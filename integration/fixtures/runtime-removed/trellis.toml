@@ -9,4 +9,4 @@ runtime = "contract.trellis"
 output = "packages/runtime-trellis"
 
 [dependencies]
-trellis = { package = "trellis", path = "../../../rust/crates/runtime" }
+trellis = { package = "trellis", path = "../../../crates/runtime" }

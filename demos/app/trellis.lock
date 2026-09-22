@@ -5,7 +5,7 @@ root = "demo-app"
 name = "demo-app"
 version = "1.0.0"
 digest = "7eHGHbYeWuVj5hHtaD0OV2fNf0SZmcjl95r1SvFol2k"
-distribution-digest = "sha256:93a832f539a17d4acde288e9b57feadd15a97106bdb1714eb57241724bf5f8c5"
+distribution-digest = "sha256:549d3cbe2be0706f20df559e4ff5db689ffa2f1f671e5e074f27d93d14fd2587"
 
 [[packages.dependencies]]
 name = "demo-service"
@@ -41,4 +41,4 @@ dependencies = []
 
 [packages.source]
 kind = "path"
-path = "./../../rust/crates/runtime"
+path = "./../../crates/runtime"

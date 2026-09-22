@@ -97,7 +97,7 @@ try {
   await ensureDir(bin);
   await Deno.copyFile(
     Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
-      join(repository, "rust/target/debug/trellis-server"),
+      join(repository, "target/debug/trellis-server"),
     join(bin, "trellis-server"),
   );
   await Deno.symlink(Deno.execPath(), join(bin, "deno"));

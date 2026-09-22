@@ -7,7 +7,7 @@ device = "contract.trellis"
 
 [dependencies]
 service = { package = "demo-service", path = "../service" }
-trellis = { package = "trellis", path = "../../../rust/crates/runtime" }
+trellis = { package = "trellis", path = "../../../crates/runtime" }
 
 [generate.typescript]
 output = "trellis"

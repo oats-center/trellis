@@ -6,7 +6,7 @@ version = "0.12.0"
 admin = "contract.trellis"
 
 [dependencies]
-trellis = { package = "trellis", path = "../../../rust/crates/runtime" }
+trellis = { package = "trellis", path = "../../../crates/runtime" }
 
 [generate.typescript]
 output = "trellis"

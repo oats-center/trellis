@@ -90,7 +90,7 @@ The portal root must contain `200.html`; the Console root must contain
 
 ## Development workflow
 
-- **Runtime changes**: edit files under `rust/crates/runtime/`; rebuild and restart `trellis-server` after changes.
+- **Runtime changes**: edit files under `crates/runtime/`; rebuild and restart `trellis-server` after changes.
 - **Web changes**: edit files under `web/`; Vite HMR applies changes through Trellis.
 - **Contract changes**: run `cargo xtask install`.
 - **CLI changes**: run `cargo build -p trellis-cli` in the `rust/` directory, then re-run `trellis ...` commands.

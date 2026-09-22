@@ -84,9 +84,9 @@ type**. It does not import `/participant`, `/jobs`, or `/contracts`.
 | `PARTICIPANT_KV_METADATA`              | V    | Present       | Absent                | Participant KV metadata                 |
 | `PARTICIPANT_STORE_METADATA`           | V    | Present       | Absent                | Participant store metadata              |
 
-Evidence: `rust/crates/codegen-ts/src/lib.rs:227-237`, `:673-682`, and
-`:940-945`; metadata fields are selected at `:336-350`. Native emission removes
-unused imports, so an individual emitted package need not import all 14.
+Evidence: `crates/codegen-ts/src/lib.rs:227-237`, `:673-682`, and `:940-945`;
+metadata fields are selected at `:336-350`. Native emission removes unused
+imports, so an individual emitted package need not import all 14.
 
 Generated modules additionally import their own `API`/`API_DIGEST`, schema
 constants, `Types` namespace, and referenced API namespaces. Those are ordinary

@@ -8,8 +8,8 @@
     "./packages/trellis"
   ],
   "tasks": {
-    "install": "cargo run --manifest-path ../rust/xtask/Cargo.toml -- install",
-    "protocol:wasm": "cargo run --manifest-path ../rust/xtask/Cargo.toml -- protocol-wasm",
+    "install": "cargo run --manifest-path ../xtask/Cargo.toml -- install",
+    "protocol:wasm": "cargo run --manifest-path ../xtask/Cargo.toml -- protocol-wasm",
     "browser:embedded": "deno task -c ../web/deno.json build:embedded",
     "build:runtime": "deno task install && deno task protocol:wasm && deno task browser:embedded",
     "packages:build:npm": "deno task -c packages/result/deno.json build:npm && deno task -c packages/trellis/deno.json build:npm && deno task -c packages/trellis-svelte/deno.json build:npm",

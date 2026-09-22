@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - rs
+      - main
   pull_request:
 
 permissions:
@@ -49,13 +49,13 @@ jobs:
           deno-version: ${{ env.DENO_VERSION }}
 
       - name: Reset isolated installation state
-        run: rm -rf rust/target
+        run: rm -rf target
 
       - name: Cache installation build
         uses: actions/cache@v4
         with:
-          path: rust/target
-          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-${{ hashFiles('rust/**/Cargo.toml', 'rust/**/Cargo.lock', '.cargo/config.toml', 'rust/.cargo/config.toml') }}
+          path: target
+          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}
 
       - name: Install generated artifacts
         run: rm -rf "$RUNNER_TEMP/trellis-cache" && TRELLIS_CACHE="$RUNNER_TEMP/trellis-cache" cargo xtask install
@@ -76,7 +76,7 @@ jobs:
         with:
           name: check-generated
           path: |
-            rust/crates/runtime/trellis
+            crates/runtime/trellis
             web/trellis
             ts/packages/trellis-test/trellis
             integration/fixtures/runtime/crates/runtime-trellis
@@ -118,7 +118,7 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - name: Build protocol WASM
-        run: cargo run --manifest-path rust/xtask/Cargo.toml -- protocol-wasm
+        run: cargo run --manifest-path xtask/Cargo.toml -- protocol-wasm
 
       - name: Upload protocol WASM
         uses: actions/upload-artifact@v4
@@ -162,7 +162,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: check-portal
-          path: rust/crates/runtime/generated
+          path: crates/runtime/generated
           retention-days: 1
 
   rust:
@@ -183,7 +183,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: check-portal
-          path: rust/crates/runtime/generated
+          path: crates/runtime/generated
 
       - name: Expose installed Cargo binaries
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -205,8 +205,8 @@ jobs:
       - name: Cache Rust build artifacts
         uses: actions/cache@v4
         with:
-          path: rust/target
-          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-${{ hashFiles('rust/**/Cargo.toml', 'rust/**/Cargo.lock', '.cargo/config.toml', 'rust/.cargo/config.toml') }}
+          path: target
+          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}
 
       - name: Download protocol WASM
         uses: actions/download-artifact@v4
@@ -216,27 +216,19 @@ jobs:
 
       - name: Check formatting
         run: |
-          cargo fmt --manifest-path rust/Cargo.toml --all --check
+          cargo fmt --manifest-path Cargo.toml --all --check
 
       - name: Lint Rust
-        run: cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings
+        run: cargo clippy --manifest-path Cargo.toml --workspace --all-targets -- -D warnings
 
       - name: Test Rust workspace
-        run: cargo test --manifest-path rust/Cargo.toml --workspace
+        run: cargo test --manifest-path Cargo.toml --workspace
 
   rust-tooling:
-    name: Rust tooling (${{ matrix.name }})
+    name: Rust tooling
     needs: [install, wasm]
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: install
-            workspace: rust/xtask
-          - name: release
-            workspace: xtask
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -259,7 +251,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Test Rust tooling
-        run: cargo test --manifest-path ${{ matrix.workspace }}/Cargo.toml
+        run: cargo test --manifest-path xtask/Cargo.toml
 
   typescript:
     name: TypeScript
@@ -338,13 +330,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: check-portal
-          path: rust/crates/runtime/generated
+          path: crates/runtime/generated
 
       - name: Build repository CLI and server
-        run: cargo build --manifest-path rust/Cargo.toml -p trellis-cli -p trellis-server
+        run: cargo build --manifest-path Cargo.toml -p trellis-cli -p trellis-server
 
       - name: Expose repository CLI
-        run: echo "$GITHUB_WORKSPACE/rust/target/debug" >> "$GITHUB_PATH"
+        run: echo "$GITHUB_WORKSPACE/target/debug" >> "$GITHUB_PATH"
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -366,7 +358,7 @@ jobs:
           export PATH="$(dirname "$(rustup which cargo)"):/usr/bin:/bin"
           export TRELLIS_CACHE="$consumer/empty-api-cache"
           cd "$consumer"
-          cargo check --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/rust/crates/trellis\""
+          cargo check --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\""
 
       - name: Check Rust device demo
         working-directory: demos/rust/device
@@ -378,7 +370,7 @@ jobs:
           export PATH="$(dirname "$(rustup which cargo)"):/usr/bin:/bin"
           export TRELLIS_CACHE="$consumer/empty-api-cache"
           cd "$consumer"
-          cargo check --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/rust/crates/trellis\""
+          cargo check --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\""
 
   live:
     name: Live integration
@@ -398,7 +390,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: check-portal
-          path: rust/crates/runtime/generated
+          path: crates/runtime/generated
 
       - name: Download protocol WASM
         uses: actions/download-artifact@v4
@@ -415,18 +407,18 @@ jobs:
           deno-version: ${{ env.DENO_VERSION }}
 
       - name: Build live runtime binaries
-        run: cargo build --manifest-path rust/Cargo.toml -p trellis-server -p trellis-cli
+        run: cargo build --manifest-path Cargo.toml -p trellis-server -p trellis-cli
 
       - name: Run Rust live integration
         env:
-          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/rust/target/debug/trellis-server
-          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/rust/target/debug/trellis
-        run: cargo test --manifest-path rust/Cargo.toml -p trellis-rs --features live-integration --test integration -- --test-threads=1 --nocapture
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
+          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
+        run: cargo test --manifest-path Cargo.toml -p trellis-rs --features live-integration --test integration -- --test-threads=1 --nocapture
 
       - name: Run TypeScript live integration
         env:
-          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/rust/target/debug/trellis-server
-          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/rust/target/debug/trellis
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
+          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
         run: deno test -A -c ts/integration/deno.json ts/integration
 
       - name: Set up Node
@@ -436,7 +428,7 @@ jobs:
 
       - name: Verify documented Orders service
         env:
-          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/rust/target/debug/trellis-server
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
         run: |
           deno task -c ts/packages/result/deno.json build:npm
           deno task -c ts/packages/trellis/deno.json build:npm:installed
@@ -460,7 +452,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: check-portal
-          path: rust/crates/runtime/generated
+          path: crates/runtime/generated
 
       - name: Download protocol WASM
         uses: actions/download-artifact@v4
@@ -477,19 +469,19 @@ jobs:
           deno-version: ${{ env.DENO_VERSION }}
 
       - name: Build Trellis server and CLI
-        run: cargo build --manifest-path rust/Cargo.toml -p trellis-server -p trellis-cli
+        run: cargo build --manifest-path Cargo.toml -p trellis-server -p trellis-cli
 
       - name: Test built-in UI hosting
         working-directory: ts
         env:
-          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/rust/target/debug/trellis-server
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
         run: deno task test:browser:ui-hosting
 
       - name: Test functional browser journeys
         working-directory: ts
         env:
-          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/rust/target/debug/trellis-server
-          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/rust/target/debug/trellis
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
+          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
         run: deno task test:browser:auth
 
   console:
@@ -519,7 +511,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: check-portal
-          path: rust/crates/runtime/generated
+          path: crates/runtime/generated
 
       - name: Download protocol WASM
         uses: actions/download-artifact@v4
@@ -536,12 +528,12 @@ jobs:
           deno-version: ${{ env.DENO_VERSION }}
 
       - name: Build Trellis server and CLI
-        run: cargo build --manifest-path rust/Cargo.toml -p trellis-server -p trellis-cli
+        run: cargo build --manifest-path Cargo.toml -p trellis-server -p trellis-cli
 
       - name: Run console browser suite
         env:
-          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/rust/target/debug/trellis-server
-          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/rust/target/debug/trellis
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
+          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
           SUITE: ${{ matrix.suite }}
         run: |
           deno test -A -c ts/browser/deno.json \

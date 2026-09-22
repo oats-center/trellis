@@ -4,7 +4,7 @@ const webDir = dirname(dirname(fromFileUrl(import.meta.url)));
 const buildDir = join(webDir, "build-embedded");
 const destination = join(
   webDir,
-  "../rust/crates/runtime/generated/web",
+  "../crates/runtime/generated/web",
 );
 
 const build = new Deno.Command(Deno.execPath(), {

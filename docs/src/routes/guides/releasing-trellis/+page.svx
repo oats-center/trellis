@@ -36,7 +36,7 @@ add synthetic failure controls to the runtime for tests.
 Before committing or ending an implementation cycle, run the focused checks that match the files touched. Build the server/CLI and set their paths as described in `integration/README.md`. Each live test owns its real runtime lifecycle:
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p trellis-rs --features live-integration --test integration -- --test-threads=1
+cargo test --manifest-path Cargo.toml -p trellis-rs --features live-integration --test integration -- --test-threads=1
 deno test -A -c ts/integration/deno.json ts/integration
 ```
 
@@ -52,14 +52,14 @@ Executable Rust and Deno tests are the integration catalog.
 For focused local debugging, run the smallest matching Rust test or Deno test file directly:
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p trellis-rs --features live-integration --test integration
+cargo test --manifest-path Cargo.toml -p trellis-rs --features live-integration --test integration
 deno test -A -c ts/integration/deno.json --filter 'generated runtime workflows' ts/integration
 ```
 
 Run both suites before accepting changes to transport or runtime behavior:
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p trellis-rs --features live-integration --test integration -- --test-threads=1
+cargo test --manifest-path Cargo.toml -p trellis-rs --features live-integration --test integration -- --test-threads=1
 deno test -A -c ts/integration/deno.json ts/integration
 ```
 
@@ -73,20 +73,20 @@ Use targeted formatting for the files changed by the task:
 
 ```sh
 deno fmt -c ts/deno.json <changed ts/ts/svelte/json/md/css/svg files>
-cargo fmt --manifest-path rust/Cargo.toml --package <crate>
+cargo fmt --manifest-path Cargo.toml --package <crate>
 rustfmt --edition 2021 <changed .rs files>
 ```
 
-`rust/xtask` is a standalone Rust workspace. When a change touches it, run its formatter check directly:
+`xtask` is a standalone Rust workspace. When a change touches it, run its formatter check directly:
 
 ```sh
-cargo fmt --manifest-path rust/xtask/Cargo.toml --check
+cargo fmt --manifest-path xtask/Cargo.toml --check
 ```
 
 When generated artifacts are affected, run `cargo xtask install` first, then verify generated Rust formatting with:
 
 ```sh
-cargo fmt --manifest-path rust/Cargo.toml --all --check
+cargo fmt --manifest-path Cargo.toml --all --check
 ```
 
 If a full formatter check reports unrelated pre-existing drift, keep the task patch scoped and report that drift separately unless the cleanup is explicitly part of the task.
@@ -259,8 +259,8 @@ and run the same package-specific checks used by the Release workflow:
 
 ```sh
 cargo xtask install
-cargo run --manifest-path rust/xtask/Cargo.toml -- protocol-wasm
-cargo package --manifest-path rust/Cargo.toml --workspace --allow-dirty \
+cargo run --manifest-path xtask/Cargo.toml -- protocol-wasm
+cargo package --manifest-path Cargo.toml --workspace --allow-dirty \
   --exclude trellis-local-bootstrap --exclude trellis-bootstrap \
   --exclude trellis-local-nats --exclude trellis-jobs-runtime \
   --exclude trellis-events-runtime --exclude trellis-test \
@@ -313,7 +313,7 @@ deno task -c ts/deno.json build:npm
 (cd ts/packages/result && deno publish --dry-run --allow-slow-types --allow-dirty)
 (cd ts/packages/trellis && deno publish --dry-run --allow-slow-types --allow-dirty)
 (cd ts/packages/trellis-test && deno publish --dry-run --allow-slow-types --allow-dirty)
-docker build -f rust/crates/runtime/Containerfile .
+docker build -f crates/runtime/Containerfile .
 docker build -f web/Containerfile .
 ```
 

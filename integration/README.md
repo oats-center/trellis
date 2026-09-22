@@ -8,15 +8,15 @@ Prepare generated artifacts and build the two binaries once:
 
 ```sh
 cargo xtask install
-cargo build --manifest-path rust/Cargo.toml -p trellis-server -p trellis-cli
-export TRELLIS_TEST_SERVER_BIN="$PWD/rust/target/debug/trellis-server"
-export TRELLIS_TEST_CLI_BIN="$PWD/rust/target/debug/trellis"
+cargo build --manifest-path Cargo.toml -p trellis-server -p trellis-cli
+export TRELLIS_TEST_SERVER_BIN="$PWD/target/debug/trellis-server"
+export TRELLIS_TEST_CLI_BIN="$PWD/target/debug/trellis"
 ```
 
 Use ordinary discovery and native filters:
 
 ```sh
-cargo test --manifest-path rust/Cargo.toml -p trellis-rs \
+cargo test --manifest-path Cargo.toml -p trellis-rs \
   --features live-integration --test integration -- --test-threads=1 --nocapture
 deno test -A -c ts/integration/deno.json ts/integration
 ```

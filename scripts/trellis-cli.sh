@@ -11,12 +11,12 @@ if [[ -n "${TRELLIS_CLI_BIN:-}" ]]; then
   exec "$TRELLIS_CLI_BIN" "$@"
 fi
 
-if [[ -x "$repo_root/rust/target/debug/trellis" ]]; then
-  exec "$repo_root/rust/target/debug/trellis" "$@"
+if [[ -x "$repo_root/target/debug/trellis" ]]; then
+  exec "$repo_root/target/debug/trellis" "$@"
 fi
 
-if [[ -x "$repo_root/rust/target/release/trellis" ]]; then
-  exec "$repo_root/rust/target/release/trellis" "$@"
+if [[ -x "$repo_root/target/release/trellis" ]]; then
+  exec "$repo_root/target/release/trellis" "$@"
 fi
 
-exec cargo run --manifest-path "$repo_root/rust/Cargo.toml" -p trellis-cli --bin trellis -- "$@"
+exec cargo run --manifest-path "$repo_root/Cargo.toml" -p trellis-cli --bin trellis -- "$@"

@@ -141,7 +141,7 @@ Deno.test("generated TypeScript caller reaches Rust provider", async () => {
           `patch.crates-io.trellis-rs.path=${
             JSON.stringify(
               fromFileUrl(
-                new URL("../../rust/crates/trellis", import.meta.url),
+                new URL("../../crates/trellis", import.meta.url),
               ),
             )
           }`,
@@ -159,7 +159,7 @@ Deno.test("generated TypeScript caller reaches Rust provider", async () => {
           TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_IDENTITY_SEED: identity.seed,
           CARGO_TARGET_DIR: fromFileUrl(
-            new URL("../../rust/target", import.meta.url),
+            new URL("../../target", import.meta.url),
           ),
         },
         stdout: "inherit",
@@ -375,7 +375,7 @@ Deno.test("generated TypeScript caller reaches Rust provider", async () => {
           `patch.crates-io.trellis-rs.path=${
             JSON.stringify(
               fromFileUrl(
-                new URL("../../rust/crates/trellis", import.meta.url),
+                new URL("../../crates/trellis", import.meta.url),
               ),
             )
           }`,
@@ -393,7 +393,7 @@ Deno.test("generated TypeScript caller reaches Rust provider", async () => {
           TRELLIS_URL: runtime.trellisUrl,
           XDG_CONFIG_HOME: join(runtime.workdir, "rust-caller-config"),
           CARGO_TARGET_DIR: fromFileUrl(
-            new URL("../../rust/target", import.meta.url),
+            new URL("../../target", import.meta.url),
           ),
         },
         stdout: "piped",
@@ -494,7 +494,7 @@ Deno.test("generated Rust resources use live NATS", async () => {
         "--config",
         `patch.crates-io.trellis-rs.path=${
           JSON.stringify(
-            fromFileUrl(new URL("../../rust/crates/trellis", import.meta.url)),
+            fromFileUrl(new URL("../../crates/trellis", import.meta.url)),
           )
         }`,
         "--bin",
@@ -511,7 +511,7 @@ Deno.test("generated Rust resources use live NATS", async () => {
         TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_IDENTITY_SEED: identity.seed,
         CARGO_TARGET_DIR: fromFileUrl(
-          new URL("../../rust/target", import.meta.url),
+          new URL("../../target", import.meta.url),
         ),
       },
       stdin: "piped",
@@ -565,7 +565,7 @@ Deno.test("generated Rust resources use live NATS", async () => {
         "--config",
         `patch.crates-io.trellis-rs.path=${
           JSON.stringify(
-            fromFileUrl(new URL("../../rust/crates/trellis", import.meta.url)),
+            fromFileUrl(new URL("../../crates/trellis", import.meta.url)),
           )
         }`,
         "--bin",
@@ -583,7 +583,7 @@ Deno.test("generated Rust resources use live NATS", async () => {
         TRELLIS_STATE_ACCEPTANCE: "1",
         XDG_CONFIG_HOME: join(runtime.workdir, "rust-state-config"),
         CARGO_TARGET_DIR: fromFileUrl(
-          new URL("../../rust/target", import.meta.url),
+          new URL("../../target", import.meta.url),
         ),
       },
       stdout: "piped",

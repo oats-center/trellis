@@ -38,7 +38,7 @@ function repoTrellisCommand() {
     args: [
       "run",
       "--manifest-path",
-      "../rust/Cargo.toml",
+      "../Cargo.toml",
       "-p",
       "trellis-server",
       "--",

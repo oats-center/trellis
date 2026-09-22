@@ -7,7 +7,7 @@
 **/.svelte-kit
 **/build
 **/node_modules
-rust/target
+target
 !ts/build
 !ts/build/vite-shims
 !ts/build/vite-shims/**

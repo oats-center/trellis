@@ -340,7 +340,7 @@ Deno.test("Rust durable events match registrations and retain unhandled messages
           `patch.crates-io.trellis-rs.path=${
             JSON.stringify(
               fromFileUrl(
-                new URL("../../rust/crates/trellis", import.meta.url),
+                new URL("../../crates/trellis", import.meta.url),
               ),
             )
           }`,
@@ -359,7 +359,7 @@ Deno.test("Rust durable events match registrations and retain unhandled messages
           TRELLIS_IDENTITY_SEED: identity.seed,
           REVERSE: String(reverse),
           CARGO_TARGET_DIR: fromFileUrl(
-            new URL("../../rust/target", import.meta.url),
+            new URL("../../target", import.meta.url),
           ),
         },
         stdout: "inherit",
@@ -579,7 +579,7 @@ for (const sdk of ["rust", "typescript"] as const) {
               `patch.crates-io.trellis-rs.path=${
                 JSON.stringify(
                   fromFileUrl(
-                    new URL("../../rust/crates/trellis", import.meta.url),
+                    new URL("../../crates/trellis", import.meta.url),
                   ),
                 )
               }`,
@@ -599,7 +599,7 @@ for (const sdk of ["rust", "typescript"] as const) {
               REVERSE: "false",
               CRASH: String(crash),
               CARGO_TARGET_DIR: fromFileUrl(
-                new URL("../../rust/target", import.meta.url),
+                new URL("../../target", import.meta.url),
               ),
             },
             stdout: "inherit",

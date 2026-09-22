@@ -48,8 +48,8 @@ utils/arangodb/data/
 
 # Generated build artifacts
 generated/
-!rust/crates/trellis/src/internal_sdk/generated/
-!rust/crates/trellis/src/internal_sdk/generated/**
+!crates/trellis/src/internal_sdk/generated/
+!crates/trellis/src/internal_sdk/generated/**
 ts/packages/trellis/auth/protocol_wasm/
 docs/static/api/typescript/
 **/npm/
@@ -61,17 +61,16 @@ ts/packages/trellis/**/*.d.ts
 # Rust build artifacts
 integration/fixtures/**/target/
 xtask/target/
-rust/target/
-rust/**/target/
+target/
+crates/**/target/
 demos/rust/target/
 demos/rust/**/target/
 xtask/Cargo.lock
-rust/xtask/Cargo.lock
 
 # Local generated packages; Orders is intentionally committed.
-/rust/crates/runtime/trellis/
-/rust/crates/eventlog-runtime/trellis/
-/rust/crates/jobs-runtime/trellis/
+/crates/runtime/trellis/
+/crates/eventlog-runtime/trellis/
+/crates/jobs-runtime/trellis/
 /web/trellis/
 /ts/packages/trellis-test/trellis/
 /integration/fixtures/runtime/crates/runtime-trellis/

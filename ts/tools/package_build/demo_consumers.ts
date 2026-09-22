@@ -103,7 +103,7 @@ try {
         trellis: {
           command: {
             cmd: Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
-              join(repository, "rust/target/debug/trellis-server"),
+              join(repository, "target/debug/trellis-server"),
             args: ["--config", "{config}", "all"],
           },
         },

@@ -10,7 +10,7 @@ import {
 
 function cliBinary(): string {
   const binary = Deno.env.get("TRELLIS_TEST_CLI_BIN") ??
-    "rust/target/debug/trellis";
+    "target/debug/trellis";
   try {
     Deno.statSync(binary);
   } catch {

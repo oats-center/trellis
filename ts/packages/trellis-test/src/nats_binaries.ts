@@ -3,7 +3,7 @@
  * the Trellis test harness.
  *
  * First use requires network access to the pinned GitHub release assets derived
- * from `rust/crates/local-nats/nats-binaries.json` (version + per-platform
+ * from `crates/local-nats/nats-binaries.json` (version + per-platform
  * sha256 only; the release URLs are derived from the version). Verified
  * archives and binaries are cached under
  * `TRELLIS_TEST_CACHE_DIR` (default `~/.cache/trellis-test`) and reused by
