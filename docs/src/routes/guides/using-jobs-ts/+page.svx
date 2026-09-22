@@ -1,248 +1,52 @@
-This guide adds background job processing to the TypeScript `orders-service` from [Tutorial: Write a service](/guides/write-a-service). By the end the service will enqueue fulfillment jobs when an order is created and process them with retry, progress tracking, and event emission on completion.
+# Use jobs from TypeScript
 
-Before starting, complete the TypeScript path in [Tutorial: Write a service](/guides/write-a-service).
+Jobs are private participant execution. Declare a `job` resource in native IDL,
+then use generated `service.jobs.<name>` handles to register handlers and create
+work. Callers that need to observe a workflow use an Operation instead.
 
-## What are jobs?
+```trellis
+model ReconcileInput { orderId: string; }
+model ReconcileOutput { changed: bool; }
 
-Jobs are **service-private** background work units. Callers never interact with your jobs directly — they are internal to your service. For caller-visible async workflows, see [Operations: TypeScript](/guides/using-operations-ts).
-
-## 1. Add top-level `jobs` to the contract
-
-Jobs participation is declared in the contract's top-level `jobs` map. Job schemas are registered by name in the contract's `schemas` map and referenced by that name in queue definitions. Update `contracts/orders_service.ts`:
-
-```ts
-import {
-  ReserveInventoryPayloadSchema,
-  ReserveInventoryResultSchema,
-  ChargePaymentPayloadSchema,
-  ChargePaymentResultSchema,
-  NotifyWarehousePayloadSchema,
-  NotifyWarehouseResultSchema,
-} from "./schemas.ts";
-
-// In the first defineServiceContract argument, add to the schemas map:
-{
-  schemas: {
-    // ... existing order schemas ...
-    ReserveInventoryPayload: ReserveInventoryPayloadSchema,
-    ReserveInventoryResult: ReserveInventoryResultSchema,
-    ChargePaymentPayload: ChargePaymentPayloadSchema,
-    ChargePaymentResult: ChargePaymentResultSchema,
-    NotifyWarehousePayload: NotifyWarehousePayloadSchema,
-    NotifyWarehouseResult: NotifyWarehouseResultSchema,
-  },
+service OrdersService {
+  job reconcile {
+    title "Reconcile order";
+    description "Repairs one order projection.";
+    payload ReconcileInput;
+    result ReconcileOutput;
+    retry { attempts 3; backoff [5s, 30s]; }
+    key_concurrency { path orderId; policy queue; }
+  }
 }
-
-// In the returned contract body:
-resources: {
-  kv: {
-    orders: {
-      purpose: "Store order records",
-      schema: ref.schema("Order"),
-      history: 1,
-      ttlMs: 0,
-    },
-  },
-},
-jobs: {
-  reserveInventory: {
-    payload: { schema: "ReserveInventoryPayload" },
-    result: { schema: "ReserveInventoryResult" },
-    maxDeliver: 5,
-    backoffMs: [5000, 30000, 120000],
-  },
-  chargePayment: {
-    payload: { schema: "ChargePaymentPayload" },
-    result: { schema: "ChargePaymentResult" },
-    maxDeliver: 5,
-    ackWaitMs: 600000,
-  },
-  notifyWarehouse: {
-    payload: { schema: "NotifyWarehousePayload" },
-    result: { schema: "NotifyWarehouseResult" },
-    maxDeliver: 3,
-  },
-},
 ```
 
-## 2. Declare job schemas
-
-Add to `schemas.ts`:
+Run `trellis generate`, then register the handler before waiting on the service:
 
 ```ts
-export const ReserveInventoryPayloadSchema = Type.Object({
-  orderId: Type.String(),
-  items: Type.Array(Type.Object({ productId: Type.String(), quantity: Type.Number() })),
+import { Result } from "@qlever-llc/trellis";
+import { RetryJobError } from "@qlever-llc/trellis/service";
+
+service.jobs.reconcile.handle(async ({ job }) => {
+  const result = await reconcile(job.payload);
+  return result
+    ? Result.ok(result)
+    : Result.err(new RetryJobError({ message: "reconcile unavailable" }));
 });
-export type ReserveInventoryPayload = Static<typeof ReserveInventoryPayloadSchema>;
 
-export const ReserveInventoryResultSchema = Type.Object({ reserved: Type.Boolean() });
-export type ReserveInventoryResult = Static<typeof ReserveInventoryResultSchema>;
-
-export const ChargePaymentPayloadSchema = Type.Object({
-  orderId: Type.String(),
-  customerId: Type.String(),
-  amountCents: Type.Number(),
-});
-export type ChargePaymentPayload = Static<typeof ChargePaymentPayloadSchema>;
-
-export const ChargePaymentResultSchema = Type.Object({ chargeId: Type.String() });
-export type ChargePaymentResult = Static<typeof ChargePaymentResultSchema>;
-
-export const NotifyWarehousePayloadSchema = Type.Object({
-  orderId: Type.String(),
-  items: Type.Array(Type.Object({ productId: Type.String(), quantity: Type.Number() })),
-});
-export type NotifyWarehousePayload = Static<typeof NotifyWarehousePayloadSchema>;
-
-export const NotifyWarehouseResultSchema = Type.Object({ notified: Type.Boolean() });
-export type NotifyWarehouseResult = Static<typeof NotifyWarehouseResultSchema>;
+const job = await service.jobs.reconcile.create({ orderId }).orThrow();
 ```
 
-## 3. Create jobs from the `Orders.Create` RPC handler
+Progress, structured logs, retry, and dead-job lifecycle are always available.
+The default is five total deliveries with delays of 5s, 30s, 2m, and 10m.
+Explicit retry supplies attempts and exactly attempts-minus-one positive delays.
+Delivery progress acknowledgement is automatic; there is no authored heartbeat,
+ack-wait, max-delivery, or feature switch.
 
-Update the `Orders.Create` handler in `main.ts` to enqueue a fulfillment job after saving the order:
+For keyed work, the handler does not start until the declared key slot is
+acquired. Waiting workers maintain delivery progress without spending a retry or
+reaching max-delivery exhaustion. A `RetryJobError` returned by ordinary handler
+execution does consume the configured attempts and backoff schedule.
 
-```ts
-await app.handle.rpc.orders.create(async ({ input, client, deps }) => {
-  const orderId = deps.id();
-  const order = {
-    orderId,
-    customerId: input.customerId,
-    status: "pending",
-    items: input.items,
-    createdAt: deps.clock().toISOString(),
-  };
-  await client.kv.orders.put(orderId, order).orThrow();
-
-  const job = await client.jobs.reserveInventory.create({
-    orderId,
-    items: input.items,
-  });
-  if (job.isErr()) throw job.error;
-
-  return Result.ok({ orderId, status: "pending" });
-});
-```
-
-## 4. Register job workers
-
-Register workers for each job type before calling `service.wait()`. Handler registration is synchronous; the connected service owns worker startup and shutdown as part of its lifecycle:
-
-Use the `service.jobs` handle returned by `TrellisService.connect(...)`, or the
-bound `app.jobs` wrapper when job handlers need application dependencies. Jobs
-bindings are Trellis runtime internals, not values service code should fetch with
-`Trellis.Bindings.Get` or pass into `Trellis` constructors.
-
-```ts
-app.jobs.reserveInventory.handle(async ({ job, client, deps }) => {
-  console.info(
-    `reserveInventory job ${job.ref.id} request=${job.context.requestId} trace=${job.context.traceId}`,
-  );
-  await job.progress({ step: "reserving", message: "Checking inventory" });
-
-  if (job.cancelled) {
-    return Result.err({ type: "JobCancelledError", message: "Cancelled" });
-  }
-
-  // reserve inventory...
-  const reserved = true;
-
-  if (!reserved) {
-    return Result.err({ type: "InventoryError", message: "Items not available" });
-  }
-
-  deps.log.info("inventory reserved", { orderId: job.payload.orderId });
-  const chargeJob = await client.jobs.chargePayment.create({
-    orderId: job.payload.orderId,
-    customerId: "cust_placeholder",
-    amountCents: 1000,
-  });
-  if (chargeJob.isErr()) throw chargeJob.error;
-
-  return Result.ok({ reserved: true });
-});
-
-app.jobs.chargePayment.handle(async ({ job, client, deps }) => {
-  await job.progress({ step: "charging", message: "Processing payment" });
-
-  if (job.cancelled) {
-    return Result.err({ type: "JobCancelledError", message: "Cancelled" });
-  }
-
-  // charge payment...
-  const chargeId = `ch_${deps.id()}`;
-
-  const notifyJob = await client.jobs.notifyWarehouse.create({
-    orderId: job.payload.orderId,
-    items: [],
-  });
-  if (notifyJob.isErr()) throw notifyJob.error;
-
-  return Result.ok({ chargeId });
-});
-
-app.jobs.notifyWarehouse.handle(async ({ job, client, deps }) => {
-  await job.progress({ step: "notifying", message: "Notifying warehouse" });
-
-  if (job.cancelled) {
-    return Result.err({ type: "JobCancelledError", message: "Cancelled" });
-  }
-
-  // notify warehouse...
-
-  await client.event.orders.shipped.publish({
-    orderId: job.payload.orderId,
-    customerId: "cust_placeholder",
-    shippedAt: deps.clock().toISOString(),
-  });
-
-  return Result.ok({ notified: true });
-});
-```
-
-Every active job exposes immutable `job.context` with `requestId`, `traceId`,
-`traceparent`, and optional `tracestate`. The runtime copies this context to all
-job lifecycle events and NATS headers, so include `requestId` or `traceId` in
-service logs when you need to follow work across RPCs, events, operations, and
-jobs.
-
-## 5. Run the service
-
-Call `service.wait()` after all `handle()` registrations. The service starts registered workers, keeps them running, and stops them when `service.stop()` or process shutdown runs:
-
-```ts
-await service.wait();
-```
-
-## 6. Retry and failure
-
-If a job handler returns `Result.err(...)`, Trellis NAKs the JetStream message and the job retries according to the `backoffMs` schedule declared in the contract. After `maxDeliver` attempts, the job moves to the `dead` queue for operator review.
-
-To prevent retry for a specific job type, set `maxDeliver: 1` in the contract queue declaration.
-
-## 7. Long-running jobs
-
-If a job may run longer than the configured `ackWaitMs` (default 5 minutes), call `job.heartbeat()` periodically to extend the deadline:
-
-```ts
-app.jobs.chargePayment.handle(async ({ job }) => {
-  while (processing) {
-    await job.heartbeat();
-    // continue work
-  }
-  return Result.ok({ chargeId });
-});
-```
-
-## Development loop
-
-1. Update job schemas and the contract's top-level `jobs` map
-2. Rebuild contract artifacts: `deno task prepare`
-3. Review and accept or reject the pending service authority change in Console if queues changed; use `trellis svc <service-id> authority plan list` and `authority plan show <PLAN_ID>` only for local or automation fallback
-4. Restart the service
-
-## Next steps
-
-- [Operations: TypeScript](/guides/using-operations-ts) — expose a caller-visible `Orders.Process` operation backed by these jobs
-- [Administer Jobs](/guides/administering-jobs) — query and manage these jobs as an operator
+Execution is at least once. Use stable job identity and idempotent side effects.
+Typed updates are transient; durable progress, logs, result/error, and dead
+lifecycle remain authoritative.

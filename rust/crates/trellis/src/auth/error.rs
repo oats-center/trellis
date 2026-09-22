@@ -2,14 +2,15 @@ use std::io;
 
 /// Errors returned by Trellis auth and admin-session helpers.
 #[derive(Debug, thiserror::Error)]
+#[doc = concat!("Public Trellis value set `", stringify!(TrellisAuthError), "`.")]
 pub enum TrellisAuthError {
-    /// The supplied contract JSON could not be parsed.
-    #[error("invalid contract json: {0}")]
-    ContractJson(#[from] serde_json::Error),
+    /// A JSON request or response could not be encoded or decoded.
+    #[error("invalid json: {0}")]
+    Json(#[from] serde_json::Error),
 
-    /// Contract digest calculation failed.
-    #[error("contract digest error: {0}")]
-    ContractDigest(#[from] trellis_contracts::ContractsError),
+    /// A protocol-owned participant or proof value was invalid.
+    #[error("auth protocol error: {0}")]
+    Protocol(Box<trellis_protocol::ProtocolError>),
 
     /// A configured auth or portal URL was invalid.
     #[error("invalid url: {0}")]
@@ -63,31 +64,17 @@ pub enum TrellisAuthError {
     #[error("operation failed: {0}")]
     OperationFailed(String),
 
-    /// A device activation wait request returned a non-success HTTP response.
-    #[error("device activation wait failed: {0} {1}")]
-    DeviceActivationWaitFailure(u16, String),
-
-    /// A device activation start request returned a non-success HTTP response.
-    #[error("device activation start failed: {0} {1}")]
-    DeviceActivationStartFailure(u16, String),
-
-    /// A device connect-info request returned a non-success HTTP response.
-    #[error("device connect info failed: {0} {1}")]
-    DeviceConnectInfoFailure(u16, String),
-
-    /// A device connect-info request returned a response status this crate cannot use.
-    #[error("unexpected device connect info status: {0}")]
-    UnexpectedDeviceConnectInfoStatus(String),
-
-    /// Device activation was explicitly rejected.
-    #[error("device activation rejected{0}")]
-    DeviceActivationRejected(String),
-
     /// The authenticated user completed login successfully but lacks admin capability.
-    #[error("logged in user is not an admin")]
+    #[error("authenticated user lacks trellis.auth::admin capability")]
     NotAdmin,
 
     /// The current session belongs to a non-user participant.
     #[error("current session is not a user session: participantKind={0}")]
     NotUserSession(String),
+}
+
+impl From<trellis_protocol::ProtocolError> for TrellisAuthError {
+    fn from(error: trellis_protocol::ProtocolError) -> Self {
+        Self::Protocol(Box::new(error))
+    }
 }

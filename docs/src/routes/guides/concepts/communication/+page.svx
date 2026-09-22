@@ -1,96 +1,61 @@
-All communication between services goes through NATS. There are three primary patterns: RPCs, operations, and events. Trellis also exposes feeds for caller-authorized live views.
+# Communication
 
-## RPCs (request/reply)
+Trellis participants communicate over NATS through native contract surfaces:
+RPC for unary request/reply, Operations for durable caller-visible workflows,
+Events for facts, Feeds for live streams, Consumers for durable event handling,
+and Jobs for private queued execution.
 
-RPCs are synchronous operations. A caller sends a request and waits for a response.
+<span id="rpcs-requestreply"></span>
 
-- Subject convention: `rpc.v1.<LogicalName>` (e.g., `rpc.v1.User.Find`)
-- Callers use logical method names (e.g., `"User.Find"`), not raw subjects
-- Timeout-bounded (default 5 seconds)
-- Both sides use `Result<T, E>`; errors are values, not exceptions
+## RPCs: request/reply
 
-## Operations (async workflows)
+RPC is typed unary request/reply with expected generated Result-style failures.
 
-Operations are caller-visible async workflows. Unlike RPCs, they accept a request, emit typed progress updates, and complete with a terminal result that the caller watches or waits for.
+<span id="operations-async-workflows"></span>
 
-- Subject convention: `operations.v1.<Domain>.<Action>` (e.g., `operations.v1.Billing.Refund`)
-- Callers receive an `OperationRef` and can call `watch()` for a progress stream or `wait()` to block until completion
-- Operation state is durable; a caller reconnecting after a disconnect can resume watching an in-flight operation
-- Callers see only their own operations; subject permissions prevent cross-caller access
-- Starting an operation is controlled by its `call` capabilities.
-- The `observe` capability gates `get`, `wait`, and `watch` access to an operation's progress and terminal result. When `observe` is omitted, Trellis defaults it to the same set as `call`.
-- The `cancel` capability gates operation cancellation.
-- The `control` capability gates named signals.
-- An explicit empty `observe`, `cancel`, or `control` list means no extra capability beyond authentication is required for that action.
+## Operations: async workflows
 
-Operations are distinct from jobs. An operation is the public async surface that a caller starts and observes. A job is service-private background work, invisible to callers.
+Operations persist acceptance and resume execution at least once after owner
+loss.
 
-## Events (JetStream pub/sub)
+<span id="events-jetstream-pubsub"></span>
 
-Events announce state changes. Publishers fire and forget. Live listeners receive new messages through direct subscriptions, while durable service processing uses contract-declared `eventConsumers` groups that Trellis provisions as JetStream pull consumers with at-least-once delivery.
+## Events
 
-- Subject convention: `events.v1.<Domain>.<Action>[.<tokens>]`
-- Handlers must be idempotent
-- Subject tokens enable filtered subscriptions (e.g., subscribe to `events.v1.Document.Uploaded.pdf.*` for only PDF uploads)
-- Services that need replay, redelivery, or independent durable cursors declare explicit `eventConsumers` groups in their contract. A plain `uses.events.subscribe` grant authorizes the event surface but does not create a durable cursor.
+Events are typed facts. Ephemeral listeners are live-only; Consumers are durable.
 
-Events are event-type authorized. They are a good fit for service-to-service cache invalidation, projections, and background processing. They are not the right security boundary for per-user object ownership, such as "only events for devices this user owns".
+<span id="feeds-authorized-live-views"></span>
 
-## Feeds (authorized live views)
+## Feeds
 
-Feeds expose live streams that the owning service authorizes against the caller. A caller sends typed input to a feed request subject and receives typed frames on its authenticated reply inbox.
+Feeds are typed live streams owned by the accepting provider executor.
 
-- Subject convention: `feeds.v1.<Domain>.<LiveView>`
-- Callers use `trellis.feed("Device.Events").input(...).subscribe()` rather than raw subjects
-- The service checks the authenticated caller, requested filter, and emitted frames
-- Feed permissions grant request access to the feed, not raw `events.v1.*` subscriptions
+<span id="cross-api-dependencies"></span>
 
-Use feeds for reactive UIs and other caller-visible streams where application authorization matters. The service may implement the feed by listening to domain events, polling local state, or combining multiple sources, but the feed remains the caller-visible authorization boundary.
+## Participant selection and cross-API dependencies
 
-## Cross-contract dependencies (`uses`)
+Providers declare `implements Api;`. Callers import the API and select exact
+interactions in `use Api { ... }`. Declarations and capability approvals do not
+themselves grant authority; Trellis derives exact selected grants and route
+subjects from verified package evidence and current bindings.
 
-A contract declares which other contracts it depends on through `uses`:
+RPC/Operation/Feed routes bind the API to a provider deployment. Event subjects
+remain API-qualified facts. Applications never derive subjects, queue groups,
+proofs, or raw transport permissions.
 
-```ts
-uses: {
-  required: {
-    auth: auth.use({
-      events: { subscribe: ["Auth.Connections.Opened"] },
-    }),
-    devices: devices.use({
-      feeds: { subscribe: ["Device.Events"] },
-    }),
-  },
-  optional: {
-    core: core.use({
-      rpc: { call: ["Trellis.Surface.Status"] },
-    }),
-  },
-},
-```
+Operations are persisted before acceptance and resume at least once after owner
+loss. Feeds are live and cancellation routes to the accepting executor. Consumer
+concurrency is local per process; retries and scoped Events DLQ/replay are
+runtime-owned. Jobs remain service-private.
 
-Contracts must declare dependencies with grouped `uses.required` and `uses.optional`:
-
-- required dependencies fail closed during runtime permission derivation when the referenced contract or surface is unknown
-- authority planning can collect pending evidence before every required dependency is live. If a required dependency manifest is known but inactive, Trellis can use it to show the requested surfaces for review. If it is unknown or only stale incompatible inactive manifests remain, Trellis records the unresolved contract id as a blocker until that service uploads current evidence.
-- optional dependencies participate in contract identity but grant no authority when the target contract or surface is missing
-- if the same alias appears in both groups, the required entry wins
-
-If a dependency is not declared in `uses`, Trellis will not grant that cross-contract access when the contract boundary is added to deployment authority.
-
-Approved service boundaries only become runtime-active when the full required dependency closure resolves from known manifests and fits deployment authority; until then service bootstrap waits instead of receiving NATS credentials. If a service instance presents a different digest for the same contract id, Trellis checks same-lineage compatibility. Incompatible same-contract replacement is an authority migration: `strict` deployments record a pending plan, while `mutable-dev` deployments record and auto-accept that plan for unreleased local iteration.
+<span id="surface-availability"></span>
 
 ## Surface availability
 
-Authorization and availability are separate. A caller may be authorized for a surface even when no enabled service instance is currently connected to implement it. Apps that need to explain this distinction can call the advisory `Trellis.Surface.Status` RPC after declaring it in `uses`:
+Authority determines whether an action may be attempted; compatible provider
+definition and current liveness determine whether it is presently available.
 
-```ts
-const status = await client.rpc.trellis.surfaceStatus({
-  contractId: "orders-service@v1",
-  kind: "feed",
-  surface: "Orders.Live",
-  action: "subscribe",
-}).orThrow();
-```
-
-The status response distinguishes `unknown_contract`, `unknown_surface`, `unauthorized`, `unavailable`, and `available`. It does not grant permissions; the caller still needs the normal contract-derived capabilities for the actual RPC, operation, event, or feed.
+Every request/event carries a message-specific proof tied to its actual subject
+and signed authorization context. Providers enforce the exact action and
+resource scope. Direct event publication is not atomic with an application SQL
+transaction; use the outbox integration when that commit boundary matters.

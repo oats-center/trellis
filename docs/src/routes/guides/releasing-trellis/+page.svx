@@ -7,54 +7,63 @@ This guide owns Trellis testing and release practice. Rust `xtask release ...` c
 - push access to the repository
 - [Deno](https://deno.com) v2+
 - a Rust toolchain (`rustup`)
-- Docker or Podman if you want to locally verify image builds
+- Docker or Podman only if you want to locally verify image builds; the live
+  integration gate runs NATS as a managed binary and needs no container runtime
 
 ## Feature testing policy
 
-Every feature, bug fix, or refactor must explicitly ask whether it needs integration coverage.
+Every feature, bug fix, or refactor must explicitly ask which live integration
+coverage proves it. Trellis runtime-observable behavior belongs in live
+TypeScript and Rust integration tests.
 
 Default to adding or updating integration tests when a change affects:
 
 - public Trellis HTTP or RPC APIs
 - NATS subjects, auth-callout, proofs, or transport permissions
 - contracts, generated SDKs, manifests, or permission derivation
-- service bootstrap, device activation, app identity authority approval, or deployment authority acceptance
+- service bootstrap, device activation, participant installation, or GrantBinding mutation
 - jobs, operations, events, feeds, state, resources, or transfer behavior
 - Rust/TypeScript cross-runtime behavior
 
-Unit tests are still appropriate for parser, schema, error, and small pure logic cases. They do not replace integration coverage for externally visible runtime behavior.
+Unit tests are the exception. Keep them only for code that is not Trellis runtime
+behavior: pure parser, codec, canonicalization, crypto vector, schema pointer,
+error serialization, package/export/import, generated artifact, CLI planning, or
+tiny UI helper checks. Do not use fake NATS, fake Hono, fake storage, fake
+runtime, fake auth, or fake generated-client workflows to prove Trellis behavior.
+Use real SQLite component tests for deterministic transaction invariants; do not
+add synthetic failure controls to the runtime for tests.
 
-Before committing or ending an implementation cycle, run the focused checks that match the files touched. If runtime or public behavior changed, also run the full integration harness:
+Before committing or ending an implementation cycle, run the focused checks that match the files touched. Build the server/CLI and set their paths as described in `integration/README.md`. Each live test owns its real runtime lifecycle:
 
 ```sh
-cargo run --manifest-path xtask/Cargo.toml -- integration run --skip-prepare --keep-workdir
+cargo test --manifest-path rust/Cargo.toml -p trellis-rs --features live-integration --test integration -- --test-threads=1
+deno test -A -c ts/integration/deno.json ts/integration
 ```
 
-If the full harness cannot be run, record the reason and the last focused checks that did run.
+Cargo and Deno discover executable tests directly. Hidden skips and separate
+test registries are forbidden.
+
+If the full integration suites cannot be run, record the reason and the last focused checks that did run.
 
 ### Targeted integration loops
 
-For focused local debugging, inspect the current integration inventory and run the smallest matching fixture or coverage slice:
+Executable Rust and Deno tests are the integration catalog.
+
+For focused local debugging, run the smallest matching Rust test or Deno test file directly:
 
 ```sh
-cargo run --manifest-path xtask/Cargo.toml -- integration list fixtures
-cargo run --manifest-path xtask/Cargo.toml -- integration list coverage
-cargo run --manifest-path xtask/Cargo.toml -- integration run --skip-prepare --keep-workdir --fixture rpc
-cargo run --manifest-path xtask/Cargo.toml -- integration run --skip-prepare --keep-workdir --coverage jobs-public-api
+cargo test --manifest-path rust/Cargo.toml -p trellis-rs --features live-integration --test integration
+deno test -A -c ts/integration/deno.json --filter 'generated runtime workflows' ts/integration
 ```
 
-Fixture runner aliases such as `rpc`, `operations`, `events`, `feeds`, `state`, `transfer`, and `resources` select both Rust and TypeScript parity fixtures. Use language-specific fixture ids, for example `rpc:rust`, only when you intentionally want a narrower diagnostic run.
-
-When experimenting with CI sharding, start with a few conservative shards and keep JUnit output per shard:
+Run both suites before accepting changes to transport or runtime behavior:
 
 ```sh
-cargo run --manifest-path xtask/Cargo.toml -- integration run --skip-prepare --fixture admin-api --fixture device-activation --fixture service-approval --fixture app-identity-approval --fixture optional-uses --junit target/integration-auth-admin.xml
-cargo run --manifest-path xtask/Cargo.toml -- integration run --skip-prepare --fixture rpc --fixture operations --fixture events --fixture feeds --fixture state --fixture transfer --fixture resources --junit target/integration-runtime-parity.xml
-cargo run --manifest-path xtask/Cargo.toml -- integration run --skip-prepare --fixture jobs --fixture health --fixture password-change --junit target/integration-jobs-health.xml
-cargo run --manifest-path xtask/Cargo.toml -- integration run --skip-prepare --fixture catalog-authority --fixture catalog-authority-restart --junit target/integration-catalog-authority.xml
+cargo test --manifest-path rust/Cargo.toml -p trellis-rs --features live-integration --test integration -- --test-threads=1
+deno test -A -c ts/integration/deno.json ts/integration
 ```
 
-Keep `catalog-authority` and `catalog-authority-restart` together because the restart fixture depends on state created by the authority fixture. Shards are a speed aid only; release verification still requires the full unsharded integration harness until shard equivalence is proven against fixture reports and coverage ids.
+For focused Rust diagnostics, pass a native test-filter substring to Cargo.
 
 ## Formatting policy
 
@@ -63,19 +72,18 @@ Formatting is part of the normal implementation loop, not just release verificat
 Use targeted formatting for the files changed by the task:
 
 ```sh
-deno fmt -c js/deno.json <changed js/ts/svelte/json/md/css/svg files>
+deno fmt -c ts/deno.json <changed ts/ts/svelte/json/md/css/svg files>
 cargo fmt --manifest-path rust/Cargo.toml --package <crate>
 rustfmt --edition 2021 <changed .rs files>
 ```
 
-`rust/tools/generate` and `rust/xtask` are standalone Rust workspaces. When a change touches them, run their formatter checks directly:
+`rust/xtask` is a standalone Rust workspace. When a change touches it, run its formatter check directly:
 
 ```sh
-cargo fmt --manifest-path rust/tools/generate/Cargo.toml --check
 cargo fmt --manifest-path rust/xtask/Cargo.toml --check
 ```
 
-When generated artifacts are affected, run the relevant prepare command first, then verify generated Rust formatting with:
+When generated artifacts are affected, run `cargo xtask install` first, then verify generated Rust formatting with:
 
 ```sh
 cargo fmt --manifest-path rust/Cargo.toml --all --check
@@ -94,9 +102,9 @@ That single tag drives:
 - Rust crate publication
 - OCI image publication
 
-JSR publication is enabled for the staged package set.
+JSR publication is enabled for the publishable package set.
 
-Release-managed JS packages and Rust crates use one checked-in base version. Stable releases usually bump that checked-in base version. Prerelease tags use a suffix such as `-rc.1`; they normally keep the checked-in base version unchanged.
+Release-managed TypeScript packages and Rust crates use one checked-in base version. Stable releases usually bump that checked-in base version. Prerelease tags use a suffix such as `-rc.1`; they normally keep the checked-in base version unchanged.
 
 The GitHub `Release` workflow runs the same Rust release tooling used locally:
 
@@ -104,20 +112,30 @@ The GitHub `Release` workflow runs the same Rust release tooling used locally:
 - `release check-metadata` checks release metadata before expensive verification
 - `release write-notes` extracts the matching `CHANGELOG.md` section for GitHub release notes
 
-The normal release path is a `release/vX.Y.Z` or `release/vX.Y.Z-rc.1` branch marker. The workflow prepares the release workspace once, uploads it as an artifact, and reuses it for formatting checks, Rust tests, Deno checks and tests, the full integration harness, npm and JSR package checks, CLI binary builds, image dry-runs, and publish jobs. After the release gate passes, GitHub Actions creates an unsigned lightweight release tag on the marked commit and publishes from the already verified artifacts. If the gate fails, no release tag is created and the same version can be retried.
+The normal release path is a `release/vX.Y.Z` or `release/vX.Y.Z-rc.1` branch marker. The workflow prepares the release workspace once, uploads it as an artifact, and reuses it for package checks, CLI binary builds, image verification, and publication. Formatting, lint/type checks, library tests, generated freshness, and live integration remain the responsibility of the normal `Check` workflow and are not rerun by Release. After the release gate passes, GitHub Actions creates an unsigned lightweight release tag on the marked commit and publishes from the already verified artifacts. If the gate fails, no release tag is created and the same version can be retried. Pull request runs verify release metadata and packages, but skip tag-dependent CLI and image jobs.
 
-Release CI intentionally keeps both the pre-`release prepare` generator bootstrap and the post-`release prepare` generator pass. Removing the first pass is a follow-up optimization only after a generated-artifact freshness check proves `release prepare` no longer depends on bootstrapped artifacts.
+The `Deploy Site to GitHub Pages` workflow is separate from release publishing. It installs each worktree's locked APIs from source before building the released and current guide and Console sites.
 
-The `Deploy Site to GitHub Pages` workflow is separate from release publishing. It builds the released and current guide/console sites, prefers a cached or published `trellis-generate` binary for speed, and falls back to building `trellis-generate` from source when the matching release asset is not available yet. This avoids races while a new release tag is still building its CLI assets.
-
-The staged JSR publish set is:
+The JSR publish set is:
 
 - `@qlever-llc/result`
 - `@qlever-llc/trellis`
+- `@qlever-llc/trellis-test`
+- `@qlever-llc/trellis-svelte` from `ts/packages/trellis-svelte/jsr`
 
-The workflow runs JSR dry-runs for those packages so package shape issues are caught early, then publishes them after the release gate passes.
+The workflow runs JSR dry-runs for the publishable core packages before the release gate. The source `@qlever-llc/trellis-svelte` package is built and smoke-tested before release, then staged and published after the matching core JSR version is available; a prepublication JSR dry-run cannot resolve that unreleased dependency.
 
-`@qlever-llc/trellis-svelte` is published to npm, but is not staged for JSR because the current source package exports `.svelte` components that `deno publish` cannot analyze directly.
+### Database schema baselines
+
+Before the first release, each independently migrated schema has exactly one
+initialization migration. Schema changes edit that baseline in place and use
+fresh development and test databases; do not append migrations to carry an
+earlier pre-release database forward, and older pre-release schema revisions are
+unsupported. The migration runners, history/checksum validation, checks, and
+baseline files are retained infrastructure, and ordinary restarts of a database
+created from the current baseline keep their data without reapplying schema. At
+the first release, freeze each shipped baseline; from then on, schema changes
+add new ordered migrations instead of editing a shipped one.
 
 ## 1. Pick the release
 
@@ -159,11 +177,13 @@ finalizing the changelog:
 /usr/bin/git diff "$PREVIOUS_TAG..HEAD"
 ```
 
-For exact path-limited release evidence, use direct Git or the unfiltered `rtk proxy` path. Do not rely on condensed wrapper output for evidence that must be copied into release notes, approvals, or audit records:
+For exact path-limited release evidence, use direct Git. Do not rely on
+condensed wrapper output for evidence that must be copied into release notes,
+approvals, or audit records:
 
 ```sh
 /usr/bin/git diff -- <paths>
-rtk proxy git diff -- <paths>
+git diff -- <paths>
 ```
 
 Use the code review, not just the commit subjects, to verify the changelog is
@@ -188,7 +208,7 @@ First verify that release-managed versions are currently consistent:
 cargo run --manifest-path xtask/Cargo.toml -- release check-versions
 ```
 
-For a new stable base release, bump release-managed JS and Rust manifests together:
+For a new stable base release, bump release-managed TypeScript and Rust manifests together:
 
 ```sh
 CURRENT_BASE_VERSION=<current-base-version>
@@ -223,52 +243,60 @@ cargo run --manifest-path xtask/Cargo.toml -- release write-notes --tag "$RELEAS
 less "$tmpdir/release-notes.md"
 ```
 
-## 5. Optionally run release verification locally
+## 5. Confirm correctness and package locally
 
-The GitHub release gate is the authoritative release verification pass. If you want local confidence before pushing the release marker, run the same full release verification set locally:
+Release preparation starts from a successful normal `Check` run for the final
+`rs` base. `Check` is the authoritative formatting, lint/type, generated
+freshness, package-test, and full live-integration gate. The Release workflow
+does not rerun those correctness suites.
+
+Keep the release commit limited to the release preparation listed below. If it
+changes product behavior, return that change to `rs`, obtain a new successful
+`Check`, and rebuild the release commit from that base.
+
+For focused package confidence before pushing the release marker, install once
+and run the same package-specific checks used by the Release workflow:
 
 ```sh
-cargo run --manifest-path xtask/Cargo.toml -- release verify --version "$RELEASE_VERSION" --since "$PREVIOUS_TAG" --keep-workdir
+cargo xtask install
+cargo run --manifest-path rust/xtask/Cargo.toml -- protocol-wasm
+cargo package --manifest-path rust/Cargo.toml --workspace --allow-dirty \
+  --exclude trellis-local-bootstrap --exclude trellis-bootstrap \
+  --exclude trellis-local-nats --exclude trellis-jobs-runtime \
+  --exclude trellis-events-runtime --exclude trellis-test \
+  --exclude trellis-protocol-wasm --exclude trellis-codegen-ts \
+  --exclude trellis-codegen-rust \
+  --exclude trellis-cli --exclude trellis-runtime
+deno task -c ts/deno.json packages:build:npm:installed
+deno task -c ts/deno.json test:packaging:built
+bash scripts/release-ts-dry-run.sh
 ```
 
-For emergency focused local verification only, `--skip-integration` skips the full integration harness and prints that release verification is incomplete. A release is not ready until the full integration harness passes in the GitHub release gate.
+Rust uses the current stable toolchain only. New workspace members must inherit
+`[lints] workspace = true`; the normal `Check` workflow enforces that policy.
 
-The command runs this sequence and prints each command before executing it:
+For focused local Deno loops after one repository install, use the prepared partitions instead of rerunning installation before every slice:
 
 ```sh
-cargo run --manifest-path xtask/Cargo.toml -- release check-metadata --version "$RELEASE_VERSION" --since "$PREVIOUS_TAG"
-cargo run --manifest-path xtask/Cargo.toml -- prepare
-deno fmt -c js/deno.json --check
-cargo fmt --manifest-path rust/Cargo.toml --all --check
-cargo fmt --manifest-path rust/tools/generate/Cargo.toml --check
-cargo fmt --manifest-path rust/xtask/Cargo.toml --check
-deno check -c js/deno.json js/packages/trellis/index.ts js/packages/trellis-svelte/src/index.ts js/packages/trellis-svelte/src/context.svelte.ts js/services/trellis/main.ts
-deno test -c js/deno.json -A
-cargo test --manifest-path rust/Cargo.toml --workspace
-cargo test --manifest-path rust/tools/generate/Cargo.toml
-cargo test --manifest-path rust/xtask/Cargo.toml
-cargo test --manifest-path xtask/Cargo.toml
-cargo run --manifest-path xtask/Cargo.toml -- integration run --skip-prepare --keep-workdir
+cargo xtask install
+deno task -c ts/deno.json test:result
+deno task -c ts/deno.json test:trellis
+deno task -c ts/deno.json test:trellis-svelte
+deno task -c ts/deno.json test:trellis-test
+deno task -c ts/deno.json test:ui-tools
+deno task -c ts/deno.json packages:build:npm
+deno task -c ts/deno.json test:packaging:built
 ```
 
-For focused local Deno loops after a single prepare, use the prepared partitions instead of rerunning generation before every slice:
+The prepared partitions are the non-integration Deno release-test set. Keep
+TypeScript client-library integration coverage in `deno task -c ts/deno.json
+test:integration` so live integration tests (which run NATS as a managed
+binary) run only in the intended integration suite.
+
+Also run repository installation when contracts, generated SDKs, runtime surfaces, or release packaging can be affected:
 
 ```sh
-deno task -c js/deno.json prepare
-deno task -c js/deno.json test:prepared:packages
-deno task -c js/deno.json test:prepared:service:catalog-state
-deno task -c js/deno.json test:prepared:service:auth
-deno task -c js/deno.json test:prepared:ui-tools
-deno task -c js/deno.json test:prepared:packaging
-```
-
-The prepared partitions are for faster focused iteration. Keep `deno test -c js/deno.json -A` in the release confidence set until the partition set has been proven equivalent to the broad Deno suite.
-
-Also run generated-artifact preparation when contracts, generated SDKs, runtime surfaces, or release packaging can be affected:
-
-```sh
-cargo run --manifest-path xtask/Cargo.toml -- prepare
-cargo run --manifest-path rust/xtask/Cargo.toml -- prepare
+cargo xtask install
 ```
 
 If the guide site changed, also run:
@@ -281,14 +309,15 @@ If packaging changed, add the relevant package or image smoke checks before comm
 
 ```sh
 cargo run --manifest-path xtask/Cargo.toml -- build --workspace --release
-deno task -c js/deno.json build:npm
-(cd js/packages/result && deno publish --dry-run --allow-slow-types --allow-dirty)
-(cd js/packages/trellis && deno publish --dry-run --allow-slow-types --allow-dirty)
-docker build -f js/services/trellis/Containerfile .
-docker build -f js/apps/console/Containerfile .
+deno task -c ts/deno.json build:npm
+(cd ts/packages/result && deno publish --dry-run --allow-slow-types --allow-dirty)
+(cd ts/packages/trellis && deno publish --dry-run --allow-slow-types --allow-dirty)
+(cd ts/packages/trellis-test && deno publish --dry-run --allow-slow-types --allow-dirty)
+docker build -f rust/crates/runtime/Containerfile .
+docker build -f web/Containerfile .
 ```
 
-If the full integration harness cannot be run, record why and list the focused checks that did run.
+If the full integration suites cannot be run, record why and list the focused checks that did run.
 
 ## 6. Review the release commit
 
@@ -296,7 +325,7 @@ Make sure the release commit includes only the intended release preparation, typ
 
 - `CHANGELOG.md`
 - release-managed version bumps for a stable release
-- generated artifacts refreshed by `xtask prepare`, if applicable
+- generated artifacts refreshed by `cargo xtask install`, if applicable
 - docs, release tooling, or workflow fixes that must ship with the release
 
 Then commit the release preparation:
@@ -328,17 +357,18 @@ After the release gate passes, GitHub Actions creates an unsigned lightweight ta
 - npm packages
 - crates.io crates
 - GHCR images
-- staged JSR packages
+- JSR packages
 
 The unified `Release` workflow publishes in gated stages:
 
 - `resolve-release` derives the final release tag from the `release/v*` branch and rejects already-used tags
 - `prepare-release` rewrites publishable versions, verifies release metadata, generates SDK artifacts, writes release notes, and uploads the prepared workspace
-- `verify-format`, `verify-rust`, `verify-js`, `verify-integration`, `build-cli`, and `verify-images` validate the release before publication
+- `package-rust` verifies all publishable workspace crates, while `package-js` builds npm output from the prepared sources, checks the built package surfaces, runs npm and JSR publication dry-runs, and uploads the npm package artifact
+- `build-cli` and `verify-images` validate release artifacts; pull request runs skip those tag-dependent matrix jobs while retaining package verification. `verify-images` builds both architectures into OCI archives and, for the `trellis` image, runs a managed-mode smoke on a native linux/amd64 build: it checks the baked nats-server version against `conformance/nats-binaries.json`, starts the image as its non-root user with a read-only config and writable state volume (`trellis-server --system --local-nats=/usr/local/bin/nats-server`), waits for runtime readiness, stops it gracefully, and asserts no startup or write errors
 - `create-release-tag` creates the release tag after the release gate passes
 - `github-release` publishes CLI archives and checksums first
 - `publish-crates`, `publish-npm`, and `publish-images` publish downstream artifacts after the GitHub release exists
-- `publish-jsr` publishes the staged JSR package set after the GitHub release exists
+- `publish-jsr` publishes the JSR package set after the GitHub release exists
 
 The workflow is idempotent where practical: npm and crates.io publish steps skip versions that already exist. A registry publish is still not an atomic transaction across registries, so if a late publish step fails, inspect the workflow logs and rerun the workflow after fixing the underlying registry or workflow issue.
 

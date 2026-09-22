@@ -1,0 +1,127 @@
+import { auth } from trellis;
+
+model Value { value: string; }
+model UpdateDetail { count: int64; payload: bytes; }
+model Update { value: string; nested: UpdateDetail; }
+model Empty {}
+model Saved { value: string; }
+model Sample { site: string; value: string; }
+model Observed { values: list<string>; }
+model DeliveryStats { attempts: list<int64>; active: int64; maxActive: int64; successes: list<string>; }
+model KeyedValue { key: string; value: string; }
+model ResourceValue { value: string; }
+
+api runtime@v1 {
+  title "Runtime acceptance";
+  description "Small generated transport and durability fixture.";
+  rpc Echo { input Value; output Value; }
+  operation Work { input Value; progress Update; output Value; signals { Continue Value; } }
+  operation Upload { input Value; output Value; signals { Continue Value; } upload; }
+  event Changed { payload Value; }
+  feed Watch { input Empty; event Value; }
+  capabilities { public { allows { rpc Echo; operation Work; operation Upload; publish event Changed; subscribe event Changed; feed Watch; } } }
+}
+
+api events@v1 {
+  title "Durable event acceptance";
+  description "Distinct publisher authority on one consumer.";
+  event Alpha { payload Sample; }
+  event Beta { payload Sample; }
+  rpc Observed { input Empty; output Observed; }
+  rpc DropAlpha { input Empty; output Empty; }
+  rpc DeliveryStats { input Empty; output DeliveryStats; }
+  capabilities { public { allows { publish event Alpha; publish event Beta; subscribe event Alpha; subscribe event Beta; rpc Observed; rpc DropAlpha; rpc DeliveryStats; } } }
+}
+
+api device_child@v1 {
+  title "Device companion acceptance";
+  description "Required and optional companion authority.";
+  rpc Required { input Empty; output Empty; }
+  rpc Optional { input Empty; output Empty; }
+  capabilities {
+    public {}
+    capability required {
+      title "Required";
+      description "Required child operation.";
+      consequence "The child can invoke its required operation.";
+      allows { rpc Required; }
+    }
+    capability optional {
+      title "Optional";
+      description "Optional child operation.";
+      consequence "The child can invoke its optional operation.";
+      allows { rpc Optional; }
+    }
+  }
+}
+
+service Provider {
+  implements runtime;
+  job work {
+    title "Work";
+    description "Runtime fixture work.";
+    payload Value;
+    result Value;
+    deadline 5s;
+    retry { attempts 2; backoff [250ms]; }
+  }
+  job keyedWork { title "Keyed work"; description "Runtime keyed queue acceptance."; payload KeyedValue; result KeyedValue; key_concurrency { path key; policy queue; } }
+  kv records { title "Records"; description "Rust KV acceptance values."; schema ResourceValue; version 1; history 4; ttl 0ms; }
+  store files { title "Files"; description "Runtime fixture transfer files."; ttl 0; desired_max_object 1MiB; desired_max_total 8MiB; }
+  consumer changes { title "Changes"; description "Runtime fixture durable changes."; events [runtime.Changed]; concurrency 1; replay new; }
+}
+service OperationProvider {
+  implements runtime;
+  job keyedWork { title "Keyed work"; description "Rust keyed queue acceptance."; payload KeyedValue; result KeyedValue; key_concurrency { path key; policy queue; } }
+}
+service OperationCaller { use runtime { operation Work; } }
+app Caller {
+  use runtime { rpc Echo; operation Work; operation Upload; publish event Changed; subscribe event Changed; feed Watch; }
+  state saved { title "Saved"; description "Caller-owned saved value."; schema Saved; version 1; }
+  state savedResource { title "Saved resource"; description "Rust State acceptance value."; schema ResourceValue; version 1; }
+}
+app StateCaller {
+  state savedResource { title "Saved resource"; description "Rust State acceptance value."; schema ResourceValue; version 1; }
+}
+app Denied { use runtime; }
+app DevicePortal { use auth { operation DeviceUserAuthorities.Resolve; } }
+service AdminService {
+  use auth {
+    rpc Deployments.Get;
+    rpc Grants.Get;
+    rpc Grants.Revoke;
+    rpc Sessions.List;
+    operation DeviceUserAuthorities.Resolve;
+    rpc DeviceUserAuthorities.List;
+    rpc DeviceUserAuthorities.Revoke;
+  }
+}
+service EventService {
+  implements events;
+  consumer events { title "Events"; description "Durable event acceptance values."; events [events.Alpha, events.Beta]; concurrency 1; replay new; retry { attempts 3; backoff [150ms, 300ms]; } }
+}
+service ChildProvider { implements device_child; }
+app Alpha { use events { publish event Alpha; rpc Observed; rpc DropAlpha; rpc DeliveryStats; } }
+app Beta { use events { publish event Beta; } }
+device Device {
+  state telemetry { title "Telemetry"; description "Device-owned State acceptance value."; schema ResourceValue; version 1; }
+  app Companion {
+    use auth { rpc Sessions.Logout; }
+    state shared { title "Shared"; description "Same-user companion State acceptance value."; schema ResourceValue; version 1; }
+    use device_child {
+      rpc Required;
+      rpc Optional;
+      optional capability optional;
+    }
+  }
+}
+device AgentDevice {
+  agent Companion {
+    use auth { rpc Sessions.Logout; }
+    use device_child {
+      rpc Required;
+      rpc Optional;
+      optional capability optional;
+    }
+  }
+}

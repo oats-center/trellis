@@ -1,0 +1,12 @@
+model CreateOrderRequest { customerId: string; }
+model CreateOrderResponse { orderId: string; customerId: string; }
+
+api orders@v1 {
+  title "Orders";
+  description "Minimal service walkthrough.";
+  rpc Create { input CreateOrderRequest; output CreateOrderResponse; }
+  capabilities { public { allows { rpc Create; } } }
+}
+
+service OrdersService { implements orders; }
+app OrdersCaller { use orders { rpc Create; } }

@@ -1,0 +1,20 @@
+{
+  "nats-server": {
+    "version": "2.14.4",
+    "sha256": {
+      "linux-amd64": "20f9d6a199560f243610908bcccea2e27e9f47213242d1c609ca46d1d73e91ea",
+      "linux-arm64": "2143f4317ac8e1dd42793c912fa09b405c7036ba181b2a3002b74501d13562b0",
+      "darwin-amd64": "7c9a3b120de53474b8dbf93e82c8530725238833e40d4085e0625f78c942439a",
+      "darwin-arm64": "dd626a605d1239ff7c08917738c14352a9f42b17021f242ff94ee69a504406ad"
+    }
+  },
+  "nsc": {
+    "version": "2.15.0",
+    "sha256": {
+      "linux-amd64": "7d55eda757dc9f233675a3038fcf8779bcda99753b1603f7009fc8537e126b7e",
+      "linux-arm64": "4556613503e2d3e91c970e2c78f17b3f369a3b987c00aa4ffe95d08ea5059a0c",
+      "darwin-amd64": "bc8230bbbac2f6a7828e0fa3d47f5ecac3fb7b09790f4e8dcfa6a22e03dd6c2f",
+      "darwin-arm64": "18ef004eded116886607c3797aa7170624b38ab7eb4b0bce0586c30a5ab811c5"
+    }
+  }
+}

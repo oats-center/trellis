@@ -1,8 +1,4 @@
-#![expect(
-    dead_code,
-    reason = "low-level NATS worker helpers are internal behind start_worker_host_from_client"
-)]
-
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::{
     atomic::{AtomicU8, Ordering},
@@ -12,32 +8,47 @@ use std::time::Duration;
 
 use async_nats::jetstream::{self, consumer, stream, AckKind};
 use futures_util::future::BoxFuture;
+use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
 use serde_json::Value;
+use time::format_description::well_known::Rfc3339;
+use time::{Duration as TimeDuration, OffsetDateTime};
+use ulid::Ulid;
 
 use crate::jobs::active_job::ActiveJob;
-use crate::jobs::bindings::{JobsQueueBinding, JobsRuntimeBinding};
+use crate::jobs::bindings::{
+    JobKeyConcurrencyBinding, JobQueueWhenFull, JobsQueueBinding, JobsRuntimeBinding,
+};
 use crate::jobs::job_key;
-use crate::jobs::manager::{JobManager, JobMetaSource, JobProcessError, JobProcessOutcome};
+use crate::jobs::keys::{
+    derive_job_key, new_key_state, release_active_slot, renew_active_slot, AcquireSlotInput,
+    AcquireSlotOutcome, JobKeyActiveSlot, JobKeyCoordinator, JobKeyPolicy, LeaseMutationOutcome,
+    NatsKeyCoordinator,
+};
+use crate::jobs::manager::{
+    JobManager, JobMetaSource, JobProcessError, JobProcessOutcome, TerminalPublishDecision,
+};
 use crate::jobs::projection::job_from_work_event;
 use crate::jobs::publisher::JobEventPublisher;
 use crate::jobs::registry::{
     start_worker_heartbeat_loop, ActiveJobCancellationRegistry, ServiceRegistryError,
-    WorkerHeartbeatHandle,
+    WorkerHeartbeatHandle, WorkerHeartbeatOptions,
 };
 use crate::jobs::subjects::job_event_subject;
-use crate::jobs::types::{Job, JobEvent, JobEventType};
+use crate::jobs::types::{Job, JobConcurrency, JobEvent, JobEventType};
 
 const JOBS_STREAM: &str = "JOBS";
 
 const CANCELLATION_NONE: u8 = 0;
 const CANCELLATION_HOST_SHUTDOWN: u8 = 1;
 const CANCELLATION_JOB: u8 = 2;
+const CANCELLATION_LEASE_LOST: u8 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WorkerAckAction {
     Ack,
-    Nak,
+    Nak(Duration),
+    AwaitMaxDeliver,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +88,16 @@ impl JobCancellationToken {
         self.notify.notify_waiters();
     }
 
+    fn cancel_for_lease_loss(&self) {
+        let _ = self.cancelled.compare_exchange(
+            CANCELLATION_NONE,
+            CANCELLATION_LEASE_LOST,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+        self.notify.notify_waiters();
+    }
+
     /// Return whether cancellation has been requested.
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst) != CANCELLATION_NONE
@@ -90,6 +111,10 @@ impl JobCancellationToken {
     /// Return whether cancellation came from worker-host shutdown.
     pub fn is_host_shutdown(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst) == CANCELLATION_HOST_SHUTDOWN
+    }
+
+    pub(crate) fn is_lease_lost(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst) == CANCELLATION_LEASE_LOST
     }
 
     pub(crate) fn is_same_token(&self, other: &Self) -> bool {
@@ -145,6 +170,18 @@ pub enum RuntimeWorkerError {
         subject: String,
         details: String,
     },
+    #[error("failed to coordinate keyed job concurrency: {0}")]
+    KeyCoordinator(String),
+}
+
+#[derive(Debug, Clone)]
+struct ActiveKeyLease {
+    policy: JobKeyPolicy,
+    slot: JobKeyActiveSlot,
+    heartbeat_interval: Duration,
+    heartbeat_ttl_ms: u64,
+    stale_slots: Vec<JobKeyActiveSlot>,
+    stale_takeover_count: u64,
 }
 
 /// Options controlling first-class worker-host startup from a resolved binding.
@@ -152,6 +189,8 @@ pub enum RuntimeWorkerError {
 pub struct WorkerHostOptions {
     /// Optional subset of queue types to run. When omitted, all bound queues run.
     pub queue_types: Option<Vec<String>>,
+    /// Local worker count by queue type. Selected queues not present here use one worker.
+    pub queue_concurrency: BTreeMap<String, u32>,
     /// How often worker presence heartbeats should be published.
     pub heartbeat_interval: Duration,
     /// Optional service version to include in worker heartbeats.
@@ -162,6 +201,7 @@ impl Default for WorkerHostOptions {
     fn default() -> Self {
         Self {
             queue_types: None,
+            queue_concurrency: BTreeMap::new(),
             heartbeat_interval: Duration::from_secs(30),
             version: None,
         }
@@ -195,6 +235,13 @@ struct WorkerTaskHandle {
     worker_index: u32,
     task: tokio::task::JoinHandle<Result<(), RuntimeWorkerError>>,
 }
+
+type WorkerJoinResult = (
+    String,
+    u32,
+    Result<Result<(), RuntimeWorkerError>, tokio::task::JoinError>,
+);
+type WorkerJoinFuture = BoxFuture<'static, WorkerJoinResult>;
 
 /// Handle for a binding-driven worker host.
 pub struct WorkerHostHandle {
@@ -244,57 +291,66 @@ impl WorkerHostHandle {
         }
         Ok(())
     }
+
+    /// Supervise worker tasks until one exits, then stop the complete host.
+    pub async fn join(self) -> Result<(), WorkerHostError> {
+        let cancellation = self.cancellation;
+        let _cancel_on_drop = CancelWorkersOnDrop(cancellation.clone());
+        let mut workers: FuturesUnordered<WorkerJoinFuture> = self
+            .workers
+            .into_iter()
+            .map(|worker| {
+                Box::pin(async move { (worker.queue_type, worker.worker_index, worker.task.await) })
+                    as BoxFuture<'static, _>
+            })
+            .collect::<FuturesUnordered<_>>();
+
+        let first_error = match workers.next().await {
+            Some((queue_type, worker_index, Ok(Ok(())))) => WorkerHostError::WorkerTask {
+                queue_type,
+                worker_index,
+                details: "worker exited unexpectedly".to_string(),
+            },
+            Some((queue_type, worker_index, Ok(Err(error)))) => WorkerHostError::WorkerTask {
+                queue_type,
+                worker_index,
+                details: error.to_string(),
+            },
+            Some((queue_type, worker_index, Err(error))) => WorkerHostError::WorkerTask {
+                queue_type,
+                worker_index,
+                details: error.to_string(),
+            },
+            None => WorkerHostError::WorkerStartup {
+                queue_type: "*".to_string(),
+                details: "worker host has no tasks".to_string(),
+            },
+        };
+        cancellation.cancel_for_shutdown();
+        while workers.next().await.is_some() {}
+        for heartbeat in self.heartbeats {
+            heartbeat.stop().await.map_err(WorkerHostError::Heartbeat)?;
+        }
+        Err(first_error)
+    }
 }
 
-/// Decode a work payload and run it through a [`JobManager`].
-pub async fn process_work_payload<P, M, H, Fut, E>(
-    manager: &JobManager<P, M>,
-    payload: &[u8],
-    handler: H,
-) -> Result<Option<JobProcessOutcome<Value>>, RuntimeWorkerError>
-where
-    P: JobEventPublisher,
-    P::Error: std::fmt::Display,
-    M: JobMetaSource,
-    H: FnOnce(ActiveJob<P, M>) -> Fut,
-    Fut: Future<Output = Result<Value, JobProcessError<E>>>,
-    E: ToString,
-{
-    process_work_payload_with_context(manager, payload, JobCancellationToken::new(), handler).await
+struct CancelWorkersOnDrop(JobCancellationToken);
+
+impl Drop for CancelWorkersOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel_for_shutdown();
+    }
 }
 
-/// Decode a work payload and run it through a [`JobManager`] with cancellation context.
-pub async fn process_work_payload_with_context<P, M, H, Fut, E>(
-    manager: &JobManager<P, M>,
-    payload: &[u8],
-    cancellation: JobCancellationToken,
-    handler: H,
-) -> Result<Option<JobProcessOutcome<Value>>, RuntimeWorkerError>
-where
-    P: JobEventPublisher,
-    P::Error: std::fmt::Display,
-    M: JobMetaSource,
-    H: FnOnce(ActiveJob<P, M>) -> Fut,
-    Fut: Future<Output = Result<Value, JobProcessError<E>>>,
-    E: ToString,
-{
-    process_work_payload_with_context_and_heartbeat(
-        manager,
-        payload,
-        cancellation,
-        || Box::pin(async { Err("worker heartbeat unavailable".to_string()) }),
-        handler,
-    )
-    .await
-}
-
-/// Decode a work payload and run it through a [`JobManager`] with cancellation
-/// context and a custom heartbeat hook.
-pub async fn process_work_payload_with_context_and_heartbeat<P, M, HB, H, Fut, E>(
+/// Decode a work payload and run it through a manager with explicit runtime hooks.
+pub async fn process_work_payload<P, M, HB, G, C, H, Fut, E>(
     manager: &JobManager<P, M>,
     payload: &[u8],
     cancellation: JobCancellationToken,
     heartbeat: HB,
+    terminal_guard: G,
+    terminal_cleanup: C,
     handler: H,
 ) -> Result<Option<JobProcessOutcome<Value>>, RuntimeWorkerError>
 where
@@ -302,6 +358,8 @@ where
     P::Error: std::fmt::Display,
     M: JobMetaSource,
     HB: Fn() -> BoxFuture<'static, Result<(), String>> + Send + Sync + 'static,
+    G: Fn(String) -> BoxFuture<'static, Result<TerminalPublishDecision, String>> + Send + Sync,
+    C: Fn(String) -> BoxFuture<'static, Result<(), String>> + Send + Sync,
     H: FnOnce(ActiveJob<P, M>) -> Fut,
     Fut: Future<Output = Result<Value, JobProcessError<E>>>,
     E: ToString,
@@ -314,10 +372,49 @@ where
         return Ok(None);
     };
 
+    process_job_with_context_heartbeat_and_terminal_hooks(
+        manager,
+        job,
+        cancellation,
+        heartbeat,
+        terminal_guard,
+        terminal_cleanup,
+        handler,
+    )
+    .await
+    .map(Some)
+}
+
+async fn process_job_with_context_heartbeat_and_terminal_hooks<P, M, HB, G, C, H, Fut, E>(
+    manager: &JobManager<P, M>,
+    job: Job,
+    cancellation: JobCancellationToken,
+    heartbeat: HB,
+    terminal_guard: G,
+    terminal_cleanup: C,
+    handler: H,
+) -> Result<JobProcessOutcome<Value>, RuntimeWorkerError>
+where
+    P: JobEventPublisher,
+    P::Error: std::fmt::Display,
+    M: JobMetaSource,
+    HB: Fn() -> BoxFuture<'static, Result<(), String>> + Send + Sync + 'static,
+    G: Fn(String) -> BoxFuture<'static, Result<TerminalPublishDecision, String>> + Send + Sync,
+    C: Fn(String) -> BoxFuture<'static, Result<(), String>> + Send + Sync,
+    H: FnOnce(ActiveJob<P, M>) -> Fut,
+    Fut: Future<Output = Result<Value, JobProcessError<E>>>,
+    E: ToString,
+{
     manager
-        .process_with_heartbeat(job, cancellation, heartbeat, handler)
+        .process_with_heartbeat_and_terminal_hooks(
+            job,
+            cancellation,
+            heartbeat,
+            terminal_guard,
+            terminal_cleanup,
+            handler,
+        )
         .await
-        .map(Some)
         .map_err(|error| RuntimeWorkerError::Process(error.to_string()))
 }
 
@@ -326,142 +423,22 @@ fn parse_work_payload_job(payload: &[u8]) -> Option<Job> {
     job_from_work_event(&event)
 }
 
-/// Run one queue worker against a bound work stream.
-///
-/// Service registration is intentionally not owned here. Callers that want
-/// instance heartbeats should start them separately at the service-host level.
-pub async fn run_single_queue_worker<P, M, H, Fut, E>(
-    nats: async_nats::Client,
-    work_stream: &str,
-    queue_type: &str,
-    manager: JobManager<P, M>,
-    handler: H,
-) -> Result<(), RuntimeWorkerError>
+struct WorkerLoopResources<P, M>
 where
-    P: JobEventPublisher + Send + Sync + 'static,
-    P::Error: std::fmt::Display,
-    M: JobMetaSource + Send + Sync + 'static,
-    H: Fn(ActiveJob<P, M>) -> Fut + Clone + Send + Sync + 'static,
-    Fut: Future<Output = Result<Value, JobProcessError<E>>> + Send,
-    E: ToString + Send,
+    P: JobEventPublisher,
+    M: JobMetaSource,
 {
-    run_single_queue_worker_with_context(
-        nats,
-        work_stream,
-        queue_type,
-        manager,
-        JobCancellationToken::new(),
-        move |job| handler(job),
-    )
-    .await
-}
-
-/// Run one queue worker against a bound work stream with cancellation context.
-pub async fn run_single_queue_worker_with_context<P, M, H, Fut, E>(
-    nats: async_nats::Client,
-    work_stream: &str,
-    queue_type: &str,
-    manager: JobManager<P, M>,
-    cancellation: JobCancellationToken,
-    handler: H,
-) -> Result<(), RuntimeWorkerError>
-where
-    P: JobEventPublisher + Send + Sync + 'static,
-    P::Error: std::fmt::Display,
-    M: JobMetaSource + Send + Sync + 'static,
-    H: Fn(ActiveJob<P, M>) -> Fut + Clone + Send + Sync + 'static,
-    Fut: Future<Output = Result<Value, JobProcessError<E>>> + Send,
-    E: ToString + Send,
-{
-    run_single_queue_worker_with_context_and_registry(
-        nats,
-        work_stream,
-        queue_type,
-        manager,
-        cancellation,
-        ActiveJobCancellationRegistry::new(),
-        handler,
-    )
-    .await
-}
-
-async fn run_single_queue_worker_with_context_and_registry<P, M, H, Fut, E>(
-    nats: async_nats::Client,
-    work_stream: &str,
-    queue_type: &str,
-    manager: JobManager<P, M>,
-    cancellation: JobCancellationToken,
-    cancellation_registry: ActiveJobCancellationRegistry,
-    handler: H,
-) -> Result<(), RuntimeWorkerError>
-where
-    P: JobEventPublisher + Send + Sync + 'static,
-    P::Error: std::fmt::Display,
-    M: JobMetaSource + Send + Sync + 'static,
-    H: Fn(ActiveJob<P, M>) -> Fut + Clone + Send + Sync + 'static,
-    Fut: Future<Output = Result<Value, JobProcessError<E>>> + Send,
-    E: ToString + Send,
-{
-    let queue = manager
-        .bindings()
-        .queues
-        .get(queue_type)
-        .ok_or_else(|| RuntimeWorkerError::MissingQueueBinding {
-            queue_type: queue_type.to_string(),
-        })?
-        .clone();
-    let cancellation_subject = format!("{}.*.cancelled", queue.publish_prefix);
-    let mut cancellation_subscriber =
-        nats.subscribe(cancellation_subject.clone())
-            .await
-            .map_err(|error| RuntimeWorkerError::CancellationSubscription {
-                subject: cancellation_subject.clone(),
-                details: error.to_string(),
-            })?;
-    let cancellation_task = {
-        let cancellation_registry = cancellation_registry.clone();
-        tokio::spawn(async move {
-            while let Some(message) = cancellation_subscriber.next().await {
-                let Ok(event) = serde_json::from_slice::<JobEvent>(&message.payload) else {
-                    continue;
-                };
-                if event.event_type != JobEventType::Cancelled {
-                    continue;
-                }
-                let key = job_key(&event.service, &event.job_type, &event.job_id);
-                cancellation_registry.cancel(&key);
-            }
-        })
-    };
-
-    let result = async {
-        let jetstream = jetstream::new(nats);
-        let lifecycle_stream = lifecycle_stream(&jetstream).await?;
-        let consumer = ensure_worker_consumer(&jetstream, work_stream, &queue).await?;
-        run_prepared_queue_worker_loop(
-            consumer,
-            lifecycle_stream,
-            queue,
-            manager,
-            cancellation,
-            cancellation_registry,
-            handler,
-        )
-        .await
-    }
-    .await;
-    cancellation_task.abort();
-    let _ = cancellation_task.await;
-    result
-}
-
-async fn run_prepared_queue_worker_loop<P, M, H, Fut, E>(
     consumer: consumer::PullConsumer,
     lifecycle_stream: stream::Stream<()>,
     queue: JobsQueueBinding,
     manager: JobManager<P, M>,
     cancellation: JobCancellationToken,
     cancellation_registry: ActiveJobCancellationRegistry,
+    key_coordinator: Option<NatsKeyCoordinator>,
+}
+
+async fn run_prepared_queue_worker_loop<P, M, H, Fut, E>(
+    resources: WorkerLoopResources<P, M>,
     handler: H,
 ) -> Result<(), RuntimeWorkerError>
 where
@@ -472,6 +449,15 @@ where
     Fut: Future<Output = Result<Value, JobProcessError<E>>> + Send,
     E: ToString + Send,
 {
+    let WorkerLoopResources {
+        consumer,
+        lifecycle_stream,
+        queue,
+        manager,
+        cancellation,
+        cancellation_registry,
+        key_coordinator,
+    } = resources;
     let mut messages = consumer
         .messages()
         .await
@@ -480,7 +466,7 @@ where
             details: error.to_string(),
         })?;
 
-    loop {
+    'work: loop {
         let next_message = tokio::select! {
             _ = cancellation.cancelled() => break,
             next_message = messages.next() => next_message,
@@ -492,15 +478,40 @@ where
             consumer: queue.consumer_name.clone(),
             details: error.to_string(),
         })?;
+        let delivery_attempt = match message.info() {
+            Ok(info) => u64::try_from(info.delivered)
+                .map_err(|error| RuntimeWorkerError::Messages {
+                    consumer: queue.consumer_name.clone(),
+                    details: format!("invalid delivery attempt metadata: {error}"),
+                })?
+                .max(1),
+            Err(error) => {
+                tracing::warn!(%error, subject = %message.subject, "retrying job with unavailable delivery metadata");
+                message
+                    .ack_with(AckKind::Nak(Some(Duration::from_secs(5))))
+                    .await
+                    .map_err(map_ack_error)?;
+                continue;
+            }
+        };
         let payload = message.payload.clone();
-        let Some(parsed_job) = parse_work_payload_job(&payload) else {
+        let Some(mut parsed_job) = parse_work_payload_job(&payload) else {
             message.ack().await.map_err(map_ack_error)?;
             continue;
         };
+        parsed_job.tries = delivery_attempt.saturating_sub(1);
         let job_key = job_key(&parsed_job.service, &parsed_job.job_type, &parsed_job.id);
         if stream_work_decision(&lifecycle_stream, &queue.publish_prefix, &parsed_job).await?
             == ProjectedWorkDecision::SkipAck
         {
+            cleanup_queued_key_for_terminal(
+                key_coordinator.as_ref(),
+                &queue,
+                manager.bindings().namespace.as_str(),
+                &parsed_job,
+                &manager.now_iso(),
+            )
+            .await?;
             cancellation_registry.clear_pending(&job_key);
             message.ack().await.map_err(map_ack_error)?;
             continue;
@@ -511,9 +522,45 @@ where
         } else if cancellation.is_job_cancelled() {
             job_cancellation.cancel();
         }
-        let _cancellation_guard = cancellation_registry.register(job_key, job_cancellation.clone());
+        let _cancellation_guard =
+            cancellation_registry.register(job_key.clone(), job_cancellation.clone());
         let handler = handler.clone();
         let heartbeat_message = message.clone();
+        let active_key = loop {
+            let active_key = acquire_key_slot_for_work(
+                key_coordinator.as_ref(),
+                &queue,
+                manager.bindings().namespace.as_str(),
+                &parsed_job,
+                &manager.now_iso(),
+                delivery_attempt,
+            )
+            .await?;
+            if queue.key_concurrency.is_none() || active_key.is_some() {
+                break active_key;
+            }
+            message
+                .ack_with(AckKind::Progress)
+                .await
+                .map_err(map_ack_error)?;
+            tokio::select! {
+                _ = cancellation.cancelled() => {
+                    cancellation_registry.clear_pending(&job_key);
+                    message.ack_with(AckKind::Nak(Some(Duration::from_secs(5))))
+                        .await.map_err(map_ack_error)?;
+                    continue 'work;
+                }
+                _ = tokio::time::sleep(progress_ack_interval(&queue)) => {}
+            }
+        };
+        if let Some(active_key) = active_key.as_ref() {
+            for stale_slot in &active_key.stale_slots {
+                manager
+                    .emit_stale_slot(&queue.queue_type, stale_slot, "key lease expired")
+                    .await
+                    .map_err(|error| RuntimeWorkerError::Process(error.to_string()))?;
+            }
+        }
         let forward_cancellation = {
             let outer_cancellation = cancellation.clone();
             let job_cancellation = job_cancellation.clone();
@@ -526,31 +573,136 @@ where
                 }
             })
         };
-        let process_result = process_work_payload_with_context_and_heartbeat(
-            &manager,
-            &payload,
-            job_cancellation,
-            move || {
+        let heartbeat_hook: Arc<dyn Fn() -> BoxFuture<'static, Result<(), String>> + Send + Sync> = {
+            Arc::new(move || {
                 let heartbeat_message = heartbeat_message.clone();
                 Box::pin(async move {
                     heartbeat_message
                         .ack_with(AckKind::Progress)
                         .await
                         .map_err(|error| error.to_string())
-                })
+                }) as BoxFuture<'static, Result<(), String>>
+            })
+        };
+        let auto_heartbeat = {
+            let heartbeat_interval = progress_ack_interval(&queue);
+            let heartbeat_hook = Arc::clone(&heartbeat_hook);
+            let job_cancellation = job_cancellation.clone();
+            Some(tokio::spawn(async move {
+                let mut interval = tokio::time::interval(heartbeat_interval);
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    if heartbeat_hook().await.is_err() {
+                        job_cancellation.cancel_for_lease_loss();
+                        break;
+                    }
+                }
+            }))
+        };
+        let auto_key_heartbeat = active_key.as_ref().and_then(|active_key| {
+            let coordinator = key_coordinator.clone()?;
+            let heartbeat_interval = active_key.heartbeat_interval;
+            let active_key = active_key.clone();
+            let job_cancellation = job_cancellation.clone();
+            Some(tokio::spawn(async move {
+                let mut interval = tokio::time::interval(heartbeat_interval);
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    match renew_key_lease(&coordinator, &active_key).await {
+                        Ok(LeaseMutationOutcome::Renewed { .. }) => {}
+                        Ok(LeaseMutationOutcome::Lost { .. })
+                        | Ok(LeaseMutationOutcome::Released { .. })
+                        | Err(_) => {
+                            job_cancellation.cancel_for_lease_loss();
+                            break;
+                        }
+                    }
+                }
+            }))
+        });
+        let terminal_guard = {
+            let active_key = active_key.clone();
+            let key_coordinator = key_coordinator.clone();
+            move |terminal_at: String| {
+                let active_key = active_key.clone();
+                let key_coordinator = key_coordinator.clone();
+                Box::pin(async move {
+                    let (Some(coordinator), Some(active_key)) = (key_coordinator, active_key)
+                    else {
+                        return Ok(TerminalPublishDecision::Publish);
+                    };
+                    match renew_key_lease_at(&coordinator, &active_key, &terminal_at)
+                        .await
+                        .map_err(|error| error.to_string())?
+                    {
+                        LeaseMutationOutcome::Renewed { .. } => {
+                            Ok(TerminalPublishDecision::Publish)
+                        }
+                        LeaseMutationOutcome::Lost { .. } => {
+                            Ok(TerminalPublishDecision::StaleCompletionIgnored)
+                        }
+                        LeaseMutationOutcome::Released { .. } => {
+                            Ok(TerminalPublishDecision::Publish)
+                        }
+                    }
+                }) as BoxFuture<'static, Result<TerminalPublishDecision, String>>
+            }
+        };
+        let terminal_cleanup = {
+            let active_key = active_key.clone();
+            let key_coordinator = key_coordinator.clone();
+            move |released_at: String| {
+                let active_key = active_key.clone();
+                let key_coordinator = key_coordinator.clone();
+                Box::pin(async move {
+                    let (Some(coordinator), Some(active_key)) = (key_coordinator, active_key)
+                    else {
+                        return Ok(());
+                    };
+                    release_key_lease(&coordinator, &active_key, &released_at)
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                }) as BoxFuture<'static, Result<(), String>>
+            }
+        };
+        let process_result = process_job_with_context_heartbeat_and_terminal_hooks(
+            &manager,
+            job_with_active_key_metadata(parsed_job.clone(), active_key.as_ref()),
+            job_cancellation,
+            {
+                let heartbeat_hook = Arc::clone(&heartbeat_hook);
+                move || heartbeat_hook()
             },
+            terminal_guard,
+            terminal_cleanup,
             handler.clone(),
         )
         .await;
+        if let Some(auto_heartbeat) = auto_heartbeat {
+            auto_heartbeat.abort();
+            let _ = auto_heartbeat.await;
+        }
+        if let Some(auto_key_heartbeat) = auto_key_heartbeat {
+            auto_key_heartbeat.abort();
+            let _ = auto_key_heartbeat.await;
+        }
         forward_cancellation.abort();
         let _ = forward_cancellation.await;
         let process_result = process_result?;
-        match ack_action_for_outcome(process_result.as_ref()) {
+        match ack_action_for_outcome(
+            Some(&process_result),
+            parsed_job.max_tries,
+            &queue.backoff_ms,
+        ) {
             WorkerAckAction::Ack => message.ack().await.map_err(map_ack_error)?,
-            WorkerAckAction::Nak => message
-                .ack_with(AckKind::Nak(None))
+            WorkerAckAction::Nak(delay) => message
+                .ack_with(AckKind::Nak(Some(delay)))
                 .await
                 .map_err(map_ack_error)?,
+            WorkerAckAction::AwaitMaxDeliver => {}
         }
     }
 
@@ -559,12 +711,7 @@ where
 
 async fn run_prepared_queue_worker_with_cancellation<P, M, H, Fut, E>(
     nats: async_nats::Client,
-    consumer: consumer::PullConsumer,
-    lifecycle_stream: stream::Stream<()>,
-    queue: JobsQueueBinding,
-    manager: JobManager<P, M>,
-    cancellation: JobCancellationToken,
-    cancellation_registry: ActiveJobCancellationRegistry,
+    mut resources: WorkerLoopResources<P, M>,
     handler: H,
 ) -> Result<(), RuntimeWorkerError>
 where
@@ -575,7 +722,7 @@ where
     Fut: Future<Output = Result<Value, JobProcessError<E>>> + Send,
     E: ToString + Send,
 {
-    let cancellation_subject = format!("{}.*.cancelled", queue.publish_prefix);
+    let cancellation_subject = format!("{}.*.cancelled", resources.queue.publish_prefix);
     let mut cancellation_subscriber =
         nats.subscribe(cancellation_subject.clone())
             .await
@@ -584,7 +731,7 @@ where
                 details: error.to_string(),
             })?;
     let cancellation_task = {
-        let cancellation_registry = cancellation_registry.clone();
+        let cancellation_registry = resources.cancellation_registry.clone();
         tokio::spawn(async move {
             while let Some(message) = cancellation_subscriber.next().await {
                 let Ok(event) = serde_json::from_slice::<JobEvent>(&message.payload) else {
@@ -599,70 +746,206 @@ where
         })
     };
 
-    let result = run_prepared_queue_worker_loop(
-        consumer,
-        lifecycle_stream,
-        queue,
-        manager,
-        cancellation,
-        cancellation_registry,
-        handler,
+    resources.key_coordinator = key_coordinator_for_queue(
+        nats.clone(),
+        resources.manager.bindings().namespace.as_str(),
+        &resources.queue,
     )
-    .await;
+    .await?;
+    let result = run_prepared_queue_worker_loop(resources, handler).await;
     cancellation_task.abort();
     let _ = cancellation_task.await;
     result
 }
 
-/// Run one queue worker using a previously resolved jobs runtime binding.
-pub async fn run_single_queue_worker_from_binding<P, M, H, Fut, E>(
+async fn key_coordinator_for_queue(
     nats: async_nats::Client,
-    binding: JobsRuntimeBinding,
-    queue_type: &str,
-    publisher: P,
-    meta: M,
-    handler: H,
-) -> Result<(), RuntimeWorkerError>
-where
-    P: JobEventPublisher + Send + Sync + 'static,
-    P::Error: std::fmt::Display,
-    M: JobMetaSource + Send + Sync + 'static,
-    H: Fn(ActiveJob<P, M>) -> Fut + Clone + Send + Sync + 'static,
-    Fut: Future<Output = Result<Value, JobProcessError<E>>> + Send,
-    E: ToString + Send,
-{
-    let manager = JobManager::new(publisher, binding.jobs, meta);
-    run_single_queue_worker(nats, &binding.work_stream, queue_type, manager, handler).await
+    namespace: &str,
+    queue: &JobsQueueBinding,
+) -> Result<Option<NatsKeyCoordinator>, RuntimeWorkerError> {
+    if queue.key_concurrency.is_none() {
+        return Ok(None);
+    }
+    NatsKeyCoordinator::open_for_service(nats, namespace)
+        .await
+        .map(Some)
+        .map_err(|error| RuntimeWorkerError::KeyCoordinator(error.to_string()))
 }
 
-/// Run one queue worker from a resolved binding with cancellation context.
-pub async fn run_single_queue_worker_from_binding_with_context<P, M, H, Fut, E>(
-    nats: async_nats::Client,
-    binding: JobsRuntimeBinding,
-    queue_type: &str,
-    publisher: P,
-    meta: M,
-    cancellation: JobCancellationToken,
-    handler: H,
-) -> Result<(), RuntimeWorkerError>
-where
-    P: JobEventPublisher + Send + Sync + 'static,
-    P::Error: std::fmt::Display,
-    M: JobMetaSource + Send + Sync + 'static,
-    H: Fn(ActiveJob<P, M>) -> Fut + Clone + Send + Sync + 'static,
-    Fut: Future<Output = Result<Value, JobProcessError<E>>> + Send,
-    E: ToString + Send,
-{
-    let manager = JobManager::new(publisher, binding.jobs, meta);
-    run_single_queue_worker_with_context(
-        nats,
-        &binding.work_stream,
-        queue_type,
-        manager,
-        cancellation,
-        handler,
-    )
-    .await
+async fn acquire_key_slot_for_work(
+    coordinator: Option<&NatsKeyCoordinator>,
+    queue: &JobsQueueBinding,
+    namespace: &str,
+    job: &Job,
+    started_at: &str,
+    tries: u64,
+) -> Result<Option<ActiveKeyLease>, RuntimeWorkerError> {
+    let Some(coordinator) = coordinator else {
+        return Ok(None);
+    };
+    let Some(key_concurrency) = queue.key_concurrency.as_ref() else {
+        return Ok(None);
+    };
+    let policy = key_policy_for_job(queue, key_concurrency, namespace, job)?;
+    let lease_expires_at = add_millis(started_at, key_concurrency.heartbeat_ttl_ms)
+        .map_err(RuntimeWorkerError::KeyCoordinator)?;
+    let input = AcquireSlotInput {
+        job_id: job.id.clone(),
+        slot_token: Ulid::new().to_string(),
+        instance_id: "rust-worker".to_string(),
+        started_at: started_at.to_string(),
+        lease_expires_at,
+        tries,
+        context: job.context.clone(),
+    };
+    let outcome = coordinator
+        .acquire(policy.clone(), input)
+        .await
+        .map_err(|error| RuntimeWorkerError::KeyCoordinator(error.to_string()))?;
+    match outcome {
+        AcquireSlotOutcome::Acquired {
+            state,
+            slot,
+            stale_slots,
+        } => Ok(Some(ActiveKeyLease {
+            policy,
+            slot: *slot,
+            heartbeat_interval: Duration::from_millis(key_concurrency.heartbeat_interval_ms),
+            heartbeat_ttl_ms: key_concurrency.heartbeat_ttl_ms,
+            stale_slots,
+            stale_takeover_count: state.stale_takeover_count,
+        })),
+        AcquireSlotOutcome::Blocked { .. } => Ok(None),
+    }
+}
+
+async fn renew_key_lease(
+    coordinator: &NatsKeyCoordinator,
+    active_key: &ActiveKeyLease,
+) -> Result<LeaseMutationOutcome, RuntimeWorkerError> {
+    let heartbeat_at = OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .map_err(|error| RuntimeWorkerError::KeyCoordinator(error.to_string()))?;
+    renew_key_lease_at(coordinator, active_key, &heartbeat_at).await
+}
+
+async fn renew_key_lease_at(
+    coordinator: &NatsKeyCoordinator,
+    active_key: &ActiveKeyLease,
+    heartbeat_at: &str,
+) -> Result<LeaseMutationOutcome, RuntimeWorkerError> {
+    let lease_expires_at = add_millis(heartbeat_at, active_key.heartbeat_ttl_ms)
+        .map_err(RuntimeWorkerError::KeyCoordinator)?;
+    coordinator
+        .update_key(&active_key.policy, {
+            let active_key = active_key.clone();
+            let heartbeat_at = heartbeat_at.to_string();
+            move |current| match current {
+                Some(state) => renew_active_slot(
+                    state,
+                    &active_key.slot.job_id,
+                    &active_key.slot.slot_token,
+                    &heartbeat_at,
+                    &lease_expires_at,
+                ),
+                None => LeaseMutationOutcome::Lost {
+                    state: new_key_state(&active_key.policy, &heartbeat_at),
+                },
+            }
+        })
+        .await
+        .map_err(|error| RuntimeWorkerError::KeyCoordinator(error.to_string()))
+}
+
+async fn cleanup_queued_key_for_terminal(
+    coordinator: Option<&NatsKeyCoordinator>,
+    queue: &JobsQueueBinding,
+    namespace: &str,
+    job: &Job,
+    removed_at: &str,
+) -> Result<(), RuntimeWorkerError> {
+    let Some(coordinator) = coordinator else {
+        return Ok(());
+    };
+    let Some(key_concurrency) = queue.key_concurrency.as_ref() else {
+        return Ok(());
+    };
+    let policy = key_policy_for_job(queue, key_concurrency, namespace, job)?;
+    coordinator
+        .remove_queued(policy, job.id.clone(), removed_at.to_string())
+        .await
+        .map(|_| ())
+        .map_err(|error| RuntimeWorkerError::KeyCoordinator(error.to_string()))
+}
+
+fn job_with_active_key_metadata(mut job: Job, active_key: Option<&ActiveKeyLease>) -> Job {
+    let Some(active_key) = active_key else {
+        return job;
+    };
+    job.concurrency = Some(JobConcurrency {
+        key: active_key.policy.key.clone(),
+        key_hash: active_key.policy.key_hash(),
+        instance_id: Some(active_key.slot.instance_id.clone()),
+        slot_token: Some(active_key.slot.slot_token.clone()),
+        heartbeat_at: Some(active_key.slot.heartbeat_at.clone()),
+        lease_expires_at: Some(active_key.slot.lease_expires_at.clone()),
+        stale_takeover_count: Some(active_key.stale_takeover_count),
+    });
+    job
+}
+
+async fn release_key_lease(
+    coordinator: &NatsKeyCoordinator,
+    active_key: &ActiveKeyLease,
+    released_at: &str,
+) -> Result<LeaseMutationOutcome, RuntimeWorkerError> {
+    coordinator
+        .update_key(&active_key.policy, {
+            let active_key = active_key.clone();
+            let released_at = released_at.to_string();
+            move |current| match current {
+                Some(state) => release_active_slot(
+                    state,
+                    &active_key.slot.job_id,
+                    &active_key.slot.slot_token,
+                    &released_at,
+                ),
+                None => LeaseMutationOutcome::Lost {
+                    state: new_key_state(&active_key.policy, &released_at),
+                },
+            }
+        })
+        .await
+        .map_err(|error| RuntimeWorkerError::KeyCoordinator(error.to_string()))
+}
+
+fn key_policy_for_job(
+    queue: &JobsQueueBinding,
+    key_concurrency: &JobKeyConcurrencyBinding,
+    namespace: &str,
+    job: &Job,
+) -> Result<JobKeyPolicy, RuntimeWorkerError> {
+    let derived = derive_job_key(&job.payload, &key_concurrency.key)
+        .map_err(|error| RuntimeWorkerError::KeyCoordinator(error.to_string()))?;
+    let queue_depth = queue.queue.as_ref();
+    Ok(JobKeyPolicy {
+        service: namespace.to_string(),
+        job_type: job.job_type.clone(),
+        key: derived.key,
+        key_hash: derived.key_hash,
+        max_active: key_concurrency.max_active,
+        max_queued_per_key: queue_depth.map_or(0, |queue| queue.max_queued_per_key),
+        when_full: queue_depth.map_or(JobQueueWhenFull::Reject, |queue| queue.when_full.clone()),
+        stale_policy: key_concurrency.stale_policy.clone(),
+    })
+}
+
+fn add_millis(timestamp: &str, millis: u64) -> Result<String, String> {
+    let parsed = OffsetDateTime::parse(timestamp, &Rfc3339).map_err(|error| error.to_string())?;
+    let offset = TimeDuration::milliseconds(i64::try_from(millis).unwrap_or(i64::MAX));
+    (parsed + offset)
+        .format(&Rfc3339)
+        .map_err(|error| error.to_string())
 }
 
 /// Start a first-class worker host from a resolved runtime binding.
@@ -686,18 +969,30 @@ where
     E: ToString + Send + 'static,
 {
     let queue_types = selected_queue_types(&binding, options.queue_types.as_deref())?;
+    let queue_concurrency = queue_types
+        .iter()
+        .map(|queue_type| {
+            let concurrency = options
+                .queue_concurrency
+                .get(queue_type)
+                .copied()
+                .unwrap_or(1);
+            if concurrency == 0 {
+                Err(WorkerHostError::InvalidConcurrency {
+                    queue_type: queue_type.clone(),
+                    concurrency,
+                })
+            } else {
+                Ok((queue_type.clone(), concurrency))
+            }
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
     for queue_type in &queue_types {
-        let queue = binding.jobs.queues.get(queue_type).ok_or_else(|| {
+        binding.jobs.queues.get(queue_type).ok_or_else(|| {
             WorkerHostError::MissingQueueBinding {
                 queue_type: queue_type.clone(),
             }
         })?;
-        if queue.concurrency == 0 {
-            return Err(WorkerHostError::InvalidConcurrency {
-                queue_type: queue_type.clone(),
-                concurrency: queue.concurrency,
-            });
-        }
     }
 
     let jetstream = jetstream::new(nats.clone());
@@ -708,7 +1003,7 @@ where
                 queue_type: queue_type.clone(),
             }
         })?;
-        for worker_index in 0..queue.concurrency {
+        for worker_index in 0..queue_concurrency[queue_type] {
             let lifecycle_stream = lifecycle_stream(&jetstream).await.map_err(|error| {
                 WorkerHostError::WorkerStartup {
                     queue_type: queue_type.clone(),
@@ -734,20 +1029,18 @@ where
     let cancellation = JobCancellationToken::new();
     let mut heartbeats = Vec::new();
     for queue_type in &queue_types {
-        let queue = binding.jobs.queues.get(queue_type).ok_or_else(|| {
-            WorkerHostError::MissingQueueBinding {
-                queue_type: queue_type.clone(),
-            }
-        })?;
         heartbeats.push(
             start_worker_heartbeat_loop(
                 nats.clone(),
-                binding.jobs.namespace.clone(),
-                queue_type.clone(),
-                instance_id.clone(),
-                Some(queue.concurrency),
-                options.version.clone(),
-                options.heartbeat_interval,
+                WorkerHeartbeatOptions {
+                    service: binding.jobs.service_name.clone(),
+                    subject_service: binding.jobs.namespace.clone(),
+                    job_type: queue_type.clone(),
+                    instance_id: instance_id.clone(),
+                    concurrency: Some(queue_concurrency[queue_type]),
+                    version: options.version.clone(),
+                    interval: options.heartbeat_interval,
+                },
             )
             .await?,
         );
@@ -766,12 +1059,15 @@ where
             let manager = JobManager::new(worker_publisher, worker_jobs, worker_meta);
             run_prepared_queue_worker_with_cancellation(
                 worker_nats,
-                consumer,
-                lifecycle_stream,
-                queue,
-                manager,
-                worker_cancellation,
-                worker_cancellation_registry,
+                WorkerLoopResources {
+                    consumer,
+                    lifecycle_stream,
+                    queue,
+                    manager,
+                    cancellation: worker_cancellation,
+                    cancellation_registry: worker_cancellation_registry,
+                    key_coordinator: None,
+                },
                 worker_handler,
             )
             .await
@@ -895,10 +1191,15 @@ fn expected_consumer_ack_wait(queue: &JobsQueueBinding) -> Duration {
     Duration::from_millis(
         queue
             .backoff_ms
-            .first()
+            .iter()
             .copied()
+            .min()
             .unwrap_or(queue.ack_wait_ms),
     )
+}
+
+fn progress_ack_interval(queue: &JobsQueueBinding) -> Duration {
+    Duration::from_millis((expected_consumer_ack_wait(queue).as_millis() as u64 / 3).max(1))
 }
 
 async fn lifecycle_stream(
@@ -956,6 +1257,8 @@ async fn exact_terminal_lifecycle_event_exists(
         JobEventType::Failed,
         JobEventType::Cancelled,
         JobEventType::Expired,
+        JobEventType::Skipped,
+        JobEventType::Stale,
         JobEventType::Dead,
         JobEventType::Dismissed,
     ] {
@@ -1016,6 +1319,8 @@ fn is_terminal_lifecycle_event(event_type: JobEventType) -> bool {
             | JobEventType::Failed
             | JobEventType::Cancelled
             | JobEventType::Expired
+            | JobEventType::Skipped
+            | JobEventType::Stale
             | JobEventType::Dead
             | JobEventType::Dismissed
     )
@@ -1023,15 +1328,38 @@ fn is_terminal_lifecycle_event(event_type: JobEventType) -> bool {
 
 fn ack_action_for_outcome<TResult>(
     outcome: Option<&JobProcessOutcome<TResult>>,
+    max_tries: u64,
+    backoff_ms: &[u64],
 ) -> WorkerAckAction {
     match outcome {
-        Some(JobProcessOutcome::Retry { .. }) => WorkerAckAction::Nak,
-        Some(JobProcessOutcome::Interrupted { .. }) => WorkerAckAction::Nak,
+        Some(JobProcessOutcome::Retry { tries, .. }) if *tries >= max_tries => {
+            WorkerAckAction::AwaitMaxDeliver
+        }
+        Some(JobProcessOutcome::Retry { tries, .. }) => {
+            WorkerAckAction::Nak(Duration::from_millis(retry_delay_ms(*tries, backoff_ms)))
+        }
+        Some(JobProcessOutcome::Interrupted { .. }) => WorkerAckAction::Nak(Duration::from_secs(5)),
         Some(JobProcessOutcome::Completed { .. })
         | Some(JobProcessOutcome::Cancelled { .. })
         | Some(JobProcessOutcome::Failed { .. })
+        | Some(JobProcessOutcome::StaleCompletionIgnored { .. })
         | None => WorkerAckAction::Ack,
     }
+}
+
+fn retry_delay_ms(delivery: u64, backoff_ms: &[u64]) -> u64 {
+    const DEFAULT_BACKOFF_MS: [u64; 4] = [5_000, 30_000, 120_000, 600_000];
+    let schedule = if backoff_ms.is_empty() {
+        DEFAULT_BACKOFF_MS.as_slice()
+    } else {
+        backoff_ms
+    };
+    let index = usize::try_from(delivery.saturating_sub(1)).unwrap_or(usize::MAX);
+    schedule
+        .get(index)
+        .copied()
+        .or_else(|| schedule.last().copied())
+        .unwrap_or(5_000)
 }
 
 async fn latest_lifecycle_message(
@@ -1078,6 +1406,7 @@ async fn latest_lifecycle_message(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::time::Duration;
 
     use serde_json::Value;
@@ -1085,11 +1414,52 @@ mod tests {
     use super::JobCancellationToken;
 
     use super::{
-        ack_action_for_outcome, lifecycle_work_decision, ProjectedWorkDecision, WorkerAckAction,
+        ack_action_for_outcome, lifecycle_work_decision, progress_ack_interval,
+        ProjectedWorkDecision, WorkerAckAction, WorkerHostOptions,
     };
-    use crate::jobs::events::{cancelled_event, completed_event, started_event};
+    use crate::jobs::bindings::JobsQueueBinding;
+    use crate::jobs::events::{cancelled, completed, created, started, EventMeta};
     use crate::jobs::manager::JobProcessOutcome;
     use crate::jobs::types::{Job, JobContext, JobState};
+
+    #[test]
+    fn worker_host_options_keep_concurrency_local() {
+        let options = WorkerHostOptions::default();
+        assert!(options.queue_concurrency.is_empty());
+
+        let options = WorkerHostOptions {
+            queue_concurrency: BTreeMap::from([("documents".to_string(), 4)]),
+            ..WorkerHostOptions::default()
+        };
+        assert_eq!(options.queue_concurrency["documents"], 4);
+    }
+
+    #[test]
+    fn progress_ack_interval_uses_shortest_retry_window() {
+        let queue = JobsQueueBinding {
+            queue_type: "work".to_owned(),
+            publish_prefix: "jobs.work".to_owned(),
+            updates_prefix: None,
+            work_subject: "jobs.work.run".to_owned(),
+            consumer_name: "work".to_owned(),
+            max_deliver: 3,
+            backoff_ms: vec![30_000, 3_000, 10_000],
+            ack_wait_ms: 60_000,
+            default_deadline_ms: None,
+            update: None,
+            key_concurrency: None,
+            queue: None,
+        };
+        assert_eq!(progress_ack_interval(&queue), Duration::from_millis(1_000));
+
+        let mut queue = queue;
+        queue.backoff_ms = vec![1];
+        assert_eq!(progress_ack_interval(&queue), Duration::from_millis(1));
+        queue.backoff_ms = vec![2];
+        assert_eq!(progress_ack_interval(&queue), Duration::from_millis(1));
+        queue.backoff_ms = vec![5];
+        assert_eq!(progress_ack_interval(&queue), Duration::from_millis(1));
+    }
 
     fn sample_context() -> JobContext {
         JobContext {
@@ -1116,31 +1486,73 @@ mod tests {
             tries,
             max_tries: 2,
             last_error: None,
+            error_detail: None,
             deadline: None,
             progress: None,
             logs: None,
+            concurrency: None,
+            queue_policy: None,
+            trigger: None,
+            lineage: None,
+            waiting_on: None,
         }
     }
 
     #[test]
     fn interrupted_outcomes_use_nak_instead_of_ack() {
         assert_eq!(
-            ack_action_for_outcome(Some(&JobProcessOutcome::<Value>::Interrupted { tries: 1 })),
-            WorkerAckAction::Nak
+            ack_action_for_outcome(
+                Some(&JobProcessOutcome::<Value>::Interrupted { tries: 1 }),
+                2,
+                &[5_000],
+            ),
+            WorkerAckAction::Nak(Duration::from_secs(5))
+        );
+    }
+
+    #[test]
+    fn final_retry_waits_for_max_deliver_advisory() {
+        assert_eq!(
+            ack_action_for_outcome(
+                Some(&JobProcessOutcome::<Value>::Retry {
+                    tries: 2,
+                    error: "retry requested".to_string(),
+                }),
+                2,
+                &[5_000],
+            ),
+            WorkerAckAction::AwaitMaxDeliver
+        );
+    }
+
+    #[test]
+    fn retry_uses_the_declared_delivery_interval() {
+        assert_eq!(
+            ack_action_for_outcome(
+                Some(&JobProcessOutcome::<Value>::Retry {
+                    tries: 1,
+                    error: "retry requested".to_string(),
+                }),
+                3,
+                &[17, 29],
+            ),
+            WorkerAckAction::Nak(Duration::from_millis(17))
         );
     }
 
     #[test]
     fn lifecycle_work_decision_allows_when_latest_event_is_created() {
         let work = sample_job(JobState::Pending, 0);
-        let latest = crate::jobs::events::created_event(
-            &work.service,
-            &work.job_type,
-            &work.id,
-            &work.context,
+        let latest = created(
+            EventMeta {
+                service: &work.service,
+                job_type: &work.job_type,
+                job_id: &work.id,
+                context: &work.context,
+                timestamp: &work.created_at,
+            },
             work.payload.clone(),
             work.max_tries,
-            &work.created_at,
             None,
         );
 
@@ -1153,14 +1565,16 @@ mod tests {
     #[test]
     fn lifecycle_work_decision_skips_when_latest_event_is_cancelled() {
         let work = sample_job(JobState::Pending, 0);
-        let latest = cancelled_event(
-            &work.service,
-            &work.job_type,
-            &work.id,
-            &work.context,
-            JobState::Pending,
+        let latest = cancelled(
+            EventMeta {
+                service: &work.service,
+                job_type: &work.job_type,
+                job_id: &work.id,
+                context: &work.context,
+                timestamp: &work.updated_at,
+            },
             work.tries,
-            &work.updated_at,
+            JobState::Pending,
         );
 
         assert_eq!(
@@ -1172,14 +1586,16 @@ mod tests {
     #[test]
     fn lifecycle_work_decision_processes_when_latest_event_is_started_for_created_work() {
         let work = sample_job(JobState::Pending, 0);
-        let latest = started_event(
-            &work.service,
-            &work.job_type,
-            &work.id,
-            &work.context,
-            JobState::Pending,
+        let latest = started(
+            EventMeta {
+                service: &work.service,
+                job_type: &work.job_type,
+                job_id: &work.id,
+                context: &work.context,
+                timestamp: &work.updated_at,
+            },
             1,
-            &work.updated_at,
+            JobState::Pending,
         );
 
         assert_eq!(
@@ -1191,13 +1607,15 @@ mod tests {
     #[test]
     fn lifecycle_work_decision_skips_when_latest_event_is_terminal() {
         let work = sample_job(JobState::Retry, 0);
-        let latest = completed_event(
-            &work.service,
-            &work.job_type,
-            &work.id,
-            &work.context,
+        let latest = completed(
+            EventMeta {
+                service: &work.service,
+                job_type: &work.job_type,
+                job_id: &work.id,
+                context: &work.context,
+                timestamp: &work.updated_at,
+            },
             1,
-            &work.updated_at,
             serde_json::json!({ "ok": true }),
         );
 

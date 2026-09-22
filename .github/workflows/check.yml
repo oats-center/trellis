@@ -1,0 +1,558 @@
+name: Check
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - rs
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DENO_VERSION: 2.9.4
+  NODE_VERSION: 24
+  CARGO_TERM_COLOR: always
+  RUSTUP_INIT_SKIP_PATH_CHECK: "yes"
+
+jobs:
+  install:
+    name: Install generated artifacts
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 20
+    outputs:
+      current: ${{ steps.current.outputs.current }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Expose installed Cargo binaries
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Rust
+        id: rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Expose Rust toolchain binaries
+        run: echo "$(dirname "$(rustup which rustfmt)")" >> "$GITHUB_PATH"
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      - name: Reset isolated installation state
+        run: rm -rf rust/target
+
+      - name: Cache installation build
+        uses: actions/cache@v4
+        with:
+          path: rust/target
+          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-${{ hashFiles('rust/**/Cargo.toml', 'rust/**/Cargo.lock', '.cargo/config.toml', 'rust/.cargo/config.toml') }}
+
+      - name: Install generated artifacts
+        run: rm -rf "$RUNNER_TEMP/trellis-cache" && TRELLIS_CACHE="$RUNNER_TEMP/trellis-cache" cargo xtask install
+
+      - name: Inspect generated artifact drift
+        id: current
+        shell: bash
+        run: |
+          if test -z "$(git status --porcelain)"; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            git diff --stat
+          fi
+
+      - name: Upload installed artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-generated
+          path: |
+            rust/crates/runtime/trellis
+            web/trellis
+            ts/packages/trellis-test/trellis
+            integration/fixtures/runtime/crates/runtime-trellis
+            integration/fixtures/runtime/packages/runtime-trellis
+            demos/rust/service/trellis
+            demos/rust/device/trellis
+            demos/ts/service/trellis
+            demos/ts/device/trellis
+            demos/app/trellis
+            docs/examples/orders/trellis
+          include-hidden-files: true
+          retention-days: 1
+
+  generated:
+    name: Generated artifacts current
+    needs: install
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Require generated artifacts to be current
+        env:
+          GENERATED_CURRENT: ${{ needs.install.outputs.current }}
+        run: test "$GENERATED_CURRENT" = true
+
+  wasm:
+    name: Protocol WASM
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Expose installed Cargo binaries
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Build protocol WASM
+        run: cargo run --manifest-path rust/xtask/Cargo.toml -- protocol-wasm
+
+      - name: Upload protocol WASM
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-protocol-wasm
+          path: ts/packages/trellis/auth/protocol_wasm
+          retention-days: 1
+
+  portal:
+    name: Embedded browser apps
+    needs: [install, wasm]
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download generated artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: check-generated
+
+      - name: Download protocol WASM
+        uses: actions/download-artifact@v4
+        with:
+          name: check-protocol-wasm
+          path: ts/packages/trellis/auth/protocol_wasm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      - name: Build embedded browser apps
+        run: deno task -c ts/deno.json browser:embedded
+
+      - name: Upload embedded browser apps
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-portal
+          path: rust/crates/runtime/generated
+          retention-days: 1
+
+  rust:
+    name: Rust
+    needs: [install, wasm, portal]
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download generated artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: check-generated
+
+      - name: Download embedded browser apps
+        uses: actions/download-artifact@v4
+        with:
+          name: check-portal
+          path: rust/crates/runtime/generated
+
+      - name: Expose installed Cargo binaries
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Rust
+        id: rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Expose Rust toolchain binaries
+        run: echo "$(dirname "$(rustup which rustfmt)")" >> "$GITHUB_PATH"
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
+        with:
+          path: rust/target
+          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-${{ hashFiles('rust/**/Cargo.toml', 'rust/**/Cargo.lock', '.cargo/config.toml', 'rust/.cargo/config.toml') }}
+
+      - name: Download protocol WASM
+        uses: actions/download-artifact@v4
+        with:
+          name: check-protocol-wasm
+          path: ts/packages/trellis/auth/protocol_wasm
+
+      - name: Check formatting
+        run: |
+          cargo fmt --manifest-path rust/Cargo.toml --all --check
+
+      - name: Lint Rust
+        run: cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings
+
+      - name: Test Rust workspace
+        run: cargo test --manifest-path rust/Cargo.toml --workspace
+
+  rust-tooling:
+    name: Rust tooling (${{ matrix.name }})
+    needs: [install, wasm]
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: install
+            workspace: rust/xtask
+          - name: release
+            workspace: xtask
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download generated artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: check-generated
+
+      - name: Download protocol WASM
+        uses: actions/download-artifact@v4
+        with:
+          name: check-protocol-wasm
+          path: ts/packages/trellis/auth/protocol_wasm
+
+      - name: Expose installed Cargo binaries
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test Rust tooling
+        run: cargo test --manifest-path ${{ matrix.workspace }}/Cargo.toml
+
+  typescript:
+    name: TypeScript
+    needs: [install, wasm]
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download generated artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: check-generated
+
+      - name: Download protocol WASM
+        uses: actions/download-artifact@v4
+        with:
+          name: check-protocol-wasm
+          path: ts/packages/trellis/auth/protocol_wasm
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      - name: Check formatting
+        run: deno fmt -c ts/deno.json --check
+
+      - name: Check TypeScript packages
+        run: >-
+          deno check -c ts/deno.json
+          ts/packages/trellis/index.ts
+          ts/packages/trellis-svelte/src/index.ts
+          ts/packages/trellis-svelte/src/context.svelte.ts
+          ts/packages/trellis-test/index.ts
+
+      - name: Check TypeScript integration
+        run: deno task -c ts/integration/deno.json check
+
+      - name: Test TypeScript packages
+        run: deno task -c ts/deno.json test
+
+  demos:
+    name: Demo consumers
+    needs: [install, wasm, portal]
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download generated artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: check-generated
+
+      - name: Expose installed Cargo binaries
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      - name: Download protocol WASM
+        uses: actions/download-artifact@v4
+        with:
+          name: check-protocol-wasm
+          path: ts/packages/trellis/auth/protocol_wasm
+
+      - name: Download embedded browser apps
+        uses: actions/download-artifact@v4
+        with:
+          name: check-portal
+          path: rust/crates/runtime/generated
+
+      - name: Build repository CLI and server
+        run: cargo build --manifest-path rust/Cargo.toml -p trellis-cli -p trellis-server
+
+      - name: Expose repository CLI
+        run: echo "$GITHUB_WORKSPACE/rust/target/debug" >> "$GITHUB_PATH"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Check TypeScript demos with packaged dependencies
+        run: |
+          deno task -c ts/deno.json packages:build:npm:installed
+          deno run -A -c ts/deno.json ts/tools/package_build/demo_consumers.ts
+
+      - name: Check Rust service demo
+        working-directory: demos/rust/service
+        run: |
+          trellis generate
+          consumer="$(mktemp -d)"
+          trap 'rm -rf "$consumer"' EXIT
+          cp -R Cargo.toml src trellis "$consumer/"
+          export PATH="$(dirname "$(rustup which cargo)"):/usr/bin:/bin"
+          export TRELLIS_CACHE="$consumer/empty-api-cache"
+          cd "$consumer"
+          cargo check --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/rust/crates/trellis\""
+
+      - name: Check Rust device demo
+        working-directory: demos/rust/device
+        run: |
+          trellis generate
+          consumer="$(mktemp -d)"
+          trap 'rm -rf "$consumer"' EXIT
+          cp -R Cargo.toml src trellis "$consumer/"
+          export PATH="$(dirname "$(rustup which cargo)"):/usr/bin:/bin"
+          export TRELLIS_CACHE="$consumer/empty-api-cache"
+          cd "$consumer"
+          cargo check --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/rust/crates/trellis\""
+
+  live:
+    name: Live integration
+    needs: [install, wasm, portal]
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download generated artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: check-generated
+
+      - name: Download embedded browser apps
+        uses: actions/download-artifact@v4
+        with:
+          name: check-portal
+          path: rust/crates/runtime/generated
+
+      - name: Download protocol WASM
+        uses: actions/download-artifact@v4
+        with:
+          name: check-protocol-wasm
+          path: ts/packages/trellis/auth/protocol_wasm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      - name: Build live runtime binaries
+        run: cargo build --manifest-path rust/Cargo.toml -p trellis-server -p trellis-cli
+
+      - name: Run Rust live integration
+        env:
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/rust/target/debug/trellis-server
+          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/rust/target/debug/trellis
+        run: cargo test --manifest-path rust/Cargo.toml -p trellis-rs --features live-integration --test integration -- --test-threads=1 --nocapture
+
+      - name: Run TypeScript live integration
+        env:
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/rust/target/debug/trellis-server
+          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/rust/target/debug/trellis
+        run: deno test -A -c ts/integration/deno.json ts/integration
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Verify documented Orders service
+        env:
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/rust/target/debug/trellis-server
+        run: |
+          deno task -c ts/packages/result/deno.json build:npm
+          deno task -c ts/packages/trellis/deno.json build:npm:installed
+          deno run -A -c ts/deno.json ts/tools/package_build/orders_example.ts
+
+  ui-hosting:
+    name: Built-in UI hosting
+    needs: [install, wasm, portal]
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download generated artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: check-generated
+
+      - name: Download embedded browser apps
+        uses: actions/download-artifact@v4
+        with:
+          name: check-portal
+          path: rust/crates/runtime/generated
+
+      - name: Download protocol WASM
+        uses: actions/download-artifact@v4
+        with:
+          name: check-protocol-wasm
+          path: ts/packages/trellis/auth/protocol_wasm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      - name: Build Trellis server and CLI
+        run: cargo build --manifest-path rust/Cargo.toml -p trellis-server -p trellis-cli
+
+      - name: Test built-in UI hosting
+        working-directory: ts
+        env:
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/rust/target/debug/trellis-server
+        run: deno task test:browser:ui-hosting
+
+      - name: Test functional browser journeys
+        working-directory: ts
+        env:
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/rust/target/debug/trellis-server
+          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/rust/target/debug/trellis
+        run: deno task test:browser:auth
+
+  console:
+    name: Console (${{ matrix.suite }})
+    needs: [install, wasm, portal]
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - services_devices
+          - portals_grants
+          - users_sessions
+          - observability
+          - navigation_permissions
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download generated artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: check-generated
+
+      - name: Download embedded browser apps
+        uses: actions/download-artifact@v4
+        with:
+          name: check-portal
+          path: rust/crates/runtime/generated
+
+      - name: Download protocol WASM
+        uses: actions/download-artifact@v4
+        with:
+          name: check-protocol-wasm
+          path: ts/packages/trellis/auth/protocol_wasm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      - name: Build Trellis server and CLI
+        run: cargo build --manifest-path rust/Cargo.toml -p trellis-server -p trellis-cli
+
+      - name: Run console browser suite
+        env:
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/rust/target/debug/trellis-server
+          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/rust/target/debug/trellis
+          SUITE: ${{ matrix.suite }}
+        run: |
+          deno test -A -c ts/browser/deno.json \
+            "ts/browser/console_${SUITE}.browser_test.ts"
+
+      - name: Upload sanitized failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-failure-${{ matrix.suite }}
+          path: |
+            ts/browser/test-results/**
+          if-no-files-found: ignore
+          retention-days: 3

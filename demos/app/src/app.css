@@ -63,10 +63,10 @@ body {
     BlinkMacSystemFont, "Segoe UI", sans-serif;
   background:
     radial-gradient(
-      circle at 0% 0%,
-      color-mix(in oklch, var(--trellis-stone) 42%, transparent),
-      transparent 32rem
-    ),
+    circle at 0% 0%,
+    color-mix(in oklch, var(--trellis-stone) 42%, transparent),
+    transparent 32rem
+  ),
     linear-gradient(
     135deg,
     #fbfaf7 0%,
@@ -253,8 +253,10 @@ a {
 }
 
 .assignment-row-selected {
-  background: color-mix(in oklch, var(--trellis-paper) 84%, var(--trellis-stone));
-  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--trellis-copper) 42%, transparent);
+  background: color-mix(in oklch, var(--trellis-paper) 84%,
+    var(--trellis-stone));
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--trellis-copper) 42%,
+    transparent);
 }
 
 .preview-placeholder {
@@ -287,7 +289,8 @@ a {
 
 .operation-update-line {
   overflow: hidden;
-  border-block: 1px solid color-mix(in oklch, var(--trellis-stone) 68%, transparent);
+  border-block: 1px solid color-mix(in oklch, var(--trellis-stone) 68%,
+    transparent);
   background: color-mix(in oklch, var(--trellis-warm-gray) 54%, transparent);
   padding: 1rem 0.25rem;
   color: color-mix(in oklch, var(--trellis-deep-ink) 70%, transparent);
@@ -401,7 +404,8 @@ a {
   justify-content: center;
   border: 1px solid color-mix(in oklch, var(--trellis-stone) 72%, transparent);
   border-radius: 999px;
-  background: color-mix(in oklch, var(--trellis-paper) 72%, var(--trellis-warm-gray));
+  background: color-mix(in oklch, var(--trellis-paper) 72%,
+    var(--trellis-warm-gray));
   color: color-mix(in oklch, var(--trellis-deep-ink) 68%, transparent);
   font-size: 0.72rem;
   font-weight: 900;
@@ -410,7 +414,8 @@ a {
 .workflow-rail-link.menu-active .workflow-step-index,
 .workflow-progress-item[aria-current="step"] .workflow-step-index {
   border-color: color-mix(in oklch, oklch(0.66 0.105 52) 64%, transparent);
-  background: color-mix(in oklch, oklch(0.66 0.105 52) 88%, var(--trellis-deep-ink));
+  background: color-mix(in oklch, oklch(0.66 0.105 52) 88%,
+    var(--trellis-deep-ink));
   color: oklch(0.97 0.018 82);
 }
 
@@ -442,7 +447,8 @@ a {
 }
 
 .blocking-operation-panel {
-  border-block: 1px solid color-mix(in oklch, var(--trellis-stone) 68%, transparent);
+  border-block: 1px solid color-mix(in oklch, var(--trellis-stone) 68%,
+    transparent);
   background: color-mix(in oklch, oklch(0.965 0.014 78) 72%, transparent);
   padding: 1rem 0.25rem;
 }

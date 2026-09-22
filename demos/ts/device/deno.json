@@ -1,0 +1,13 @@
+{
+  "extends": "../deno.json",
+  "name": "@trellis-demo/device",
+  "version": "0.0.0",
+  "exports": "./src/main.ts",
+  "tasks": {
+    "update": "trellis update",
+    "generate": "trellis generate",
+    "check": "deno check src/main.ts",
+    "build": "deno bundle --external @qlever-llc/trellis --external @qlever-llc/trellis/device --external @qlever-llc/trellis/errors --external @qlever-llc/trellis/generated --external chalk --external ulid -o build/main.mjs src/main.ts",
+    "start": "deno run --allow-env --allow-net --allow-read --allow-write --allow-sys src/main.ts"
+  }
+}

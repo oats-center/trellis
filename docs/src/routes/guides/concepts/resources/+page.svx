@@ -1,69 +1,67 @@
-Services can declare cloud-managed resources in their contract. Accepting a deployment authority plan updates desired authority to include the resource boundary; authority reconciliation then provisions or updates the materialized resource and binding.
+# Runtime resources
 
-## KV buckets
+Participants declare State, KV, Store, Job, and Consumer resources in native
+IDL. Each declaration has a local name, title, description, and optional status.
+Trellis approves and provisions them before exposing generated handles.
 
-NATS KV buckets provide persistent state:
+Capability approval is a human/policy decision; the server still derives exact
+runtime grants. Resource approval commits concrete physical semantics. Desired
+capacity fields are planning hints only: they do not grant approval, gate
+readiness, configure the provider, or become reported actual limits.
 
-```ts
-resources: {
-  kv: {
-    items: {
-      purpose: "Store item records",
-      schema: ref.schema("Item"),
-      history: 1,
-      ttlMs: 0,
-    },
-  },
-},
-```
+## Lifecycle and ownership
 
-The key (`items`) is a logical alias. During authority reconciliation, Trellis provisions the resource before making the accepted boundary runtime-available and persists the deployment binding. Physical bucket names remain scoped to the deployment/profile/lineage rather than to a single digest, so compatible rollouts can reuse the same underlying resource. `TrellisService.connect(...)` consumes those persisted bindings, resolves required bindings plus any optional bindings that were successfully provisioned, and exposes them as `service.kv.items`, which is typed and ready to use directly without an extra open step.
+Each resource is identified by owner, participant, kind, and local name. Service
+resources belong to the deployment; device resources belong to the device;
+app/agent State belongs to the user and qualified participant.
 
-Resolved binding payloads are Trellis runtime internals. Service authors should
-not call `Trellis.Bindings.Get`, construct `TrellisService` or resource handles,
-or pass binding/resource data into `Trellis` constructors; connect with
-`TrellisService.connect(...)` and use the returned resource handles.
+Removing a declaration performs Detach: it removes runtime authority without
+deleting the allocation or its data. A compatible, newly approved re-add of the
+same identity reattaches it. Rename or kind change creates a new identity.
 
-## Store resources
+An existing provider resource at Trellis's deterministic name must carry the
+ownership marker for that catalog resource. Trellis rejects a foreign resource
+instead of adopting, purging, or destroying it. Explicit administrator
+`trellis resources destroy` accepts only a detached catalog resource and deletes
+its allocation only after ownership is proven. Because State shares one
+Trellis-owned bucket, State destruction purges only that resource's owned key.
 
-Service-owned stores hold larger opaque blobs such as uploaded files, generated exports, or intermediate workflow artifacts.
+## State
 
-```ts
-resources: {
-  store: {
-    uploads: {
-      purpose: "Temporary uploaded files awaiting processing",
-      ttlMs: 86_400_000,
-      maxTotalBytes: 10 * 1024 * 1024 * 1024,
-    },
-  },
-},
-```
+State is one typed value with `get`, `create`, `set`, `replace`, and `delete`.
+It has no application key or TTL. Revisions are opaque CAS tokens. An available
+but unwritten State resource returns no value; that differs from an unavailable
+optional resource handle.
 
-Like KV, the key (`uploads`) is a logical alias and Trellis assigns the physical store identity during authority reconciliation after the desired authority change is accepted. The intended service runtime shape mirrors KV closely: `service.store.uploads.open()` resolves a higher-level store object from the persisted binding, and its failable methods return `Result` values. Store bindings expose effective installed runtime limits; omitting `maxTotalBytes` means no finite total-size request and reconciles the object store back to the runtime's unlimited/default setting. v1 does not advertise per-object limits until the runtime write path enforces them.
+State values carry a positive representation version. Generated SDKs may run a
+declared direct historical-to-current migration in memory while preserving the
+original storage revision/time. Reads never write migrated values back.
 
-These examples use the default `required: true`. Optional KV and store resources may not appear in runtime bindings if provisioning is unavailable or fails.
+## KV
 
-## Event consumer bindings
+KV is typed keyed storage with explicit revisions, CAS, bounded history, and
+watches including tombstones. Values use the Trellis envelope and generated
+codec. Approved hard commitments include history and TTL. Approved retention
+expansions reconcile in place; destructive reductions fail rather than mutate
+retained data.
 
-Durable service event processing is also binding-backed, but it is declared with top-level `eventConsumers` rather than under `resources`. Each group references events already subscribed through `uses.events.subscribe`. Authority acceptance mutates desired state; reconciliation provisions the physical JetStream consumer, persists the binding, and grants the service token only the exact consumer info, pull-next, and ack subjects for that binding.
+## Store
 
-Use `eventConsumers` when a service needs replay, redelivery, or an independent cursor. Use an ephemeral event listener for live-only reactions that do not need a durable cursor.
+Store holds opaque objects and metadata. It preserves streaming, checksum,
+cancellation, TTL, and provider-enforced capacity behavior. Store has no schema
+or representation migration. Listing uses finite cursor pages by object key.
 
-## Public app state
+## Trellis-owned streams
 
-Not all state belongs in service-owned resources. Trellis also ships a public `trellis.state@v1` contract for semi-durable app memory that should be available across app instances, CLIs, and devices.
+Runtime startup creates a missing Trellis-owned stream or accepts an exact
+existing configuration. It may reconcile only safe subject or retention-limit
+expansions. Startup fails for incompatible identity, storage, retention, discard,
+source, or limit settings and never applies a retention-reducing change.
 
-- apps and devices call `State.*` over authenticated RPCs
-- namespaces are derived from the authenticated user or device, contract id lineage, and named store
-- values are JSON and keys are opaque strings
-- entries carry state-version provenance so apps and devices can migrate older stored values client-side
-- services should still use `resources.kv` directly for private service state or projections
+## Consumers and jobs
 
-State ownership is derived by Trellis; normal callers do not pass a public scope, OAuth scope, or capability to pick a state partition.
-
-Use `State` for things like saved filters, drafts, UI preferences, and app memory that should follow the same user or device across machines. Use `resources.kv` when the state is owned by a service implementation instead of by an app or device participant.
-
-## Runtime streams
-
-Services do not declare arbitrary stream resources in v1 contracts. Trellis-owned features such as jobs, operations, events, and transfers still use JetStream internally, but those streams are derived from first-class contract surfaces and installed bindings rather than from `resources.streams` entries.
+A Consumer is a durable event cursor with local per-process concurrency, replay,
+retry, and an Events-owned per-Consumer DLQ. Replay targets only that Consumer
+and remains at least once. Jobs are private participant queues with durable
+progress, logs, retries, and dead-job lifecycle. Use durable Operations for
+caller-visible workflows.

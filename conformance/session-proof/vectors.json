@@ -1,0 +1,179 @@
+{
+  "format": "trellis.session-proof-vectors.v1",
+  "identitySeed": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "identityPublicKey": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+  "identityKeyId": "Vkdap1RjR0wChd9dvyvKtz2mUTWIOem3dIGy6rEHcIw",
+  "identityNkey": "UAB2CB576PHBBPQ5ODORRZ2LYCMWPZGWGCN2KDK7DXOIMZASKUY3RLKK",
+  "sessionSeed": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+  "sessionPublicKey": "Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc",
+  "sessionNkey": "UAU2ZOXBIG6MV4FSFYNJJU2NBPDTMHSSNUF74EWIS6KLZEZCSZW5PMRM",
+  "cases": [
+    {
+      "name": "user-auth-request",
+      "purpose": "userAuthRequest",
+      "signerPublicKey": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+      "request": {
+        "requestId": "req_user_01",
+        "issuedAt": 1735689600000,
+        "sessionPublicKey": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+        "sessionNkey": "UAB2CB576PHBBPQ5ODORRZ2LYCMWPZGWGCN2KDK7DXOIMZASKUY3RLKK",
+        "participantId": "example.app",
+        "participantDigest": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "redirectTarget": "https://app.example.test/auth/callback",
+        "opaqueAppContext": null,
+        "preferredProvider": null,
+        "proof": {
+          "format": "trellis.session-proof.v1",
+          "signature": "chLZnE-0ZulS0fQOi-wnpP71lob2g4Iizgb5fZ5F_-cwNWT7JlESQNQMnM47pp3lbUCyptoaqvyE-NyhWLY9DQ"
+        }
+      },
+      "requestDigest": "jvlPlVg6hkKxY2AS3IH2sV0YCkjwP-HTvAkfCdoftTg",
+      "transcriptDigest": "IjO6QSxe2iROFqdUDWfnrV06WXmmbskY8fQtUmkh1WA",
+      "signature": "chLZnE-0ZulS0fQOi-wnpP71lob2g4Iizgb5fZ5F_-cwNWT7JlESQNQMnM47pp3lbUCyptoaqvyE-NyhWLY9DQ"
+    },
+    {
+      "name": "service-bootstrap",
+      "purpose": "serviceBootstrap",
+      "signerPublicKey": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+      "request": {
+        "requestId": "req_service_01",
+        "issuedAt": 1735689600000,
+        "deploymentId": "dep_service_01",
+        "instanceId": "ins_service_01",
+        "provisionedIdentityKeyId": "Vkdap1RjR0wChd9dvyvKtz2mUTWIOem3dIGy6rEHcIw",
+        "newSessionPublicKey": "Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc",
+        "newSessionNkey": "UAU2ZOXBIG6MV4FSFYNJJU2NBPDTMHSSNUF74EWIS6KLZEZCSZW5PMRM",
+        "participantId": "example.service",
+        "participantDigest": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "participantArtifact": null,
+        "referencedApis": null,
+        "proof": {
+          "format": "trellis.session-proof.v1",
+          "signature": "HUCg95PFc2hI9cqSDSwUePwEaCS-JTaJL0j2s-er9iF8U7e_YuReRos-osPm6cYQsMRYksGfiz0UiqNFDuRlDQ"
+        }
+      },
+      "requestDigest": "mQdd78-8ox2MYA-qgDoeTuj7M-bknwp0c6N5nFjW3Ts",
+      "transcriptDigest": "3W4NXUtq6K9PO0r85fPpe63QOTQ5H_wKmTqjd9Z5ISY",
+      "signature": "HUCg95PFc2hI9cqSDSwUePwEaCS-JTaJL0j2s-er9iF8U7e_YuReRos-osPm6cYQsMRYksGfiz0UiqNFDuRlDQ"
+    },
+    {
+      "name": "device-bootstrap",
+      "purpose": "deviceBootstrap",
+      "signerPublicKey": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+      "request": {
+        "requestId": "req_device_01",
+        "issuedAt": 1735689600000,
+        "deploymentId": "dep_device_01",
+        "instanceId": "ins_device_01",
+        "deviceIdentityKeyId": "Vkdap1RjR0wChd9dvyvKtz2mUTWIOem3dIGy6rEHcIw",
+        "newSessionPublicKey": "Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc",
+        "newSessionNkey": "UAU2ZOXBIG6MV4FSFYNJJU2NBPDTMHSSNUF74EWIS6KLZEZCSZW5PMRM",
+        "participantId": "example.device",
+        "participantDigest": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "challengeDigest": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "participantArtifact": null,
+        "referencedApis": null,
+        "proof": {
+          "format": "trellis.session-proof.v1",
+          "signature": "iG2F8BB5JGNTo302T9dECfpKzHZSoq9Gy78JevZgrIc6-UhYXV15Q5EGCnnzbIguzy9nyOuyzQgrZsWlfnZ6DA"
+        }
+      },
+      "requestDigest": "vtguiKud17T5eGISdfopMwPLS9qFoRvJSlr8-bOX2Xk",
+      "transcriptDigest": "2SsGEgpEk2lE_aAcwBPkpQIs24_UeTkRfLsbeI_gLiQ",
+      "signature": "iG2F8BB5JGNTo302T9dECfpKzHZSoq9Gy78JevZgrIc6-UhYXV15Q5EGCnnzbIguzy9nyOuyzQgrZsWlfnZ6DA"
+    },
+    {
+      "name": "authorization-context-refresh",
+      "purpose": "authorizationContextRefresh",
+      "signerPublicKey": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+      "request": {
+        "requestId": "req_context_refresh_01",
+        "issuedAt": 1735689600000,
+        "sessionId": "ses_example_01",
+        "currentContextDigest": null,
+        "expectedParticipantDigest": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "expectedNeedsDigest": null,
+        "knownRootKeyId": "Vkdap1RjR0wChd9dvyvKtz2mUTWIOem3dIGy6rEHcIw",
+        "minimumManifestGeneration": 12,
+        "proof": {
+          "format": "trellis.session-proof.v1",
+          "signature": "lUTuEFCHSEBr50lypvzl6Hw6H52LWQF4It42iuzq8zzM1wtZjBFvS_RiNp2bMyTb1gTXZnAOn2vLCVJrtUXQCw",
+          "futureProofField": {
+            "version": 2
+          }
+        }
+      },
+      "requestDigest": "V1bDlq2NPV2fuau5guVF5GZGTpX57N3RcWeglLhD3vg",
+      "transcriptDigest": "EKTkjD5fWjBS_KiDJhfaGiAfAIyOz3gYguAgFiXDEP4",
+      "signature": "lUTuEFCHSEBr50lypvzl6Hw6H52LWQF4It42iuzq8zzM1wtZjBFvS_RiNp2bMyTb1gTXZnAOn2vLCVJrtUXQCw"
+    }
+  ],
+  "invalidCases": [
+    {
+      "name": "wrong-proof-domain",
+      "base": "service-bootstrap",
+      "mutation": "devicePurpose",
+      "expected": "InvalidSignature"
+    },
+    {
+      "name": "modified-session-key",
+      "base": "service-bootstrap",
+      "mutation": "identityAsNewSession",
+      "expected": "InvalidSignature"
+    },
+    {
+      "name": "modified-participant-digest",
+      "base": "user-auth-request",
+      "mutation": "participantDigest",
+      "expected": "InvalidSignature"
+    },
+    {
+      "name": "modified-deployment",
+      "base": "service-bootstrap",
+      "mutation": "deploymentId",
+      "expected": "InvalidSignature"
+    },
+    {
+      "name": "modified-instance",
+      "base": "service-bootstrap",
+      "mutation": "instanceId",
+      "expected": "InvalidSignature"
+    },
+    {
+      "name": "modified-redirect",
+      "base": "user-auth-request",
+      "mutation": "redirectTarget",
+      "expected": "InvalidSignature"
+    },
+    {
+      "name": "modified-request-id",
+      "base": "service-bootstrap",
+      "mutation": "requestId",
+      "expected": "InvalidSignature"
+    },
+    {
+      "name": "noncanonical-public-key",
+      "base": "user-auth-request",
+      "mutation": "paddedPublicKey",
+      "expected": "InvalidEncoding"
+    },
+    {
+      "name": "invalid-signature",
+      "base": "service-bootstrap",
+      "mutation": "signature",
+      "expected": "InvalidSignature"
+    },
+    {
+      "name": "expired-issued-at",
+      "base": "service-bootstrap",
+      "mutation": "expiredNow",
+      "expected": "ProofIatOutOfRange"
+    },
+    {
+      "name": "future-issued-at",
+      "base": "service-bootstrap",
+      "mutation": "futureNow",
+      "expected": "ProofIatOutOfRange"
+    }
+  ]
+}

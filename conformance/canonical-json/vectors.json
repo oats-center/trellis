@@ -29,5 +29,50 @@
     },
     "canonical": "{\"a\":{\"c\":[2,1],\"d\":\"x\"},\"m\":true,\"z\":[3,{\"a\":null,\"b\":false}]}",
     "digest": "jQrlRPuAKU3T3oolG4lvsPk7_FUB7kM9jAU9dyqzXYU"
+  },
+  {
+    "name": "ecmascript-number-rendering",
+    "input": {
+      "numbers": [333333333.33333329, 1e30, 4.50, 2e-3, 1e-27]
+    },
+    "canonical": "{\"numbers\":[333333333.3333333,1e+30,4.5,0.002,1e-27]}",
+    "digest": "fIktNFKtha1lhXpD6Nysk7eUddIzT8PoW6xcWZFCwVg"
+  },
+  {
+    "name": "negative-zero",
+    "input": -0.0,
+    "canonical": "0",
+    "digest": "X-zrZv_IbzjZUnhsbWlsecLbwjndTpG0ZynXOif7V-k"
+  },
+  {
+    "name": "string-escaping",
+    "input": "\b\t\n\f\r\u000f\"\\/",
+    "canonical": "\"\\b\\t\\n\\f\\r\\u000f\\\"\\\\/\"",
+    "digest": "ixDUgAn9hAzKvY5pAVTkDzN1Q7UhUrTo-_djyFZA_sE"
+  },
+  {
+    "name": "non-ascii-string",
+    "input": "\u20ac \u00e9 \ud83d\ude00",
+    "canonical": "\"\u20ac \u00e9 \ud83d\ude00\"",
+    "digest": "oQ0brXq_rJ2cgKAonc-emi3eVkthigZjYochcgM04IQ"
+  },
+  {
+    "name": "utf-16-property-ordering",
+    "input": {
+      "\u20ac": "euro",
+      "\r": "carriage-return",
+      "\ufb33": "hebrew-letter",
+      "1": "one",
+      "\ud83d\ude00": "emoji",
+      "\u0080": "control",
+      "\u00f6": "o-diaeresis"
+    },
+    "canonical": "{\"\\r\":\"carriage-return\",\"1\":\"one\",\"\u0080\":\"control\",\"\u00f6\":\"o-diaeresis\",\"\u20ac\":\"euro\",\"\ud83d\ude00\":\"emoji\",\"\ufb33\":\"hebrew-letter\"}",
+    "digest": "aXKbyUAZXNvS_lBHtCfMRnPzJii4mNDvr8jukuN3q_g"
+  },
+  {
+    "name": "unsupported-non-finite-number",
+    "inputJson": "1e400",
+    "error": true
   }
 ]

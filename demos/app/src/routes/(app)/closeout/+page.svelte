@@ -46,7 +46,7 @@
   let mounted = false;
   let assignmentRequestId = 0;
   let operationRunId = 0;
-  const listPage = { limit: 50, offset: 0 };
+  const listPage = { page: { limit: 50 } };
 
   let queryInspectionId = $derived(page.url.searchParams.get("inspectionId"));
   let selectedAssignment = $derived(assignments.find((assignment) => assignment.inspectionId === selectedInspectionId));
@@ -81,12 +81,12 @@
     error = null;
 
     try {
-      const response = await trellis.request("Assignments.List", listPage).orThrow();
+      const response = await trellis.assignmentsList(listPage).orThrow();
       if (!mounted || requestId !== assignmentRequestId) return;
-      assignments = response.entries;
-      selectedInspectionId = response.entries.some((assignment) => assignment.inspectionId === preferredInspectionId)
+      assignments = response.items;
+      selectedInspectionId = response.items.some((assignment) => assignment.inspectionId === preferredInspectionId)
         ? preferredInspectionId ?? ""
-        : response.entries[0]?.inspectionId ?? "";
+        : response.items[0]?.inspectionId ?? "";
     } catch (cause) {
       if (!mounted || requestId !== assignmentRequestId) return;
       error = cause instanceof Error ? cause.message : String(cause);
@@ -137,7 +137,7 @@
 
     try {
       const reportInput: ReportsGenerateInputWithComment = { inspectionId: selectedInspectionId, reportComment: comment };
-      const ref = await trellis.operation("Reports.Generate").input(reportInput).start().orThrow();
+      const ref = await trellis.reportsGenerate(reportInput).start().orThrow();
       if (!mounted || runId !== operationRunId) return;
       currentRef = ref;
       acceptedId = ref.id;

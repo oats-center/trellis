@@ -1,6 +1,17 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "types": ["deno.ns"]
+    "types": ["deno.ns"],
+    "baseUrl": ".",
+    "paths": {
+      "$lib": ["src/lib"],
+      "$lib/*": ["src/lib/*"],
+      "@qlever-llc/result": ["../../ts/packages/result/mod.ts"],
+      "@qlever-llc/trellis": ["../../ts/packages/trellis/index.ts"],
+      "@qlever-llc/trellis/*": ["../../ts/packages/trellis/*"],
+      "@qlever-llc/trellis-svelte": [
+        "../../ts/packages/trellis-svelte/src/index.ts"
+      ]
+    }
   }
 }

@@ -1,0 +1,939 @@
+import { auth } from auth;
+import { core } from core;
+import { state } from state;
+import { health } from health;
+import { jobs } from jobs;
+import { events } from events;
+import {
+  AuthBrowserFlow,
+  AuthConnectionPresence,
+  AuthOAuthState,
+  AuthApiSurfaceTarget,
+  AuthApiSurfaceTargetKind,
+  AuthApiSurfaceTargetSurface,
+  AuthPackageEvidence,
+  AuthPackageSourceEvidence,
+  AuthCapabilitiesListRequest,
+  AuthCapabilitiesListResponse,
+  AuthCapabilitiesListResponseentriesItem,
+  AuthCapabilitiesListResponseentriesItemallowsItem,
+  AuthCapabilitiesListResponseentriesItemallowsItemAction,
+  AuthCapabilitiesListResponseentriesItemallowsItemtarget1,
+  AuthCapabilitiesListResponseentriesItemallowsItemtarget1Kind,
+  AuthCapabilitiesListResponseentriesItemallowsItemtarget1Surface,
+  AuthCapabilitiesListResponseentriesItemallowsItemtarget2,
+  AuthCapabilitiesListResponseentriesItemallowsItemtarget2Kind,
+  AuthCapabilitiesListResponseentriesItemallowsItemtarget3,
+  AuthCapabilitiesListResponseentriesItemallowsItemtarget3Kind,
+  AuthCapabilitiesListResponseentriesItemallowsItemtarget3Resource,
+  AuthCapabilityGroupsDeleteRequest,
+  AuthCapabilityGroupsDeleteResponse,
+  AuthCapabilityGroupsGetRequest,
+  AuthCapabilityGroupsGetResponse,
+  AuthCapabilityGroupsGetResponsegroup,
+  AuthCapabilityGroupsListRequest,
+  AuthCapabilityGroupsListResponse,
+  AuthCapabilityGroupsListResponseentriesItem,
+  AuthCapabilityGroupsPutRequest,
+  AuthCapabilityGroupsPutResponse,
+  AuthCapabilityGroupsPutResponsegroup,
+  AuthConnectionsClosedEvent,
+  AuthConnectionsKickRequest,
+  AuthConnectionsKickResponse,
+  AuthConnectionsKickedEvent,
+  AuthConnectionsListRequest,
+  AuthConnectionsListResponse,
+  AuthConnectionsListResponseentriesItem,
+  AuthConnectionsOpenedEvent,
+  AuthDeploymentsApplyRequest,
+  AuthDeploymentsApplyResponse,
+  AuthDeploymentsCreateRequest,
+  AuthDeploymentsCreateRequestKind,
+  AuthDeploymentsCreateResponse,
+  AuthDeploymentsCreateResponsedeployment,
+  AuthDeploymentsCreateResponsedeploymentKind,
+  AuthDeploymentsCreateResponsedeploymentState,
+  AuthDeploymentsDisableRequest,
+  AuthDeploymentsDisableResponse,
+  AuthDeploymentsDisableResponsedeployment,
+  AuthDeploymentsDisableResponsedeploymentKind,
+  AuthDeploymentsDisableResponsedeploymentState,
+  AuthDeploymentsDisableResponsemutation,
+  AuthDeploymentsEnableRequest,
+  AuthDeploymentsEnableResponse,
+  AuthDeploymentsEnableResponsedeployment,
+  AuthDeploymentsEnableResponsedeploymentKind,
+  AuthDeploymentsEnableResponsedeploymentState,
+  AuthDeploymentsEnableResponsemutation,
+  AuthDeploymentsGetRequest,
+  AuthDeploymentsGetResponse,
+  AuthDeploymentsListRequest,
+  AuthDeploymentsListRequestKind,
+  AuthDeploymentsListRequestState,
+  AuthDeploymentsListResponse,
+  AuthDeploymentsListResponseentriesItem,
+  AuthDeploymentsListResponseentriesItemKind,
+  AuthDeploymentsListResponseentriesItemState,
+  AuthDeploymentsRemoveRequest,
+  AuthDeploymentsRemoveResponse,
+  AuthDeploymentsRemoveResponsedeployment,
+  AuthDeploymentsRemoveResponsedeploymentKind,
+  AuthDeploymentsRemoveResponsedeploymentState,
+  AuthDeploymentsRemoveResponsemutation,
+  AuthDeviceUserAuthoritiesApprovedEvent,
+  AuthDeviceUserAuthoritiesListRequest,
+  AuthDeviceUserAuthoritiesListResponse,
+  AuthDeviceUserAuthoritiesListResponseentriesItem,
+  AuthDeviceUserAuthoritiesListResponseentriesItemdevice,
+  AuthDeviceUserAuthoritiesListResponseentriesItemdeviceAdministrativeApproval,
+  AuthDeviceUserAuthoritiesListResponseentriesItemdeviceDelegationState,
+  AuthDeviceUserAuthoritiesListResponseentriesItemdeviceState,
+  AuthDeviceUserAuthoritiesRequestedEvent,
+  AuthDeviceUserAuthoritiesResolveProgress,
+  AuthDeviceUserAuthoritiesResolveProgressState,
+  AuthDeviceUserAuthoritiesResolveRequest,
+  AuthDeviceUserAuthoritiesResolveResponse,
+  AuthDeviceUserAuthoritiesResolveResponsedevice,
+  AuthDeviceUserAuthoritiesResolveResponsedeviceAdministrativeApproval,
+  AuthDeviceUserAuthoritiesResolveResponsedeviceDelegationState,
+  AuthDeviceUserAuthoritiesResolveResponsedeviceState,
+  AuthDeviceUserAuthoritiesResolveResponsereview,
+  AuthDeviceUserAuthoritiesResolveResponsereviewState,
+  AuthDeviceUserAuthoritiesResolvedEvent,
+  AuthDeviceUserAuthoritiesReviewRequestedEvent,
+  AuthDeviceUserAuthoritiesReviewsDecideRequest,
+  AuthDeviceUserAuthoritiesReviewsDecideRequestDecision,
+  AuthDeviceUserAuthoritiesReviewsDecideResponse,
+  AuthDeviceUserAuthoritiesReviewsDecideResponsereview,
+  AuthDeviceUserAuthoritiesReviewsDecideResponsereviewState,
+  AuthDeviceUserAuthoritiesReviewsListRequest,
+  AuthDeviceUserAuthoritiesReviewsListRequestState,
+  AuthDeviceUserAuthoritiesReviewsListResponse,
+  AuthDeviceUserAuthoritiesReviewsListResponseentriesItem,
+  AuthDeviceUserAuthoritiesReviewsListResponseentriesItemState,
+  AuthDeviceUserAuthoritiesRevokeRequest,
+  AuthDeviceUserAuthoritiesRevokeResponse,
+  AuthDeviceUserAuthoritiesRevokeResponsedevice,
+  AuthDeviceUserAuthoritiesRevokeResponsedeviceAdministrativeApproval,
+  AuthDeviceUserAuthoritiesRevokeResponsedeviceDelegationState,
+  AuthDeviceUserAuthoritiesRevokeResponsedeviceState,
+  AuthDevicesDisableRequest,
+  AuthDevicesDisableResponse,
+  AuthDevicesDisableResponsedevice,
+  AuthDevicesDisableResponsedeviceAdministrativeApproval,
+  AuthDevicesDisableResponsedeviceDelegationState,
+  AuthDevicesDisableResponsedeviceState,
+  AuthDevicesDisableResponsemutation,
+  AuthDevicesEnableRequest,
+  AuthDevicesEnableResponse,
+  AuthDevicesEnableResponsedevice,
+  AuthDevicesEnableResponsedeviceAdministrativeApproval,
+  AuthDevicesEnableResponsedeviceDelegationState,
+  AuthDevicesEnableResponsedeviceState,
+  AuthDevicesEnableResponsemutation,
+  AuthDevicesListRequest,
+  AuthDevicesListRequestState,
+  AuthDevicesListResponse,
+  AuthDevicesListResponseentriesItem,
+  AuthDevicesListResponseentriesItemAdministrativeApproval,
+  AuthDevicesListResponseentriesItemDelegationState,
+  AuthDevicesListResponseentriesItemState,
+  AuthDevicesProvisionRequest,
+  AuthDevicesProvisionResponse,
+  AuthDevicesProvisionResponsedevice,
+  AuthDevicesProvisionResponsedeviceAdministrativeApproval,
+  AuthDevicesProvisionResponsedeviceDelegationState,
+  AuthDevicesProvisionResponsedeviceState,
+  AuthDevicesRemoveRequest,
+  AuthDevicesRemoveResponse,
+  AuthDevicesRemoveResponsedevice,
+  AuthDevicesRemoveResponsedeviceAdministrativeApproval,
+  AuthDevicesRemoveResponsedeviceDelegationState,
+  AuthDevicesRemoveResponsedeviceState,
+  AuthDevicesRemoveResponsemutation,
+  AuthErrorDetails,
+  AuthGrantBinding,
+  AuthGrantBindingOwnerKind,
+  AuthGrantBindingState,
+  AuthGrantSet,
+  AuthGrantsChangedEvent,
+  AuthGrantsGetRequest,
+  AuthGrantsGetRequestOwnerKind,
+  AuthGrantsGetResponse,
+  AuthGrantsListRequest,
+  AuthGrantsListRequestOwnerKind,
+  AuthGrantsListRequestState,
+  AuthGrantsListResponse,
+  AuthGrantsMutationResponse,
+  AuthGrantsRevokeRequest,
+  AuthGrantsRevokeRequestOwnerKind,
+  AuthGrantsSetRequest,
+  AuthGrantsSetRequestOwnerKind,
+  AuthIssuersRevokeRequest,
+  AuthIssuersRevokeResponse,
+  AuthIssuersRevokeResponseState,
+  AuthIssuersRevokedEvent,
+  AuthLoginSession,
+  AuthLoginSessionParticipantKind,
+  AuthLoginSessionState,
+  AuthOperationSignalTarget,
+  AuthOperationSignalTargetKind,
+  AuthOptionalBundle,
+  AuthParticipantResourceTarget,
+  AuthParticipantResourceTargetKind,
+  AuthParticipantResourceTargetResource,
+  AuthParticipantsGetRequest,
+  AuthParticipantsGetResponse,
+  AuthParticipantsInstallRequest,
+  AuthParticipantsInstallResponse,
+  AuthPermissionAtom,
+  AuthPermissionAtomAction,
+  AuthPortalsGetRequest,
+  AuthPortalsGetResponse,
+  AuthPortalsGetResponseportal,
+  AuthPortalsGetResponseportalloginSettings,
+  AuthPortalsGetResponseroutesItem,
+  AuthPortalsGrantOverridesListRequest,
+  AuthPortalsGrantOverridesListResponse,
+  AuthPortalsGrantOverridesListResponseentriesItem,
+  AuthPortalsGrantOverridesListResponseentriesItemroleMappingsItem,
+  AuthPortalsGrantOverridesPutRequest,
+  AuthPortalsGrantOverridesPutRequestroleMappingsItem,
+  AuthPortalsGrantOverridesPutResponse,
+  AuthPortalsGrantOverridesPutResponsepolicy,
+  AuthPortalsGrantOverridesPutResponsepolicyroleMappingsItem,
+  AuthPortalsGrantOverridesRemoveRequest,
+  AuthPortalsGrantOverridesRemoveResponse,
+  AuthPortalsGrantOverridesRemoveResponseremoved,
+  AuthPortalsGrantOverridesRemoveResponseremovedroleMappingsItem,
+  AuthPortalsListRequest,
+  AuthPortalsListResponse,
+  AuthPortalsListResponseentriesItem,
+  AuthPortalsListResponseentriesItemloginSettings,
+  AuthPortalsLoginSettingsGetRequest,
+  AuthPortalsLoginSettingsGetResponse,
+  AuthPortalsLoginSettingsGetResponsesettings,
+  AuthPortalsLoginSettingsUpdateRequest,
+  AuthPortalsLoginSettingsUpdateRequestsettings,
+  AuthPortalsLoginSettingsUpdateResponse,
+  AuthPortalsLoginSettingsUpdateResponsesettings,
+  AuthPortalsPutRequest,
+  AuthPortalsPutRequestloginSettings,
+  AuthPortalsPutResponse,
+  AuthPortalsPutResponseportal,
+  AuthPortalsPutResponseportalloginSettings,
+  AuthPortalsRemoveRequest,
+  AuthPortalsRemoveResponse,
+  AuthPortalsRoutesPutRequest,
+  AuthPortalsRoutesPutResponse,
+  AuthPortalsRoutesPutResponseroute,
+  AuthPortalsRoutesRemoveRequest,
+  AuthPortalsRoutesRemoveResponse,
+  AuthResourceBinding,
+  AuthResourceBindingState,
+  AuthResourceEventConsumerProvider,
+  AuthResourceEventConsumerProviderKind,
+  AuthResourceJobQueueProvider,
+  AuthResourceJobQueueProviderKind,
+  AuthResourceKvProvider,
+  AuthResourceKvProviderKind,
+  AuthResourceStateProvider,
+  AuthResourceStateProviderKind,
+  AuthResourceStoreProvider,
+  AuthResourceStoreProviderKind,
+  AuthRuntimeConnection,
+  AuthRuntimeConnectionParticipantKind,
+  AuthRuntimeConnectionPrincipalKind,
+  AuthServiceInstancesDisableRequest,
+  AuthServiceInstancesDisableResponse,
+  AuthServiceInstancesDisableResponseinstance,
+  AuthServiceInstancesDisableResponseinstanceState,
+  AuthServiceInstancesDisableResponsemutation,
+  AuthServiceInstancesEnableRequest,
+  AuthServiceInstancesEnableResponse,
+  AuthServiceInstancesEnableResponseinstance,
+  AuthServiceInstancesEnableResponseinstanceState,
+  AuthServiceInstancesEnableResponsemutation,
+  AuthServiceInstancesListRequest,
+  AuthServiceInstancesListRequestState,
+  AuthServiceInstancesListResponse,
+  AuthServiceInstancesListResponseentriesItem,
+  AuthServiceInstancesListResponseentriesItemState,
+  AuthServiceInstancesProvisionRequest,
+  AuthServiceInstancesProvisionResponse,
+  AuthServiceInstancesProvisionResponseinstance,
+  AuthServiceInstancesProvisionResponseinstanceState,
+  AuthServiceInstancesRemoveRequest,
+  AuthServiceInstancesRemoveResponse,
+  AuthServiceInstancesRemoveResponseinstance,
+  AuthServiceInstancesRemoveResponseinstanceState,
+  AuthServiceInstancesRemoveResponsemutation,
+  AuthSessionsListRequest,
+  AuthSessionsListRequestState,
+  AuthSessionsListResponse,
+  AuthSessionsLogoutRequest,
+  AuthSessionsLogoutResponse,
+  AuthSessionsMeRequest,
+  AuthSessionsMeResponse,
+  AuthSessionsRevokeRequest,
+  AuthSessionsRevokeResponse,
+  AuthSessionsRevokedEvent,
+  AuthUserIdentitiesListRequest,
+  AuthUserIdentitiesListResponse,
+  AuthUserIdentitiesListResponseentriesItem,
+  AuthUserIdentitiesUnlinkRequest,
+  AuthUserIdentitiesUnlinkResponse,
+  AuthUsersCreateRequest,
+  AuthUsersCreateResponse,
+  AuthUsersCreateResponseuser,
+  AuthUsersCreateResponseuserState,
+  AuthUsersGetRequest,
+  AuthUsersGetResponse,
+  AuthUsersGetResponseuser,
+  AuthUsersGetResponseuserState,
+  AuthUsersIdentityLinkCreateRequest,
+  AuthUsersIdentityLinkCreateResponse,
+  AuthUsersIdentityLinkCreateResponseflow,
+  AuthUsersIdentityLinkCreateResponseflowKind,
+  AuthUsersListRequest,
+  AuthUsersListRequestState,
+  AuthUsersListResponse,
+  AuthUsersListResponseentriesItem,
+  AuthUsersListResponseentriesItemState,
+  AuthUsersPasswordChangeRequest,
+  AuthUsersPasswordChangeResponse,
+  AuthUsersPasswordResetCreateRequest,
+  AuthUsersPasswordResetCreateResponse,
+  AuthUsersPasswordResetCreateResponseflow,
+  AuthUsersPasswordResetCreateResponseflowKind,
+  AuthUsersResolveRequest,
+  AuthUsersResolveRequestselector1,
+  AuthUsersResolveRequestselector1Kind,
+  AuthUsersResolveRequestselector2,
+  AuthUsersResolveRequestselector2Kind,
+  AuthUsersResolveResponse,
+  AuthUsersResolveResponseuser1,
+  AuthUsersResolveResponseuser1State,
+  AuthUsersUpdateRequest,
+  AuthUsersUpdateRequestState,
+  AuthUsersUpdateResponse,
+  AuthUsersUpdateResponseuser,
+  AuthUsersUpdateResponseuserState,
+  Empty,
+  EventConsumerStatusRow,
+  EventConsumerStatusRowManagedBy,
+  EventConsumerStatusRowStatus,
+  EventsConsumersInspectRequest,
+  EventsConsumersInspectResponse,
+  EventsConsumersQueryRequest,
+  EventsConsumersQueryRequestStatus,
+  EventsConsumersQueryResponse,
+  EventsInspectRequest,
+  EventsInspectResponse,
+  EventsMetricsRequest,
+  EventsMetricsResponse,
+  EventsMetricsResponsebucketsItem,
+  EventsMetricsResponsebucketsItembyResolution,
+  EventsMetricsResponsebucketsItembyVerificationStatus,
+  EventsMetricsResponsesummary,
+  EventsMetricsResponsesummarybyResolution,
+  EventsMetricsResponsesummarybyVerificationStatus,
+  EventsMetricsResponsesummaryeventTypesItem,
+  EventsQueryRequest,
+  EventsQueryRequestResolution,
+  EventsQueryRequestVerificationStatus,
+  EventsQueryRequestexcludeEventTypesItem,
+  EventsQueryRequestincludeEventTypesItem,
+  EventsQueryRequestsort,
+  EventsQueryResponse,
+  EventsRow,
+  EventsRowPublisherKind,
+  EventsRowResolution,
+  EventsRowVerificationStatus,
+  EventsWatchFrame,
+  EventsWatchRequest,
+  EventsNotFoundErrorData,
+  EventsNotFoundErrorDataType,
+  EventsNotFoundErrorDatacontext,
+  HealthHeartbeatSample,
+  HealthHeartbeatSampleReportedStatus,
+  HealthHeartbeatSamplechecksItem,
+  HealthHeartbeatSamplechecksItemStatus,
+  HealthHeartbeatSamplechecksIteminfo,
+  HealthHeartbeatSampleparticipant,
+  HealthHeartbeatSampleparticipantKind,
+  HealthHeartbeatSampleparticipantRuntime,
+  HealthHeartbeatSampleparticipantinfo,
+  HealthHeartbeatSamplesample,
+  HealthInspectRequest,
+  HealthInspectRequestParticipantKind,
+  HealthInspectResponse,
+  HealthInspectResponsehistoryItem,
+  HealthInspectResponsehistoryItemEffectiveStatus,
+  HealthInspectResponsehistoryItemReportedStatus,
+  HealthInspectResponsehistoryItemchecksItem,
+  HealthInspectResponsehistoryItemchecksItemStatus,
+  HealthInspectResponseinstancesItem,
+  HealthInspectResponseinstancesItemEffectiveStatus,
+  HealthInspectResponseinstancesItemReportedStatus,
+  HealthInspectResponseinstancesItemlatestSample,
+  HealthInspectResponseinstancesItemlatestSampleReportedStatus,
+  HealthInspectResponseinstancesItemlatestSamplechecksItem,
+  HealthInspectResponseinstancesItemlatestSamplechecksItemStatus,
+  HealthInspectResponseinstancesItemlatestSamplechecksIteminfo,
+  HealthInspectResponseinstancesItemlatestSampleparticipant,
+  HealthInspectResponseinstancesItemlatestSampleparticipantKind,
+  HealthInspectResponseinstancesItemlatestSampleparticipantRuntime,
+  HealthInspectResponseinstancesItemlatestSampleparticipantinfo,
+  HealthInspectResponseinstancesItemlatestSamplesample,
+  HealthInspectResponseparticipant,
+  HealthInspectResponseparticipantEffectiveStatus,
+  HealthInspectResponseparticipantParticipantKind,
+  HealthInspectResponseprojection,
+  HealthMetricsRequest,
+  HealthMetricsRequestParticipantKind,
+  HealthMetricsResponse,
+  HealthMetricsResponseprojection,
+  HealthMetricsResponseseriesItem,
+  HealthMetricsResponseseriesItemParticipantKind,
+  HealthMetricsResponseseriesItembucketsItem,
+  HealthMetricsResponseseriesItembucketsItemchecksItem,
+  HealthMetricsResponsesummary,
+  HealthNotFoundErrorData,
+  HealthNotFoundErrorDataType,
+  HealthNotFoundErrorDatacontext,
+  HealthProjectionDiagnostics,
+  HealthQueryRequest,
+  HealthQueryRequestParticipantKinds,
+  HealthQueryRequestStatuses,
+  HealthQueryResponse,
+  HealthQueryResponseentriesItem,
+  HealthQueryResponseentriesItemEffectiveStatus,
+  HealthQueryResponseentriesItemParticipantKind,
+  HealthQueryResponseprojection,
+  HealthStatusChangedEvent,
+  HealthStatusChangedEventPreviousStatus,
+  HealthStatusChangedEventReportedStatus,
+  HealthStatusChangedEventStatus,
+  HealthStatusChangedEventheader,
+  HealthStatusChangedEventparticipant,
+  HealthStatusChangedEventparticipantKind,
+  HealthWatchFrame,
+  HealthWatchFrameValue1,
+  HealthWatchFrameValue1Type,
+  HealthWatchFrameValue2,
+  HealthWatchFrameValue2Type,
+  HealthWatchFrameValue2changesItem,
+  HealthWatchFrameValue2changesItemParticipantKind,
+  HealthWatchRequest,
+  HealthWatchRequestParticipantKinds,
+  InstalledParticipantDetail,
+  InstalledParticipantDetailParticipantKind,
+  InstalledParticipantSummary,
+  InstalledParticipantSummaryParticipantKind,
+  Job,
+  JobConcurrencyMetadata,
+  JobContext,
+  JobErrorDetail,
+  JobErrorDetailcausesItem,
+  JobErrorDetailworker,
+  JobLineage,
+  JobLogEntry,
+  JobLogEntryLevel,
+  JobProgress,
+  JobQueuePolicyMetadata,
+  JobState,
+  JobTimelineEvent,
+  JobTimelineEventPreviousState,
+  JobTimelineEventState,
+  JobTimelineEventerrorDetail,
+  JobTimelineEventerrorDetailcausesItem,
+  JobTimelineEventerrorDetailworker,
+  JobTimelineEventlogsItem,
+  JobTimelineEventlogsItemLevel,
+  JobTimelineEventprogress,
+  JobTimelineEventwaitEdge,
+  JobTimelineEventwaitEdgetarget,
+  JobTimelineEventwaitEdgetargetKind,
+  JobTrigger,
+  JobTriggerKind,
+  JobWaitEdge,
+  JobWaitEdgetarget,
+  JobWaitEdgetargetKind,
+  JobWaitTarget,
+  JobWaitTargetKind,
+  Jobconcurrency,
+  Jobcontext,
+  JoberrorDetail,
+  JoberrorDetailcausesItem,
+  JoberrorDetailworker,
+  Joblineage,
+  JoblogsItem,
+  JoblogsItemLevel,
+  Jobprogress,
+  JobqueuePolicy,
+  JobsCancelRequest,
+  JobsCancelResponse,
+  JobsCancelResponsejob,
+  JobsCancelResponsejobState,
+  JobsCancelResponsejobconcurrency,
+  JobsCancelResponsejobcontext,
+  JobsCancelResponsejoberrorDetail,
+  JobsCancelResponsejoberrorDetailcausesItem,
+  JobsCancelResponsejoberrorDetailworker,
+  JobsCancelResponsejoblineage,
+  JobsCancelResponsejoblogsItem,
+  JobsCancelResponsejoblogsItemLevel,
+  JobsCancelResponsejobprogress,
+  JobsCancelResponsejobqueuePolicy,
+  JobsCancelResponsejobtrigger,
+  JobsCancelResponsejobtriggerKind,
+  JobsCancelResponsejobwaitingOnItem,
+  JobsCancelResponsejobwaitingOnItemtarget,
+  JobsCancelResponsejobwaitingOnItemtargetKind,
+  JobsDismissDLQRequest,
+  JobsDismissDLQResponse,
+  JobsDismissDLQResponsejob,
+  JobsDismissDLQResponsejobState,
+  JobsDismissDLQResponsejobconcurrency,
+  JobsDismissDLQResponsejobcontext,
+  JobsDismissDLQResponsejoberrorDetail,
+  JobsDismissDLQResponsejoberrorDetailcausesItem,
+  JobsDismissDLQResponsejoberrorDetailworker,
+  JobsDismissDLQResponsejoblineage,
+  JobsDismissDLQResponsejoblogsItem,
+  JobsDismissDLQResponsejoblogsItemLevel,
+  JobsDismissDLQResponsejobprogress,
+  JobsDismissDLQResponsejobqueuePolicy,
+  JobsDismissDLQResponsejobtrigger,
+  JobsDismissDLQResponsejobtriggerKind,
+  JobsDismissDLQResponsejobwaitingOnItem,
+  JobsDismissDLQResponsejobwaitingOnItemtarget,
+  JobsDismissDLQResponsejobwaitingOnItemtargetKind,
+  JobsGetKeyRequest,
+  JobsGetKeyResponse,
+  JobsGetKeyResponseactiveItem,
+  JobsGetKeyResponsequeuedItem,
+  JobsInspectRequest,
+  JobsInspectResponse,
+  JobsInspectResponseattemptsItem,
+  JobsInspectResponseattemptsItemState,
+  JobsInspectResponseattemptsItemerror,
+  JobsInspectResponseattemptsItemerrorcausesItem,
+  JobsInspectResponseattemptsItemerrorworker,
+  JobsInspectResponseerrorsItem,
+  JobsInspectResponseerrorsItemcausesItem,
+  JobsInspectResponseerrorsItemworker,
+  JobsInspectResponsejob,
+  JobsInspectResponsejobState,
+  JobsInspectResponsejobconcurrency,
+  JobsInspectResponsejobcontext,
+  JobsInspectResponsejoberrorDetail,
+  JobsInspectResponsejoberrorDetailcausesItem,
+  JobsInspectResponsejoberrorDetailworker,
+  JobsInspectResponsejoblineage,
+  JobsInspectResponsejoblogsItem,
+  JobsInspectResponsejoblogsItemLevel,
+  JobsInspectResponsejobprogress,
+  JobsInspectResponsejobqueuePolicy,
+  JobsInspectResponsejobtrigger,
+  JobsInspectResponsejobtriggerKind,
+  JobsInspectResponsejobwaitingOnItem,
+  JobsInspectResponsejobwaitingOnItemtarget,
+  JobsInspectResponsejobwaitingOnItemtargetKind,
+  JobsInspectResponselineage,
+  JobsInspectResponserelatedItem,
+  JobsInspectResponserelatedItemMatchedBy,
+  JobsInspectResponserelatedItemState,
+  JobsInspectResponserelatedItemcontext,
+  JobsInspectResponserelatedItemlineage,
+  JobsInspectResponserelatedItemprogress,
+  JobsInspectResponserelatedItemtrigger,
+  JobsInspectResponserelatedItemtriggerKind,
+  JobsInspectResponserelatedItemwaitingOnItem,
+  JobsInspectResponserelatedItemwaitingOnItemtarget,
+  JobsInspectResponserelatedItemwaitingOnItemtargetKind,
+  JobsInspectResponsetimelineItem,
+  JobsInspectResponsetimelineItemPreviousState,
+  JobsInspectResponsetimelineItemState,
+  JobsInspectResponsetimelineItemerrorDetail,
+  JobsInspectResponsetimelineItemerrorDetailcausesItem,
+  JobsInspectResponsetimelineItemerrorDetailworker,
+  JobsInspectResponsetimelineItemlogsItem,
+  JobsInspectResponsetimelineItemlogsItemLevel,
+  JobsInspectResponsetimelineItemprogress,
+  JobsInspectResponsetimelineItemwaitEdge,
+  JobsInspectResponsetimelineItemwaitEdgetarget,
+  JobsInspectResponsetimelineItemwaitEdgetargetKind,
+  JobsInspectResponsetrigger,
+  JobsInspectResponsetriggerKind,
+  JobsListDLQRequest,
+  JobsListDLQResponse,
+  JobsListDLQResponseentriesItem,
+  JobsListDLQResponseentriesItemState,
+  JobsListDLQResponseentriesItemconcurrency,
+  JobsListDLQResponseentriesItemcontext,
+  JobsListDLQResponseentriesItemerrorDetail,
+  JobsListDLQResponseentriesItemerrorDetailcausesItem,
+  JobsListDLQResponseentriesItemerrorDetailworker,
+  JobsListDLQResponseentriesItemlineage,
+  JobsListDLQResponseentriesItemlogsItem,
+  JobsListDLQResponseentriesItemlogsItemLevel,
+  JobsListDLQResponseentriesItemprogress,
+  JobsListDLQResponseentriesItemqueuePolicy,
+  JobsListDLQResponseentriesItemtrigger,
+  JobsListDLQResponseentriesItemtriggerKind,
+  JobsListDLQResponseentriesItemwaitingOnItem,
+  JobsListDLQResponseentriesItemwaitingOnItemtarget,
+  JobsListDLQResponseentriesItemwaitingOnItemtargetKind,
+  JobsListServicesRequest,
+  JobsListServicesResponse,
+  JobsListServicesResponseentriesItem,
+  JobsListServicesResponseentriesItemworkersItem,
+  JobsMetricsBucket,
+  JobsMetricsBucketGroup,
+  JobsMetricsBucketGroupqueueWait,
+  JobsMetricsBucketGroupruntime,
+  JobsMetricsBucketgroupsItem,
+  JobsMetricsBucketgroupsItemqueueWait,
+  JobsMetricsBucketgroupsItemruntime,
+  JobsMetricsLatency,
+  JobsMetricsRequest,
+  JobsMetricsRequestGroupBy,
+  JobsMetricsRequestState,
+  JobsMetricsResponse,
+  JobsMetricsResponsebucketsItem,
+  JobsMetricsResponsebucketsItemgroupsItem,
+  JobsMetricsResponsebucketsItemgroupsItemqueueWait,
+  JobsMetricsResponsebucketsItemgroupsItemruntime,
+  JobsMetricsResponsesummaryItem,
+  JobsMetricsResponsesummaryItemqueueWait,
+  JobsMetricsResponsesummaryItemruntime,
+  JobsMetricsSummaryGroup,
+  JobsMetricsSummaryGroupqueueWait,
+  JobsMetricsSummaryGroupruntime,
+  JobsNotFoundErrorData,
+  JobsNotFoundErrorDataType,
+  JobsNotFoundErrorDatacontext,
+  JobsQueryRequest,
+  JobsQueryRequestGroupBy,
+  JobsQueryRequestRuntimeBand,
+  JobsQueryRequestState,
+  JobsQueryRequestsort,
+  JobsQueryRequestsortDirection,
+  JobsQueryRequestsortField,
+  JobsQueryResponse,
+  JobsQueryResponseentriesItem,
+  JobsQueryResponseentriesItemState,
+  JobsQueryResponseentriesItemcontext,
+  JobsQueryResponseentriesItemlineage,
+  JobsQueryResponseentriesItemprogress,
+  JobsQueryResponseentriesItemtrigger,
+  JobsQueryResponseentriesItemtriggerKind,
+  JobsQueryResponseentriesItemwaitingOnItem,
+  JobsQueryResponseentriesItemwaitingOnItemtarget,
+  JobsQueryResponseentriesItemwaitingOnItemtargetKind,
+  JobsQueryResponsegroupsItem,
+  JobsQueryResponsegroupsItemState,
+  JobsQueryResponsestats,
+  JobsReplayDLQRequest,
+  JobsReplayDLQResponse,
+  JobsReplayDLQResponsejob,
+  JobsReplayDLQResponsejobState,
+  JobsReplayDLQResponsejobconcurrency,
+  JobsReplayDLQResponsejobcontext,
+  JobsReplayDLQResponsejoberrorDetail,
+  JobsReplayDLQResponsejoberrorDetailcausesItem,
+  JobsReplayDLQResponsejoberrorDetailworker,
+  JobsReplayDLQResponsejoblineage,
+  JobsReplayDLQResponsejoblogsItem,
+  JobsReplayDLQResponsejoblogsItemLevel,
+  JobsReplayDLQResponsejobprogress,
+  JobsReplayDLQResponsejobqueuePolicy,
+  JobsReplayDLQResponsejobtrigger,
+  JobsReplayDLQResponsejobtriggerKind,
+  JobsReplayDLQResponsejobwaitingOnItem,
+  JobsReplayDLQResponsejobwaitingOnItemtarget,
+  JobsReplayDLQResponsejobwaitingOnItemtargetKind,
+  JobsRetryRequest,
+  JobsRetryResponse,
+  JobsRetryResponsejob,
+  JobsRetryResponsejobState,
+  JobsRetryResponsejobconcurrency,
+  JobsRetryResponsejobcontext,
+  JobsRetryResponsejoberrorDetail,
+  JobsRetryResponsejoberrorDetailcausesItem,
+  JobsRetryResponsejoberrorDetailworker,
+  JobsRetryResponsejoblineage,
+  JobsRetryResponsejoblogsItem,
+  JobsRetryResponsejoblogsItemLevel,
+  JobsRetryResponsejobprogress,
+  JobsRetryResponsejobqueuePolicy,
+  JobsRetryResponsejobtrigger,
+  JobsRetryResponsejobtriggerKind,
+  JobsRetryResponsejobwaitingOnItem,
+  JobsRetryResponsejobwaitingOnItemtarget,
+  JobsRetryResponsejobwaitingOnItemtargetKind,
+  JobsWatchFrame,
+  JobsWatchFrameValue1,
+  JobsWatchFrameValue1Kind,
+  JobsWatchFrameValue2,
+  JobsWatchFrameValue2Kind,
+  JobsWatchFrameValue2State,
+  JobsWatchFrameValue3,
+  JobsWatchFrameValue3Kind,
+  JobsWatchFrameValue4,
+  JobsWatchFrameValue4Kind,
+  JobsWatchRequest,
+  JobsWatchRequestquery,
+  JobsWatchRequestqueryGroupBy,
+  JobsWatchRequestqueryRuntimeBand,
+  JobsWatchRequestqueryState,
+  JobsWatchRequestquerysort,
+  JobsWatchRequestquerysortDirection,
+  JobsWatchRequestquerysortField,
+  JobsWorkbenchGroup,
+  JobsWorkbenchGroupState,
+  JobsWorkbenchJobRow,
+  JobsWorkbenchJobRowState,
+  JobsWorkbenchJobRowcontext,
+  JobsWorkbenchJobRowlineage,
+  JobsWorkbenchJobRowprogress,
+  JobsWorkbenchJobRowtrigger,
+  JobsWorkbenchJobRowtriggerKind,
+  JobsWorkbenchJobRowwaitingOnItem,
+  JobsWorkbenchJobRowwaitingOnItemtarget,
+  JobsWorkbenchJobRowwaitingOnItemtargetKind,
+  JobsWorkbenchStats,
+  Jobtrigger,
+  JobtriggerKind,
+  JobwaitingOnItem,
+  JobwaitingOnItemtarget,
+  JobwaitingOnItemtargetKind,
+  PortalGrantProvenance,
+  TrellisSurfaceStatusRequest,
+  TrellisSurfaceStatusRequestAction,
+  TrellisSurfaceStatusRequestKind,
+  TrellisSurfaceStatusResponse,
+  TrellisSurfaceStatusResponsestatus1,
+  TrellisSurfaceStatusResponsestatus1Runtime,
+  TrellisSurfaceStatusResponsestatus1State,
+  TrellisSurfaceStatusResponsestatus2,
+  TrellisSurfaceStatusResponsestatus2Reason,
+  TrellisSurfaceStatusResponsestatus2State,
+  TrellisSurfaceStatusResponsestatus3,
+  TrellisSurfaceStatusResponsestatus3State,
+  TrellisSurfaceStatusResponsestatus4,
+  TrellisSurfaceStatusResponsestatus4State,
+  TrellisSurfaceStatusResponsestatus5,
+  TrellisSurfaceStatusResponsestatus5State,
+} from types;
+
+service platform {
+  implements auth;
+  implements core;
+  implements state;
+  kv browserFlows { title "Browser flows"; description "Short-lived browser authentication and activation flow state."; schema AuthBrowserFlow; ttl 1d; desired_max_value 64KiB; }
+  kv oauthStates { title "OAuth states"; description "CAS-consumed OAuth state and recovery records."; schema AuthOAuthState; ttl 15m; desired_max_value 16KiB; }
+  kv connections { title "Connections"; description "Current operational NATS connection presence."; schema AuthConnectionPresence; ttl 2m; desired_max_value 16KiB; }
+}
+service healthRuntime { implements health; }
+service jobsRuntime { implements jobs; }
+service eventsRuntime { implements events; }
+app portal {
+  use auth { operation DeviceUserAuthorities.Resolve; }
+}
+app cli {
+  use auth {
+    rpc Issuers.Revoke;
+    rpc Participants.Install;
+    rpc Participants.Get;
+    rpc Participants.List;
+    rpc Deployments.Apply;
+    rpc Deployments.Get;
+    rpc Grants.Get;
+    rpc Grants.List;
+    rpc Grants.Set;
+    rpc Grants.Revoke;
+    rpc Capabilities.List;
+    rpc CapabilityGroups.Delete;
+    rpc CapabilityGroups.Get;
+    rpc CapabilityGroups.List;
+    rpc CapabilityGroups.Put;
+    rpc Connections.Kick;
+    rpc Connections.List;
+    rpc Deployments.Create;
+    rpc Deployments.Disable;
+    rpc Deployments.Enable;
+    rpc Deployments.List;
+    rpc Deployments.Remove;
+    rpc DeviceUserAuthorities.List;
+    rpc DeviceUserAuthorities.Reviews.Decide;
+    rpc DeviceUserAuthorities.Reviews.List;
+    rpc DeviceUserAuthorities.Revoke;
+    rpc Devices.Disable;
+    rpc Devices.Enable;
+    rpc Devices.List;
+    rpc Devices.Provision;
+    rpc Devices.Remove;
+    rpc Portals.Get;
+    rpc Portals.GrantOverrides.List;
+    rpc Portals.GrantOverrides.Put;
+    rpc Portals.GrantOverrides.Remove;
+    rpc Portals.List;
+    rpc Portals.LoginSettings.Get;
+    rpc Portals.LoginSettings.Update;
+    rpc Portals.Put;
+    rpc Portals.Remove;
+    rpc Portals.Routes.Put;
+    rpc Portals.Routes.Remove;
+    rpc ServiceInstances.Disable;
+    rpc ServiceInstances.Enable;
+    rpc ServiceInstances.List;
+    rpc ServiceInstances.Provision;
+    rpc ServiceInstances.Remove;
+    rpc Sessions.List;
+    rpc Sessions.Logout;
+    rpc Sessions.Me;
+    rpc Sessions.Revoke;
+    rpc UserIdentities.List;
+    rpc UserIdentities.Unlink;
+    rpc Users.Create;
+    rpc Users.Get;
+    rpc Users.IdentityLink.Create;
+    rpc Users.List;
+    rpc Users.Password.Change;
+    rpc Users.PasswordReset.Create;
+    rpc Users.Resolve;
+    rpc Users.Update;
+  }
+  use state {
+    rpc Delete;
+    rpc Resources.Inspect;
+    rpc Resources.Query;
+  }
+  use health { rpc Query; }
+  use jobs { rpc Query; }
+  use events {
+    rpc Consumers.Inspect;
+    rpc Consumers.Query;
+    rpc DeadLetters.Dismiss;
+    rpc DeadLetters.Inspect;
+    rpc DeadLetters.Query;
+    rpc DeadLetters.Replay;
+    rpc Query;
+  }
+}
+app console {
+  use auth {
+    rpc Issuers.Revoke;
+    rpc Participants.Install;
+    rpc Participants.Get;
+    rpc Participants.List;
+    rpc Deployments.Apply;
+    rpc Deployments.Get;
+    rpc Grants.Get;
+    rpc Grants.List;
+    rpc Grants.Set;
+    rpc Grants.Revoke;
+    rpc Capabilities.List;
+    rpc CapabilityGroups.Delete;
+    rpc CapabilityGroups.Get;
+    rpc CapabilityGroups.List;
+    rpc CapabilityGroups.Put;
+    rpc Connections.Kick;
+    rpc Connections.List;
+    rpc Deployments.Create;
+    rpc Deployments.Disable;
+    rpc Deployments.Enable;
+    rpc Deployments.List;
+    rpc Deployments.Remove;
+    rpc DeviceUserAuthorities.List;
+    rpc DeviceUserAuthorities.Reviews.Decide;
+    rpc DeviceUserAuthorities.Reviews.List;
+    rpc DeviceUserAuthorities.Revoke;
+    rpc Devices.Disable;
+    rpc Devices.Enable;
+    rpc Devices.List;
+    rpc Devices.Provision;
+    rpc Devices.Remove;
+    rpc Portals.Get;
+    rpc Portals.GrantOverrides.List;
+    rpc Portals.GrantOverrides.Put;
+    rpc Portals.GrantOverrides.Remove;
+    rpc Portals.List;
+    rpc Portals.LoginSettings.Get;
+    rpc Portals.LoginSettings.Update;
+    rpc Portals.Put;
+    rpc Portals.Remove;
+    rpc Portals.Routes.Put;
+    rpc Portals.Routes.Remove;
+    rpc ServiceInstances.Disable;
+    rpc ServiceInstances.Enable;
+    rpc ServiceInstances.List;
+    rpc ServiceInstances.Provision;
+    rpc ServiceInstances.Remove;
+    rpc Sessions.List;
+    rpc Sessions.Logout;
+    rpc Sessions.Me;
+    rpc Sessions.Revoke;
+    rpc UserIdentities.List;
+    rpc UserIdentities.Unlink;
+    rpc Users.Create;
+    rpc Users.Get;
+    rpc Users.IdentityLink.Create;
+    rpc Users.List;
+    rpc Users.Password.Change;
+    rpc Users.PasswordReset.Create;
+    rpc Users.Resolve;
+    rpc Users.Update;
+    operation DeviceUserAuthorities.Resolve;
+  }
+  use state {
+    rpc Delete;
+    rpc Get;
+    rpc Put;
+    rpc Resources.Inspect;
+    rpc Resources.Query;
+  }
+  use core {
+    rpc Resources.Destroy;
+    rpc Resources.Inspect;
+    rpc Resources.Query;
+  }
+  use health {
+    rpc Inspect;
+    rpc Metrics;
+    rpc Query;
+    rpc Summary;
+    feed Watch;
+  }
+  use jobs {
+    rpc Cancel;
+    rpc DismissDLQ;
+    rpc GetKey;
+    rpc Inspect;
+    rpc ListDLQ;
+    rpc ListServices;
+    rpc Metrics;
+    rpc Query;
+    rpc Summary;
+    rpc ReplayDLQ;
+    rpc Retry;
+    feed Watch;
+  }
+  use events {
+    rpc Consumers.Inspect;
+    rpc Consumers.Query;
+    rpc Consumers.ReportDelivery;
+    rpc DeadLetters.Dismiss;
+    rpc DeadLetters.Inspect;
+    rpc DeadLetters.Query;
+    rpc DeadLetters.Replay;
+    rpc Diagnostics;
+    rpc Inspect;
+    rpc Metrics;
+    rpc Query;
+    feed Watch;
+  }
+}

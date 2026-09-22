@@ -1,0 +1,5 @@
+{
+  "imports": {
+    "@qlever-llc/trellis": "../../../ts/packages/trellis/index.ts"
+  }
+}

@@ -26,10 +26,18 @@
 ## Repo-Wide Engineering Rules
 
 - Keep changes minimal and aligned with the existing architecture.
+- Do not add small or narrowly scoped helper functions that are rarely called.
+  Inline the logic until it is repeated enough to justify extraction.
 - Before adding aliases, migration code, compatibility shims, or dual-read or
   dual-write behavior for a breaking change, ask whether a compatibility path is
   actually wanted. Prefer a clean break unless the user asks for compatibility
   or persisted data or shipped behavior requires it.
+- Before the first release, each independently migrated schema keeps exactly one
+  initialization migration: edit that baseline in place for schema changes and
+  use fresh development and test databases instead of appending migrations to
+  carry an earlier pre-release database forward. Keep the migration runners,
+  history/checksum validation, checks, and baseline files. At the first release,
+  freeze each shipped baseline; later schema changes add ordered migrations.
 - Preserve the platform boundary from `design/core/trellis-patterns.md`: the
   Trellis platform repo owns runtime, protocol, tooling, and Trellis-owned
   contracts; cloud repos own domain services, apps, and domain models unless a
@@ -49,30 +57,52 @@
 - Follow the type-system rules in `design/core/type-system-patterns.md`: no
   `@ts-nocheck`, no `as any`, no `as unknown as`; prefer stronger honest public
   types over misleading compatibility.
-- Use TypeBox for RPC, event, and operation wire schemas. Use Zod for
-  environment and config parsing.
+- Author RPC, event, operation, and other contract schemas in native Trellis
+  IDL. TypeScript and Rust consume generated types and descriptors; do not
+  introduce handwritten contract-authoring or wire-schema definitions. TypeBox
+  remains a generator/runtime implementation dependency.
+- Use Zod for environment and config parsing in Trellis-owned TypeScript code.
+  Downstream applications choose their own configuration and validation tools.
 - Expected public or RPC failures should use `Result`-style modeling rather than
   thrown exceptions.
 - Exported public functions, classes, and methods need JSDoc. See
   `design/core/observability-patterns.md`.
 - Format files as part of the normal edit loop, before type checks and tests.
   For JS, TS, Svelte, JSON, Markdown, CSS, and SVG files, run
-  `rtk deno fmt -c js/deno.json <changed files>`. For Rust files, run
-  `rtk cargo fmt --manifest-path rust/Cargo.toml --package <crate>` when the
-  crate is known, or `rustfmt --edition 2021 <changed .rs files>` for narrow
-  file-scoped edits. If generated artifacts are affected, run prepare first and
-  then verify generated Rust formatting with
-  `rtk cargo fmt --manifest-path rust/Cargo.toml --all --check`. Do not
-  bulk-format unrelated drift unless the user asks for that cleanup; report it
-  separately.
+  `deno fmt -c ts/deno.json <changed files>`. For Rust files, run
+  `cargo fmt --manifest-path rust/Cargo.toml --package <crate>` when the crate
+  is known, or `rustfmt --edition 2021 <changed .rs files>` for narrow
+  file-scoped edits. If generated artifacts are affected, run
+  `cargo xtask install` first and then verify generated Rust formatting with
+  `cargo fmt --manifest-path rust/Cargo.toml --all --check`. Do not bulk-format
+  unrelated drift unless the user asks for that cleanup; report it separately.
 - When changes affect contracts, generated SDKs, or runtime surfaces that depend
-  on generated artifacts, run `cd js && deno task prepare` and
-  `cd rust && cargo xtask prepare` as part of verification.
+  on generated artifacts, run `cargo xtask install` as part of verification.
 - Follow `docs/src/routes/guides/releasing-trellis/+page.svx` for testing and
-  release practice. New features must explicitly check whether they need
-  integration coverage, and runtime or public API behavior changes should run
-  the full integration harness before commit or at the end of the implementation
-  cycle.
+  release practice and `design/core/testing-patterns.md` for test design. Test
+  each invariant at the smallest real boundary that proves it. Use live
+  TypeScript and Rust integration for transport, authorization, cross-language,
+  process-lifecycle, restart, NATS, and distributed-coordination behavior. Use
+  real component or adapter integration tests for deterministic transaction,
+  repository, projection, reducer, and state-machine invariants. Do not use fake
+  NATS, fake Hono, fake storage, fake runtime, fake auth, fake generated
+  clients, or synthetic failure hooks when a real boundary can prove the
+  invariant.
+- Live integration uses real NATS and Trellis infrastructure. Executable Rust
+  and Deno tests are the catalog; separate matrices and inventory reconciliation
+  are not maintained. Hidden skips are forbidden.
+- Tests must exercise behavior realizable in an ordinary production build. Do
+  not add or retain `test-support` features, test-only runtime constructors,
+  verified-context injection, readiness bypasses, or instrumentation compiled
+  only for tests. Do not replace these with differently named testing hooks.
+  Ordinary test modules may test pure functions and real adapters, but must
+  exercise unchanged production implementations. Live acceptance uses normal
+  builds, real infrastructure, and public behavior; use existing production
+  diagnostics when measurements are needed.
+- The normal `Check` workflow owns correctness verification, including the full
+  live suite. Release verification is limited to metadata, packages, archives,
+  images, and publication inputs. Rust supports the current stable toolchain; no
+  older compiler compatibility is promised.
 - Release work must keep release-managed Trellis versions consistent through the
   Rust xtask release commands, verify `CHANGELOG.md` against changes since the
   previous release, and run the release verification checklist before the
@@ -85,7 +115,7 @@
   when Trellis features, service-author workflows, public TypeScript APIs,
   public Rust APIs, generated SDK behavior, contract authoring, runtime
   surfaces, operations, jobs, resources, state, files, events, or
-  prepare/tooling workflows change. These files are user-facing guidance for
+  install/tooling workflows change. These files are user-facing guidance for
   service repos that consume Trellis; do not include Trellis-repo-only
   instructions unless the same command or rule is also the intended service-repo
   pattern.
@@ -115,13 +145,13 @@
 - Device activation: `design/auth/device-activation.md`
 - Operations design: `design/operations/trellis-operations.md`
 - Jobs design: `design/jobs/trellis-jobs.md`
-- TypeScript contract authoring:
-  `design/contracts/trellis-typescript-contract-authoring.md`
+- TypeScript contract authoring: `design/contracts/trellis-idl.md`
 - Rust contract generation/facades:
   `design/contracts/trellis-rust-contract-libraries.md`
 - Contract catalog, manifests, and permission derivation:
-  `design/contracts/trellis-contracts-catalog.md`
+  `design/contracts/trellis-api-participants.md`
 - State semantics and migrations: `design/core/state-patterns.md`
 - Observability, correlation, and JSDoc expectations:
   `design/core/observability-patterns.md`
+- Testing policy and live integration parity: `design/core/testing-patterns.md`
 - Frontend conventions: `design/core/frontend-svelte-patterns.md`

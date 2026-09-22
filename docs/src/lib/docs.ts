@@ -349,6 +349,13 @@ export const apiReferenceDocs: DocEntry[] = [
     section: "API Reference",
   },
   {
+    title: "@qlever-llc/trellis-test",
+    description:
+      "Deno-first integration test helpers for Trellis service repositories.",
+    href: "/api/typescript/trellis-test/index.ts/index.html",
+    section: "API Reference",
+  },
+  {
     title: "@qlever-llc/result",
     description:
       "Class-based Result and AsyncResult APIs for explicit TypeScript error handling.",
@@ -363,9 +370,10 @@ export const apiReferenceDocs: DocEntry[] = [
     section: "Rustdoc",
   },
   {
-    title: "trellis-contracts",
-    description: "Rust contract types and helpers on docs.rs.",
-    href: "https://docs.rs/trellis-contracts/latest/trellis_contracts/",
+    title: "trellis-protocol",
+    description:
+      "Language-neutral Trellis artifacts, exact permissions, and signed authorization protocol primitives on docs.rs.",
+    href: "https://docs.rs/trellis-protocol/latest/trellis_protocol/",
     section: "Rustdoc",
   },
 ];
@@ -394,13 +402,13 @@ const typescriptServiceTutorialDocs: DocEntry[] = [
     sidebarLabel: "1. Setup",
   },
   {
-    title: "Your first contract",
+    title: "Your first API and participant",
     description:
-      "Define the smallest valid Trellis service contract for the selected language.",
+      "Declare the smallest valid Trellis API and service participant in native IDL.",
     href: "/guides/write-a-service/first-contract",
     section: "Getting started",
     sidebarGroup: typescriptServiceTutorialGroup,
-    sidebarLabel: "2. Contract",
+    sidebarLabel: "2. IDL",
   },
   {
     title: "The service entry point",
@@ -423,7 +431,7 @@ const typescriptServiceTutorialDocs: DocEntry[] = [
   {
     title: "Writing our first RPC",
     description:
-      "Add the Orders.Create schemas, contract declaration, capability gate, and handler.",
+      "Add Orders.Create schemas, its native API declaration, capability gate, and handler.",
     href: "/guides/write-a-service/first-rpc",
     section: "Getting started",
     sidebarGroup: typescriptServiceTutorialGroup,
@@ -432,7 +440,7 @@ const typescriptServiceTutorialDocs: DocEntry[] = [
   {
     title: "Retrieving an order with service errors",
     description:
-      "Add Orders.Get schemas, a domain error, the contract declaration, and a typed read handler.",
+      "Add Orders.Get schemas, a declared domain error, and a typed read handler.",
     href: "/guides/write-a-service/retrieve-order",
     section: "Getting started",
     sidebarGroup: typescriptServiceTutorialGroup,
@@ -475,13 +483,13 @@ const typescriptServiceTutorialDocs: DocEntry[] = [
     sidebarLabel: "10. Shutdown",
   },
   {
-    title: "Prepare SDKs and contract artifacts",
+    title: "Generate SDKs and artifacts",
     description:
-      "Generate publishable client packages and service contract artifacts from the contract.",
+      "Compile native IDL into canonical artifacts and private language SDKs.",
     href: "/guides/write-a-service/contract-artifacts",
     section: "Getting started",
     sidebarGroup: typescriptServiceTutorialGroup,
-    sidebarLabel: "11. SDKs and Artifacts",
+    sidebarLabel: "11. Generation",
   },
   {
     title: "Declare optional dependencies",
@@ -611,6 +619,13 @@ export const guideDocs: DocEntry[] = [
     description:
       "Use Trellis from Rust services, CLIs, devices, and generated Cargo participant facades.",
     href: "/guides/libraries/rust",
+    section: "Libraries",
+  },
+  {
+    title: "Testing Trellis services",
+    description:
+      "Run out-of-tree TypeScript service integration tests with @qlever-llc/trellis-test, case-scoped fixtures, and the generic runner.",
+    href: "/guides/testing-trellis-services",
     section: "Libraries",
   },
   {

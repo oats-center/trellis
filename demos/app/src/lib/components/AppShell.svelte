@@ -2,7 +2,6 @@
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
   import { resolve } from "$app/paths";
-  import { clearSessionKey } from "@qlever-llc/trellis/auth/browser";
   import type { Snippet } from "svelte";
   import DemoClientLogo from "$lib/components/DemoClientLogo.svelte";
   import LiveEventStream from "$lib/components/LiveEventStream.svelte";
@@ -30,7 +29,6 @@
   async function logout(): Promise<void> {
     loggingOut = true;
     try {
-      await clearSessionKey();
       await connection.close();
       await goto(resolve("/"));
     } finally {

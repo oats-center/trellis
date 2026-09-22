@@ -1,237 +1,109 @@
-This guide walks through the intended Trellis device flow for a TypeScript device. The device has its own durable identity, may be activated through the built-in Trellis portal (`trellis.portal.activation@v1`) or a custom device portal, and can support both online approval and offline confirmation-code entry.
+# Build and activate a device
 
-Before starting, review [Trellis Concepts](/guides/concepts) and [Tutorial: Write a service](/guides/write-a-service) for background on contracts, auth, and packages.
+Devices are durable Trellis principals. Their root/identity key survives
+restarts; login sessions, route JWTs, authorization contexts, participant
+artifacts, grants, and deployment assignments do not belong in device config.
 
-## What you need
+## 1. Declare the participant
 
-- a running Trellis environment, with admin access
-- the `trellis` CLI (see [Install the Trellis CLI](/guides/install-trellis-cli))
+Define a native `device` participant with its exact owned/used APIs and optional
+resource/state selections, then run `trellis update` and `trellis generate`.
+Generated TypeScript or Rust facades carry the compile-time participant/API
+evidence.
 
-## How devices work
-
-Devices follow a provision, lifecycle, deployment authority, and user-delegation model:
-
-1. A Trellis admin provisions a device secret. Trellis stores the public identity key and activation key, and the root secret is transferred to the device for storage.
-2. When a device starts up, the root secret is used to generate an activation URL or QR code.
-3. A Trellis user follows that link to a Trellis portal, completes any product-specific activation flow, and may trigger a privileged review step.
-4. Trellis returns connect info only when the device is registered, its lifecycle state allows runtime access, and the presented contract evidence fits deployment authority.
-5. The device connects as its own principal using its derived device identity.
-
-Activation adds user-delegated authority. Admin review can grant setup authority for registered devices that need runtime access before user delegation, but neither path bypasses registration, lifecycle, or deployment-authority checks.
-
-The device root secret and derived identity seed never go over the wire and are not known by Trellis, which limits the risk of a stolen identity.
-
-## 1. Create the project
+## 2. Create and apply the deployment
 
 ```sh
-mkdir my-device && cd my-device
-deno init
-deno add npm:@qlever-llc/trellis
+trellis dev field-device create --format json
+trellis dev "$DEPLOYMENT_ID" apply \
+  --source . \
+  --participant acme.field-device
+trellis dev "$DEPLOYMENT_ID" show --format json
 ```
 
-## 2. Define the device contract
+Direct apply installs the participant revision, updates device deployment
+policy/resources, and writes the relevant binding. There is no authority
+proposal or reconcile step.
 
-Create `contracts/my_device.ts`. Devices declare only non-baseline Trellis
-surfaces they need after connecting. The common auth session RPCs are available
-automatically for device contracts.
+## 3. Provision the device
+
+```sh
+trellis dev "$DEPLOYMENT_ID" provision --format json
+```
+
+Provisioning creates the device/instance principal and returns one-use material.
+Store the root or identity seed on the device. Trellis stores public identity
+and a hash of any one-use provisioning secret, never private key material.
+
+## 4. Enroll for review
+
+TypeScript:
 
 ```ts
-import { defineDeviceContract } from "@qlever-llc/trellis";
+import {
+  checkDeviceActivation,
+  deriveDeviceIdentity,
+  waitForDeviceActivation,
+} from "@qlever-llc/trellis/device";
+import { participants } from "field-device-trellis";
 
-export const myDevice = defineDeviceContract(() => ({
-  id: "my-device@v1",
-  displayName: "My Device",
-  description: "An activated device that connects to Trellis after activation.",
-}));
+const identity = await deriveDeviceIdentity(rootSecret);
+const options = {
+  trellisUrl: "http://127.0.0.1:8080",
+  participant: participants.fieldDevice.participant,
+  identity,
+  provisioningSecret,
+};
 
-export default myDevice;
+const first = await checkDeviceActivation(options).orThrow();
+const ready = first.status === "ready"
+  ? first
+  : await waitForDeviceActivation(options, first).orThrow();
 ```
 
-Activated devices may not use contract `resources`.
+`/auth/device/enroll` verifies the durable identity and a fresh ephemeral session
+key, then creates or resumes one review. Polling reuses that attempt. The result
+is `pending`, `rejected`, or `ready`; enrollment does not install runtime
+credentials.
 
-The resulting contract object carries the manifest metadata and API views that `TrellisDevice.connect(...)` expects.
+Display the returned activation URL and confirmation code. The code is a setup
+signal, never an online credential.
 
-## 3. Write the device startup code
+## 5. Approve in Portal or Console
 
-The intended public startup surface now has two steps:
+The activation Portal shows the exact device, deployment, participant, and
+confirmation code. A signed-in user approves or rejects the review through the
+Auth device-review operation. Review policy may permit automatic approval,
+require an administrator, or disable activation.
 
-1. `checkDeviceActivation(...)` answers whether the device is already activated
-2. `TrellisDevice.connect(...)` opens the runtime connection once activation is ready
+The Portal uses a normal browser login and acts as that user. Its built-in
+participant receives no bootstrap Admin binding.
 
-Your application is still responsible for loading the root secret however it wants before calling into Trellis.
+## 6. Bootstrap and connect
 
-```ts
-import { TrellisDevice } from "@qlever-llc/trellis";
-import { checkDeviceActivation } from "@qlever-llc/trellis/device/deno";
-import { myDevice } from "./contracts/my_device.ts";
+After approval, connect with the generated device facade. The runtime calls
+`/bootstrap/device` with only identity/proof inputs. Trellis resolves the
+server-owned deployment/instance assignment, installed participant revision,
+current `GrantBinding`, resources, issuer, signed context, route JWT, inbox, and
+exact NATS endpoints.
 
-const rootSecret = await Deno.readTextFile("./secrets/root.secret");
+`/bootstrap/device` never creates a review. Pending, rejected, disabled, removed,
+or unknown devices fail closed.
 
-const authority = await checkDeviceActivation({
-  trellisUrl: "http://localhost:3000",
-  contract: myDevice,
-  rootSecret,
-});
+The ephemeral session key returned by the successful activation attempt is used
+for the connection. Application requests/events include the context digest,
+matching redundant `session-key`, and message proof. Reconnect refreshes current
+authorization once per disconnected episode.
 
-if (authority.status === "not_ready") {
-  throw new Error(`Device user authority is not ready: ${authority.reason}`);
-}
+## Offline QR transport
 
-if (authority.status !== "activated") {
-  console.log(`Open this URL to resolve user authority: ${authority.activationUrl}`);
+An application may transfer one-use enrollment material by QR code. Auth has no
+separate QR endpoint or trust path: the device still submits the ordinary
+proof-bound `/auth/device/enroll` request when online.
 
-  const confirmationCode = prompt(
-    "Enter a confirmation code for offline approval, or press Cancel to wait for online approval.",
-  );
+## Lifecycle
 
-  if (confirmationCode && confirmationCode.trim().length > 0) {
-    await authority.acceptConfirmationCode(confirmationCode);
-  } else {
-    await authority.waitForOnlineApproval();
-  }
-}
-
-// Activation resolves user-delegated authority. Runtime access still requires
-// current registration, lifecycle, and deployment-authority checks during connect.
-
-const trellis = await TrellisDevice.connect({
-  trellisUrl: "http://localhost:3000",
-  contract: myDevice,
-  rootSecret,
-}).orThrow();
-
-console.log("device connected", trellis);
-```
-
-That activation-status check covers the normal device startup cases:
-
-1. already activated: connect immediately after fetching fresh connect info
-2. first online activation: return an activation URL and wait for authority acceptance or review
-3. first offline activation: accept a confirmation code from local user input
-4. admin-reviewed setup access: connect before activation only when registration, lifecycle state, and device deployment authority allow the presented contract evidence
-
-For Deno devices, the activation helper hides local activation-state persistence
-internally so the same activation attempt can survive restart without the
-application managing pending activation details directly.
-
-Online waiting is tied to the activation flow id that Trellis returned with the
-activation URL. The wait request signs that `flowId` along with the device
-identity, nonce, timestamp, and contract evidence, and Trellis loads the browser
-flow directly by id before checking that it matches the device. The QR payload
-and MAC remain the bearer setup artifact for handing the flow to a browser.
-
-## 4. Create the device deployment
-
-Once the code shape is clear, create the server-side device deployment and submit the device contract as a deployment authority proposal.
-
-```sh
-trellis dev my-device.standard create --review-mode none
-trellis dev my-device.standard apply --source /path/to/my-device
-```
-
-Notes:
-
-- the `dev/<id>` reference names the admin-chosen deployment for this device line or rollout policy
-- use Console as the primary place to review deployment authority; **Admin → Devices** shows pending device authority requests for the deployment, while service authority updates can be accepted or rejected from **Admin → Services**
-- `--review-mode required` enables the device-review gate instead of immediate activation
-- registered devices connect only when the presented contract evidence fits enabled device deployment authority
-
-If the device deployment uses `--review-mode required`, portal completion does not activate the device immediately. Instead, a service or user with `trellis.auth::device.review` capabilities or an admin must first approve the activation.
-
-Admin-reviewed setup access is for devices that need deployment-owned runtime
-authority before a user delegates authority through activation. In that mode,
-`checkDeviceActivation(...)` can receive ready connect info for a registered
-device, and the returned connect info carries
-`auth.authority: "admin_reviewed"`. After activation, the same device connects
-with `auth.authority: "user_delegated"`. Trellis keeps those authorities
-separate and does not create or mutate activation records for admin-reviewed
-runtime sessions.
-
-An admin can approve or reject a pending activation review in Console. Open
-**Admin → Devices**, select the deployment, switch to **Reviews**, and choose
-**Decide** for the pending review.
-
-For local development or automation, the CLI can decide the same review:
-
-```sh
-# Find the pending review ID
-trellis dev my-device.standard reviews list
-
-# Approve it
-trellis dev my-device.standard reviews approve dar_123456789
-```
-
-After approval or rejection, Trellis completes the original
-`Auth.DeviceUserAuthorities.Resolve` operation that the portal started. Devices
-and portals should continue watching or waiting on that operation rather than
-polling a separate review-status RPC.
-Internally, the activation handler records `pending_review` progress and returns
-`op.defer()` so the handler can settle while the durable operation remains open
-for the later review decision. The review job resumes the operation with the
-public operation-scoped service control helper, using only the stored
-`operationId`, and then completes or fails the same operation record. It does not
-depend on a private runtime handle surviving the original handler or process.
-
-## 5. Provision a device instance
-
-A specific device instance can be provisioned with `trellis dev <id> provision`. This generates a device root secret, derives the device keys, registers the instance with Trellis, and prints the provisioning values.
-
-```sh
-trellis dev my-device.standard provision \
-  --name "Front Desk Reader" \
-  --serial-number SN-123 \
-  --model-number MX-10 \
-  --metadata assetTag=asset-42 \
-  --metadata site=lab-a
-```
-
-The device only needs the printed `rootSecret` before calling `checkDeviceActivation(...)` and `TrellisDevice.connect(...)`. Store it securely when you provision the instance.
-
-Provisioning metadata is optional. Trellis understands `name`, `serialNumber`, and `modelNumber` for default CLI and console display, and it also accepts arbitrary opaque string metadata through repeated `--metadata key=value` flags.
-
-In the console admin app, the device instances, activations, and reviews pages all promote `name`, `serial`, and `model` by default. Each page also has a `Show metadata` toggle that reveals only the remaining opaque metadata entries for operators who need them.
-
-To inspect provisioned instances later:
-
-```sh
-trellis dev my-device.standard instances
-trellis dev my-device.standard instances --show-metadata
-```
-
-The default table shows `name`, `serial`, and `model` when present. `--show-metadata` adds a column for the remaining opaque metadata.
-
-## 6. Roll out a new contract boundary
-
-Use Console as the primary place to review device deployment authority before
-rolling out runtimes that present a new contract boundary. Open **Admin →
-Devices**, select the deployment, and check the pending authority count for the
-boundary request. Service authority updates have accept/reject controls on
-**Admin → Services**; use `trellis dev <id> authority plan list` and
-`trellis dev <id> authority plan show <PLAN_ID>` only as a concise
-local-development or automation fallback before accepting or rejecting pending
-device authority plans.
-
-Trellis stores deployment evidence for audit, but full manifest lookup comes
-from built-in contracts or the global contract store. Authority is the modeled
-deployment authority. A presented device or service contract must fit the enabled
-parent deployment authority; Trellis rejects unknown or unavailable boundaries
-instead of accepting a digest from a deployment allow-list.
-
-Same-lineage device rollouts should keep duplicate RPC, operation, event, and job surfaces schema-compatible. Optional additive fields are safe only for open object payloads; required-field changes, closed object additions, and unsupported non-identical schema constructs should use a new `@vN` contract id rather than relying on a deployment-level digest switch.
-
-Remove deployment authority only after deployed device runtimes no longer need
-the old boundary. Authority removal previews affected sessions and requests before
-committing the change.
-
-## 7. Revoke an activated device
-
-Activated device revocation is handled through the device activation admin surface. The next NATS connect attempt by that device will be rejected.
-Revocation also removes the device's ability to reconnect with previously fetched connect info.
-
-```sh
-# Find the instance ID
-trellis dev my-device.standard activations list
-
-# Revoke the device
-trellis dev my-device.standard activations revoke dev_123456789
-```
+Enable, disable, and remove operations atomically update the principal/device,
+events, context revocations, and connection-kick intents. An old local context
+or route token cannot bypass current lifecycle state because bootstrap, refresh,
+and Auth Callout revalidate it.

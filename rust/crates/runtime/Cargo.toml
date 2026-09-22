@@ -1,0 +1,67 @@
+[package]
+name = "trellis-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rust runtime entrypoint and configuration for Trellis."
+publish = false
+
+[lib]
+name = "trellis_runtime"
+
+[features]
+default = ["sqlite-storage", "nats-leases"]
+sqlite-storage = ["dep:rusqlite", "dep:refinery"]
+nats-leases = ["dep:async-nats", "dep:bytes"]
+
+[lints]
+workspace = true
+
+[dependencies]
+argon2.workspace = true
+async-trait = "0.1.89"
+async-nats = { workspace = true, optional = true }
+axum.workspace = true
+axum-reverse-proxy = "2.2.0"
+base64.workspace = true
+data-encoding.workspace = true
+ed25519-dalek.workspace = true
+bytes = { workspace = true, optional = true }
+clap.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
+jsonschema.workspace = true
+nats-jwt-rs.workspace = true
+nkeys.workspace = true
+oauth2.workspace = true
+openidconnect.workspace = true
+opentelemetry.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rustls.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+rusqlite = { workspace = true, optional = true }
+refinery = { workspace = true, optional = true }
+thiserror.workspace = true
+time.workspace = true
+tokio = { workspace = true, features = ["net", "signal"] }
+toml = "1.1.2"
+tower_governor.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+trellis-protocol.workspace = true
+trellis-runtime-apis = { path = "../runtime-apis" }
+trellis-events-runtime = { path = "../events-runtime", version = "0.12.0" }
+trellis-idl = { path = "../idl", version = "0.12.0" }
+trellis-jobs-runtime = { path = "../jobs-runtime", version = "0.12.0" }
+trellis-rs = { path = "../trellis", features = ["runtime-internals"] }
+tower = { version = "0.5.3", features = ["util"] }
+ulid = "1.2.1"
+url.workspace = true
+
+[dev-dependencies]
+trellis-local-nats = { path = "../local-nats" }
+tempfile = "3.27.0"

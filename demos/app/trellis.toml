@@ -1,0 +1,13 @@
+[package]
+name = "demo-app"
+version = "1.0.0"
+
+[sources]
+app = "contract.trellis"
+
+[dependencies]
+service = { package = "demo-service", path = "../ts/service" }
+trellis = { package = "trellis", path = "../../rust/crates/runtime" }
+
+[generate.typescript]
+output = "trellis"

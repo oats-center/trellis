@@ -1,0 +1,23 @@
+[package]
+name = "trellis-local-nats"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Managed local NATS server binary download, verification, and lifecycle for Trellis."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+flate2 = "1.1.9"
+libc = "0.2.186"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar = "0.4.46"
+tempfile = "3.27.0"
+thiserror.workspace = true
+trellis-bootstrap = { path = "../bootstrap", version = "0.12.0" }
+ureq = "3.3.0"

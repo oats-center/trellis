@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,11 +30,13 @@ jobs:
           deno-version: v2.x
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
 
       - uses: actions/cache@v4
         with:
           path: ~/.cache/trellis/pages-generator
-          key: pages-generator-${{ runner.os }}-${{ hashFiles('js/packages/trellis/deno.json') }}
+          key: pages-generator-${{ runner.os }}-${{ hashFiles('ts/packages/trellis/deno.json') }}
           restore-keys: |
             pages-generator-${{ runner.os }}-
 
@@ -54,8 +56,6 @@ jobs:
 
           release_root="/tmp/trellis-release-site"
           current_root="${GITHUB_WORKSPACE}"
-          generator_cache="${HOME}/.cache/trellis/pages-generator"
-          generator_target="x86_64-unknown-linux-gnu"
           pages_root="/tmp/trellis-pages-site"
           release_worktree_path="/tmp/trellis-release-worktree"
           release_worktree="${release_worktree_path}"
@@ -78,102 +78,9 @@ jobs:
           }
           trap cleanup EXIT
 
-          package_version() {
+          install_apis() {
             local repo_root="$1"
-
-            deno eval 'const manifest = JSON.parse(await Deno.readTextFile(Deno.args[0])); console.log(manifest.version);' "${repo_root}/js/packages/trellis/deno.json"
-          }
-
-          try_release_generator() {
-            local tag="$1"
-            local repo_root="$2"
-
-            if [ -z "${tag}" ] || [ "${tag}" = "HEAD" ]; then
-              return 1
-            fi
-
-            local cache_dir="${generator_cache}/${tag}/${generator_target}"
-            local binary="${cache_dir}/trellis-generate"
-            local archive="trellis-generate-${tag}-${generator_target}.tar.gz"
-            local checksum="checksum-${tag}-${generator_target}-trellis-generate.sha256"
-
-            if [ ! -x "${binary}" ]; then
-              local temp_dir
-              temp_dir="$(mktemp -d)"
-              local cleanup_temp
-              cleanup_temp() {
-                rm -rf "${temp_dir}"
-              }
-
-              local release_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
-              echo "Trying published trellis-generate ${tag} for ${repo_root}"
-              if ! curl --fail --location --silent --show-error --output "${temp_dir}/${archive}" "${release_url}/${archive}"; then
-                echo "Published trellis-generate archive is not available for ${tag}; falling back to cargo"
-                cleanup_temp
-                return 1
-              fi
-              if ! curl --fail --location --silent --show-error --output "${temp_dir}/${checksum}" "${release_url}/${checksum}"; then
-                echo "Published trellis-generate checksum is not available for ${tag}; falling back to cargo"
-                cleanup_temp
-                return 1
-              fi
-
-              local expected actual _rest
-              read -r expected _rest < "${temp_dir}/${checksum}"
-              actual="$(shasum -a 256 "${temp_dir}/${archive}")"
-              actual="${actual%% *}"
-              if [ "${actual}" != "${expected}" ]; then
-                echo "Checksum mismatch for ${archive}; falling back to cargo"
-                cleanup_temp
-                return 1
-              fi
-
-              mkdir -p "${cache_dir}"
-              tar -xzf "${temp_dir}/${archive}" -C "${cache_dir}"
-              chmod +x "${binary}"
-              cleanup_temp
-            else
-              echo "Using cached trellis-generate ${tag} for ${repo_root}"
-            fi
-
-            "${binary}" prepare --no-npm "${repo_root}"
-          }
-
-          run_cargo_generator() {
-            local repo_root="$1"
-
-            echo "Building trellis-generate from source for ${repo_root}"
-            cargo run --manifest-path "${repo_root}/rust/tools/generate/Cargo.toml" -- prepare --no-npm "${repo_root}"
-          }
-
-          prepare_sdk_artifacts() {
-            local repo_root="$1"
-            local preferred_tag="$2"
-            local fallback_tag="${3:-}"
-
-            if try_release_generator "${preferred_tag}" "${repo_root}"; then
-              return 0
-            fi
-            if [ -n "${fallback_tag}" ] && [ "${fallback_tag}" != "${preferred_tag}" ] && try_release_generator "${fallback_tag}" "${repo_root}"; then
-              return 0
-            fi
-            run_cargo_generator "${repo_root}"
-          }
-
-          prepared_roots=()
-          prepare_once() {
-            local repo_root="$1"
-            local preferred_tag="$2"
-            local fallback_tag="${3:-}"
-
-            for prepared_root in "${prepared_roots[@]}"; do
-              if [ "${prepared_root}" = "${repo_root}" ]; then
-                return 0
-              fi
-            done
-
-            prepare_sdk_artifacts "${repo_root}" "${preferred_tag}" "${fallback_tag}"
-            prepared_roots+=("${repo_root}")
+            (cd "${repo_root}" && rm -rf "$RUNNER_TEMP/trellis-cache" && TRELLIS_CACHE="$RUNNER_TEMP/trellis-cache" cargo xtask install)
           }
 
           build_docs() {
@@ -197,10 +104,11 @@ jobs:
             local out_dir="$3"
 
             (
-              cd "${repo_root}/js/apps/console"
+              cd "${repo_root}/web"
               SITE_BASE_PATH="${base_path}" deno run -A vite build
-              mkdir -p "${out_dir}"
-              cp -R build/. "${out_dir}/"
+              mkdir -p "${out_dir}/assets/web" "${out_dir}/console"
+              cp -R build/assets/web/. "${out_dir}/assets/web/"
+              cp build/200.html "${out_dir}/console/index.html"
             )
           }
 
@@ -211,28 +119,51 @@ jobs:
           fi
 
           release_console_root="${release_worktree}"
-          if [ ! -f "${release_worktree}/js/apps/console/svelte.config.js" ]; then
+          if [ ! -f "${release_worktree}/web/svelte.config.js" ]; then
             echo "Latest release tag worktree is missing console sources; using current main console until the next release tag"
             release_console_root="${current_root}"
-          elif ! grep -q 'SITE_BASE_PATH' "${release_worktree}/js/apps/console/svelte.config.js"; then
+          elif ! grep -q 'SITE_BASE_PATH' "${release_worktree}/web/svelte.config.js"; then
             echo "Latest release tag predates Pages console base-path support; using current main console until the next release tag"
             release_console_root="${current_root}"
           fi
 
-          current_tag="v$(package_version "${current_root}")"
+          if [ ! -f "${release_worktree}/ts/packages/trellis/trellis.toml" ]; then
+            echo "Latest release tag predates project-local API installation; using current main until the next release tag"
+            release_docs_root="${current_root}"
+            release_console_root="${current_root}"
+          fi
 
-          prepare_once "${release_worktree}" "${latest_tag}"
-          prepare_once "${current_root}" "${current_tag}"
+          install_apis "${release_docs_root}"
+          if [ "${release_console_root}" != "${release_docs_root}" ]; then
+            install_apis "${release_console_root}"
+          fi
+          if [ "${current_root}" != "${release_docs_root}" ] && [ "${current_root}" != "${release_console_root}" ]; then
+            install_apis "${current_root}"
+          fi
+
+          ensure_protocol_wasm() {
+            local repo_root="$1"
+            local output="${repo_root}/ts/packages/trellis/auth/protocol_wasm/trellis_protocol_wasm.js"
+            if [ -s "${output}" ]; then
+              return 0
+            fi
+            cargo run --manifest-path "${repo_root}/rust/xtask/Cargo.toml" -- protocol-wasm
+          }
+
+          ensure_protocol_wasm "${release_docs_root}"
+          ensure_protocol_wasm "${release_console_root}"
+          ensure_protocol_wasm "${current_root}"
 
           build_docs "${release_docs_root}" "${site_root}" "${release_root}/docs"
           build_docs "${current_root}" "${site_root}/current" "${pages_root}/current"
 
-          build_console "${release_console_root}" "${site_root}/console" "${release_root}/console"
-          build_console "${current_root}" "${site_root}/current/console" "${pages_root}/current/console"
+          build_console "${release_console_root}" "${site_root}" "${release_root}/console"
+          build_console "${current_root}" "${site_root}/current" "${pages_root}/current"
 
           cp -R "${release_root}/docs/." "${pages_root}/"
-          mkdir -p "${pages_root}/console"
-          cp -R "${release_root}/console/." "${pages_root}/console/"
+          mkdir -p "${pages_root}/assets/web" "${pages_root}/console"
+          cp -R "${release_root}/console/assets/web/." "${pages_root}/assets/web/"
+          cp "${release_root}/console/console/index.html" "${pages_root}/console/index.html"
 
           cat > "${pages_root}/404.html" <<EOF
           <!doctype html>
@@ -280,7 +211,7 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

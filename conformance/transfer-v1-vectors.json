@@ -1,0 +1,11 @@
+{
+  "format": "trellis.transfer.v1.vectors",
+  "vectors": [
+    {
+      "seq": 2,
+      "control": "cancel",
+      "payloadBase64url": "eyJhY3Rpb24iOiJjYW5jZWwifQ",
+      "framedBase64url": "dHJlbGxpcy50cmFuc2Zlci52MS5mcmFtZQAAAAAAAAAAAgAAAAZjYW5jZWx7ImFjdGlvbiI6ImNhbmNlbCJ9"
+    }
+  ]
+}

@@ -1,21 +1,27 @@
-Service-owned `resources.store` gives a service durable blob storage. The public `Files` pattern defines how apps and peer services interact with file-like data without receiving raw store bindings.
+Service-owned `resources.store` gives a service durable blob storage. The public
+`Files` pattern defines how apps and peer services interact with file-like data
+without receiving raw store bindings.
 
 ## Files vs store resources
 
-Stores are implementation resources owned by a service. Files are the public contract surface the service exposes on top of those stores.
+Stores are implementation resources owned by a service. Files are the public
+contract surface the service exposes on top of those stores.
 
 Rules:
 
 - the owning service keeps direct access to `service.store.<alias>`
 - clients and peer services do not resolve raw store bindings
 - public file behavior is exposed through the owning service's contract surface
-- another service that needs file access should use the owning service's `Files.*` API rather than the raw store binding
+- another service that needs file access should use the owning service's
+  `Files.*` API rather than the raw store binding
 
-Files relate to stores the same way operations relate to jobs: the public concept wraps service-owned execution or persistence machinery.
+Files relate to stores the same way operations relate to jobs: the public
+concept wraps service-owned execution or persistence machinery.
 
 ## Metadata and control RPCs
 
-File metadata and small control actions remain ordinary contract-owned JSON RPCs.
+File metadata and small control actions remain ordinary contract-owned JSON
+RPCs.
 
 Examples:
 
@@ -23,32 +29,59 @@ Examples:
 - `Documents.Files.Head`
 - `Documents.Files.Delete`
 
-These methods use normal Trellis RPC authorization and capability checks. They return JSON payloads and expected failures as `Result` values.
+These methods use normal Trellis RPC authorization and capability checks. They
+return JSON payloads and expected failures as `Result` values.
 
-Listing is prefix plus standard page request oriented in v1. Callers send pagination inputs plus file-domain filters such as `prefix`, and services return entries plus paging metadata. File listing is live offset pagination, not snapshot or cursor pagination.
+Listing is a bounded keyset query ordered by object key. Callers send
+`{ prefix?: string; cursor?: string; limit?: number }` and services return only
+`{ entries, nextCursor? }`. The default limit is `100`; the maximum is `500`.
+
+Treat `nextCursor` as opaque and reuse it only with the same prefix. Malformed
+cursors and cursors used with a different query are rejected. When `nextCursor`
+is absent, the listing is exhausted.
+
+File listing is live, not a snapshot. A later page can reflect concurrent
+changes, but inserting or deleting keys at or before the previous continuation
+key does not duplicate or skip entries that already followed it.
 
 ## Send transfers
 
-When a caller sends bytes to a service, file bytes use an operation-native model:
+When a caller sends bytes to a service, file bytes use an operation-native
+model:
 
-1. a contract-owned operation accepts JSON input and declares `direction: "send"` transfer support
-2. the caller configures input and sends bytes through `operation.<group>.<leaf>.input(input).transfer(body).start()`
-3. the provider waits for durable transfer completion before continuing service-owned processing
+1. a contract-owned operation accepts JSON input and declares `upload` transfer
+   support
+2. the caller configures input and sends bytes through
+   `operation.<group>.<leaf>.input(input).transfer(body).start()`
+3. the provider waits for durable transfer completion before continuing
+   service-owned processing
 
-Callers do not start the operation first and attach bytes later. The transfer is part of the operation start flow.
+Callers do not start the operation first and attach bytes later. The transfer is
+part of the operation start flow.
 
 ## Receive transfers
 
-When a service sends bytes to a caller, the service returns a receive grant from a contract-owned RPC or operation result. The caller consumes the grant through the runtime transfer helper rather than by accessing service-owned storage directly.
+When a service sends bytes to a caller, the service returns a receive grant from
+a contract-owned RPC or operation result. The caller consumes the grant through
+the runtime transfer helper rather than by accessing service-owned storage
+directly.
 
-The grant is bounded, authorized, and tied to the owning service's file behavior. The caller sees a public file transfer, not an internal object-store location.
+The grant is bounded, authorized, and tied to the owning service's file
+behavior. The caller sees a public file transfer, not an internal object-store
+location.
 
 ## Operations and transfers
 
-Transfer-backed operations still follow operation semantics. The operation reference is the handle for durable workflow state, progress, cancellation, and terminal completion.
+Transfer-backed operations still follow operation semantics. The operation
+reference is the handle for durable workflow state, progress, cancellation, and
+terminal completion.
 
-Bytes move through transfer helpers. Control state moves through the operation reference. Keeping those concepts separate prevents callers from depending on hidden chunk subjects or service-private storage details.
+Bytes move through transfer helpers. Control state moves through the operation
+reference. Keeping those concepts separate prevents callers from depending on
+hidden chunk subjects or service-private storage details.
 
 ## Store backing
 
-Most file APIs will use `resources.store` internally, but the store remains service-private. Trellis provides the service binding; the service defines the public file metadata, authorization, and lifecycle behavior in its own contract.
+Most file APIs will use `resources.store` internally, but the store remains
+service-private. Trellis provides the service binding; the service defines the
+public file metadata, authorization, and lifecycle behavior in its own contract.

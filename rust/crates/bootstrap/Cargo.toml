@@ -1,0 +1,28 @@
+[package]
+name = "trellis-bootstrap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bootstrap generation for Trellis runtime configuration and NATS material."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+indexmap = "2.12.1"
+nats-jwt-rs = "0.1.1"
+nkeys = { version = "0.4.5", features = ["xkeys"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml = "1.1.2"
+trellis-runtime = { path = "../runtime" }
+trellis-local-bootstrap = { path = "../local-bootstrap" }
+miette.workspace = true
+
+[dev-dependencies]
+async-nats.workspace = true
+base64.workspace = true
+tempfile = "3.27.0"

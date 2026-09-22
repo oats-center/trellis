@@ -1,98 +1,23 @@
-<script lang="ts">
-  import LanguageTabs from "$lib/components/LanguageTabs.svelte";
-</script>
+# Declare an API and participants
 
-In Trellis, every service is defined by a **contract**. The contract is the authoritative description of what your service does: what databases it needs, what RPCs it handles, what events it emits or consumes, and who is allowed to call it. Trellis compares the contract boundary with deployment authority, records any required authority plan, and reconciles accepted resource changes before granting runtime access.
+```trellis
+model CreateOrderRequest { customerId: string; }
+model CreateOrderResponse { orderId: string; customerId: string; }
 
-Before writing a contract, you may want to read [Contracts](/guides/concepts/contracts) for the contract model and identity rules, and [Architecture](/guides/concepts/architecture) for the platform vs domain boundary.
-
-Start with the smallest possible service contract:
-
-<LanguageTabs>
-{#snippet ts()}
-
-Let's start with the smallest possible contract. Create `contracts/orders_service.ts`:
-
-```ts
-import { defineServiceContract } from "@qlever-llc/trellis";
-
-export const ordersService = defineServiceContract({}, () => ({
-  id: "orders-service@v1",
-  displayName: "Orders Service",
-  description: "A simple service for managing orders.",
-  uses: {},
-  resources: {},
-  rpc: {},
-  events: {},
-}));
-
-export default ordersService;
-```
-
-This is a valid, if empty, contract. We will fill it in as we add capabilities. Export the contract object itself and let Trellis use that object for runtime bootstrap, API typing, and SDK generation.
-
-Also export short local type aliases for handler modules. The service should use contract-derived types directly instead of consuming its own generated SDK:
-
-```ts
-import type {
-  EventHandler,
-  EventName,
-  RpcArgs,
-  RpcMethodNameOf,
-  RpcResult,
-} from "@qlever-llc/trellis";
-
-export type RpcHandlerArgs<T extends RpcMethodNameOf<typeof ordersService>> =
-  RpcArgs<typeof ordersService, T>;
-
-export type RpcHandlerResult<T extends RpcMethodNameOf<typeof ordersService>> =
-  RpcResult<typeof ordersService, T>;
-
-export type Event<T extends EventName<typeof ordersService>> =
-  EventHandler<typeof ordersService, T>;
-```
-
-We will use those aliases for every handler in this tutorial.
-
-{/snippet}
-{#snippet rust()}
-
-Create `contracts/service.rs`:
-
-```rust
-use serde_json::{json, Value};
-use trellis_contracts::{
-    ContractKind, ContractManifest, ContractManifestBuilder, ContractsError,
-};
-
-fn empty_object_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {}
-    })
+api orders@v1 {
+  title "Orders";
+  description "Minimal service walkthrough.";
+  rpc Create { input CreateOrderRequest; output CreateOrderResponse; }
+  capabilities { public { allows { rpc Create; } } }
 }
 
-pub fn contract_manifest() -> Result<ContractManifest, ContractsError> {
-    ContractManifestBuilder::new(
-        "orders-service@v1",
-        "Orders Service",
-        "A simple service for managing orders.",
-        ContractKind::Service,
-    )
-    .schema("Empty", empty_object_schema())
-    .build()
-}
+service OrdersService { implements orders; }
+app OrdersCaller { use orders { rpc Create; } }
 ```
 
-This is a valid, nearly empty service contract. Rust services should keep this Rust source as the authoring surface and treat generated manifests and SDK crates as artifacts.
-
-Prepare the generated artifacts once so the SDK crate exists:
-
-```sh
-trellis-generate prepare .
-```
-
-That creates a generated Rust SDK crate at `generated/packages/cargo/orders-service`. The Rust crate name derived from the package is `trellis_sdk_orders_service`, which later service code imports at compile time.
-
-{/snippet}
-</LanguageTabs>
+The service implements the API. The app selects only `Create`; importing types
+alone grants nothing. Run `trellis install` and `trellis generate`, then use the
+configured package's generated `apis` and `participants`. Exact generated names
+are authoritative: the authored API token and generated path remain lowercase
+(`orders`), while generated language symbols may use PascalCase (`Orders`).
+Package version is metadata, not authorization.

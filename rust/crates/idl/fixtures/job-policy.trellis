@@ -1,0 +1,16 @@
+model Payload { value: string; }
+model Result { value: string; }
+
+service Worker {
+  job Work {
+    title "Work";
+    description "Work queue.";
+    payload Payload;
+    result Result;
+    deadline 45s;
+    retry {
+      attempts 3;
+      backoff [5s, 30s];
+    }
+  }
+}

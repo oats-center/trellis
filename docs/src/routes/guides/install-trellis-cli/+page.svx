@@ -47,11 +47,11 @@ When working against unreleased docs or source, build the CLI from the repositor
 ```sh
 git clone https://github.com/qlever-llc/trellis.git
 cd trellis
-cargo xtask prepare
+cargo xtask install
 cargo install --path rust/crates/cli
 ```
 
-`cargo xtask prepare` generates the SDK crates that the Rust workspace needs before `trellis-cli` is built.
+`cargo xtask install` generates the SDK crates that the Rust workspace needs before `trellis-cli` is built.
 
 ## Verify
 

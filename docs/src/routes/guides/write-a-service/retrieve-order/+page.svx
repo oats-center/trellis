@@ -1,242 +1,28 @@
-<script lang="ts">
-  import LanguageTabs from "$lib/components/LanguageTabs.svelte";
-</script>
+# Declare service errors
 
-A create endpoint isn't much without a read endpoint. Add the read RPC and return a declared service-local error when the order does not exist.
+Errors are named wire declarations in the API and are selected by surfaces that may return them.
 
-<LanguageTabs>
-{#snippet ts()}
+```trellis
+model OrderNotFoundData { orderId: string; }
+error OrderNotFound { schema OrderNotFoundData; }
 
-Add the schemas to `schemas.ts`:
-
-```ts
-export const GetOrderRequest = Type.Object({
-  orderId: Type.String(),
-});
-export type GetOrderRequest = Static<typeof GetOrderRequest>;
-
-export const GetOrderResponse = Type.Object({
-  orderId: Type.String(),
-  customerId: Type.String(),
-  status: Type.String(),
-  items: Type.Array(Type.Object({
-    productId: Type.String(),
-    quantity: Type.Number(),
-  })),
-});
-export type GetOrderResponse = Static<typeof GetOrderResponse>;
-```
-
-When an order does not exist, return a declared service error instead of an ad-hoc `{ type, message }` object. Built-in Trellis errors cover platform failures such as validation, auth, transport, and unexpected internal errors. Domain failures belong to your service.
-
-Create `errors.ts` next to `schemas.ts`:
-
-```ts
-import { defineError } from "@qlever-llc/trellis";
-import { Type } from "@sinclair/typebox";
-
-export const NotFoundError = defineError({
-  type: "NotFoundError",
-  fields: {
-    resource: Type.String(),
-    resourceId: Type.String(),
-  },
-  message: ({ resource, resourceId }) => `${resource} ${resourceId} not found`,
-});
-
-export const errors = {
-  NotFoundError,
-} as const;
-```
-
-Register `Orders.Get` in the contract's `rpc` section alongside `Orders.Create`. Also import and pass the error map to `defineServiceContract(...)`:
-
-```ts
-import { defineServiceContract } from "@qlever-llc/trellis";
-import { errors } from "../errors.ts";
-import * as schemas from "../schemas.ts";
-
-export const ordersService = defineServiceContract(
-  { schemas, errors },
-  (ref) => ({
-    // ...
-
-    capabilities: {
-      "orders.write": { /* ... */ },
-      "orders.read": {
-        displayName: "Read orders",
-        description: "Read order records.",
-      },
-    },
-
-    rpc: {
-      "Orders.Create": { /* ... */ },
-      "Orders.Get": {
-        version: "v1",
-        input: ref.schema("GetOrderRequest"),
-        output: ref.schema("GetOrderResponse"),
-        capabilities: { call: ["orders.read"] },
-        errors: [ref.error("NotFoundError"), ref.error("UnexpectedError")],
-      },
-    },
-  }),
-);
-```
-
-Now add the typed read handler to `handlers/orders.ts`:
-
-```ts
-import { err, isErr, ok } from "@qlever-llc/trellis";
-import { NotFoundError } from "../errors.ts";
-import type {
-  RpcHandlerArgs,
-  RpcHandlerResult,
-} from "../contracts/orders_service.ts";
-
-type Args = RpcHandlerArgs<"Orders.Get">;
-type Result = RpcHandlerResult<"Orders.Get">;
-
-export async function getOrderHandler({
-  input,
-  client,
-}: Args): Promise<Result> {
-  const result = await client.kv.orders.get(input.orderId).take();
-  if (isErr(result)) {
-    return err(new NotFoundError({
-      resource: "Order",
-      resourceId: input.orderId,
-    }));
-  }
-
-  return ok(result.value);
+rpc "Orders.Get" {
+  version "v1";
+  input GetOrderRequest;
+  output GetOrderResponse;
+  errors [OrderNotFound];
 }
 ```
 
-Mount it from `main.ts`:
+Generated SDKs expose the typed error class. Expected RPC failures remain `Result` values rather than thrown transport exceptions.
 
-```ts
-import { getOrderHandler } from "./handlers/orders.ts";
+Add these declarations to the existing Orders API. When the repository lookup
+finds no order, return `Result.err(new OrderNotFound({ orderId }))` using the
+generated class. A found order returns `Result.ok(...)` with the declared
+response. Do not translate every database error into `OrderNotFound`: unexpected
+storage failures are a different outcome and must not be reported as absence.
 
-await app.handle.rpc.orders.get(getOrderHandler);
-```
-
-`client.kv.orders.get(key)` returns a `Result<TypedKVEntry<Order>, KVError>`. When the key doesn't exist, it returns an `Err`. Translate that into a declared service-local `NotFoundError` for the caller.
-
-Callers can now branch on the declared error class:
-
-```ts
-import { isErr } from "@qlever-llc/trellis";
-import { NotFoundError } from "./errors.ts";
-
-const result = await client.rpc.orders.get({ orderId: "ord_123" });
-const value = result.take();
-
-if (isErr(value) && value.error instanceof NotFoundError) {
-  console.log(value.error.resource, value.error.resourceId);
-}
-```
-
-Upgrade and restart as before.
-
-{/snippet}
-{#snippet rust()}
-
-Add the schemas in `contracts/service.rs`:
-
-```rust
-fn get_order_request_schema() -> Value {
-    json!({
-        "type": "object",
-        "required": ["orderId"],
-        "properties": {
-            "orderId": { "type": "string" }
-        }
-    })
-}
-
-fn get_order_response_schema() -> Value {
-    order_schema()
-}
-
-fn not_found_error_schema() -> Value {
-    json!({
-        "type": "object",
-        "required": ["id", "type", "message", "resource", "resourceId"],
-        "properties": {
-            "id": { "type": "string" },
-            "type": { "type": "string", "const": "NotFoundError" },
-            "message": { "type": "string" },
-            "resource": { "type": "string" },
-            "resourceId": { "type": "string" },
-            "context": { "type": "object", "patternProperties": { "^.*$": {} } },
-            "traceId": { "type": "string" }
-        }
-    })
-}
-```
-
-Register the schemas, error, capability, and RPC:
-
-```rust
-.schema("GetOrderRequest", get_order_request_schema())
-.schema("GetOrderResponse", get_order_response_schema())
-.schema("NotFoundErrorData", not_found_error_schema())
-.error("NotFoundError", "NotFoundError", "NotFoundErrorData")
-.capability(
-    "orders.read",
-    ContractCapabilityMetadata {
-        display_name: "Read orders".to_string(),
-        description: "Read order records.".to_string(),
-        consequence: None,
-    },
-)
-.rpc(
-    "Orders.Get",
-    rpc("v1", "rpc.v1.Orders.Get", "GetOrderRequest", "GetOrderResponse")
-        .with_call_capabilities(["orders.read"])
-        .with_error_types(["NotFoundError", "UnexpectedError"]),
-)
-```
-
-Add the handler:
-
-```rust
-use serde_json::json;
-use trellis_sdk_orders_service::types::GetOrderRequest;
-use trellis_rs::service::{DeclaredRpcError, ServerError};
-
-pub async fn get_order(
-    context: Arc<AppContext>,
-    _ctx: ServiceHandlerContext,
-    input: GetOrderRequest,
-) -> HandlerResult<Order> {
-    let Some(bytes) = context.orders.get(&input.order_id).await? else {
-        return Err(ServerError::DeclaredRpc(DeclaredRpcError::new(
-            "NotFoundError",
-            format!("Order {} not found", input.order_id),
-            [
-                ("resource", json!("Order")),
-                ("resourceId", json!(input.order_id)),
-            ],
-        )));
-    };
-
-    Ok(serde_json::from_slice(&bytes)?)
-}
-```
-
-Register it with the generated provider helper:
-
-```rust
-service.handle().rpc().orders().get({
-    let context = Arc::clone(&context);
-    move |ctx, input| handlers::get_order(Arc::clone(&context), ctx, input)
-});
-```
-
-Callers see `NotFoundError` as a structured RPC error payload. Rust client code can branch on `RpcErrorPayload::error_type()` when a typed call returns `TrellisClientError::RpcError(...)`.
-
-Upgrade and restart as before.
-
-{/snippet}
-</LanguageTabs>
+Callers should inspect the generated error when they can recover, for example
+by showing an unavailable order. Reserve `.orThrow()` for boundaries that
+intentionally propagate failures. Tests should assert the declared error type
+and relevant order ID, not the complete serialized stack or message wording.

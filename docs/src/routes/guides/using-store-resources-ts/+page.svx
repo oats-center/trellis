@@ -1,223 +1,42 @@
-This guide shows how a TypeScript service uses `resources.store` for service-owned blobs.
+# Use Store resources from TypeScript
 
-Read [Trellis Concepts](/guides/concepts) first for background on contracts, resources, and `Result`-based APIs.
+Declare a `store` resource with title, description, TTL, and optional desired
+capacity. Store is raw object bytes plus metadata; it has no schema or
+representation migration.
 
-## What `resources.store` is for
-
-Use `resources.store` when a service needs to keep larger opaque blobs that do not fit well in typed KV entries or normal RPC bodies.
-
-Good uses:
-
-- uploaded files waiting for processing
-- generated export bundles
-- intermediate binary artifacts between workflow steps
-- service-owned attachments with simple metadata
-
-Do not use `resources.store` for typed records. Keep those in `resources.kv`.
-
-## 1. Declare the store in the contract
-
-Add a `store` section under `resources`:
-
-```ts
-import { defineServiceContract } from "@qlever-llc/trellis";
-
-export const documentsService = defineServiceContract({}, () => ({
-  id: "documents-service@v1",
-  displayName: "Documents Service",
-  description: "Process uploaded documents and generated exports.",
-  resources: {
-    store: {
-      uploads: {
-        purpose: "Temporary uploaded files awaiting processing",
-        ttlMs: 86_400_000,
-        maxObjectBytes: 100 * 1024 * 1024,
-        maxTotalBytes: 10 * 1024 * 1024 * 1024,
-      },
-    },
-  },
-}));
-```
-
-Fields:
-
-- `purpose` explains why the service needs the store
-- `required` defaults to `true`; set it to `false` only when the service can run
-  without this store binding
-- `ttlMs` is optional; omit it or set it to `0` when the store should not request automatic expiry
-- `maxObjectBytes` requests a finite per-object limit. Trellis enforces it for
-  normal store writes and transfer-staged objects before the object becomes
-  available through the store.
-- `maxTotalBytes` requests a finite total store size limit; omit it when the
-  store should use the runtime's unlimited/default object-store size behavior
-
-Like `resources.kv`, the key under `store` (`uploads`) is only a logical alias. Trellis assigns the physical store identity during authority reconciliation and stores the deployment binding. Optional stores may be omitted from runtime bindings when provisioning fails or object-store support is unavailable. If a later compatible boundary omits `maxObjectBytes` or `maxTotalBytes`, Trellis reconciles the backing object store back to the unlimited/default size setting instead of preserving an older finite limit.
-
-## 2. Connect the service and open the store
-
-The runtime shape mirrors the KV handle pattern. This example assumes the
-default required binding, so `service.store.uploads` is present after a
-successful connect. Do not construct `StoreHandle` or pass binding/resource data
-into a `Trellis` constructor yourself; connect with `TrellisService.connect(...)`
-and use the returned `service.store` handle.
-
-```ts
-import { isErr, Result } from "@qlever-llc/trellis";
-import { TrellisService } from "@qlever-llc/trellis/service/deno";
-import { documentsService } from "./contracts/documents_service.ts";
-
-const service = await TrellisService.connect({
-  trellisUrl: Deno.env.get("TRELLIS_URL")!,
-  contract: documentsService,
-  name: "documents-service",
-  sessionKeySeed: Deno.env.get("DOCUMENTS_SERVICE_SESSION_KEY_SEED")!,
-  server: {},
-});
-
-const opened = await service.store.uploads.open();
-if (isErr(opened)) throw opened.error;
-const uploads = opened.value;
-```
-
-Unlike KV bindings, which are pre-opened during `TrellisService.connect()`, store handles need a failable `open()` call that returns `Result`.
-
-## 3. Create and replace objects
-
-Store write semantics follow KV naming and behavior:
-
-- `create(...)` fails when the key already exists
-- `put(...)` overwrites the current value for that key
-
-```ts
-const created = await uploads.create("incoming/claim-1234.pdf", fileBytes, {
-  contentType: "application/pdf",
-  metadata: {
-    source: "portal",
-    claimId: "claim-1234",
-  },
-});
-if (isErr(created)) throw created.error;
-
-const replaced = await uploads.put("incoming/claim-1234.pdf", updatedBytes, {
-  contentType: "application/pdf",
-  metadata: {
-    source: "portal",
-    claimId: "claim-1234",
-    normalized: "true",
-  },
-});
-if (isErr(replaced)) throw replaced.error;
-```
-
-All failable public methods return `Result`, matching the broader Trellis TypeScript design and the existing KV API style.
-
-## 4. Read metadata and body data
-
-The `get(...)` API returns an entry object so metadata stays attached to the object body.
-
-```ts
-const entryResult = await uploads.get("incoming/claim-1234.pdf");
-if (isErr(entryResult)) throw entryResult.error;
-
-const entry = entryResult.value;
-console.info(entry.info.contentType, entry.info.metadata.claimId);
-```
-
-For body access, the primary path is a stream with a byte-array convenience helper:
-
-```ts
-const streamResult = await entry.stream();
-if (isErr(streamResult)) throw streamResult.error;
-const bodyStream = streamResult.value;
-
-const bytesResult = await entry.bytes();
-if (isErr(bytesResult)) throw bytesResult.error;
-const bodyBytes = bytesResult.value;
-```
-
-Use `stream()` for larger values. Use `bytes()` when the object is small enough to materialize in memory conveniently.
-
-## 5. List and delete by prefix
-
-The v1 listing model is prefix-based, owner-only, and uses live offset pages.
-Pass `{ prefix, offset?, limit }` and read objects from `.entries`.
-
-```ts
-const listed = await uploads.list({ prefix: "incoming/", limit: 50 });
-if (isErr(listed)) throw listed.error;
-
-for (const info of listed.value.entries) {
-  console.info(info.key, info.size, info.updatedAt);
-}
-
-if (listed.value.nextOffset !== undefined) {
-  const next = await uploads.list({
-    prefix: "incoming/",
-    offset: listed.value.nextOffset,
-    limit: listed.value.limit,
-  });
-  if (isErr(next)) throw next.error;
-}
-
-const deleted = await uploads.delete("incoming/claim-1234.pdf");
-if (isErr(deleted)) throw deleted.error;
-```
-
-This is live offset pagination, not snapshot or cursor pagination. Concurrent
-object writes or deletes can change what appears at later offsets.
-
-## 6. Metadata model
-
-Store metadata is limited to string pairs in v1:
-
-```ts
-metadata: {
-  source: "portal",
-  claimId: "claim-1234",
-  stage: "normalized",
+```trellis
+service Documents {
+  store documents {
+    title "Documents";
+    description "Document objects.";
+    ttl 0;
+    desired_max_object 1MiB;
+    desired_max_total 100MiB;
+  }
 }
 ```
 
-Keep metadata small and descriptive. If the service needs richer typed state or query patterns, store that state separately in `resources.kv` and treat the store object as the opaque binary payload.
+`desired_max_object` and `desired_max_total` are planning hints. They do not
+grant approval, determine readiness, configure an enforced limit, or report the
+limits the service actually receives.
 
-## 7. After a send transfer completes
+Connect through the generated participant and use its Store handle. Trellis
+resolves physical identity and actual limits. Stream reads/writes, preserve
+checksums, and propagate cancellation; do not derive bucket names or buffer
+large objects for JSON validation.
 
-Transfer-capable operations can stage caller-sent bytes into a service store. After the provider-side `transfer.completed()` resolves, the staged object is durable in the owning service store and the next step is normal store access.
+Bindings report observed or effective `ttlMs`, `maxTotalBytes`, and
+`maxObjectBytes`. `maxObjectBytes` is present only when the runtime write path
+actually enforces it; do not infer it from `desired_max_object`.
 
-```ts
-await service.handle.operation.documents.filesUpload(
-  async ({ input, transfer }) => {
-    const transferred = await transfer.completed();
-    if (transferred.isErr()) return Result.err(transferred.error);
+List with `{ prefix?, cursor?, limit? }`. Results contain only `entries` and an
+optional `nextCursor`, ordered by object key. The default limit is `100`, and
+the maximum is `500`.
 
-    const opened = await service.store.uploads.open();
-    const uploads = opened.take();
-    if (isErr(uploads)) return Result.err(uploads.error);
+Pass `nextCursor` unchanged with the same prefix. A malformed cursor or one from
+a different query is rejected. No `nextCursor` means the listing is complete.
+Listing is live rather than a snapshot, but inserting or deleting keys before
+the continuation does not duplicate or skip remaining keys after it.
 
-    const entryResult = await uploads.get(input.key);
-    const entry = entryResult.take();
-    if (isErr(entry)) return Result.err(entry.error);
-
-    const streamResult = await entry.stream();
-    const stream = streamResult.take();
-    if (isErr(stream)) return Result.err(stream.error);
-
-    await processDocumentStream(stream);
-
-    const deleted = await uploads.delete(input.key);
-    if (deleted.isErr()) {
-      console.warn("upload cleanup failed", deleted.error);
-    }
-
-    return Result.ok({ key: input.key, size: entry.info.size });
-  },
-);
-```
-
-Prefer `stream()` for large files and use `bytes()` only when buffering the full object is intentional. Clean up temporary staged objects with `delete(...)` after processing when they should not remain in the service store.
-
-## 8. Relationship to client transfer
-
-`resources.store` is the service-owned storage layer. Do not expose raw store bindings to callers.
-
-For caller-sent bytes, expose a contract-owned operation with `transfer: { direction: "send", store, key, contentType }` and let the service process the staged object after `transfer.completed()`. For caller-received bytes, expose a contract-owned RPC or operation that returns a `direction: "receive"` transfer grant; callers consume that grant with `client.transfer(grant).stream()` or `.bytes()`.
+Trellis never adopts a foreign store as the declared resource and never destroys
+a store without matching Trellis ownership evidence.

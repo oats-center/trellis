@@ -1,36 +1,24 @@
-This guide covers day-to-day development from a Trellis source checkout. It uses the same simple local setup as [Starting Trellis](/guides/starting-trellis): NATS runs in a container, while the Trellis runtime and Console run from source.
+This guide covers day-to-day development from a Trellis source checkout. It uses the same local setup as [Starting Trellis](/guides/starting-trellis): `trellis-server` explicitly manages local NATS while the runtime and Console run from source.
 
 ## What you need
 
 - Git
 - [Deno](https://deno.com) v2+
 - a Rust toolchain
-- `podman`
 - the `trellis` CLI installed (see [Install the Trellis CLI](/guides/install-trellis-cli))
+- `nats-server` on `PATH`, or network access when explicitly using
+  `--nats-download`
 
 ## 1. Prepare a local runtime bundle
 
 Generate local NATS, Trellis config, credentials, keys, and data directories:
 
 ```sh
-trellis local init --out ~/trellis
+trellis init config --out ~/trellis
 ```
 
-Start NATS from that bundle:
-
-```sh
-podman run --replace --detach --name trellis-nats \
-  --publish 127.0.0.1:4222:4222 \
-  --publish 127.0.0.1:8080:8080 \
-  --publish 127.0.0.1:8222:8222 \
-  --volume "$HOME/trellis/nats/nats.conf:/etc/nats/nats.conf:ro,Z" \
-  --volume "$HOME/trellis/nats/jwt.conf:/etc/nats/jwt.conf:ro,Z" \
-  --volume "$HOME/trellis/nats/data:/data:Z" \
-  docker.io/library/nats:latest \
-  -c /etc/nats/nats.conf
-```
-
-The generated config is ready for local username/password login. You do not need a GitHub or OIDC application for the first local admin account.
+`trellis-server` derives its managed NATS config from that bundle, so no
+separate NATS setup step is needed.
 
 ## 2. Clone and prepare the repo
 
@@ -39,76 +27,81 @@ git clone https://github.com/qlever-llc/trellis.git
 cd trellis
 ```
 
-Generate contract artifacts from a clean checkout:
+Install API dependencies and generate contract artifacts from a clean checkout:
 
 ```sh
-cd js
-deno task prepare
-cd ..
+cargo xtask install
 ```
 
-`deno task prepare` is bootstrap-safe because it runs through `trellis-generate`; you do not need a running Trellis instance to generate SDKs and manifests. Rust-first workflows can run the same repo-local generation step with `cargo xtask prepare`.
+Installation is bootstrap-safe; you do not need a running Trellis instance to generate SDKs and manifests.
 
-During active contract work, run a watcher in a separate terminal:
+## 3. Start the Trellis runtime
+
+Run the server from the source tree so runtime changes are picked up by rebuilds:
 
 ```sh
-cd js
-deno task prepare:watch
+cargo run -p trellis-server -- --dev
 ```
 
-The Rust workspace exposes the same workflow as `cargo xtask prepare-watch`.
+The runtime safely converges the streams and KV buckets owned by `all`, then
+starts on `http://localhost:3000` using the generated TOML config. The current
+Rust runtime exposes `/healthz` and `/readyz`; both return version and mode
+metadata.
 
-## 3. Apply shared infrastructure
+## 4. Check runtime readiness
+
+Query both runtime endpoints:
 
 ```sh
-trellis infra apply \
-  --servers 127.0.0.1 \
-  --trellis-creds ~/trellis/nats/creds/trellis-auth.creds \
-  --auth-creds ~/trellis/nats/creds/auth-auth.creds
+curl http://localhost:3000/healthz
+curl http://localhost:3000/readyz
 ```
 
-## 4. Start the Trellis runtime
+Use a runtime path that explicitly includes the auth and portal services for end-to-end first-admin, portal, and CLI login flows.
+
+## 5. Start the built-in web app
 
 ```sh
-cd js/services/trellis
-TRELLIS_CONFIG="$HOME/trellis/trellis/config.jsonc" deno task dev
-```
-
-The runtime starts on `http://localhost:3000` with file watching enabled. Trellis serves the built-in portal from the source tree during this flow.
-
-## 5. Create and log in as an admin
-
-When Trellis starts for the first time, it creates the initial local `admin` identity and prints an admin setup URL. Open that URL in your browser and set the password. Then start the CLI login flow:
-
-```sh
-trellis login http://localhost:3000
-trellis whoami
-```
-
-## 6. Start Console
-
-```sh
-cd js/apps/console
-cp .env.example .env
+cd web
 deno task dev
 ```
 
-Open `http://localhost:5173` and log in with the local admin username and password.
+Point the shared built-in web source at Vite in the runtime configuration, then
+open `http://localhost:3000/console`:
+
+```toml
+[http]
+web_source = { proxy = "http://127.0.0.1:5173" }
+```
+
+Trellis reverse proxies the complete web source, including Vite modules and HMR
+WebSockets. The browser continues to use the Trellis origin.
+
+To replace either embedded UI with a built static artifact, configure its root:
+
+```toml
+[http]
+portal_source = { directory = "/opt/acme/trellis-login" }
+console_source = { directory = "/opt/acme/trellis-console" }
+```
+
+The portal root must contain `200.html`; the Console root must contain
+`index.html`.
 
 ## Development workflow
 
-- **Runtime changes**: edit files under `js/services/trellis/` or `js/packages/`; the service watcher restarts automatically.
-- **Console changes**: edit files under `js/apps/console/`; Vite HMR applies changes in place.
-- **Contract changes**: run `cd js && deno task prepare`, or keep `cd js && deno task prepare:watch` running.
+- **Runtime changes**: edit files under `rust/crates/runtime/`; rebuild and restart `trellis-server` after changes.
+- **Web changes**: edit files under `web/`; Vite HMR applies changes through Trellis.
+- **Contract changes**: run `cargo xtask install`.
 - **CLI changes**: run `cargo build -p trellis-cli` in the `rust/` directory, then re-run `trellis ...` commands.
-- **Type checking**: run `deno task -c js/deno.json check`.
-- **Tests**: run `deno task -c js/deno.json test:contracts` or `deno task -c js/deno.json test:auth`.
+- **Type checking**: run `deno task -c ts/deno.json check`.
+- **Tests**: run `deno task -c ts/deno.json test:contracts` or `deno task -c ts/deno.json test:auth`.
 
 ## Verify
 
 ```sh
 curl http://127.0.0.1:8222/healthz
-curl -i http://localhost:3000/_trellis/portal
-curl -I http://localhost:5173/
-trellis whoami
+curl http://localhost:3000/healthz
+curl http://localhost:3000/readyz
+curl -I http://localhost:3000/console
 ```

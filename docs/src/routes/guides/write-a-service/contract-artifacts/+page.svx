@@ -1,131 +1,27 @@
-<script lang="ts">
-  import LanguageTabs from "$lib/components/LanguageTabs.svelte";
-</script>
-
-Now that your service is live, how do other teams call it, and how do operators roll it out? Trellis generates both caller SDK packages and deployment artifacts from the same contract.
-
-The generated packages under `./generated/packages/` are publishable client modules for other services and apps to use through npm, JSR, Cargo, or whatever package targets your project supports. Those packages include typed request/response definitions, schema constants, a concrete client facade, and `use(...)` helpers that consumers drop into their own contracts.
-
-Operators also need a contract artifact they can submit as a service deployment authority proposal before, or during, rollout.
-
-## Generated artifact layout
-
-`generated/` is disposable build output. It is ignored by git and recreated by repo-local prepare tasks that run `trellis-generate` behind the scenes.
-
-For TypeScript contract sources, prepare resolves either a top-level `contract.ts` or `contract.js` for single-contract projects, or `contracts/*.ts` for multi-contract layouts, from the file's default export. Authors do not need to add named `CONTRACT` exports just for generation. For TypeScript authoring, schema and error registries belong in the first `define*Contract(...)` argument, while contract-owned capability metadata belongs in the returned contract body beside `id`, `displayName`, and `description`.
-
-You can also add docs metadata to the contract or to owned surfaces when generated docs need more than the short `displayName` and `description` copy:
-
-```ts
-export const ordersService = defineServiceContract({ schemas }, (ref) => ({
-  id: "orders-service@v1",
-  displayName: "Orders Service",
-  description: "A simple service for managing orders.",
-  docs: {
-    summary: "Order management APIs.",
-    markdown: "# Orders Service\n\nCreates and retrieves order records.",
-  },
-  rpc: {
-    "Orders.Create": {
-      version: "v1",
-      input: ref.schema("CreateOrderRequest"),
-      output: ref.schema("CreateOrderResponse"),
-      docs: {
-        markdown: "Creates one order and returns its generated order id.",
-      },
-    },
-  },
-}));
-```
-
-Docs-only edits still require artifact regeneration so manifests and generated documentation stay current. They do not change the contract digest identity, because `docs` is normalized metadata and not part of the runtime digest projection. Keep approval and authority meaning in capability metadata; use `docs` for authored reference material.
-
-Outputs include:
-
-- contract manifests under `generated/contracts/manifests/`
-- generated JSR TypeScript packages under `generated/packages/jsr/`
-- generated npm JavaScript packages under `generated/packages/npm/`
-- generated Cargo crates under `generated/packages/cargo/`
-- Rust build output under `generated/packages/cargo/*/target/`
-
-JSR packages include `client.ts` facade types for consumers. Service contracts generate JSR, npm, and Cargo SDK packages; app contracts generate JSR and npm SDK packages so Svelte/browser code can import concrete client facade types. Device and agent contracts are verified, with Rust participant facades generated where applicable.
-
-Refresh the outputs with the repo workflow entrypoints:
-
-- `cd js && deno task prepare`
-- `cargo xtask prepare`
-- `cargo xtask build`
-
-`trellis` is the runtime/operator CLI. Normal users should not need machine-global generator setup to refresh these artifacts.
-
-The Rust workspace treats the generated SDK crates under `generated/packages/cargo/` as build inputs. Run `cargo xtask prepare` before `cargo build` or `cargo install` from this repository. When you just want the normal Rust build workflow, prefer `cargo xtask build`, which runs `prepare` first and then invokes `cargo build`.
-
-<LanguageTabs>
-{#snippet ts()}
-
-A typical service repo ends up with a shape like this:
-
-```text
-orders-service/
-  contracts/orders_service.ts
-  schemas.ts
-  main.ts
-  dist/contracts/
-  generated/packages/
-```
-
-Keep the source contract with the service, and generate artifacts from the project root:
+# Install source packages and generate SDKs
 
 ```sh
-deno task prepare
+trellis install
+trellis generate
 ```
 
-During active development, keep a watcher running in another terminal:
+`trellis install` reproduces `trellis.lock`. Use `trellis update` only when
+intentionally resolving dependency changes.
 
-```sh
-deno task prepare:watch
-```
+`trellis.toml` defines `[package]`, explicitly lists `[sources]`, declares
+`[dependencies]`, and configures language output. Local dependencies use
+`{ package, path }`; registry dependencies resolve to exact source bundles in
+the global content-addressed OCI cache.
 
-The watcher ignores unrelated files and generated output. If you change schemas, contracts, RPCs, operations, or events, it refreshes the affected contract entries when it can. If you change project discovery inputs or generator tooling, it may ask you to run a full prepare or restart the watcher.
+Each language output is one ordinary package containing APIs, participants,
+types, codecs, and descriptors. Its version equals the source package version.
+There is no project-local dependency installation tree, canonical API or
+participant JSON directory, generator build script, or startup generation step.
 
-If a watch run behaves unexpectedly, ask Trellis why it made that decision:
+Published Trellis packages contain the manifest, listed `.trellis` files, and
+frozen resolution metadata. Generated descriptors are runtime support ABI, not
+a contract builder or exchange artifact.
 
-```sh
-trellis-generate prepare --watch --changes .
-```
-
-That prints the changed paths, the watch decision, and the reason.
-
-Regenerate these artifacts whenever the contract changes. If only handler implementation changed, you usually do not need a prepare run.
-
-{/snippet}
-{#snippet rust()}
-
-Every Rust contract change should regenerate artifacts:
-
-```sh
-trellis-generate prepare .
-```
-
-This writes:
-
-```text
-generated/
-  contracts/manifests/orders-service@v1.json
-  packages/cargo/orders-service/
-  packages/jsr/orders-service/
-  packages/npm/orders-service/
-```
-
-Other Rust services can depend on the generated Cargo package and use its typed descriptors, request/response structs, client helpers, service-runtime registration, event descriptors, and feed descriptors. Other language targets can use the generated JS packages.
-
-For active contract editing, keep prepare running in watch mode:
-
-```sh
-trellis-generate prepare --watch --changes .
-```
-
-Rust code should treat source as authoritative for exact runtime APIs and Rustdoc as the public API reference. If a generated SDK helper or descriptor name differs from the examples here, prefer the generated item in `generated/packages/cargo/orders-service/src/`.
-
-{/snippet}
-</LanguageTabs>
+Commit generated output when consumers must build without the CLI/cache;
+otherwise follow the repository's ignore policy. Never hand-edit generated
+files. `trellis generate --check` verifies configured output is current.

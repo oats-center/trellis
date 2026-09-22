@@ -1,0 +1,66 @@
+type NonEmptyString = string(min_length=1);
+enum Priority { high; medium; low; }
+model AuditRecordedEvent { activityId: NonEmptyString; kind: NonEmptyString; message: NonEmptyString; occurredAt: NonEmptyString; relatedSiteId?: NonEmptyString; relatedInspectionId?: NonEmptyString; }
+model InspectionAssignment { inspectionId: NonEmptyString; siteId: NonEmptyString; siteName: NonEmptyString; assetName: NonEmptyString; checklistName: NonEmptyString; priority: Priority; scheduledFor: NonEmptyString; }
+model SiteSummary { siteId: NonEmptyString; siteName: NonEmptyString; openInspections: uint32; overdueInspections: uint32; latestStatus: NonEmptyString; lastReportAt: NonEmptyString; }
+model AssignmentsListRequest { page?: CursorQuery; }
+model SitesListRequest { page?: CursorQuery; }
+model EvidenceListRequest { page?: CursorQuery; prefix?: NonEmptyString; }
+model ReportsListRequest { page?: CursorQuery; }
+model SitesGetRequest { siteId: NonEmptyString; }
+model SitesGetResponse { site?: SiteSummary; }
+model SitesRefreshRequest { siteId: NonEmptyString; }
+model SitesRefreshProgress { stage: NonEmptyString; message: NonEmptyString; }
+model SitesRefreshResponse { refreshId: NonEmptyString; site: SiteSummary; status: NonEmptyString; }
+model SiteRefreshJobPayload { siteId: NonEmptyString; }
+model SiteRefreshJobResult { refreshId: NonEmptyString; site: SiteSummary; status: NonEmptyString; }
+model SitesRefreshedEvent { refreshId: NonEmptyString; site: SiteSummary; refreshedAt: NonEmptyString; }
+model EvidenceUploadRequest { key: NonEmptyString; contentType?: NonEmptyString; evidenceType: NonEmptyString; metadata?: map<string>; }
+model EvidenceUploadProgress { stage: NonEmptyString; message: NonEmptyString; }
+model EvidenceUploadResponse { evidenceId: NonEmptyString; key: NonEmptyString; size: uint64; contentType?: NonEmptyString; fileName?: NonEmptyString; disposition: NonEmptyString; }
+model EvidenceRecord { evidenceId: NonEmptyString; key: NonEmptyString; size: uint64; contentType?: NonEmptyString; evidenceType: NonEmptyString; fileName?: NonEmptyString; uploadedAt: NonEmptyString; }
+model EvidenceDownloadRequest { key: NonEmptyString; }
+model EvidenceDownloadResponse { key: NonEmptyString; size: uint64; updatedAt: NonEmptyString; digest: NonEmptyString; contentType?: NonEmptyString; metadata: map<string>; }
+model EvidenceDeleteRequest { key: NonEmptyString; }
+model EvidenceDeleteResponse { key: NonEmptyString; deleted: bool; }
+model ReportsGenerateRequest { inspectionId: NonEmptyString; reportComment: NonEmptyString; }
+model ReportsGenerateProgress { stage: NonEmptyString; message: NonEmptyString; }
+model ReportsGenerateResponse { reportId: NonEmptyString; inspectionId: NonEmptyString; status: NonEmptyString; }
+model ReportRecord { reportId: NonEmptyString; inspectionId: NonEmptyString; siteId?: NonEmptyString; siteName: NonEmptyString; assetName: NonEmptyString; status: NonEmptyString; publishedAt: NonEmptyString; reportComment: NonEmptyString; summary: NonEmptyString; readiness: NonEmptyString; evidenceStatus: NonEmptyString; }
+model ReportsPublishedEvent { reportId: NonEmptyString; inspectionId: NonEmptyString; siteId?: NonEmptyString; publishedAt: NonEmptyString; }
+model ActivityLiveFeedRequest {}
+model ActivityLiveFeedEvent { name: NonEmptyString; audit?: AuditRecordedEvent; report?: ReportsPublishedEvent; evidence?: EvidenceRecord; site?: SitesRefreshedEvent; }
+type AssignmentsListResponse = CursorPage<InspectionAssignment>;
+type SitesListResponse = CursorPage<SiteSummary>;
+type EvidenceListResponse = CursorPage<EvidenceRecord>;
+type ReportsListResponse = CursorPage<ReportRecord>;
+
+api fieldops@v1 {
+  title "Field Ops Demo Service";
+  description "Assignments, site summaries, evidence, reports, and audit activity.";
+  error UnexpectedError;
+  error TransferError;
+  rpc Assignments.List { input AssignmentsListRequest; output AssignmentsListResponse; errors [UnexpectedError]; pagination cursor; }
+  rpc Sites.List { input SitesListRequest; output SitesListResponse; errors [UnexpectedError]; pagination cursor; }
+  rpc Sites.Get { input SitesGetRequest; output SitesGetResponse; errors [UnexpectedError]; }
+  rpc Evidence.List { input EvidenceListRequest; output EvidenceListResponse; errors [UnexpectedError]; pagination cursor; }
+  rpc Evidence.Download { input EvidenceDownloadRequest; output EvidenceDownloadResponse; errors [TransferError, UnexpectedError]; download; }
+  rpc Evidence.Delete { input EvidenceDeleteRequest; output EvidenceDeleteResponse; errors [UnexpectedError]; }
+  rpc Reports.List { input ReportsListRequest; output ReportsListResponse; errors [UnexpectedError]; pagination cursor; }
+  operation Sites.Refresh { input SitesRefreshRequest; progress SitesRefreshProgress; output SitesRefreshResponse; }
+  operation Reports.Generate { input ReportsGenerateRequest; progress ReportsGenerateProgress; output ReportsGenerateResponse; }
+  operation Evidence.Upload { input EvidenceUploadRequest; progress EvidenceUploadProgress; output EvidenceUploadResponse; upload; }
+  event Audit.Recorded { payload AuditRecordedEvent; }
+  event Reports.Published { payload ReportsPublishedEvent; }
+  event Evidence.Uploaded { payload EvidenceRecord; }
+  event Sites.Refreshed { payload SitesRefreshedEvent; }
+  feed Audit.Feed { input ActivityLiveFeedRequest; event ActivityLiveFeedEvent; }
+  capabilities { public { allows { rpc Assignments.List; rpc Sites.List; rpc Sites.Get; rpc Evidence.List; rpc Evidence.Download; rpc Evidence.Delete; rpc Reports.List; operation Sites.Refresh; operation Reports.Generate; operation Evidence.Upload; publish event Audit.Recorded; publish event Reports.Published; publish event Evidence.Uploaded; publish event Sites.Refreshed; subscribe event Audit.Recorded; subscribe event Reports.Published; subscribe event Evidence.Uploaded; subscribe event Sites.Refreshed; feed Audit.Feed; } } }
+}
+
+service Service {
+  implements fieldops;
+  store uploads { title "Evidence uploads"; description "Persistent evidence files."; ttl 0; desired_max_object 64MiB; desired_max_total 256MiB; }
+  kv siteSummaries { title "Site summaries"; description "Latest site summaries."; schema SiteSummary; version 1; history 1; ttl 0; }
+  job refreshSiteSummary { title "Refresh site summary"; description "Recomputes one site summary."; payload SiteRefreshJobPayload; result SiteRefreshJobResult; }
+}

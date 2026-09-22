@@ -1,274 +1,143 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::time::Duration;
 
-use super::{AuthenticatedUser, ClientTransportsRecord, SentinelCredsRecord};
+use super::AuthenticatedUser;
 use crate::client::SessionAuth;
 
 /// Persisted admin session details for the CLI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[doc = concat!("Public Trellis data type `", stringify!(AdminSessionState), "`.")]
 pub struct AdminSessionState {
+    /// Generated participant identity used by this login.
+    pub participant_id: String,
+    /// Durable user-only login identifier.
+    pub login_session_id: String,
     /// Base URL for the Trellis deployment.
+    #[doc = concat!("The `", stringify!(trellis_url), "` value.")]
     pub trellis_url: String,
-    /// Comma-separated NATS server list returned by Trellis.
-    pub nats_servers: String,
     /// Session-key seed used to sign subsequent Trellis requests.
+    #[doc = concat!("The `", stringify!(session_seed), "` value.")]
     pub session_seed: String,
-    /// Public session key derived from `session_seed`.
-    pub session_key: String,
-    /// Current delegated contract digest for admin runtime auth.
-    pub contract_digest: String,
-    /// Sentinel JWT used for NATS authentication.
-    pub sentinel_jwt: String,
-    /// Sentinel seed used for NATS authentication.
-    pub sentinel_seed: String,
-    /// RFC3339 expiry timestamp for the current delegated agent grant.
-    pub expires: String,
+    /// Session expiry in Unix milliseconds, when bounded.
+    #[doc = concat!("The `", stringify!(expires_at), "` value.")]
+    pub expires_at: Option<i64>,
+    /// Whether this login explicitly accepted a non-loopback HTTP origin.
+    #[serde(default)]
+    pub allow_insecure_origin: bool,
+}
+
+impl AdminSessionState {
+    /// Derive the public session key from the persisted private seed.
+    pub fn session_key(&self) -> Result<String, crate::client::TrellisClientError> {
+        Ok(crate::client::SessionAuth::from_seed_base64url(&self.session_seed)?.session_key)
+    }
 }
 
 /// A successfully bound user session.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[doc = concat!("Public Trellis data type `", stringify!(BoundSession), "`.")]
 pub struct BoundSession {
-    /// Inbox prefix authorized for the bound session.
-    #[serde(rename = "inboxPrefix")]
-    pub inbox_prefix: String,
-    /// RFC3339 expiry timestamp for this binding.
-    pub expires: String,
-    /// Comma-separated native NATS transport endpoints for the session.
-    pub nats_servers: String,
-    /// Sentinel credentials returned alongside the binding.
-    pub sentinel: SentinelCredsRecord,
+    /// Durable login shared by subsequent CLI connections.
+    pub login_session_id: String,
+    /// Session expiry in Unix milliseconds, when bounded.
+    #[doc = concat!("The `", stringify!(expires_at), "` value.")]
+    pub expires_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(crate) struct BindResponseBound {
-    #[serde(rename = "inboxPrefix")]
-    pub inbox_prefix: String,
-    pub expires: String,
-    pub sentinel: SentinelCredsRecord,
-    pub transports: ClientTransportsRecord,
+#[serde(rename_all = "camelCase")]
+#[doc = concat!("Public Trellis data type `", stringify!(BindResponseBound), "`.")]
+pub struct BindResponseBound {
+    /// Server time in Unix milliseconds.
+    pub server_now: i64,
+    #[doc = concat!("The `", stringify!(session), "` value.")]
+    pub session: BoundSessionRecord,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub(crate) enum BindResponse {
-    Bound(BindResponseBound),
-    ApprovalRequired {
-        approval: Value,
-    },
-    ApprovalDenied {
-        approval: Value,
-    },
-    InsufficientCapabilities {
-        approval: Value,
-        #[serde(rename = "missingCapabilities")]
-        missing_capabilities: Vec<String>,
-    },
+#[serde(rename_all = "camelCase")]
+#[doc = concat!("Public Trellis data type `", stringify!(BoundSessionRecord), "`.")]
+pub struct BoundSessionRecord {
+    #[doc = concat!("The `", stringify!(session_id), "` value.")]
+    pub session_id: String,
+    /// Installed participant selected by the authenticated login flow.
+    pub participant_id: String,
+    /// Installation public key whose possession was proven during binding.
+    pub session_key: String,
+    #[doc = concat!("The `", stringify!(expires_at), "` value.")]
+    pub expires_at: Option<i64>,
 }
 
 /// An in-progress agent login flow waiting for completion.
+#[doc = concat!("Public Trellis data type `", stringify!(AgentLoginChallenge), "`.")]
 pub struct AgentLoginChallenge {
-    pub(crate) flow_id: String,
-    pub(crate) login_url: String,
-    pub(crate) session_seed: String,
-    pub(crate) contract_digest: String,
-    pub(crate) auth: SessionAuth,
+    #[doc = concat!("The `", stringify!(flow_id), "` value.")]
+    pub flow_id: String,
+    #[doc = concat!("The `", stringify!(login_url), "` value.")]
+    pub login_url: String,
+    #[doc = concat!("The `", stringify!(session_seed), "` value.")]
+    pub session_seed: String,
+    pub(crate) participant_id: String,
+    /// Whether this flow explicitly accepted a non-loopback HTTP origin.
+    pub allow_insecure_origin: bool,
+    #[doc = concat!("The `", stringify!(auth), "` value.")]
+    pub auth: SessionAuth,
 }
 
 /// Options for starting an agent login flow.
 pub struct StartAgentLoginOpts<'a> {
     /// Base URL for the Trellis deployment.
+    #[doc = concat!("The `", stringify!(trellis_url), "` value.")]
     pub trellis_url: &'a str,
-    /// Contract JSON sent to `/auth/login` when starting the flow.
-    pub contract_json: &'a str,
+    /// Generated participant identity requesting the user session.
+    pub participant_id: &'a str,
+    /// Accept a non-loopback HTTP Trellis origin explicitly allow-listed by the
+    /// operator. Defaults to strict HTTPS-or-loopback validation.
+    pub allow_insecure_origin: bool,
 }
 
 /// Successful agent-login result after the admin user has been verified.
+#[doc = concat!("Public Trellis data type `", stringify!(AdminLoginOutcome), "`.")]
 pub struct AdminLoginOutcome {
     /// Persistable admin session state for later CLI reuse.
+    #[doc = concat!("The `", stringify!(state), "` value.")]
     pub state: AdminSessionState,
     /// Authenticated user returned by `Auth.Sessions.Me` after bind succeeds.
+    #[doc = concat!("The `", stringify!(user), "` value.")]
     pub user: AuthenticatedUser,
 }
 
 /// Result of starting admin reauthentication for a changed contract.
+#[doc = concat!("Public Trellis value set `", stringify!(AdminReauthOutcome), "`.")]
 pub enum AdminReauthOutcome {
     /// Contract change was auto-approved and the session was rebound immediately.
-    Bound(AdminLoginOutcome),
+    Bound(Box<AdminLoginOutcome>),
     /// External interaction is still required to finish the agent auth flow.
-    Flow(AgentLoginChallenge),
+    Flow(Box<AgentLoginChallenge>),
 }
 
-/// Derived device identity material used by the device activation helpers.
+/// Derived device identity material used to provision and bootstrap a device.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[doc = concat!("Public Trellis data type `", stringify!(DeviceIdentity), "`.")]
 pub struct DeviceIdentity {
     #[serde(rename = "identitySeedBase64url")]
+    #[doc = concat!("The `", stringify!(identity_seed_base64url), "` value.")]
     pub identity_seed_base64url: String,
     #[serde(rename = "publicIdentityKey")]
+    #[doc = concat!("The `", stringify!(public_identity_key), "` value.")]
     pub public_identity_key: String,
     #[serde(rename = "activationKeyBase64url")]
+    /// Secret used to derive activation confirmation codes. Keep it device-local.
     pub activation_key_base64url: String,
 }
 
-/// Encoded device activation payload carried in the activation QR.
+/// Device-local credential derived for one exact user companion installation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DeviceActivationPayload {
-    pub v: u8,
-    #[serde(rename = "publicIdentityKey")]
-    pub public_identity_key: String,
-    pub nonce: String,
-    #[serde(rename = "qrMac")]
-    pub qr_mac: String,
-}
-
-/// Signed pre-auth request sent to `/auth/devices/activate/wait`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DeviceActivationWaitRequest {
-    #[serde(rename = "flowId")]
-    pub flow_id: String,
-    #[serde(rename = "publicIdentityKey")]
-    pub public_identity_key: String,
-    #[serde(rename = "contractDigest", skip_serializing_if = "Option::is_none")]
-    pub contract_digest: Option<String>,
-    pub nonce: String,
-    pub iat: u64,
-    pub sig: String,
-}
-
-/// Signed pre-auth request sent to `/auth/devices/connect-info`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct DeviceConnectInfoRequest {
-    pub public_identity_key: String,
-    pub contract_digest: String,
-    pub iat: u64,
-    pub sig: String,
-}
-
-/// Native NATS transport endpoints returned for an activated device.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct DeviceConnectInfoNativeTransport {
-    pub nats_servers: Vec<String>,
-}
-
-/// Transport endpoints returned for an activated device.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-pub struct DeviceConnectInfoTransports {
-    pub native: Option<DeviceConnectInfoNativeTransport>,
-}
-
-/// Sentinel credentials returned for an activated device connection.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-pub struct DeviceConnectInfoSentinel {
-    pub jwt: String,
-    pub seed: String,
-}
-
-/// Selected runtime transport credentials for an activated device.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-pub struct DeviceConnectInfoTransport {
-    pub sentinel: DeviceConnectInfoSentinel,
-}
-
-/// Activated-device runtime auth settings returned by auth.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum DeviceConnectInfoAuthMode {
-    /// Device authenticates with its durable device identity key.
-    DeviceIdentity,
-}
-
-/// Activated-device runtime auth settings returned by auth.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct DeviceConnectInfoAuth {
-    pub mode: DeviceConnectInfoAuthMode,
-    pub iat_skew_seconds: i64,
-}
-
-/// Current runtime connection information for an activated device.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct DeviceConnectInfo {
-    pub instance_id: String,
-    pub deployment_id: String,
-    pub contract_id: String,
-    pub contract_digest: String,
-    pub transports: DeviceConnectInfoTransports,
-    pub transport: DeviceConnectInfoTransport,
-    pub auth: DeviceConnectInfoAuth,
-}
-
-/// Ready response returned by `/auth/devices/connect-info`.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct DeviceConnectInfoResponse {
-    pub status: String,
-    pub connect_info: DeviceConnectInfo,
-}
-
-/// Options for refreshing activated-device runtime connection information.
-pub struct GetDeviceConnectInfoOpts<'a> {
-    pub trellis_url: &'a str,
-    pub public_identity_key: &'a str,
-    pub identity_seed_base64url: &'a str,
-    pub contract_digest: &'a str,
-    pub iat: u64,
-}
-
-/// Activated wait response returned by auth.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DeviceActivationActivatedResponse {
-    pub status: String,
-    #[serde(rename = "activatedAt")]
-    pub activated_at: String,
-    #[serde(rename = "confirmationCode", skip_serializing_if = "Option::is_none")]
-    pub confirmation_code: Option<String>,
-    #[serde(rename = "connectInfo")]
-    pub connect_info: serde_json::Value,
-}
-
-/// Rejected wait response returned by auth.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DeviceActivationRejectedResponse {
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-}
-
-/// Pending wait response returned by auth.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DeviceActivationPendingResponse {
-    pub status: String,
-}
-
-/// Union of possible wait responses returned by auth.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "status", rename_all = "lowercase")]
-pub enum WaitForDeviceActivationResponse {
-    Activated {
-        #[serde(rename = "activatedAt")]
-        activated_at: String,
-        #[serde(rename = "confirmationCode", skip_serializing_if = "Option::is_none")]
-        confirmation_code: Option<String>,
-        #[serde(rename = "connectInfo")]
-        connect_info: serde_json::Value,
-    },
-    Rejected {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        reason: Option<String>,
-    },
-    Pending,
-}
-
-/// Polling options for waiting on an activated device.
-pub struct WaitForDeviceActivationOpts<'a> {
-    pub trellis_url: &'a str,
-    pub flow_id: &'a str,
-    pub public_identity_key: &'a str,
-    pub nonce: &'a str,
-    pub identity_seed_base64url: &'a str,
-    pub contract_digest: Option<&'a str>,
-    pub poll_interval: Duration,
+#[doc = concat!("Public Trellis data type `", stringify!(DeviceCompanionIdentity), "`.")]
+pub struct DeviceCompanionIdentity {
+    /// Secret Ed25519 seed. Keep it device-local and never send it to Trellis.
+    #[serde(rename = "installationSeedBase64url")]
+    pub installation_seed_base64url: String,
+    /// Public installation key sent in the proof-bound companion claim.
+    #[serde(rename = "installationPublicKey")]
+    pub installation_public_key: String,
 }

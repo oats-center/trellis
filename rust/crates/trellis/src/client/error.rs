@@ -7,6 +7,9 @@ pub struct RpcErrorPayload {
     value: Option<Value>,
 }
 
+/// Structured payload returned by an undeclared remote Trellis error.
+pub type RemoteErrorPayload = RpcErrorPayload;
+
 impl RpcErrorPayload {
     /// Builds a payload from a raw JSON RPC error body.
     pub fn from_json_slice(raw: &[u8]) -> Result<Self, serde_json::Error> {
@@ -51,25 +54,121 @@ impl RpcErrorPayload {
             .and_then(Value::as_str)
     }
 
-    /// Decode this payload as a declared RPC error when its discriminator matches.
-    pub fn decode_declared<T>(&self, error_type: &str) -> Result<Option<T>, serde_json::Error>
-    where
-        T: serde::de::DeserializeOwned,
-    {
-        let Some(value) = self.value.as_ref() else {
-            return Ok(None);
-        };
-        if self.error_type() != Some(error_type) {
-            return Ok(None);
-        }
-        serde_json::from_value(value.clone()).map(Some)
-    }
-
     fn format_human(&self) -> String {
         if let Some(value) = &self.value {
             format_rpc_error_value(value, &self.raw)
         } else {
             self.raw.clone()
+        }
+    }
+}
+
+/// Authentication failure returned while making a connected call.
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+#[error("{message}")]
+pub struct AuthenticationError {
+    message: String,
+}
+
+impl AuthenticationError {
+    /// Build an authentication error from a runtime message.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+/// Remote protocol failure, including malformed contract payloads.
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+#[error("{message}")]
+pub struct ProtocolError {
+    message: String,
+}
+
+impl ProtocolError {
+    /// Build a protocol error from a runtime message.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+/// Connected transport failure.
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+#[error("{message}")]
+pub struct TransportError {
+    message: String,
+}
+
+impl TransportError {
+    /// Build a transport error from a runtime message.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+/// Errors returned by generated caller methods.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum CallError<E>
+where
+    E: std::fmt::Debug,
+{
+    /// Contract-declared error.
+    #[error("declared remote error: {0:?}")]
+    Declared(Box<E>),
+    /// Well-formed remote error not declared by this action.
+    #[error("remote error: {}", .0.format_human())]
+    Remote(RemoteErrorPayload),
+    /// Request timeout.
+    #[error("request timeout")]
+    Timeout,
+    /// Authentication failure.
+    #[error(transparent)]
+    Authentication(AuthenticationError),
+    /// Invalid protocol frame or contract payload.
+    #[error(transparent)]
+    Protocol(ProtocolError),
+    /// NATS or other connected transport failure.
+    #[error(transparent)]
+    Transport(TransportError),
+    /// An optional generated action is not present in the installed availability snapshot.
+    #[error("optional action unavailable: {0}")]
+    AuthorizationUnavailable(String),
+}
+
+impl<E> CallError<E>
+where
+    E: std::fmt::Debug,
+{
+    pub(crate) fn from_client(
+        error: TrellisClientError,
+        decode_error: impl FnOnce(Value) -> Result<Option<E>, serde_json::Error>,
+    ) -> Self {
+        match error {
+            TrellisClientError::RpcError(payload) => match payload.value().cloned() {
+                Some(value) => match decode_error(value) {
+                    Ok(Some(error)) => Self::Declared(Box::new(error)),
+                    Ok(None) => Self::Remote(payload),
+                    Err(error) => Self::Protocol(ProtocolError::new(error.to_string())),
+                },
+                None => Self::Protocol(ProtocolError::new(
+                    "remote error payload is not structured JSON",
+                )),
+            },
+            TrellisClientError::Timeout => Self::Timeout,
+            TrellisClientError::Json(error) => {
+                Self::Protocol(ProtocolError::new(error.to_string()))
+            }
+            TrellisClientError::Codec(error) => Self::Protocol(ProtocolError::new(error)),
+            TrellisClientError::AuthorizationUnavailable(message) => {
+                Self::AuthorizationUnavailable(message)
+            }
+            error => Self::Transport(TransportError::new(error.to_string())),
         }
     }
 }
@@ -157,39 +256,6 @@ fn format_rpc_error_payload(raw: &str) -> String {
     format_rpc_error_value(&value, raw)
 }
 
-fn format_bootstrap_http_payload(raw: &str) -> String {
-    let Ok(value) = serde_json::from_str::<Value>(raw) else {
-        return raw.to_string();
-    };
-
-    let reason = value.get("reason").and_then(Value::as_str);
-    let message = value
-        .get("message")
-        .and_then(Value::as_str)
-        .or(reason)
-        .unwrap_or(raw);
-
-    let mut formatted = match reason {
-        Some(reason) if message != reason => format!("{reason}: {message}"),
-        _ => message.to_string(),
-    };
-
-    if let Some(object) = value.as_object() {
-        let context = object
-            .iter()
-            .filter(|(key, value)| {
-                key.as_str() != "reason" && key.as_str() != "message" && !value.is_null()
-            })
-            .map(|(key, value)| format!("{key}={}", format_json_value(value)))
-            .collect::<Vec<_>>();
-        if !context.is_empty() {
-            formatted.push_str(&format!(" ({})", context.join(", ")));
-        }
-    }
-
-    formatted
-}
-
 /// Errors returned by the Trellis client runtime.
 #[derive(thiserror::Error, Debug)]
 pub enum TrellisClientError {
@@ -211,8 +277,12 @@ pub enum TrellisClientError {
     #[error("nats request error: {0}")]
     NatsRequest(String),
 
-    #[error("service bootstrap failed with HTTP {status}: {}", format_bootstrap_http_payload(.body))]
-    BootstrapHttp { status: u16, body: String },
+    #[error("Trellis HTTP request failed with status {status}: {code}")]
+    BootstrapHttp { status: u16, code: String },
+
+    /// Required authorization evidence could not be obtained or kept current.
+    #[error("authorization evidence unavailable: {0}")]
+    AuthorizationUnavailable(String),
 
     #[error("service bootstrap error: {0}")]
     Bootstrap(String),
@@ -223,6 +293,13 @@ pub enum TrellisClientError {
     #[error("invalid json: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// A generated wire codec rejected a value.
+    #[error("generated codec error: {0}")]
+    Codec(String),
+
+    #[error(transparent)]
+    Subject(#[from] super::subject::SubjectError),
+
     #[error("rpc returned error: {}", .0.format_human())]
     RpcError(RpcErrorPayload),
 
@@ -232,13 +309,19 @@ pub enum TrellisClientError {
     #[error("transfer protocol error: {0}")]
     TransferProtocol(String),
 
+    #[error("transfer cancelled")]
+    TransferCancelled,
+
     #[error("event subscription protocol error: {0}")]
     EventSubscriptionProtocol(String),
+
+    #[error("feed protocol error: {0}")]
+    FeedProtocol(String),
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{format_bootstrap_http_payload, format_rpc_error_payload, RpcErrorPayload};
+    use super::{format_rpc_error_payload, RpcErrorPayload};
 
     #[test]
     fn formats_validation_error_payload_human_readably() {
@@ -264,32 +347,6 @@ mod tests {
     }
 
     #[test]
-    fn rpc_error_payload_decodes_matching_declared_error() {
-        #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
-        struct NotFoundError {
-            resource: String,
-        }
-
-        let raw = r#"{"id":"err-1","type":"NotFoundError","message":"Workspace not found","resource":"Workspace"}"#;
-        let payload = RpcErrorPayload::from_json_slice(raw.as_bytes()).unwrap();
-
-        assert_eq!(
-            payload
-                .decode_declared::<NotFoundError>("NotFoundError")
-                .unwrap(),
-            Some(NotFoundError {
-                resource: "Workspace".to_string()
-            })
-        );
-        assert_eq!(
-            payload
-                .decode_declared::<NotFoundError>("OtherError")
-                .unwrap(),
-            None
-        );
-    }
-
-    #[test]
     fn rpc_error_display_uses_formatted_payload() {
         let error =
             super::TrellisClientError::RpcError(RpcErrorPayload::from_value(serde_json::json!({
@@ -302,38 +359,6 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "rpc returned error: deploymentId: service deployment not found (deploymentId=demo)"
-        );
-    }
-
-    #[test]
-    fn formats_bootstrap_http_failure_payload_human_readably() {
-        let raw = r#"{"contractDigest":"digest-new","contractId":"trellis.jobs@v1","deploymentId":"svc/jobs","instanceId":"svc_1","message":"Service deployment 'svc/jobs' authority does not cover contract 'trellis.jobs@v1' digest 'digest-new'. An authority plan was created.","planId":"plan_1","reason":"authority_update_required"}"#;
-
-        assert_eq!(
-            format_bootstrap_http_payload(raw),
-            "authority_update_required: Service deployment 'svc/jobs' authority does not cover contract 'trellis.jobs@v1' digest 'digest-new'. An authority plan was created. (contractDigest=digest-new, contractId=trellis.jobs@v1, deploymentId=svc/jobs, instanceId=svc_1, planId=plan_1)"
-        );
-    }
-
-    #[test]
-    fn bootstrap_http_failure_falls_back_to_reason() {
-        assert_eq!(
-            format_bootstrap_http_payload(r#"{"reason":"invalid_signature"}"#),
-            "invalid_signature"
-        );
-    }
-
-    #[test]
-    fn bootstrap_http_error_display_uses_formatted_payload() {
-        let error = super::TrellisClientError::BootstrapHttp {
-            status: 409,
-            body: r#"{"reason":"service_contract_mismatch","message":"Apply the contract first."}"#
-                .to_string(),
-        };
-
-        assert_eq!(
-            error.to_string(),
-            "service bootstrap failed with HTTP 409: service_contract_mismatch: Apply the contract first."
         );
     }
 }

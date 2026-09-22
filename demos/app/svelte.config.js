@@ -1,9 +1,5 @@
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import adapter from "@sveltejs/adapter-static";
 import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
-
-const rootDir = dirname(fileURLToPath(import.meta.url));
 
 const config = {
   preprocess: vitePreprocess(),
@@ -13,76 +9,6 @@ const config = {
       assets: "build",
       fallback: "index.html",
     }),
-    alias: {
-      "@qlever-llc/result": resolve(
-        rootDir,
-        "../../js/packages/result/mod.ts",
-      ),
-      "@qlever-llc/trellis/auth/browser": resolve(
-        rootDir,
-        "../../js/packages/trellis/auth/browser.ts",
-      ),
-      "@qlever-llc/trellis/auth": resolve(
-        rootDir,
-        "../../js/packages/trellis/auth.ts",
-      ),
-      "@qlever-llc/trellis/browser": resolve(
-        rootDir,
-        "../../js/packages/trellis/browser.ts",
-      ),
-      "@qlever-llc/trellis/contracts": resolve(
-        rootDir,
-        "../../js/packages/trellis/contracts.ts",
-      ),
-      "@qlever-llc/trellis/device/deno": resolve(
-        rootDir,
-        "../../js/packages/trellis/device/deno.ts",
-      ),
-      "@qlever-llc/trellis/errors": resolve(
-        rootDir,
-        "../../js/packages/trellis/errors/index.ts",
-      ),
-      "@qlever-llc/trellis/service/deno": resolve(
-        rootDir,
-        "../../js/packages/trellis/service/deno.ts",
-      ),
-      "@qlever-llc/trellis/service": resolve(
-        rootDir,
-        "../../js/packages/trellis/service/mod.ts",
-      ),
-      "@qlever-llc/trellis-svelte": resolve(
-        rootDir,
-        "../../js/packages/trellis-svelte/src/index.ts",
-      ),
-      "@qlever-llc/trellis/sdk/auth": resolve(
-        rootDir,
-        "../../generated/packages/jsr/auth/mod.ts",
-      ),
-      "@qlever-llc/trellis/sdk/core": resolve(
-        rootDir,
-        "../../generated/packages/jsr/trellis-core/mod.ts",
-      ),
-      "@qlever-llc/trellis/sdk/health": resolve(
-        rootDir,
-        "../../generated/packages/jsr/health/mod.ts",
-      ),
-      "@qlever-llc/trellis/sdk/jobs": resolve(
-        rootDir,
-        "../../generated/packages/jsr/jobs/mod.ts",
-      ),
-      "@qlever-llc/trellis/sdk/state": resolve(
-        rootDir,
-        "../../generated/packages/jsr/state/mod.ts",
-      ),
-      "@qlever-llc/trellis": resolve(
-        rootDir,
-        "../../js/packages/trellis/index.ts",
-      ),
-      "@trellis-sdk/trellis-demo-service": resolve(
-        rootDir,
-        "../js/generated/packages/jsr/demo-service/mod.ts",
-      ),
-    },
   },
 };
 

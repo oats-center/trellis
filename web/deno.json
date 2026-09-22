@@ -1,0 +1,23 @@
+{
+  "importMap": "../ts/deno.json",
+  "tasks": {
+    "dev": "deno task -c ../ts/deno.json install && deno task -c ../ts/deno.json protocol:wasm && deno run -A vite dev",
+    "build": "deno task -c ../ts/deno.json install && deno task -c ../ts/deno.json protocol:wasm && deno run -A --frozen @sveltejs/kit sync && deno run -A --frozen vite build",
+    "build:embedded": "deno run -A scripts/build_embedded.ts",
+    "preview": "deno run -A vite preview",
+    "test": "deno test -A src",
+    "check": "deno task -c ../ts/deno.json install && deno task -c ../ts/deno.json protocol:wasm && deno run -A @sveltejs/kit sync && deno run -A svelte-check --tsconfig ./tsconfig.check.json"
+  },
+  "compilerOptions": {
+    "strict": true,
+    "lib": ["dom", "dom.iterable", "dom.asynciterable", "deno.ns"],
+    "verbatimModuleSyntax": true,
+    "types": ["npm:vite/client"]
+  },
+  "nodeModulesDir": "auto",
+  "lint": {
+    "rules": {
+      "exclude": ["import-map-remap"]
+    }
+  }
+}

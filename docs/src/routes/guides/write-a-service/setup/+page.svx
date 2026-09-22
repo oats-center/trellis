@@ -1,67 +1,89 @@
-<script lang="ts">
-  import LanguageTabs from "$lib/components/LanguageTabs.svelte";
-</script>
+# Set up the project
 
-Your service lives in its own repository, completely separate from the Trellis core. Create a standalone `orders-service` project in your language runtime:
+This walkthrough uses Deno and TypeScript to expose one RPC, call it through
+Trellis, and shut down cleanly. It returns an order receipt without persisting
+orders. No database, ORM, or configuration library is involved. These are
+example choices, not requirements for a Trellis service.
 
-<LanguageTabs>
-{#snippet ts()}
+For Rust connection and provider APIs, see the
+[Rust library guide](/guides/libraries/rust). The native contract and generation
+workflow are shared by both languages.
 
-Create a new Deno project:
+## Prerequisites
 
-```sh
-mkdir orders-service && cd orders-service
-deno init
-```
+- Install [the Trellis CLI](/guides/install-trellis-cli) matching your
+  libraries.
+- Install Deno 2 for this example.
+- For manual deployment, have a [running Trellis](/guides/starting-trellis) and
+  an administrator login. The [automated test](/guides/testing-trellis-services)
+  instead starts an isolated runtime using `trellis-server`.
 
-Add the Trellis SDK and TypeBox, our schema library, as dependencies:
+These pages track the repository source. If using an older released CLI, use the
+documentation from that release rather than combining authoring generations.
 
-```sh
-deno add npm:@qlever-llc/trellis npm:@sinclair/typebox
-```
-
-If you are using Node.js instead, use `npm`:
-
-```sh
-npm install @qlever-llc/trellis @sinclair/typebox
-```
-
-{/snippet}
-{#snippet rust()}
-
-Create a new Cargo binary project:
+## Create a standalone project
 
 ```sh
-cargo new orders-service --bin
+mkdir orders-service
 cd orders-service
-mkdir contracts
+deno init
+deno add npm:@qlever-llc/trellis jsr:@qlever-llc/trellis-test jsr:@std/assert
 ```
 
-Add the runtime, contract, and generated-SDK dependencies. Use the current Trellis release version for the Trellis crates:
+Select matching released versions when installing packages. Keep the import
+mappings that `deno add` writes; generated code uses those package specifiers.
+The test package is only needed to run the live test.
+
+Create `trellis.toml`:
 
 ```toml
-[dependencies]
-anyhow = "1"
-async-nats = "0.41"
-bytes = "1"
-clap = { version = "4", features = ["derive", "env"] }
-futures-util = "0.3"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-time = { version = "0.3", features = ["formatting"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-ulid = "1.2"
+[package]
+name = "orders"
+version = "1.0.0"
 
-trellis-contracts = "0.10"
-trellis-rs = "0.10"
+[sources]
+orders = "contract.trellis"
 
-# Add this after the first prepare run creates the generated SDK crate.
-trellis-sdk-orders-service = { path = "generated/packages/cargo/orders-service" }
+[generate.typescript]
+output = "trellis"
 ```
 
-In the Trellis monorepo, these dependencies are workspace dependencies instead of published versions. Standalone services should use the published crate versions or a `[patch]` that points at a local Trellis checkout during development.
+The tutorial defines its provider and caller API in the same project, so no
+external API dependency is needed. `trellis.toml` is a Trellis compiler
+manifest, not the service's runtime configuration file.
 
-{/snippet}
-</LanguageTabs>
+Add `"orders-trellis": "./trellis/index.js"` to `deno.json`'s `imports`. This
+maps the local package name to its generated ESM entrypoint. The generator never
+edits your Deno or npm configuration.
+
+The resulting authored project will contain:
+
+```text
+orders-service/
+  trellis.toml
+  trellis.lock
+  contract.trellis
+  deno.json
+  service.ts
+  main.ts
+  service_test.ts
+  trellis/          # one generated package, committed for ordinary clone builds
+```
+
+## Run the checked-in example instead
+
+The same source is checked in under
+[`docs/examples/orders`](https://github.com/qlever-llc/trellis/tree/main/docs/examples/orders).
+Its generated package is committed. Its tasks use ordinary installed libraries,
+not parent-repository paths, so a copied checkout needs no Trellis CLI or API
+cache for its normal check and test:
+
+```sh
+cd docs/examples/orders
+deno task check
+deno task test
+```
+
+The live test still needs the matching `trellis-server` runtime executable and
+pinned NATS binaries. Only authoring changes require regeneration. Continue with
+[the contract](/guides/write-a-service/first-contract).

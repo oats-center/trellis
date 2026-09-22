@@ -1,45 +1,26 @@
-<script lang="ts">
-  import LanguageTabs from "$lib/components/LanguageTabs.svelte";
-</script>
+# Stop the service
 
-Add shutdown handling so local restarts and production deployments do not leave background work or in-flight messages behind.
-
-<LanguageTabs>
-{#snippet ts()}
-
-Explicitly exiting after `service.stop()` also keeps `deno task dev` or other watched local dev restarts from leaving the old process around.
+The walkthrough's `main.ts` already registers the handler before starting
+`service.wait()`, and stops the service when its shutdown signal arrives:
 
 ```ts
-Deno.addSignalListener("SIGTERM", async () => {
-  await service.stop();
-  Deno.exit(0);
-});
+Deno.addSignalListener("SIGINT", () => void service.stop());
+Deno.addSignalListener("SIGTERM", () => void service.stop());
+await service.wait();
 ```
 
-For Node.js, use `process.on("SIGTERM", ...)`.
+These signal APIs are a Deno example. A Node process, supervisor, or embedded
+host can trigger the same `service.stop()` lifecycle through its own shutdown
+mechanism. If your application starts additional timers, database pools, or
+background tasks, close those as well. Trellis does not own those resources.
+Avoid forcing process exit before shutdown has completed.
 
-{/snippet}
-{#snippet rust()}
+For tests, close clients and stop the service in `finally`; always stop the test
+runtime even when an assertion fails. The
+[checked-in test](https://github.com/qlever-llc/trellis/blob/main/docs/examples/orders/service_test.ts)
+shows this sequence.
 
-For local development, `ctrl_c` is enough:
-
-```rust
-tokio::signal::ctrl_c().await?;
-```
-
-For production deployments, also listen for `SIGTERM` and stop background tasks before exiting:
-
-```rust
-use tokio::signal::unix::{signal, SignalKind};
-
-let mut sigterm = signal(SignalKind::terminate())?;
-tokio::select! {
-    _ = sigterm.recv() => {}
-    _ = tokio::signal::ctrl_c() => {}
-}
-```
-
-If your service spawns event listeners, feed workers, transfer endpoints, or job workers, keep their `JoinHandle`s or stop handles and abort or drain them here. The low-level Rust service runner owns the NATS request-loop task you await; background work you create is your responsibility.
-
-{/snippet}
-</LanguageTabs>
+Rust uses its generated service `run()` lifecycle rather than TypeScript's
+`wait()` API. Follow the [Rust library guide](/guides/libraries/rust) for the
+current generated facade. Application-created tasks outside that lifecycle need
+their own shutdown handling.

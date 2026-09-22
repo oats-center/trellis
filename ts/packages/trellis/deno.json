@@ -1,0 +1,44 @@
+{
+  "extends": "../../deno.json",
+  "name": "@qlever-llc/trellis",
+  "version": "0.12.0",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./index.ts",
+    "./generated": "./generated.ts",
+    "./auth": "./auth.ts",
+    "./auth/browser": "./auth/browser.ts",
+    "./device": "./device.ts",
+    "./service": "./service/mod.ts",
+    "./telemetry": "./telemetry.ts",
+    "./errors": "./errors/index.ts"
+  },
+  "publish": {
+    "exclude": [
+      ".build/**",
+      "npm/**",
+      "scripts/**",
+      "tests/**",
+      "!internal_sdk/generated/**",
+      "**/*_test.ts",
+      "**/*.test.ts",
+      "**/*.api_check.ts",
+      "!auth/protocol_wasm/**"
+    ]
+  },
+  "tasks": {
+    "build:npm": "deno task -c ../../deno.json protocol:wasm && deno run -A ./scripts/build_npm.ts",
+    "build:npm:installed": "deno run -A ./scripts/build_npm.ts",
+    "test": "PINO_LEVEL=fatal deno test --allow-env --allow-sys --allow-write --allow-run --allow-read --allow-net",
+    "dev": "deno run --watch main.ts"
+  },
+  "compilerOptions": {
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "dom.asynciterable",
+      "deno.ns"
+    ],
+    "verbatimModuleSyntax": true
+  }
+}

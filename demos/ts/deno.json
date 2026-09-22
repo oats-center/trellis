@@ -1,0 +1,24 @@
+{
+  "workspace": ["./service", "./device"],
+  "tasks": {
+    "check": "deno task check:service && deno task check:device",
+    "check:service": "deno task -c service/deno.json check",
+    "check:device": "deno task -c device/deno.json check",
+    "service": "deno task -c service/deno.json start",
+    "device": "deno task -c device/deno.json start"
+  },
+  "imports": {
+    "@qlever-llc/result": "npm:@qlever-llc/result@^0.12.0",
+    "@qlever-llc/trellis": "npm:@qlever-llc/trellis@^0.12.0",
+    "@libs/qrcode": "jsr:@libs/qrcode@^3.0.1",
+    "chalk": "npm:chalk@^5.6.2",
+    "typebox": "npm:typebox@^1.0.15",
+    "ulid": "npm:ulid@^3.0.1"
+  },
+  "nodeModulesDir": "auto",
+  "compilerOptions": {
+    "strict": true,
+    "lib": ["dom", "dom.iterable", "dom.asynciterable", "deno.ns"],
+    "verbatimModuleSyntax": true
+  }
+}

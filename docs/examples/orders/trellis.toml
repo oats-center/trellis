@@ -1,0 +1,9 @@
+[package]
+name = "acme-orders"
+version = "1.0.0"
+
+[sources]
+orders = "contract.trellis"
+
+[generate.typescript]
+output = "trellis"

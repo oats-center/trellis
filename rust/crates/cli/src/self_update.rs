@@ -348,7 +348,7 @@ mod tests {
         let release = Release {
             assets: vec![
                 self_update::update::ReleaseAsset {
-                    name: format!("trellis-generate-0.8.0-{}.tar.gz", get_target()),
+                    name: format!("other-binary-0.8.0-{}.tar.gz", get_target()),
                     download_url: String::new(),
                 },
                 self_update::update::ReleaseAsset {

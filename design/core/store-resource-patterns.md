@@ -12,7 +12,7 @@ order: 45
   communication model
 - [kv-resource-patterns.md](./kv-resource-patterns.md) - related service-owned
   resource patterns and naming guidance
-- [../contracts/trellis-contracts-catalog.md](./../contracts/trellis-contracts-catalog.md) -
+- [../contracts/trellis-api-participants.md](./../contracts/trellis-api-participants.md) -
   canonical contract and binding model
 
 ## Context
@@ -35,8 +35,8 @@ the owning runtime feature, such as jobs or operations.
 
 ## Scope
 
-This document defines the `resources.store` resource shape, its service-owned
-runtime semantics, and the TypeScript-facing API expectations.
+This document defines the native `store` resource shape, its service-owned
+lifecycle, binding semantics, and runtime invariants.
 
 Caller-visible file transfer is defined separately in
 [files-transfer-patterns.md](./files-transfer-patterns.md).
@@ -56,28 +56,26 @@ Rules:
 - values are opaque bytes plus small metadata, not typed JSON records
 - services discover stores through normal resource bindings rather than through
   cloud-management credentials
-- accepted store requests become deployment authority desired state;
-  reconciliation is the only path that creates, updates, removes, or adopts
-  materialized stores and bindings
+- deployment reconciliation creates, updates, or removes Trellis-owned stores
+  and records observed resource evidence used by context issuance
 
-`resources.store` is intended for service-local and service-owned binary data.
-It is not a shared public data plane and it does not change the ownership rules
-used by `kv`.
+An IDL `store` declaration is intended for service-local and service-owned
+binary data. It is not a shared public data plane and it does not change the
+ownership rules used by `kv`.
 
 ### Contract Shape
 
 Example:
 
-```ts
-resources: {
-  store: {
-    uploads: {
-      purpose: "Temporary uploaded files awaiting processing",
-      required: true,
-      ttlMs: 86_400_000,
-      maxTotalBytes: 10 * 1024 * 1024 * 1024,
-    },
-  },
+```trellis
+service Documents {
+  store uploads {
+    title "Uploads";
+    description "Temporary uploaded files awaiting processing.";
+    ttl 1d;
+    desired_max_object 64MiB;
+    desired_max_total 10GiB;
+  }
 }
 ```
 
@@ -85,46 +83,31 @@ Rules:
 
 - store aliases are logical names chosen by the service author
 - aliases are stable API surface for the service runtime
-- a store request declares:
-  - `purpose`: required human-facing explanation of why the service needs the
-    store
-  - `required`: whether the generated service handle is typed as required;
-    default `true`
-  - `ttlMs`: optional desired retention in milliseconds; `0` or omitted means no
-    automatic expiry requested
-  - `maxTotalBytes`: optional desired total-store size limit in bytes; omit it
-    when the store should not request a finite total-size limit
-- contract proposals request logical stores; accepted requests become deployment
-  authority desired state, and Trellis chooses the concrete physical store
-  identity during reconciliation
+- the native IDL resource fields are `ttl`, `desired_max_object`, and
+  `desired_max_total`; `ttl 0` means no automatic expiry
+- `desired_max_object` and `desired_max_total` are planning hints only; they do
+  not grant approval, determine readiness, configure an enforced limit, or
+  report an actual limit
+- contract declarations request logical stores, and Trellis chooses the concrete
+  physical identity during reconciliation
 - Trellis validates store declarations from the presented contract, but physical
   store identity is scoped to the deployment and contract lineage rather than
   the digest so compatible service updates preserve objects
-- all accepted stores must be materialized; reconciliation remains pending if
-  Trellis cannot create or bind one according to platform policy
-- optional stores (`required: false`) still participate in reconciliation; the
-  flag controls generated service typing, not best-effort omission
-- when `maxTotalBytes` is omitted, Trellis reconciles the backing NATS object
-  store to the backend sentinel for "no contract-requested finite total limit"
-  instead of preserving a stale finite limit from an older contract digest
 
-### Authority Update And Migration Classification
+### Reconciliation And Ownership
 
-Safe store authority updates include:
+Rules:
 
-- adding a new store alias
-- increasing `maxTotalBytes` or `maxObjectBytes`
-- increasing retention or moving from finite retention to no automatic expiry
-- changing `purpose` without changing runtime behavior
-
-Dangerous store authority migrations include:
-
-- removing or renaming a store alias
-- reducing retention, `maxTotalBytes`, or `maxObjectBytes`
-- changing store semantics in a way that may make existing objects invalid or
-  inaccessible
-- adopting an existing object store with incompatible ownership, retention, or
-  size-limit expectations
+- reconciliation may create a missing Trellis-owned store or update compatible
+  operational settings such as retention
+- a physical store is Trellis-owned only when its ownership evidence matches the
+  resource being reconciled
+- an existing foreign store is never adopted, modified, or treated as a
+  successful binding
+- resource removal destroys only a store with matching Trellis ownership
+  evidence; a foreign store at the same physical identity is never destroyed
+- changes that would weaken retention or otherwise invalidate existing objects
+  require explicit administrative handling rather than silent reconciliation
 
 ### Binding Shape
 
@@ -151,91 +134,25 @@ Rules:
   `bindings.store`
 - bindings expose only the information the service runtime needs to use the
   resource safely
-- bindings include `maxTotalBytes` only when the contract requested a finite
-  total-store limit; Trellis maps this to the backing NATS object store's
-  `max_bytes` stream limit
-- bindings include `maxObjectBytes` only when the contract requested a finite
-  per-object limit that the Trellis runtime write path enforces before writing
-  each object
+- `ttlMs`, `maxTotalBytes`, and `maxObjectBytes` report observed or effective
+  runtime limits, not the declaration's desired planning values
+- bindings include `maxTotalBytes` only when a finite total-store limit is
+  actually observed or enforced
+- bindings include `maxObjectBytes` only when the runtime write path actually
+  enforces a finite per-object limit; it must not be inferred from
+  `desired_max_object`
 - bindings must not expose operator or platform management credentials
 
-### Runtime API Expectations
+### Runtime Semantics
 
 The store runtime surface should mirror the KV runtime style as closely as store
 semantics allow.
 
-TypeScript expectations:
-
-```ts
-type PageResponse<T> = {
-  entries: T[];
-  count: number;
-  offset: number;
-  limit: number;
-  nextOffset?: number;
-};
-
-class StoreHandle {
-  open(): AsyncResult<TypedStore, StoreError>;
-  waitFor(
-    key: string,
-    opts?: StoreWaitOptions,
-  ): AsyncResult<TypedStoreEntry, StoreError>;
-}
-
-class TypedStore {
-  create(
-    key: string,
-    body: Uint8Array | ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>,
-    opts?: { contentType?: string; metadata?: Record<string, string> },
-  ): AsyncResult<void, StoreError>;
-
-  put(
-    key: string,
-    body: Uint8Array | ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>,
-    opts?: { contentType?: string; metadata?: Record<string, string> },
-  ): AsyncResult<void, StoreError>;
-
-  get(key: string): AsyncResult<TypedStoreEntry, StoreError>;
-  waitFor(
-    key: string,
-    opts?: StoreWaitOptions,
-  ): AsyncResult<TypedStoreEntry, StoreError>;
-  delete(key: string): AsyncResult<void, StoreError>;
-  list(opts: { prefix?: string; offset?: number; limit: number }): AsyncResult<
-    PageResponse<StoreInfo>,
-    StoreError
-  >;
-  status(): AsyncResult<StoreStatus, StoreError>;
-}
-
-type StoreWaitOptions = {
-  timeoutMs?: number;
-  pollIntervalMs?: number;
-  signal?: AbortSignal;
-};
-
-class TypedStoreEntry {
-  readonly key: string;
-  readonly info: StoreInfo;
-
-  stream(): AsyncResult<
-    ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>,
-    StoreError
-  >;
-  bytes(): AsyncResult<Uint8Array, StoreError>;
-}
-```
-
 Rules:
 
-- all failable public store APIs return `Result`, matching the broader Trellis
-  TypeScript style
-- `StoreHandle.open()` mirrors `KVHandle.open(...)` by resolving a higher-level
-  typed runtime object from a binding
-- `StoreHandle.waitFor(...)` is a convenience helper for the common
-  service-runtime pattern of waiting for a staged object without manually
-  opening the store and polling `get(...)`
+- all failable public store APIs return `Result`
+- generated service handles resolve a higher-level runtime object from the
+  installed binding
 - `create(...)` follows KV `create(...)` semantics and fails if the key already
   exists
 - `put(...)` follows KV `put(...)` semantics and overwrites the current object
@@ -246,14 +163,22 @@ Rules:
   same `TypedStoreEntry` shape a direct `get(...)` would have returned
 - `waitFor(...)` remains a store primitive rather than a policy helper: it does
   not read, stream, move, or delete bytes on the caller's behalf
-- `list(...)` is prefix-based in v1 and requires a `limit`; it may accept
-  `offset` and MUST NOT expose an unbounded list mode
-- store listing uses the standard live offset page response:
-  `{ entries, count, offset, limit, nextOffset? }`; this is live offset
-  pagination, not snapshot or cursor pagination, so concurrent writes or deletes
-  can change what appears at later offsets
+- listing accepts `{ prefix?: string; cursor?: string; limit?: number }` and
+  returns `{ entries, nextCursor? }`; entries are ordered by object key
+- the default list limit is `100`, the maximum accepted limit is `500`, and
+  listing never exposes an unbounded mode
+- `nextCursor` is opaque and bound to the normalized prefix query; malformed
+  cursors and cursors reused with a different prefix are rejected
+- an omitted `nextCursor` means the listing is exhausted
+- listing is live rather than snapshot-based; keyset continuation means inserts
+  or deletes at or before the previous continuation key do not duplicate or skip
+  entries that already followed it
 - `stream()` is the primary body-access path for large values; `bytes()` is a
   convenience helper
+- streaming writes enforce an effective `maxObjectBytes` limit while bytes flow
+  when that limit is present in the binding
+- successful operations expose logical metadata only; physical bucket names,
+  object identifiers, and chunk subjects remain runtime internals
 
 ### Object Metadata Model
 
@@ -287,10 +212,10 @@ Rules:
 - store keys are logical object keys within one store alias
 - keys may be path-like and may include `/`
 - keys are exact-match identifiers; prefix matching is only for `list(...)`
-- `ttlMs` is optional in the contract, but materialized bindings always expose
-  the effective retention value
-- deployments may clamp requested limits according to platform policy as long as
-  the resulting binding reflects the effective installed limits
+- `ttl` is declared in native IDL, and materialized bindings expose effective
+  retention as `ttlMs`
+- deployments may choose limits according to platform policy, but bindings must
+  report only the effective or observed limits actually applied
 
 ### Authorization
 

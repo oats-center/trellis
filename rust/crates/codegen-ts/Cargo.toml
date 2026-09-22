@@ -4,13 +4,17 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "TypeScript code generation for Trellis contract manifests."
+description = "TypeScript code generation for native Trellis package graphs."
 publish = false
 
 [dependencies]
-oxc_allocator = "0.129.0"
-oxc_parser = "0.129.0"
-oxc_span = "0.129.0"
+oxc_allocator = "0.96.0"
+oxc_codegen = "0.96.0"
+oxc_isolated_declarations = "0.96.0"
+oxc_parser = "0.96.0"
+oxc_semantic = "0.96.0"
+oxc_span = "0.96.0"
+oxc_transformer = "0.96.0"
 serde_json.workspace = true
 thiserror.workspace = true
-trellis-contracts = { path = "../contracts", version = "0.10.22" }
+trellis-idl = { path = "../idl" }

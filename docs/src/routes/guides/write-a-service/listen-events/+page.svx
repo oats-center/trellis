@@ -1,117 +1,14 @@
-<script lang="ts">
-  import LanguageTabs from "$lib/components/LanguageTabs.svelte";
-</script>
+# Consume events durably
 
-Our service shouldn't exist in a vacuum. Let's say we want to know whenever a user logs into Trellis so we can warm up their cache or log the activity.
+Add the owning source package as a dependency, import its API, and select the
+event in a `use` body. For durable processing, declare a `consumer` resource with
+title, description, exact selected events, local concurrency, initial replay,
+and retry policy. An ephemeral event listener is for lossy live-only reactions.
 
-Events from other services are gated by your contract's `uses` block. Durable service processing also needs an explicit `eventConsumers` group so Trellis can provision the JetStream consumer and grant only that bound consumer to your service token.
+Register the generated Consumer handler during startup. Trellis owns its stream,
+durable identity, proof verification, retry, progress acknowledgement, and scoped
+DLQ. Concurrency is local per participant process, not a distributed cap.
 
-Open `contracts/orders_service.ts` and update the contract builder output:
-
-<LanguageTabs>
-{#snippet ts()}
-
-```ts
-import { sdk as auth } from "@qlever-llc/trellis/sdk/auth";
-
-uses: {
-  required: {
-    auth: auth.use({
-      events: { subscribe: ["Auth.Connections.Opened"] },
-    }),
-  },
-},
-eventConsumers: {
-  authConnections: {
-    events: [{ use: "auth", event: "Auth.Connections.Opened" }],
-    replay: "new",
-    ordering: "strict",
-    concurrency: 1,
-  },
-},
-```
-
-`auth.use(...)` explicitly declares the auth surface this service needs. The `authConnections` consumer group declares the durable cursor Trellis should provision for this service deployment. The group name is logical; Trellis chooses the physical durable consumer name.
-
-Now subscribe to the event in `main.ts`:
-
-```ts
-import { ok } from "@qlever-llc/trellis";
-
-await service.event.auth.connectionsOpened.listen(async (event) => {
-  const e = event as { sessionKey: string };
-  console.info("connection opened", { sessionKey: e.sessionKey });
-  return ok(undefined);
-}, {}, { group: "authConnections" });
-```
-
-If the listener needs application dependencies, register through the bound
-wrapper. The event payload, Trellis listener context, handler client, and deps are
-kept separate:
-
-```ts
-await app.event.auth.connectionsOpened.listen(
-  async ({ event, context, deps }) => {
-    const e = event as { sessionKey: string };
-    deps.log.info("connection opened", {
-      eventId: context.id,
-      sessionKey: e.sessionKey,
-    });
-    return ok(undefined);
-  },
-  {},
-  { group: "authConnections" },
-);
-```
-
-Returning `ok(undefined)` acknowledges the message. If your handler returns `err(...)`, Trellis will NAK the delivery and redeliver it, which is useful for transient failures like a downstream service being temporarily unavailable.
-
-Do not pass a `durableName`. Durable event consumer names, filters, and permissions are provisioned by Trellis from the contract. If you want a live-only listener that does not replay stored events, pass `{ mode: "ephemeral", replay: "new" }` and omit `eventConsumers`.
-
-{/snippet}
-{#snippet rust()}
-
-Add the auth contract use to the service manifest. Rust client subscriptions are live/ephemeral by default; service-level durable event consumers should still be represented in the canonical manifest as `eventConsumers` so Trellis can provision matching bindings.
-
-```rust
-use trellis_contracts::use_contract;
-
-.use_ref(
-    "auth",
-    use_contract("trellis.auth@v1")
-        .with_event_subscribe(["Auth.Connections.Opened"]),
-)
-```
-
-Then subscribe with the auth SDK descriptor:
-
-```rust
-use futures_util::StreamExt;
-use trellis_rs::client::{
-    EventReplayPolicy, EventSubscribeOptions, EventSubscriptionMode, TrellisClientError,
-};
-use trellis_rs::sdk::auth::events::AuthConnectionsOpenedEventDescriptor;
-
-let mut auth_events = client
-    .subscribe_messages::<AuthConnectionsOpenedEventDescriptor>(EventSubscribeOptions {
-        mode: EventSubscriptionMode::Ephemeral,
-        replay: EventReplayPolicy::New,
-        durable_name: None,
-    })
-    .await?;
-
-tokio::spawn(async move {
-    while let Some(message) = auth_events.next().await {
-        let message = message?;
-        let event = message.decode()?;
-        tracing::info!(event = ?event, "auth connection opened");
-        message.ack().await?;
-    }
-    Ok::<(), TrellisClientError>(())
-});
-```
-
-{/snippet}
-</LanguageTabs>
-
-Upgrade the contract and restart.
+Delivery and manual replay are at least once. Keep side effects idempotent or
+commit an inbox marker with the side effect. Final failure is recorded by Events
+before the original delivery is acknowledged; replay targets only this Consumer.

@@ -7,6 +7,10 @@ repository.workspace = true
 description = "CLI for generating, validating, and operating Trellis contracts and services."
 publish = false
 
+[features]
+default = ["runtime"]
+runtime = ["dep:trellis-bootstrap", "dep:trellis-rs", "dep:trellis-runtime-apis"]
+
 [dependencies]
 async-nats.workspace = true
 clap.workspace = true
@@ -16,20 +20,31 @@ owo-colors.workspace = true
 qrcode = { version = "0.14.1", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
+semver.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
 json5 = "1.3.1"
 tokio.workspace = true
-trellis-rs = { path = "../trellis", version = "0.10.22" }
-trellis-codegen-rust = { path = "../codegen-rust", version = "0.10.22" }
-trellis-codegen-ts = { path = "../codegen-ts", version = "0.10.22" }
-trellis-contracts = { path = "../contracts", version = "0.10.22" }
-trellis-local-bootstrap = { path = "../local-bootstrap", version = "0.10.22" }
+trellis-rs = { path = "../trellis", version = "0.12.0", optional = true }
+trellis-runtime-apis = { path = "../runtime-apis", optional = true }
+trellis-codegen-rust = { path = "../codegen-rust", version = "0.12.0" }
+trellis-codegen-ts = { path = "../codegen-ts", version = "0.12.0" }
+trellis-idl = { path = "../idl", version = "0.12.0" }
+trellis-local-bootstrap = { path = "../local-bootstrap", version = "0.12.0" }
+trellis-protocol = { path = "../protocol", version = "0.12.0" }
+trellis-bootstrap = { path = "../bootstrap", version = "0.12.0", optional = true }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 miette.workspace = true
+notify-debouncer-mini.workspace = true
 base64.workspace = true
 bytes.workspace = true
+futures-util.workspace = true
+docker_credential = "1.4.0"
 ed25519-dalek.workspace = true
+oci-client = { version = "0.17", default-features = false, features = ["rustls-tls"] }
 sha2.workspace = true
+tar.workspace = true
 rand = "0.10.0"
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 rustls.workspace = true
@@ -38,6 +53,12 @@ self_update.workspace = true
 time.workspace = true
 ulid = "1.2.1"
 
+[dev-dependencies]
+axum = "0.8.8"
+registry-testkit = "0.1.3"
+reqwest = { version = "0.13.2", default-features = false }
+
 [[bin]]
 name = "trellis"
 path = "src/main.rs"
+required-features = ["runtime"]

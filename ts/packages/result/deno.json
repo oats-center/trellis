@@ -1,0 +1,27 @@
+{
+  "extends": "../../deno.json",
+  "name": "@qlever-llc/result",
+  "version": "0.12.0",
+  "license": "Apache-2.0",
+  "exports": "./mod.ts",
+  "imports": {
+    "typebox": "npm:typebox@^1.1.33",
+    "ulid": "npm:ulid@^3.0.2"
+  },
+  "publish": {
+    "exclude": [
+      "npm/**",
+      "scripts/**",
+      "tests/**",
+      "**/*_test.ts",
+      "**/*.test.ts"
+    ]
+  },
+  "tasks": {
+    "build:npm": "deno run -A ./scripts/build_npm.ts",
+    "test": "deno task build:npm && deno test --allow-read"
+  },
+  "compilerOptions": {
+    "verbatimModuleSyntax": true
+  }
+}

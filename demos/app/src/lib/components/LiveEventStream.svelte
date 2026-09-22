@@ -297,9 +297,7 @@
     let startupComplete = false;
 
     try {
-      const stream = await trellis.feed("Audit.Feed")
-        .input({})
-        .subscribe({ signal: localController.signal })
+      const stream = await trellis.auditFeed({}, { signal: localController.signal })
         .orThrow();
 
       if (!mounted || controller !== localController || localController.signal.aborted) return;

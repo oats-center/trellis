@@ -5,6 +5,15 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Curated public Rust facade for Trellis clients and services."
+readme = "../../README.md"
+
+[features]
+live-integration = []
+runtime-internals = []
+
+[[test]]
+name = "integration"
+required-features = ["live-integration"]
 
 [dependencies]
 async-nats.workspace = true
@@ -12,20 +21,31 @@ base64.workspace = true
 bytes.workspace = true
 ed25519-dalek.workspace = true
 futures-util.workspace = true
-hmac = "0.13.0"
 hkdf = "0.13.0"
+hmac = "0.13.0"
 nkeys = "0.4"
 postgres = "0.19.12"
 rand = "0.10.0"
-reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls-no-provider"] }
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls"] }
 rusqlite.workspace = true
+ryu-js.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
+jsonschema.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "sync"] }
-trellis-contracts = { path = "../contracts", version = "0.10.22" }
+trellis-protocol = { path = "../protocol", version = "0.12.0" }
 tracing.workspace = true
 ulid = "1.2.1"
 url = "2.5.8"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+trellis-test = { path = "../trellis-test" }
+trellis-local-nats = { path = "../local-nats" }
+trellis-bootstrap = { path = "../bootstrap" }
+
+[lints]
+workspace = true

@@ -12,38 +12,54 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
 
+use super::error::merge_context;
 use super::{AuthenticatedRouter, RequestContext, RequestValidator, Router, ServerError};
 
 static ERROR_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Decoded request message consumed by the host dispatcher.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[doc = concat!("Public Trellis data type `", stringify!(InboundRequest), "`.")]
 pub struct InboundRequest {
+    #[doc = concat!("The `", stringify!(subject), "` value.")]
     pub subject: String,
+    #[doc = concat!("The `", stringify!(payload), "` value.")]
     pub payload: Bytes,
+    #[doc = concat!("The `", stringify!(reply_to), "` value.")]
     pub reply_to: Option<String>,
+    #[doc = concat!("The `", stringify!(context), "` value.")]
     pub context: RequestContext,
 }
 
 /// Outbound response message emitted by the host dispatcher.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[doc = concat!("Public Trellis data type `", stringify!(OutboundReply), "`.")]
 pub struct OutboundReply {
+    #[doc = concat!("The `", stringify!(reply_to), "` value.")]
     pub reply_to: String,
+    #[doc = concat!("The `", stringify!(payload), "` value.")]
     pub payload: Bytes,
+    #[doc = concat!("The `", stringify!(is_error), "` value.")]
     pub is_error: bool,
 }
 
 pub type ResponseStream = Pin<Box<dyn Stream<Item = Result<Bytes, ServerError>> + Send>>;
 
+#[doc = concat!("Public Trellis value set `", stringify!(HandlerResponse), "`.")]
 pub enum HandlerResponse {
     Frames(Vec<Bytes>),
     Error(Bytes),
     Stream(ResponseStream),
-    FeedStream(ResponseStream),
+    FeedStream {
+        stream: ResponseStream,
+        control_subject: String,
+        feed_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ErrorAnnotationContext {
+#[doc = concat!("Public Trellis data type `", stringify!(ErrorAnnotationContext), "`.")]
+pub struct ErrorAnnotationContext {
     request_id: Option<String>,
     trace_id: Option<String>,
     service: Option<String>,
@@ -149,7 +165,7 @@ pub trait RequestHandler: Send + Sync {
                     }
                     Ok(frames)
                 }
-                HandlerResponse::FeedStream(mut stream) => {
+                HandlerResponse::FeedStream { mut stream, .. } => {
                     let mut frames = Vec::new();
                     while let Some(frame) = stream.next().await {
                         frames.push(frame?);
@@ -208,7 +224,7 @@ impl RequestHandler for Router {
 
 impl<V> RequestHandler for AuthenticatedRouter<V>
 where
-    V: RequestValidator,
+    V: RequestValidator + 'static,
 {
     fn handle<'a>(
         &'a self,
@@ -242,7 +258,8 @@ where
 }
 
 /// Decode one inbound NATS message into host request fields.
-pub(crate) fn decode_nats_request(message: &async_nats::Message) -> InboundRequest {
+#[doc = concat!("Trellis API operation `", stringify!(decode_nats_request), "`.")]
+pub fn decode_nats_request(message: &async_nats::Message) -> InboundRequest {
     let subject = message.subject.to_string();
     let reply_to = message.reply.as_ref().map(ToString::to_string);
     let session_key = message
@@ -254,6 +271,11 @@ pub(crate) fn decode_nats_request(message: &async_nats::Message) -> InboundReque
         .headers
         .as_ref()
         .and_then(|headers| headers.get("proof"))
+        .map(|value| value.as_str().to_string());
+    let authorization_context = message
+        .headers
+        .as_ref()
+        .and_then(|headers| headers.get("authorization-context"))
         .map(|value| value.as_str().to_string());
     let iat = message
         .headers
@@ -281,12 +303,16 @@ pub(crate) fn decode_nats_request(message: &async_nats::Message) -> InboundReque
         payload: message.payload.clone(),
         reply_to: reply_to.clone(),
         context: RequestContext {
+            resuming: false,
+            operation_progress: None,
             subject,
             session_key,
             proof,
+            authorization_context,
             iat,
             request_id,
             required_capabilities: None,
+            required_permission: None,
             reply_to: reply_to.clone(),
             caller: None,
             traceparent,
@@ -296,6 +322,7 @@ pub(crate) fn decode_nats_request(message: &async_nats::Message) -> InboundReque
 }
 
 /// Encode one successful handler payload for reply publishing.
+#[doc = concat!("Trellis API operation `", stringify!(encode_success_reply), "`.")]
 pub fn encode_success_reply(reply_to: String, payload: Bytes) -> OutboundReply {
     OutboundReply {
         reply_to,
@@ -305,17 +332,20 @@ pub fn encode_success_reply(reply_to: String, payload: Bytes) -> OutboundReply {
 }
 
 /// Encode one failed handler result for reply publishing.
+#[doc = concat!("Trellis API operation `", stringify!(encode_error_reply), "`.")]
 pub fn encode_error_reply(reply_to: String, error: &ServerError) -> OutboundReply {
     encode_error_reply_with_context(reply_to, error, &ErrorAnnotationContext::default())
 }
 
-pub(crate) fn encode_error_reply_with_context(
+#[doc = concat!("Trellis API operation `", stringify!(encode_error_reply_with_context), "`.")]
+pub fn encode_error_reply_with_context(
     reply_to: String,
     error: &ServerError,
     annotations: &ErrorAnnotationContext,
 ) -> OutboundReply {
-    if let ServerError::DeclaredRpc(error) = error {
-        let payload = serde_json::to_vec(&error.to_payload_with_context(
+    match error {
+        ServerError::DeclaredRpc(error) => {
+            let payload = serde_json::to_vec(&error.to_payload_with_context(
             error_id(),
             annotations.context_map(),
             annotations.trace_id(),
@@ -323,11 +353,71 @@ pub(crate) fn encode_error_reply_with_context(
         .unwrap_or_else(|_| {
             br#"{"id":"rust-server-error","type":"UnexpectedError","message":"An unexpected error has occurred"}"#.to_vec()
         });
-        return OutboundReply {
-            reply_to,
-            payload: Bytes::from(payload),
-            is_error: true,
-        };
+            return OutboundReply {
+                reply_to,
+                payload: Bytes::from(payload),
+                is_error: true,
+            };
+        }
+        ServerError::SchemaValidation { issues } => {
+            let mut payload = Map::new();
+            payload.insert("id".to_string(), Value::String(error_id()));
+            payload.insert(
+                "type".to_string(),
+                Value::String("SchemaValidationError".to_string()),
+            );
+            payload.insert(
+                "message".to_string(),
+                Value::String("Schema validation failed.".to_string()),
+            );
+            payload.insert(
+                "issues".to_string(),
+                serde_json::to_value(issues).unwrap_or_default(),
+            );
+            let context = annotations.context_map();
+            merge_context(&mut payload, context);
+            if let Some(trace_id) = annotations.trace_id() {
+                payload.insert("traceId".to_string(), Value::String(trace_id.to_string()));
+            }
+            let payload_bytes = serde_json::to_vec(&payload).unwrap_or_else(|_| {
+            br#"{"id":"rust-server-error","type":"UnexpectedError","message":"An unexpected error has occurred"}"#.to_vec()
+        });
+            return OutboundReply {
+                reply_to,
+                payload: Bytes::from(payload_bytes),
+                is_error: true,
+            };
+        }
+        ServerError::Validation { issues } => {
+            let mut payload = Map::new();
+            payload.insert("id".to_string(), Value::String(error_id()));
+            payload.insert(
+                "type".to_string(),
+                Value::String("ValidationError".to_string()),
+            );
+            payload.insert(
+                "message".to_string(),
+                Value::String("Data validation failed.".to_string()),
+            );
+            payload.insert(
+                "issues".to_string(),
+                serde_json::to_value(issues).unwrap_or_default(),
+            );
+            let context = annotations.context_map();
+            merge_context(&mut payload, context);
+            if let Some(trace_id) = annotations.trace_id() {
+                payload.insert("traceId".to_string(), Value::String(trace_id.to_string()));
+            }
+            let payload_bytes = serde_json::to_vec(&payload).unwrap_or_else(|_| {
+            br#"{"id":"rust-server-error","type":"UnexpectedError","message":"An unexpected error has occurred"}"#.to_vec()
+        });
+            return OutboundReply {
+                reply_to,
+                payload: Bytes::from(payload_bytes),
+                is_error: true,
+            };
+        }
+        _ => {}
     }
 
     #[derive(serde::Serialize)]
@@ -362,26 +452,26 @@ pub(crate) fn encode_error_reply_with_context(
 
     let error_message = error.to_string();
     let payload = match serde_json::to_vec(&ErrorPayload {
-        id: error_id(),
-        r#type: "UnexpectedError",
-        message: "An unexpected error has occurred",
-        trace_id: annotations.trace_id(),
-        context: ErrorContext {
-            cause_message: &error_message,
-            request_id: annotations.request_id.as_deref(),
-            service: annotations.service.as_deref(),
-            contract_id: annotations.contract_id.as_deref(),
-            contract_digest: annotations.contract_digest.as_deref(),
-            method: annotations.method.as_deref(),
-            feed: annotations.feed.as_deref(),
-            operation: annotations.operation.as_deref(),
-        },
-    }) {
-        Ok(value) => Bytes::from(value),
-        Err(_) => Bytes::from_static(
-            br#"{"id":"rust-server-error","type":"UnexpectedError","message":"An unexpected error has occurred"}"#,
-        ),
-    };
+    id: error_id(),
+    r#type: "UnexpectedError",
+    message: "An unexpected error has occurred",
+    trace_id: annotations.trace_id(),
+    context: ErrorContext {
+        cause_message: &error_message,
+        request_id: annotations.request_id.as_deref(),
+        service: annotations.service.as_deref(),
+        contract_id: annotations.contract_id.as_deref(),
+        contract_digest: annotations.contract_digest.as_deref(),
+        method: annotations.method.as_deref(),
+        feed: annotations.feed.as_deref(),
+        operation: annotations.operation.as_deref(),
+    },
+}) {
+    Ok(value) => Bytes::from(value),
+    Err(_) => Bytes::from_static(
+        br#"{"id":"rust-server-error","type":"UnexpectedError","message":"An unexpected error has occurred"}"#,
+    ),
+};
 
     OutboundReply {
         reply_to,
@@ -581,18 +671,11 @@ async fn publish_reply(
     Ok(())
 }
 
-async fn flush_replies(client: &async_nats::Client) -> Result<(), ServerError> {
-    client
-        .flush()
-        .await
-        .map_err(|error| ServerError::Nats(error.to_string()))
-}
-
 async fn publish_response(
     client: &async_nats::Client,
     reply_to: String,
     response: HandlerResponse,
-    annotations: ErrorAnnotationContext,
+    annotations: &ErrorAnnotationContext,
 ) -> Result<(), ServerError> {
     match response {
         HandlerResponse::Frames(frames) => {
@@ -613,15 +696,13 @@ async fn publish_response(
             match frame {
                 Ok(Some(Ok(payload))) => {
                     publish_reply(client, encode_success_reply(reply_to.clone(), payload)).await?;
-                    flush_replies(client).await?;
                 }
                 Ok(Some(Err(error))) => {
                     publish_reply(
                         client,
-                        encode_error_reply_with_context(reply_to.clone(), &error, &annotations),
+                        encode_error_reply_with_context(reply_to.clone(), &error, annotations),
                     )
                     .await?;
-                    flush_replies(client).await?;
                     break;
                 }
                 Ok(None) => break,
@@ -629,22 +710,26 @@ async fn publish_response(
                     let error = panic_to_server_error(panic);
                     publish_reply(
                         client,
-                        encode_error_reply_with_context(reply_to.clone(), &error, &annotations),
+                        encode_error_reply_with_context(reply_to.clone(), &error, annotations),
                     )
                     .await?;
-                    flush_replies(client).await?;
                     break;
                 }
             }
         },
-        HandlerResponse::FeedStream(mut stream) => {
+        HandlerResponse::FeedStream {
+            mut stream,
+            control_subject,
+            feed_id,
+        } => {
             let mut headers = HeaderMap::new();
             headers.insert("feed-status", "ready");
+            headers.insert("feed-control-subject", control_subject.as_str());
+            headers.insert("feed-id", feed_id.as_str());
             client
                 .publish_with_headers(reply_to.clone(), headers, Bytes::new())
                 .await
                 .map_err(|error| ServerError::Nats(error.to_string()))?;
-            flush_replies(client).await?;
 
             loop {
                 let frame = AssertUnwindSafe(stream.next()).catch_unwind().await;
@@ -652,15 +737,13 @@ async fn publish_response(
                     Ok(Some(Ok(payload))) => {
                         publish_reply(client, encode_success_reply(reply_to.clone(), payload))
                             .await?;
-                        flush_replies(client).await?;
                     }
                     Ok(Some(Err(error))) => {
                         publish_reply(
                             client,
-                            encode_error_reply_with_context(reply_to.clone(), &error, &annotations),
+                            encode_error_reply_with_context(reply_to.clone(), &error, annotations),
                         )
                         .await?;
-                        flush_replies(client).await?;
                         break;
                     }
                     Ok(None) => break,
@@ -668,10 +751,9 @@ async fn publish_response(
                         let error = panic_to_server_error(panic);
                         publish_reply(
                             client,
-                            encode_error_reply_with_context(reply_to.clone(), &error, &annotations),
+                            encode_error_reply_with_context(reply_to.clone(), &error, annotations),
                         )
                         .await?;
-                        flush_replies(client).await?;
                         break;
                     }
                 }
@@ -691,7 +773,7 @@ fn panic_to_server_error(panic: Box<dyn Any + Send>) -> ServerError {
 }
 
 /// Run an inbound NATS request loop until the subscriber closes.
-pub async fn run_nats_request_loop<H>(
+pub(crate) async fn run_nats_request_loop<H>(
     client: async_nats::Client,
     subscriber: impl futures_util::Stream<Item = async_nats::Message>,
     handler: H,
@@ -712,8 +794,15 @@ where
                 let client = &client;
                 let handler = &handler;
                 in_flight.push(async move {
+                    let subject = request.subject.clone();
                     match dispatch_response(handler, request).await {
-                        Ok(Some((reply_to, response, annotations))) => publish_response(client, reply_to, response, annotations).await?,
+                        Ok(Some((reply_to, response, annotations))) => {
+                            tracing::debug!(%subject, %reply_to, request_id = ?annotations.request_id, "publishing service request reply");
+                            if let Err(error) = publish_response(client, reply_to.clone(), response, &annotations).await {
+                                tracing::warn!(%subject, %reply_to, request_id = ?annotations.request_id, %error, "service request reply publish failed");
+                                return Err(error);
+                            }
+                        }
                         Ok(None) => {}
                         Err(_) => {}
                     }
@@ -740,7 +829,9 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::service::{BootstrapBinding, DeclaredRpcError, ServiceHost};
+    use crate::service::{
+        BootstrapBinding, DeclaredRpcError, SchemaValidationIssue, ServiceHost, ValidationIssue,
+    };
 
     const TRACEPARENT: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
     const TRACE_ID: &str = "4bf92f3577b34da6a3ce929d0e0e4736";
@@ -841,6 +932,112 @@ mod tests {
         assert!(context.get("subject").is_none());
     }
 
+    #[tokio::test]
+    async fn schema_validation_error_reply_uses_correct_type() {
+        struct SchemaValidationHandler;
+
+        impl RequestHandler for SchemaValidationHandler {
+            fn handle<'a>(
+                &'a self,
+                _subject: &'a str,
+                _payload: Bytes,
+                _context: RequestContext,
+            ) -> BoxFuture<'a, Result<Bytes, ServerError>> {
+                Box::pin(async {
+                    Err(ServerError::SchemaValidation {
+                        issues: Box::new(vec![SchemaValidationIssue {
+                            path: "/items".to_string(),
+                            schema_path: Some("#/properties/items".to_string()),
+                            keyword: "minItems".to_string(),
+                            code: "test.items.required".to_string(),
+                            message: "Add at least one item.".to_string(),
+                            label: Some("Items".to_string()),
+                            note: None,
+                            i18n_key: None,
+                            severity: None,
+                            params: Some(
+                                vec![("limit".to_string(), serde_json::json!(1))]
+                                    .into_iter()
+                                    .collect(),
+                            ),
+                        }]),
+                    })
+                })
+            }
+        }
+
+        let host = test_service_host(SchemaValidationHandler);
+        let replies = dispatch_all(&host, test_request("rpc.v1.Test.Validate"))
+            .await
+            .expect("dispatch should not fail")
+            .expect("reply should be encoded");
+        let payload = reply_payload(&replies[0]);
+
+        assert_eq!(payload["type"], "SchemaValidationError");
+        assert_eq!(payload["message"], "Schema validation failed.");
+
+        let issues = payload["issues"]
+            .as_array()
+            .expect("issues should be an array");
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0]["code"], "test.items.required");
+        assert_eq!(issues[0]["keyword"], "minItems");
+        assert_eq!(issues[0]["path"], "/items");
+
+        assert_eq!(payload["traceId"], TRACE_ID);
+        let context = payload["context"]
+            .as_object()
+            .expect("context should exist");
+        assert_eq!(context["requestId"], "request-123");
+        assert_eq!(context["service"], "inventory-service");
+    }
+
+    #[tokio::test]
+    async fn validation_error_reply_uses_correct_type() {
+        struct ValidationHandler;
+
+        impl RequestHandler for ValidationHandler {
+            fn handle<'a>(
+                &'a self,
+                _subject: &'a str,
+                _payload: Bytes,
+                _context: RequestContext,
+            ) -> BoxFuture<'a, Result<Bytes, ServerError>> {
+                Box::pin(async {
+                    Err(ServerError::Validation {
+                        issues: Box::new(vec![ValidationIssue {
+                            path: "/name".to_string(),
+                            message: "minLength: minimum length is 3".to_string(),
+                        }]),
+                    })
+                })
+            }
+        }
+
+        let host = test_service_host(ValidationHandler);
+        let replies = dispatch_all(&host, test_request("rpc.v1.Test.Validate"))
+            .await
+            .expect("dispatch should not fail")
+            .expect("reply should be encoded");
+        let payload = reply_payload(&replies[0]);
+
+        assert_eq!(payload["type"], "ValidationError");
+        assert_eq!(payload["message"], "Data validation failed.");
+
+        let issues = payload["issues"]
+            .as_array()
+            .expect("issues should be an array");
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0]["path"], "/name");
+
+        assert_eq!(payload["traceId"], TRACE_ID);
+        let context = payload["context"]
+            .as_object()
+            .expect("context should exist");
+        assert_eq!(context["requestId"], "request-123");
+        assert_eq!(context["service"], "inventory-service");
+    }
+
     #[test]
     fn invalid_traceparent_does_not_add_trace_id() {
         let annotations = ErrorAnnotationContext::from_request(
@@ -868,12 +1065,16 @@ mod tests {
 
     fn test_context(subject: &str) -> RequestContext {
         RequestContext {
+            resuming: false,
+            operation_progress: None,
             subject: subject.to_string(),
             session_key: None,
             proof: None,
+            authorization_context: None,
             iat: None,
             request_id: Some("request-123".to_string()),
             required_capabilities: None,
+            required_permission: None,
             reply_to: Some("reply.inbox".to_string()),
             caller: None,
             traceparent: Some(TRACEPARENT.to_string()),

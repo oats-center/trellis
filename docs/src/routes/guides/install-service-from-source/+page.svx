@@ -1,142 +1,39 @@
-This guide covers creating and running a service from its source tree during development. You need the contract source file checked out locally.
+# Install a service from source
 
-If you are deploying a published service from an OCI image, see [Install a service from an image](/guides/install-service-from-image) instead.
+Clone the project, install its declared language dependencies, then run
+`trellis install` and `trellis generate`. The CLI reads native `.trellis` source
+packages and frozen resolution metadata; it never executes TypeScript or Rust
+authoring code.
 
-## What you need
+For local API dependencies, use a `path` entry in `trellis.toml`. Registry dependencies remain exact and digest-verified through `trellis.lock`.
 
-- a running Trellis environment
-- the `trellis` CLI installed (see [Install the Trellis CLI](/guides/install-trellis-cli))
-- admin access to the Trellis instance
-- the service source tree checked out locally
+## Build a reproducible consumer
 
-## 1. Log in as an admin
+Use `trellis update` when intentionally changing dependency resolutions. For an
+existing deployment checkout, use `trellis install` to reproduce its lock, then
+`trellis generate` to build its private language SDKs. Run the project's own
+format, check, test, and build commands before deployment. Do not edit generated
+artifacts or rewrite imports as an installation step.
 
-Create or refresh the local administrator session:
+## Install and apply the participant
 
-```sh
-trellis login http://localhost:3000
-```
+Log in to the target runtime with `trellis login <url>`. Create the service
+deployment, apply the selected participant directly from verified source, and
+provision an instance using `trellis svc <id> create`, `apply`, and `provision`.
+`apply --source <project-root>` compiles and installs the selected participant,
+updates deployment resources, and writes its participant-scoped grant. See
+[installing an image](/guides/install-service-from-image) for the matching
+provisioning sequence.
 
-This CLI flow is detached-only. The command prints a portal URL and QR code for you to open or scan manually; it does not start a local callback listener or auto-open your browser.
+## Run and update
 
-Confirm the session is active:
+Store the returned private identity seed securely and configure the service's
+documented Trellis URL and identity seed. Start its normal run command.
+Bootstrap resolves deployment/instance assignment, installed participant,
+grants, transports, and resource handles; application code must not
+inject NATS administrator credentials or binding payloads.
 
-```sh
-trellis whoami
-```
-
-## 2. Prepare local generated artifacts
-
-Before creating the deployment, run the repo-local prepare task for the service source tree so the local `contracts/` directory and generated artifacts are refreshed using `trellis-generate`.
-
-For Deno workspace repos:
-
-```sh
-deno task prepare
-```
-
-For Rust workspace repos:
-
-```sh
-cargo xtask prepare
-```
-
-## 3. Create from source
-
-```sh
-trellis svc my-service create
-trellis svc my-service apply --source /path/to/my-service
-trellis svc my-service provision
-```
-
-The CLI creates the service deployment, submits the source contract boundary as a deployment authority proposal, then generates a service instance key and provisions an instance.
-
-The CLI will:
-
-- generate a new Ed25519 instance seed locally
-- derive the public session key for the service instance
-- infer deployment defaults such as display name, description, and namespaces
-- show a provisioning review before sending the request
-
-Authority review verifies the submitted manifest boundary before it can become runtime-available. Use Console as the primary review path: open **Admin → Services**, select the deployment, review the pending **Authority review required** delta, and accept or reject it there. Acceptance updates desired authority and schedules reconciliation; reconciliation materializes any resource and binding changes. Later contract changes should update deployment authority rather than applying or removing individual digests.
-
-## 4. Store the seed immediately
-
-After a successful provision, the CLI prints:
-
-```text
-provisioned service instance
-sessionKey=<public-key>
-contractId=trellis.my-service@v1
-contractDigest=<digest>
-seed=<private-seed>
-store the seed securely; it will not be shown again
-```
-
-Save the seed to your env file or secret store immediately. The CLI will not print it again.
-
-The printed `contractDigest` is runtime contract evidence. It is not the service
-deployment authority key; deployment authority comes from the service deployment
-authority that you update through Trellis Auth.
-
-## 5. Start the service process
-
-Pass the seed and NATS details as environment variables and start the service with your normal command:
-
-```sh
-export MY_SERVICE_SESSION_KEY_SEED="<seed printed by trellis svc my-service provision>"
-export NATS_SERVERS=localhost
-export NATS_SENTINEL_CREDS=$HOME/trellis/nats/creds/sentinel.creds
-```
-
-```sh
-deno task dev
-```
-
-or:
-
-```sh
-npm run dev
-```
-
-## 6. Update when the contract changes
-
-When you change the contract, regenerate artifacts and submit the new source boundary:
-
-```sh
-trellis svc my-service apply --source /path/to/my-service
-```
-
-Trellis validates the new boundary against known manifests and creates a plan for any desired authority or resource changes. After you accept the plan, reconciliation provisions required resource changes before runtime availability, and the service instance key stays the same. Restart the service process after applying the authority update. Production deployments use `strict` same-contract compatibility. If a new digest is incompatible with the accepted same-contract digest, Trellis records a pending authority migration plan; review and explicitly accept it only when you intend that migration. Use a new `@vN` contract id for breaking production changes. Use `mutable-dev` only for unreleased local iteration; it records and auto-accepts the same migration plan instead of waiting for manual approval. Remove authority only when you want to remove boundary that is no longer needed.
-
-Review the resulting boundary change in Console before restarting runtimes that rely on it. The Services page shows pending service authority updates for the selected deployment and provides accept/reject controls. `mutable-dev` same-contract migrations may already appear as accepted history because Trellis auto-approved them for local iteration. For local development or automation, use `trellis svc <id> authority plan list`, `trellis svc <id> authority plan show <PLAN_ID>`, and `trellis svc <id> authority accept-update <PLAN_ID>` or `accept-migration <PLAN_ID> --acknowledgement <TEXT>` to inspect history or decide pending plans.
-
-## What deployment authority actually grants
-
-Deployment authority is not only metadata storage. It is the control-plane boundary that determines what the service is allowed to do.
-
-Trellis derives service access from:
-
-- the service-owned RPC, event, and subject surfaces declared in the contract
-- explicit dependencies declared under `uses`
-- runtime-managed resource bindings created during authority reconciliation
-
-## Useful flags
-
-| Flag | Command | What it does |
-| --- | --- | --- |
-| `--namespace` | `trellis svc <id> create` | Adds namespaces for the service deployment |
-| `--instance-seed` | `trellis svc <id> provision` | Uses an existing service instance seed |
-
-## Development loop
-
-1. update schemas and the `defineServiceContract(...)` module
-2. run the repo-local prepare task (`deno task prepare` or `cargo xtask prepare`)
-3. run `trellis svc my-service apply --source /path/to/my-service`
-4. review and accept or reject any pending authority change in Console; `mutable-dev` migrations may already be accepted history
-5. restart the service after reconciliation has materialized required bindings
-6. confirm the expected RPCs, events, and bindings work
-
-If authority update validation fails, Trellis rolls the durable deployment record back. Once reconciliation has made the accepted boundary current on an enabled service deployment, runtime auth can grant presented evidence that fits deployment authority. Service bootstrap only proves a running instance fits current materialized authority, so failed or absent service starts do not control authority.
-
-If a locally restarted service presents a new digest for the same contract id, Trellis checks it against the service instance's current digest. In `strict` mode, incompatible same-contract changes create a pending migration plan and the service waits or retries until the plan is accepted or rejected. In `mutable-dev` mode, Trellis records and auto-accepts that migration plan so local development can iterate without creating a production compatibility promise.
+For an update, rebuild from the new IDL and source, run direct apply, then
+restart the service. Keep the same
+provisioned identity for the same instance. Do not reprovision merely because
+the generated SDK or application binary changed.

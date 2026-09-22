@@ -1,73 +1,103 @@
 [workspace]
 members = [
-  "crates/auth",
   "crates/trellis",
-  "crates/auth-adapters",
-  "crates/core-bootstrap",
+  "crates/runtime-apis",
   "crates/local-bootstrap",
-  "crates/jobs",
-  "crates/service-jobs",
-  "crates/service-runtime",
-  "crates/service",
-  "crates/contracts",
+  "crates/bootstrap",
+  "crates/local-nats",
+  "crates/jobs-runtime",
+  "crates/events-runtime",
+  "crates/trellis-test",
+  "crates/idl",
+  "crates/protocol",
+  "crates/protocol-wasm",
   "crates/codegen-ts",
   "crates/codegen-rust",
-  "crates/generate-runner",
-  "crates/integration-harness",
-  "crates/client",
   "crates/cli",
+  "crates/server",
+  "crates/runtime",
+  "xtask",
 ]
 default-members = [
-  "crates/auth",
   "crates/trellis",
-  "crates/auth-adapters",
-  "crates/core-bootstrap",
+  "crates/runtime-apis",
   "crates/local-bootstrap",
-  "crates/jobs",
-  "crates/service-jobs",
-  "crates/service-runtime",
-  "crates/service",
-  "crates/contracts",
+  "crates/bootstrap",
+  "crates/local-nats",
+  "crates/jobs-runtime",
+  "crates/events-runtime",
+  "crates/trellis-test",
+  "crates/protocol",
   "crates/codegen-ts",
   "crates/codegen-rust",
-  "crates/generate-runner",
-  "crates/client",
   "crates/cli",
+  "crates/server",
+  "crates/runtime",
+  "xtask",
 ]
 resolver = "2"
 
+[patch.crates-io]
+trellis-rs = { path = "crates/trellis" }
+
 [workspace.package]
-version = "0.10.22"
+version = "0.12.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/qlever-llc/trellis"
 
+[workspace.lints]
+rust.missing_docs = "deny"
+
 [workspace.dependencies]
+argon2 = "0.5.3"
 base64 = "0.22.1"
+data-encoding = "2.9.0"
 ed25519-dalek = "2.2.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+serde_json_canonicalizer = "0.3.2"
+semver = "1.0.27"
+tar = "0.4.46"
 rusqlite = { version = "0.37.0", features = ["bundled"] }
+ryu-js = "1.0.3"
 rustls = { version = "0.23.40", default-features = false, features = ["ring", "std"] }
+refinery = { version = "0.9.1", default-features = false, features = ["rusqlite"] }
 sha2 = "0.11.0"
+subtle = "2.6.1"
 thiserror = "2.0.18"
 tokio = { version = "1.51.1", features = ["macros", "rt-multi-thread", "time"] }
-async-nats = "0.47.0"
+async-nats = "0.50"
+nkeys = "0.4.5"
+wasm-bindgen = "0.2.114"
 bytes = "1.11.1"
 futures-util = "0.3.32"
+getrandom = "0.3.4"
 clap = { version = "4.6.0", features = ["derive"] }
 clap_complete = "4.6.0"
 comfy-table = "7.2.2"
 heck = "0.5.0"
-jsonschema = { version = "0.46.0", default-features = false }
+jsonptr = { version = "0.7.1", default-features = false }
+jsonschema = { version = "0.47.0", default-features = false }
 miette = { version = "7.6.0", features = ["fancy"] }
+logos = "0.16.1"
+notify-debouncer-mini = "0.7"
 owo-colors = "4.3.0"
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
-time = { version = "=0.3.46", features = ["formatting"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
+opentelemetry = { version = "0.32.0", default-features = false, features = ["metrics", "trace"] }
+opentelemetry_sdk = { version = "0.32.1", default-features = false, features = ["metrics", "trace"] }
+opentelemetry-otlp = { version = "0.32.0", default-features = false, features = ["http-proto", "reqwest-blocking-client", "metrics", "trace"] }
+tracing-opentelemetry = "0.33.0"
+axum = "0.8.8"
+openidconnect = "4.0.1"
+oauth2 = "5.0.0"
+nats-jwt-rs = "0.1.1"
+tower_governor = "0.8.0"
+tower-http = { version = "0.6.8", features = ["cors", "limit", "set-header", "trace"] }
+time = { version = "0.3.46", features = ["formatting"] }
+url = "2.5.8"
 self_update = { version = "0.44.0", default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "rustls", "ureq"] }
-trellis-sdk-auth = { path = "../generated/packages/cargo/auth", version = "0.10.22" }
-trellis-sdk-core = { path = "../generated/packages/cargo/trellis-core", version = "0.10.22" }
-trellis-sdk-health = { path = "../generated/packages/cargo/health", version = "0.10.22" }
-trellis-sdk-jobs = { path = "../generated/packages/cargo/jobs", version = "0.10.22" }
-trellis-sdk-state = { path = "../generated/packages/cargo/state", version = "0.10.22" }
+toml = "1.1.2"
+toml_edit = { version = "0.23.7", features = ["serde"] }
+trellis-protocol = { path = "crates/protocol", version = "0.12.0" }

@@ -1,0 +1,24 @@
+[package]
+name = "trellis-idl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+base64.workspace = true
+logos.workspace = true
+miette.workspace = true
+semver = { workspace = true, features = ["serde"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+toml.workspace = true
+trellis-protocol.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

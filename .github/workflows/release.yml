@@ -21,7 +21,9 @@ on:
       - ".github/workflows/release.yml"
       - "CHANGELOG.md"
       - "art/**"
-      - "js/**"
+      - "conformance/**"
+      - "integration/**"
+      - "ts/**"
       - "rust/**"
       - "scripts/**"
       - "xtask/**"
@@ -34,8 +36,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  CARGO_HTTP_MULTIPLEXING: false
   CARGO_TERM_COLOR: always
-  DENO_VERSION: 2.7.14
+  DENO_VERSION: 2.9.4
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   NODE_VERSION: 24
   REGISTRY: ghcr.io
@@ -44,7 +47,7 @@ jobs:
   resolve-release:
     name: Resolve release marker
     if: github.event_name != 'push' || github.event.deleted != true
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     outputs:
       release-tag: ${{ steps.release.outputs.tag }}
       release-version: ${{ steps.release.outputs.version }}
@@ -70,21 +73,20 @@ jobs:
           should_publish=false
           should_create_tag=false
 
-          case "${GITHUB_REF}" in
-            refs/heads/release/v*)
-              release_tag="${GITHUB_REF_NAME#release/}"
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${INPUT_TAG}" ]; then
+            release_tag="${INPUT_TAG}"
+            if [ "${INPUT_PUBLISH}" = "true" ]; then
               should_publish=true
-              should_create_tag=true
-              ;;
-            *)
-              if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
-                release_tag="${INPUT_TAG}"
-                if [ "${INPUT_PUBLISH}" = "true" ] && [ -n "${release_tag}" ]; then
-                  should_publish=true
-                fi
-              fi
-              ;;
-          esac
+            fi
+          else
+            case "${GITHUB_REF}" in
+              refs/heads/release/v*)
+                release_tag="${GITHUB_REF_NAME#release/}"
+                should_publish=true
+                should_create_tag=true
+                ;;
+            esac
+          fi
 
           if [ -n "${release_tag}" ] && [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]]; then
             echo "::error::Invalid release tag '${release_tag}'; expected vX.Y.Z or vX.Y.Z-rc.1"
@@ -112,7 +114,7 @@ jobs:
   prepare-release:
     name: Prepare release workspace
     needs: resolve-release
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     outputs:
       release-tag: ${{ steps.release.outputs.tag }}
       release-version: ${{ steps.release.outputs.version }}
@@ -138,13 +140,24 @@ jobs:
         with:
           path: |
             ~/.cache/deno
-            js/node_modules
-          key: deno-${{ runner.os }}-${{ env.DENO_VERSION }}-${{ hashFiles('js/deno.lock') }}
+            ts/node_modules
+          key: deno-${{ runner.os }}-${{ env.DENO_VERSION }}-${{ hashFiles('ts/deno.lock') }}
           restore-keys: |
             deno-${{ runner.os }}-${{ env.DENO_VERSION }}-
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Prepare release version
+        run: time cargo run --manifest-path xtask/Cargo.toml -- release prepare --tag "${RELEASE_TAG}"
+
+      - name: Install release API dependencies
+        run: rm -rf "$RUNNER_TEMP/trellis-cache" && TRELLIS_CACHE="$RUNNER_TEMP/trellis-cache" time cargo xtask install
+
+      - name: Build protocol WASM
+        run: time cargo run --manifest-path rust/xtask/Cargo.toml -- protocol-wasm
 
       - name: Cache Rust build artifacts
         uses: swatinem/rust-cache@v2
@@ -153,13 +166,6 @@ jobs:
             xtask -> target
             rust -> target
             rust/xtask -> target
-            rust/tools/generate -> target
-
-      - name: Bootstrap generated SDK artifacts
-        run: time cargo run --manifest-path rust/tools/generate/Cargo.toml -- prepare --no-npm .
-
-      - name: Prepare release version
-        run: time cargo run --manifest-path xtask/Cargo.toml -- release prepare --tag "${RELEASE_TAG}"
 
       - name: Capture release outputs
         id: release
@@ -183,8 +189,8 @@ jobs:
             time cargo run --manifest-path xtask/Cargo.toml -- release check-metadata
           fi
 
-      - name: Generate release SDK artifacts
-        run: time cargo run --manifest-path rust/tools/generate/Cargo.toml -- prepare --no-npm .
+      - name: Build embedded browser apps
+        run: deno task -c ts/deno.json browser:embedded
 
       - name: Write release notes
         if: env.RELEASE_TAG != ''
@@ -199,8 +205,10 @@ jobs:
             .dockerignore
             CHANGELOG.md
             art
-            generated
-            js
+            conformance
+            demos/ts
+            demos/app
+            ts
             rust
             scripts
             xtask
@@ -215,12 +223,10 @@ jobs:
           name: release-notes
           path: dist/release-notes.md
 
-  verify-rust:
-    name: Verify Rust packages
+  package-rust:
+    name: Verify Rust package
     needs: prepare-release
-    runs-on: ubuntu-latest
-    env:
-      RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
+    runs-on: [self-hosted, Linux, X64]
 
     steps:
       - name: Check out repository
@@ -235,74 +241,16 @@ jobs:
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: ${{ env.DENO_VERSION }}
-
-      - name: Cache Rust build artifacts
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            xtask -> target
-            rust -> target
-            rust/xtask -> target
-            rust/tools/generate -> target
-
-      - name: Run Rust tests
-        shell: bash
+      - name: Verify publishable Rust packages
         run: |
-          set -euo pipefail
-          if [ -n "${RELEASE_TAG}" ]; then
-            time cargo test --manifest-path rust/Cargo.toml --workspace
-            time cargo test --manifest-path rust/tools/generate/Cargo.toml
-            time cargo test --manifest-path rust/xtask/Cargo.toml
-            time cargo test --manifest-path xtask/Cargo.toml
-          else
-            time cargo test --manifest-path rust/Cargo.toml --workspace --locked
-            time cargo test --manifest-path rust/tools/generate/Cargo.toml --locked
-            time cargo test --manifest-path rust/xtask/Cargo.toml --locked
-            time cargo test --manifest-path xtask/Cargo.toml --locked
-          fi
+          cargo package --manifest-path rust/Cargo.toml --allow-dirty \
+            -p trellis-protocol \
+            -p trellis-rs
 
-  verify-format:
-    name: Verify formatting
+  package-js:
+    name: Verify JavaScript packages
     needs: prepare-release
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Download prepared release workspace
-        uses: actions/download-artifact@v4
-        with:
-          name: prepared-release
-          path: .
-
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: ${{ env.DENO_VERSION }}
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Run formatter checks
-        shell: bash
-        run: |
-          set -euo pipefail
-          time deno fmt -c js/deno.json --check
-          time cargo fmt --manifest-path rust/Cargo.toml --all --check
-          time cargo fmt --manifest-path rust/tools/generate/Cargo.toml --check
-          time cargo fmt --manifest-path rust/xtask/Cargo.toml --check
-
-  verify-js:
-    name: Verify npm and JSR packages
-    needs: prepare-release
-    runs-on: ubuntu-latest
-    env:
-      RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
+    runs-on: [self-hosted, Linux, X64]
 
     steps:
       - name: Check out repository
@@ -324,8 +272,8 @@ jobs:
         with:
           path: |
             ~/.cache/deno
-            js/node_modules
-          key: deno-${{ runner.os }}-${{ env.DENO_VERSION }}-${{ hashFiles('js/deno.lock') }}
+            ts/node_modules
+          key: deno-${{ runner.os }}-${{ env.DENO_VERSION }}-${{ hashFiles('ts/deno.lock') }}
           restore-keys: |
             deno-${{ runner.os }}-${{ env.DENO_VERSION }}-
 
@@ -334,68 +282,33 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Type-check JS entrypoints
-        run: time deno check -c js/deno.json js/packages/trellis/index.ts js/packages/trellis-svelte/src/index.ts js/packages/trellis-svelte/src/context.svelte.ts js/services/trellis/main.ts
+      - name: Build npm packages from installed sources
+        run: deno task -c ts/deno.json packages:build:npm:installed
 
-      - name: Build publishable npm packages
-        run: time deno task packages:build:npm
-        working-directory: js
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Run Deno tests
-        run: time deno test -c js/deno.json -A
+      - name: Build runtime for live package consumer verification
+        run: cargo build --manifest-path rust/Cargo.toml -p trellis-server
 
-      - name: Smoke test packed npm packages
-        run: time deno task smoke:npm
-        working-directory: js
+      - name: Verify built package surfaces
+        run: deno task -c ts/deno.json test:packaging:built
 
-      - name: Dry-run npm publishing
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm_tag=latest
-          if [[ "${RELEASE_TAG}" == *-* ]]; then
-            npm_tag=rc
-          fi
-          start_seconds=$SECONDS
-          for pkg in \
-            js/packages/result/npm \
-            js/packages/trellis/npm \
-            js/packages/trellis-svelte/npm
-          do
-            npm publish --dry-run --access public --tag "$npm_tag" "$pkg"
-          done
-          printf 'npm dry-runs completed in %ss\n' "$((SECONDS - start_seconds))"
-
-      - name: Dry-run JSR publishing
-        shell: bash
-        run: |
-          set -euo pipefail
-          for pkg in \
-            js/packages/result \
-            js/packages/trellis \
-            js/packages/trellis-svelte/jsr
-          do
-            (cd "$pkg" && time deno publish --dry-run --allow-slow-types --allow-dirty)
-          done
+      - name: Verify TypeScript publication
+        run: bash scripts/release-ts-dry-run.sh
 
       - name: Upload npm package artifact
         uses: actions/upload-artifact@v4
         with:
           name: npm-packages
           path: |
-            js/packages/result/npm
-            js/packages/trellis/npm
-            js/packages/trellis-svelte/npm
-            dist/npm
-
-      - name: Upload trellis-svelte JSR package artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: trellis-svelte-jsr-package
-          path: js/packages/trellis-svelte/jsr
+            ts/packages/result/npm
+            ts/packages/trellis/npm
+            ts/packages/trellis-svelte/npm
 
   build-cli:
     name: Build ${{ matrix.target }} CLI
+    if: needs.prepare-release.outputs.release-tag != ''
     needs: prepare-release
     runs-on: ${{ matrix.runner }}
     env:
@@ -442,13 +355,6 @@ jobs:
             xtask -> target
             rust -> target
             rust/xtask -> target
-            rust/tools/generate -> target
-
-      - name: Refresh generated Rust SDK paths
-        shell: bash
-        run: |
-          set -euo pipefail
-          time cargo run --manifest-path rust/tools/generate/Cargo.toml -- -f prepare --no-npm .
 
       - name: Build release binaries
         shell: bash
@@ -458,11 +364,9 @@ jobs:
         run: |
           set -euo pipefail
           if [ -n "${RELEASE_TAG}" ]; then
-            time cargo build -p trellis-cli --release --target ${{ matrix.target }}
-            time cargo build --manifest-path tools/generate/Cargo.toml --release --target ${{ matrix.target }}
+            time cargo build -p trellis-cli -p trellis-server --release --target ${{ matrix.target }}
           else
-            time cargo build -p trellis-cli --release --locked --target ${{ matrix.target }}
-            time cargo build --manifest-path tools/generate/Cargo.toml --release --locked --target ${{ matrix.target }}
+            time cargo build -p trellis-cli -p trellis-server --release --locked --target ${{ matrix.target }}
           fi
         working-directory: rust
 
@@ -477,14 +381,10 @@ jobs:
           mkdir -p "$staging"
 
           cp "rust/target/${target}/release/trellis" "$staging/trellis"
+          cp "rust/target/${target}/release/trellis-server" "$staging/trellis-server"
           archive="trellis-${archive_version}-${target}.tar.gz"
-          tar -C "$staging" -czf "dist/$archive" trellis
+          tar -C "$staging" -czf "dist/$archive" trellis trellis-server
           shasum -a 256 "dist/$archive" > "dist/checksum-${archive_version}-${target}-trellis.sha256"
-
-          cp "rust/tools/generate/target/${target}/release/trellis-generate" "$staging/trellis-generate"
-          archive="trellis-generate-${archive_version}-${target}.tar.gz"
-          tar -C "$staging" -czf "dist/$archive" trellis-generate
-          shasum -a 256 "dist/$archive" > "dist/checksum-${archive_version}-${target}-trellis-generate.sha256"
 
       - name: Upload packaged CLI artifact
         uses: actions/upload-artifact@v4
@@ -495,9 +395,10 @@ jobs:
             dist/*.sha256
 
   verify-images:
-    name: Verify ${{ matrix.image }} image
+    name: Build verified ${{ matrix.image }} image
+    if: needs.prepare-release.outputs.release-tag != ''
     needs: prepare-release
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     env:
       RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
 
@@ -506,15 +407,13 @@ jobs:
       matrix:
         include:
           - image: trellis
-            file: js/services/trellis/Containerfile
+            file: rust/crates/runtime/Containerfile
             title: trellis
-            description: Trellis service runtime
-            contract-path: /trellis/contract.json
+            description: Trellis Rust runtime
           - image: console
-            file: js/apps/console/Containerfile
+            file: web/Containerfile
             title: console
             description: Trellis administrative web console
-            contract-path: ""
 
     steps:
       - name: Check out repository
@@ -532,66 +431,185 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Dry-run image build
+      - name: Build verified image archive
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ${{ matrix.file }}
           platforms: linux/amd64,linux/arm64
-          push: false
+          outputs: type=oci,dest=/tmp/${{ matrix.image }}.tar
           build-args: |
             TRELLIS_VERSION=${{ env.RELEASE_TAG }}
             TRELLIS_REVISION=${{ github.sha }}
           labels: |
             org.opencontainers.image.title=${{ matrix.title }}
             org.opencontainers.image.description=${{ matrix.description }}
-            io.trellis.contract.path=${{ matrix.contract-path }}
 
-  verify-integration:
-    name: Verify integration harness
-    needs: prepare-release
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Download prepared release workspace
-        uses: actions/download-artifact@v4
+      # The managed-mode smoke needs a named, single-platform image in the local
+      # Docker daemon. The multi-arch OCI archive above cannot be loaded by name
+      # (buildx's oci exporter leaves the images untagged and the archive is not a
+      # docker-loadable single image), so the trellis image is rebuilt natively for
+      # linux/amd64 with `load: true`, reusing the same build cache. Both
+      # architectures are still proven by the OCI archive build above; the smoke only
+      # runs the native amd64 image.
+      - name: Build native trellis image for the managed-mode smoke
+        if: matrix.image == 'trellis'
+        uses: docker/build-push-action@v6
         with:
-          name: prepared-release
-          path: .
+          context: .
+          file: rust/crates/runtime/Containerfile
+          platforms: linux/amd64
+          load: true
+          tags: trellis-smoke:test
+          build-args: |
+            TRELLIS_VERSION=${{ env.RELEASE_TAG }}
+            TRELLIS_REVISION=${{ github.sha }}
 
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
+      - name: Smoke-test managed NATS in the trellis image
+        if: matrix.image == 'trellis'
+        shell: bash
+        env:
+          IMAGE: trellis-smoke:test
+          BUNDLE_VOLUME: trellis-bundle
+          STATE_VOLUME: trellis-state
+        run: |
+          set -euo pipefail
+          cleanup() {
+            docker rm -f trellis-smoke-run >/dev/null 2>&1 || true
+            docker volume rm "${BUNDLE_VOLUME}" >/dev/null 2>&1 || true
+            docker volume rm "${STATE_VOLUME}" >/dev/null 2>&1 || true
+            docker image rm "${IMAGE}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          # 1. Baked nats-server matches the pinned version; both binaries run.
+          nats_version="$(docker run --rm --entrypoint nats-server "${IMAGE}" --version)"
+          expected_nats_version="$(jq -r '.["nats-server"].version' rust/crates/local-nats/nats-binaries.json)"
+          case "${nats_version}" in *"v${expected_nats_version}"*) ;; *)
+            echo "nats-server version mismatch: got '${nats_version}', expected v${expected_nats_version}" >&2
+            exit 1
+            ;;
+          esac
+          trellis_version="$(docker run --rm --entrypoint trellis "${IMAGE}" --version)"
+          test -n "${trellis_version}"
+          server_version="$(docker run --rm --entrypoint trellis-server "${IMAGE}" --version)"
+          test -n "${server_version}"
+
+          # 2. Generate a bundle into the state volume, owned by the image's
+          #    non-root user, then copy it into its own named volume. System path
+          #    defaults keep mutable SQLite state out of the read-only bundle.
+          docker volume create "${BUNDLE_VOLUME}" >/dev/null
+          docker volume create "${STATE_VOLUME}" >/dev/null
+          docker run --rm --user root --entrypoint chown -v "${STATE_VOLUME}":/var/lib/trellis \
+            "${IMAGE}" -R 10001:10001 /var/lib/trellis
+          docker run --rm --user 10001:10001 --entrypoint trellis \
+            -v "${STATE_VOLUME}":/var/lib/trellis "${IMAGE}" \
+            init config --out /var/lib/trellis/bundle
+          docker run --rm --user root --entrypoint cp \
+            -v "${STATE_VOLUME}":/from:ro -v "${BUNDLE_VOLUME}":/to "${IMAGE}" \
+            -a /from/bundle/. /to/
+          # The bundle's creds/secrets are 0o600 and generated as 10001, but the
+          # copy helper runs as root and the bundle volume root is root-owned:
+          # the run container uid must own the bundle contents to read them.
+          docker run --rm --user root --entrypoint chown \
+            -v "${BUNDLE_VOLUME}":/to "${IMAGE}" \
+            -R 10001:10001 /to
+
+          # 3. Managed-mode run: non-root user, read-only rootfs, read-only
+          #    bundle volume, writable state volume. All mutable NATS files go
+          #    to /var/lib/trellis/nats via the system profile and the runtime's
+          #    SQLite stores to /var/lib/trellis/data (config rewritten above).
+          docker run --detach --name trellis-smoke-run --read-only --tmpfs /tmp \
+            --tmpfs /run/trellis:uid=10001,gid=10001,mode=0700 \
+            --tmpfs /var/log/trellis:uid=10001,gid=10001,mode=0700 \
+            --user 10001:10001 \
+            --publish 127.0.0.1::3000 \
+            --volume "${BUNDLE_VOLUME}":/etc/trellis:ro,Z \
+            --volume "${STATE_VOLUME}":/var/lib/trellis:rw,Z \
+            --entrypoint trellis-server "${IMAGE}" \
+            --system all --local-nats=/usr/local/bin/nats-server
+
+          # 4. Wait for runtime readiness on the published port.
+          runtime_port="$(docker port trellis-smoke-run 3000/tcp | cut -d: -f2)"
+          ready=""
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent "http://127.0.0.1:${runtime_port}/readyz" >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            if ! docker inspect trellis-smoke-run >/dev/null 2>&1; then
+              echo "trellis-smoke-run exited during startup" >&2
+              docker logs trellis-smoke-run >&2 || true
+              exit 1
+            fi
+            sleep 2
+          done
+          if [ -z "${ready}" ]; then
+            echo "timed out waiting for runtime readiness" >&2
+            docker logs trellis-smoke-run >&2 || true
+            exit 1
+          fi
+
+          # 5. Graceful stop: SIGTERM, wait up to 30s, then check the exit code.
+          docker stop --time 30 trellis-smoke-run >/dev/null
+          exit_code="$(docker wait trellis-smoke-run)"
+          if [ "${exit_code}" != "0" ]; then
+            echo "trellis-smoke-run exited with ${exit_code} instead of 0" >&2
+            docker logs trellis-smoke-run >&2 || true
+            exit 1
+          fi
+
+          # 6. No startup or write errors in the logs.
+          logs="$(docker logs trellis-smoke-run 2>&1)"
+          if grep -Ei 'read-only|readonly|permission denied|failed to (write|create|open)' <<<"${logs}"; then
+            echo "unexpected write/startup error in the smoke logs" >&2
+            printf '%s\n' "${logs}" >&2
+            exit 1
+          fi
+
+          # 7. Mutable NATS state landed in the state volume; the pid file was
+          #    removed on shutdown; the bundle volume stayed untouched; the
+          #    runtime's SQLite databases landed in the system data root.
+          docker run --rm --entrypoint sh \
+            -v "${BUNDLE_VOLUME}":/etc/trellis:ro \
+            -v "${STATE_VOLUME}":/var/lib/trellis "${IMAGE}" -c '
+              set -eu
+              test -f /var/lib/trellis/nats/nats.conf
+              test -f /var/lib/trellis/nats/jwt.conf
+              test -d /var/lib/trellis/nats/data/jwt
+              test -d /var/lib/trellis/nats/data/jetstream
+              test ! -e /var/lib/trellis/nats/nats-server.pid
+              test ! -e /etc/trellis/nats/nats.local.conf
+              test ! -e /etc/trellis/nats/jwt.local.conf
+              test -f /var/lib/trellis/platform.sqlite
+              test ! -e /etc/trellis/platform.sqlite
+            '
+          echo "managed NATS image smoke passed"
+
+      - name: Upload verified image archive
+        uses: actions/upload-artifact@v4
         with:
-          deno-version: ${{ env.DENO_VERSION }}
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust build artifacts
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            xtask -> target
-            rust -> target
-            rust/xtask -> target
-            rust/tools/generate -> target
-
-      - name: Run integration harness
-        run: time cargo run --manifest-path xtask/Cargo.toml -- integration run --skip-prepare
+          name: verified-image-${{ matrix.image }}
+          path: /tmp/${{ matrix.image }}.tar
+          compression-level: 0
 
   release-gate:
     name: Release gate
     needs:
-      - verify-format
-      - verify-rust
-      - verify-js
+      - prepare-release
+      - package-rust
+      - package-js
       - build-cli
       - verify-images
-      - verify-integration
-    runs-on: ubuntu-latest
+    if: >-
+      always()
+      && needs.package-rust.result == 'success'
+      && needs.package-js.result == 'success'
+      && (
+        needs.prepare-release.outputs.release-tag == ''
+        || (needs.build-cli.result == 'success' && needs.verify-images.result == 'success')
+      )
+    runs-on: [self-hosted, Linux, X64]
 
     steps:
       - name: Confirm release verification passed
@@ -603,7 +621,8 @@ jobs:
     needs:
       - prepare-release
       - release-gate
-    runs-on: ubuntu-latest
+      - publish-apis
+    runs-on: [self-hosted, Linux, X64]
     permissions:
       contents: write
 
@@ -652,12 +671,13 @@ jobs:
 
   github-release:
     name: Publish GitHub release
-    if: always() && needs.prepare-release.outputs.should-publish == 'true' && needs.release-gate.result == 'success' && (needs.prepare-release.outputs.should-create-tag != 'true' || needs.create-release-tag.result == 'success')
+    if: always() && needs.prepare-release.outputs.should-publish == 'true' && needs.release-gate.result == 'success' && needs.publish-apis.result == 'success' && (needs.prepare-release.outputs.should-create-tag != 'true' || needs.create-release-tag.result == 'success')
     needs:
       - prepare-release
       - release-gate
       - create-release-tag
-    runs-on: ubuntu-latest
+      - publish-apis
+    runs-on: [self-hosted, Linux, X64]
     permissions:
       contents: write
 
@@ -689,12 +709,11 @@ jobs:
 
   publish-crates:
     name: Publish Rust crates
-    if: needs.prepare-release.outputs.should-publish == 'true'
+    if: always() && needs.prepare-release.outputs.should-publish == 'true' && needs.github-release.result == 'success'
     needs:
       - prepare-release
-      - release-gate
       - github-release
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     permissions:
       contents: read
       id-token: write
@@ -724,7 +743,6 @@ jobs:
             xtask -> target
             rust -> target
             rust/xtask -> target
-            rust/tools/generate -> target
 
       - name: Authenticate with crates.io
         id: auth
@@ -816,7 +834,8 @@ jobs:
             run_publish "$crate" -p "$crate"
           }
 
-          publish_workspace_crate trellis-contracts
+          publish_workspace_crate trellis-protocol
+          # run_publish waits for protocol to enter the index before this contracts dry-run.
           publish_workspace_crate trellis-rs
 
           echo "Published ${#published[@]} crate(s)"
@@ -829,14 +848,63 @@ jobs:
             echo "  skipped: $item"
           done
 
+  publish-apis:
+    name: Publish canonical APIs
+    if: always() && needs.prepare-release.outputs.should-publish == 'true' && needs.release-gate.result == 'success'
+    needs:
+      - prepare-release
+      - release-gate
+    runs-on: [self-hosted, Linux, X64]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download prepared release workspace
+        uses: actions/download-artifact@v4
+        with:
+          name: prepared-release
+          path: .
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      - name: Authenticate with GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish APIs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/trellis-cache"
+          export TRELLIS_CACHE="$RUNNER_TEMP/trellis-cache"
+          cargo build --manifest-path rust/Cargo.toml --locked --package trellis-cli
+          trellis="$GITHUB_WORKSPACE/rust/target/debug/trellis"
+          for project in \
+            rust/crates/events-runtime \
+            rust/crates/jobs-runtime \
+            rust/crates/runtime \
+            ts/packages/trellis
+          do
+            (cd "$project" && "$trellis" publish)
+          done
+
   publish-npm:
     name: Publish npm packages
-    if: needs.prepare-release.outputs.should-publish == 'true'
+    if: always() && needs.prepare-release.outputs.should-publish == 'true' && needs.github-release.result == 'success' && needs.package-js.result == 'success'
     needs:
       - prepare-release
       - github-release
-      - verify-js
-    runs-on: ubuntu-latest
+      - package-js
+    runs-on: [self-hosted, Linux, X64]
     permissions:
       contents: read
       id-token: write
@@ -918,9 +986,9 @@ jobs:
           fi
 
           packages=(
-            js/packages/result/npm
-            js/packages/trellis/npm
-            js/packages/trellis-svelte/npm
+            ts/packages/result/npm
+            ts/packages/trellis/npm
+            ts/packages/trellis-svelte/npm
           )
           for pkg in "${packages[@]}"; do
             package_json="$pkg/package.json"
@@ -941,15 +1009,17 @@ jobs:
 
   publish-jsr:
     name: Publish JSR packages
-    if: needs.prepare-release.outputs.should-publish == 'true'
+    if: always() && needs.prepare-release.outputs.should-publish == 'true' && needs.github-release.result == 'success' && needs.package-js.result == 'success'
     needs:
       - prepare-release
       - github-release
-      - verify-js
-    runs-on: ubuntu-latest
+      - package-js
+    runs-on: [self-hosted, Linux, X64]
     permissions:
       contents: read
       id-token: write
+    env:
+      RELEASE_VERSION: ${{ needs.prepare-release.outputs.release-version }}
 
     steps:
       - name: Check out repository
@@ -961,12 +1031,6 @@ jobs:
           name: prepared-release
           path: .
 
-      - name: Download trellis-svelte JSR package artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: trellis-svelte-jsr-package
-          path: js/packages/trellis-svelte/jsr
-
       - name: Set up Deno
         uses: denoland/setup-deno@v2
         with:
@@ -977,8 +1041,8 @@ jobs:
         with:
           path: |
             ~/.cache/deno
-            js/node_modules
-          key: deno-${{ runner.os }}-${{ env.DENO_VERSION }}-${{ hashFiles('js/deno.lock') }}
+            ts/node_modules
+          key: deno-${{ runner.os }}-${{ env.DENO_VERSION }}-${{ hashFiles('ts/deno.lock') }}
           restore-keys: |
             deno-${{ runner.os }}-${{ env.DENO_VERSION }}-
 
@@ -1037,9 +1101,13 @@ jobs:
             wait_for_jsr_package "$package_name" "$package_version"
           }
 
-          publish_or_skip js/packages/result
-          publish_or_skip js/packages/trellis
-          publish_or_skip js/packages/trellis-svelte/jsr
+          publish_or_skip ts/packages/result
+          publish_or_skip ts/packages/trellis
+          publish_or_skip ts/packages/trellis-test
+
+          TRELLIS_SVELTE_JSR_RUNTIME_DEPENDENCY_VERSION="${RELEASE_VERSION}" \
+            deno task -c ts/packages/trellis-svelte/deno.json build:npm
+          publish_or_skip ts/packages/trellis-svelte/jsr
 
           echo "Published ${#published[@]} JSR package(s)"
           for item in "${published[@]}"; do
@@ -1053,12 +1121,12 @@ jobs:
 
   publish-images:
     name: Publish ${{ matrix.image }} image
-    if: needs.prepare-release.outputs.should-publish == 'true'
+    if: always() && needs.prepare-release.outputs.should-publish == 'true' && needs.release-gate.result == 'success' && needs.github-release.result == 'success'
     needs:
       - prepare-release
       - release-gate
       - github-release
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     permissions:
       contents: read
       packages: write
@@ -1070,25 +1138,14 @@ jobs:
       matrix:
         include:
           - image: trellis
-            file: js/services/trellis/Containerfile
-            title: trellis
-            description: Trellis service runtime
-            contract-path: /trellis/contract.json
           - image: console
-            file: js/apps/console/Containerfile
-            title: console
-            description: Trellis administrative web console
-            contract-path: ""
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Download prepared release workspace
+      - name: Download verified image archive
         uses: actions/download-artifact@v4
         with:
-          name: prepared-release
-          path: .
+          name: verified-image-${{ matrix.image }}
+          path: /tmp
 
       - name: Normalize image owner
         id: owner
@@ -1097,18 +1154,10 @@ jobs:
           set -euo pipefail
           echo "value=$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up image promotion
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes skopeo
 
       - name: Extract image metadata
         id: meta
@@ -1121,19 +1170,17 @@ jobs:
             type=raw,value=rc,enable=${{ env.RELEASE_TAG != '' && contains(env.RELEASE_TAG, '-') }}
             type=raw,value=latest,enable=${{ env.RELEASE_TAG != '' && !contains(env.RELEASE_TAG, '-') }}
 
-      - name: Build and push image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ${{ matrix.file }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          build-args: |
-            TRELLIS_VERSION=${{ env.RELEASE_TAG }}
-            TRELLIS_REVISION=${{ github.sha }}
-          labels: |
-            ${{ steps.meta.outputs.labels }}
-            org.opencontainers.image.title=${{ matrix.title }}
-            org.opencontainers.image.description=${{ matrix.description }}
-            io.trellis.contract.path=${{ matrix.contract-path }}
+      - name: Promote verified image
+        shell: bash
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_USER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          auth_file="${RUNNER_TEMP}/skopeo-auth.json"
+          printf '%s' "${REGISTRY_PASSWORD}" | skopeo login --authfile "${auth_file}" --username "${REGISTRY_USER}" --password-stdin "${REGISTRY}"
+          while IFS= read -r image_tag; do
+            [ -n "${image_tag}" ] || continue
+            skopeo copy --all --dest-authfile "${auth_file}" "oci-archive:/tmp/${{ matrix.image }}.tar" "docker://${image_tag}"
+          done <<< "${IMAGE_TAGS}"

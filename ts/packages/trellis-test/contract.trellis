@@ -1,0 +1,52 @@
+import { auth, events, health, jobs, state } from trellis;
+
+app cli {
+  use auth {
+    rpc CapabilityGroups.Get;
+    rpc CapabilityGroups.Put;
+    rpc Connections.List;
+    rpc Deployments.Apply;
+    rpc Deployments.Get;
+    rpc Deployments.Create;
+    rpc Devices.Provision;
+    rpc DeviceUserAuthorities.Reviews.List;
+    rpc DeviceUserAuthorities.Reviews.Decide;
+    rpc Grants.Get;
+    rpc Grants.List;
+    rpc Grants.Revoke;
+    rpc Grants.Set;
+    rpc Participants.Get;
+    rpc Participants.Install;
+    rpc Portals.Get;
+    rpc Portals.GrantOverrides.Put;
+    rpc Portals.GrantOverrides.Remove;
+    rpc Portals.List;
+    rpc Portals.LoginSettings.Get;
+    rpc Portals.LoginSettings.Update;
+    rpc Portals.Put;
+    rpc Portals.Routes.Put;
+    rpc ServiceInstances.Disable;
+    rpc ServiceInstances.Provision;
+    rpc Sessions.List;
+    rpc Sessions.Revoke;
+    rpc UserIdentities.List;
+    rpc Users.Create;
+    rpc Users.PasswordReset.Create;
+  }
+  use events {
+    rpc Consumers.Inspect;
+    rpc Consumers.Query;
+    rpc DeadLetters.Dismiss;
+    rpc DeadLetters.Inspect;
+    rpc DeadLetters.Query;
+    rpc DeadLetters.Replay;
+    rpc Query;
+  }
+  use health { rpc Query; }
+  use jobs { rpc Query; }
+  use state {
+    rpc Delete;
+    rpc Resources.Inspect;
+    rpc Resources.Query;
+  }
+}

@@ -1,126 +1,31 @@
 ---
 title: Capability Patterns
-description: Capability naming, assignment, and deployment policy patterns across Trellis contracts and auth.
-order: 70
+description: Capability approval, exact grants, and deployment policy.
 ---
 
-# Design: Capability Patterns
+# Capability Patterns
 
-## Prerequisites
+Capabilities are API-owned explanation and approval groups. Their identity is
+`<api-id>::<name>`. Human consent fingerprints bind capability identity,
+description, and consequence. Titles are presentation; exact `allows` membership
+is machine semantics but not part of the consent fingerprint.
 
-- [trellis-patterns.md](./trellis-patterns.md) - Trellis architecture and
-  communication model
-- [../auth/trellis-auth.md](./../auth/trellis-auth.md) - identity, approval, and
-  enforcement model
-- [../contracts/trellis-contracts-catalog.md](./../contracts/trellis-contracts-catalog.md) -
-  contract-level capability declarations
+Approval does not grant a capability token. Trellis resolves selected actions,
+public membership, approved current-consent capabilities, and the principal's
+delegation ceiling into exact signed permission atoms. Unselected actions are
+never granted. Overlapping capabilities combine by OR, while every implicated
+nonoptional capability must still be approved for readiness.
 
-## Scope
+Capability mode supports user consent and capability-based deployment approval.
+Exact mode supports explicit administrative grants and does not auto-expand from
+capability names. Platform Admin is separate and never inferred from application
+capability text.
 
-This document defines Trellis capability naming, contract-authored capability
-metadata, and role/capability usage patterns.
+Optional capability decline leaves functionality unavailable without blocking
+the participant. Provider definition compatibility is a readiness prerequisite;
+socket liveness is reported separately and does not revoke an otherwise valid
+login.
 
-## Capability Model
-
-Contracts declare capability requirements on RPCs, operations, events, and
-feeds. The owning contract may also declare human-facing metadata for each owned
-capability so planning and approval UIs can explain the requested authority
-without inventing a separate scope catalog. Accepted deployment authority stores
-the runtime capability view projected from those contracts. Deployments grant
-capabilities through roles, groups, grant overrides, or external identity
-mappings.
-
-Rules:
-
-- contracts declare required capabilities on owned and used surfaces
-- event subscription capabilities authorize the logical event surface. Durable
-  service event consumers require an additional `eventConsumers` resource
-  binding and receive least-privilege JetStream consumer permissions from that
-  binding rather than from broader capability grants.
-- contracts SHOULD declare top-level metadata for every capability they own
-- deployments assign capability bundles to users and services
-- deployments MAY also assign auth-owned dynamic capability overlays through
-  grant overrides keyed by `contractId + origin` for web grants or
-  `contractId + sessionPublicKey` for session-keyed grants
-- services receive deployment policy through deployment authority
-  materialization and current materialized authority
-- authorization changes take effect after accepted authority is materialized or
-  stored grants change; runtime auth derives transport permissions from current
-  materialized authority and stored grants, not from active contracts
-- auth-owned self-service RPCs may intentionally require zero granted
-  capabilities when ordinary authenticated user context is sufficient, such as
-  `Auth.Sessions.Me` and `Auth.Sessions.Logout`
-- user, service, session, and grant projections store capability keys as
-  strings; approval payloads carry capability metadata objects keyed by those
-  strings
-
-Grant overrides are deployment policy, not user-owned grants. They must not be
-copied onto the user projection, and they may be revoked dynamically so affected
-delegated sessions must reconnect and re-evaluate current policy.
-
-## Capability Naming
-
-Capability names have two forms:
-
-- local capability names are authored inside the owning contract, for example
-  `users.read` or `admin.read`
-- global capability keys are emitted into canonical manifests and grant records
-  as `<contract namespace>::<local capability>`, for example
-  `trellis.jobs::admin.read`
-
-The contract namespace is the contract `id` with a trailing major-version suffix
-removed. For example, both `trellis.jobs@v1` and `trellis.jobs@v2` map to the
-capability namespace `trellis.jobs`. This keeps grants stable across intentional
-major contract-version upgrades when the capability meaning is preserved.
-
-Rules:
-
-- contract authors SHOULD write local capability names in source contract files
-  and let authoring helpers emit global keys
-- local capability names MUST NOT start with the owning contract namespace plus
-  `.`, so `trellis.core@v1` declares `catalog.read` rather than
-  `trellis.core.catalog.read`
-- direct manifest authors SHOULD write global keys in canonical
-  `trellis.contract.v1` manifests
-- if a capability reference matches a declared top-level capability, tooling
-  projects it to the global key in the emitted manifest
-- undeclared platform or external capability strings such as `service` and
-  `admin` remain raw strings and are not rewritten
-- capability metadata belongs to the owning contract; other contracts reference
-  used APIs by logical `uses` selections, not by redeclaring another contract's
-  capability metadata
-- admin capability catalogs come from Trellis platform capabilities plus
-  authority-owned projected capability definitions, not from the active catalog
-  alone
-- changing capability metadata changes what users are asked to approve and
-  therefore changes the contract digest
-
-| Pattern                          | Example                      | Meaning                    | Who Can Claim   |
-| -------------------------------- | ---------------------------- | -------------------------- | --------------- |
-| `<namespace>::<domain>.<action>` | `trellis.auth::users.read`   | Can read users             | Users, Services |
-| `<namespace>::<domain>.<action>` | `graph::partners.write`      | Can mutate partners        | Users, Services |
-| `service`                        | —                            | Backend service principal  | Services only   |
-| `admin`                          | —                            | Administrative access      | Users, Services |
-| `<namespace>::<domain>.<action>` | `trellis.jobs::admin.read`   | Read jobs admin data       | Users, Services |
-| `<namespace>::<domain>.<action>` | `trellis.jobs::admin.mutate` | Mutate jobs admin state    | Users, Services |
-| `<namespace>::<domain>.<action>` | `trellis.jobs::admin.stream` | Observe jobs admin streams | Users, Services |
-
-Deployments may still encounter role-shaped strings such as `users:read`, but
-the architectural model is capability-oriented. New Trellis-owned contract
-capabilities should use dotted local names and global `::` projection rather
-than colon-shaped role names.
-
-## Service-Only Requirements
-
-Some operations require both:
-
-- the needed capabilities
-- a registered service identity
-
-Auth enforces this using service identity plus a presented contract compatible
-with the materialized authority.
-
-## Future Direction
-
-Richer capability bundles and role composition remain deployment policy
-concerns, not protocol surface.
+Resource approval is separate. Capabilities may explain actions, while resource
+commitments authorize concrete State/KV/Store/Job/Consumer semantics. Desired
+capacity is not approval.

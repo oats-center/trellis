@@ -12,7 +12,7 @@ order: 46
   communication model
 - [store-resource-patterns.md](./store-resource-patterns.md) - service-owned
   blob-store resources
-- [../contracts/trellis-contracts-catalog.md](./../contracts/trellis-contracts-catalog.md) -
+- [../contracts/trellis-api-participants.md](./../contracts/trellis-api-participants.md) -
   contract ownership and permission rules
 
 ## Context
@@ -82,20 +82,26 @@ Rules:
 
 - these methods use normal Trellis RPC auth and capability checks
 - they return JSON payloads and `Result`-modeled failures
-- `list` is prefix plus standard page request oriented in v1 rather than an
-  arbitrary metadata query language: callers send
-  `{ offset?: number; limit: number }` plus file-domain filters such as
-  `prefix`, and services return `{ entries, count, offset, limit, nextOffset? }`
-- file listing is live offset pagination, not snapshot or cursor pagination;
-  concurrent file writes or deletes can change what appears at later offsets
+- `list` is a bounded keyset query rather than an arbitrary metadata query
+  language: callers send `{ prefix?: string; cursor?: string; limit?: number }`
+  and services return `{ entries, nextCursor? }`
+- entries are ordered by object key; the default limit is `100` and the maximum
+  accepted limit is `500`
+- `nextCursor` is an opaque continuation bound to the normalized query; callers
+  must not inspect or construct it, and malformed cursors or cursors reused with
+  a different prefix are rejected
+- an omitted `nextCursor` means the listing is exhausted
+- listing is live rather than snapshot-based, but inserting or deleting keys at
+  or before the continuation key does not duplicate or skip entries that already
+  followed that key
 
 #### Send transfer operations
 
 When the caller sends bytes to the service, file bytes use an operation-native
 model:
 
-1. a contract-owned operation accepts JSON input and declares
-   `direction: "send"` transfer support
+1. a contract-owned operation accepts JSON input and declares `upload` transfer
+   support
 2. the caller configures the operation input and sends bytes through the
    generated transfer-capable operation helper for that language
 3. callers do not start the same send-transfer operation first and attach bytes
@@ -111,8 +117,8 @@ Rules:
 
 - send transfer is modeled as a capability of an operation; upload/file-ingest
   remains operation-native
-- the operation contract declares the backing store alias and the input pointers
-  used to derive transfer metadata such as `key` and `contentType`
+- the platform stages upload bytes independently of any participant-authored
+  Store mapping; typed operation input carries declared transfer metadata
 - the actual byte movement still uses raw NATS chunk traffic rather than
   JSON/base64 RPC payloads
 - the transfer protocol is Trellis-owned runtime machinery, not a
@@ -134,7 +140,7 @@ Example:
 
 Rules:
 
-- the RPC declares `transfer: { direction: "receive" }`
+- the RPC declares `download` transfer support
 - the RPC response contains a Trellis transfer grant, not raw store binding
   details
 - callers consume the grant through the language runtime's receive-transfer
@@ -144,68 +150,37 @@ Rules:
 - product-facing docs may still use words such as upload and download, but the
   platform API should prefer transfer, send, and receive language where possible
 
-### Operation Transfer Declaration
+### Native IDL Transfer Declaration
 
-Transfer-capable operations declare transfer support in the operation
-descriptor.
+Transfer capability is declared in native Trellis IDL.
 
 Example:
 
-```ts
-operations: {
-  "Documents.Files.Upload": {
-    version: "v1",
-    input: ref.schema("FilesUploadRequest"),
-    progress: ref.schema("FilesUploadProgress"),
-    output: ref.schema("FilesUploadResult"),
-    transfer: {
-      direction: "send",
-      store: "uploads",
-      key: "/key",
-      contentType: "/contentType",
-      expiresInMs: 60_000,
-    },
-    capabilities: {
-      call: ["uploader"],
-      observe: ["uploader"],
-    },
-  },
+```trellis
+operation Documents.Files.Upload {
+  input FilesUploadRequest;
+  progress FilesUploadProgress;
+  output FilesUploadResult;
+  upload;
+}
+
+rpc Documents.Files.Download {
+  input FilesDownloadRequest;
+  output FilesDownloadResponse;
+  download;
 }
 ```
 
 Rules:
 
-- `transfer.store` names the owning service store resource alias used for
-  staging
-- `transfer.direction` is explicit; operation-native file ingest uses `"send"`
-- `transfer.key` points into the validated operation input and resolves to the
-  staged store key
-- optional pointers such as `contentType` and `metadata` resolve from the same
-  validated input payload
-- contract validation should fail if the configured store alias does not exist
-  or a configured input pointer does not exist in the input schema
-
-RPCs that issue receive grants declare the receive direction explicitly:
-
-```ts
-rpc: {
-  "Documents.Files.Download": {
-    version: "v1",
-    input: ref.schema("FilesDownloadRequest"),
-    output: ref.schema("FilesDownloadResponse"),
-    transfer: {
-      direction: "receive",
-    },
-    capabilities: {
-      call: ["reader"],
-    },
-  },
-}
-```
-
-The response schema carries file metadata and the transfer grant. The service
-still owns the raw store binding and any lookup, authorization, retention, or
-audit policy behind the RPC.
+- `upload` marks an operation that accepts caller-sent bytes
+- `download` marks an RPC whose response may carry a receive-transfer grant
+- upload staging is platform-owned and is not configured by mapping the
+  participant-authored operation to a store alias
+- typed request and response models carry the domain metadata declared by the
+  contract
+- the service still owns any later mapping to a service store and any lookup,
+  authorization, retention, or audit policy
 
 ### Runtime Helper Boundaries
 
@@ -226,8 +201,8 @@ Rules:
 - providers that expose send-transfer operations MUST await the provider-side
   durable transfer completion primitive before treating bytes as durably
   available; completion resolves only after the transfer endpoint has accepted
-  EOF and written the object to the configured service-owned store, or fails
-  with a transfer error if durable storage was not reached
+  EOF and durably staged the object, or fails with a transfer error if durable
+  storage was not reached
 
 ### Wire Behavior
 
@@ -253,7 +228,9 @@ plus separate metadata/control frames.
 Rules:
 
 - canonical v1 file persistence lands in the owning service's `resources.store`
-- services may use one or more store aliases as transfer staging backends
+- services may move staged uploads into one or more store aliases for
+  service-owned persistence; declaring upload transfer support does not map an
+  operation to a participant-authored store
 - services may later mirror or copy files to external systems, but `Files` does
   not depend on those backends
 - `Files` does not imply shared raw store access across services
@@ -282,8 +259,8 @@ Rules:
 
 - transfer success means `bytes stored`, not `workflow finished`
 - a durable transfer completion signal means all chunks were accepted, EOF was
-  received, and the configured service-owned store write completed; service code
-  can then read the object through normal store APIs
+  received, and platform staging completed; service code can then apply its own
+  persistence and processing policy
 - use runtime-owned transfer events or language-runtime transfer callbacks for
   progress bars and service-authored progress calls for domain milestones
 - use operations for caller-visible progress and final results

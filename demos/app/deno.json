@@ -1,38 +1,28 @@
 {
   "name": "@trellis-demo/app",
   "version": "0.0.0",
-  "exports": "./contract.ts",
-  "links": [
-    "../../js/packages/result",
-    "../../js/packages/trellis",
-    "../../js/packages/trellis-svelte"
-  ],
   "tasks": {
-    "prepare": "cargo run --manifest-path ../../rust/tools/generate/Cargo.toml --bin trellis-generate -- prepare ..",
-    "dev": "deno task prepare && deno run -A vite dev",
-    "build": "deno task prepare && deno run -A vite build",
+    "update": "trellis update",
+    "generate": "trellis generate",
+    "prepare": "deno install",
+    "dev": {
+      "dependencies": ["prepare"],
+      "command": "deno run -A vite dev"
+    },
+    "build": {
+      "dependencies": ["prepare"],
+      "command": "deno run -A vite build"
+    },
     "preview": "deno run -A vite preview",
-    "check": "deno task prepare && deno task check:prepared",
-    "check:prepared": "deno run -A @sveltejs/kit sync && deno run -A svelte-check --tsconfig ./tsconfig.check.json"
+    "check": {
+      "dependencies": ["prepare"],
+      "command": "deno run -A @sveltejs/kit sync && deno run -A svelte-check --tsconfig ./tsconfig.check.json"
+    }
   },
   "imports": {
-    "@qlever-llc/result": "../../js/packages/result/mod.ts",
-    "@qlever-llc/trellis-svelte": "../../js/packages/trellis-svelte/src/index.ts",
-    "@qlever-llc/trellis": "../../js/packages/trellis/index.ts",
-    "@qlever-llc/trellis/auth": "../../js/packages/trellis/auth.ts",
-    "@qlever-llc/trellis/auth/browser": "../../js/packages/trellis/auth/browser.ts",
-    "@qlever-llc/trellis/browser": "../../js/packages/trellis/browser.ts",
-    "@qlever-llc/trellis/contracts": "../../js/packages/trellis/contracts.ts",
-    "@qlever-llc/trellis/device/deno": "../../js/packages/trellis/device/deno.ts",
-    "@qlever-llc/trellis/errors": "../../js/packages/trellis/errors/index.ts",
-    "@qlever-llc/trellis/service": "../../js/packages/trellis/service/mod.ts",
-    "@qlever-llc/trellis/service/deno": "../../js/packages/trellis/service/deno.ts",
-    "@qlever-llc/trellis/sdk/auth": "../../generated/packages/jsr/auth/mod.ts",
-    "@qlever-llc/trellis/sdk/core": "../../generated/packages/jsr/trellis-core/mod.ts",
-    "@qlever-llc/trellis/sdk/health": "../../generated/packages/jsr/health/mod.ts",
-    "@qlever-llc/trellis/sdk/jobs": "../../generated/packages/jsr/jobs/mod.ts",
-    "@qlever-llc/trellis/sdk/state": "../../generated/packages/jsr/state/mod.ts",
-    "@trellis-sdk/trellis-demo-service": "../js/generated/packages/jsr/demo-service/mod.ts",
+    "@qlever-llc/result": "npm:@qlever-llc/result@^0.12.0",
+    "@qlever-llc/trellis-svelte": "npm:@qlever-llc/trellis-svelte@^0.12.0",
+    "@qlever-llc/trellis": "npm:@qlever-llc/trellis@^0.12.0",
     "@sveltejs/acorn-typescript": "npm:@sveltejs/acorn-typescript@^1.0.9",
     "@sveltejs/adapter-auto": "npm:@sveltejs/adapter-auto@^7.0.1",
     "@sveltejs/adapter-static": "npm:@sveltejs/adapter-static@3.0.10",
@@ -54,6 +44,7 @@
     "tailwindcss": "npm:tailwindcss@4.2.4",
     "typebox": "npm:typebox@^1.0.15",
     "typescript": "npm:typescript@6.0.3",
+    "ulid": "npm:ulid@^3.0.1",
     "vite": "npm:vite@8.0.10"
   },
   "nodeModulesDir": "auto",

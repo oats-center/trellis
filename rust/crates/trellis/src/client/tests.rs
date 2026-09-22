@@ -3,49 +3,53 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use crate::client::proof::{base64url_encode, build_proof_input, sha256};
-use crate::client::{verify_proof, SessionAuth};
+use crate::client::proof::base64url_encode;
+use crate::client::{verify_event_proof, VerifyEventProofInput};
+use crate::client::{SessionAuth, TrellisClientError};
+use trellis_protocol::{
+    build_authorization_event_proof_input, build_authorization_request_proof_input,
+    AuthorizationEventProof, AuthorizationRequestProof, AuthorizationRequestProofInput,
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AuthProofFixture {
-    name: String,
-    seed: String,
-    session_key: String,
-    oauth_init: DomainSigFixture,
-    flow_bind: DomainSigFixture,
-    nats_connect: NatsConnectFixture,
-    rpc_proof: RpcProofFixture,
+struct AuthorizationChainFixture {
+    session_seed: String,
+    session_public_key: String,
+    context_digest: String,
+    request_proof_input_hex: String,
+    request_proof_digest: String,
+    request_proof: String,
+    event_proof_input_hex: String,
+    event_proof_digest: String,
+    event_proof: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DomainSigFixture {
-    redirect_to: Option<String>,
-    flow_id: Option<String>,
-    sig: String,
+struct AuthorizationVectorDefaults {
+    request: RequestProofFixture,
+    event: EventProofFixture,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct NatsConnectFixture {
-    contract_digest: String,
-    iat: u64,
-    iat_sig: String,
-    runtime_token: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RpcProofFixture {
+struct RequestProofFixture {
     subject: String,
+    reply: String,
     payload: String,
     iat: i64,
     request_id: String,
-    payload_hash_base64url: String,
-    proof_input_hex: String,
-    proof_digest_base64url: String,
-    proof: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EventProofFixture {
+    descriptor_identity: String,
+    subject: String,
+    payload: String,
+    event_id: String,
+    event_time: String,
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
@@ -57,94 +61,150 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
     out
 }
 
-#[test]
-fn auth_proof_matches_shared_conformance_vectors() {
+fn chain_fixture() -> AuthorizationChainFixture {
     let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../conformance/auth-proof/vectors.json");
-    let fixtures: Vec<AuthProofFixture> =
+        .join("../../../conformance/authorization-context/vectors.json");
+    let value: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(fixture_path).unwrap()).unwrap();
+    let complete: AuthorizationChainFixture =
+        serde_json::from_value(value["completeChain"].clone()).unwrap();
+    complete
+}
 
-    assert!(fixtures.len() >= 2);
+fn vector_defaults() -> AuthorizationVectorDefaults {
+    let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../conformance/authorization-context/vectors.json");
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(fixture_path).unwrap()).unwrap();
+    serde_json::from_value(value["defaults"].clone()).unwrap()
+}
 
-    for fixture in fixtures {
-        assert!(fixture.name.starts_with("proof-layout-current"));
-        let auth = SessionAuth::from_seed_base64url(&fixture.seed).unwrap();
-        assert_eq!(auth.session_key, fixture.session_key);
+#[test]
+fn request_proof_matches_language_neutral_conformance_vector() {
+    let chain = chain_fixture();
+    let defaults = vector_defaults();
+    let auth = SessionAuth::from_seed_base64url(&chain.session_seed).unwrap();
+    assert_eq!(auth.session_key, chain.session_public_key);
 
-        assert_eq!(
-            auth.sign_sha256_domain(
-                "oauth-init",
-                &format!(
-                    "{}:null",
-                    fixture.oauth_init.redirect_to.as_deref().unwrap()
-                )
-            ),
-            fixture.oauth_init.sig
-        );
-        assert_eq!(
-            auth.sign_sha256_domain("bind-flow", fixture.flow_bind.flow_id.as_deref().unwrap()),
-            fixture.flow_bind.sig
-        );
-        assert_eq!(
-            auth.sign_sha256_domain(
-                "nats-connect",
-                &format!(
-                    "{}:{}",
-                    fixture.nats_connect.iat, fixture.nats_connect.contract_digest
-                )
-            ),
-            fixture.nats_connect.iat_sig
-        );
-        assert_eq!(
-            auth.nats_connect_user_token(
-                fixture.nats_connect.iat,
-                &fixture.nats_connect.contract_digest,
-            ),
-            fixture.nats_connect.runtime_token
-        );
-
-        let payload_hash = sha256(fixture.rpc_proof.payload.as_bytes());
-        assert_eq!(
-            base64url_encode(&payload_hash),
-            fixture.rpc_proof.payload_hash_base64url
-        );
-
-        let proof_input = build_proof_input(
-            &fixture.session_key,
-            &fixture.rpc_proof.subject,
-            &payload_hash,
-            fixture.rpc_proof.iat,
-            &fixture.rpc_proof.request_id,
-        );
-        assert_eq!(
-            bytes_to_hex(&proof_input),
-            fixture.rpc_proof.proof_input_hex
-        );
-
-        let proof_digest = sha256(&proof_input);
-        assert_eq!(
-            base64url_encode(&proof_digest),
-            fixture.rpc_proof.proof_digest_base64url
-        );
-
-        assert_eq!(
-            auth.create_proof(
-                &fixture.rpc_proof.subject,
-                fixture.rpc_proof.payload.as_bytes(),
-                fixture.rpc_proof.iat,
-                &fixture.rpc_proof.request_id,
-            ),
-            fixture.rpc_proof.proof
-        );
-
-        assert!(verify_proof(
-            &fixture.session_key,
-            &fixture.rpc_proof.subject,
-            fixture.rpc_proof.payload.as_bytes(),
-            fixture.rpc_proof.iat,
-            &fixture.rpc_proof.request_id,
-            &fixture.rpc_proof.proof,
+    let payload = defaults.request.payload.as_bytes();
+    let proof: AuthorizationRequestProof = auth
+        .create_request_proof(
+            &chain.context_digest,
+            &defaults.request.subject,
+            &defaults.request.reply,
+            payload,
+            defaults.request.iat,
+            &defaults.request.request_id,
         )
-        .unwrap());
-    }
+        .unwrap();
+    assert_eq!(proof.as_str(), chain.request_proof);
+
+    let context_digest = crate::client::proof::base64url_decode(&chain.context_digest).unwrap();
+    let context_digest: [u8; 32] = context_digest.try_into().unwrap();
+    let input = build_authorization_request_proof_input(
+        &context_digest,
+        &defaults.request.subject,
+        Some(&defaults.request.reply),
+        payload,
+        defaults.request.iat,
+        &defaults.request.request_id,
+    )
+    .unwrap();
+    assert_eq!(
+        bytes_to_hex(input.as_bytes()),
+        chain.request_proof_input_hex
+    );
+    assert_eq!(base64url_encode(input.digest()), chain.request_proof_digest);
+    assert!(verify_request_proof(&auth.session_key, &input, proof.as_str(),).unwrap());
+    // A different reply subject breaks verification: the proof is bound to the
+    // exact inbox the response arrives on.
+    let altered_input = build_authorization_request_proof_input(
+        &context_digest,
+        &defaults.request.subject,
+        Some("_INBOX.other.reply"),
+        payload,
+        defaults.request.iat,
+        &defaults.request.request_id,
+    )
+    .unwrap();
+    assert!(!verify_request_proof(&auth.session_key, &altered_input, proof.as_str(),).unwrap());
+}
+
+fn verify_request_proof(
+    public_session_key: &str,
+    input: &AuthorizationRequestProofInput,
+    proof: &str,
+) -> Result<bool, TrellisClientError> {
+    use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
+    let public_key = VerifyingKey::from_bytes(
+        &crate::client::proof::base64url_decode(public_session_key)?
+            .try_into()
+            .map_err(|_| {
+                TrellisClientError::Bootstrap("session public key must encode 32 bytes".into())
+            })?,
+    )
+    .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
+    let signature = Signature::from_bytes(
+        &crate::client::proof::base64url_decode(proof)?
+            .try_into()
+            .map_err(|_| TrellisClientError::Bootstrap("proof must encode 64 bytes".into()))?,
+    );
+    Ok(public_key.verify(input.digest(), &signature).is_ok())
+}
+
+#[test]
+fn event_proof_matches_language_neutral_conformance_vector() {
+    let chain = chain_fixture();
+    let defaults = vector_defaults();
+    let auth = SessionAuth::from_seed_base64url(&chain.session_seed).unwrap();
+    assert_eq!(auth.session_key, chain.session_public_key);
+
+    let payload = defaults.event.payload.as_bytes();
+    let proof: AuthorizationEventProof = auth
+        .create_event_proof(
+            &chain.context_digest,
+            &defaults.event.descriptor_identity,
+            &defaults.event.subject,
+            payload,
+            &defaults.event.event_id,
+            &defaults.event.event_time,
+        )
+        .unwrap();
+    assert_eq!(proof.as_str(), chain.event_proof);
+
+    let context_digest = crate::client::proof::base64url_decode(&chain.context_digest).unwrap();
+    let context_digest: [u8; 32] = context_digest.try_into().unwrap();
+    let input = build_authorization_event_proof_input(
+        &context_digest,
+        &defaults.event.descriptor_identity,
+        &defaults.event.subject,
+        payload,
+        &defaults.event.event_id,
+        &defaults.event.event_time,
+    )
+    .unwrap();
+    assert_eq!(bytes_to_hex(input.as_bytes()), chain.event_proof_input_hex);
+    assert_eq!(base64url_encode(input.digest()), chain.event_proof_digest);
+    assert!(verify_event_proof(VerifyEventProofInput {
+        public_session_key: &auth.session_key,
+        context_digest: &chain.context_digest,
+        descriptor_identity: &defaults.event.descriptor_identity,
+        subject: &defaults.event.subject,
+        payload,
+        event_id: &defaults.event.event_id,
+        event_time: &defaults.event.event_time,
+        proof_base64url: proof.as_str(),
+    })
+    .expect("event proof verifies"));
+    assert!(!verify_event_proof(VerifyEventProofInput {
+        public_session_key: &auth.session_key,
+        context_digest: &chain.context_digest,
+        descriptor_identity: &defaults.event.descriptor_identity,
+        subject: &defaults.event.subject,
+        payload,
+        event_id: "evt_other",
+        event_time: &defaults.event.event_time,
+        proof_base64url: proof.as_str(),
+    })
+    .expect("changed event id rejects"));
 }

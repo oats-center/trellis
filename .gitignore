@@ -7,13 +7,17 @@ node_modules
 *.pt
 
 # Output
+coverage/
+**/coverage/
 .output
 .vercel
 .netlify
 .wrangler
 .svelte-kit
+.svelte-kit-embedded
 .vite
 build
+build-embedded
 
 # Database
 .sqlite3
@@ -44,19 +48,38 @@ utils/arangodb/data/
 
 # Generated build artifacts
 generated/
+!rust/crates/trellis/src/internal_sdk/generated/
+!rust/crates/trellis/src/internal_sdk/generated/**
+ts/packages/trellis/auth/protocol_wasm/
 docs/static/api/typescript/
 **/npm/
-js/packages/result/**/*.d.ts
-js/packages/trellis/**/*.d.ts
+ts/services/trellis/jsr/
+ts/packages/result/**/*.d.ts
+ts/packages/trellis/**/*.d.ts
 *.tgz
 
 # Rust build artifacts
+integration/fixtures/**/target/
 xtask/target/
 rust/target/
 rust/**/target/
 demos/rust/target/
+demos/rust/**/target/
 xtask/Cargo.lock
 rust/xtask/Cargo.lock
-rust/tools/generate/Cargo.lock
 
-.trellis
+# Local generated packages; Orders is intentionally committed.
+/rust/crates/runtime/trellis/
+/rust/crates/eventlog-runtime/trellis/
+/rust/crates/jobs-runtime/trellis/
+/web/trellis/
+/ts/packages/trellis-test/trellis/
+/integration/fixtures/runtime/crates/runtime-trellis/
+/integration/fixtures/runtime/packages/runtime-trellis/
+/demos/rust/service/trellis/
+/demos/rust/device/trellis/
+/demos/ts/service/trellis/
+/demos/ts/device/trellis/
+/demos/app/trellis/
+
+.cortexkit

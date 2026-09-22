@@ -24,7 +24,9 @@
     } else if (href.startsWith("/design/")) {
       resolvedPath = href;
     } else if (href.startsWith("./") || href.startsWith("../")) {
-      resolvedPath = new URL(href, `https://example.test${currentDesignDirectory()}/`).pathname;
+      resolvedPath =
+        new URL(href, `https://example.test${currentDesignDirectory()}/`)
+          .pathname;
     }
 
     resolvedPath = resolvedPath.replace(/\.md(?=([?#]|$))/i, "");
@@ -46,12 +48,16 @@
   const clamp = (value) => Math.min(255, Math.max(0, value));
 
   const srgbChannel = (value) => {
-    const normalized = value <= 0.0031308 ? 12.92 * value : 1.055 * value ** (1 / 2.4) - 0.055;
+    const normalized = value <= 0.0031308
+      ? 12.92 * value
+      : 1.055 * value ** (1 / 2.4) - 0.055;
     return Math.round(clamp(normalized * 255));
   };
 
   const oklchToHex = (value) => {
-    const match = value.match(/oklch\(\s*([\d.]+)%?\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*[\d.]+)?\s*\)/i);
+    const match = value.match(
+      /oklch\(\s*([\d.]+)%?\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*[\d.]+)?\s*\)/i,
+    );
     if (!match) {
       return value;
     }
@@ -75,11 +81,14 @@
     const g = -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3;
     const blue = -0.0041960863 * l3 - 0.7034186147 * m3 + 1.7076147010 * s3;
 
-    const toHexChannel = (channel) => srgbChannel(Math.min(1, Math.max(0, channel)));
+    const toHexChannel = (channel) =>
+      srgbChannel(Math.min(1, Math.max(0, channel)));
 
-    return `#${[toHexChannel(r), toHexChannel(g), toHexChannel(blue)]
-      .map((n) => n.toString(16).padStart(2, "0"))
-      .join("")}`;
+    return `#${
+      [toHexChannel(r), toHexChannel(g), toHexChannel(blue)]
+        .map((n) => n.toString(16).padStart(2, "0"))
+        .join("")
+    }`;
   };
 
   const toHex = (value) => {
@@ -110,19 +119,33 @@
     }
 
     const [, r, g, b] = match.map(Number);
-    return `#${[r, g, b]
-      .map((n) => n.toString(16).padStart(2, "0"))
-      .join("")}`;
+    return `#${
+      [r, g, b]
+        .map((n) => n.toString(16).padStart(2, "0"))
+        .join("")
+    }`;
   };
 
   const themeVars = () => {
     const styles = getComputedStyle(document.documentElement);
-    const base100 = toHex(styles.getPropertyValue("--color-base-100").trim() || "#111827");
-    const base200 = toHex(styles.getPropertyValue("--color-base-200").trim() || "#1f2937");
-    const base300 = toHex(styles.getPropertyValue("--color-base-300").trim() || "#334155");
-    const content = toHex(styles.getPropertyValue("--color-base-content").trim() || "#e5e7eb");
-    const primary = toHex(styles.getPropertyValue("--color-primary").trim() || "#38bdf8");
-    const secondary = toHex(styles.getPropertyValue("--color-secondary").trim() || "#94a3b8");
+    const base100 = toHex(
+      styles.getPropertyValue("--color-base-100").trim() || "#111827",
+    );
+    const base200 = toHex(
+      styles.getPropertyValue("--color-base-200").trim() || "#1f2937",
+    );
+    const base300 = toHex(
+      styles.getPropertyValue("--color-base-300").trim() || "#334155",
+    );
+    const content = toHex(
+      styles.getPropertyValue("--color-base-content").trim() || "#e5e7eb",
+    );
+    const primary = toHex(
+      styles.getPropertyValue("--color-primary").trim() || "#38bdf8",
+    );
+    const secondary = toHex(
+      styles.getPropertyValue("--color-secondary").trim() || "#94a3b8",
+    );
 
     return {
       background: "transparent",
@@ -158,7 +181,8 @@
   };
 
   const getMermaid = () =>
-    window.mermaid || window.__esbuild_esm_mermaid_nm?.mermaid || window.__mermaid;
+    window.mermaid || window.__esbuild_esm_mermaid_nm?.mermaid ||
+    window.__mermaid;
 
   const loadMermaid = async () => {
     for (let attempt = 0; attempt < 50; attempt += 1) {

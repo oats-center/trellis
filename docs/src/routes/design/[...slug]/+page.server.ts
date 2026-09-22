@@ -2,10 +2,19 @@ import { error } from "@sveltejs/kit";
 
 const designModules = import.meta.glob("$design/**/*.md");
 
-const designSlugs = Array.from(new Set(Object.keys(designModules)
-  .map((path) => path.replace(/^\$design\//, "").replace(/^.*\/design\//, "").replace(/\\/g, "/").replace(/\.md$/, ""))
-  .map((path) => path.replace(/(?:^|\/)README$/i, ""))
-  .filter((slug) => slug.length > 0)));
+const designSlugs = Array.from(
+  new Set(
+    Object.keys(designModules)
+      .map((path) =>
+        path.replace(/^\$design\//, "").replace(/^.*\/design\//, "").replace(
+          /\\/g,
+          "/",
+        ).replace(/\.md$/, "")
+      )
+      .map((path) => path.replace(/(?:^|\/)README$/i, ""))
+      .filter((slug) => slug.length > 0),
+  ),
+);
 
 export const prerender = true;
 

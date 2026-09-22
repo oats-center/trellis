@@ -1,161 +1,151 @@
-# Trellis AI guidance for Rust services
+# Trellis For Rust Consumers
 
-Last verified against Trellis main (2026-06-13).
+Use with [the consumer guide](llms-full.txt) from the same Trellis revision.
+Trellis does not prescribe an application's configuration parser, database,
+domain types, DI pattern, logging setup, or test framework.
 
-Use this file for AI coding agents working in a Rust service repository that
-consumes Trellis. The language-neutral guide is:
+## Generated Package
 
-https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-full.txt
+Author native IDL and set `[package]`, `[sources]`, and `[generate.rust].output`
+in `trellis.toml`. `trellis generate` is offline after dependencies are
+available in the global validated source-package cache.
 
-## Service repository setup
+The output is one ordinary crate at the source package version, with
+`orders_trellis::apis::<api>` and `orders_trellis::participants::<participant>`
+modules, not independent SDK or participant crates. Add an ordinary Cargo path
+dependency, for example `orders-trellis = { path = "trellis" }`. The generated
+crate declares the published runtime dependency matching the CLI. It has no
+generator build script, repository-relative runtime paths, or runtime-path
+config in `trellis.toml`. Use ordinary Cargo overrides when developing against a
+local runtime. Generation does not modify the consumer's Cargo manifest.
 
-Rules:
+Commit generated output when clones should build with Cargo alone, without the
+Trellis CLI/cache. Regenerate rather than editing it. Native source packages,
+not canonical API/participant JSON, are the publication and evidence boundary.
 
-- Rust service repos should expose Trellis generation through
-  `cargo xtask prepare`
-- generated SDKs, manifests, and package outputs belong under the service repo's
-  generated output locations; do not edit generated files by hand
-- Trellis caches manifests by digest at runtime. If auth/bootstrap reports a
-  missing digest after the cache is pruned, regenerate from source and present the
-  full manifest; do not patch deployment authority or implementation offers by
-  hand.
-- Deployment authority proposal/desired `needs` are grouped by `contracts`,
-  `surfaces`, `capabilities`, and `resources`. Materialized authority is a
-  projection with runtime `grants` grouped by `capabilities`, `surfaces`, and
-  `nats`; service permissions require current materialization for the accepted
-  desired authority version. Stale or obsolete persisted projections are repaired
-  by Trellis storage upgrade and reconciliation.
-- prefer generated descriptors and generated client/facade methods
-- prefer generated provider facades for service handler registration when they
-  are available
-- event subject params must point at string, number, or integer-compatible schema
-  fields; for `anyOf` or `oneOf` event payload schemas, every variant must expose
-  each routed pointer
-- durable event processing is a Trellis-provisioned `eventConsumers` resource;
-  `eventConsumers.<group>.uses` selects dependency events by top-level `uses`
-  alias, and `eventConsumers.<group>.self` selects events owned by the same
-  contract. Dependency durable consumption remains authority-backed by top-level
-  `uses`; runtime durable consumers are Trellis-provisioned only.
+An API SDK contains types and descriptors. The participant facade supplies the
+connection boundary and only the declared caller/provider surfaces. Its
+constants carry source-package/participant evidence; applications do not supply
+digests to service bootstrap.
 
-## Use generated descriptors and facades
+## Connection
 
-Prefer generated client wrappers and participant facades when available:
+Service facades export `connect` and `ServiceConnectOptions`. The current
+constructor takes only Trellis URL and the provisioned identity seed; name and
+timeout are optional builders:
 
 ```rust
-let order = orders_client
-    .rpc()
-    .orders()
-    .get(&orders_sdk::OrdersGetRequest {
-        order_id: "ord_123".into(),
-    })
-    .await?;
+let mut service = connect(
+    ServiceConnectOptions::new(&trellis_url, &identity_seed)
+        .with_name("orders-service")
+        .with_timeout_ms(10_000),
+).await?;
 ```
 
-Descriptor APIs are the lower-level typed surface:
+Trellis resolves deployment/instance assignment, installed package/participant
+evidence, exact grants, resources, signed context, route JWT, and endpoints
+server-side. Authorization state is process-memory-only and refreshes on
+reconnect; there is no context-store parameter.
 
-```rust
-use orders_sdk::events::OrdersShippedEventDescriptor;
-use orders_sdk::OrdersShippedEvent;
+Register generated providers before `service.run().await`. The service lifecycle
+supervises its request host and workers. `with_timeout_ms(...)` bounds
+bootstrap, connect, and request operations.
 
-trellis_client
-    .publish::<OrdersShippedEventDescriptor>(&OrdersShippedEvent {
-        order_id: "ord_123".into(),
-        customer_id: "cust_456".into(),
-        shipped_at: now_iso(),
-    })
-    .await?;
+Apps/agents use user-login credentials (login session ID plus session seed) and
+perform context refresh before CONNECT. Devices retain their provisioned
+identity seed and use generated activation/connect options. Do not substitute a
+raw NATS URL/JWT or client-authored assignment for either lifecycle.
 
-let mut events = trellis_client
-    .subscribe::<OrdersShippedEventDescriptor>()
-    .await?;
-```
+A generated device companion is established only through the parent device's
+activation flow and separate user consent. It receives an independent ordinary
+App/Agent user session and cannot bootstrap standalone or use the parent's
+device authority.
 
-Operations use generated operation descriptors:
+## Typed Surfaces
 
-```rust
-let op = trellis_client
-    .operation::<orders_sdk::operations::OrdersProcessOperation>()
-    .start(&orders_sdk::OrdersProcessInput {
-        order_id: "ord_123".into(),
-    })
-    .await?;
+Use the participant's generated methods. Dependency aliases are accessors on
+`client()`; owned provider registration is under `handle()`. For the tutorial's
+`orders` alias selecting RPC `Orders.Create`, use the generated
+`connected.client().orders().orders_create(...)` method. Its argument type comes
+from the generated API crate; it need not share the authored model's name.
 
-let terminal = op.wait().await?;
-```
+Exact method and model names come from the generated crate. Match generated
+declared-error variants directly; transport and unknown remote failures remain
+distinct. Operations expose generated invokers and typed references for start,
+wait, progress/watch, and optional cancellation/transfer.
 
-Register service handlers through generated provider facades where they exist:
+Owned event publication uses generated publishers. Durable handlers use declared
+Consumer resources; Trellis resolves durable identity, local concurrency, retry,
+authority, and scoped Events DLQ/replay. Delivery may repeat, so choose a
+side-effect strategy that handles duplicates. Subjects include the encoded
+qualified API identity and base64url parameter tokens; the signed descriptor
+binds the exact API, dotted event name, and parameter count. Success is
+acknowledged only after the handler succeeds;
+final exhaustion is durably recorded before source acknowledgement. Manual
+replay uses the same handler and a fresh retry budget without rewinding the
+original Consumer, and confirms resolution before acknowledgement.
 
-```rust
-service.handle().rpc().orders().get(get_order_handler);
-service.handle().feed().orders().live(orders_live_stream);
-service.handle().operation().orders().process(orders_process_provider);
-```
+Jobs are private service queues. Use generated queue handles and cloneable
+`jobs_client()` handles for submission from other handlers. Worker registration
+and processing are supervised by the service lifecycle. Jobs expose durable
+state, retries, progress, cooperative cancellation, and live updates. Delivery
+progress acknowledgement is automatic. Waiting for keyed capacity extends the
+current delivery and does not consume an attempt before handler entry.
+`Jobs.Summary` computes all matching totals, groups, and statistics
+independently of a `Jobs.Query` page.
+Job deadlines are creation-relative. Omitted retry means five deliveries with
+delays of 5s, 30s, 2m, and 10m; explicit retry requires exactly one fewer
+positive ordered backoffs than total attempts.
 
-Do not hand-build NATS subjects or JSON envelopes in application service code.
-Use generated descriptors and runtime helpers.
+Operation get, watch, signal, and cancel remain bound to the creator principal
+plus participant across reconnects rather than to one session key. Completed,
+failed, and cancelled records are immutable. Feed cancellation similarly binds
+the runtime-issued `feedId` and original caller identity.
 
-Rust Trellis clients and service facades do not expose `async_nats::Client` as
-application API. Use generated descriptors/facades for communication and
-Trellis-owned lifecycle/resource helpers instead of extracting or constructing
-raw transport handles through Trellis.
+## Resources And Atomicity
 
-## Prepared events and outbox/inbox
+Use generated State, KV, Store, Consumer, and Job handles. State is one typed
+value without key/TTL; KV is typed history; Store is raw bytes. State/KV direct
+historical migration runs in SDK memory without write-on-read. Resolved binding
+payloads and subjects are runtime internals.
 
-Direct descriptor publish is the default. Use `prepare_event::<Descriptor>(...)`
-only when event enqueue must be coupled to local durable state:
+Generated cursor-paginated RPCs add lazy fallible page/item streams. Missing
+`next_cursor` is the sole end signal; general keyset pagination does not promise
+a snapshot.
 
-```rust
-use orders_sdk::events::OrdersShippedEventDescriptor;
-use orders_sdk::OrdersShippedEvent;
-use trellis_rs::client::{dispatch_outbox_once, OutboxStore, SqliteOutboxStore};
+`StoreResourceHandle::list_page` and file metadata listing are key-sorted keyset
+pagination with opaque cursors bound to the prefix query. The limit defaults to
+100 and must be at most 500. Desired resource capacities are sizing hints,
+approved commitments define authority, and generated bindings expose observed
+provider limits. Trellis does not adopt or destroy foreign-owned physical
+resources.
 
-let prepared = trellis_client.prepare_event::<OrdersShippedEventDescriptor>(
-    &OrdersShippedEvent {
-        order_id: "ord_123".into(),
-        customer_id: "cust_456".into(),
-        shipped_at: now_iso(),
-    },
-)?;
+Store readers/writers support bounded streaming through `write_from` and
+`read_into`; whole-buffer helpers remain available. Transfer-capable operation
+builders accept `transfer_from(reader, expected_size)`. Completion checks size
+and SHA-256; cancellation is authenticated and acknowledged.
 
-let tx = sqlite.transaction()?;
-mark_order_shipped(&tx, "ord_123")?;
+Prepared events and SQL outbox stores allow event intents to participate in a
+local SQL transaction. The application owns its transaction and migration
+execution. KV outbox/inbox stores do not atomically commit unrelated database
+writes. See `/guides/libraries/rust` and current Rustdoc for supported stores
+and transaction APIs.
 
-{
-    let mut outbox = SqliteOutboxStore::new(&tx);
-    outbox.enqueue("outbox:ord_123:shipped", &prepared).await?;
-}
+SQL outbox claims expire after 30 seconds and can be reclaimed. Pass the claimed
+record to `mark_published`/`mark_failed`; false means ownership was superseded.
+`dispatch_outbox_once` returns `ClaimLost` for superseded completion.
+Publication can repeat after interruption, so the claim fence is not
+exactly-once delivery. Current schema helpers do not upgrade pre-release
+layouts; applications own migration of any retained older database.
 
-tx.commit()?;
+## Test And Verify
 
-let mut outbox = SqliteOutboxStore::new(&sqlite);
-dispatch_outbox_once(&mut outbox, |event| async {
-    trellis_client.publish_prepared(&event).await
-})
-.await?;
-```
+Run generation and the consuming project's own Cargo checks. A real-runtime test
+can launch a Rust service from a Deno test using `@qlever-llc/trellis-test` and
+its `TrellisTestRuntime`. This is a TypeScript helper, not a Rust crate API. A
+Rust test can instead manage real runtime processes directly; Trellis does not
+require one application test framework.
 
-`PreparedTrellisEvent` stores the subject, encoded payload, and message metadata
-needed for later publishing. It intentionally carries no contract id or contract
-digest.
-
-Use an inbox store only for non-idempotent handlers:
-
-```rust
-use trellis_rs::client::{InboxReceipt, InboxStore, SqliteInboxStore};
-
-let mut inbox = SqliteInboxStore::new(&sqlite);
-match inbox.record_received(event.header.id.as_str()).await? {
-    InboxReceipt::Accepted => apply_non_idempotent_side_effect(&event).await?,
-    InboxReceipt::Duplicate => return Ok(()),
-}
-```
-
-Use `PostgresOutboxStore` and `PostgresInboxStore` for Postgres-backed services.
-Use `NatsKvOutboxStore` and `NatsKvInboxStore` for NATS KV durability when no SQL
-transaction must include the outbox or inbox record.
-
-## Verification
-
-Use the format, clippy, test, run, and migration commands configured by the
-service repository. If contract artifacts or generated SDKs changed, run
-`cargo xtask prepare` and commit the generated outputs expected by that repo.
+Use `/api` to discover current Rustdoc and generated participant source for
+project-specific APIs. Private Trellis workspace crates are not consumer
+dependencies. Trellis's supported Rust toolchain is current stable.

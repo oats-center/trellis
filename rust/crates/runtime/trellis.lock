@@ -1,0 +1,13 @@
+format = 2
+root = "trellis"
+
+[[packages]]
+name = "trellis"
+version = "0.12.0"
+digest = "olfZWlhfujeEP1Au7d1504OBs7YyE-qvox6U3Xi1xpo"
+distribution-digest = "sha256:f073c1bcd82f8a67dfdcfdd9b4435f2e48d0e7f9225dfa947408ade3d1fa12d7"
+dependencies = []
+
+[packages.source]
+kind = "path"
+path = "."

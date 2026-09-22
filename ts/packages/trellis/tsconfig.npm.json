@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ESNext", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
+    "types": ["node"],
+    "strict": true,
+    "declaration": true,
+    "rewriteRelativeImportExtensions": true,
+    "verbatimModuleSyntax": true,
+    "allowJs": true,
+    "stripInternal": true,
+    "rootDir": ".",
+    "outDir": "npm",
+    "paths": {
+      "@qlever-llc/result": ["../result/npm/mod.d.ts"],
+      "@qlever-llc/trellis/generated": ["./generated.ts"]
+    }
+  },
+  "files": [
+    "index.ts",
+    "generated.ts",
+    "auth.ts",
+    "auth/browser.ts",
+    "device.ts",
+    "errors/index.ts",
+    "service/mod.ts",
+    "telemetry.ts"
+  ]
+}

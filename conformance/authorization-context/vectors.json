@@ -1,0 +1,58 @@
+{
+  "completeChain": {
+    "contextCanonicalJson": "{\"connectionId\":\"01JY0000000000000000000001\",\"critical\":[],\"deploymentId\":null,\"expiresAt\":1300,\"extensions\":{},\"format\":\"trellis.authorization-context.v1\",\"grantRevision\":12,\"grants\":{\"format\":\"trellis.grant-set.v1\",\"permissions\":[{\"action\":\"publish\",\"target\":{\"api\":\"documents@v1\",\"kind\":\"apiSurface\",\"name\":\"Documents.Changed\",\"surface\":\"event\"}},{\"action\":\"call\",\"target\":{\"api\":\"documents@v1\",\"kind\":\"apiSurface\",\"name\":\"Documents.Get\",\"surface\":\"rpc\"}}]},\"identityKeyId\":null,\"inboxPrefix\":\"_INBOX.test\",\"instanceId\":null,\"issuedAt\":1100,\"issuerKeyId\":\"ajgD1fBZkCocba-8m6RykhL3yqwIY0zDrnaydSnwOCc\",\"loginSessionId\":\"01JY0000000000000000000003\",\"notBefore\":1100,\"ownerId\":\"01JY0000000000000000000002\",\"ownerKind\":\"user\",\"participantId\":\"documents-web\",\"platformPrivileges\":[],\"principalId\":\"01JY0000000000000000000002\",\"principalKind\":\"user\",\"sessionKey\":\"7UkoxijRwsbq6QM4kFmVYSlZJzpcY_k2NsFGFKyHN9E\",\"signature\":\"0qGFjzv99_hHvS-TUXfleUC9RQM3u-Blgicby2ctwy0XJDeHW2-rHJyMeAo5sWjuwLrcoz3yV7s7dJ2dIWEiDQ\"}",
+    "contextDigest": "oOph5MdfTMS-tblKFuEq18TUwI5ZikL4Kkn587fNcJI",
+    "eventProof": "UIZ9rUaXiUbUlCOx_fYl8WlhQEqVXt7-Xjgcft_fpd0OnMX8DQRRvLonz88RTb0SD4x7NZlNpSzhR3jb9P-mBQ",
+    "eventProofDigest": "spvtX4zyfhMrVsr2cNmfFKVrURnzdcXyrqJBt94c2_I",
+    "eventProofInputHex": "000000247472656c6c69732e617574686f72697a6174696f6e2d6576656e742d70726f6f662e763100000020a0ea61e4c75f4cc4beb5b94a16e12ad7c4d4c08e598a42f82a49f9f3b7cd70920000002d76312e5a47396a6457316c626e527a514859782e5247396a6457316c626e527a4c6b4e6f5957356e5a57512e31000000326576656e74732e76312e5a47396a6457316c626e527a514859782e446f63756d656e74732e4368616e6765642e646f632d31000000209eb803b2c601706a797e2e58a58cb40b01ff0a0b024b1056ae044cafce2da786000000096576745f646f635f3100000014313937302d30312d30315430303a31393a31305a",
+    "issuerKeyId": "ajgD1fBZkCocba-8m6RykhL3yqwIY0zDrnaydSnwOCc",
+    "issuerPublicKey": "gTl3Dqh9F19Wo1Rmw0x-zMuNipG07jeiXfYPW4_Js5Q",
+    "issuerSeed": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+    "requestProof": "JuRv9W7-oW7idTZARtiDwd93skMvLcWRDt8nZ1fduzcu1dDG03yI75JE4cMeJuEwT_HtKd6GFKy9wAUnaRobDQ",
+    "requestProofDigest": "6gMiQNPgyGEKBphXNvqPT3pD9va021e6U2PMA_LCGQ4",
+    "requestProofInputHex": "000000267472656c6c69732e617574686f72697a6174696f6e2d726571756573742d70726f6f662e763100000020a0ea61e4c75f4cc4beb5b94a16e12ad7c4d4c08e598a42f82a49f9f3b7cd7092000000147270632e76312e446f63756d656e74732e476574000000115f494e424f582e746573742e7265706c79000000209eb803b2c601706a797e2e58a58cb40b01ff0a0b024b1056ae044cafce2da7860000000431313030000000087265715f74657374",
+    "sessionPublicKey": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY_k2NsFGFKyHN9E",
+    "sessionSeed": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM"
+  },
+  "cryptography": {
+    "binaryEncoding": "base64url without padding",
+    "hash": "SHA-256",
+    "integerEncoding": "ASCII decimal safe integers only",
+    "jsonCanonicalization": "RFC 8785",
+    "lengthPrefix": "unsigned 32-bit big endian",
+    "signature": "Ed25519"
+  },
+  "defaults": {
+    "event": {
+      "descriptorIdentity": "v1.ZG9jdW1lbnRzQHYx.RG9jdW1lbnRzLkNoYW5nZWQ.1",
+      "eventId": "evt_doc_1",
+      "eventTime": "1970-01-01T00:19:10Z",
+      "payload": "{\"id\":\"doc-1\"}",
+      "subject": "events.v1.ZG9jdW1lbnRzQHYx.Documents.Changed.doc-1"
+    },
+    "permission": {
+      "action": "call",
+      "target": {
+        "api": "documents@v1",
+        "kind": "apiSurface",
+        "name": "Documents.Get",
+        "surface": "rpc"
+      }
+    },
+    "policy": {
+      "allowedClockSkewSeconds": 30,
+      "maximumContextBytes": 16384,
+      "maximumContextLifetimeSeconds": 300,
+      "maximumPermissions": 16,
+      "nowUnixSeconds": 1100
+    },
+    "request": {
+      "iat": 1100,
+      "payload": "{\"id\":\"doc-1\"}",
+      "reply": "_INBOX.test.reply",
+      "requestId": "req_test",
+      "subject": "rpc.v1.Documents.Get"
+    }
+  },
+  "format": "trellis.authorization-context.conformance.v4"
+}

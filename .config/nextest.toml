@@ -1,9 +1,0 @@
-[profile.default]
-retries = 0
-
-[profile.fast]
-default-filter = 'not package(trellis-integration-harness)'
-
-[profile.integration-harness]
-default-filter = 'package(trellis-integration-harness)'
-retries = 0

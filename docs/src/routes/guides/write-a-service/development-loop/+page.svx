@@ -1,47 +1,21 @@
-<script lang="ts">
-  import LanguageTabs from "$lib/components/LanguageTabs.svelte";
-</script>
+# Development loop
 
-Once the service is real, the loop is simple:
+1. Edit a `.trellis` file explicitly listed by `[sources]`.
+2. Run `trellis update` only when dependency declarations change.
+3. Run `trellis generate`, or `trellis generate --watch` during development.
+4. Compile the generated language surface and application code.
+5. Review authority changes before deployment.
 
-<LanguageTabs>
-{#snippet ts()}
+Watch mode observes the project and direct local dependencies. Temporary source
+errors are reported without deleting the last successful artifacts. Renderer and
+formatter failures also retain the previous successful outputs. Colliding
+participant output paths fail rather than overwriting another participant;
+installed API dependencies are left intact.
 
-1. Update schemas and the `defineServiceContract(...)` module
-2. Run `deno task prepare`, or keep `deno task prepare:watch` running
-3. Review and update deployment authority if the contract boundary changed
-4. Restart the service
-
-{/snippet}
-{#snippet rust()}
-
-1. Update schemas and `contracts/service.rs`
-2. Run `trellis-generate prepare .`, or keep `trellis-generate prepare --watch --changes .` running
-3. Run `cargo fmt` and `cargo test` for the service crate
-4. Apply the service contract boundary with `trellis svc orders-service apply --source .`
-5. Review and update deployment authority if the contract boundary changed
-6. Restart the service
-
-{/snippet}
-</LanguageTabs>
-
-If only handler implementation changed, you usually do not need a contract prepare or authority change. If the public boundary changed, regenerate artifacts and update deployment authority.
-
-Public boundary changes include schemas, RPCs, events, operations, resources, state, dependencies, and capabilities.
-
-Use Console as the primary review path for authority changes. Open **Admin → Services**, select `orders-service`, review the pending **Authority review required** delta, and accept or reject it before restarting runtimes that require the new boundary.
-
-For local development or automation, the Trellis CLI can decide the same pending request:
-
-```sh
-trellis svc orders-service authority plan list --state pending
-trellis svc orders-service authority plan show <plan-id>
-trellis svc orders-service authority accept-update <plan-id>
-trellis svc orders-service authority reject <plan-id> --reason not-needed
-```
-
-Accepting the plan updates desired authority and schedules reconciliation. You only need `authority reconcile` for repair, retry, or manual convergence.
-
-Congratulations. You now have a fully functional Trellis service. It connects, stores data, handles RPCs with access control, listens for events from other services, and publishes its own.
-
-Next, you can move long-running fulfillment work into the background with [Jobs: TypeScript](/guides/using-jobs-ts), or expose a caller-visible async workflow with progress updates using [Operations: TypeScript](/guides/using-operations-ts).
+Selections use exact names: `Get` and `Sites.Get` are distinct, and an invented
+prefix is not an API qualifier. Unsupported surface members and incompatible
+type constraints are source-located errors. Numeric bounds accept finite JSON
+literals, such as `number(minimum = -1, maximum = 2.5)`; lengths and item counts
+require unsigned integer literals. See the
+[IDL reference](/design/contracts/trellis-idl) for the member and constraint
+tables.

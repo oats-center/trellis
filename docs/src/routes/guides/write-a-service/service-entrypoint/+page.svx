@@ -1,131 +1,137 @@
-<script lang="ts">
-  import LanguageTabs from "$lib/components/LanguageTabs.svelte";
-</script>
+# Connect and implement the service
 
-Now write the code that actually runs the service. Both paths authenticate a service instance, present contract evidence, resolve deployment bindings, and connect to NATS.
+Start with the generated project from
+[the previous page](/guides/write-a-service/first-contract). The complete files
+are in
+[`docs/examples/orders`](https://github.com/qlever-llc/trellis/tree/main/docs/examples/orders).
 
-<LanguageTabs>
-{#snippet ts()}
+## Write the handler
 
-Open `main.ts`, which was created by `deno init`, and replace it with:
+Create `service.ts`:
 
 ```ts
-import { TrellisService } from "@qlever-llc/trellis/service/deno";
-import { ordersService } from "./contracts/orders_service.ts";
+import { Result } from "@qlever-llc/trellis";
+import type { RpcHandler } from "@qlever-llc/trellis/service";
+import { participants } from "orders-trellis";
+
+/** Returns an example order receipt; this walkthrough does not persist orders. */
+export const createOrder: RpcHandler<typeof participants.acmeOrdersService.participant, "Orders.Create"> = (
+  { input },
+) => Result.ok({ orderId: crypto.randomUUID(), customerId: input.customerId });
+```
+
+`RpcHandler` derives both request and response types from the generated
+participant and exact action name. The UUID and the absence of storage are
+demonstration choices. A real order service can invoke its own domain code and
+database here. Trellis does not choose either.
+
+## Connect and own the lifecycle
+
+Replace `main.ts` with:
+
+```ts
+import { TrellisService } from "@qlever-llc/trellis/service";
+import { participants } from "orders-trellis";
+import { createOrder } from "./service.ts";
+
+function requiredEnv(name: string): string {
+  const value = Deno.env.get(name);
+  if (!value) throw new Error(`Missing ${name}`);
+  return value;
+}
 
 const service = await TrellisService.connect({
-  trellisUrl: Deno.env.get("TRELLIS_URL")!,
-  contract: ordersService,
+  participant: participants.acmeOrdersService.participant,
   name: "orders-service",
-  sessionKeySeed: Deno.env.get("ORDERS_SERVICE_SESSION_KEY_SEED")!,
-});
+  trellisUrl: requiredEnv("TRELLIS_URL"),
+  seed: requiredEnv("TRELLIS_IDENTITY_SEED"),
+}).orThrow();
 
-const app = service.with({
-  clock: () => new Date(),
-  id: () => crypto.randomUUID(),
-  log: console,
-});
-
-console.log("Connected to Trellis!");
-```
-
-> **Node.js users:** Import from `@qlever-llc/trellis/service/node` and replace `Deno.env.get(...)` with `process.env`.
-
-`TrellisService.connect(...)` does a lot of heavy lifting. It authenticates your service session, verifies that the presented contract evidence fits the enabled deployment authority, fetches transport details, and hands back a `service` object with the deployment's persisted resource bindings already resolved.
-
-The contract can be active before this instance connects. If deployment authority does not cover the contract boundary yet, bootstrap creates or reuses a pending authority update and waits while retrying. Required dependencies whose only known manifests are stale and incompatible are tracked as blockers until current evidence is uploaded.
-
-Those resolved bindings are Trellis runtime internals. Use the returned
-`service.kv`, `service.store`, and `service.jobs` handles; do not call
-`Trellis.Bindings.Get`, construct `TrellisService` or `StoreHandle`, or pass
-binding/resource payloads into `Trellis` constructors.
-
-Use `service.with(deps)` for application-owned dependencies you want available
-in handlers, such as repositories, clocks, loggers, or local projections. The
-returned `app` wrapper injects those dependencies as `args.deps` in RPC, feed,
-operation, job, and event listener handlers. It does not replace Trellis runtime
-resources or contract `uses` dependencies; keep `service` for lifecycle and
-resolved resource handles.
-
-{/snippet}
-{#snippet rust()}
-
-Create `src/main.rs`:
-
-```rust
-use clap::Parser;
-use trellis_sdk_orders_service::{connect_service, ServiceConnectOptions};
-
-const SERVICE_NAME: &str = "orders-service";
-
-#[derive(Debug, Parser)]
-struct Args {
-    #[arg(long, env = "TRELLIS_URL")]
-    trellis_url: String,
-
-    #[arg(long, env = "ORDERS_SERVICE_SESSION_KEY_SEED")]
-    seed: String,
-}
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
-    let args = Args::parse();
-
-    let mut service = connect_service(ServiceConnectOptions::new(
-        &args.trellis_url,
-        SERVICE_NAME,
-        &args.seed,
-    ))
-    .await?;
-
-    tracing::info!("connected to Trellis");
-    service.run().await?;
-    Ok(())
+const stop = () => {
+  void service.stop();
+};
+Deno.addSignalListener("SIGINT", stop);
+Deno.addSignalListener("SIGTERM", stop);
+try {
+  await service.handleOrdersCreate(createOrder);
+  console.log("Orders service connected; press Ctrl-C to stop.");
+  await service.wait();
+} finally {
+  Deno.removeSignalListener("SIGINT", stop);
+  Deno.removeSignalListener("SIGTERM", stop);
+  await service.stop();
 }
 ```
 
-The generated `connect_service(...)` helper authenticates the service instance through the public Trellis service facade, presents the generated contract manifest, resolves deployment bindings, prepares authenticated request validation, and waits if bootstrap creates a pending authority update. `service.run()` owns the NATS service loop for the handlers you register.
+Environment variables and their names are this example's configuration
+interface, not a Trellis requirement. Pass the same typed options from a file,
+secret manager, CLI parser, or application configuration system if preferred.
 
-{/snippet}
-</LanguageTabs>
+`connect()` proves the provisioned identity, verifies the server-owned installed
+participant and GrantBinding, and resolves Trellis resources. `handleOrdersCreate()`
+registers the provider. `wait()` supervises the running service; `stop()` closes
+its resources. Authorization contexts and route credentials remain in process
+memory and are refreshed on reconnect.
 
-Before we can run this, we need to create a deployment, provision a service instance, and accept any deployment authority plan created from the contract boundary.
+The shared `/service` entrypoint supports Node-compatible native runtimes,
+including Deno. For Rust, use the generated facade described in
+[the Rust guide](/guides/libraries/rust), not this TypeScript options object.
 
-Every Trellis service authenticates with a unique instance key. `trellis svc <id> provision` prints the private seed for that instance; treat it like a private key and never commit it to source control.
+## Provision and run
 
-```sh
-trellis svc orders-service create
-trellis svc orders-service apply --source .
-trellis svc orders-service provision
-```
-
-Before starting the service, submit the service contract boundary and review the resulting deployment authority change in Console. Open **Admin → Services**, select `orders-service`, and use the pending authority accept/reject controls if bootstrap or `trellis svc orders-service apply --source .` created a request. During local development you can also start first and accept the pending authority update that bootstrap creates; acceptance schedules reconciliation before runtime access becomes available.
-
-Now run your service:
-
-<LanguageTabs>
-{#snippet ts()}
+Log the CLI into your [running Trellis](/guides/starting-trellis) as an
+administrator. From the service project:
 
 ```sh
-TRELLIS_URL=http://localhost:3000 \
-ORDERS_SERVICE_SESSION_KEY_SEED=<seed-from-provision> \
-deno run --allow-net --allow-env main.ts
+trellis svc orders-service create --format json
 ```
 
-{/snippet}
-{#snippet rust()}
+The create command uses `orders-service` as a display name. Set
+`TRELLIS_DEPLOYMENT` to the returned `deployment.deploymentId`, not that display
+name. This project also contains a caller; choose the provider's artifact files
+explicitly:
 
 ```sh
-TRELLIS_URL=http://localhost:3000 \
-ORDERS_SERVICE_SESSION_KEY_SEED=<seed-from-provision> \
-cargo run
+trellis svc "$TRELLIS_DEPLOYMENT" apply \
+  --source . \
+  --participant acme.orders-service
 ```
 
-{/snippet}
-</LanguageTabs>
+The direct apply installs the participant and deployment resources. Inspect the
+deployment and provision an instance:
 
-You should see a connected log line. The service does not do anything yet, but it is alive on the network. Let's change that.
+```sh
+trellis svc "$TRELLIS_DEPLOYMENT" show --format json
+trellis svc "$TRELLIS_DEPLOYMENT" provision --format json
+```
+
+Provisioning prints private identity material; retain it securely, not in source
+control or logs.
+
+| Example environment variable          | Value                                                    |
+| ------------------------------------- | -------------------------------------------------------- |
+| `TRELLIS_URL`                         | Runtime HTTP URL, for example `http://127.0.0.1:8080`    |
+| `TRELLIS_DEPLOYMENT`                  | Created `deployment.deploymentId`                        |
+| `TRELLIS_IDENTITY_SEED`               | Provision response `instanceSeed`                        |
+
+Deployment, instance, participant, grant, resource, and transport data are
+resolved by Trellis during bootstrap; do not duplicate them in service config.
+
+Then run from the directory containing `main.ts`, with the environment
+populated:
+
+```sh
+deno check main.ts
+deno run -A main.ts
+```
+
+`-A` keeps the demonstration command readable, not least-privilege. Deployment
+permissions are an application/runtime-host choice; restrict Deno permissions to
+the network, files, signals, and telemetry that instance actually uses.
+
+Expect the connected message. Ctrl-C stops the instance. If startup waits, check
+pending authority; if identity verification fails, check the provisioned
+instance and exact participant binding rather than bypassing bootstrap.
+
+To exercise the RPC without a manually provisioned deployment, continue with
+[the complete live test](/guides/testing-trellis-services).

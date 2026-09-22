@@ -1,0 +1,9 @@
+[package]
+name = "demo-service"
+version = "1.0.0"
+
+[sources]
+service = "contract.trellis"
+
+[generate.typescript]
+output = "trellis"

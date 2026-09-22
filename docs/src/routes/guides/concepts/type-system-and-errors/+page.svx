@@ -1,74 +1,49 @@
-Trellis uses contract-owned schemas and explicit expected-failure modeling so services, apps, CLIs, and generated SDKs share the same wire contract.
+# Type system and errors
+
+Trellis IDL is the authoring language for wire schemas. JSON Schema is the current canonical lowering, not the source language or permanent backend contract.
 
 ## Schemas
 
-Contract source defines input, output, event, job, state, resource, and error payload schemas. The emitted `trellis.contract.v1` manifest is the canonical cross-language artifact.
-
-In TypeScript, services use TypeBox schemas and `ref.schema(...)` references inside contract builders:
-
-```ts
-import { Type } from "@sinclair/typebox";
-
-const schemas = {
-  CreateOrderRequest: Type.Object({
-    customerId: Type.String(),
-    items: Type.Array(Type.Object({
-      productId: Type.String(),
-      quantity: Type.Number({ minimum: 1 }),
-    })),
-  }),
-  CreateOrderResponse: Type.Object({
-    orderId: Type.String(),
-    status: Type.String(),
-  }),
-};
-
-export const ordersService = defineServiceContract({ schemas }, (ref) => ({
-  // ...
-  rpc: {
-    "Orders.Create": {
-      version: "v1",
-      input: ref.schema("CreateOrderRequest"),
-      output: ref.schema("CreateOrderResponse"),
-    },
-  },
-}));
-```
-
-In generated artifacts, those references become language-neutral schema names and embedded JSON Schema values.
-
-Schemas are not just TypeScript type hints. They are used for manifest validation, runtime validation, generated DTOs, generated docs, and cross-contract compatibility checks.
+Declare models in `contract.trellis` and reference them from RPC, event,
+operation, feed, state, or resource declarations. Generated SDKs carry both wire
+schemas and language types; application code should import them rather than
+maintain a second representation. Typed maps use `map<T>`.
 
 ## Schema validation
 
-Runtime validation protects contract boundaries. A caller should not assume that local static types are enough, because data crosses process and language boundaries over NATS.
-
-Trellis validates schema-backed inputs and outputs at the edges where runtime contracts require it. Validation failures are expected contract failures and should be modeled clearly rather than surfacing as ambiguous transport errors.
+Known fields remain validated at public boundaries. Trellis-owned runtime
+objects tolerate additive unknown members; application-authored schemas follow
+their declared constraints. Signed authorization objects use their explicit
+extension and must-understand rules instead of silently accepting unsigned
+changes. Static types never substitute for validation of received bytes.
 
 ## Declared errors
 
-Contracts can declare expected error types. Those errors become part of the public API surface in the same way input and output schemas do.
-
-Declared errors let generated SDKs and documentation tell callers which failures they should handle. Service-local failures that callers can reasonably act on should be declared. Unexpected infrastructure failures should remain unexpected errors.
+Declare an error model and select the named error on the surfaces that may
+return it. Generated error classes let callers distinguish expected domain
+outcomes, such as a missing order, from transport or unexpected internal
+failures. Keep wire error data useful and safe; do not expose secrets, SQL, or
+private stack traces as public error fields.
 
 ## Result values
 
-Expected failures use `Result`-style modeling rather than thrown exceptions.
-
-In TypeScript, public APIs use `Result<T, E>` or `AsyncResult<T, E>`. In Rust, public APIs return Rust `Result` values. The shape differs by language, but the semantics are the same: expected failures are values, not control-flow exceptions.
-
-This applies to RPC handlers, client helpers, operation helpers, file transfer helpers, and service runtime operations.
+Expected RPC and operation failures are returned through generated `Result`
+surfaces. Inspect the result where the caller can recover. Use `.orThrow()` only
+at a boundary that intentionally propagates failure. A successful operation
+start is not terminal completion: await its terminal result before reporting
+that the requested work succeeded.
 
 ## Pagination shapes
 
-List APIs should use standard page request and page response schemas rather than inventing bespoke list shapes for every service.
-
-The default model is live offset pagination: `{ offset?, limit }` requests and `{ entries, count, offset, limit, nextOffset? }` responses. It keeps offset, limit, count, entries, and next offset semantics consistent across generated SDKs and UI code. Domain-specific filters can be added beside the standard page fields. TypeScript services can use `PageRequestSchema`, `PageResponseSchema(...)`, `normalizePageQuery(...)`, and `buildPageResponse(...)` for this shape.
-
-For stable ID/keyset pages, use cursor pagination instead: `{ cursor?, limit? }` requests and `{ items, page: { nextCursor? } }` responses. Cursor limits default to `100` and are capped at `500` unless the service chooses and documents a different maximum. TypeScript services can use `CursorQuerySchema`, `CursorPageSchema(...)`, `normalizeCursorQuery(...)`, and `buildCursorPage(...)` for this shape.
+Pagination is part of an API's declared request and response models. Use its
+generated cursor/limit and page fields rather than assuming all APIs share the
+same envelope. Treat cursors as opaque continuation tokens; stable ordering
+and filters must be owned by the provider, not reconstructed by the client.
 
 ## Storage identity
 
-Storage identity should be explicit and stable. Data stored in KV, state, or service-owned stores should preserve enough identity information for migrations, conflict checks, and ownership decisions.
-
-Do not rely on incidental TypeScript object shape or display labels as storage identity. Contract ids, lineages, named stores, schema names, and version provenance are the stable concepts.
+An entity's application ID is distinct from its storage revision and from the
+participant identity that owns a resource. Use returned revisions for
+compare-and-set updates and handle conflicts explicitly. Services access
+generated `service.kv`, `service.store`, and `service.jobs` handles after
+bootstrap; physical resource names and resolved bindings remain runtime internals.

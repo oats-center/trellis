@@ -28,7 +28,9 @@ export function formatDateTimeWithAge(value: string): string {
   if (Number.isNaN(date.getTime())) return value;
 
   const relative = formatRelativeAge(value);
-  return relative ? `${formatDateTime(value)} (${relative})` : formatDateTime(value);
+  return relative
+    ? `${formatDateTime(value)} (${relative})`
+    : formatDateTime(value);
 }
 
 /** Formats an ISO date/time as a short relative age. */
@@ -43,7 +45,10 @@ export function formatRelativeAge(value: string): string | null {
   const dayMs = 24 * hourMs;
 
   if (absMs < hourMs) {
-    return relativeTimeFormatter.format(Math.round(diffMs / minuteMs), "minute");
+    return relativeTimeFormatter.format(
+      Math.round(diffMs / minuteMs),
+      "minute",
+    );
   }
 
   if (absMs < dayMs) {

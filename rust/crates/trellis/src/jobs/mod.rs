@@ -13,27 +13,29 @@ use crate::client::TrellisClient;
 pub mod active_job;
 pub mod api;
 pub mod bindings;
+/// Constructors for Jobs lifecycle events.
 pub mod events;
+#[doc(hidden)]
 pub mod keys;
 pub mod manager;
 pub mod projection;
 pub mod publisher;
 pub mod registry;
+pub mod runtime;
+#[doc(hidden)]
+pub mod runtime_ref;
 mod runtime_worker;
 pub mod subjects;
 pub mod types;
+pub mod updates;
 
 pub use active_job::ActiveJob as WorkerActiveJob;
 pub use api::{
-    ActiveJob, JobFilter, JobIdentity, JobQueue, JobRef, JobSnapshot, JobWorkerHost, JobsError,
-    JobsFacade, JobsService, TerminalJob,
+    ActiveJob, JobFilter, JobIdentity, JobNotEnqueued, JobNotEnqueuedReason, JobQueue, JobRef,
+    JobSnapshot, JobSubmitOutcome, JobWorkerHost, JobsError, JobsFacade, JobsService, TerminalJob,
 };
 pub use bindings::{JobsBinding, JobsQueueBinding, JobsRuntimeBinding};
-pub use events::{
-    cancelled_event, completed_event, created_event, dead_event, dismissed_event, expired_event,
-    failed_event, retried_event, started_event,
-};
-pub use keys::{job_key, worker_presence_key};
+pub use keys::{derive_key, job_key, key_hash, worker_presence_key, KeyDerivationError};
 pub use manager::{
     JobManager, JobManagerError, JobMetaSource, JobProcessError, JobProcessOutcome,
     TrellisJobMetaSource,
@@ -42,27 +44,52 @@ pub use projection::{is_terminal, job_from_work_event, reduce_job_event};
 pub use publisher::{JobEventHeaders, JobEventPublisher};
 pub use registry::{
     new_worker_heartbeat, publish_worker_heartbeat, start_worker_heartbeat_loop,
-    ActiveJobCancellationRegistry, WorkerHeartbeatHandle,
+    ActiveJobCancellationRegistry, WorkerHeartbeatHandle, WorkerHeartbeatOptions,
 };
+pub use runtime::{JobsRuntime, JobsRuntimeMessage, JobsRuntimeMessageStream};
 pub use runtime_worker::{JobCancellationToken, WorkerHostHandle, WorkerHostOptions};
 pub use subjects::{job_event_subject, worker_heartbeat_subject, WORKER_HEARTBEATS_WILDCARD};
 pub use types::{
-    Job, JobContext, JobEvent, JobEventType, JobLogEntry, JobLogLevel, JobProgress, JobState,
-    WorkerHeartbeat,
+    Job, JobAdminAction, JobConcurrency, JobContext, JobEvent, JobEventType, JobLogEntry,
+    JobLogLevel, JobProgress, JobQueuePolicy, JobQueuePolicyOutcome, JobState, JobWaitEdge,
+    JobWaitTarget, JobWaitTargetKind, WorkerHeartbeat,
 };
+pub use updates::{JobDescriptor, JobUpdate, JobUpdateDescriptor, JobUpdateError};
+
+#[doc(hidden)]
+pub type NatsJobEventPublisher = TrellisJobEventPublisher;
 
 #[doc(hidden)]
 pub mod internal {
     pub use super::runtime_worker::{
-        process_work_payload, process_work_payload_with_context,
-        process_work_payload_with_context_and_heartbeat, start_worker_host_from_binding,
-        WorkerHostError,
+        process_work_payload, start_worker_host_from_binding, WorkerHostError,
     };
+
+    pub fn typed_active_job<D>(
+        active: super::WorkerActiveJob<
+            super::TrellisJobEventPublisher,
+            super::TrellisJobMetaSource,
+        >,
+    ) -> Result<super::ActiveJob<D::Payload, D::Result>, super::JobsError>
+    where
+        D: super::JobDescriptor,
+    {
+        let payload = serde_json::from_value(active.job().payload.clone())
+            .map_err(super::JobsError::DecodePayload)?;
+        Ok(super::ActiveJob::from_runtime(payload, active))
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct TrellisJobEventPublisher {
     nats: async_nats::Client,
+}
+
+impl TrellisJobEventPublisher {
+    #[doc(hidden)]
+    pub fn new(nats: async_nats::Client) -> Self {
+        Self { nats }
+    }
 }
 
 impl JobEventPublisher for TrellisJobEventPublisher {
@@ -90,7 +117,7 @@ impl JobEventPublisher for TrellisJobEventPublisher {
 }
 
 /// Start a service-private job worker host using a connected Trellis client.
-pub async fn start_worker_host_from_client<MF, M, H, Fut, E>(
+pub(crate) async fn start_worker_host_from_client<MF, M, H, Fut, E>(
     client: &TrellisClient,
     binding: JobsRuntimeBinding,
     instance_id: String,

@@ -6,45 +6,80 @@
 //! small local wrappers.
 
 mod auth;
-mod client;
-mod descriptor;
+mod authorization;
+mod connection;
 mod error;
 mod events;
+mod http_error;
 mod operations;
 mod proof;
-mod state;
+mod resources;
+mod subject;
 mod transfer;
 
 pub use auth::SessionAuth;
-pub use client::{
-    DeviceConnectOptions, EventMessage, EventReplayPolicy, EventSubscribeOptions,
-    EventSubscriptionMode, ServiceConnectOptions, ServiceConnectWithContractOptions, TrellisClient,
-    UserConnectOptions,
+#[cfg(any(test, feature = "runtime-internals"))]
+pub use authorization::AuthorizationRegistryBinding;
+pub use authorization::{
+    canonical_trellis_origin, canonical_trellis_origin_with_insecure, AuthorizationProviderCache,
 };
-pub use descriptor::{EventDescriptor, FeedDescriptor, RpcDescriptor};
-pub use error::{RpcErrorPayload, TrellisClientError};
+pub use authorization::{
+    AuthorizationApiBinding, AuthorizationContextBundle, AuthorizationContextCache,
+    AuthorizationContextPolicy, AuthorizationInstallation, AuthorizationNativeTransport,
+    AuthorizationRoutingMaterial, AuthorizationRuntimeBinding, AuthorizationRuntimeTransports,
+    AuthorizationVerificationCore, AuthorizationVerificationError, EventVerificationInput,
+    RequestVerificationInput, VerifiedAuthorizationEvent, VerifiedAuthorizationRequest,
+    VerifiedCaller,
+};
+#[cfg(feature = "runtime-internals")]
+pub use authorization::{RuntimeAuthorizationIoCounters, RuntimeAuthorizationTrust};
+
+pub use crate::generated::{EventDescriptor, FeedDescriptor, RpcDescriptor};
+pub(crate) use connection::fetch_device_activation;
+pub(crate) use connection::DeviceEnrollmentResponse;
+pub(crate) use connection::ServiceConnectWithContractOptions;
+pub(crate) use connection::TrellisClient;
+pub use connection::{
+    DeviceConnectOptions, EventMessage, EventReplayPolicy, EventSubscribeOptions,
+    EventSubscriptionMode, UserConnectOptions, UserSessionCredentials,
+};
+pub use error::{
+    AuthenticationError, CallError, ProtocolError, RemoteErrorPayload, RpcErrorPayload,
+    TransportError, TrellisClientError,
+};
 pub use events::{
     dispatch_outbox_once, prepare_event, prepare_event_value, EventStoreError, InboxReceipt,
-    InboxStore, MemoryInboxStore, MemoryOutboxStore, NatsKvInboxStore, NatsKvOutboxStore,
-    OutboxDispatchResult, OutboxEventRecord, OutboxStore, PostgresInboxStore, PostgresOutboxStore,
-    PreparedTrellisEvent, SqliteInboxStore, SqliteOutboxStore,
+    InboxStore, MemoryInboxStore, MemoryOutboxStore, OutboxDispatchResult, OutboxEventRecord,
+    OutboxStore, PostgresInboxStore, PostgresOutboxStore, PreparedTrellisEvent, SqliteInboxStore,
+    SqliteOutboxStore,
 };
+pub(crate) use http_error::read_bounded_http_body;
+pub use http_error::{decode_trellis_http_error, TrellisHttpError};
 pub use operations::{
-    control_subject, OperationDescriptor, OperationEvent, OperationInputBuilder, OperationInvoker,
-    OperationRef, OperationRefData, OperationSignalAccepted, OperationSnapshot, OperationState,
-    OperationTransferInputBuilder, OperationTransferProgress, OperationTransferStartError,
-    OperationTransport, StartedOperationTransfer, TransferOperationDescriptor,
+    control_subject, DeclaredOperationUpdates, HasOperationUpdates, NoOperationUpdates,
+    OperationDescriptor, OperationEvent, OperationInputBuilder, OperationInvoker, OperationRef,
+    OperationRefData, OperationSignalAccepted, OperationSnapshot, OperationState,
+    OperationTransferInputBuilder, OperationTransferProgress, OperationTransferReaderInputBuilder,
+    OperationTransferStartError, OperationTransport, OperationUpdateEvent, OperationUpdateEvidence,
+    StartedOperationTransfer, TransferOperationDescriptor,
 };
-pub use proof::verify_proof;
-pub use state::{
-    DeleteStateOptions, ExpectedPutRevision, ListStateOptions, MapStateEntry, MapStateListResult,
-    MapStateStore, PutStateOptions, StateDeleteResult, StateEntry, StateGetResult,
-    StateMigrationRequired, StatePutResult, StateTransport, StateValue, ValueStateStore,
+pub use proof::{verify_event_proof, VerifyEventProofInput};
+#[doc(hidden)]
+pub use resources::{BoundStateResourceClient, ConnectedStateHandle};
+pub use resources::{
+    ConsumerDescriptor, ConsumerHandle, RawStateValue, RawStateWriteError, ResourceCodec,
+    ResourceCodecError, ResourceRevision, StateHandle, StateReadError, StateResourceClient,
+    StateValue, StateWriteError, StateWriteMode,
 };
+#[cfg(any(test, feature = "runtime-internals"))]
+#[doc(hidden)]
+pub use subject::resolve_subject;
+#[cfg(not(any(test, feature = "runtime-internals")))]
+pub(crate) use subject::resolve_subject;
+pub use subject::SubjectError;
 pub use transfer::{
-    download_transfer_grant_from_value, DownloadTransferGrant, FileInfo, UploadTransferGrant,
+    download_transfer_grant_from_value, DownloadTransferDirection, DownloadTransferGrant, FileInfo,
+    TransferCancellation, TransferGrantType, UploadTransferDirection, UploadTransferGrant,
 };
-pub use trellis_contracts::{PageRequest, PageResponse};
-
 #[cfg(test)]
 mod tests;

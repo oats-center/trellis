@@ -9,23 +9,32 @@ This guide is for operators. If you are a service author, see [Jobs: TypeScript]
 `trellis.jobs@v1` is a standard built-in Trellis API. The optional Jobs admin
 runtime is Trellis infrastructure that implements its admin behavior:
 
-- **SQL projection** — a queryable read-optimized view of current job state derived from the JetStream source of truth
-- **Global RPCs** — `Jobs.List`, `Jobs.Get`, `Jobs.Cancel`, `Jobs.Retry`, `Jobs.ReplayDLQ`, `Jobs.DismissDLQ`, `Jobs.ListServices`, `Jobs.Health`
+- **SQL projection** — a disposable query view of current job state derived from
+  the `JOBS` JetStream source of truth
+- **Global RPCs** — `Jobs.Query`, `Jobs.Summary`, `Jobs.Inspect`, `Jobs.GetKey`,
+  `Jobs.Cancel`, `Jobs.Retry`, `Jobs.ReplayDLQ`, `Jobs.DismissDLQ`,
+  `Jobs.ListDLQ`, `Jobs.ListServices`
+- **Workbench feed** — `Jobs.Watch` invalidation frames for live query and
+  inspection views
 - **Janitor** — background cleanup of expired jobs and stale projection entries
 
-The Jobs admin runtime is stateless and horizontally scalable. It does not participate in job correctness — it is a derived observability layer. The JetStream stream remains the source of truth.
+The Jobs admin runtime is stateless and horizontally scalable. It does not
+participate in job correctness — it is a derived observability layer. The
+JetStream stream remains the source of truth.
 
 ## Querying jobs
 
-Use the admin client to query jobs. The client is available from a Trellis CLI tool or any service/app that declares the `trellis.jobs@v1` contract in its `uses`.
+Use `Jobs.Query` to query jobs. The client is available from a Trellis CLI tool
+or any service/app that declares the `trellis.jobs@v1` contract in its `uses`.
 
 **List all pending fulfillment jobs for the orders service:**
 
 ```ts
-const pending = await client.rpc.jobs.list({
+const pending = await client.rpc.jobs.query({
   service: "orders-service",
   type: "reserve-inventory",
   state: ["pending"],
+  sort: { field: "updatedAt", direction: "desc" },
   limit: 50,
 });
 
@@ -34,20 +43,60 @@ for (const job of pending.entries) {
 }
 ```
 
-**Get a specific job:**
+`Jobs.Query` performs search, sort, grouping, and stats on the server for admin
+workbenches. Full-text search covers safe fields only: ids, service/type/state,
+request and trace context, queue key/policy text, progress/log text, and error
+text. Payload and result bodies are not searched by default.
+
+Use `Jobs.Summary` with the same filters when the UI needs aggregate data. It
+computes `count`, state totals/statistics, and optional groups across the full
+filtered result set, independent of the current `Jobs.Query` page or cursor.
+
+**Inspect a specific job:**
 
 ```ts
-const job = await client.rpc.jobs.get({
+const inspection = await client.rpc.jobs.inspect({
   id: "job_abc123",
 });
 
-console.log(job.context.requestId, job.context.traceId);
+console.log(inspection.job.context.requestId, inspection.timeline.length);
 ```
 
-`JobFilter` fields are all optional — omit any to widen the query.
 Projected job records include `context.requestId`, `context.traceId`,
 `context.traceparent`, and optional `context.tracestate` so operators can pivot
 from a job to related RPC, event, operation, and service logs.
+
+`Jobs.Inspect` returns the current job, lifecycle timeline, attempts, related
+jobs, structured or string-derived errors, trigger, lineage, and current wait
+edges. Error details include a stable fingerprint and aggregate occurrence count
+when the same failure repeats.
+
+Active jobs that are suspended on child work remain in the `active` state and add
+`waitingOn` entries. Runtime-owned waits on Trellis jobs and operations are
+recorded automatically. Service authors can use `job.waitFor(...)` /
+`job.wait_for(...)` to describe long external waits such as vendor APIs,
+databases, object stores, or polling loops.
+
+## Inspecting keyed concurrency
+
+Jobs that declare keyed concurrency expose their derived key in admin
+projection. Use `Jobs.GetKey` to inspect why work is waiting or rejected for a
+logical key:
+
+```ts
+const key = await client.rpc.jobs.getKey({
+  service: "zendesk-sync",
+  type: "sync-tickets",
+  key: "zendesk:foo:tickets",
+});
+
+console.log(key.active, key.queued, key.heartbeatAgeMs);
+```
+
+Key status includes the active job identity, queued depth, heartbeat age, lease
+expiry, stale takeover count, and the latest queue-policy reason such as
+`active-limit`, `queue-depth`, `coalesced`, or `replaced`. A stale active job is
+reported explicitly; it is not inferred from worker-presence heartbeats.
 
 ## Cancelling a job
 
@@ -56,22 +105,34 @@ from a job to related RPC, event, operation, and service logs.
 ```ts
 await client.rpc.jobs.cancel({
   id: "job_abc123",
+  reason: "replacement run queued",
 });
 ```
 
-**Important:** Cancellation is cooperative and eventual for `active` jobs. The service worker continues running until it checks `job.cancelled` and responds. Expect a short delay before the state transitions to `cancelled`. Jobs in `pending` or `retry` state transition immediately.
+**Important:** Cancellation is cooperative and eventual for `active` jobs. The
+service worker continues running until it checks `job.cancelled` and responds.
+Expect a short delay before the state transitions to `cancelled`. Jobs in
+`pending` or `retry` state transition immediately. There is no hard kill or stop
+API.
+
+The optional `reason` on `Jobs.Cancel`, `Jobs.Retry`, `Jobs.ReplayDLQ`, and
+`Jobs.DismissDLQ` is recorded in lifecycle event admin metadata and appears in
+the inspection timeline.
 
 ## Failed vs dead: two different operations
 
-The jobs system distinguishes `failed` from `dead`. They require different admin actions.
+The jobs system distinguishes `failed` from `dead`. They require different admin
+actions.
 
 ### `failed` jobs
 
-A job enters the `failed` state when it has exhausted its automatic retries. Use `Jobs.Retry` to re-enqueue it:
+A job enters the `failed` state when its handler reports a non-retryable failure.
+Use `Jobs.Retry` to re-enqueue it:
 
 ```ts
 await client.rpc.jobs.retry({
   id: "job_abc123",
+  reason: "fixed provider credentials",
 });
 ```
 
@@ -79,15 +140,20 @@ This transitions the job back to `pending` for re-processing.
 
 ### `dead` jobs
 
-A job enters the `dead` state when it exhausts its `maxDeliver` retry attempts. Example: a `charge-payment` job failed 5 consecutive times because the payment provider was down.
+A job enters the `dead` state when retryable handler failures exhaust its
+declared retry attempts. Capacity blocking for a keyed queue does not spend
+attempts or cause dead-lettering. Example: a `charge-payment` handler ran and
+reported a retryable provider outage 5 consecutive times.
 
-The `dead` state is **not terminal** — dead jobs can be either replayed or dismissed.
+The `dead` state is **not terminal** — dead jobs can be either replayed or
+dismissed.
 
 **Replay** (when the underlying issue is fixed):
 
 ```ts
 await client.rpc.jobs.replayDLQ({
   id: "job_abc123",
+  reason: "provider recovered",
 });
 ```
 
@@ -98,16 +164,30 @@ This re-enqueues the job at `pending`.
 ```ts
 await client.rpc.jobs.dismissDLQ({
   id: "job_abc123",
+  reason: "order was manually closed",
 });
 ```
 
-This transitions the job to `dismissed`, a terminal state. Dismissed jobs are not re-processed.
+This transitions the job to `dismissed`, a terminal state. Dismissed jobs are not
+re-processed.
+
+## Watching for changes
+
+Use `Jobs.Watch` when a workbench or detail view needs live updates without
+polling every row. The feed emits `ready`, `jobChanged`,
+`jobInspectChanged`, and `queryInvalidated` frames. Treat those frames as
+invalidations: rerun `Jobs.Query` for a workbench view or `Jobs.Inspect` for
+a detail view. The feed does not provide a precise row-delta protocol.
 
 ## Worker presence
 
-Services emit heartbeat messages per job type while workers are running. Use these to confirm workers are active and see what they are processing.
+Services emit heartbeat messages per job type while the worker host is running.
+Use these to confirm service/job-type presence, not as proof that every queue
+consumer task is healthy or making progress.
 
-The heartbeat data includes the service name, job type, instance identifier, and a timestamp. Absence of recent heartbeats for a job type means either the service is not running or the worker is not registered for that job type.
+The heartbeat data includes the service name, job type, instance identifier, and
+a timestamp. Absence of recent heartbeats for a job type means either the service
+is not running or the worker is not registered for that job type.
 
 Use the `trellis` CLI or an observability tool subscribed to the heartbeat subjects to monitor worker presence:
 
@@ -119,7 +199,12 @@ trellis jobs workers --service orders-service
 
 The janitor is a background loop in the Jobs admin runtime that cleans up:
 
-- **Expired jobs** — jobs that exceeded their `defaultDeadlineMs` and have not completed; moved to `expired`
-- **Stale SQL projection entries** — projection records whose underlying stream messages have been cleaned up
+- **Expired jobs** — jobs that exceeded their `defaultDeadlineMs` and have not
+  completed; moved to `expired`
+- **Stale SQL projection entries** — projection records whose underlying stream
+  messages have been cleaned up
 
-The janitor interval is operator-configurable via the Jobs admin runtime configuration. There is no fixed default — tune it based on your job volume and retention requirements. A shorter interval keeps the projection tighter; a longer interval reduces janitor overhead on high-volume deployments.
+The janitor interval is operator-configurable via the Jobs admin runtime
+configuration. There is no fixed default — tune it based on your job volume and
+retention requirements. A shorter interval keeps the projection tighter; a longer
+interval reduces janitor overhead on high-volume deployments.

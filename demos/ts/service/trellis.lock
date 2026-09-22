@@ -1,0 +1,13 @@
+format = 2
+root = "demo-service"
+
+[[packages]]
+name = "demo-service"
+version = "1.0.0"
+digest = "xSE-gdBFo_5s8gRCS9_IkNFYJsVpl2OC_o98Xr6s-jw"
+distribution-digest = "sha256:783e1d499f1b909b0f13a3689c57c5e45a64e21efa7634f55e926e4628fa0be7"
+dependencies = []
+
+[packages.source]
+kind = "path"
+path = "."

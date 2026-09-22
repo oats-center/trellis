@@ -1,39 +1,42 @@
-This guide generates the local files Trellis needs, starts NATS in a container, applies shared infrastructure, and runs Trellis from the source tree with `deno task dev`.
+This guide generates the local files Trellis needs and runs `trellis-server` with an explicitly managed local NATS process. No containers or external NATS server are required.
 
 By the end, you will have:
 
 - a local folder at `~/trellis` with generated Trellis and NATS files
-- a NATS container running on your machine
-- Trellis running at `http://localhost:3000`
-- the built-in setup page for creating your first admin account
-- Console running at `http://localhost:5173`
-- a CLI login you can use for admin commands
+- a managed nats-server process running on your machine
+- the current Rust Trellis runtime running at `http://localhost:3000`
+- runtime health and readiness checks that return version and mode metadata
+- Console running through Trellis at `http://localhost:3000/console`
 
 ## What you need
 
 - Git
 - [Deno](https://deno.com) v2+
-- a Rust toolchain, because local prepare tasks run the Rust generator
 - the `trellis` CLI installed (see [Install the Trellis CLI](/guides/install-trellis-cli))
-- `podman`
+- network access when using `--nats-download`: the server downloads a pinned,
+  checksum-verified nats-server binary under the XDG cache root (default
+  `~/.cache/trellis/nats` on Linux); every run cryptographically
+  revalidates the cached archive and binary against the pin, reinstalling
+  corrupted or replaced cache entries
 
-The local bootstrap command uses a `nats-box` container internally to generate NATS operator, account, credential, signing-key, and resolver files. You do not need to configure NATS accounts, credentials, or signing keys by hand.
+The config init command generates NATS operator, account, credential,
+signing-key, auth-callout, and resolver files natively. Trellis-owned signing
+authority is persisted in runtime state rather than startup trust files.
 
 ## 1. Generate the local bundle
 
 ```sh
-trellis local init --out ~/trellis
+trellis init config --out ~/trellis
 ```
 
-This creates a movable local bundle under `~/trellis`:
+This creates a movable init bundle under `~/trellis`:
 
 | Path | Purpose |
 | --- | --- |
-| `manifest.json` | Generated bundle manifest with public keys and relative paths |
 | `nats/` | NATS config, resolver data, service credentials, and signing seeds |
-| `trellis/config.jsonc` | Trellis runtime config using relative file paths |
-| `trellis/session.seed` | Local Trellis runtime session key seed |
-| `trellis/data/` | Local Trellis SQLite data directory |
+| `config.toml` | Trellis runtime config using relative file paths |
+| `auth/` | Online issuer seed and Auth runtime state |
+| `session.seed` | Private 32-byte event-session seed referenced from `config.toml` |
 
 The generated Trellis config omits `nats.jetstream.replicas`. On startup,
 Trellis probes NATS JetStream topology and uses `1` for this standalone local
@@ -45,44 +48,13 @@ Useful local flags:
 
 | Flag | Default | Use when |
 | --- | --- | --- |
-| `--container-runtime podman` | `auto` | You want to avoid runtime autodetection |
+| `--name Trellis` | `Trellis` | You want a different Trellis display name; the NATS server name is derived from this unless overridden |
+| `--server-name trellis` | derived from `--name` | You need a specific NATS server name |
 | `--public-origin http://localhost:3000` | `http://localhost:3000` | Trellis is exposed on a different local origin |
 | `--nats-server-url nats://127.0.0.1:4222` | `nats://127.0.0.1:4222` | Server-side clients reach NATS somewhere else |
 | `--nats-websocket-url ws://localhost:8080` | `ws://localhost:8080` | Browser clients reach NATS somewhere else |
 
-## 2. Start NATS
-
-Run NATS from the generated config and resolver data:
-
-```sh
-podman run --replace --detach --name trellis-nats \
-  --publish 127.0.0.1:4222:4222 \
-  --publish 127.0.0.1:8080:8080 \
-  --publish 127.0.0.1:8222:8222 \
-  --volume "$HOME/trellis/nats/nats.conf:/etc/nats/nats.conf:ro,Z" \
-  --volume "$HOME/trellis/nats/jwt.conf:/etc/nats/jwt.conf:ro,Z" \
-  --volume "$HOME/trellis/nats/data:/data:Z" \
-  docker.io/library/nats:latest \
-  -c /etc/nats/nats.conf
-```
-
-The container publishes only loopback ports:
-
-| Port | Purpose |
-| --- | --- |
-| `4222` | Native NATS clients |
-| `8080` | Browser websocket clients |
-| `8222` | NATS monitoring and health |
-
-## 3. Verify NATS
-
-```sh
-curl http://127.0.0.1:8222/healthz
-```
-
-An HTTP 200 response means NATS is ready for the Trellis infrastructure bootstrap step.
-
-## 4. Check out the source tree
+## 2. Check out the source tree
 
 ```sh
 TRELLIS_VERSION="$(trellis --version)"
@@ -92,90 +64,202 @@ git clone --branch "v${TRELLIS_VERSION#v}" --depth 1 https://github.com/qlever-l
 cd trellis
 ```
 
-This checks out the release tag that matches your installed CLI. If you already have a checkout, use that directory instead.
+This checks out the release tag that matches your installed CLI. You only need
+the checkout for Console development and source-level work; `trellis-server`
+runs the installed runtime. If you already have a checkout, use
+that directory instead.
 
-## 5. Apply shared infrastructure
+## 3. Start Trellis
 
-Create the Trellis event stream and auth-owned KV buckets in NATS:
-
-```sh
-trellis infra apply \
-  --servers 127.0.0.1 \
-  --trellis-creds ~/trellis/nats/creds/trellis-auth.creds \
-  --auth-creds ~/trellis/nats/creds/auth-auth.creds
-```
-
-Verify that the resources are ready:
+Use the development preset for an installed `nats-server` on `PATH`:
 
 ```sh
-trellis infra check \
-  --servers 127.0.0.1 \
-  --trellis-creds ~/trellis/nats/creds/trellis-auth.creds \
-  --auth-creds ~/trellis/nats/creds/auth-auth.creds
+trellis-server --dev --config "$HOME/trellis/config.toml"
 ```
 
-## 6. Start Trellis from source
+Keep this terminal running. To explicitly download the pinned release instead,
+run `trellis-server --dev --nats-download --config "$HOME/trellis/config.toml"`.
+The server renders an effective NATS config from `nats/nats.conf` and
+`nats/jwt.conf`, keeps mutable state under the XDG state root, writes NATS output
+to the XDG state log directory, and stops NATS when `trellis-server` exits. NATS
+listens on the bundle's loopback ports:
 
-In the source checkout:
+| Port | Purpose |
+| --- | --- |
+| `4222` | Native NATS clients |
+| `8080` | Browser websocket clients |
+| `8222` | NATS monitoring and health |
+
+The runtime safely converges the streams and KV buckets owned by its selected
+mode during startup, exposes the embedded portal, first-admin and login flows,
+authorization context registries, `/healthz`, and `/readyz`. On a fresh
+bundle, the first full run boots into first-administrator onboarding and prints
+a bootstrap URL for the first admin; run
+`trellis-server check --dev --config "$HOME/trellis/config.toml"` before
+any run to see which stores the first run will create.
+
+Runtime-owned paths use the selected profile as defaults. User mode follows XDG;
+`--system` uses `/var/lib/trellis`, `/var/cache/trellis`, `/run/trellis`, and
+`/var/log/trellis`. Override any root in `config.toml` when the deployment needs
+different locations:
+
+```toml
+[paths]
+data = "/srv/trellis/data"
+state = "/srv/trellis/state"
+cache = "/srv/trellis/cache"
+runtime = "/run/my-trellis"
+logs = "/srv/trellis/log"
+```
+
+Fields are optional. Relative root overrides resolve from the selected config
+file's directory. Omitted SQLite `storage.path` values use stable filenames
+under the effective data root; an explicit absolute database path is exact, and
+an explicit relative database path remains config-relative. `--config` changes
+the config file and config-relative resource base, not the selected user/system
+profile.
+
+The initial administrator remains the permanent bootstrap recovery principal,
+but its `trellis-app.cli@v1` authority follows the ordinary authority lifecycle
+and may be changed or revoked. Start Trellis with `--reset-admin` to recover the
+account. Trellis prints a replacement one-time URL, preserves the principal,
+restores full approved authority for the exact current CLI participant revision, and
+revokes its existing sessions when reset completes. The command targets this
+bootstrap account even when additional administrators exist.
+
+### External NATS (production pattern)
+
+Plain startup uses `[nats].servers` from `config.toml` and never spawns or
+downloads NATS:
 
 ```sh
-cd js/services/trellis
-TRELLIS_CONFIG="$HOME/trellis/trellis/config.jsonc" deno task dev
+trellis-server --config "$HOME/trellis/config.toml"
 ```
 
-Keep this terminal running. The task prepares generated artifacts, builds the built-in portal, and starts the Trellis runtime with file watching.
+Permanent deployments use the quadlet units under `deploy/quadlet`,
+which run their own external NATS container plus `trellis-server`; that path is
+unchanged.
 
-On first boot, Trellis prints an admin setup URL because no admin account exists yet. You will use that link in the next step.
+### Pre-installed nats-server binary
 
-## 7. Create your first admin account
+`--local-nats=<path>` manages an existing nats-server binary without
+ downloading or using the cache. It is an explicit
+ trusted-operator escape hatch — the binary is NOT re-verified against the
+ Trellis pin or version. The path is canonicalized and must be a regular
+ executable owned by root or the current user, with no group/world-writable bits
+ on the file or any parent directory.
 
-Find the admin setup URL in the Trellis server output. It looks like this:
+### Single-container deployment (runtime OCI image)
 
-```text
-http://localhost:3000/_trellis/portal/admin/bootstrap?flowId=...
-```
-
-Open that URL in your browser and set the password for the initial local `admin` account.
-
-## 8. Log in with the CLI
+The runtime OCI image ships the `trellis` CLI and the pinned nats-server
+(v2.14.4) baked in at `/usr/local/bin/nats-server` — downloaded and
+checksum-verified at image build time against `conformance/nats-binaries.json`,
+never at container runtime; `nsc` is not in the image because the Rust bootstrap
+material is generated natively. The image's `ENTRYPOINT` remains
+`trellis-server` for the external-NATS/quadlet deployment path (unchanged). For
+a single container with a managed nats-server, override the entrypoint, mount
+the bundle read-only, and keep the mutable state on a writable volume:
 
 ```sh
-trellis login http://localhost:3000
+docker volume create trellis-bundle
+docker volume create trellis-state
+# Generate the bundle into the state volume once (as the image's non-root user):
+docker run --rm --user 10001:10001 --entrypoint trellis \
+  --volume trellis-state:/var/lib/trellis ghcr.io/qlever-llc/trellis:latest \
+  init config --out /var/lib/trellis/bundle
+# Prepare the writable system data/state volume for the image's uid:
+docker run --rm --user root --entrypoint sh \
+  --volume trellis-state:/var/lib/trellis ghcr.io/qlever-llc/trellis:latest \
+  -c 'chown -R 10001:10001 /var/lib/trellis'
+# Copy the generated bundle into its own named volume:
+docker run --rm --user root --entrypoint cp \
+  --volume trellis-state:/from:ro --volume trellis-bundle:/to ghcr.io/qlever-llc/trellis:latest \
+  -a /from/bundle/. /to/
+# The bundle's creds/secrets are 0o600: the run container uid must own the
+# bundle volume contents to read them:
+docker run --rm --user root --entrypoint chown \
+  --volume trellis-bundle:/to ghcr.io/qlever-llc/trellis:latest \
+  -R 10001:10001 /to
+# Run: read-only rootfs, read-only bundle volume, writable state volume; managed
+# NATS state in /var/lib/trellis/nats from the system profile:
+docker run --rm --name trellis --read-only --tmpfs /tmp \
+  --tmpfs /run/trellis:uid=10001,gid=10001,mode=0700 \
+  --tmpfs /var/log/trellis:uid=10001,gid=10001,mode=0700 \
+  --user 10001:10001 --publish 3000:3000 \
+  --volume trellis-bundle:/etc/trellis:ro,Z \
+  --volume trellis-state:/var/lib/trellis:rw,Z \
+  --entrypoint trellis-server ghcr.io/qlever-llc/trellis:latest \
+  --system all --local-nats=/usr/local/bin/nats-server
 ```
 
-The CLI prints a portal URL and QR code. Open the URL, sign in with the local `admin` username and password you just set, approve the CLI contract, and wait for the command to complete.
+The bundle (`/etc/trellis`) is mounted read-only from its own named volume: the
+runtime reads its config, credentials, and trust material from it. All mutable
+NATS files (`nats.conf`, `jwt.conf`, pid file, resolver JWTs,
+JetStream data) are written under `/var/lib/trellis/nats`, and the runtime's
+SQLite databases use the system data root `/var/lib/trellis`. Quadlet and
+other external-NATS deployments are unchanged: they keep running
+`trellis-server` against their own NATS container.
 
-Confirm the stored admin session:
+## 4. Check the converged runtime
+
+In another terminal, run the public read-only preflight:
 
 ```sh
-trellis whoami
+trellis-server check --config "$HOME/trellis/config.toml"
 ```
 
-## 9. Start the Console
+This validates the complete TOML, all configured NATS credentials and
+connectivity, required streams and KV buckets, migration compatibility on
+temporary copies made without opening configured SQLite paths, the
+root-to-issuer trust chain, and the file/SQLite/registry trust floors without
+mutating production state or opening listeners. Missing required databases,
+streams, buckets, or trust records fail the check. A trailing mode such as
+`jobs` selects one split runtime mode; the default `all` checks the deduplicated
+union.
+
+## 5. Check runtime readiness
+
+Query both runtime endpoints:
+
+```sh
+curl http://localhost:3000/healthz
+curl http://localhost:3000/readyz
+```
+
+Each response should include fields like `version` and `mode`.
+
+## 6. Start the built-in web app
 
 In another terminal from the source checkout:
 
 ```sh
-cd js/apps/console
-cp .env.example .env
+cd web
 deno task dev
 ```
 
-Open `http://localhost:5173` and log in with the local `admin` username and password. The browser flow uses the built-in Trellis portal served by the source-run runtime.
+Configure Trellis to proxy the shared built-in source:
 
-## 10. Verify the local stack
+```toml
+[http]
+web_source = { proxy = "http://127.0.0.1:5173" }
+```
+
+Open `http://localhost:3000/console`. The Rust `trellis-server` owns the browser
+login, OIDC, bootstrap, portal, authorization-context, and well-known trust
+routes; there is no separate TypeScript control-plane runtime.
+
+## 7. Verify the local stack
 
 ```sh
 curl http://127.0.0.1:8222/healthz
-curl -i http://localhost:3000/_trellis/portal
-curl -I http://localhost:5173/
-trellis whoami
+curl http://localhost:3000/healthz
+curl http://localhost:3000/readyz
+curl -I http://localhost:3000/console
 ```
 
 At this point you have:
 
-- NATS running in a container
-- Trellis running from source with `deno task dev`
-- the built-in portal served by Trellis
-- Console running from source
-- an admin CLI session
+- NATS running as a managed process started explicitly by `trellis-server`
+- Trellis running from the installed `trellis-server`
+- Rust runtime health and readiness checks returning version and mode metadata
+- Console running from source for UI development

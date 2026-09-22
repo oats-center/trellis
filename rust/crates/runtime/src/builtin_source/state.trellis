@@ -1,0 +1,68 @@
+import {
+  ResourcesInspectRequest,
+  ResourcesInspectResponse,
+  ResourcesQueryRequest,
+  ResourcesQueryResponse,
+  StateConflict,
+  StateDeleteRequest,
+  StateDeleteResponse,
+  StateGetRequest,
+  StateGetResponse,
+  StatePutRequest,
+  StatePutResponse,
+  StateRepresentationError,
+} from types;
+
+api state@v1 {
+  title "Trellis State";
+  description "Trellis-managed single-value state for authenticated app, device, and agent participants.";
+  version "1.0.0";
+
+  error Conflict(StateConflict);
+  error CorruptRepresentation(StateRepresentationError);
+  error UnsupportedRepresentation(StateRepresentationError);
+
+  rpc Get {
+    input StateGetRequest;
+    output StateGetResponse;
+    errors [CorruptRepresentation, UnsupportedRepresentation];
+  }
+
+  rpc Put {
+    input StatePutRequest;
+    output StatePutResponse;
+    errors [Conflict, CorruptRepresentation, UnsupportedRepresentation];
+  }
+
+  rpc Delete {
+    input StateDeleteRequest;
+    output StateDeleteResponse;
+    errors [Conflict];
+  }
+
+
+  rpc Resources.Query {
+    input ResourcesQueryRequest;
+    output ResourcesQueryResponse;
+    errors [CorruptRepresentation, UnsupportedRepresentation];
+    pagination cursor;
+  }
+
+  rpc Resources.Inspect {
+    input ResourcesInspectRequest;
+    output ResourcesInspectResponse;
+    errors [CorruptRepresentation, UnsupportedRepresentation];
+  }
+
+  capabilities {
+    public {
+      allows { rpc Delete; rpc Get; rpc Put; }
+    }
+    capability resources_read {
+      title "State Resources Read";
+      description "Inspect State resource identities, representations, and readiness.";
+      consequence "The caller can inspect State resources across explicit administrative scope.";
+      allows { rpc Resources.Inspect; rpc Resources.Query; }
+    }
+  }
+}

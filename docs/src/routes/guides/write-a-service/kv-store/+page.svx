@@ -1,164 +1,29 @@
-<script lang="ts">
-  import LanguageTabs from "$lib/components/LanguageTabs.svelte";
-</script>
+# Declare service resources
 
-Connecting is a good start, but let's actually store some orders. In Trellis, you don't provision databases or juggle connection strings in service code. You ask for a Key-Value bucket in your contract, accept the desired deployment authority change, and Trellis provisions it during authority reconciliation.
+Participant-owned resources are native IDL declarations, not runtime constructor options.
 
-First, define what an `Order` looks like and add a service-owned `orders` KV resource.
-
-<LanguageTabs>
-{#snippet ts()}
-
-Create `schemas.ts`:
-
-```ts
-import { type Static, Type } from "@sinclair/typebox";
-
-export const Order = Type.Object({
-  orderId: Type.String(),
-  customerId: Type.String(),
-  status: Type.Union([
-    Type.Literal("pending"),
-    Type.Literal("shipped"),
-    Type.Literal("failed"),
-  ]),
-  items: Type.Array(Type.Object({
-    productId: Type.String(),
-    quantity: Type.Number({ minimum: 1 }),
-  })),
-  createdAt: Type.String({ format: "date-time" }),
-});
-export type Order = Static<typeof Order>;
-```
-
-Next, open `contracts/orders_service.ts` and update two things:
-
-1. Pass the `Order` schema into the contract registry so `ref.schema("Order")` can reference it.
-2. Add the KV resource with the required `schema` field referencing that name.
-
-```ts
-import * as schemas from "../schemas.ts";
-
-export const ordersService = defineServiceContract(
-  { schemas },
-  (ref) => ({
-    // ...
-    resources: {
-      kv: {
-        orders: {
-          purpose: "Store order records",
-          schema: ref.schema("Order"),
-          history: 1,
-          ttlMs: 0,
-        },
-      },
-    },
-  }),
-);
-```
-
-The default `required: true` means deploy fails if Trellis cannot provision or bind the bucket.
-
-Finally, back in `main.ts`, the KV store is ready to use after `TrellisService.connect(...)`. The `service.kv.orders` handle was already resolved and opened during connection. You can use it directly without any extra setup:
-
-```ts
-// After TrellisService.connect(...)
-// service.kv.orders is already a fully typed TypedKV<Order>
-const startupEntry = await service.kv.orders.get("some-key").take();
-```
-
-Do not fetch or pass binding data yourself. Service resource bindings are
-resolved by the Trellis runtime and exposed through the connected `service`
-object. Handler code accesses the same bindings through `client.kv.orders`
-in their method parameters.
-
-> The `.take()` / `isErr(...)` pattern shows up throughout Trellis. Rather than throwing exceptions, Trellis returns `Result<T, E>` values. Call `.take()` to get either the success value or error value, then use `isErr(value)` before using the value.
-
-{/snippet}
-{#snippet rust()}
-
-Add an `Order` schema helper in `contracts/service.rs`:
-
-```rust
-fn order_schema() -> Value {
-    json!({
-        "type": "object",
-        "required": ["orderId", "customerId", "status", "items", "createdAt"],
-        "properties": {
-            "orderId": { "type": "string" },
-            "customerId": { "type": "string" },
-            "status": {
-                "anyOf": [
-                    { "type": "string", "const": "pending" },
-                    { "type": "string", "const": "shipped" },
-                    { "type": "string", "const": "failed" }
-                ]
-            },
-            "items": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "required": ["productId", "quantity"],
-                    "properties": {
-                        "productId": { "type": "string" },
-                        "quantity": { "type": "number", "minimum": 1 }
-                    }
-                }
-            },
-            "createdAt": { "type": "string", "format": "date-time" }
-        }
-    })
+```trellis
+service OrdersService {
+  implements Orders;
+  kv orders {
+    title "Orders";
+    description "Current order records.";
+    value Order;
+    history 1;
+    ttl 0;
+  }
 }
 ```
 
-Add the schema and KV resource to `contract_manifest()`:
+Connect with `TrellisService.connect(...)` and use the resolved `service.kv` handle. Resource binding payloads are runtime internals.
 
-```rust
-use trellis_contracts::kv;
+Define `Order` in the implemented API before referencing it here. Regenerate so
+the generated `service.kv.orders` handle carries the correct value type. Trellis
+provisions the physical binding during deployment apply; the service
+must not create a bucket or derive its physical name.
 
-pub fn contract_manifest() -> Result<ContractManifest, ContractsError> {
-    ContractManifestBuilder::new(
-        "orders-service@v1",
-        "Orders Service",
-        "A simple service for managing orders.",
-        ContractKind::Service,
-    )
-    .schema("Order", order_schema())
-    .kv_resource(
-        "orders",
-        kv("Store order records", "Order")
-            .required(true)
-            .history(1)
-            .ttl_ms(0),
-    )
-    .build()
-}
-```
-
-After preparing artifacts and applying the contract boundary, open the resource
-through the connected service runtime. Do not fetch or pass binding data yourself;
-Trellis resolves bindings during service bootstrap and exposes resource clients
-through the connected service object.
-
-```rust
-use trellis_rs::service::NatsKvResourceClient;
-
-async fn open_orders_kv(
-    service: &trellis_sdk_orders_service::ConnectedService,
-) -> anyhow::Result<NatsKvResourceClient> {
-    Ok(service.kv_client("orders").await?)
-}
-```
-
-{/snippet}
-</LanguageTabs>
-
-Because we changed the contract, review the pending authority change in Console. Accepting it approves the desired resource boundary and schedules reconciliation, which provisions the required new bucket. Open **Admin → Services**, select `orders-service`, inspect the **Authority review required** delta, and accept or reject it.
-
-For local development or automation, the Trellis CLI can decide the same pending request:
-
-```sh
-trellis svc orders-service authority plan list --state pending
-trellis svc orders-service authority plan show <plan-id>
-trellis svc orders-service authority accept-update <plan-id>
-```
+Use returned revisions for compare-and-set mutations when concurrent writers
+must not silently overwrite each other. Handle missing keys and revision
+conflicts as expected outcomes. A KV write cannot atomically commit an unrelated
+SQL transaction: use the SQL outbox when a database mutation and event must
+commit together.

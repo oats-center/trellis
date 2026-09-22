@@ -1,0 +1,44 @@
+format = 2
+root = "demo-app"
+
+[[packages]]
+name = "demo-app"
+version = "1.0.0"
+digest = "7eHGHbYeWuVj5hHtaD0OV2fNf0SZmcjl95r1SvFol2k"
+distribution-digest = "sha256:93a832f539a17d4acde288e9b57feadd15a97106bdb1714eb57241724bf5f8c5"
+
+[[packages.dependencies]]
+name = "demo-service"
+version = "1.0.0"
+digest = "xSE-gdBFo_5s8gRCS9_IkNFYJsVpl2OC_o98Xr6s-jw"
+
+[[packages.dependencies]]
+name = "trellis"
+version = "0.12.0"
+digest = "olfZWlhfujeEP1Au7d1504OBs7YyE-qvox6U3Xi1xpo"
+
+[packages.source]
+kind = "path"
+path = "."
+
+[[packages]]
+name = "demo-service"
+version = "1.0.0"
+digest = "xSE-gdBFo_5s8gRCS9_IkNFYJsVpl2OC_o98Xr6s-jw"
+distribution-digest = "sha256:783e1d499f1b909b0f13a3689c57c5e45a64e21efa7634f55e926e4628fa0be7"
+dependencies = []
+
+[packages.source]
+kind = "path"
+path = "./../ts/service"
+
+[[packages]]
+name = "trellis"
+version = "0.12.0"
+digest = "olfZWlhfujeEP1Au7d1504OBs7YyE-qvox6U3Xi1xpo"
+distribution-digest = "sha256:f073c1bcd82f8a67dfdcfdd9b4435f2e48d0e7f9225dfa947408ade3d1fa12d7"
+dependencies = []
+
+[packages.source]
+kind = "path"
+path = "./../../rust/crates/runtime"

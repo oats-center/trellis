@@ -1,121 +1,92 @@
-This guide covers creating and running a service from a published OCI image. You do not need the service source tree — the contract artifact is embedded in the image.
+This guide covers running a service from a published OCI image. The release must
+also distribute the Trellis project metadata used to install the exact
+participant: `trellis.toml`, `trellis.lock`, and native `.trellis` source. The
+runtime never accepts artifacts uploaded by the service process itself.
 
-If you are developing a service locally and have the source checked out, see [Install a service from source](/guides/install-service-from-source) instead.
-
-## What you need
-
-- a running Trellis environment
-- the `trellis` CLI installed (see [Install the Trellis CLI](/guides/install-trellis-cli))
-- admin access to the Trellis instance
-- a published OCI image for the service (e.g., `ghcr.io/my-org/my-service:1.2.3`)
-
-## 1. Log in as an admin
-
-Create or refresh the local administrator session:
+## 1. Log in
 
 ```sh
 trellis login http://localhost:3000
-```
-
-This CLI flow is detached-only. The command prints a portal URL and QR code for you to open or scan manually; it does not start a local callback listener or auto-open your browser.
-
-Confirm the session is active:
-
-```sh
 trellis whoami
 ```
 
-## 2. Create the deployment from the image
+The detached login prints a Portal URL/QR code. Bind creates the CLI login and
+the CLI refreshes authorization for its installed `trellis-app.cli@v1`
+participant.
+
+## 2. Create and apply
+
+Create the deployment and compile/apply the release's participant project:
 
 ```sh
-trellis svc my-service create
-trellis svc my-service apply --image ghcr.io/my-org/my-service:1.2.3
-trellis svc my-service provision
+trellis svc my-service create --format json
+trellis svc "$DEPLOYMENT_ID" apply \
+  --source ./release/trellis-project \
+  --participant acme.my-service
+trellis svc "$DEPLOYMENT_ID" show --format json
 ```
 
-The CLI creates the service deployment, submits the image contract boundary as a deployment authority proposal, then generates a service instance key and provisions an instance. The artifact lives at the path declared by the `io.trellis.contract.path` label, or `/trellis/contract.json` by default.
+Apply compiles native IDL in memory, installs an immutable participant revision,
+updates deployment resources, and writes the participant-scoped binding. There
+is no proposal, authority-plan, acceptance, or reconcile step.
 
-The CLI will:
+## 3. Provision an instance
 
-- generate a new Ed25519 instance seed locally
-- derive the public session key for the service instance
-- infer deployment defaults such as display name, description, and namespaces
-- show a provisioning review before sending the request
-
-## 3. Store the seed immediately
-
-After a successful provision, the CLI prints:
-
-```text
-provisioned service instance
-sessionKey=<public-key>
-contractId=trellis.my-service@v1
-contractDigest=<digest>
-seed=<private-seed>
-store the seed securely; it will not be shown again
+```sh
+trellis svc "$DEPLOYMENT_ID" provision --format json
 ```
 
-Save the seed to your secret manager or deployment system immediately. The CLI will not print it again.
-
-The printed `contractDigest` is runtime contract evidence. It is not the service
-deployment authority key; deployment authority comes from the service deployment
-authority that you update through Trellis Auth.
+Provisioning returns private identity material once. Put the seed in the secret
+manager used by the container platform. Trellis stores only the immutable public
+identity.
 
 ## 4. Run the container
 
-Run the same image you installed from. Pass the session seed and NATS connection details as environment variables:
+Pass only the runtime URL and the provisioned identity material required by the
+service's configuration:
 
 ```sh
 podman run --rm \
-  -e MY_SERVICE_SESSION_KEY_SEED="<seed from provision>" \
-  -e NATS_SERVERS=host.containers.internal \
-  -e NATS_SENTINEL_CREDS=/run/creds/sentinel.creds \
-  -v "$HOME/trellis/nats/creds/sentinel.creds:/run/creds/sentinel.creds:ro,Z" \
+  -e TRELLIS_URL="http://host.containers.internal:3000" \
+  -e MY_SERVICE_IDENTITY_SEED="<seed from provision>" \
   ghcr.io/my-org/my-service:1.2.3
 ```
 
-For a permanent deployment, create a Quadlet unit for the service similar to the runtime and console units in the [Starting Trellis](/guides/starting-trellis) guide.
+Bootstrap proves the identity and a fresh session key. Trellis resolves the
+deployment/instance assignment, exact installed participant/APIs, current
+grant, resource evidence, signed context, route JWT, inbox, and NATS endpoints.
+Do not mount NATS administrator credentials, semantic digests, deployment
+IDs, instance IDs, resource bindings, or authorization-context files.
 
-## 5. Upgrade to a new version
+## 5. Upgrade
 
-When you publish a new image, apply the new image contract before restarting the service:
+Distribute the new image and matching Trellis project metadata. Apply that
+project before rolling out containers:
 
 ```sh
-trellis svc my-service apply --image ghcr.io/my-org/my-service:1.2.4
+trellis svc "$DEPLOYMENT_ID" apply \
+  --source ./new-release/trellis-project \
+  --participant acme.my-service
 ```
 
-Trellis validates the new boundary against known manifests and creates a plan for any desired authority or resource changes. After you accept the plan, reconciliation provisions required resource changes before runtime availability, and service instance keys stay the same. Restart the container with the new image tag after applying the authority update. Production deployments use `strict` same-contract compatibility. If the new image presents an incompatible digest for the same contract id, Trellis records a pending authority migration plan; accept it only when you intend that migration. Use a new `@vN` contract id for breaking production changes. Use `mutable-dev` only for unreleased local iteration; it records and auto-accepts the same migration plan instead of waiting for manual approval. Remove authority only when you want to remove boundary that is no longer needed.
+Apply validates the replacement, installs the new immutable participant
+revision, updates resources, and advances the binding directly. Use a new
+participant `@vN` lineage for breaking API changes. Existing provisioned
+identity keys remain valid for the same instance unless intentionally rotated.
 
-Use Console as the primary review path for that boundary change: open **Admin → Services**, select the deployment, review the pending **Authority review required** delta, and accept or reject it before rolling out containers that require the new boundary. `mutable-dev` same-contract migrations may already appear as accepted history because Trellis auto-approved them for local iteration. For local scripts or CI/CD automation, use `trellis svc <id> authority plan list`, `trellis svc <id> authority plan show <PLAN_ID>`, and `trellis svc <id> authority accept-update <PLAN_ID>` or `accept-migration <PLAN_ID> --acknowledgement <TEXT>` to inspect history or decide pending plans.
+Console **Admin / Services** shows the current deployment, installed revision,
+resources, instances, and grant state. It does not expose retired authority
+plans.
 
-## What deployment authority actually grants
+## Practical loop
 
-Deployment authority is not only metadata storage. It is the control-plane boundary that determines what the service is allowed to do.
+1. Log in as an administrator.
+2. Create the deployment.
+3. Apply the release's Trellis project and inspect the result.
+4. Provision an instance and store its seed securely.
+5. Start the container with only endpoint and identity configuration.
+6. Confirm expected RPCs, events, jobs, and resource handles.
 
-Trellis derives service access from:
-
-- the service-owned RPC, event, and subject surfaces declared in the contract
-- explicit dependencies declared under `uses`
-- runtime-managed resource bindings created during authority reconciliation
-
-## Useful flags
-
-| Flag | Command | What it does |
-| --- | --- | --- |
-| `--namespace` | `trellis svc <id> create` | Adds namespaces for the service deployment |
-| `--instance-seed` | `trellis svc <id> provision` | Uses an existing service instance seed |
-
-## Practical deploy loop
-
-1. `trellis login http://localhost:3000` and follow the printed portal URL or QR code
-2. `trellis svc my-service create && trellis svc my-service apply --image ghcr.io/my-org/my-service:1.2.3 && trellis svc my-service provision`
-3. review and accept or reject pending service authority in Console; `mutable-dev` migrations may already be accepted history
-4. store the seed
-5. start the container with the right env after reconciliation has materialized required bindings
-6. confirm the expected RPCs, events, and bindings work
-
-Authority acceptance and instance provisioning should happen before the container starts serving traffic. Service resource provisioning happens during authority reconciliation; after the accepted boundary is current in materialized authority on an enabled deployment, runtime auth can grant presented evidence that fits deployment authority even before an instance connects. Service bootstrap validates that the presented contract evidence fits current materialized authority and consumes the persisted bindings; it does not activate a catalog entry.
-
-If a restarted container presents a new digest for the same contract id, Trellis checks it against the service instance's current digest. In `strict` mode, incompatible same-contract changes create a pending migration plan and the service waits or retries until the plan is accepted or rejected. In `mutable-dev` mode, Trellis records and auto-accepts that migration plan so local development can iterate without creating a production compatibility promise.
-
-If you are building service images, include the generated contract artifact at `/trellis/contract.json`. If the image uses a different path, add an OCI label such as `io.trellis.contract.path=/path/to/contract.json` so the CLI can discover it automatically.
+All required resource evidence must exist before context issuance. Unavailable
+optional evidence removes only its affected optional grants. The service never
+provisions resources as a bootstrap side effect.

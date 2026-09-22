@@ -2,7 +2,8 @@
 
 Rust crates for the Trellis platform.
 
-The public Cargo authoring packages are `trellis` and `trellis-contracts`.
+The public Cargo runtime package is `trellis`; projects author APIs and
+participants in Trellis IDL and generate Rust code with the `trellis` CLI.
 Low-level crates in this workspace support the platform implementation,
 generators, CLIs, and tests; they are not the stable package surface that normal
 Rust services and apps should author against. Internal workspace crates are
@@ -11,23 +12,21 @@ behind modules of the public `trellis` facade.
 
 **Crates in this repository:**
 
-| Crate                         | Purpose                                                       |
-| ----------------------------- | ------------------------------------------------------------- |
-| `trellis-auth`                | Unpublished compatibility/test package for auth helpers       |
-| `trellis-auth-adapters`       | Unpublished compatibility/test package for auth adapters      |
-| `trellis`                     | Curated public Rust facade for clients and services           |
-| `trellis-cli`                 | Operator CLI crate for the `trellis` binary                   |
-| `trellis-client`              | Unpublished compatibility package for `trellis_rs::client`    |
-| `trellis-codegen-rust`        | Internal Rust SDK code generation                             |
-| `trellis-codegen-ts`          | Internal TypeScript SDK code generation                       |
-| `trellis-contracts`           | Contract manifest model and validation                        |
-| `trellis-core-bootstrap`      | Internal bootstrap helpers for infrastructure state           |
-| `trellis-generate-runner`     | Internal helper for invoking the bootstrap-safe generator     |
-| `trellis-integration-harness` | End-to-end integration harness used by release verification   |
-| `trellis-jobs`                | Unpublished compatibility/test package for `trellis_rs::jobs` |
-| `trellis-local-bootstrap`     | Internal local Trellis/NATS bootstrap bundle generation       |
-| `trellis-service`             | Unpublished compatibility/test package for `trellis_rs::service` |
-| `trellis-service-jobs`        | Internal service-side jobs integration helpers                |
+| Crate                     | Purpose                                                          |
+| ------------------------- | ---------------------------------------------------------------- |
+| `trellis-auth`            | Unpublished compatibility/test package for auth helpers          |
+| `trellis-auth-adapters`   | Unpublished compatibility/test package for auth adapters         |
+| `trellis`                 | Curated public Rust facade for clients and services              |
+| `trellis-cli`             | Operator CLI crate for the `trellis` binary                      |
+| `trellis-client`          | Unpublished compatibility package for `trellis_rs::client`       |
+| `trellis-codegen-rust`    | Internal Rust SDK code generation                                |
+| `trellis-codegen-ts`      | Internal TypeScript SDK code generation                          |
+| `trellis-idl`             | Native Trellis IDL compiler                                      |
+| `trellis-core-bootstrap`  | Internal bootstrap helpers for infrastructure state              |
+| `trellis-local-bootstrap` | Internal local Trellis/NATS bootstrap bundle generation          |
+| `trellis-service`         | Unpublished compatibility/test package for `trellis_rs::service` |
+| `trellis-events-runtime`  | Internal built-in Events runtime                                 |
+| `trellis-jobs-runtime`    | Internal built-in Jobs admin runtime                             |
 
 See `../design/tooling/trellis-cli.md` and
 `../design/contracts/trellis-rust-contract-libraries.md`.
@@ -55,8 +54,8 @@ such as `.rpc().group().method(...)`, and service registration through
 Prepared event support includes `PreparedTrellisEvent`,
 `prepare_event::<Descriptor>(...)`, `publish_prepared`, and
 `dispatch_outbox_once`. Durable stores include `OutboxStore`, `InboxStore`,
-`SqliteOutboxStore`, `SqliteInboxStore`, `PostgresOutboxStore`,
-`PostgresInboxStore`, `NatsKvOutboxStore`, and `NatsKvInboxStore`.
+`SqliteOutboxStore`, `SqliteInboxStore`, `PostgresOutboxStore`, and
+`PostgresInboxStore`.
 
 Rust client event subscriptions are live/ephemeral by default. Service-level
 durable event processing is a contract/resource concern: declare
@@ -65,28 +64,16 @@ consumer binding and grants exact bound JetStream subjects. Rust service code
 should not create arbitrary durable event consumers for contract event
 processing.
 
-The bootstrap-safe `trellis-generate` helper lives under `rust/tools/generate/`
-and is used by repo-local generation and clean-checkout workflows.
+Run `cargo xtask install` from the repository root to install every locked API
+dependency and regenerate project-local artifacts in dependency order. If you
+are doing a normal Rust build from the repo, prefer `cargo xtask build`, which
+runs installation first. Rust client-library integration coverage lives in the
+public `trellis` facade crate and runs with:
 
-Run `cargo xtask prepare` from the repository root to execute that repo-local
-prepare workflow through Cargo. For JS-first repo workflows, use
-`cd js && deno task prepare`.
+```sh
+cargo test --manifest-path rust/Cargo.toml -p trellis-rs --features live-integration --test integration -- --nocapture
+```
 
-Before `cargo build` or `cargo install --path rust/crates/cli`, run
-`cargo xtask prepare` so the generated Rust SDK crates under
-`generated/packages/cargo/` exist. If you are doing a normal Rust build from the
-repo, prefer `cargo xtask build`, which runs `prepare` first and then invokes
-the default Rust workspace build. The default build excludes the live
-`trellis-integration-harness`; run `cargo xtask integration run` for that suite.
-
-## Known 0.9.x Rust Gaps
-
-The Trellis design docs describe the intended platform semantics. TypeScript
-runtime surfaces currently cover more of that model than Rust in a few areas:
-
-- Rust service operations use process-local `InMemoryOperationRuntime` storage;
-  restart-durable operation storage is planned for a later minor release.
-- Rust operation signal descriptors and validation are narrower than the shared
-  operation model.
-- Rust client operation snapshots expose the fields currently needed by the Rust
-  runtime but are narrower than the full shared snapshot model.
+That Rust suite is a peer of the TypeScript/Deno suite
+(`deno task -c ts/deno.json test:integration`). Both use native test discovery
+and real runtime processes; see [the setup commands](../integration/README.md).

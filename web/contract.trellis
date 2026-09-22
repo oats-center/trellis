@@ -1,0 +1,85 @@
+import { auth, events, health, jobs, state } from trellis;
+
+app Portal {
+  use auth { operation DeviceUserAuthorities.Resolve; }
+}
+
+app Console {
+  use auth {
+    rpc Capabilities.List;
+    rpc CapabilityGroups.Delete;
+    rpc CapabilityGroups.Get;
+    rpc CapabilityGroups.List;
+    rpc CapabilityGroups.Put;
+    rpc Connections.Kick;
+    rpc Connections.List;
+    rpc Deployments.Apply;
+    rpc Deployments.Get;
+    rpc Deployments.Create;
+    rpc Deployments.Disable;
+    rpc Deployments.Enable;
+    rpc Deployments.List;
+    rpc Deployments.Remove;
+    rpc DeviceUserAuthorities.List;
+    rpc DeviceUserAuthorities.Reviews.Decide;
+    rpc DeviceUserAuthorities.Reviews.List;
+    rpc DeviceUserAuthorities.Revoke;
+    rpc Devices.Disable;
+    rpc Devices.Enable;
+    rpc Devices.List;
+    rpc Devices.Provision;
+    rpc Devices.Remove;
+    rpc Grants.Get;
+    rpc Grants.List;
+    rpc Grants.Revoke;
+    rpc Grants.Set;
+    rpc Issuers.Revoke;
+    rpc Participants.Get;
+    rpc Participants.Install;
+    rpc Portals.Get;
+    rpc Portals.GrantOverrides.List;
+    rpc Portals.GrantOverrides.Put;
+    rpc Portals.GrantOverrides.Remove;
+    rpc Portals.List;
+    rpc Portals.LoginSettings.Get;
+    rpc Portals.LoginSettings.Update;
+    rpc Portals.Put;
+    rpc Portals.Remove;
+    rpc Portals.Routes.Put;
+    rpc Portals.Routes.Remove;
+    rpc ServiceInstances.Disable;
+    rpc ServiceInstances.Enable;
+    rpc ServiceInstances.List;
+    rpc ServiceInstances.Provision;
+    rpc ServiceInstances.Remove;
+    rpc Sessions.List;
+    rpc Sessions.Logout;
+    rpc Sessions.Me;
+    rpc Sessions.Revoke;
+    rpc UserIdentities.List;
+    rpc Users.Create;
+    rpc Users.Get;
+    rpc Users.IdentityLink.Create;
+    rpc Users.List;
+    rpc Users.Password.Change;
+    rpc Users.PasswordReset.Create;
+    rpc Users.Resolve;
+    rpc Users.Update;
+  }
+  use events {
+    rpc Consumers.Inspect;
+    rpc Consumers.Query;
+    rpc DeadLetters.Dismiss;
+    rpc DeadLetters.Inspect;
+    rpc DeadLetters.Query;
+    rpc DeadLetters.Replay;
+    rpc Diagnostics;
+    rpc Inspect;
+    rpc Metrics;
+    rpc Query;
+    feed Watch;
+  }
+  use health { rpc Inspect; rpc Metrics; rpc Query; rpc Summary; subscribe event StatusChanged; feed Watch; }
+  use jobs { rpc Cancel; rpc DismissDLQ; rpc GetKey; rpc Inspect; rpc ListDLQ; rpc ListServices; rpc Metrics; rpc Query; rpc ReplayDLQ; rpc Retry; rpc Summary; feed Watch; }
+  use state { rpc Delete; rpc Resources.Inspect; rpc Resources.Query; }
+}

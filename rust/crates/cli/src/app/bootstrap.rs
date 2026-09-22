@@ -1,10 +1,6 @@
-use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::app::{
-    connect_with_creds, ensure_bucket, ensure_stream, BucketEnsureStatus, AUTH_BOOTSTRAP_BUCKETS,
-};
 use crate::cli::*;
 use crate::output;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -13,82 +9,14 @@ use miette::{miette, IntoDiagnostic};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 use time::OffsetDateTime;
-use trellis_local_bootstrap::{
-    generate_local_trellis_bootstrap, ContainerRuntime, LocalBootstrapError,
-    LocalTrellisBootstrapOptions,
-};
+use trellis_bootstrap::{generate_trellis_bootstrap, BootstrapError, TrellisBootstrapOptions};
 use ulid::Ulid;
-
-pub(super) fn local(format: OutputFormat, command: LocalCommand) -> miette::Result<()> {
-    match command.command {
-        LocalSubcommand::Init(args) => local_init_command(format, &args),
-    }
-}
-
-pub(super) async fn infra(format: OutputFormat, command: InfraCommand) -> miette::Result<()> {
-    match command.command {
-        InfraSubcommand::Apply(args) => infra_apply_command(format, &args).await,
-        InfraSubcommand::Check(args) => infra_check_command(format, &args).await,
-    }
-}
 
 pub(super) async fn init(format: OutputFormat, command: InitCommand) -> miette::Result<()> {
     match command.command {
+        InitSubcommand::Config(args) => init_config_command(format, &args),
         InitSubcommand::Admin(args) => init_admin_command(format, &args).await,
     }
-}
-
-fn local_init_command(_format: OutputFormat, args: &LocalInitArgs) -> miette::Result<()> {
-    local_trellis_bootstrap_command(args)
-}
-
-async fn infra_apply_command(_format: OutputFormat, args: &InfraApplyArgs) -> miette::Result<()> {
-    nats_bootstrap_command(_format, args).await
-}
-
-async fn infra_check_command(format: OutputFormat, args: &InfraCheckArgs) -> miette::Result<()> {
-    let servers = bootstrap_servers(args.servers.as_deref());
-    let trellis_client = connect_with_creds(&servers, &args.trellis_creds).await?;
-    let trellis_js = async_nats::jetstream::new(trellis_client);
-    let mut checks = vec![InfraCheckResult {
-        kind: "stream".to_string(),
-        name: "trellis".to_string(),
-        status: if trellis_js.get_stream("trellis").await.is_ok() {
-            "ready".to_string()
-        } else {
-            "missing".to_string()
-        },
-    }];
-
-    let auth_client = connect_with_creds(&servers, &args.auth_creds).await?;
-    let auth_js = async_nats::jetstream::new(auth_client);
-    for bucket in AUTH_BOOTSTRAP_BUCKETS {
-        let status = match auth_js.get_key_value(bucket.name).await {
-            Ok(store) => match store.status().await {
-                Ok(status)
-                    if status.history() == 1
-                        && status.max_age().as_millis() as u64 == bucket.ttl_ms =>
-                {
-                    "ready"
-                }
-                Ok(_) => "drifted",
-                Err(_) => "unavailable",
-            },
-            Err(_) => "missing",
-        };
-        checks.push(InfraCheckResult {
-            kind: "bucket".to_string(),
-            name: bucket.name.to_string(),
-            status: status.to_string(),
-        });
-    }
-
-    print_infra_results(format, &checks)?;
-    miette::ensure!(
-        checks.iter().all(|check| check.status == "ready"),
-        "shared infrastructure is not ready"
-    );
-    Ok(())
 }
 
 async fn init_admin_command(_format: OutputFormat, args: &InitAdminArgs) -> miette::Result<()> {
@@ -98,145 +26,51 @@ async fn init_admin_command(_format: OutputFormat, args: &InitAdminArgs) -> miet
     bootstrap_admin_command(&args.db_path, provider, subject).await
 }
 
-fn local_trellis_bootstrap_command(args: &LocalInitArgs) -> miette::Result<()> {
-    let mut options = LocalTrellisBootstrapOptions::new(args.out.clone());
+fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::Result<()> {
+    let mut options = TrellisBootstrapOptions::new(args.out.clone());
     options.force = args.force;
-    options.container_runtime = container_runtime_arg(args.container_runtime);
-    options.nats_box_image = args.nats_box_image.clone();
-    options.operator_name = args.operator_name.clone();
-    options.system_account = args.system_account.clone();
-    options.auth_account = args.auth_account.clone();
-    options.trellis_account = args.trellis_account.clone();
-    options.server_name = args.server_name.clone();
-    options.trellis_port = args.trellis_port;
-    options.nats_server_url = args.nats_server_url.clone();
-    options.nats_websocket_url = args.nats_websocket_url.clone();
-    options.public_origin = args.public_origin.clone();
+    options.runtime.name = args.name.clone();
+    options.runtime.trellis_port = args.trellis_port;
+    options.runtime.nats_server_url = args.nats_server_url.clone();
+    options.runtime.nats_websocket_url = args.nats_websocket_url.clone();
+    options.runtime.public_origin = args.public_origin.clone();
+    options.nats.names.operator_name = args.operator_name.clone();
+    options.nats.names.system_account = args.system_account.clone();
+    options.nats.names.auth_account = args.auth_account.clone();
+    options.nats.names.trellis_account = args.trellis_account.clone();
+    options.nats.names.server_name = args.server_name.clone();
 
-    let manifest = generate_local_trellis_bootstrap(&options).map_err(local_bootstrap_report)?;
-    output::print_success("generated local Trellis bootstrap files");
-    output::print_info(&format!("out={}", args.out.display()));
-    output::print_info(&format!(
-        "manifest={}",
-        args.out.join("manifest.json").display()
-    ));
-    output::print_info(&format!(
-        "trellisConfig={}",
-        args.out.join(&manifest.paths.trellis_config).display()
-    ));
-    output::print_info(&format!(
-        "natsConfig={}",
-        args.out
-            .join("nats")
-            .join(&manifest.nats.paths.nats_config)
-            .display()
-    ));
-    output::print_info(&format!("publicOrigin={}", manifest.urls.public_origin));
-    output::print_info(&format!("natsServer={}", manifest.urls.nats_server));
-    output::print_info(&format!("natsWebsocket={}", manifest.urls.nats_websocket));
-    Ok(())
-}
-
-fn container_runtime_arg(runtime: LocalNatsContainerRuntimeArg) -> ContainerRuntime {
-    match runtime {
-        LocalNatsContainerRuntimeArg::Auto => ContainerRuntime::Auto,
-        LocalNatsContainerRuntimeArg::Podman => ContainerRuntime::Podman,
-        LocalNatsContainerRuntimeArg::Docker => ContainerRuntime::Docker,
-    }
-}
-
-fn local_bootstrap_report(error: LocalBootstrapError) -> miette::Report {
-    miette!(error.to_string())
-}
-
-async fn nats_bootstrap_command(format: OutputFormat, args: &InfraApplyArgs) -> miette::Result<()> {
-    let servers = bootstrap_servers(args.servers.as_deref());
-    let jetstream_replicas = match args.jetstream_replicas {
-        Some(0) => {
-            return Err(miette!("--jetstream-replicas must be a positive integer"));
-        }
-        Some(replicas) => replicas,
-        None => parse_jetstream_replicas_env()?.unwrap_or(1),
-    };
-
-    let stream_created = ensure_stream(
-        &servers,
-        &args.trellis_creds,
-        "trellis",
-        vec!["events.>".to_string()],
-        jetstream_replicas,
-    )
-    .await?;
-    let mut checks = vec![InfraCheckResult {
-        kind: "stream".to_string(),
-        name: "trellis".to_string(),
-        status: if stream_created { "created" } else { "exists" }.to_string(),
-    }];
-    for bucket in AUTH_BOOTSTRAP_BUCKETS {
-        let status = ensure_bucket(
-            &servers,
-            &args.auth_creds,
-            bucket.name,
-            1,
-            bucket.ttl_ms,
-            jetstream_replicas,
-        )
-        .await?;
-        checks.push(InfraCheckResult {
-            kind: "bucket".to_string(),
-            name: bucket.name.to_string(),
-            status: match status {
-                BucketEnsureStatus::Created => "created",
-                BucketEnsureStatus::Updated => "updated",
-                BucketEnsureStatus::Exists => "exists",
-            }
-            .to_string(),
-        });
-    }
-    print_infra_results(format, &checks)?;
-    Ok(())
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct InfraCheckResult {
-    kind: String,
-    name: String,
-    status: String,
-}
-
-fn print_infra_results(format: OutputFormat, checks: &[InfraCheckResult]) -> miette::Result<()> {
+    generate_trellis_bootstrap(&options).map_err(bootstrap_report)?;
+    let trellis_config = args.out.join("config.toml");
+    let nats_config = args.out.join("nats/nats.conf");
     if output::is_json(format) {
-        output::print_json(&json!({ "resources": checks }))?;
+        output::print_json(&json!({
+            "generated": true,
+            "out": args.out.display().to_string(),
+            "trellisConfig": trellis_config.display().to_string(),
+            "natsConfig": nats_config.display().to_string(),
+            "publicOrigin": options.runtime.public_origin,
+            "natsServer": options.runtime.nats_server_url,
+            "natsWebsocket": options.runtime.nats_websocket_url,
+        }))?;
         return Ok(());
     }
 
-    let rows = checks
-        .iter()
-        .map(|check| vec![check.kind.clone(), check.name.clone(), check.status.clone()])
-        .collect();
-    println!("{}", output::table(&["kind", "name", "status"], rows));
+    output::print_success("generated Trellis bootstrap files");
+    output::print_info(&format!("out={}", args.out.display()));
+    output::print_info(&format!("trellisConfig={}", trellis_config.display()));
+    output::print_info(&format!("natsConfig={}", nats_config.display()));
+    output::print_info(&format!("publicOrigin={}", options.runtime.public_origin));
+    output::print_info(&format!("natsServer={}", options.runtime.nats_server_url));
+    output::print_info(&format!(
+        "natsWebsocket={}",
+        options.runtime.nats_websocket_url
+    ));
     Ok(())
 }
 
-fn bootstrap_servers(explicit: Option<&str>) -> String {
-    explicit
-        .map(ToOwned::to_owned)
-        .or_else(|| env::var("TRELLIS_NATS_SERVERS").ok())
-        .or_else(|| env::var("NATS_SERVERS").ok())
-        .unwrap_or_else(|| "localhost".to_string())
-}
-
-fn parse_jetstream_replicas_env() -> miette::Result<Option<usize>> {
-    let Some(value) = env::var("TRELLIS_JETSTREAM_REPLICAS").ok() else {
-        return Ok(None);
-    };
-    match value.parse::<usize>() {
-        Ok(replicas) if replicas > 0 => Ok(Some(replicas)),
-        _ => Err(miette!(
-            "TRELLIS_JETSTREAM_REPLICAS must be a positive integer"
-        )),
-    }
+fn bootstrap_report(error: BootstrapError) -> miette::Report {
+    miette::Report::new(error)
 }
 
 async fn bootstrap_admin_command(
@@ -414,30 +248,7 @@ fn identity_id_for_provider_subject(provider: &str, subject: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{identity_id_for_provider_subject, seed_admin_user_in_connection};
-    use crate::app::{KvBucketSpec, AUTH_BOOTSTRAP_BUCKETS};
     use rusqlite::{params, Connection};
-
-    #[derive(Debug, Eq, PartialEq)]
-    struct RuntimeBucketSpec {
-        name: String,
-        ttl_ms: u64,
-    }
-
-    #[test]
-    fn bootstrap_buckets_match_runtime_globals() {
-        let runtime = parse_runtime_bucket_specs(include_str!(
-            "../../../../../js/services/trellis/bootstrap/globals.ts"
-        ));
-        let bootstrap = AUTH_BOOTSTRAP_BUCKETS
-            .iter()
-            .map(|bucket| RuntimeBucketSpec {
-                name: bucket.name.to_string(),
-                ttl_ms: bucket.ttl_ms,
-            })
-            .collect::<Vec<_>>();
-
-        assert_eq!(bootstrap, runtime);
-    }
 
     #[test]
     fn seed_admin_user_uses_account_first_storage_shape() {
@@ -523,78 +334,5 @@ mod tests {
             )
             .expect("select capability groups");
         assert_eq!(capability_groups, r#"["admin"]"#);
-    }
-
-    fn parse_runtime_bucket_specs(source: &str) -> Vec<RuntimeBucketSpec> {
-        let mut specs = Vec::new();
-        let mut current_name: Option<String> = None;
-
-        for line in source.lines() {
-            if current_name.is_none() {
-                current_name = extract_bucket_name(line);
-                continue;
-            }
-
-            if let Some(ttl_ms) = extract_ttl_ms(line) {
-                specs.push(RuntimeBucketSpec {
-                    name: current_name
-                        .take()
-                        .expect("bucket name should be present when ttl is parsed"),
-                    ttl_ms,
-                });
-            }
-        }
-
-        assert!(
-            current_name.is_none(),
-            "found bucket without ttl in globals.ts"
-        );
-        specs
-    }
-
-    fn extract_bucket_name(line: &str) -> Option<String> {
-        if !line.contains('"') || !line.contains("trellis_") {
-            return None;
-        }
-
-        let start = line.find('"')? + 1;
-        let rest = &line[start..];
-        let end = rest.find('"')?;
-        let name = &rest[..end];
-
-        name.starts_with("trellis_").then(|| name.to_string())
-    }
-
-    fn extract_ttl_ms(line: &str) -> Option<u64> {
-        let ttl = line
-            .split_once("ttl:")?
-            .1
-            .trim()
-            .trim_end_matches(',')
-            .trim_end_matches('}')
-            .trim();
-
-        Some(match ttl {
-            "0" => 0,
-            "config.ttlMs.sessions" => 24 * 60 * 60_000_u64,
-            "config.ttlMs.oauth" => 5 * 60_000_u64,
-            "Math.max(config.ttlMs.oauth, config.ttlMs.deviceFlow)" => 30 * 60_000_u64,
-            "config.ttlMs.deviceFlow" => 30 * 60_000_u64,
-            "config.ttlMs.pendingAuth" => 5 * 60_000_u64,
-            "config.ttlMs.connections" => 2 * 60 * 60_000_u64,
-            other => panic!("unexpected ttl expression in globals.ts: {other}"),
-        })
-    }
-
-    #[test]
-    fn bootstrap_bucket_names_are_unique() {
-        let mut names = AUTH_BOOTSTRAP_BUCKETS
-            .iter()
-            .map(|bucket: &KvBucketSpec| bucket.name)
-            .collect::<Vec<_>>();
-        let original_len = names.len();
-        names.sort_unstable();
-        names.dedup();
-        assert_eq!(names.len(), original_len);
     }
 }

@@ -2,8 +2,23 @@ Jobs are service-private background execution. They are useful for work that sho
 
 The Trellis jobs runtime provides a service-private job queue with retry, progress tracking, and dead-letter handling. Jobs use a stream-first architecture: JetStream is the source of truth, and the Jobs admin runtime keeps a SQL projection for queries.
 
-Job states: `pending` → `active` → `completed` / `failed` / `retry` / `cancelled` / `expired` / `dead`
+Job states include `pending`, `active`, `retry`, `completed`, `failed`,
+`cancelled`, `expired`, `skipped`, `stale`, `dead`, and `dismissed`.
+
+Keyed queues can also skip queued work by policy or mark active work stale when
+its key lease expires. Dead-lettered jobs can be replayed or dismissed by an
+operator.
+
+A keyed worker acquires the key slot before starting handler work. While capacity
+is unavailable, it maintains the broker delivery lease with progress
+acknowledgements; this wait does not consume retry attempts or trigger
+max-delivery exhaustion. Retryable failures after the handler starts do consume
+the job's retry policy.
 
 Services process their own jobs via their own JetStream consumer. A central Jobs admin runtime handles global queries, janitor cleanup, and the SQL projection for the built-in Jobs API.
+
+`Jobs.Query` returns cursor pages. `Jobs.Summary` applies the same filters to all
+matching projected jobs and returns page-independent totals, state statistics,
+and optional groups.
 
 Jobs are not visible to callers. Caller-observable async work should use an operation instead.

@@ -8,7 +8,7 @@
 **/build
 **/node_modules
 rust/target
-!js/build
-!js/build/vite-shims
-!js/build/vite-shims/**
-!js/apps/console/build
+!ts/build
+!ts/build/vite-shims
+!ts/build/vite-shims/**
+!ts/apps/console/build

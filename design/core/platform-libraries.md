@@ -29,19 +29,17 @@ connection walkthroughs, and exact public signatures belong in:
 
 ## Core Libraries
 
-| Library                            | Purpose                                                                                                                         | Use when                                               |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| `@qlever-llc/trellis`              | Canonical core Trellis runtime package: client/device helpers, Result helpers, transfer helpers, and everyday contract builders | Frontend apps, services, CLI tools                     |
-| `@qlever-llc/trellis/health`       | Health schemas, helper functions, and health-check result types                                                                 | Contracts, devices, services, lightweight clients      |
-| `@qlever-llc/trellis/service`      | Service-side runtime facade, extracted handler types, and service-only helpers                                                  | Backend services                                       |
-| `@qlever-llc/trellis/service/node` | Node service adapter                                                                                                            | External Node services                                 |
-| `@qlever-llc/trellis/service/deno` | Deno service adapter                                                                                                            | In-repo Deno services                                  |
-| `@qlever-llc/trellis/auth`         | Full auth helper and auth protocol surface, including browser bind helpers                                                      | Apps, services, docs, tests                            |
-| `@qlever-llc/trellis/auth/browser` | Browser-only auth and portal-flow helper facade                                                                                 | Browser apps, custom portals                           |
-| `@qlever-llc/trellis/contracts`    | Advanced contract-model, canonicalization, and low-level contract authoring surface                                             | SDK generation, docs, advanced tooling                 |
-| `@qlever-llc/trellis/sdk/*`        | First-party generated SDK modules for Trellis-owned contracts                                                                   | Apps and services that consume Trellis-owned contracts |
-| `@qlever-llc/trellis/telemetry`    | Specialized Trellis telemetry facade for tracing, propagation, and metrics                                                      | Runtime libraries and services                         |
-| `@qlever-llc/trellis-svelte`       | Svelte-specific Trellis browser integration with a Trellis-only public surface                                                  | Svelte applications                                    |
+| Library                            | Purpose                                                                                                                  | Use when                            |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------- |
+| `@qlever-llc/trellis`              | Canonical core Trellis runtime package: client/device helpers, Result helpers, transfers, and generated-contract support | Frontend apps, services, CLI tools  |
+| `@qlever-llc/trellis/service`      | Service-side runtime facade, extracted handler types, and service-only helpers                                           | Backend services                    |
+| `@qlever-llc/trellis/service`      | Shared Node-compatible native service runtime                                                                            | Node and Deno services              |
+| `@qlever-llc/trellis/auth`         | Full auth helper and auth protocol surface, including browser bind helpers                                               | Apps, services, docs, tests         |
+| `@qlever-llc/trellis/auth/browser` | Browser-only auth and portal-flow helper facade                                                                          | Browser apps, custom portals        |
+| `@qlever-llc/trellis/participant`  | Participant metadata and canonical runtime types                                                                         | Generated code and tooling          |
+| Configured local generated package | One ordinary ESM package with `apis` and `participants` namespaces                                                       | Apps and services that consume APIs |
+| `@qlever-llc/trellis/telemetry`    | Specialized Trellis telemetry facade for tracing, propagation, and metrics                                               | Runtime libraries and services      |
+| `@qlever-llc/trellis-svelte`       | Svelte-specific Trellis browser integration with a Trellis-only public surface                                           | Svelte applications                 |
 
 ## Library Rules
 
@@ -50,16 +48,16 @@ connection walkthroughs, and exact public signatures belong in:
 - service APIs are defined with the service that owns them and are consumed
   through contract packages
 - server helpers live on explicit Trellis subpaths
-- first-party SDKs for Trellis-owned contracts live under explicit
-  `@qlever-llc/trellis/sdk/*` subpaths
-- contract modules that only need health schemas should prefer root health
-  re-exports or `@qlever-llc/trellis/health`
+- APIs and participant surfaces live in the configured local generated package,
+  with the source package version and the CLI-matched published runtime
+  dependency
+- health contract types come from the generated Health API module
 - framework adapters such as `@qlever-llc/trellis-svelte` remain separate
   packages
 - platform packages should expose stable ergonomic surfaces and hide
   transport/bootstrap details
-- browser-safe public runtime APIs and the kind-specific contract builders
-  belong on `@qlever-llc/trellis`
+- browser-safe public runtime APIs and generated descriptor support belong on
+  `@qlever-llc/trellis`
 - the root package should expose Trellis-owned lifecycle handles such as
   `TrellisConnection`, not raw transport handles such as `NatsConnection`
 - browser-only login and portal-flow helpers belong on
@@ -69,6 +67,10 @@ connection walkthroughs, and exact public signatures belong in:
   `@qlever-llc/trellis/service*`
 - `@qlever-llc/trellis/service` is a service-author surface and must not
   re-export low-level runtime/server internals
+- generic SQL outbox helpers, including `service.createSqlOutbox(...)` and
+  Trellis-owned helper-table migration artifacts, belong on
+  `@qlever-llc/trellis/service*`; applications adapt their database and
+  transaction handles to the generic `SqlExecutor` interface
 - public TypeScript jobs helpers belong on `@qlever-llc/trellis` and
   `@qlever-llc/trellis/service*`, not on a standalone jobs package
 
@@ -115,24 +117,28 @@ Rules:
   raw worker-runtime helpers or stream bindings
 - transfer-aware operation contexts belong on the server runtime surface for
   transfer-capable operations
+- SQL outbox creation belongs on the service runtime surface: TypeScript
+  services create it with `service.createSqlOutbox(...)`, and the returned
+  object is a plain dependency that handlers close over at registration without
+  importing low-level repository or dispatcher internals
 - extracted service RPC handler aliases that need service-only helpers belong on
   `@qlever-llc/trellis/service*`, not the browser-safe root package, so handler
   types expose the canonical object argument shape and narrow injected `trellis`
   facade for `kv`, `store`, and transfer-aware operation contexts
 
-## `@qlever-llc/trellis/sdk/*`
+## Generated Packages
 
-Provides the first-party generated SDKs for Trellis-owned contracts such as
-auth, core, activity, jobs, health, and state.
+Each selected language produces one ordinary local package containing owned
+APIs, exact locked dependencies, and participants. TypeScript exposes `apis` and
+`participants` from its executable ESM entrypoint, with declarations alongside
+the JavaScript. Rust exposes the same namespaces in one path-dependency crate.
 
-Generated SDK package exports are root-only. The root module re-exports the
-contract module as `sdk`, the standalone `use(...)` helper, typed DTOs, schemas,
-and public client/API types. Contract authors should import `sdk` with a local
-alias that describes the dependency and declare all required `uses` explicitly
-with `sdk.use(...)`.
-
-- public apps and peer services should not resolve those service-owned handles
-  directly
+Author API and participant declarations in native IDL, including selected `use`
+actions. Do not build participant metadata with TypeScript arrays. There are no
+independent API or participant packages. Registry APIs come from the validated
+global cache; generated imports never refer to project installation state. See
+[trellis-idl.md](../contracts/trellis-idl.md) for configuration and offline
+behavior.
 
 ## `@qlever-llc/trellis-svelte`
 
@@ -144,6 +150,8 @@ Rules:
   expose app-scoped typed helpers to components
 - the adapter derives the connected client type from the app contract and
   delegates runtime bootstrap/reconnect to the core browser client
+- browser apps import their generated participant from the local package and use
+  it as the authority for the connected client type; do not reconstruct metadata
 - `trellis-svelte` should keep the typed Trellis client and reactive connection
   adapter scoped to app-owned context rather than exposing a synthetic runtime
   bag
@@ -204,23 +212,18 @@ standalone TypeScript package.
 
 - TypeScript service-local jobs live on connected service runtimes as
   `service.jobs`
-- TypeScript admin jobs access uses `Jobs.*` RPCs declared through
-  `@qlever-llc/trellis/sdk/jobs`
+- TypeScript admin jobs access uses `Jobs.*` RPCs selected in native IDL and
+  exposed through generated participant callers
 - subsystem semantics and API details live in:
   - [../jobs/trellis-jobs.md](./../jobs/trellis-jobs.md)
   - `/api` in the guides site for exact TypeScript signatures and Rustdoc links
 
-## `@qlever-llc/trellis/contracts`
+## `@qlever-llc/trellis/participant`
 
-Provides the advanced contract-model, manifest validation, canonicalization, SDK
-generation, and documentation export surface behind the root package's curated
-contract re-exports. See:
+Provides participant metadata and canonical runtime types used by generated code
+and tooling. It is not a contract-authoring API. Native IDL is the source of
+APIs and participants; consumers import the generated package. See:
 
-- normal contract source files may import the kind-specific helper they need
-  from `@qlever-llc/trellis`
-- advanced tooling, SDK generation, and low-level contract-model consumers
-  should use `@qlever-llc/trellis/contracts`
-
-- [../contracts/trellis-contracts-catalog.md](./../contracts/trellis-contracts-catalog.md)
-- [../contracts/trellis-typescript-contract-authoring.md](./../contracts/trellis-typescript-contract-authoring.md)
+- [../contracts/trellis-api-participants.md](./../contracts/trellis-api-participants.md)
+- [../contracts/trellis-idl.md](./../contracts/trellis-idl.md)
 - [../contracts/trellis-rust-contract-libraries.md](./../contracts/trellis-rust-contract-libraries.md)

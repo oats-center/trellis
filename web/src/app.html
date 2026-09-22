@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link
+      rel="icon"
+      href="%sveltekit.assets%/assets/web/trellis-logo.svg"
+    />
+    <script>
+      (() => {
+        const url = new URL(window.location.href);
+        const route = url.searchParams.get("__trellis_route");
+        if (route === null) return;
+
+        url.searchParams.delete("__trellis_route");
+        const basePath = url.pathname.endsWith("/")
+          ? url.pathname
+          : `${url.pathname}/`;
+        const restored = new URL(route || ".", `${url.origin}${basePath}`);
+
+        history.replaceState(
+          history.state,
+          "",
+          `${restored.pathname}${restored.search}${restored.hash}`,
+        );
+      })();
+    </script>
+    <script>
+      (() => {
+        try {
+          const theme = localStorage.getItem("trellis.console.theme");
+          document.documentElement.setAttribute(
+            "data-theme",
+            theme === "trellis-dark" ? "trellis-dark" : "trellis",
+          );
+        } catch (_) {
+          document.documentElement.setAttribute("data-theme", "trellis");
+        }
+      })();
+    </script>
+    <script src="%sveltekit.assets%/assets/web/runtime-config.js"></script>
+    %sveltekit.head%
+  </head>
+  <body data-sveltekit-preload-data="hover">
+    <div style="display: contents">%sveltekit.body%</div>
+  </body>
+</html>

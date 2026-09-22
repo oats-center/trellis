@@ -8,10 +8,10 @@ scopes, and runtime wiring from those contract sources.
 ## Repository layout
 
 ```
-conformance/    Shared JS/Rust test vectors (canonical JSON, auth proofs)
+conformance/    Shared TypeScript/Rust test vectors (canonical JSON, auth proofs)
 demos/          Shared demo app plus TypeScript and Rust service/device examples
 docs/           Trellis documentation site (SvelteKit static site, published to GitHub Pages)
-js/             TypeScript packages, services, and apps (Deno workspace)
+ts/             TypeScript packages, services, and apps (Deno workspace)
 rust/           Rust crates (public facades plus internal CLI, codegen, and runtime support)
 generated/      Derived manifests and SDKs when generated locally (usually absent from a clean checkout)
 deploy/         Deployment assets, including quadlets and NATS templates
@@ -24,18 +24,17 @@ checklists.
 
 ## Key concepts
 
-- **Contracts** - service-owned contract definitions that emit canonical
-  `trellis.contract.v1` JSON for release and exchange boundaries. See
-  `design/contracts/trellis-contracts-catalog.md`.
+- **Contracts** - native `.trellis` source packages with explicit source files
+  and locked dependencies. Published bundles contain source and frozen
+  resolution metadata, not API JSON artifacts.
 - **Auth** - two-layer model: NATS transport auth plus Trellis session-key
   proofs with contract-gated approval. See `design/auth/trellis-auth.md`.
 - **Jobs** - JetStream-backed job lifecycle with retry, progress tracking, and
   dead-letter handling. See `design/jobs/trellis-jobs.md`.
 - **Operations** - caller-visible asynchronous workflows with durable state and
   watch semantics. See `design/operations/trellis-operations.md`.
-- **CLI** - public `trellis` operator/runtime CLI plus a bootstrap-safe
-  `trellis-generate` companion used by repo-local prepare and generation
-  workflows. See `design/tooling/trellis-cli.md`.
+- **CLI** - public `trellis` operator/runtime and package-manager CLI. See
+  `design/tooling/trellis-cli.md`.
 - **Patterns** - top-level architecture boundaries and communication patterns.
   See `design/core/trellis-patterns.md`.
 
@@ -61,31 +60,28 @@ Current TypeScript runtime entrypoints:
 - `TrellisService.connect(...)` for services
 - `TrellisDevice.connect(...)` for activated devices
 
-For repository development workflows, prefer the repo-local prepare entrypoints:
+Install locked API dependencies and regenerate project-local artifacts with:
 
-- `cd js && deno task prepare`
-- `cd js && deno task prepare:watch`
-- `cargo xtask prepare`
-- `cargo xtask prepare-watch`
+- `cargo xtask install`
+- `cd ts && deno task install`
 - `cargo xtask build`
 - `cargo xtask release check-versions`
 - `cargo xtask release prepare --tag v0.9.0-rc.1`
 
-Normal operators only need `trellis`; repo generation flows stay behind those
-local tasks and wrappers.
+Each contract project owns `trellis.toml`, commits `trellis.lock`, and consumes
+its private generated SDK through the configured TypeScript or Rust output.
+`cargo xtask build` installs the fixed repository project DAG before building
+the Rust workspace. Live client-library integration coverage is language-owned.
+Run these peer suites when you need that coverage:
 
-If you build or install Rust binaries from this repo directly, run
-`cargo xtask prepare` first so the generated Rust SDK crates under
-`generated/packages/cargo/` exist. `cargo xtask build` is the convenient
-Rust-side wrapper for `prepare` followed by the default Rust workspace build.
-The default build excludes the live integration harness; run
-`cargo xtask integration run` when you need that coverage. Use
-`cargo xtask prepare-watch` during active contract development. Watch mode
-watches broadly, ignores file changes that are not TypeScript, JavaScript, or
-Rust source unless they are recognized project/discovery inputs, prepares only
-affected contract entries when safe, falls back to full prepare for project
-manifests and discovery-shape changes, and asks you to restart the watcher after
-generator/tooling changes.
+```sh
+deno task -c ts/deno.json test:integration
+cargo test --manifest-path rust/Cargo.toml -p trellis-rs --features live-integration --test integration -- --nocapture
+```
+
+Both suites use ordinary Rust and Deno discovery. Build the server and CLI once
+and pass their paths as documented in
+[integration/README.md](integration/README.md).
 
 ## Design documents
 

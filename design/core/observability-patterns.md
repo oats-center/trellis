@@ -1,6 +1,6 @@
 ---
 title: Observability Patterns
-description: Health, stats, documentation, telemetry, and request-correlation patterns for Trellis services.
+description: Health, stats, documentation, tracing, and request-correlation patterns for Trellis services.
 order: 60
 ---
 
@@ -15,41 +15,38 @@ order: 60
 
 ## Scope
 
-This document defines Trellis observability, documentation, telemetry, and
-request-correlation patterns.
+This document defines Trellis runtime observability and contributor conventions
+for Trellis-owned code. Documentation style and general logging/tracing choices
+are not requirements for downstream applications. Trellis logger adapters and
+wire correlation fields still follow their public interfaces when used.
+
+Public API documentation explains behavior that signatures cannot: ownership,
+validation and commit points, cancellation and drop semantics, backpressure, and
+failure cleanup. Do not add lint-satisfying prose that only repeats an item or
+field name. An obvious field may use a short semantic phrase; a public operation
+must document the guarantees callers need to use it safely.
 
 ## Service Observability
 
-Every service exposes:
+The service runtime publishes baseline heartbeat samples through the private
+Trellis health transport. Its logging and telemetry are configurable;
+application logging and tracing outside that runtime remain application-owned. A
+service can declare its own health or statistics RPCs if useful, but those
+domain surfaces are not automatically added to its API or required by Trellis.
 
-- `<Service>.Health` RPC
-- baseline `Health.Heartbeat` event publishing through the shared Trellis health
-  contract
-- optional `<Service>.Stats` RPC
-- OpenTelemetry tracing and metrics
-- structured logging
+Activated devices publish through the same private health transport. Heartbeat
+publishing is a runtime protocol grant, not a contract dependency or event
+surface, so contract authors do not declare it.
 
-Activated devices publish `Health.Heartbeat` through the same shared contract.
-Connected service and device participants receive a Trellis-defined baseline
-health use for `trellis.health@v1`; it is modeled as the grouped
-`uses.required.health` dependency in emitted manifests, not as a flat health
-alias, and contract authors do not manually repeat it.
-
-Health example:
+Example payload for an application-declared health RPC:
 
 ```ts
 const service = await TrellisService.connect({
   trellisUrl: config.trellisUrl,
-  contract: graph,
+  participant: participants.graph.participant,
+  seed: config.seed,
   name: "graph",
-  sessionKeySeed: config.sessionKeySeed,
-  server: {
-    log,
-    healthChecks: {
-      db: () => db.ping(),
-    },
-  },
-});
+}).orThrow();
 
 service.health.setInfo({
   version: build.version,
@@ -64,20 +61,68 @@ service.health.add("db", async () => ({
 
 Heartbeat behavior:
 
-- if the connected service contract uses the shared `Health.Heartbeat` event,
-  `TrellisService.connect(...)` and Rust `TrellisClient::connect_service(...)`
-  publish baseline heartbeats automatically
-- if the connected device contract uses the shared `Health.Heartbeat` event,
-  `TrellisDevice.connect(...)` and Rust `TrellisClient::connect_device(...)`
-  publish baseline heartbeats automatically
+- `TrellisService.connect(...)`, Rust `TrellisClient::connect_service(...)`,
+  `TrellisDevice.connect(...)`, and Rust `TrellisClient::connect_device(...)`
+  publish baseline samples automatically after authenticated bootstrap
 - baseline heartbeats include runtime metadata, instance identity, publish
   interval, and a built-in NATS connectivity check
 - `service.health.setInfo(...)` and `service.health.add(...)` extend service
   heartbeat payloads at publish time using callback-based state snapshots; the
   same helper surface is also available on device connections
-- the Trellis console can subscribe to these heartbeats directly and show both a
-  live feed and an in-browser current-participant view without a separate
-  aggregator
+- heartbeat samples are not Trellis events and are not exposed as a public live
+  feed; Console reads the Rust-owned health projection through `Health.Query`,
+  `Health.Inspect`, and `Health.Metrics`, then uses `Health.Watch` as a
+  post-commit invalidation feed
+
+### Runtime Health And Events Views
+
+The Rust runtime has first-class `health` and `events` subsystems. In all-in-one
+mode both run with the platform and jobs subsystems. In split mode, operators
+run `trellis-server health` for health projection and may omit
+`trellis-server events` when projected event capture is not wanted.
+
+Health subsystem rules:
+
+- publishers send samples to
+  `health.v1.heartbeat.<kind>.<contract>.<digest>.<deployment>.<instance>.<session>`;
+  identity components other than kind and session are unpadded base64url UTF-8
+  tokens
+- Auth grants each authenticated service or device exactly one matching publish
+  subject. The projector treats this subject identity as authoritative and
+  rejects payload identity mismatches.
+- `TRELLIS_HEALTH` captures `health.v1.heartbeat.>` with file storage, limits
+  retention, a default 24-hour maximum age, a default 1 GiB maximum size, and no
+  inactive threshold on projector durables
+- JetStream ingress time is canonical for freshness. Publisher sample time is
+  retained only as diagnostic data. A participant becomes offline at
+  `observedAt + 2 * publishIntervalMs`.
+- the health store retains only latest instance state, status intervals,
+  five-minute metric buckets, bounded rejection diagnostics, and a transition
+  outbox; it does not retain one SQL row per raw sample
+- health projection is independent from Events storage; it must not depend on an
+  Events store to answer latest or freshness queries
+- health stores bounded history according to runtime config, with a default of
+  30 days when not overridden
+- health projector and retention loops are singleton runtime loops coordinated
+  with NATS KV leases
+- every committed projection change increments a monotonic revision and
+  publishes cross-process invalidation; RPC responses include that revision and
+  projection completeness diagnostics
+- only meaningful effective-status transitions publish the durable
+  `Health.StatusChanged` event on the normal event stream
+
+Events subsystem rules:
+
+- Events captures Trellis-owned event subjects under `events.v1.>` and stores
+  queryable metadata plus raw payloads for those events
+- jobs lifecycle and worker-presence subjects are jobs subsystem stream traffic,
+  not initial Events input
+- Events stores full NATS-valid payloads unless a later explicit storage or
+  retention policy defines a different bound
+- Events stores bounded history according to runtime config, with a default of 7
+  days when not overridden
+- Events projector and retention loops are singleton runtime loops coordinated
+  with NATS KV leases
 
 Stats example:
 
@@ -104,19 +149,10 @@ Required fields:
 
 Skip JSDoc for private helpers when the code is self-evident and for tests.
 
-## Telemetry
-
-`@qlever-llc/trellis/telemetry` is the public TypeScript telemetry entrypoint.
-The former public `@qlever-llc/trellis/tracing` subpath is not part of the
-current public surface.
+## Tracing
 
 `TrellisService.connect()` initializes OpenTelemetry automatically using the
-service name unless automatic telemetry is disabled by the caller. Runtime
-helpers must keep browser-safe imports separate from Node/Deno telemetry SDK
-setup; package entrypoints may use `@opentelemetry/api`, but exporter and SDK
-packages should be loaded only from server/runtime initialization paths.
-
-Tracing rules:
+service name.
 
 Span naming:
 
@@ -140,24 +176,6 @@ Library support rule:
 - if a runtime has not installed an OpenTelemetry tracer provider, RPC error
   responses should still attach `traceId` from a valid inbound `traceparent`
   header before the error leaves the server span boundary
-
-Error metrics:
-
-- Trellis runtime libraries record caller-visible and runtime-observed failures
-  with the `trellis.errors` OpenTelemetry counter
-- metrics are no-op unless an OpenTelemetry meter provider/exporter is installed
-  or configured by telemetry runtime initialization
-- metric attributes must be low cardinality and must not include user IDs,
-  session keys, raw subjects, payload data, trace IDs, request IDs, or raw error
-  messages
-- allowed Trellis error attributes are stable labels such as `trellis.surface`,
-  `trellis.direction`, `trellis.operation`, `trellis.phase`,
-  `trellis.error.type`, `trellis.remote_error.type`, and bounded
-  `trellis.auth.reason`
-- `trellis.operation` should come from contract metadata or runtime operation
-  kind, not from NATS subjects, URLs, payloads, or remote peer-provided values
-- expected public failures remain `Result`-modeled behavior; metrics are
-  observability side effects and must not change error semantics
 
 ## Request Correlation
 

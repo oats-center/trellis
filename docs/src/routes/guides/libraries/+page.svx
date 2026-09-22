@@ -27,6 +27,8 @@ allowed to use.
   devices, CLIs, generated SDKs, Result-style errors, and Svelte integration.
 - [Rust libraries](/guides/libraries/rust) cover generated Cargo SDKs,
   participant facades, service provider APIs, async calls, streams, and Rustdoc.
+- [Testing Trellis services](/guides/testing-trellis-services) covers
+  out-of-tree TypeScript integration tests with `@qlever-llc/trellis-test`.
 
 ## Learn by building
 

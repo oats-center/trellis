@@ -1,0 +1,36 @@
+{
+  "extends": "../../deno.json",
+  "name": "@qlever-llc/trellis-test",
+  "version": "0.12.0",
+  "license": "Apache-2.0",
+  "exports": "./index.ts",
+  "imports": {
+    "@qlever-llc/trellis": "jsr:@qlever-llc/trellis@^0.12.0",
+    "@qlever-llc/trellis/auth": "jsr:@qlever-llc/trellis@^0.12.0/auth",
+    "@qlever-llc/trellis/generated": "jsr:@qlever-llc/trellis@^0.12.0/generated",
+    "@qlever-llc/trellis/auth/browser": "jsr:@qlever-llc/trellis@^0.12.0/auth/browser",
+    "@qlever-llc/trellis/telemetry": "jsr:@qlever-llc/trellis@^0.12.0/telemetry",
+    "@qlever-llc/trellis/service": "jsr:@qlever-llc/trellis@^0.12.0/service",
+    "@nats-io/jetstream": "npm:@nats-io/jetstream@^3.3.1",
+    "@nats-io/kv": "npm:@nats-io/kv@^3.3.1",
+    "@nats-io/nats-core": "npm:@nats-io/nats-core@^3.3.1",
+    "@nats-io/transport-node": "npm:@nats-io/transport-node@^3.3.1",
+    "@libsql/client": "npm:@libsql/client@^0.15.15",
+    "@std/assert": "jsr:@std/assert@^1.0.19",
+    "@std/path": "jsr:@std/path@^1.1.4",
+    "fflate": "npm:fflate@^0.8.2",
+    "ulid": "npm:ulid@^3.0.2"
+  },
+  "publish": {
+    "exclude": [
+      "!trellis/**",
+      "tests/**",
+      "**/*_test.ts",
+      "**/*.test.ts"
+    ]
+  },
+  "tasks": { "test": "deno test -A" },
+  "compilerOptions": {
+    "verbatimModuleSyntax": true
+  }
+}

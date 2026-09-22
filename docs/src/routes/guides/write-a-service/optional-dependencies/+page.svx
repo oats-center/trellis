@@ -1,44 +1,10 @@
-<script lang="ts">
-  import LanguageTabs from "$lib/components/LanguageTabs.svelte";
-</script>
+# Select optional functionality
 
-The required uses block is for dependencies your service cannot run without. The auth event subscription above belongs there if your service needs those events to do its job.
+Optionality belongs on implicated capabilities and resource/companion
+declarations, not on a whole API use or individual action. `use Api;` selects
+nothing; a nonempty body selects exact interactions.
 
-Sometimes an integration is useful but not required. Put those in `uses.optional`:
-
-<LanguageTabs>
-{#snippet ts()}
-
-```ts
-import { sdk as core } from "@qlever-llc/trellis/sdk/core";
-
-uses: {
-  required: {
-    auth: auth.use({
-      events: { subscribe: ["Auth.Connections.Opened"] },
-    }),
-  },
-  optional: {
-    coreStatus: core.use({
-      rpc: { call: ["Trellis.Surface.Status"] },
-    }),
-  },
-},
-```
-
-Optional uses still participate in the contract digest, so Trellis can tell exactly what the service was built to use. If the target contract or surface is not active, Trellis skips the optional binding and grants no authority for it.
-
-{/snippet}
-{#snippet rust()}
-
-```rust
-.optional_use_ref(
-    "warehouse",
-    use_contract("warehouse@v1").with_rpc_call(["Warehouse.Ping"]),
-)
-```
-
-Use optional dependencies only when the service can run correctly without the remote contract. If a missing dependency means the service cannot fulfill its core contract, keep it required.
-
-{/snippet}
-</LanguageTabs>
+Required implicated capabilities must be approved and eligible for readiness.
+Declining an optional capability leaves its actions unavailable without blocking
+the participant. Optional resource handles are absent when unapproved or
+unusable. Generated method presence is not evidence of current authority.

@@ -1,205 +1,54 @@
-This guide adds background job processing to the Rust `orders-service` from [Tutorial: Write a service](/guides/write-a-service). By the end the service will enqueue fulfillment jobs when an order is created and process them with retry, progress tracking, and event emission on completion.
+# Use jobs from Rust
 
-Before starting, complete the Rust path in [Tutorial: Write a service](/guides/write-a-service).
+Jobs are service-private durable execution. Declare a `job` resource with
+payload, optional result/update/deadline/retry, and optional keyed-concurrency
+policy. Progress, structured logs, and dead-job lifecycle are always available;
+there are no feature switches or authored ack-wait/max-delivery knobs.
 
-## What are jobs?
+Native IDL uses the same job declaration for Rust generation:
 
-Jobs are **service-private** background work units. For caller-visible async workflows, see [Operations: Rust](/guides/using-operations-rust).
-
-## 1. Add top-level `jobs` to the contract manifest
-
-Update `contracts/orders_service.manifest.json` to add a top-level `jobs` map with the three fulfillment queue types:
-
-```json
-"resources": {
-  "kv": {
-    "orders": { "purpose": "Store order records", "history": 1, "ttlMs": 0 }
-  }
-},
-"jobs": {
-  "reserve-inventory": {
-    "payload": { "schema": "ReserveInventoryPayload" },
-    "result": { "schema": "ReserveInventoryResult" },
-    "maxDeliver": 5,
-    "backoffMs": [5000, 30000, 120000]
-  },
-  "charge-payment": {
-    "payload": { "schema": "ChargePaymentPayload" },
-    "result": { "schema": "ChargePaymentResult" },
-    "maxDeliver": 5,
-    "ackWaitMs": 600000
-  },
-  "notify-warehouse": {
-    "payload": { "schema": "NotifyWarehousePayload" },
-    "result": { "schema": "NotifyWarehouseResult" },
-    "maxDeliver": 3
-  }
+```trellis
+job reconcile {
+  title "Reconcile order";
+  description "Repairs one order projection.";
+  payload ReconcileInput;
+  result ReconcileOutput;
+  retry { attempts 3; backoff [5s, 30s]; }
+  key_concurrency { path orderId; policy queue; }
 }
 ```
 
-Regenerate the participant facade after updating the manifest.
+Use generated handles to register workers and submit work. The default policy is
+five total deliveries with delays of 5s, 30s, 2m, and 10m. Explicit retry uses
+attempts plus exactly attempts-minus-one positive delays.
 
-## 2. Create jobs from the `Orders.Create` handler
-
-The participant facade exposes `service.jobs()` returning a `JobsFacade` with one typed `JobQueue` per declared queue. The facade converts kebab-case manifest queue names to snake_case Rust method names: `"reserve-inventory"` → `reserve_inventory()`, `"charge-payment"` → `charge_payment()`, etc.
-
-Update the `Orders.Create` handler:
-
-```rust
-service
-    .handle()
-    .rpc()
-    .orders()
-    .create(|_ctx, req| async move {
-        let order_id = ulid::Ulid::new().to_string();
-        // save order...
-
-        service
-            .jobs()
-            .reserve_inventory()
-            .create(ReserveInventoryPayload {
-                order_id: order_id.clone(),
-                items: req.items,
-            })
-            .await?;
-
-        Ok(CreateOrderResponse { order_id, status: "pending".into() })
-    });
-```
-
-## 3. Register job workers
-
-Use `handle(handler)` on each `JobQueue` to register a worker. Call all registrations before `start_workers()`:
+Generated provider methods accept an `ActiveJob` handler whose future returns
+`Result<JobResult, JobProcessError<E>>`:
 
 ```rust
-service
-    .jobs()
-    .reserve_inventory()
-    .handle(|job: ActiveJob<ReserveInventoryPayload, ReserveInventoryResult>| async move {
-        tracing::info!(
-            request_id = %job.context().request_id,
-            trace_id = %job.context().trace_id,
-            "reserve inventory job started",
-        );
-        job.progress(JobProgress {
-            step: Some("reserving".into()),
-            message: Some("Checking inventory".into()),
-            ..Default::default()
-        })
-        .await?;
+use trellis_rs::jobs::JobProcessError;
 
-        if job.is_cancelled() {
-            return Err(Err(JobsError::Message { message: "cancelled".to_string() }));
-        }
-
-        // reserve inventory...
-
-        service
-            .jobs()
-            .charge_payment()
-            .create(ChargePaymentPayload {
-                order_id: job.payload().order_id.clone(),
-                customer_id: "cust_placeholder".into(),
-                amount_cents: 1000,
-            })
-            .await?;
-
-        Ok(ReserveInventoryResult { reserved: true })
+provider
+    .register_reconcile(|job| async move {
+        reconcile(job.payload())
+            .await
+            .map_err(JobProcessError::retryable)
     })
     .await?;
 
-service
-    .jobs()
-    .charge_payment()
-    .handle(|job: ActiveJob<ChargePaymentPayload, ChargePaymentResult>| async move {
-        job.progress(JobProgress {
-            step: Some("charging".into()),
-            message: Some("Processing payment".into()),
-            ..Default::default()
-        })
-        .await?;
-
-        if job.is_cancelled() {
-            return Err(Err(JobsError::Message { message: "cancelled".to_string() }));
-        }
-
-        let charge_id = format!("ch_{}", ulid::Ulid::new());
-
-        service
-            .jobs()
-            .notify_warehouse()
-            .create(NotifyWarehousePayload {
-                order_id: job.payload().order_id.clone(),
-                items: vec![],
-            })
-            .await?;
-
-        Ok(ChargePaymentResult { charge_id })
-    })
-    .await?;
-
-service
-    .jobs()
-    .notify_warehouse()
-    .handle(|job: ActiveJob<NotifyWarehousePayload, NotifyWarehouseResult>| async move {
-        job.progress(JobProgress {
-            step: Some("notifying".into()),
-            message: Some("Notifying warehouse".into()),
-            ..Default::default()
-        })
-        .await?;
-
-        if job.is_cancelled() {
-            return Err(Err(JobsError::Message { message: "cancelled".to_string() }));
-        }
-
-        service
-            .events()
-            .publish::<orders_participant::events::OrdersShipped>(OrderShippedEvent {
-                order_id: job.payload().order_id.clone(),
-                customer_id: "cust_placeholder".into(),
-                shipped_at: chrono::Utc::now().to_rfc3339(),
-            })
-            .await?;
-
-        Ok(NotifyWarehouseResult { notified: true })
-    })
-    .await?;
+let job = provider.submit_reconcile(input).await?;
 ```
 
-Every active job exposes immutable `job.context()` with `request_id`, `trace_id`,
-`traceparent`, and optional `tracestate`. The runtime copies this context to all
-job lifecycle events and NATS headers, so include `request_id` or `trace_id` in
-service logs when you need to follow work across RPCs, events, operations, and
-jobs.
+Use `JobProcessError::failed(error)` for a non-retryable handler failure.
 
-## 4. Start workers
+Delivery progress acknowledgement is automatic for keyed and unkeyed work.
+Applications do not heartbeat merely to retain delivery. Keyed lease renewal is
+separate and fences/cancels work after ownership loss.
 
-Call `start_workers()` **after** all `handle()` registrations:
+For keyed work, the handler starts only after the active key slot is acquired.
+Capacity waits maintain broker delivery progress without consuming an attempt or
+causing max-delivery exhaustion. `JobProcessError::retryable(error)` from handler
+execution consumes the configured attempts and backoff schedule.
 
-```rust
-let worker_host = service.jobs().start_workers().await?;
-```
-
-Hold the `worker_host` handle for the lifetime of the service. Stop it during shutdown:
-
-```rust
-worker_host.stop().await?;
-```
-
-## 5. Long-running jobs
-
-Call `job.heartbeat().await` periodically to extend the ack deadline for jobs that may run longer than `ackWaitMs`:
-
-```rust
-job.heartbeat().await?;
-```
-
-## 6. Retry and failure
-
-Returning `Err(...)` from a handler triggers JetStream NAK and redelivery per the `backoffMs` schedule. After `maxDeliver` attempts the job moves to the `dead` queue. Use `job.is_redelivery()` and `job.redelivery_count()` to adjust behavior on redelivery.
-
-## Next steps
-
-- [Operations: Rust](/guides/using-operations-rust) — expose a caller-visible `Orders.Process` operation backed by these jobs
-- [Administer Jobs](/guides/administering-jobs) — query and manage these jobs as an operator
+Jobs are at least once. Keep side effects idempotent. Typed updates are live-only;
+durable progress, logs, result/error, and dead lifecycle remain authoritative.

@@ -1,91 +1,89 @@
-# Trellis AI guide
+# Trellis
 
-Last verified against Trellis main (2026-06-13).
+Trellis provides authenticated, contract-defined communication and runtime
+resources for TypeScript and Rust participants. Native IDL generates each
+participant's typed API. Connected calls run over NATS; the libraries own
+bootstrap, proofs, authorization, and connection lifecycle.
 
-Canonical full guide:
-https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-full.txt
+## Scope
 
-Use this file when generating code for a Trellis service repository or browser
-app repository. Prefer the full guide when you need examples, contract workflow,
-prepared events, browser-app wiring, generated SDK notes, or verification
-commands.
+This guidance covers Trellis interfaces, not application engineering policy.
+Services choose their configuration and validation libraries, databases, domain
+models, dependency injection, project layout, and development tools. Examples
+choose a concrete stack to demonstrate Trellis, not to require that stack.
 
-## Current model
+Use documentation from the same Trellis release or source revision as the
+installed libraries and CLI. For a local checkout, these files live under
+`docs/static/`. The links below address the main branch and may be newer than an
+installed release.
 
-- Trellis runtime authority comes from deployment authority and identity
-  authority.
-- Deployment authority proposal/desired `needs` are grouped by `contracts`,
-  `surfaces`, `capabilities`, and `resources`. Materialized authority is a
-  projection; runtime `grants` are grouped by `capabilities`, `surfaces`, and
-  `nats`, and permissions require current materialization for the accepted
-  desired authority version. Stale or obsolete persisted projections are repaired
-  by Trellis storage upgrade and reconciliation.
-- The runtime `contracts` store is a manifest cache keyed by digest, not durable
-  authority. If Trellis asks for a missing manifest or prunes an invalid cached
-  manifest, present the full contract manifest again instead of editing runtime
-  authority or implementation-offer records.
-- Caller-visible communication is contract-driven and runs through generated
-  RPC, event, feed, and operation surfaces. Resources, state, files, and jobs are
-  contract-declared runtime surfaces; jobs are service-private background work.
-- Normal TypeScript contract authoring imports `define*Contract(...)` helpers from
-  the browser-safe `@qlever-llc/trellis` root. Runtime-specific helpers,
-  generated SDKs, browser auth, device activation, telemetry, and advanced
-  contract tooling stay on explicit subpaths.
-- Durable event processing uses contract-declared `eventConsumers` resources;
-  `eventConsumers.<group>.uses` selects dependency events by top-level `uses`
-  alias, and `eventConsumers.<group>.self` selects events owned by the same
-  contract. Dependency durable consumption remains authority-backed by top-level
-  `uses`; runtime durable consumers are Trellis-provisioned only.
-- Trellis libraries do not expose raw NATS connection handles as application API.
-  Use generated surfaces, service resource handles, and `TrellisConnection` for
-  lifecycle status and shutdown.
-- Use operations for caller-visible async workflows. Use jobs for service-private
-  background execution.
-- Model expected public failures with declared errors or `Result`-style values.
-- Event subject `params` must point at string, number, or integer-compatible
-  payload fields. For `anyOf` or `oneOf` event payload schemas, every variant must
-  contain each routed pointer.
+## Start Here
 
-## Service repo setup
+- [Consumer guide](llms-full.txt): project files, generation, participants,
+  communication, authorization, resources, and testing.
+- [TypeScript](llms-typescript.txt): service connection, generated handlers,
+  events, operations, and transactional outbox integration.
+- [Rust](llms-rust.txt): generated Cargo crates, connection options, typed
+  callers, providers, resources, and lifecycle.
+- [Svelte](llms-svelte.txt): browser authentication and the Svelte integration.
+- Human service walkthrough: `/guides/write-a-service`.
+- Human testing walkthrough: `/guides/testing-trellis-services`.
+- Public API reference: `/api` on the docs site. Generated participant source
+  defines the exact names available for a project's declared actions.
 
-- Keep Trellis-wide AI guidance in this file or `llms-full.txt`; keep local paths,
-  commands, secrets, and domain rules in the service repo's own `AGENTS.md`.
-- Put TypeScript service source next to a local `deno.json`, `deno.jsonc`, or
-  `package.json`. Single-contract services normally expose a top-level
-  `contract.ts`; multi-contract services use `contracts/*.ts`. Contract source
-  files should default-export the `define*Contract(...)` result.
-- Wrap TypeScript Trellis generation in `deno task prepare`.
-- Wrap Rust Trellis generation in `cargo xtask prepare`.
-- Browser app repos should read the Svelte AI guide before wiring
-  `createTrellisApp`, `TrellisProvider`, generated SDK aliases for contract
-  `uses`, Vite aliases, or `svelte-check` path maps.
-- Browser apps should let Trellis helpers own auth redirects and treat plain
-  callbacks after expired login as auth-restart opportunities, not errors.
-- Browser apps that sign users out should use Trellis browser auth helpers for
-  signed HTTP logout; do not call `Auth.Sessions.Logout` from the active app
-  connection, hard-code IdP logout endpoints, or invent arbitrary post-logout
-  return URLs.
-- Record the local contract path, generation command, format command, typecheck
-  command, test command, run command, and database migration command in the local
-  `AGENTS.md`.
+## Essential Workflow
 
-## Language guides
+1. Author the `.trellis` files explicitly listed by `[sources]`.
+2. Set `[package]`, `[dependencies]`, and language outputs in `trellis.toml`;
+   run `trellis update` to resolve changes into `trellis.lock`.
+3. Run `trellis install` to reproduce locked dependencies and `trellis generate`
+   after IDL edits. `trellis generate --watch` supports the edit loop.
+4. Depend on the one ordinary generated package for your language. Import its
+   `apis` and `participants` namespaces, not separate API or participant
+   packages.
+5. Connect through that participant's supported runtime API. Use generated calls
+   and resolved resource handles; do not reconstruct Trellis transport metadata.
 
-- TypeScript services:
-  https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-typescript.txt
-- Svelte browser apps:
-  https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-svelte.txt
-- Rust services:
-  https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-rust.txt
+Commit authored IDL, `trellis.toml`, and `trellis.lock`. Commit generated
+packages when clones should build without the Trellis CLI or source-package
+cache; regenerate rather than hand-edit them. Configure `[generate.rust].output`
+and/or `[generate.typescript].output`. Detection uses root Cargo, npm, or Deno
+manifests; no marker means no language package. Package version equals the
+source package version. TypeScript packages contain executable ESM JavaScript
+and declarations; Rust packages are ordinary path-dependency crates. Both use
+published runtime dependencies matching the CLI. No project-local installation
+tree, runtime-path configuration, or consumer transpilation step is required.
+Use exact declared action names, not suffixes or invented qualifiers. Failed
+compilation, rendering, or formatting retains the last successful generated
+outputs; colliding participant output paths are errors.
 
-## Useful links
+Trellis Operations are durable, restartable, at-least-once caller-visible
+workflows; controls remain bound to the creator principal and participant across
+reconnects, and terminal states are immutable. Jobs are service-private; keyed
+capacity waits do not consume attempts. Job deadlines are creation-relative;
+retry defaults to five deliveries delayed by 5s, 30s, 2m, and 10m. Jobs Summary
+is independent of Query pages. Capability approval is not an exact grant. Resource commitments are
+approvals; desired capacities are hints, while observed bindings are the usable
+limits. Trellis neither adopts nor destroys foreign-owned physical resources.
+Removal detaches access without deleting new-version data, allowing compatible
+approved reattachment. Store and file metadata listing uses opaque, query-bound
+keyset cursors with a default limit of 100 and maximum of 500. An administrator
+installs the immutable participant revision and writes a participant-scoped
+`GrantBinding`; deployment apply provisions exact resource evidence.
+Services/devices bootstrap with identity and proof inputs only, while browsers
+bind a user login and then refresh. A device companion is established only by
+activation-owned separate consent and cannot bootstrap as a standalone
+participant. Authorization contexts, route JWTs, transports, grants, and issuer
+keys remain process-memory-only. Requests/events carry context digest, matching
+redundant `session-key`, and a message-specific proof.
 
-- Full AI guide: https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-full.txt
-- TypeScript AI guide: https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-typescript.txt
-- Svelte AI guide: https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-svelte.txt
-- Rust AI guide: https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-rust.txt
-- TypeScript AGENTS template: https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/templates/trellis-service-typescript-AGENTS.md
-- Rust AGENTS template: https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/templates/trellis-service-rust-AGENTS.md
-- Combined AGENTS template: https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/templates/trellis-service-AGENTS.md
-- Docs-site path for the human guide: `/guides/ai/developing-trellis-services`
-- Docs-site path for the API reference: `/api`
+Events use API-qualified subjects and base64url parameter tokens; their signed
+descriptor binds the exact API, dotted event name, and parameter count. Durable delivery acknowledges success only
+after the handler succeeds; final exhaustion is durably recorded in the
+per-Consumer DLQ before acknowledgement. Manual replay uses the same handler and
+a fresh delivery budget without rewinding the original Consumer, and successful
+replay is durably resolved before acknowledgement. Feed controls bind both the
+runtime `feedId` and the original caller identity.
+
+Consumer AGENTS templates are available under `templates/`. They describe the
+Trellis boundary; application policies belong in the consumer repository.

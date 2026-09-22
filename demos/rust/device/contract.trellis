@@ -1,0 +1,15 @@
+import { fieldops } from service;
+
+model SelectedSiteState { siteId: string; siteName: string; selectedAt: string; }
+model DraftInspectionState { inspectionId: string; siteId: string; checklistName: string; notes: string; updatedAt: string; }
+
+device Device {
+  use fieldops {
+    rpc Assignments.List; rpc Sites.List; rpc Sites.Get; rpc Evidence.List; rpc Evidence.Download;
+    operation Sites.Refresh; operation Reports.Generate; operation Evidence.Upload;
+    subscribe event Audit.Recorded; subscribe event Reports.Published;
+    subscribe event Evidence.Uploaded; subscribe event Sites.Refreshed;
+  }
+  state selectedSite { title "Selected site"; description "The active site."; schema SelectedSiteState; version 1; }
+  kv draftInspections { title "Draft inspections"; description "Editable inspection drafts keyed by inspection id."; schema DraftInspectionState; version 1; history 1; ttl 0; }
+}

@@ -1,0 +1,69 @@
+import {
+  ResourcesDestroyRequest,
+  ResourcesDestroyResponse,
+  ResourcesInspectRequest,
+  ResourcesInspectResponse,
+  ResourcesQueryRequest,
+  ResourcesQueryResponse,
+  TrellisSurfaceStatusRequest,
+  TrellisSurfaceStatusResponse,
+} from types;
+
+api core@v1 {
+  title "Trellis Core";
+  description "Trellis runtime and resource administration RPCs.";
+  version "1.0.0";
+
+  error UnexpectedError;
+  error ValidationError;
+
+  rpc Surface.Status {
+    input TrellisSurfaceStatusRequest;
+    output TrellisSurfaceStatusResponse;
+    errors [UnexpectedError, ValidationError];
+  }
+
+  rpc Resources.Query {
+    input ResourcesQueryRequest;
+    output ResourcesQueryResponse;
+    errors [UnexpectedError, ValidationError];
+    pagination cursor;
+  }
+
+  rpc Resources.Inspect {
+    input ResourcesInspectRequest;
+    output ResourcesInspectResponse;
+    errors [UnexpectedError, ValidationError];
+  }
+
+  rpc Resources.Destroy {
+    input ResourcesDestroyRequest;
+    output ResourcesDestroyResponse;
+    errors [UnexpectedError, ValidationError];
+  }
+
+  capabilities {
+    public {}
+
+    capability authority_read {
+      title "Authority Read";
+      description "Inspect Trellis runtime surfaces.";
+      consequence "The caller can inspect runtime surface readiness.";
+      allows { rpc Surface.Status; }
+    }
+
+    capability resources_read {
+      title "Resources Read";
+      description "Inspect Trellis-managed resources.";
+      consequence "The caller can read resource configuration, status, and history.";
+      allows { rpc Resources.Inspect; rpc Resources.Query; }
+    }
+
+    capability resources_destroy {
+      title "Resources Destroy";
+      description "Destroy Trellis-managed resources.";
+      consequence "The caller can permanently delete managed resource data.";
+      allows { rpc Resources.Destroy; }
+    }
+  }
+}

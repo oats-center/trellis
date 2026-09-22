@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { ulid } from "ulid";
+  import { TransferGrantSchema } from "@qlever-llc/trellis";
+  import { Value } from "typebox/value";
   import { onDestroy, onMount } from "svelte";
   import { resolve } from "$app/paths";
   import { page } from "$app/state";
@@ -27,7 +30,7 @@
   const evidenceType = "field-photo";
   const evidenceTypeLabel = "Field photo";
   const evidencePageSize = 3;
-  const listPage = { limit: 50, offset: 0 };
+  const listPage = { page: { limit: 50 } };
 
   type CloseoutRoute = "/closeout" | `/closeout?${string}`;
 
@@ -148,13 +151,12 @@
     const runId = ++uploadRunId;
 
     try {
-      const evidenceId = crypto.randomUUID();
+      const evidenceId = ulid();
       const fileName = safeFileName(file.name);
       const key = `evidence/${evidenceId}-${fileName}`;
       const bytes = new Uint8Array(await file.arrayBuffer());
       if (!mounted || runId !== uploadRunId) return;
-      const upload = await trellis.operation("Evidence.Upload")
-        .input({
+      const upload = await trellis.evidenceUpload({
           key,
           contentType: file.type || "application/octet-stream",
           evidenceType,
@@ -192,9 +194,10 @@
     clearPreviewUrls();
 
     try {
-      const list = await trellis.request("Evidence.List", { ...listPage, prefix: "evidence/" }).orThrow();
+      const list = await trellis.evidenceList({ ...listPage, prefix: "evidence/" }).orThrow();
       if (!mounted || requestId !== galleryRequestId) return;
-      gallery = list.entries
+      gallery = list.items
+        .map((item) => ({ ...item, size: Number(item.size) }))
         .slice()
         .sort((left: EvidenceRecord, right: EvidenceRecord) => Date.parse(right.uploadedAt) - Date.parse(left.uploadedAt));
       evidencePage = 0;
@@ -223,8 +226,10 @@
     updateGalleryItem(key, { previewUrl: undefined, previewError: undefined, previewing: true });
 
     try {
-      const download = await trellis.request("Evidence.Download", { key }).orThrow();
-      const bytes = await trellis.transfer(download.transfer).bytes().orThrow();
+      const download = await trellis.evidenceDownload({ key }).orThrow();
+      const transfer = Value.Parse(TransferGrantSchema, download.transfer);
+      if (transfer.direction !== "receive") throw new Error("Evidence download returned a send transfer grant.");
+      const bytes = await trellis.transfer(transfer).bytes().orThrow();
       if (!mounted || downloadRunIds.get(key) !== runId) return;
       const latest = gallery.find((item) => item.key === key);
       const contentType = latest?.contentType ?? "application/octet-stream";
@@ -250,7 +255,7 @@
     error = null;
 
     try {
-      await trellis.request("Evidence.Delete", { key }).orThrow();
+      await trellis.evidenceDelete({ key }).orThrow();
       if (!mounted) return;
       const deleted = gallery.find((item) => item.key === key);
       if (deleted) revokePreviewUrl(deleted);

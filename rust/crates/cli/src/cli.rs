@@ -6,11 +6,16 @@ use clap_complete::Shell;
 mod auth;
 mod bootstrap;
 mod deploy;
+mod events;
+mod resources;
 mod self_cmd;
 
 pub use auth::*;
+#[cfg(feature = "runtime")]
 pub use bootstrap::*;
 pub use deploy::*;
+pub use events::*;
+pub use resources::*;
 pub use self_cmd::*;
 
 #[derive(Debug, Parser)]
@@ -39,29 +44,48 @@ pub enum OutputFormat {
 #[derive(Debug, Subcommand)]
 /// Root command tree for Trellis operator, admin, and local development tasks.
 pub enum TopLevelCommand {
+    /// Add or replace one local API dependency, lock it, and install.
+    Add(AddArgs),
+    /// Remove one API dependency and reconcile installed outputs.
+    Rm(RmArgs),
+    /// Parse, resolve, and validate the local source package.
+    Check(ProjectRootArgs),
+    /// Refresh local package dependencies, lock them, and install.
+    Update(UpdateArgs),
+    /// Recreate the local generated package from the exact lock.
+    Install(ProjectRootArgs),
+    /// Generate the project package from Trellis IDL.
+    Generate(GenerateArgs),
+    /// Publish every project-owned canonical API to OCI.
+    Publish(PublishArgs),
     /// Start a detached portal login against a Trellis auth service.
     Login(LoginArgs),
     /// Revoke the current admin session and clear local session state.
     Logout,
     /// Show the currently logged-in Trellis admin session.
     Whoami,
-    /// Manage identity authority and delegated grants.
+    /// Manage participant-scoped identity grants.
     Identity(IdentityCommand),
+    /// Install participant definitions without granting authority.
+    Participants(ParticipantsCommand),
+    /// Manage authorization signing issuers.
+    Issuers(IssuersCommand),
     /// Manage Trellis users.
     Users(UsersCommand),
     /// Inspect and manage login portals.
     Portals(PortalsCommand),
-    /// Manage deployment grant overrides.
-    Grants(GrantsCommand),
     /// Manage service deployments.
     Svc(SvcCommand),
     /// Manage device deployments.
     Dev(DevCommand),
-    /// Generate local Trellis development files.
-    Local(LocalCommand),
-    /// Apply or check shared infrastructure.
-    Infra(InfraCommand),
+    /// Inspect and destroy provisioned resources.
+    #[command(subcommand)]
+    Resources(ResourcesCommand),
+    /// Query and administer Events.
+    #[command(subcommand)]
+    Events(EventsCommand),
     /// Run one-time initialization workflows.
+    #[cfg(feature = "runtime")]
     Init(InitCommand),
     /// Generate or derive Trellis keys.
     Keys(KeysCommand),
@@ -71,6 +95,70 @@ pub enum TopLevelCommand {
     Version,
     /// Generate shell completion scripts for Trellis.
     Completion { shell: Shell },
+}
+
+#[derive(Debug, clap::Args)]
+/// Shared project-root selection for local package commands.
+pub struct ProjectRootArgs {
+    #[arg(long, default_value = ".")]
+    /// Directory containing `trellis.toml`.
+    pub root: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+/// Select dependencies to refresh in a local Trellis project.
+pub struct UpdateArgs {
+    /// Dependency alias to refresh; omit to refresh every dependency.
+    pub dependency_alias: Option<String>,
+    #[command(flatten)]
+    pub project: ProjectRootArgs,
+}
+
+#[derive(Debug, clap::Args)]
+/// Generate the project package once or whenever IDL sources change.
+pub struct GenerateArgs {
+    #[arg(short = 'w', long)]
+    /// Watch the project and direct local dependencies for source changes.
+    pub watch: bool,
+    #[arg(long, conflicts_with = "watch")]
+    /// Check for missing, stale, or extra generated files without changing outputs.
+    pub check: bool,
+    #[command(flatten)]
+    pub project: ProjectRootArgs,
+}
+
+#[derive(Debug, clap::Args)]
+/// Add one local Trellis project or remote API ID.
+pub struct AddArgs {
+    /// Relative Trellis project path or stable API ID such as `acme.orders@v1`.
+    pub source: String,
+    #[arg(long)]
+    /// Semantic Version requirement; defaults to a caret of the exact release.
+    pub version: Option<String>,
+    #[arg(long)]
+    /// Named OCI registry for a remote API.
+    pub registry: Option<String>,
+    #[command(flatten)]
+    pub project: ProjectRootArgs,
+}
+
+#[derive(Debug, clap::Args)]
+/// Publish project-owned canonical APIs to OCI.
+pub struct PublishArgs {
+    #[arg(long)]
+    /// Named OCI registry; defaults to `default-registry`.
+    pub registry: Option<String>,
+    #[command(flatten)]
+    pub project: ProjectRootArgs,
+}
+
+#[derive(Debug, clap::Args)]
+/// Remove one API dependency by stable API ID.
+pub struct RmArgs {
+    /// Stable API ID such as `acme.orders@v1`.
+    pub api_id: String,
+    #[command(flatten)]
+    pub project: ProjectRootArgs,
 }
 
 #[derive(Debug, clap::Args)]

@@ -1,0 +1,26 @@
+model ListRequest {
+  page?: CursorQuery;
+}
+
+model Row {
+  id: string;
+}
+
+type ListResponse = CursorPage<Row>;
+
+api catalog@v1 {
+  title "Catalog";
+  description "Cursor pagination fixture.";
+
+  rpc List {
+    input ListRequest;
+    output ListResponse;
+    pagination cursor;
+  }
+
+  capabilities {
+    public {
+      allows { rpc List; }
+    }
+  }
+}

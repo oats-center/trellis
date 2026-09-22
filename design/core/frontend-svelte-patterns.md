@@ -13,7 +13,12 @@ order: 80
 
 ## Scope
 
-This document defines Trellis frontend guidance for Svelte applications.
+This document defines contributor conventions for Trellis-owned Svelte apps and
+components. Its state, layout, styling, and file-organization preferences are
+not requirements for applications that consume Trellis. Those applications
+choose their own frontend architecture; the optional
+`@qlever-llc/trellis-svelte` package's connection/context APIs are documented in
+the Svelte integration guide.
 
 ## Svelte 5 State Pattern
 
@@ -45,6 +50,50 @@ Patterns:
 - public getters and no public setters
 - methods own mutations
 - static factory methods handle async initialization when needed
+
+## Console Read and Mutation Pattern
+
+Trellis-owned console pages follow four stable conventions. They apply to
+operator surfaces under the console app; consuming applications choose their
+own.
+
+### Page reads use a request scope
+
+Every asynchronous page read belongs to a request scope keyed by the page's
+semantic target and filter values. Capture those values before awaiting, and
+commit data, errors, and pagination cursors only while the token is current. A
+target change clears the previous target's data; a same-target refresh may keep
+a labelled snapshot. Component disposal invalidates outstanding reads so no late
+response mutates a page that has gone away. Do not make the initiating `$effect`
+itself async.
+
+### Lists use cursor pagination
+
+Tables advance one server page at a time with an opaque cursor history and reset
+that history when a server filter changes. Selectors and catalogs that need
+completeness traverse pages with a bounded limit and a cursor-cycle guard, and a
+failed later page is reported as an incomplete catalog rather than a complete
+one. Exact-target pages resolve through the resource's `Get` where the contract
+offers one, and otherwise through correctly filtered complete traversal; a
+missing target renders an unavailable state and never falls back to the first
+loaded record.
+
+### Mutations use an immutable intent
+
+Capture the exact endpoint, target identifiers, displayed label, expected
+version, editable values, and one idempotency key when the operator confirms.
+Confirmation and the request both use that frozen intent, never a mutable
+selection reread after an `await`. Update the local record from the returned
+result or a documented exact refresh. Preserve the draft on a conflict; treat an
+uncertain transport outcome as unknown rather than successful or failed.
+
+### Live views schedule coalesced refreshes
+
+A watch is established once per semantic scope and tied to component disposal,
+not restarted on every data refresh. Change events schedule a non-resetting
+coalesced refresh with at most one read in flight and one trailing refresh, so
+continuous events cannot starve the view. A live indicator reflects the actual
+feed lifecycle; the general connection badge does not.
 
 ## Browser App Runtime Pattern
 
@@ -103,8 +152,11 @@ Rules:
 - Svelte context is the runtime transport for the live Trellis instance and
   related browser state; the app-local module is the static typing boundary that
   keeps contract knowledge out of arbitrary page files
-- generated client facades are not needed for Svelte app-local helpers; the app
-  contract is the typing source for `createTrellisApp` and `TrellisProvider`
+- generated client facades do not exist; the app contract is the typing source
+  for `createTrellisApp` and `TrellisProvider`
+- do not generate or import an app SDK just to type `getTrellis()`; the app
+  contract passed to `createTrellisApp` infers its flat caller surface, while
+  generated service SDK imports provide the descriptors selected by that app
 - SvelteKit apps should usually source that fixed instance URL from public env
   such as `PUBLIC_TRELLIS_URL`; use `$env/dynamic/public` when local demos need
   a safe default and `$env/static/public` when the value must be fixed at build
@@ -151,6 +203,7 @@ Rules:
   resolves aliases by prefix
 
 The Trellis repo's local frontend apps keep explicit `kit.alias` objects in each
-SvelteKit config. App workspaces that define their own local generated SDK
-package names should add those package names to their app-local aliases, for
-example `@trellis-sdk/trellis-demo-service` in the demo workspace.
+SvelteKit config. App workspaces should resolve their single generated ESM
+package through an ordinary local package dependency, or an app-local alias to
+its `index.js`. The package exposes `apis` and `participants`; do not add
+per-API aliases or mappings into an installation tree.

@@ -1,216 +1,73 @@
----
-title: Auth Operations
-description: Operational guidance for running Trellis auth in production, including HA, rate limits, and key rotation.
-order: 60
----
-
 # Design: Auth Operations
 
-## Prerequisites
-
-- [trellis-auth.md](./trellis-auth.md) - auth architecture and trust model
-- [auth-protocol.md](./auth-protocol.md) - internal state and auth-callout
-  protocol
-
-## Scope
-
-This document defines the operational and deployment guidance for Trellis auth.
-
-It covers:
-
-- configuration defaults
-- deployment checklist
-- HA and availability concerns
-- secrets handling
-- rate limiting
-- key rotation
-- accepted operational risks
+Status: operational requirements after WO-02.
 
 ## Configuration
 
-### TTL Defaults
+Runtime Auth configuration includes:
 
-| Config key       | Default | Description                         |
-| ---------------- | ------- | ----------------------------------- |
-| `ttlMs.sessions` | 24h     | Session expires after inactivity    |
-| `ttlMs.natsJwt`  | 1h      | NATS JWT expiry; triggers reconnect |
+- online issuer seed path;
+- authorization-context lifetime;
+- route/NATS JWT lifetime;
+- browser flow, login, enrollment, and one-use-secret lifetimes;
+- password hashing and rate-limit policy; and
+- exact NATS/KV endpoint and retention configuration.
 
-Relationship: `ttlMs.natsJwt < ttlMs.sessions`.
+Route/NATS JWT lifetime is shorter than authorization-context lifetime. User
+login expiry bounds contexts issued for that login. Native services/devices are
+bounded by credential, grant, resource, issuer, and context evidence rather than
+a login TTL.
 
-Reducing `ttlMs.natsJwt` increases reconnect frequency but does not change RPC
-request-id replay-cache retention.
-
-### Per-service Secrets
-
-| Config key               | Description                 |
-| ------------------------ | --------------------------- |
-| `sessionKeySeedFile`     | Base64url Ed25519 seed file |
-| `client.natsServers`     | NATS server URL(s)          |
-| `nats.sentinelCredsPath` | Path to sentinel creds      |
-
-Additional `trellis` service config:
-
-| Config key               | Description                  |
-| ------------------------ | ---------------------------- |
-| `nats.auth.credsPath`    | Auth account credentials     |
-| `nats.trellis.credsPath` | Trellis account credentials  |
-| `storage.dbPath`         | SQLite auth/control-plane DB |
-
-### Store TTLs
-
-| Store                  | TTL                                     |
-| ---------------------- | --------------------------------------- |
-| sessions               | SQL rows, expired from `ttlMs.sessions` |
-| users                  | None                                    |
-| oauthStates            | 5 min                                   |
-| pendingAuth            | 5 min                                   |
-| deviceActivationFlows  | 30 min                                  |
-| deviceActivations      | None                                    |
-| deviceInstances        | None                                    |
-| identityAuthority      | None                                    |
-| deploymentAuthority    | None                                    |
-| materializedAuthority  | None                                    |
-| loginPortals           | None                                    |
-| deploymentPortalRoutes | None                                    |
-| services               | None                                    |
-| connections            | 2h                                      |
+There is no offline trust-root, certificate, manifest, or rollback-floor
+configuration.
 
 ## Deployment Checklist
 
-Cluster-wide required state:
+- create secure runtime/config/data directories;
+- generate and protect the online issuer seed;
+- configure Auth public origin and exact transport endpoints;
+- initialize a fresh Auth database through the current migration chain;
+- confirm built-in Auth/CLI/Console/Portal participant installation;
+- complete first-admin setup;
+- provision service/device identities and retain one-use secrets only until
+  consumed;
+- verify context KV retention is unbounded for Auth-owned history;
+- verify context/revocation replay completes before readiness; and
+- monitor post-commit backlog, issuer expiry, rejected proofs, and failed kicks.
 
-- SQLite auth/control-plane database (`storage.dbPath`)
-- services tables
-- sessions table
-- RPC replay cache used by auth validators
-- OAuth state store
-- pending auth store
-- device activation flow store
-- device activation record store
-- device instance store
-- device deployment store
-- identity authority and identity grant tables
-- auth-owned login portal records, settings, and route selectors
-- deployment authority and materialized authority tables, including device
-  portal-route metadata
-- connection store
+## Revocation
 
-Production requirements:
+Grant, principal, credential/login, resource, participant, or issuer changes
+commit explicit affected-context revocations before requesting exact connection
+kicks. Kick failure is operational and retried; it never rolls back durable
+authorization state. Short NATS JWT lifetimes bound reauthorization even if a
+kick cannot reach an already absent connection.
 
-- TLS enabled
-- NTP enabled for services
-- auth callout deployed HA
-- `auth_callout_error_allow = false`
-- rate limiting configured
+Ordinary context expiry and issuer rotation preserve historical context rows.
+Explicit revocation remains authoritative for historical event validation.
 
-## Operational Concerns
+## Rotation
 
-- run multiple `trellis` auth-callout instances with shared KV state
-- the `trellis` service is a critical dependency for all authenticated
-  operations and must be deployed HA
-- the `trellis` service requires `$SYS.ACCOUNT.TRELLIS.DISCONNECT` subscribe and
-  `$SYS.REQ.SERVER.*.KICK` publish permissions
-- no other services should receive broad `$SYS.*` access
+Online issuer rotation installs the new issuer and moves current issuance to it.
+Old issuer metadata and signed contexts remain available for historical
+verification. Explicit issuer revocation invalidates every context signed by
+that issuer. Runtime startup must reject an invalid/unavailable configured
+issuer seed rather than generating one silently.
 
-Secrets that MUST NOT be logged:
+Service/device durable identity rotation is performed through provisioning
+lifecycle, not by mutating private keys in Trellis. Session keys are ephemeral
+and rotate on bootstrap/login attempts.
 
-- `authToken`
-- NATS `auth_token` payload
-- session key seeds
-- RPC `proof` header
+## Recovery
 
-`sessionKey` itself may be logged because it is an identifier rather than a
-credential.
+Auth SQL is authoritative. On restart the runtime rebuilds all signed-context
+and revocation mirrors, resumes durable post-commit actions, and retains exact
+prepared event bytes/proofs across retries. Operators do not repair authority by
+editing KV, NATS ACLs, or client caches.
 
-## Connection Revocation Model
+## Accepted Browser Risk
 
-Connection revocation is performed by kicking live NATS clients, deleting
-connection-presence KV state, and deleting SQL-backed sessions.
-
-Illustrative behavior:
-
-```ts
-async function revokeSession(sessionKey: string) {
-  const connections = await connectionsKv.keys(`${sessionKey}.*.*`);
-  for await (const connKey of connections) {
-    const { serverId, clientId } = await connectionsKv.get(connKey);
-    await nc.request(
-      `$SYS.REQ.SERVER.${serverId}.KICK`,
-      JSON.stringify({ cid: clientId }),
-    );
-    await connectionsKv.delete(connKey);
-  }
-
-  await sessionsSql.deleteBySessionKey(sessionKey);
-}
-```
-
-Kicking connections instead of revoking JWTs avoids account-JWT bloat.
-
-## Rate Limiting
-
-Rate limiting is a production gate.
-
-Minimum targets:
-
-- the auth callout, per source IP or equivalent edge identity
-- `/auth/requests`
-- `/auth/login/:provider`
-- `/auth/callback/:provider`
-- `/auth/flow/:flowId`
-- `/auth/flow/:flowId/approval`
-- `/auth/flow/:flowId/bind`
-- `/auth/devices/activate`
-- `/auth/devices/activate/wait`
-- `/auth/devices/connect-info`
-
-Deployments should not go live without configured limits. HTTP auth limits must
-use an address or edge identity supplied by the trusted runtime/proxy boundary;
-client-controlled forwarding headers such as `x-forwarded-for` are not a safe
-rate-limit identity by themselves.
-
-## Key Rotation
-
-### TRELLIS account signing key
-
-1. Generate new key
-2. Add it as an additional signing key
-3. Push updated account JWT
-4. Update the `trellis` service
-5. Wait for JWT expiry
-6. Remove the old key
-7. Destroy old material
-
-### Service session key
-
-1. Generate new keypair
-2. Register the new public key
-3. Deploy the new seed
-4. Remove the old key after rollout
-
-### Sentinel credentials
-
-1. Generate new sentinel user via NSC
-2. Update `trellis` config
-3. Restart `trellis`
-4. Restart dependent services with updated creds
-5. Remove the old sentinel user
-
-## Accepted Risks
-
-### XSS Session Abuse
-
-Risk: active XSS can invoke signing operations while the page is compromised.
-
-Mitigations:
-
-- non-extractable browser keys prevent key theft
-- CSP and standard XSS mitigations remain primary defenses
-
-Accepted because non-extractable keys still reduce blast radius compared with
-extractable browser secrets.
-
-## Non-Goals
-
-- redefining the auth protocol or public auth API
-- defining TypeScript or Rust package surfaces
+Browser session seed persistence permits same-origin script to act as the user;
+XSS prevention remains required. IndexedDB generation fencing prevents stale
+tabs from overwriting or clearing newer login credentials but is not an XSS
+sandbox.

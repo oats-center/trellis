@@ -1,0 +1,12 @@
+import { fieldops } from service;
+
+model InspectionContextState { siteId: string; note: string; updatedBy: string; updatedAt: string; }
+
+app App {
+  use fieldops {
+    rpc Assignments.List; rpc Sites.List; rpc Sites.Get; rpc Evidence.List; rpc Evidence.Download;
+    rpc Evidence.Delete; rpc Reports.List; operation Sites.Refresh; operation Reports.Generate;
+    operation Evidence.Upload; feed Audit.Feed;
+  }
+  state workspaceContext { title "Workspace context"; description "Current inspection workspace context."; schema InspectionContextState; version 1; }
+}

@@ -1,0 +1,2098 @@
+use async_nats::header::HeaderMap;
+use async_nats::jetstream::{self, consumer, AckKind};
+use async_nats::ConnectOptions;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use bytes::Bytes;
+use futures_util::stream::{self, BoxStream};
+use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest as _, Sha256};
+use std::marker::PhantomData;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
+use tokio::task::JoinHandle;
+use tokio::time::timeout;
+use trellis_protocol::{NativeBootstrapSessionProofInput, SessionProofInput};
+
+use super::events::{EVENT_ID_HEADER, EVENT_TIME_HEADER};
+use crate::client::operations::OperationTransport;
+use crate::client::proof::{base64url_decode, new_request_id, now_iat_seconds};
+use crate::client::transfer::{get_download_grant, DownloadTransferGrant};
+use crate::client::transfer::{put_upload_grant, FileInfo, UploadTransferGrant};
+use crate::client::{
+    prepare_event, AuthorizationContextBundle, AuthorizationContextCache,
+    AuthorizationProviderCache, AuthorizationRuntimeBinding, EventDescriptor, FeedDescriptor,
+    PreparedTrellisEvent, RpcErrorPayload, SessionAuth, TrellisClientError,
+};
+use crate::generated::Codec as _;
+use crate::service::{BootstrapBinding, CoreBootstrapBinding, ServiceResourceBindings};
+
+const HEALTH_HEARTBEAT_SUBJECT_PREFIX: &str = "health.v1.heartbeat";
+const HEALTH_HEARTBEAT_INTERVAL_MS: u64 = 30_000;
+const DEFAULT_EVENT_STREAM: &str = "trellis";
+static FEED_INBOX_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AppliedNativeAuthorization {
+    runtime: AuthorizationRuntimeBinding,
+    context_digest: String,
+    routing_jwt: String,
+}
+
+impl AppliedNativeAuthorization {
+    pub(crate) fn from_cache(
+        contexts: &AuthorizationContextCache,
+    ) -> Result<Self, TrellisClientError> {
+        let (runtime, context_digest, routing_jwt) = contexts.applied_transport()?;
+        Ok(Self {
+            runtime,
+            context_digest,
+            routing_jwt,
+        })
+    }
+
+    fn record(
+        &mut self,
+        refreshed: Self,
+        result: Result<(), TrellisClientError>,
+    ) -> Result<(), TrellisClientError> {
+        result?;
+        *self = refreshed;
+        Ok(())
+    }
+}
+
+struct FeedCancelGuard {
+    runtime: tokio::runtime::Handle,
+    nats: async_nats::Client,
+    auth: Arc<SessionAuth>,
+    context_digest: String,
+    subject: String,
+    reply: String,
+    payload: Bytes,
+}
+
+impl Drop for FeedCancelGuard {
+    fn drop(&mut self) {
+        let nats = self.nats.clone();
+        let subject = self.subject.clone();
+        let reply = self.reply.clone();
+        let payload = self.payload.clone();
+        let context_digest = self.context_digest.clone();
+        let headers = signed_headers(&self.auth, &context_digest, &subject, &reply, &payload);
+        self.runtime.spawn(async move {
+            let headers = match headers {
+                Ok(headers) => headers,
+                Err(error) => {
+                    tracing::warn!(%error, "feed cancel signing failed");
+                    return;
+                }
+            };
+            let _ = nats
+                .publish_with_reply_and_headers(subject, reply, headers, payload)
+                .await;
+        });
+    }
+}
+
+pub(crate) fn signed_headers(
+    auth: &SessionAuth,
+    context_digest: &str,
+    subject: &str,
+    reply: &str,
+    payload: &[u8],
+) -> Result<HeaderMap, TrellisClientError> {
+    let iat = now_iat_seconds() as i64;
+    let request_id = new_request_id();
+    let proof =
+        auth.create_request_proof(context_digest, subject, reply, payload, iat, &request_id)?;
+    let mut headers = HeaderMap::new();
+    headers.insert("authorization-context", context_digest);
+    headers.insert("session-key", auth.session_key.as_str());
+    headers.insert("proof", proof.as_str());
+    headers.insert("iat", iat.to_string().as_str());
+    headers.insert("request-id", request_id.as_str());
+    Ok(headers)
+}
+
+/// Internal service connection inputs; assignment and resources come from the server.
+pub struct ServiceConnectWithContractOptions<'a> {
+    pub trellis_url: &'a str,
+    pub participant_id: &'a str,
+    pub participant_path: &'static str,
+    pub package_evidence: crate::generated::PackageEvidence,
+    pub provisioned_identity_seed_base64url: &'a str,
+    pub name: Option<&'a str>,
+    pub timeout_ms: u64,
+    /// Accept a non-loopback HTTP Trellis origin explicitly allow-listed by the
+    /// runtime; defaults to strict HTTPS-or-loopback validation.
+    pub allow_insecure_origin: bool,
+}
+
+/// Runtime and device-identity options for an activated device principal.
+///
+/// The type parameter `C` supplies the generated participant identity.
+pub struct DeviceConnectOptions<'a, C> {
+    trellis_url: &'a str,
+    participant_id: &'a str,
+    identity_seed_base64url: &'a str,
+    companion_installation_seed_base64url: Option<&'a str>,
+    timeout_ms: u64,
+    name: Option<&'a str>,
+    allow_insecure_origin: bool,
+    contract_type: std::marker::PhantomData<C>,
+}
+
+impl<'a, C: crate::generated::ParticipantDescriptor> DeviceConnectOptions<'a, C> {
+    /// Create device connection options using the participant identity from `C`.
+    ///
+    /// Runtime bootstrap generates fresh session keys internally; this constructor accepts only
+    /// runtime location and the provisioned device seed.
+    pub fn new(trellis_url: &'a str, identity_seed_base64url: &'a str) -> Self {
+        Self {
+            trellis_url,
+            participant_id: C::ID,
+            identity_seed_base64url,
+            companion_installation_seed_base64url: None,
+            timeout_ms: crate::service::DEFAULT_TIMEOUT_MS,
+            name: None,
+            allow_insecure_origin: false,
+            contract_type: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<'a, C> DeviceConnectOptions<'a, C> {
+    /// Set the request/connect timeout in milliseconds.
+    pub const fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Accept a non-loopback HTTP Trellis origin explicitly allow-listed by the
+    /// operator. Defaults to strict HTTPS-or-loopback validation.
+    pub const fn with_insecure_origin(mut self, allow_insecure_origin: bool) -> Self {
+        self.allow_insecure_origin = allow_insecure_origin;
+        self
+    }
+
+    /// Return the device public identity key bound to these options.
+    pub fn public_identity_key(&self) -> Result<String, TrellisClientError> {
+        Ok(SessionAuth::from_seed_base64url(self.identity_seed_base64url)?.session_key)
+    }
+
+    /// Attach optional display metadata without changing device identity.
+    pub fn with_name(mut self, name: &'a str) -> Self {
+        self.name = Some(name);
+        self
+    }
+
+    /// Attach the root-derived installation seed for the descriptor's exact companion.
+    pub fn with_companion_installation_seed(mut self, seed_base64url: &'a str) -> Self {
+        self.companion_installation_seed_base64url = Some(seed_base64url);
+        self
+    }
+
+    pub(crate) fn activation_origin_digest(
+        &self,
+        activation_key_base64url: &str,
+        nonce: &str,
+        session_key_seed_base64url: &str,
+    ) -> [u8; 32] {
+        let mut digest = Sha256::new();
+        for value in [
+            self.trellis_url,
+            self.participant_id,
+            self.identity_seed_base64url,
+            activation_key_base64url,
+            nonce,
+            session_key_seed_base64url,
+        ] {
+            digest.update(value.len().to_be_bytes());
+            digest.update(value.as_bytes());
+        }
+        digest.finalize().into()
+    }
+}
+
+/// Whether an event subscription uses a durable or ephemeral JetStream consumer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EventSubscriptionMode {
+    /// Reuse a named durable consumer and retain delivery state across reconnects.
+    Durable,
+    /// Create an unnamed consumer that ends when the subscription is dropped.
+    #[default]
+    Ephemeral,
+}
+
+/// Initial delivery position for a descriptor-backed event subscription.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EventReplayPolicy {
+    /// Deliver all retained events visible to the consumer.
+    All,
+    /// Deliver only events published after the consumer is created.
+    #[default]
+    New,
+}
+
+/// Options for descriptor-backed event subscriptions.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EventSubscribeOptions {
+    /// JetStream stream that owns the event consumer. Defaults to the Trellis event stream.
+    pub stream: Option<String>,
+    /// Durable or ephemeral consumer mode.
+    pub mode: EventSubscriptionMode,
+    /// Initial delivery position for a newly created consumer.
+    pub replay: EventReplayPolicy,
+    /// Optional durable name. Ignored for ephemeral subscriptions.
+    pub durable_name: Option<String>,
+}
+
+/// One descriptor-backed event message with explicit JetStream acknowledgement controls.
+#[derive(Debug)]
+pub struct EventMessage<T> {
+    message: jetstream::Message,
+    _event: PhantomData<fn() -> T>,
+}
+
+impl<T> EventMessage<T> {
+    /// Return the raw NATS headers delivered with the event message, if present.
+    pub fn headers(&self) -> Option<&HeaderMap> {
+        self.message.headers.as_ref()
+    }
+
+    /// Return the Trellis event id from the `Nats-Msg-Id` header, when present.
+    pub fn event_id(&self) -> Option<&str> {
+        self.headers()
+            .and_then(|headers| headers.get(EVENT_ID_HEADER))
+            .map(|value| value.as_str())
+    }
+
+    /// Return the Trellis event timestamp from the `Trellis-Event-Time` header, when present.
+    pub fn event_time(&self) -> Option<&str> {
+        self.headers()
+            .and_then(|headers| headers.get(EVENT_TIME_HEADER))
+            .map(|value| value.as_str())
+    }
+
+    /// Return the raw JSON payload bytes.
+    pub fn payload(&self) -> &[u8] {
+        &self.message.payload
+    }
+
+    /// Return the concrete NATS subject that delivered this event message.
+    pub fn subject(&self) -> &str {
+        self.message.subject.as_ref()
+    }
+
+    /// Decode the message payload as the descriptor's typed event payload.
+    pub fn decode(&self) -> Result<T, TrellisClientError>
+    where
+        T: for<'de> Deserialize<'de>,
+    {
+        Ok(serde_json::from_slice(&self.message.payload)?)
+    }
+
+    /// Acknowledge successful handling of the message.
+    pub async fn ack(&self) -> Result<(), TrellisClientError> {
+        self.message
+            .ack()
+            .await
+            .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))
+    }
+
+    /// Negatively acknowledge the message so JetStream may redeliver it.
+    pub async fn nak(&self) -> Result<(), TrellisClientError> {
+        self.message
+            .ack_with(AckKind::Nak(None))
+            .await
+            .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))
+    }
+
+    pub(crate) async fn nak_after(&self, delay: Duration) -> Result<(), TrellisClientError> {
+        self.message
+            .ack_with(AckKind::Nak(Some(delay)))
+            .await
+            .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))
+    }
+
+    pub(crate) async fn ack_progress(&self) -> Result<(), TrellisClientError> {
+        self.message
+            .ack_with(AckKind::Progress)
+            .await
+            .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))
+    }
+
+    pub(crate) fn delivery_count(&self) -> u64 {
+        self.message
+            .info()
+            .ok()
+            .and_then(|info| u64::try_from(info.delivered).ok())
+            .unwrap_or(1)
+    }
+
+    pub(crate) fn delivery_proof(&self) -> Result<String, TrellisClientError> {
+        self.message
+            .reply
+            .as_ref()
+            .map(ToString::to_string)
+            .ok_or_else(|| {
+                TrellisClientError::EventSubscriptionProtocol(
+                    "JetStream delivery has no acknowledgement subject".to_owned(),
+                )
+            })
+    }
+
+    pub(crate) fn stream_sequence(&self) -> Result<u64, TrellisClientError> {
+        self.message
+            .info()
+            .map(|info| info.stream_sequence)
+            .map_err(|error| TrellisClientError::EventSubscriptionProtocol(error.to_string()))
+    }
+
+    /// Terminate the message without successful acknowledgement or redelivery.
+    pub async fn term(&self) -> Result<(), TrellisClientError> {
+        self.message
+            .ack_with(AckKind::Term)
+            .await
+            .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeviceEnrollmentResponse {
+    pub(crate) server_now: i64,
+    pub(crate) state: String,
+    pub(crate) activation: Option<DeviceBootstrapActivation>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeviceBootstrapActivation {
+    pub(crate) state: String,
+    pub(crate) activation_url: String,
+    pub(crate) review_id: String,
+    pub(crate) expires_at: i64,
+    pub(crate) retry_after_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceBootstrapAuthorization {
+    participant_id: String,
+    participant_digest: String,
+    resource_runtime: ServiceResourceBindings,
+    companion: Option<CompanionBootstrapAuthorization>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CompanionBootstrapAuthorization {
+    participant_id: String,
+    login_session_id: String,
+    required: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NatsConnectToken {
+    format: &'static str,
+    context_digest: String,
+}
+
+#[derive(Clone, Debug)]
+struct HealthHeartbeatConfig {
+    session_key: String,
+    service_name: String,
+    kind: HealthHeartbeatServiceKind,
+    deployment_id: String,
+    instance_id: String,
+    contract_id: String,
+    contract_digest: String,
+    started_at: String,
+    publish_interval_ms: u64,
+}
+
+struct NativeConnectOptions<'a> {
+    trellis_url: &'a str,
+    participant_id: &'a str,
+    participant_path: &'static str,
+    package_evidence: crate::generated::PackageEvidence,
+    identity_seed: &'a str,
+    companion_installation_seed: Option<&'a str>,
+    companion_descriptor: Option<crate::generated::CompanionDescriptor>,
+    name: Option<&'a str>,
+    timeout_ms: u64,
+    allow_insecure_origin: bool,
+    kind: trellis_protocol::AuthorizationPrincipalKind,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum HealthHeartbeatServiceKind {
+    Service,
+    Device,
+}
+
+pub(crate) async fn fetch_device_activation<C: crate::generated::ParticipantDescriptor>(
+    opts: &DeviceConnectOptions<'_, C>,
+    session_auth: &SessionAuth,
+    connection_id: &str,
+    provisioning_secret: Option<&str>,
+    challenge_digest: &str,
+    confirmation_code: &str,
+) -> Result<DeviceEnrollmentResponse, TrellisClientError> {
+    let identity_auth = SessionAuth::from_seed_base64url(opts.identity_seed_base64url)?;
+    let origin = super::canonical_trellis_origin_with_insecure(
+        opts.trellis_url,
+        opts.allow_insecure_origin,
+    )?;
+    let mut request = serde_json::json!({
+        "requestId": new_request_id(),
+        "iat": now_context_millis()?,
+        "connectionId": connection_id,
+        "identityKeyId": identity_auth.key_id(),
+        "sessionKey": session_auth.session_key,
+        "participantId": opts.participant_id,
+        "identityPublicKey": identity_auth.session_key,
+        "challengeDigest": challenge_digest,
+        "confirmationCode": confirmation_code,
+        "packageEvidence": C::package_evidence(),
+        "participantPath": C::PATH,
+        "packageDigest": C::package_evidence().root_digest(),
+    });
+    if let Some(provisioning_secret) = provisioning_secret {
+        request["provisioningSecret"] = serde_json::Value::String(provisioning_secret.to_owned());
+    }
+    match (C::COMPANION, opts.companion_installation_seed_base64url) {
+        (Some(companion), Some(seed)) => {
+            let installation = SessionAuth::from_seed_base64url(seed)?;
+            let companion_kind = match companion.kind {
+                crate::generated::ParticipantKind::App => "app",
+                crate::generated::ParticipantKind::Agent => "agent",
+                _ => unreachable!("validated companion kind"),
+            };
+            let claim = serde_json::json!({
+                "participantId": companion.id,
+                "kind": companion_kind,
+                "installationPublicKey": installation.session_key,
+            });
+            let digest = trellis_protocol::digest_json(&serde_json::json!({
+                "format": "trellis.device.user-companion.v1",
+                "origin": origin,
+                "enrollment": request,
+                "claim": claim,
+            }))
+            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
+            let digest = base64url_decode(&digest)?;
+            request["companion"] = serde_json::json!({
+                "participantId": companion.id,
+                "kind": companion_kind,
+                "installationPublicKey": installation.session_key,
+                "requestProof": installation.sign_bytes(&digest),
+            });
+        }
+        (Some(_), None) => {
+            return Err(TrellisClientError::Bootstrap(
+                "device companion installation seed is required".to_owned(),
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(TrellisClientError::Bootstrap(
+                "device descriptor has no companion".to_owned(),
+            ));
+        }
+        (None, None) => {}
+    }
+    let input = SessionProofInput::device_enrollment(NativeBootstrapSessionProofInput {
+        origin: origin.clone(),
+        unsigned_request: request.clone(),
+    })
+    .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
+    request["proof"] = serde_json::to_value(identity_auth.sign_session_proof(&input)?)?;
+    let response = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_millis(opts.timeout_ms))
+        .build()
+        .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?
+        .post(format!("{origin}/auth/device/enroll"))
+        .json(&request)
+        .send()
+        .await
+        .map_err(|error| TrellisClientError::AuthorizationUnavailable(error.to_string()))?;
+    if !response.status().is_success() {
+        let error = super::decode_trellis_http_error(response).await;
+        return Err(TrellisClientError::BootstrapHttp {
+            status: error.status,
+            code: error.code,
+        });
+    }
+    Ok(serde_json::from_slice(
+        &super::read_bounded_http_body(response, 64 * 1024).await?,
+    )?)
+}
+
+fn now_rfc3339() -> String {
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+fn now_context_millis() -> Result<i64, TrellisClientError> {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?
+            .as_millis(),
+    )
+    .map_err(|_| TrellisClientError::Bootstrap("context time overflow".into()))
+}
+
+fn health_subject_token(value: &str) -> String {
+    URL_SAFE_NO_PAD.encode(value.as_bytes())
+}
+
+fn health_heartbeat_subject(config: &HealthHeartbeatConfig) -> String {
+    let kind = match config.kind {
+        HealthHeartbeatServiceKind::Service => "service",
+        HealthHeartbeatServiceKind::Device => "device",
+    };
+    format!(
+        "{HEALTH_HEARTBEAT_SUBJECT_PREFIX}.{kind}.{}.{}.{}.{}.{}",
+        health_subject_token(&config.contract_id),
+        health_subject_token(&config.contract_digest),
+        health_subject_token(&config.deployment_id),
+        health_subject_token(&config.instance_id),
+        config.session_key,
+    )
+}
+
+fn build_health_heartbeat(config: &HealthHeartbeatConfig) -> Value {
+    serde_json::json!({
+        "sample": {
+            "id": ulid::Ulid::new().to_string(),
+            "time": now_rfc3339(),
+        },
+        "participant": {
+            "name": config.service_name,
+            "kind": config.kind,
+            "instanceId": config.instance_id,
+            "contractId": config.contract_id,
+            "contractDigest": config.contract_digest,
+            "startedAt": config.started_at,
+            "publishIntervalMs": config.publish_interval_ms,
+            "runtime": "rust",
+        },
+        "reportedStatus": "healthy",
+        "checks": [{
+            "name": "nats",
+            "status": "ok",
+            "latencyMs": 0.0,
+        }],
+    })
+}
+
+fn signed_event_headers(
+    auth: &SessionAuth,
+    context_digest: &str,
+    event: &PreparedTrellisEvent,
+) -> Result<HeaderMap, TrellisClientError> {
+    let mut headers = event.publish_headers();
+    headers.insert("authorization-context", context_digest);
+    headers.insert("session-key", auth.session_key.as_str());
+    headers.insert(
+        "proof",
+        auth.create_event_proof(
+            context_digest,
+            event.descriptor_identity(),
+            event.subject(),
+            event.payload(),
+            event.event_id(),
+            event.event_time(),
+        )?
+        .as_str(),
+    );
+    Ok(headers)
+}
+
+async fn publish_prepared_event(
+    nats: &async_nats::Client,
+    auth: &SessionAuth,
+    context_digest: &str,
+    timeout_ms: u64,
+    event: &PreparedTrellisEvent,
+) -> Result<(), TrellisClientError> {
+    let jetstream = jetstream::new(nats.clone());
+    let headers = signed_event_headers(auth, context_digest, event)?;
+    let publish = async {
+        jetstream
+            .publish_with_headers(event.subject().to_string(), headers, event.payload_bytes())
+            .await
+    };
+    let ack = timeout(std::time::Duration::from_millis(timeout_ms), publish)
+        .await
+        .map_err(|_| TrellisClientError::Timeout)?
+        .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+    timeout(std::time::Duration::from_millis(timeout_ms), ack)
+        .await
+        .map_err(|_| TrellisClientError::Timeout)?
+        .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+    Ok(())
+}
+
+async fn publish_health_heartbeat(
+    nats: &async_nats::Client,
+    timeout_ms: u64,
+    config: &HealthHeartbeatConfig,
+) -> Result<(), TrellisClientError> {
+    let payload = Bytes::from(serde_json::to_vec(&build_health_heartbeat(config))?);
+    let jetstream = jetstream::new(nats.clone());
+    let publish = jetstream.publish(health_heartbeat_subject(config), payload);
+    let ack = timeout(std::time::Duration::from_millis(timeout_ms), publish)
+        .await
+        .map_err(|_| TrellisClientError::Timeout)?
+        .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+    timeout(std::time::Duration::from_millis(timeout_ms), ack)
+        .await
+        .map_err(|_| TrellisClientError::Timeout)?
+        .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+    Ok(())
+}
+
+fn spawn_health_heartbeat_task(
+    nats: async_nats::Client,
+    timeout_ms: u64,
+    config: HealthHeartbeatConfig,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_millis(config.publish_interval_ms));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if let Err(error) = publish_health_heartbeat(&nats, timeout_ms, &config).await {
+                tracing::warn!(%error, "failed to publish health heartbeat");
+            }
+        }
+    })
+}
+
+fn spawn_authorization_context_refresh_task(
+    contexts: std::sync::Arc<AuthorizationContextCache>,
+    auth: Arc<SessionAuth>,
+    nats: async_nats::Client,
+    applied_native_authorization: Arc<tokio::sync::Mutex<AppliedNativeAuthorization>>,
+    provider: AuthorizationProviderCache,
+    timeout_ms: u64,
+) -> JoinHandle<()> {
+    crate::client::authorization::spawn_authorization_context_refresh_task(
+        contexts,
+        auth,
+        nats,
+        applied_native_authorization,
+        provider,
+        timeout_ms,
+    )
+}
+
+/// Connected provider-cache handle returned by attach.
+struct AuthorizationProviderHandle {
+    provider: AuthorizationProviderCache,
+    stop: tokio::sync::watch::Sender<()>,
+    task: JoinHandle<()>,
+}
+
+/// Attach the connected NATS authorization registry to this client's provider
+/// cache and wait for its complete snapshot before returning.
+async fn attach_authorization_provider(
+    nats: async_nats::Client,
+    authorization_contexts: Arc<AuthorizationContextCache>,
+) -> Result<AuthorizationProviderHandle, TrellisClientError> {
+    let registry_binding = match authorization_contexts.bundle() {
+        Ok(bundle) => bundle.authorization_registry.clone(),
+        Err(error) => return Err(error),
+    };
+    let provider = match AuthorizationProviderCache::attach(
+        nats.clone(),
+        &registry_binding,
+        authorization_contexts.clone(),
+    )
+    .await
+    {
+        Ok(provider) => provider,
+        Err(error) => {
+            let _ = nats.drain().await;
+            return Err(error);
+        }
+    };
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(());
+    let watcher = provider.clone();
+    let task_stop = stop_tx.clone();
+    let task_nats = nats.clone();
+    let task = tokio::spawn(async move {
+        if let Err(error) = watcher.run(stop_rx).await {
+            tracing::warn!(%error, "authorization provider watch stopped");
+            let _ = task_stop.send(());
+            let _ = task_nats.drain().await;
+        }
+    });
+    let ready = match tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        provider.wait_ready(stop_tx.subscribe()),
+    )
+    .await
+    {
+        Ok(ready) => ready,
+        Err(_) => {
+            let _ = stop_tx.send(());
+            task.abort();
+            let _ = nats.drain().await;
+            return Err(TrellisClientError::Bootstrap(
+                "authorization provider did not become ready".into(),
+            ));
+        }
+    };
+    if let Err(error) = ready {
+        let _ = stop_tx.send(());
+        task.abort();
+        let _ = nats.drain().await;
+        return Err(error);
+    }
+    Ok(AuthorizationProviderHandle {
+        provider,
+        stop: stop_tx,
+        task,
+    })
+}
+
+async fn connect_authorized_nats(
+    auth: Arc<SessionAuth>,
+    authorization_contexts: Arc<AuthorizationContextCache>,
+    timeout_ms: u64,
+    refresh_before_connect: bool,
+) -> Result<async_nats::Client, TrellisClientError> {
+    if refresh_before_connect {
+        authorization_contexts.refresh(&auth).await?;
+    }
+    let runtime = authorization_contexts.runtime_binding()?;
+    let key_pair = Arc::new(auth.nkey_pair()?);
+    let session_nkey = key_pair.public_key();
+    let contexts = authorization_contexts.clone();
+    let event_contexts = contexts.clone();
+    let options = ConnectOptions::with_auth_callback(move |nonce| {
+        let contexts = contexts.clone();
+        let key_pair = key_pair.clone();
+        let session_nkey = session_nkey.clone();
+        async move {
+            let (routing_jwt, context_digest) = contexts
+                .transport_credentials()
+                .map_err(async_nats::AuthError::new)?;
+            let mut credentials = async_nats::Auth::new();
+            credentials.nkey = Some(session_nkey);
+            credentials.jwt = Some(routing_jwt);
+            credentials.signature =
+                Some(key_pair.sign(&nonce).map_err(async_nats::AuthError::new)?);
+            credentials.token = Some(
+                serde_json::to_string(&NatsConnectToken {
+                    format: "trellis.nats-connect-token.v1",
+                    context_digest,
+                })
+                .map_err(async_nats::AuthError::new)?,
+            );
+            Ok(credentials)
+        }
+    })
+    .connection_timeout(Duration::from_millis(timeout_ms))
+    .event_callback(move |event| {
+        let contexts = event_contexts.clone();
+        async move {
+            if matches!(event, async_nats::Event::Disconnected) {
+                contexts.suspend();
+                contexts.request_coverage_reconciliation();
+                tracing::info!(
+                    context_digest = contexts.retained_context_digest().ok(),
+                    "suspended authorization installation after NATS disconnect"
+                );
+            }
+            if matches!(event, async_nats::Event::Connected) {
+                contexts.request_coverage_reconciliation();
+            }
+            if matches!(
+                event,
+                async_nats::Event::ServerError(async_nats::ServerError::AuthorizationViolation)
+            ) {
+                contexts.suspend();
+                contexts.request_refresh();
+                tracing::info!(
+                    "requested authorization refresh after broker authentication rejection"
+                );
+            }
+            tracing::debug!(event = ?event, "observed NATS client event");
+        }
+    })
+    .custom_inbox_prefix(runtime.inbox_prefix);
+    let native = runtime.transports.native.ok_or_else(|| {
+        TrellisClientError::AuthorizationUnavailable(
+            "bootstrap did not offer a native NATS transport".into(),
+        )
+    })?;
+    options
+        .connect(native.nats_servers)
+        .await
+        .map_err(|error| TrellisClientError::NatsConnect(error.to_string()))
+}
+
+pub(crate) async fn apply_native_runtime_refresh(
+    nats: &async_nats::Client,
+    previous: &AuthorizationRuntimeBinding,
+    refreshed: &AuthorizationRuntimeBinding,
+    credentials_changed: bool,
+    timeout_ms: u64,
+) -> Result<(), TrellisClientError> {
+    if previous.connection_id != refreshed.connection_id
+        || previous.login_session_id != refreshed.login_session_id
+        || previous.participant_id != refreshed.participant_id
+        || previous.inbox_prefix != refreshed.inbox_prefix
+    {
+        return Err(TrellisClientError::Bootstrap(
+            "refreshed native runtime changed stable session binding".into(),
+        ));
+    }
+    if !credentials_changed && previous.transports == refreshed.transports {
+        return Ok(());
+    }
+    let native = refreshed.transports.native.as_ref().ok_or_else(|| {
+        TrellisClientError::AuthorizationUnavailable(
+            "bootstrap did not offer a native NATS transport".into(),
+        )
+    })?;
+    nats.set_server_pool(native.nats_servers.as_slice())
+        .await
+        .map_err(|error| TrellisClientError::NatsConnect(error.to_string()))?;
+    let connects = nats.statistics().connects.load(Ordering::Relaxed);
+    nats.force_reconnect()
+        .await
+        .map_err(|error| TrellisClientError::NatsConnect(error.to_string()))?;
+    timeout(Duration::from_millis(timeout_ms), async {
+        while nats.statistics().connects.load(Ordering::Relaxed) <= connects {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        nats.flush().await
+    })
+    .await
+    .map_err(|_| TrellisClientError::Timeout)?
+    .map_err(|error| TrellisClientError::NatsConnect(error.to_string()))
+}
+
+pub(crate) async fn apply_native_authorization_refresh(
+    nats: &async_nats::Client,
+    applied: &mut AppliedNativeAuthorization,
+    refreshed: AppliedNativeAuthorization,
+    timeout_ms: u64,
+) -> Result<(), TrellisClientError> {
+    let credentials_changed = applied.context_digest != refreshed.context_digest
+        || applied.routing_jwt != refreshed.routing_jwt;
+    let result = apply_native_runtime_refresh(
+        nats,
+        &applied.runtime,
+        &refreshed.runtime,
+        credentials_changed,
+        timeout_ms,
+    )
+    .await;
+    applied.record(refreshed, result)
+}
+
+/// Connection options for a user/session-key principal.
+pub struct UserConnectOptions<'a> {
+    trellis_url: &'a str,
+    timeout_ms: u64,
+    credentials: UserSessionCredentials<'a>,
+    participant_id: &'a str,
+    name: Option<&'a str>,
+    allow_insecure_origin: bool,
+}
+
+/// Secret session credential for a user connection.
+pub struct UserSessionCredentials<'a> {
+    /// Durable user-only login issued by the proof-bound final bind.
+    pub login_session_id: &'a str,
+    /// Base64url-encoded Ed25519 session key seed.
+    pub session_key_seed_base64url: &'a str,
+}
+
+impl<'a> UserConnectOptions<'a> {
+    /// Create user-authenticated connection options.
+    pub fn new(
+        trellis_url: &'a str,
+        timeout_ms: u64,
+        credentials: UserSessionCredentials<'a>,
+        participant_id: &'a str,
+    ) -> Self {
+        Self {
+            trellis_url,
+            timeout_ms,
+            credentials,
+            participant_id,
+            name: None,
+            allow_insecure_origin: false,
+        }
+    }
+
+    /// Attach optional display metadata without changing login or connection identity.
+    pub fn with_name(mut self, name: &'a str) -> Self {
+        self.name = Some(name);
+        self
+    }
+
+    /// Accept a non-loopback HTTP Trellis origin explicitly allow-listed by the
+    /// operator. Defaults to strict HTTPS-or-loopback validation.
+    pub const fn with_insecure_origin(mut self, allow_insecure_origin: bool) -> Self {
+        self.allow_insecure_origin = allow_insecure_origin;
+        self
+    }
+}
+
+/// Internal authenticated Trellis transport.
+pub(crate) struct TrellisClient {
+    nats: async_nats::Client,
+    inbox_prefix: String,
+    authorization_provider: AuthorizationProviderCache,
+    authorization_provider_stop: tokio::sync::watch::Sender<()>,
+    authorization_provider_task: JoinHandle<()>,
+    auth: Arc<SessionAuth>,
+    timeout_ms: u64,
+    service_bootstrap_binding: Option<CoreBootstrapBinding>,
+    health_heartbeat_task: Option<JoinHandle<()>>,
+    authorization_contexts: Option<Arc<AuthorizationContextCache>>,
+    applied_native_authorization: Arc<tokio::sync::Mutex<AppliedNativeAuthorization>>,
+    authorization_context_refresh_task: Option<JoinHandle<()>>,
+    companion: Option<Arc<TrellisClient>>,
+}
+
+impl TrellisClient {
+    pub(crate) fn descriptor_subject(&self, subject: &str) -> String {
+        subject.to_string()
+    }
+
+    pub(crate) fn bound_api_subject(
+        &self,
+        family: &str,
+        api_id: &str,
+        action: &str,
+    ) -> Result<String, TrellisClientError> {
+        let deployment_id = self
+            .authorization_contexts
+            .as_ref()
+            .ok_or_else(|| {
+                TrellisClientError::Bootstrap("authorization context unavailable".into())
+            })?
+            .provider_deployment_id(api_id)?;
+        let subject = match family {
+            "rpc" => trellis_protocol::derive_bound_rpc_subject(api_id, &deployment_id, action),
+            "operation" => {
+                trellis_protocol::derive_bound_operation_subject(api_id, &deployment_id, action)
+            }
+            "feed" => trellis_protocol::derive_bound_feed_subject(api_id, &deployment_id, action),
+            _ => unreachable!("only request route families are deployment-bound"),
+        };
+        subject.map_err(|error| TrellisClientError::Bootstrap(error.to_string()))
+    }
+
+    /// Derive a bound request subject from a generated action key. The generated
+    /// key carries the API short-name prefix that bound routes do not repeat, so
+    /// it is normalized exactly like `Router::descriptor_subject` does.
+    pub(crate) fn bound_key_subject(
+        &self,
+        family: &str,
+        api_id: &str,
+        key: &str,
+    ) -> Result<String, TrellisClientError> {
+        self.bound_api_subject(family, api_id, descriptor_action(key))
+    }
+
+    pub(crate) fn nats(&self) -> async_nats::Client {
+        self.nats.clone()
+    }
+
+    pub(crate) fn participant_id(&self) -> Result<String, TrellisClientError> {
+        self.authorization_contexts
+            .as_ref()
+            .ok_or_else(|| {
+                TrellisClientError::Bootstrap("authorization context unavailable".into())
+            })?
+            .runtime_binding()
+            .map(|binding| binding.participant_id)
+    }
+
+    /// Return the session auth helper used by this client.
+    pub fn auth(&self) -> &SessionAuth {
+        &self.auth
+    }
+
+    /// Return the request timeout configured for this client.
+    pub fn timeout_ms(&self) -> u64 {
+        self.timeout_ms
+    }
+
+    /// Return the resource binding supplied by service HTTP bootstrap, if this is a service client.
+    pub fn service_bootstrap_binding(&self) -> Option<&CoreBootstrapBinding> {
+        self.service_bootstrap_binding.as_ref()
+    }
+
+    pub(crate) fn companion(&self) -> Option<Arc<TrellisClient>> {
+        self.companion.clone()
+    }
+
+    /// Connect using a provisioned service seed and server-owned assignment.
+    pub async fn connect_service_with_contract(
+        opts: ServiceConnectWithContractOptions<'_>,
+    ) -> Result<Self, TrellisClientError> {
+        Self::connect_native(NativeConnectOptions {
+            trellis_url: opts.trellis_url,
+            participant_id: opts.participant_id,
+            participant_path: opts.participant_path,
+            package_evidence: opts.package_evidence,
+            identity_seed: opts.provisioned_identity_seed_base64url,
+            companion_installation_seed: None,
+            companion_descriptor: None,
+            name: opts.name,
+            timeout_ms: opts.timeout_ms,
+            allow_insecure_origin: opts.allow_insecure_origin,
+            kind: trellis_protocol::AuthorizationPrincipalKind::Service,
+        })
+        .await
+    }
+
+    async fn connect_native(opts: NativeConnectOptions<'_>) -> Result<Self, TrellisClientError> {
+        let NativeConnectOptions {
+            trellis_url,
+            participant_id,
+            participant_path,
+            package_evidence,
+            identity_seed,
+            companion_installation_seed,
+            companion_descriptor,
+            name,
+            timeout_ms,
+            allow_insecure_origin,
+            kind,
+        } = opts;
+        let identity = Arc::new(SessionAuth::from_seed_base64url(identity_seed)?);
+        let (session_seed, _) = crate::auth::generate_session_keypair();
+        let auth = SessionAuth::from_seed_base64url(&session_seed)?;
+        let companion_credential = match (companion_descriptor, companion_installation_seed) {
+            (Some(descriptor), Some(seed)) => {
+                Some(super::authorization::NativeCompanionCredential {
+                    participant_id: descriptor.id,
+                    installation: Arc::new(SessionAuth::from_seed_base64url(seed)?),
+                })
+            }
+            (Some(_), None) => {
+                return Err(TrellisClientError::Bootstrap(
+                    "device companion installation seed is required".into(),
+                ))
+            }
+            (None, Some(_)) => {
+                return Err(TrellisClientError::Bootstrap(
+                    "device descriptor has no companion".into(),
+                ))
+            }
+            (None, None) => None,
+        };
+        let contexts = Arc::new(AuthorizationContextCache::new_with_insecure_origin(
+            trellis_url,
+            participant_id.to_owned(),
+            ulid::Ulid::new().to_string(),
+            auth.session_key.clone(),
+            super::authorization::AuthorizationCredential::Native {
+                kind,
+                identity,
+                package_evidence,
+                participant_path,
+                companion: companion_credential,
+            },
+            name.map(str::to_owned),
+            allow_insecure_origin,
+        )?);
+        let mut retry_delay = Duration::from_millis(100);
+        loop {
+            match contexts.refresh(&auth).await {
+                Err(TrellisClientError::BootstrapHttp { code, .. })
+                    if kind == trellis_protocol::AuthorizationPrincipalKind::Service
+                        && code == "resource_pending" =>
+                {
+                    tokio::time::sleep(retry_delay).await;
+                    retry_delay = (retry_delay * 2).min(Duration::from_secs(1));
+                }
+                result => {
+                    result?;
+                    break;
+                }
+            }
+        }
+        let authorization: ServiceBootstrapAuthorization =
+            serde_json::from_value(contexts.state_snapshot()?.authorization.ok_or_else(|| {
+                TrellisClientError::Bootstrap("native bootstrap omitted resource evidence".into())
+            })?)?;
+        if authorization.participant_id != participant_id {
+            return Err(TrellisClientError::Bootstrap(
+                "native resource evidence has the wrong participant".into(),
+            ));
+        }
+        let context = trellis_protocol::parse_authorization_context(&contexts.bundle()?.context)
+            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
+        let heartbeat = HealthHeartbeatConfig {
+            session_key: auth.session_key.clone(),
+            service_name: name.unwrap_or(participant_id).to_owned(),
+            kind: match kind {
+                trellis_protocol::AuthorizationPrincipalKind::Service => {
+                    HealthHeartbeatServiceKind::Service
+                }
+                trellis_protocol::AuthorizationPrincipalKind::Device => {
+                    HealthHeartbeatServiceKind::Device
+                }
+                trellis_protocol::AuthorizationPrincipalKind::User => {
+                    return Err(TrellisClientError::Bootstrap(
+                        "native connection requires a service or device credential".into(),
+                    ))
+                }
+            },
+            deployment_id: context.unsigned.deployment_id.ok_or_else(|| {
+                TrellisClientError::Bootstrap(
+                    "native bootstrap omitted deployment assignment".into(),
+                )
+            })?,
+            instance_id: context.unsigned.instance_id.ok_or_else(|| {
+                TrellisClientError::Bootstrap("native bootstrap omitted instance assignment".into())
+            })?,
+            contract_id: participant_id.to_owned(),
+            contract_digest: authorization.participant_digest.clone(),
+            started_at: now_rfc3339(),
+            publish_interval_ms: HEALTH_HEARTBEAT_INTERVAL_MS,
+        };
+        let mut connected = Self::connect_context(auth, contexts, timeout_ms).await?;
+        connected.service_bootstrap_binding = Some(CoreBootstrapBinding::new(
+            BootstrapBinding {
+                contract_id: authorization.participant_id,
+                digest: authorization.participant_digest,
+            },
+            authorization.resource_runtime,
+        ));
+        if let Some(companion) = authorization.companion {
+            let seed = companion_installation_seed.ok_or_else(|| {
+                TrellisClientError::Bootstrap(
+                    "device bootstrap returned a companion without its installation seed".into(),
+                )
+            })?;
+            match Self::connect_user(
+                UserConnectOptions::new(
+                    trellis_url,
+                    timeout_ms,
+                    UserSessionCredentials {
+                        login_session_id: &companion.login_session_id,
+                        session_key_seed_base64url: seed,
+                    },
+                    &companion.participant_id,
+                )
+                .with_insecure_origin(allow_insecure_origin),
+            )
+            .await
+            {
+                Ok(child) => connected.companion = Some(Arc::new(child)),
+                Err(error) if !companion.required => {
+                    tracing::warn!(%error, "optional device companion could not connect");
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if let Err(error) = publish_health_heartbeat(&connected.nats, timeout_ms, &heartbeat).await
+        {
+            tracing::warn!(%error, "failed to publish initial health heartbeat");
+        }
+        connected.health_heartbeat_task = Some(spawn_health_heartbeat_task(
+            connected.nats.clone(),
+            timeout_ms,
+            heartbeat,
+        ));
+        Ok(connected)
+    }
+
+    /// Connect an activated device using refreshed auth-owned connect info.
+    pub async fn connect_device<C: crate::generated::ParticipantDescriptor>(
+        opts: DeviceConnectOptions<'_, C>,
+    ) -> Result<Self, TrellisClientError> {
+        Self::connect_native(NativeConnectOptions {
+            trellis_url: opts.trellis_url,
+            participant_id: opts.participant_id,
+            participant_path: C::PATH,
+            package_evidence: C::package_evidence(),
+            identity_seed: opts.identity_seed_base64url,
+            companion_installation_seed: opts.companion_installation_seed_base64url,
+            companion_descriptor: C::COMPANION,
+            name: opts.name,
+            timeout_ms: opts.timeout_ms,
+            allow_insecure_origin: opts.allow_insecure_origin,
+            kind: trellis_protocol::AuthorizationPrincipalKind::Device,
+        })
+        .await
+    }
+
+    /// Issue fresh connection authority from a durable user login before connecting.
+    pub async fn connect_user(opts: UserConnectOptions<'_>) -> Result<Self, TrellisClientError> {
+        let installation = Arc::new(SessionAuth::from_seed_base64url(
+            opts.credentials.session_key_seed_base64url,
+        )?);
+        let auth = connection_runtime_auth()?;
+        let authorization_contexts = AuthorizationContextCache::new_with_insecure_origin(
+            opts.trellis_url,
+            opts.participant_id.to_owned(),
+            ulid::Ulid::new().to_string(),
+            auth.session_key.clone(),
+            super::authorization::AuthorizationCredential::User {
+                login_session_id: opts.credentials.login_session_id.to_owned(),
+                installation,
+            },
+            opts.name.map(str::to_owned),
+            opts.allow_insecure_origin,
+        )?;
+        let authorization_contexts = Arc::new(authorization_contexts);
+        authorization_contexts.refresh(&auth).await?;
+        Self::connect_context(auth, authorization_contexts, opts.timeout_ms).await
+    }
+
+    async fn connect_context(
+        auth: SessionAuth,
+        authorization_contexts: Arc<AuthorizationContextCache>,
+        timeout_ms: u64,
+    ) -> Result<Self, TrellisClientError> {
+        let inbox_prefix = authorization_contexts.runtime_binding()?.inbox_prefix;
+        let applied_native_authorization =
+            AppliedNativeAuthorization::from_cache(&authorization_contexts)?;
+        let auth = Arc::new(auth);
+        let nats = connect_authorized_nats(
+            auth.clone(),
+            authorization_contexts.clone(),
+            timeout_ms,
+            false,
+        )
+        .await?;
+
+        let provider =
+            attach_authorization_provider(nats.clone(), authorization_contexts.clone()).await?;
+        let applied_native_authorization =
+            Arc::new(tokio::sync::Mutex::new(applied_native_authorization));
+        let authorization_context_refresh_task = Some(spawn_authorization_context_refresh_task(
+            authorization_contexts.clone(),
+            auth.clone(),
+            nats.clone(),
+            applied_native_authorization.clone(),
+            provider.provider.clone(),
+            timeout_ms,
+        ));
+        Ok(Self {
+            nats,
+            inbox_prefix,
+            authorization_provider: provider.provider,
+            authorization_provider_stop: provider.stop,
+            authorization_provider_task: provider.task,
+            auth,
+            timeout_ms,
+            service_bootstrap_binding: None,
+            health_heartbeat_task: None,
+            authorization_contexts: Some(authorization_contexts),
+            applied_native_authorization,
+            authorization_context_refresh_task,
+            companion: None,
+        })
+    }
+
+    /// Return the signed authorization context used by this connection.
+    pub fn authorization_context(
+        &self,
+    ) -> Result<Option<AuthorizationContextBundle>, TrellisClientError> {
+        self.authorization_contexts
+            .as_ref()
+            .map(|cache| cache.bundle())
+            .transpose()
+    }
+
+    /// Return the in-process provider cache used by local verification.
+    pub(crate) fn authorization_context_cache(
+        &self,
+    ) -> Result<AuthorizationProviderCache, TrellisClientError> {
+        Ok(self.authorization_provider.clone())
+    }
+
+    /// Refresh and verify the current authorization context immediately.
+    pub async fn refresh_authorization_context(
+        &self,
+    ) -> Result<AuthorizationContextBundle, TrellisClientError> {
+        let contexts = self.authorization_contexts.as_ref().ok_or_else(|| {
+            TrellisClientError::Bootstrap("authorization context unavailable".into())
+        })?;
+        let mut applied = self.applied_native_authorization.lock().await;
+        let (candidate_digest, _) = contexts.prepare_refresh(&self.auth).await?;
+        apply_native_authorization_refresh(
+            &self.nats,
+            &mut applied,
+            AppliedNativeAuthorization::from_cache(contexts)?,
+            self.timeout_ms,
+        )
+        .await?;
+        self.authorization_provider
+            .retain_own_context(&candidate_digest, self.authorization_provider.epoch())
+            .await?;
+        self.authorization_provider
+            .finalize_own_installation(&candidate_digest, true)?;
+        contexts.bundle()
+    }
+
+    pub(crate) fn availability(&self) -> crate::generated::AvailabilitySnapshot {
+        self.authorization_contexts
+            .as_ref()
+            .map_or_else(Default::default, |contexts| contexts.availability())
+    }
+
+    pub(crate) fn watch_availability(
+        &self,
+    ) -> tokio::sync::watch::Receiver<crate::generated::AvailabilitySnapshot> {
+        self.authorization_contexts
+            .as_ref()
+            .expect("connected clients always retain authorization context state")
+            .watch_availability()
+    }
+
+    async fn request(
+        &self,
+        subject: &str,
+        payload: Bytes,
+    ) -> Result<async_nats::Message, TrellisClientError> {
+        // Create the exact reply inbox before signing so the proof binds the
+        // reply subject the response arrives on.
+        let nats = self.nats();
+        let reply = nats.new_inbox();
+        let headers = self.signed_headers(subject, &reply, &payload)?;
+        let request = async_nats::Request::new()
+            .inbox(reply)
+            .headers(headers)
+            .payload(payload);
+
+        let future = nats.send_request(subject.to_string(), request);
+        let message = timeout(std::time::Duration::from_millis(self.timeout_ms), future)
+            .await
+            .map_err(|_| TrellisClientError::Timeout)?
+            .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+        Ok(message)
+    }
+
+    pub(crate) fn signed_headers(
+        &self,
+        subject: &str,
+        reply: &str,
+        payload: &[u8],
+    ) -> Result<HeaderMap, TrellisClientError> {
+        let context_digest = self.authorization_context_digest()?;
+        signed_headers(&self.auth, &context_digest, subject, reply, payload)
+    }
+
+    pub(crate) fn authorization_context_digest(&self) -> Result<String, TrellisClientError> {
+        let contexts = self.authorization_contexts.as_ref().ok_or_else(|| {
+            TrellisClientError::Bootstrap("authorization context unavailable".into())
+        })?;
+        contexts.context_digest()
+    }
+
+    pub(crate) fn own_deployment_id(&self) -> Result<String, TrellisClientError> {
+        let contexts = self.authorization_contexts.as_ref().ok_or_else(|| {
+            TrellisClientError::Bootstrap("authorization context unavailable".into())
+        })?;
+        let context = trellis_protocol::parse_authorization_context(&contexts.bundle()?.context)
+            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
+        context.unsigned.deployment_id.ok_or_else(|| {
+            TrellisClientError::Bootstrap(
+                "authorization context omitted deployment assignment".into(),
+            )
+        })
+    }
+
+    pub(crate) fn own_connection_id(&self) -> Result<String, TrellisClientError> {
+        let contexts = self.authorization_contexts.as_ref().ok_or_else(|| {
+            TrellisClientError::Bootstrap("authorization context unavailable".into())
+        })?;
+        let context = trellis_protocol::parse_authorization_context(&contexts.bundle()?.context)
+            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
+        Ok(context.unsigned.connection_id)
+    }
+
+    pub(crate) fn own_instance_id(&self) -> Result<String, TrellisClientError> {
+        let contexts = self.authorization_contexts.as_ref().ok_or_else(|| {
+            TrellisClientError::Bootstrap("authorization context unavailable".into())
+        })?;
+        let context = trellis_protocol::parse_authorization_context(&contexts.bundle()?.context)
+            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
+        context.unsigned.instance_id.ok_or_else(|| {
+            TrellisClientError::Bootstrap(
+                "authorization context omitted instance assignment".into(),
+            )
+        })
+    }
+
+    async fn request_json(&self, subject: &str, body: Value) -> Result<Value, TrellisClientError> {
+        let payload = Bytes::from(serde_json::to_vec(&body)?);
+        let message = self.request(subject, payload).await?;
+
+        decode_json_message(message)
+    }
+
+    /// Call a raw subject with a JSON value payload.
+    pub async fn request_json_value(
+        &self,
+        subject: &str,
+        body: &Value,
+    ) -> Result<Value, TrellisClientError> {
+        self.request_json(subject, body.clone()).await
+    }
+
+    /// Publish one descriptor-backed event.
+    pub async fn publish<D>(&self, event: &D::Event) -> Result<(), TrellisClientError>
+    where
+        D: EventDescriptor,
+    {
+        let prepared = prepare_event::<D>(event)?.with_subject(self.descriptor_subject(D::SUBJECT));
+        self.publish_prepared(&prepared).await
+    }
+
+    /// Publish an event that was already prepared, preserving its subject, payload, and message id.
+    pub async fn publish_prepared(
+        &self,
+        event: &PreparedTrellisEvent,
+    ) -> Result<(), TrellisClientError> {
+        let event = event
+            .clone()
+            .with_subject(self.descriptor_subject(event.subject()));
+        let context_digest = self.authorization_context_digest()?;
+        publish_prepared_event(
+            &self.nats(),
+            &self.auth,
+            &context_digest,
+            self.timeout_ms,
+            &event,
+        )
+        .await
+    }
+
+    /// Subscribe to one descriptor-backed event subject with explicit subscription options.
+    pub async fn subscribe_with_options<D>(
+        &self,
+        options: EventSubscribeOptions,
+    ) -> Result<BoxStream<'static, Result<D::Event, TrellisClientError>>, TrellisClientError>
+    where
+        D: EventDescriptor,
+        D::Event: Send + 'static,
+    {
+        if options.mode == EventSubscriptionMode::Ephemeral {
+            return self.subscribe_live::<D>().await;
+        }
+
+        let messages = self.subscribe_messages::<D>(options).await?;
+        let stream = stream::try_unfold(messages, |mut messages| async move {
+            match messages.next().await {
+                Some(Ok(event_message)) => {
+                    let event = event_message.decode()?;
+                    event_message.ack().await?;
+                    Ok(Some((event, messages)))
+                }
+                Some(Err(error)) => Err(error),
+                None => Ok(None),
+            }
+        });
+
+        Ok(Box::pin(stream) as BoxStream<'static, Result<D::Event, TrellisClientError>>)
+    }
+
+    async fn subscribe_live<D>(
+        &self,
+    ) -> Result<BoxStream<'static, Result<D::Event, TrellisClientError>>, TrellisClientError>
+    where
+        D: EventDescriptor,
+        D::Event: Send + 'static,
+    {
+        let subscriber = timeout(
+            std::time::Duration::from_millis(self.timeout_ms),
+            self.nats()
+                .subscribe(self.descriptor_subject(D::SUBSCRIBE_SUBJECT)),
+        )
+        .await
+        .map_err(|_| TrellisClientError::Timeout)?
+        .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+
+        let stream = stream::try_unfold(subscriber, |mut subscriber| async move {
+            match subscriber.next().await {
+                Some(message) => {
+                    let value: Value = serde_json::from_slice(&message.payload)?;
+                    let event = D::Event::decode(value)
+                        .map_err(|error| TrellisClientError::Codec(error.to_string()))?;
+                    Ok(Some((event, subscriber)))
+                }
+                None => Ok(None),
+            }
+        });
+
+        Ok(Box::pin(stream) as BoxStream<'static, Result<D::Event, TrellisClientError>>)
+    }
+
+    /// Subscribe to descriptor-backed event messages with explicit ack/nak/term control.
+    pub async fn subscribe_messages<D>(
+        &self,
+        options: EventSubscribeOptions,
+    ) -> Result<
+        BoxStream<'static, Result<EventMessage<D::Event>, TrellisClientError>>,
+        TrellisClientError,
+    >
+    where
+        D: EventDescriptor,
+        D::Event: Send + 'static,
+    {
+        self.event_messages(
+            options,
+            Some(self.descriptor_subject(D::SUBSCRIBE_SUBJECT)),
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn event_messages<T: Send + 'static>(
+        &self,
+        options: EventSubscribeOptions,
+        filter_subject: Option<String>,
+        max_messages: Option<usize>,
+    ) -> Result<BoxStream<'static, Result<EventMessage<T>, TrellisClientError>>, TrellisClientError>
+    {
+        let jetstream = jetstream::new(self.nats());
+        let stream_name = options.stream.as_deref().unwrap_or(DEFAULT_EVENT_STREAM);
+        if options.mode == EventSubscriptionMode::Durable && options.durable_name.is_none() {
+            return Err(TrellisClientError::EventSubscriptionProtocol(
+                "durable event subscriptions require a pre-provisioned durable name".to_string(),
+            ));
+        }
+
+        let durable_name = if options.mode == EventSubscriptionMode::Durable {
+            options.durable_name.as_deref()
+        } else {
+            None
+        };
+        let consumer = match durable_name {
+            Some(name) => timeout(
+                std::time::Duration::from_millis(self.timeout_ms),
+                jetstream.get_consumer_from_stream(name, stream_name),
+            )
+            .await
+            .map_err(|_| TrellisClientError::Timeout)?
+            .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?,
+            None => {
+                let event_stream = timeout(
+                    std::time::Duration::from_millis(self.timeout_ms),
+                    jetstream.get_stream_no_info(stream_name),
+                )
+                .await
+                .map_err(|_| TrellisClientError::Timeout)?
+                .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+                let subject = filter_subject.ok_or_else(|| {
+                    TrellisClientError::EventSubscriptionProtocol(
+                        "ephemeral event subscriptions require a filter subject".to_owned(),
+                    )
+                })?;
+                let config = event_consumer_config(&options, subject);
+                timeout(
+                    std::time::Duration::from_millis(self.timeout_ms),
+                    event_stream.create_consumer(config),
+                )
+                .await
+                .map_err(|_| TrellisClientError::Timeout)?
+                .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?
+            }
+        };
+
+        let mut request = consumer.stream().expires(std::time::Duration::from_secs(1));
+        if let Some(max_messages) = max_messages {
+            request = request.max_messages_per_batch(max_messages);
+        }
+        let messages = timeout(
+            std::time::Duration::from_millis(self.timeout_ms),
+            request.messages(),
+        )
+        .await
+        .map_err(|_| TrellisClientError::Timeout)?
+        .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+
+        let stream = stream::try_unfold(messages, |mut messages| async move {
+            match messages.next().await {
+                Some(Ok(message)) => {
+                    let event_message = EventMessage {
+                        message,
+                        _event: PhantomData,
+                    };
+                    Ok(Some((event_message, messages)))
+                }
+                Some(Err(error)) => Err(TrellisClientError::NatsRequest(error.to_string())),
+                None => Ok(None),
+            }
+        });
+
+        Ok(Box::pin(stream)
+            as BoxStream<
+                'static,
+                Result<EventMessage<T>, TrellisClientError>,
+            >)
+    }
+
+    /// Subscribe to one descriptor-backed feed and decode event payloads.
+    pub async fn feed<D>(
+        &self,
+        input: &D::Input,
+    ) -> Result<BoxStream<'static, Result<D::Event, TrellisClientError>>, TrellisClientError>
+    where
+        D: FeedDescriptor,
+        D::Event: Send + 'static,
+    {
+        let input = input
+            .encode()
+            .map_err(|error| TrellisClientError::Codec(error.to_string()))?;
+        let payload = Bytes::from(serde_json::to_vec(&input)?);
+        let subject = self.bound_key_subject("feed", D::API_ID, D::KEY)?;
+        let context_digest = self.authorization_context_digest()?;
+        let inbox = format!(
+            "{}.{}",
+            self.inbox_prefix,
+            FEED_INBOX_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let headers = signed_headers(&self.auth, &context_digest, &subject, &inbox, &payload)?;
+        let mut subscriber = timeout(
+            std::time::Duration::from_millis(self.timeout_ms),
+            self.nats().subscribe(inbox.clone()),
+        )
+        .await
+        .map_err(|_| TrellisClientError::Timeout)?
+        .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+
+        timeout(
+            std::time::Duration::from_millis(self.timeout_ms),
+            self.nats()
+                .publish_with_reply_and_headers(subject, inbox.clone(), headers, payload),
+        )
+        .await
+        .map_err(|_| TrellisClientError::Timeout)?
+        .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+
+        let first = timeout(
+            std::time::Duration::from_millis(self.timeout_ms),
+            subscriber.next(),
+        )
+        .await
+        .map_err(|_| TrellisClientError::Timeout)?
+        .ok_or(TrellisClientError::Timeout)?;
+
+        let control_subject = first
+            .headers
+            .as_ref()
+            .and_then(|headers| headers.get("feed-control-subject"))
+            .map(ToString::to_string)
+            .ok_or_else(|| {
+                TrellisClientError::NatsRequest(
+                    "feed acknowledgement omitted owner control subject".to_owned(),
+                )
+            })?;
+        let feed_id = first
+            .headers
+            .as_ref()
+            .and_then(|headers| headers.get("feed-id"))
+            .map(ToString::to_string)
+            .ok_or_else(|| {
+                TrellisClientError::NatsRequest("feed acknowledgement omitted feed id".to_owned())
+            })?;
+        let first_event = decode_feed_message::<D>(first)?;
+        let cancel = FeedCancelGuard {
+            runtime: tokio::runtime::Handle::current(),
+            nats: self.nats(),
+            auth: Arc::clone(&self.auth),
+            context_digest,
+            subject: control_subject,
+            reply: inbox.clone(),
+            payload: Bytes::from(serde_json::to_vec(&serde_json::json!({
+                "_trellisFeedCancel": inbox.clone(),
+                "feedId": feed_id,
+            }))?),
+        };
+        let stream = stream::try_unfold(
+            (subscriber, first_event, cancel),
+            |(mut subscriber, first_event, cancel)| async move {
+                if let Some(event) = first_event {
+                    return Ok(Some((event, (subscriber, None, cancel))));
+                }
+
+                match subscriber.next().await {
+                    Some(message) => {
+                        let event = decode_feed_message::<D>(message)?.ok_or_else(|| {
+                            TrellisClientError::NatsRequest(
+                                "feed emitted duplicate ready acknowledgement".to_string(),
+                            )
+                        })?;
+                        Ok(Some((event, (subscriber, None, cancel))))
+                    }
+                    None => Ok(None),
+                }
+            },
+        );
+
+        Ok(Box::pin(stream) as BoxStream<'static, Result<D::Event, TrellisClientError>>)
+    }
+
+    /// Download the bytes exposed by a receive transfer grant.
+    pub async fn download_transfer(
+        &self,
+        grant: &DownloadTransferGrant,
+    ) -> Result<Vec<u8>, TrellisClientError> {
+        get_download_grant(self, grant).await
+    }
+
+    /// Stream the bytes exposed by a receive transfer grant into `writer`.
+    pub async fn download_transfer_into<W>(
+        &self,
+        grant: &DownloadTransferGrant,
+        writer: &mut W,
+    ) -> Result<FileInfo, TrellisClientError>
+    where
+        W: tokio::io::AsyncWrite + Unpin + Send + ?Sized,
+    {
+        crate::client::transfer::get_download_grant_into(self, grant, writer).await
+    }
+
+    /// Stream a receive transfer into `writer` with authenticated cancellation.
+    pub async fn download_transfer_into_with_cancel<W>(
+        &self,
+        grant: &DownloadTransferGrant,
+        writer: &mut W,
+        cancellation: &crate::client::TransferCancellation,
+    ) -> Result<FileInfo, TrellisClientError>
+    where
+        W: tokio::io::AsyncWrite + Unpin + Send + ?Sized,
+    {
+        crate::client::transfer::get_download_grant_into_with_cancel(
+            self,
+            grant,
+            writer,
+            Some(cancellation),
+        )
+        .await
+    }
+}
+
+impl Drop for TrellisClient {
+    fn drop(&mut self) {
+        if let Some(task) = self.health_heartbeat_task.take() {
+            task.abort();
+        }
+        if let Some(task) = self.authorization_context_refresh_task.take() {
+            task.abort();
+        }
+        let _ = self.authorization_provider_stop.send(());
+        self.authorization_provider_task.abort();
+    }
+}
+
+impl OperationTransport for TrellisClient {
+    fn operation_subject(
+        &self,
+        api_id: &str,
+        operation: &str,
+        subject: &str,
+    ) -> Result<String, TrellisClientError> {
+        if api_id.is_empty() {
+            return Ok(subject.to_owned());
+        }
+        self.bound_key_subject("operation", api_id, operation)
+    }
+
+    async fn request_json_value(
+        &self,
+        subject: String,
+        body: Value,
+    ) -> Result<Value, TrellisClientError> {
+        TrellisClient::request_json_value(self, &subject, &body).await
+    }
+
+    async fn watch_json_value<'a>(
+        &'a self,
+        subject: String,
+        body: Value,
+    ) -> Result<BoxStream<'a, Result<Value, TrellisClientError>>, TrellisClientError> {
+        let payload = Bytes::from(serde_json::to_vec(&body)?);
+        let nats = self.nats();
+        let inbox = nats.new_inbox();
+        let headers = self.signed_headers(&subject, &inbox, &payload)?;
+        let mut subscriber = timeout(
+            std::time::Duration::from_millis(self.timeout_ms),
+            nats.subscribe(inbox.clone()),
+        )
+        .await
+        .map_err(|_| TrellisClientError::Timeout)?
+        .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+
+        timeout(
+            std::time::Duration::from_millis(self.timeout_ms),
+            nats.publish_with_reply_and_headers(subject, inbox, headers, payload),
+        )
+        .await
+        .map_err(|_| TrellisClientError::Timeout)?
+        .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+
+        let first = timeout(
+            std::time::Duration::from_millis(self.timeout_ms),
+            subscriber.next(),
+        )
+        .await
+        .map_err(|_| TrellisClientError::Timeout)?
+        .ok_or_else(|| TrellisClientError::NatsRequest("operation watch closed".to_owned()))?;
+        let first = decode_watch_message(first)?;
+        let first_terminal = is_terminal_event(&first);
+
+        let stream = stream::once(async move { Ok(first) }).chain(stream::try_unfold(
+            (subscriber, first_terminal),
+            |(mut subscriber, done)| async move {
+                if done {
+                    return Ok(None);
+                }
+
+                match subscriber.next().await {
+                    Some(message) => {
+                        let event = decode_watch_message(message)?;
+                        let terminal = is_terminal_event(&event);
+                        Ok(Some((event, (subscriber, terminal))))
+                    }
+                    None => Ok(None),
+                }
+            },
+        ));
+
+        Ok(Box::pin(stream) as BoxStream<'a, Result<Value, TrellisClientError>>)
+    }
+
+    async fn put_upload_transfer(
+        &self,
+        grant: UploadTransferGrant,
+        body: Vec<u8>,
+    ) -> Result<FileInfo, TrellisClientError> {
+        put_upload_grant(self, &grant, body).await
+    }
+
+    async fn put_upload_transfer_from<'a, R>(
+        &'a self,
+        grant: UploadTransferGrant,
+        reader: &'a mut R,
+        expected_size: Option<u64>,
+    ) -> Result<FileInfo, TrellisClientError>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + ?Sized + 'a,
+    {
+        crate::client::transfer::put_upload_grant_from(self, &grant, reader, expected_size).await
+    }
+
+    async fn put_upload_transfer_from_with_cancel<'a, R>(
+        &'a self,
+        grant: UploadTransferGrant,
+        reader: &'a mut R,
+        expected_size: Option<u64>,
+        cancellation: &'a crate::client::TransferCancellation,
+    ) -> Result<FileInfo, TrellisClientError>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + ?Sized + 'a,
+    {
+        crate::client::transfer::put_upload_grant_from_with_cancel(
+            self,
+            &grant,
+            reader,
+            expected_size,
+            Some(cancellation),
+        )
+        .await
+    }
+}
+
+fn decode_json_message(message: async_nats::Message) -> Result<Value, TrellisClientError> {
+    if let Some(headers) = &message.headers {
+        if headers
+            .get("status")
+            .is_some_and(|status| status.as_str() == "error")
+        {
+            return Err(TrellisClientError::RpcError(
+                RpcErrorPayload::from_json_slice(&message.payload)?,
+            ));
+        }
+    }
+
+    Ok(serde_json::from_slice(&message.payload)?)
+}
+
+fn decode_watch_message(message: async_nats::Message) -> Result<Value, TrellisClientError> {
+    decode_json_message(message)
+}
+
+fn decode_feed_message<D>(
+    message: async_nats::Message,
+) -> Result<Option<D::Event>, TrellisClientError>
+where
+    D: FeedDescriptor,
+{
+    if message.status == Some(async_nats::StatusCode::NO_RESPONDERS) {
+        return Err(TrellisClientError::NatsRequest(
+            "no responders for feed request".to_string(),
+        ));
+    }
+    decode_feed_frame::<D>(message.headers.as_ref(), &message.payload)
+}
+
+fn decode_feed_frame<D>(
+    headers: Option<&HeaderMap>,
+    payload: &[u8],
+) -> Result<Option<D::Event>, TrellisClientError>
+where
+    D: FeedDescriptor,
+{
+    if let Some(headers) = headers {
+        if headers
+            .get("status")
+            .is_some_and(|status| status.as_str() == "error")
+        {
+            return Err(TrellisClientError::RpcError(
+                RpcErrorPayload::from_json_slice(payload)?,
+            ));
+        }
+        if headers
+            .get("feed-status")
+            .is_some_and(|status| status.as_str() == "ready")
+        {
+            return Ok(None);
+        }
+    }
+
+    let value: Value = serde_json::from_slice(payload)?;
+    Ok(Some(D::Event::decode(value).map_err(|error| {
+        TrellisClientError::Codec(error.to_string())
+    })?))
+}
+
+fn is_terminal_event(event: &Value) -> bool {
+    matches!(
+        event.get("type").and_then(Value::as_str),
+        Some("completed" | "failed" | "cancelled")
+    )
+}
+
+fn event_consumer_config(
+    options: &EventSubscribeOptions,
+    filter_subject: String,
+) -> consumer::pull::Config {
+    consumer::pull::Config {
+        durable_name: match options.mode {
+            EventSubscriptionMode::Durable => options.durable_name.clone(),
+            EventSubscriptionMode::Ephemeral => None,
+        },
+        deliver_policy: match options.replay {
+            EventReplayPolicy::All => consumer::DeliverPolicy::All,
+            EventReplayPolicy::New => consumer::DeliverPolicy::New,
+        },
+        ack_policy: consumer::AckPolicy::Explicit,
+        filter_subject,
+        ..Default::default()
+    }
+}
+
+fn descriptor_action(action: &str) -> &str {
+    action.split_once('.').map_or(action, |(_, action)| action)
+}
+
+fn connection_runtime_auth() -> Result<SessionAuth, TrellisClientError> {
+    let (context_seed, _) = crate::auth::generate_session_keypair();
+    SessionAuth::from_seed_base64url(&context_seed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppliedNativeAuthorization;
+    use crate::client::{
+        AuthorizationNativeTransport, AuthorizationRuntimeBinding, AuthorizationRuntimeTransports,
+        TrellisClientError,
+    };
+
+    #[test]
+    fn each_user_connection_gets_an_independent_runtime_key() {
+        let first = super::connection_runtime_auth().expect("runtime auth");
+        let second = super::connection_runtime_auth().expect("runtime auth");
+        assert_ne!(first.session_key, second.session_key);
+    }
+
+    #[test]
+    fn generated_action_keys_normalize_like_bound_routes() {
+        assert_eq!(super::descriptor_action("auth.Sessions.Me"), "Sessions.Me");
+        assert_eq!(
+            super::descriptor_action("core.Resources.Destroy"),
+            "Resources.Destroy"
+        );
+        assert_eq!(super::descriptor_action("Ping"), "Ping");
+        // Internal SDK descriptors carry the same generated-key form as the
+        // routes they call, including for actions that already contain a dot.
+        assert_eq!(
+            super::descriptor_action("events.Consumers.ReportDelivery"),
+            "Consumers.ReportDelivery"
+        );
+        assert_eq!(
+            super::descriptor_action("events.DeadLetters.Inspect"),
+            "DeadLetters.Inspect"
+        );
+    }
+
+    fn authorization(
+        server: &str,
+        context_digest: &str,
+        routing_jwt: &str,
+    ) -> AppliedNativeAuthorization {
+        AppliedNativeAuthorization {
+            runtime: AuthorizationRuntimeBinding {
+                connection_id: "connection".to_owned(),
+                login_session_id: None,
+                participant_id: "participant".to_owned(),
+                inbox_prefix: "_INBOX.connection".to_owned(),
+                transports: AuthorizationRuntimeTransports {
+                    native: Some(AuthorizationNativeTransport {
+                        nats_servers: vec![server.to_owned()],
+                    }),
+                    websocket: None,
+                },
+            },
+            context_digest: context_digest.to_owned(),
+            routing_jwt: routing_jwt.to_owned(),
+        }
+    }
+
+    #[test]
+    fn failed_native_transport_refresh_remains_pending() {
+        let mut applied = authorization("nats://old", "old-context", "old-jwt");
+        let refreshed = authorization("nats://new", "new-context", "new-jwt");
+
+        assert!(matches!(
+            applied.record(refreshed.clone(), Err(TrellisClientError::Timeout)),
+            Err(TrellisClientError::Timeout)
+        ));
+        assert_ne!(applied, refreshed);
+
+        assert!(applied.record(refreshed.clone(), Ok(())).is_ok());
+        assert_eq!(applied, refreshed);
+    }
+}

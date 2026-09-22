@@ -1,0 +1,11 @@
+import { fieldops, SiteSummary } from service;
+
+model SiteRefreshJobPayload { siteId: string; }
+model SiteRefreshJobResult { refreshId: string; site: SiteSummary; status: string; }
+
+service Service {
+  implements fieldops;
+  store uploads { title "Evidence uploads"; description "Persistent evidence files."; ttl 0; desired_max_object 64MiB; desired_max_total 256MiB; }
+  kv siteSummaries { title "Site summaries"; description "Latest site summaries."; schema SiteSummary; version 1; history 1; ttl 0; }
+  job refreshSiteSummary { title "Refresh site summary"; description "Recomputes one site summary."; payload SiteRefreshJobPayload; result SiteRefreshJobResult; }
+}

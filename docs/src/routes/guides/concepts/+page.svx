@@ -5,7 +5,7 @@ or CLI.
 
 - [Architecture](/guides/concepts/architecture): service categories, platform boundaries, and why APIs stay with the services that own them.
 - [Contracts](/guides/concepts/contracts): service and app contracts, contract identity, and generated artifacts.
-- [Deployment authority](/guides/concepts/deployment-authority): deployment authority, identity authority, authority updates, reconciliation, availability, liveness, grant overrides, and contract evidence.
+- [Participant grants](/guides/concepts/deployment-authority): installed participant revisions, GrantBinding, resource evidence, and runtime issuance.
 - [Communication](/guides/concepts/communication): RPCs, operations, events, feeds, and cross-contract dependencies.
 - [Authentication and authorization](/guides/concepts/authentication-and-authorization): principals, sessions, portals, approvals, and capabilities.
 - [Resources](/guides/concepts/resources): KV buckets, stores, public app state, and runtime streams.

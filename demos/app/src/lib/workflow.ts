@@ -14,10 +14,30 @@ export type WorkflowContext = {
 };
 
 export const workflowSteps: WorkflowStep[] = [
-  { id: "select", label: "Select inspection", eyebrow: "Assignment queue", path: "/inspection" },
-  { id: "reconcile", label: "Reconcile site", eyebrow: "Live site context", path: "/inspection" },
-  { id: "evidence", label: "Verify evidence", eyebrow: "Chain of custody", path: "/evidence" },
-  { id: "closeout", label: "Closeout", eyebrow: "Final report", path: "/closeout" },
+  {
+    id: "select",
+    label: "Select inspection",
+    eyebrow: "Assignment queue",
+    path: "/inspection",
+  },
+  {
+    id: "reconcile",
+    label: "Reconcile site",
+    eyebrow: "Live site context",
+    path: "/inspection",
+  },
+  {
+    id: "evidence",
+    label: "Verify evidence",
+    eyebrow: "Chain of custody",
+    path: "/evidence",
+  },
+  {
+    id: "closeout",
+    label: "Closeout",
+    eyebrow: "Final report",
+    path: "/closeout",
+  },
 ];
 
 export function workflowContextFromUrl(url: URL): WorkflowContext {
@@ -35,22 +55,38 @@ export function workflowQuery(context: WorkflowContext): string {
   return value ? `?${value}` : "";
 }
 
-export function workflowHref(step: WorkflowStep, context: WorkflowContext): string {
-  return `${step.path}${workflowQuery(context)}${step.hash ? `#${step.hash}` : ""}`;
+export function workflowHref(
+  step: WorkflowStep,
+  context: WorkflowContext,
+): string {
+  return `${step.path}${workflowQuery(context)}${
+    step.hash ? `#${step.hash}` : ""
+  }`;
 }
 
 export function workflowStepIndex(url: URL, context: WorkflowContext): number {
   if (url.pathname.endsWith("/evidence")) return 2;
   if (url.pathname.endsWith("/closeout")) return 3;
-  if (url.pathname.endsWith("/inspection") && (context.inspectionId || context.siteId)) return 1;
+  if (
+    url.pathname.endsWith("/inspection") &&
+    (context.inspectionId || context.siteId)
+  ) return 1;
   return 0;
 }
 
-export function workflowStepState(index: number, activeIndex: number, context: WorkflowContext): "current" | "completed" | "ready" | "locked" {
+export function workflowStepState(
+  index: number,
+  activeIndex: number,
+  context: WorkflowContext,
+): "current" | "completed" | "ready" | "locked" {
   if (index === activeIndex) return "current";
   if (index < activeIndex) return "completed";
-  if (index === 1) return context.siteId || context.inspectionId ? "ready" : "locked";
-  if (index === 2) return context.siteId || context.inspectionId ? "ready" : "locked";
+  if (index === 1) {
+    return context.siteId || context.inspectionId ? "ready" : "locked";
+  }
+  if (index === 2) {
+    return context.siteId || context.inspectionId ? "ready" : "locked";
+  }
   if (index === 3) return context.inspectionId ? "ready" : "locked";
   return "ready";
 }

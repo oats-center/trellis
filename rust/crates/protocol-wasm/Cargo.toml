@@ -1,0 +1,20 @@
+[package]
+name = "trellis-protocol-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+getrandom = { version = "0.3.4", features = ["wasm_js"] }
+serde.workspace = true
+serde_json.workspace = true
+trellis-protocol.workspace = true
+wasm-bindgen.workspace = true
+
+[lints]
+workspace = true

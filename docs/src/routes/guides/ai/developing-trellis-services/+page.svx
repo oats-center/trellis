@@ -1,53 +1,71 @@
+# Give an AI agent Trellis context
+
 This guide explains how to give AI coding agents current Trellis instructions
 when they work in a service or browser app repository.
 
-Use the raw files as stable, pasteable references:
+The links below follow `main`. For a released installation, replace `main` with
+its matching release tag so instructions and library APIs agree. The guides
+cover Trellis-owned contracts and runtime behavior, not your application's
+configuration parser, databases, architecture, or general development policies.
 
-- Short guide: <https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms.txt>
-- Full guide: <https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-full.txt>
-- TypeScript guide: <https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-typescript.txt>
-- Svelte guide: <https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-svelte.txt>
-- Rust guide: <https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-rust.txt>
+- Short guide:
+  <https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms.txt>
+- Full guide:
+  <https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-full.txt>
+- TypeScript guide:
+  <https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-typescript.txt>
+- Svelte guide:
+  <https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-svelte.txt>
+- Rust guide:
+  <https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-rust.txt>
 - TypeScript AGENTS template: `/templates/trellis-service-typescript-AGENTS.md`
 - Rust AGENTS template: `/templates/trellis-service-rust-AGENTS.md`
 - Combined AGENTS template: `/templates/trellis-service-AGENTS.md`
 
 ## When to use each file
 
-Use `llms.txt` as a small bootstrap document for every Trellis task. It points an
-agent at the current service model, generated surfaces, and language-specific
+Use `llms.txt` as a small bootstrap document for every Trellis task. It points
+an agent at the current service model, generated surfaces, and language-specific
 guides.
 
 Use `llms-full.txt` when the agent will change a contract, generated SDK usage,
 service handlers, browser app wiring, operations, event publication, or
-outbox/inbox code. It links to the language-specific TypeScript, Svelte, and Rust
-guides.
+outbox/inbox code. It links to the language-specific TypeScript, Svelte, and
+Rust guides.
+
+For TypeScript SQL outbox work, `llms-typescript.txt` explains the
+`service.createSqlOutbox(...)` executor and transaction boundary. Database
+libraries, transaction ownership, and how handlers receive application
+dependencies remain local choices.
 
 Use `llms-typescript.txt` for TypeScript service work and `llms-rust.txt` for
-Rust service work. Most service repositories should link one of these rather than
-asking agents to read both language stacks.
+Rust service work. Most service repositories should link one of these rather
+than asking agents to read both language stacks.
 
 Use `llms-svelte.txt` for Svelte or SvelteKit browser apps that need
-`createTrellisApp`, `TrellisProvider`, generated SDK aliases for contract
-`uses`, Vite aliases, or `svelte-check` path-map guidance.
+`createTrellisApp`, `TrellisProvider`, native-IDL action selections, and import
+resolution. `TrellisClientFor<typeof participant>` derives the connected client
+type from its generated participant.
 
-Copy the TypeScript or Rust `templates/*-AGENTS.md` file into a service
-repository as `AGENTS.md`, then fill in the local commands and paths. Keep local
-rules in that file; keep Trellis-wide rules linked to the raw guides. The
-combined template remains available for mixed-language repositories.
+Adapt the TypeScript or Rust template into the repository's existing
+`AGENTS.md`, then fill in the local commands and paths. Keep local rules in that
+file; keep Trellis-wide rules linked to the raw guides. The combined template
+remains available for mixed-language repositories.
 
 ## Recommended setup for a service repo
 
-1. Copy the matching template:
+1. Download the matching template for review without overwriting existing
+   instructions:
 
    ```sh
    curl -fsSL \
      https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/templates/trellis-service-typescript-AGENTS.md \
-     -o AGENTS.md
+      -o trellis-AGENTS.example.md
    ```
 
 2. Fill in the repository-specific contract path, generation command, format
-   command, typecheck command, test command, run command, and migration command.
+   command, typecheck command, test command, and run command. Include migration
+   commands only if the application has them.
 3. Link the raw `llms.txt`, `llms-full.txt`, the relevant language-specific
    guide URL, and the matching AGENTS template from any other AI-facing project
    instructions.
@@ -57,7 +75,6 @@ combined template remains available for mixed-language repositories.
 
 ## What to ask agents to verify
 
-Ask agents to run the service repo's own format, typecheck, lint, test, run, and
-migration commands. If contracts changed, ask them to run `deno task prepare` for
-TypeScript services or `cargo xtask prepare` for Rust services and verify
-generated artifacts are updated from the source contract.
+Ask agents to run the checks configured by the service repository, not an
+invented standard task list. If IDL changed, ask them to run `trellis generate`
+and verify generated artifacts are updated from the source contract.

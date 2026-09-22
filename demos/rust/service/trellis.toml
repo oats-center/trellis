@@ -1,0 +1,12 @@
+[package]
+name = "demo-rust-service"
+version = "1.0.0"
+
+[sources]
+host = "contract.trellis"
+
+[dependencies]
+service = { package = "demo-service", path = "../../ts/service" }
+
+[generate.rust]
+output = "trellis"

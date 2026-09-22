@@ -1,267 +1,31 @@
-<script lang="ts">
-  import LanguageTabs from "$lib/components/LanguageTabs.svelte";
-</script>
+# Add an RPC
 
-Let's allow other services to create an order. Add request and response schemas, declare the capability-gated RPC, then register the handler.
+Declare request and response models, then reference them from the API surface:
 
-<LanguageTabs>
-{#snippet ts()}
+```trellis
+model GetOrderRequest { orderId: string; }
+model GetOrderResponse { orderId: string; status: string; }
 
-Add the request and response schemas to `schemas.ts`:
-
-```ts
-export const CreateOrderRequest = Type.Object({
-  customerId: Type.String(),
-  items: Type.Array(Type.Object({
-    productId: Type.String(),
-    quantity: Type.Number({ minimum: 1 }),
-  })),
-});
-export type CreateOrderRequest = Static<typeof CreateOrderRequest>;
-
-export const CreateOrderResponse = Type.Object({
-  orderId: Type.String(),
-  status: Type.String(),
-});
-export type CreateOrderResponse = Static<typeof CreateOrderResponse>;
-```
-
-Register the new RPC in `contracts/orders_service.ts`. Update your imports, change the contract callback to receive `ref`, declare the local capability metadata in the contract body, and fill in the `rpc` section:
-
-```ts
-import * as schemas from "../schemas.ts";
-
-// ...
-
-// In the first defineServiceContract argument:
-{ schemas }
-
-// In the returned contract body:
-  capabilities: {
-    "orders.write": {
-      displayName: "Write orders",
-      description: "Create order records.",
-    },
-  },
-
-  rpc: {
-    "Orders.Create": {
-      version: "v1",
-      input: ref.schema("CreateOrderRequest"),
-      output: ref.schema("CreateOrderResponse"),
-      capabilities: { call: ["orders.write"] },
-      errors: [ref.error("ValidationError"), ref.error("UnexpectedError")],
-    },
-  },
-```
-
-The top-level `capabilities` map defines what `orders.write` means for approval and admin UIs. The RPC-level `capabilities.call` field is the gate: only callers that have been granted the projected `orders.write` capability can invoke this RPC. Trellis enforces this on every request before your handler ever runs. There is no auth middleware to write.
-
-Now implement the handler in `handlers/orders.ts`:
-
-```ts
-import { ok } from "@qlever-llc/trellis";
-import type {
-  RpcHandlerArgs,
-  RpcHandlerResult,
-} from "../contracts/orders_service.ts";
-
-type Args = RpcHandlerArgs<"Orders.Create"> & {
-  deps: {
-    id(): string;
-    clock(): Date;
-  };
-};
-type Result = RpcHandlerResult<"Orders.Create">;
-
-export async function createOrderHandler({
-  input,
-  client,
-  deps,
-}: Args): Promise<Result> {
-  const orderId = deps.id();
-  const order = {
-    orderId,
-    customerId: input.customerId,
-    status: "pending" as const,
-    items: input.items,
-    createdAt: deps.clock().toISOString(),
-  };
-
-  await client.kv.orders.put(orderId, order).orThrow();
-
-  return ok({ orderId, status: "pending" });
+rpc "Orders.Get" {
+  version "v1";
+  input GetOrderRequest;
+  output GetOrderResponse;
 }
 ```
 
-Mount it from `main.ts`:
+After `trellis generate`, import the generated descriptor or participant facade. Runtime code does not execute the IDL source and does not construct API metadata.
 
-```ts
-import { createOrderHandler } from "./handlers/orders.ts";
+Place these declarations inside the Orders API block. Connect the generated
+service participant, then register `service.handleOrdersGet(...)` before
+`service.wait()`. The handler receives typed `input` and returns a `Result`
+containing the declared output. Keep database access in an application-owned
+closure instead of adding fields to the Trellis handler context.
 
-await app.handle.rpc.orders.create(createOrderHandler);
-```
+A caller selects `call rpc "Orders.Get";` in its participant's `use` block and
+regenerates. It can then call `client.ordersGet({ orderId })` without knowing
+the NATS subject or wire envelope. A selected surface still requires granted
+authority; generated methods are not an authorization bypass.
 
-Handlers registered through `app` receive the same Trellis `input`, `context`,
-and `client` values as unbound handlers, plus the app dependencies you bound in
-the entrypoint as `deps`. Handlers return `ok(value)` on success or `err(error)`
-for declared, caller-visible failures. Input validation has already happened by
-the time your handler is called. If the caller sends a malformed request, Trellis
-rejects it before reaching your code. Use `.orThrow()` only for unexpected
-platform failures that should become `UnexpectedError` responses.
-
-{/snippet}
-{#snippet rust()}
-
-Add request and response schemas in `contracts/service.rs`:
-
-```rust
-fn create_order_request_schema() -> Value {
-    json!({
-        "type": "object",
-        "required": ["customerId", "items"],
-        "properties": {
-            "customerId": { "type": "string" },
-            "items": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "required": ["productId", "quantity"],
-                    "properties": {
-                        "productId": { "type": "string" },
-                        "quantity": { "type": "number", "minimum": 1 }
-                    }
-                }
-            }
-        }
-    })
-}
-
-fn create_order_response_schema() -> Value {
-    json!({
-        "type": "object",
-        "required": ["orderId", "status"],
-        "properties": {
-            "orderId": { "type": "string" },
-            "status": { "type": "string" }
-        }
-    })
-}
-```
-
-Declare the capability and RPC in `contract_manifest()`:
-
-```rust
-use trellis_contracts::{rpc, ContractCapabilityMetadata};
-
-.schema("CreateOrderRequest", create_order_request_schema())
-.schema("CreateOrderResponse", create_order_response_schema())
-.capability(
-    "orders.write",
-    ContractCapabilityMetadata {
-        display_name: "Write orders".to_string(),
-        description: "Create order records.".to_string(),
-        consequence: None,
-    },
-)
-.rpc(
-    "Orders.Create",
-    rpc(
-        "v1",
-        "rpc.v1.Orders.Create",
-        "CreateOrderRequest",
-        "CreateOrderResponse",
-    )
-    .with_call_capabilities(["orders.write"])
-    .with_error_types(["ValidationError", "UnexpectedError"]),
-)
-```
-
-Run `trellis-generate prepare .` again. The generated SDK now includes request/response types and a typed `service.handle().rpc().orders().create(...)` provider helper on the connected service.
-
-Create `src/handlers.rs`:
-
-```rust
-use std::sync::Arc;
-
-use bytes::Bytes;
-use serde::{Deserialize, Serialize};
-use time::format_description::well_known::Rfc3339;
-use trellis_sdk_orders_service::types::{CreateOrderRequest, CreateOrderResponse};
-use trellis_rs::service::{HandlerResult, NatsKvResourceClient, ServiceHandlerContext};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Order {
-    order_id: String,
-    customer_id: String,
-    status: String,
-    items: serde_json::Value,
-    created_at: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct AppContext {
-    pub orders: NatsKvResourceClient,
-}
-
-fn now_iso() -> String {
-    time::OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
-}
-
-pub async fn create_order(
-    context: Arc<AppContext>,
-    _ctx: ServiceHandlerContext,
-    input: CreateOrderRequest,
-) -> HandlerResult<CreateOrderResponse> {
-    let order_id = ulid::Ulid::new().to_string();
-    let order = Order {
-        order_id: order_id.clone(),
-        customer_id: input.customer_id,
-        status: "pending".to_string(),
-        items: serde_json::to_value(input.items)?,
-        created_at: now_iso(),
-    };
-
-    context
-        .orders
-        .put(&order_id, Bytes::from(serde_json::to_vec(&order)?))
-        .await?;
-
-    Ok(CreateOrderResponse {
-        order_id,
-        status: "pending".to_string(),
-    })
-}
-```
-
-Register it in `main.rs`:
-
-```rust
-mod handlers;
-
-use handlers::AppContext;
-
-let orders = open_orders_kv(&service).await?;
-let context = Arc::new(AppContext { orders });
-
-service.handle().rpc().orders().create({
-    let context = Arc::clone(&context);
-    move |ctx, input| handlers::create_order(Arc::clone(&context), ctx, input)
-});
-```
-
-The generated registration helper records `Orders.Create`'s NATS subject, so the request loop does not need a manual subject list. Keep `service.run().await?` at the end of `main()`:
-
-```rust
-service.run().await?;
-```
-
-Handlers return `HandlerResult<T>`, which is `Result<T, ServerError>`. Return `Ok(value)` for success, `ServerError::DeclaredRpc(...)` for declared caller-visible errors, and ordinary `ServerError` variants for unexpected platform failures.
-
-{/snippet}
-</LanguageTabs>
-
-Review and update deployment authority to include the new RPC boundary, then restart the service.
+Test a real returned order through this generated caller. Unknown orders should
+use the [declared error](/guides/write-a-service/retrieve-order), not an empty
+successful response or an untyped thrown exception.

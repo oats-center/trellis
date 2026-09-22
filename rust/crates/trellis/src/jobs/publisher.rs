@@ -1,9 +1,13 @@
 use crate::jobs::types::JobContext;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[doc = concat!("Public Trellis data type `", stringify!(JobEventHeaders), "`.")]
 pub struct JobEventHeaders {
+    #[doc = concat!("The `", stringify!(request_id), "` value.")]
     pub request_id: String,
+    #[doc = concat!("The `", stringify!(traceparent), "` value.")]
     pub traceparent: String,
+    #[doc = concat!("The `", stringify!(tracestate), "` value.")]
     pub tracestate: Option<String>,
 }
 

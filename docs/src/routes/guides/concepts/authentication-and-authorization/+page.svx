@@ -1,114 +1,134 @@
-Trellis uses external OAuth or OIDC providers for user login when needed, but those provider scopes are not Trellis's main authorization model. Inside Trellis, authorization is contract-driven and uses Trellis-owned capabilities.
-
-The Trellis user account is the durable user principal: linked local and OIDC login identities are sign-in methods for that account, not separate authorization containers.
+Trellis separates authentication, participant-scoped grants, signed
+authorization contexts, and transport permissions. The Rust platform runtime
+owns these boundaries. Services and clients never read Auth storage or derive
+NATS subjects themselves.
 
 ## Principals
 
-Trellis has one user principal class and two device provisioning paths:
-
-| Type | How it authenticates |
+| Principal | Authentication |
 | --- | --- |
-| User | Browser or CLI session established through the portal login flow |
-| Provisioned device | Ed25519 session key provisioned by an operator |
-| Activated device | Ed25519 identity key derived from a root secret, activated before first use |
+| User | Browser or CLI login established through an Auth portal |
+| Service | Immutable provisioned Ed25519 identity for a service instance |
+| Device | Provisioned/activated Ed25519 identity for a device instance |
 
-All three share the same post-auth authorization pipeline. Provisioned and activated devices connect directly after provisioning. Users always go through the browser login flow.
+OIDC identities and local passwords are sign-in methods for a Trellis user.
+They are not separate authorization containers. Durable Auth sessions represent
+user logins only; services and devices authenticate without a login row.
 
-## Session keys
+## Installed participants
 
-Every client has a local Ed25519 session key. The private seed never leaves the client. Authentication works by proving ownership of the session key in every RPC and runtime connect request. RPC proofs sign the session key, request subject, raw payload hash, corrected `iat`, and request id; Trellis rejects replay of the same request id for the same session while the replay-cache entry is live.
+Every participant is installed in Auth before it can be granted access. An
+installed revision identifies verified source-package evidence, its semantic
+digest, and the participant's exact lexical path. Revisions are immutable,
+so Auth can always explain the exact API surface behind an issued context.
 
-For user runtime reconnects, Trellis uses fresh signed proofs over the session key, presented contract digest, and `iat` timestamp rather than renewable binding tokens. That digest is contract evidence; the durable approval identity is the identity authority anchored by web origin, CLI/native session public key, or device public key.
-
-- **Provisioned devices** receive their identity when an operator provisions the device and approves deployment authority for its contract boundary
-- **Browser apps** choose between a temporary memory-only non-extractable WebCrypto key and a remembered IndexedDB non-extractable key with expiry metadata
-- **CLI tools** use a local seed file
-- **Activated devices** derive their identity key from a root secret using HKDF; the root secret never leaves the device
-
-## Browser login and the portal
-
-Browser login flows route through a Trellis **portal**. A portal is a browser web app that owns the provider-selection and contract-approval UX for one or more browser contracts. Trellis ships a built-in portal that handles both login and generic device onboarding. Login portals are auth-owned records selected by global route rules; device activation portals remain device-deployment routing configuration.
-
-If a browser session is revoked while an app is open, subsequent Trellis calls return `session_not_found`. Browser integrations treat that as auth-required and send the user back through login, preserving the app's current return URL.
-
-The flow:
-
-1. An app sends a signed `POST /auth/requests` request with its session key, contract digest, redirect target, and optional portal context
-2. Trellis creates a browser flow record, resolves portal routing from auth-owned login route selectors using the app identity, and falls back to the built-in Trellis login portal when no custom route applies
-3. The portal fetches `GET /auth/flow/:flowId` and renders UX based on the flow state: provider chooser, approval screen, optional app context, or a terminal redirect
-4. After the user authenticates and approval is satisfied, Trellis records the approved session immediately and the browser bind flow returns the approved session metadata, transport endpoints, and sentinel credentials for the app session.
-5. The app connects through `TrellisClient.connect(...)`, which generates fresh signed runtime auth proofs from the local session key and current contract digest during connect and reconnect.
-
-If Trellis does not know the digest in step 1, auth returns `manifest_required`.
-The browser client retries the same auth request with the full manifest, Trellis
-verifies that the manifest hashes to the presented digest, and the later runtime
-NATS auth path still presents only the digest. Trellis treats the stored manifest
-as a cache: invalid cached manifests can be pruned, and a later full-manifest
-request repopulates the same digest.
-
-CLI sessions use the same contract-bearing flow. If the Trellis CLI contract boundary changes beyond the identity authority anchored to the stored session public key, the CLI starts detached reauthentication with the portal URL or QR code. A generic NATS authorization denial during reconnect does not automatically delete the local CLI session; explicit revoked or missing-session responses still require a fresh `trellis login`.
-
-Provider scopes like `openid`, `profile`, and `email` stay in the external identity-provider layer. The approval screen inside Trellis is about the app's requested Trellis capabilities and contract-derived access, not about minting an OAuth access token for a Trellis API.
-
-App approvals are reusable across linked identities on the same Trellis account. After a user approves an app while signed in with one linked OIDC identity, signing in later with another linked OIDC identity or the account's local identity can reuse that approval for the same app identity. Provider details are kept as audit evidence, but they are not the approval matching key.
-
-Users can start account linking from the Console profile. The profile action opens the account-link flow directly, so users should not need to copy a generated link. A Trellis account can have many OIDC login identities but only one local username/password identity. Password setup and reset links target that existing local identity; they do not choose or change the local username.
-
-Deployments can also configure **grant overrides** for browser apps and session-keyed clients. Web grant overrides are keyed by `contractId + origin`; session-keyed grant overrides are keyed by `contractId + sessionPublicKey`. When an override matches, Trellis can pre-authorize identity authority and capability decisions without copying those capabilities onto the user record. This is how a Trellis admin can remove first-login approval screens for trusted product apps while still keeping the decision deployment-owned and revocable.
-
-While a grant override is enabled, it takes precedence over an older explicit user denial for that same web or session-keyed identity. If the override changes in a way that removes access, Trellis revokes affected delegated sessions and requires reconnect or re-auth.
-
-Portal trust comes from auth-owned login portal records/routes or deployment-owned device portal routing, not from service deployment. Some portals stay passive and only render auth flow state. Other portals also continue after login as normal Trellis browser apps acting as the logged-in user. In that case the portal may declare an optional app contract, but it is still never a service-authenticated principal.
-
-The built-in Trellis portal is authored in `js/portals/login` and served directly by the Trellis HTTP server from static assets. This ensures that the initial login and default device onboarding flows work out-of-the-box without requiring any portal bootstrapping. Admins can still add auth-owned custom login portals and assign them with global login route rules, or configure device-specific portal routing for activation flows. See [Create a custom portal](/guides/creating-custom-portal) for how to build and register one.
-
-Admins manage grant overrides through deployment authority administration surfaces.
+The CLI (`trellis-app.cli@v1`), Console (`trellis-app.console@v1`), activation
+Portal (`trellis-app.portal@v1`), and Auth runtime are installed built-ins.
+Their IDs do not grant access by themselves.
 
 ## Capabilities
 
-Contracts declare per-operation capability requirements:
+Capabilities are approval and explanation groups. Approval is constrained by
+current policy and is converted to exact selected grants; it is not itself a
+runtime permission token.
 
-```ts
-"MyService.List": {
-  capabilities: { call: ["admin"] },
-},
-```
+## GrantBinding
 
-Contract-authored capability names are projected to canonical global keys using `<contract namespace>::<local capability>`, where the namespace is the contract id without the `@vN` suffix. For example, a `trellis.auth@v1` capability named `device.review` is assigned as `trellis.auth::device.review`. Platform capabilities such as `service` and `admin` remain raw strings; `service` means only registered services can call the surface, and `admin` grants administrative access.
+A `GrantBinding` is the only current authority record. It is scoped to one
+identity and one participant and contains:
 
-They are similar to OAuth scopes, but they are intentionally different:
+- the installed participant revision;
+- exact derived permission atoms;
+- approval mode, approved capability fingerprints, approved resource
+  commitments, and delegation ceiling; and
+- finite platform privileges such as `Admin`.
 
-- OAuth scopes belong to the external provider login flow.
-- Trellis capabilities belong to Trellis and gate RPCs, operations, events, and
-  other runtime permissions derived from contracts.
+Grant writes use an expected revision and reject atoms absent from the installed
+participant. `Admin` authorizes administrative APIs but does not imply arbitrary
+application permissions. Capability approvals are policy inputs, not a second
+current GrantSet. Resource desires are hints, not approval; provisioning runs
+post-commit and exposes bindings only after validating actual configuration.
 
-Trellis keeps its own capabilities because the same authorization model has to
-work across browser apps, CLIs, backend services, activated devices, and NATS
-subject permissions. That is broader than a normal OAuth client-to-API scope
-check.
+## Session keys
 
-Capabilities are assigned to users and devices at the deployment level. Trellis
-derives NATS permissions from known contract manifests, identity authority,
-deployment authority, deployment grant overrides, current grants, and current
-materialized resource bindings. Deployment authority proposals and desired state
-group requested needs by `contracts`, `surfaces`, `capabilities`, and
-`resources`; materialized authority groups runtime grants by `capabilities`,
-`surfaces`, and `nats`. Service and device runtimes must also present contract
-evidence that fits their enabled deployment authority; Trellis rejects evidence
-outside that authority during NATS auth, and service resource permissions are
-granted only after reconciliation materializes the matching desired authority
-version. Stale or obsolete persisted materialized-authority projections are
-repaired through Trellis storage upgrade and reconciliation, but they do not grant
-runtime permissions until current. For durable service event consumers, the
-resource binding narrows the token to the exact provisioned JetStream consumer
-subjects.
+Each live installation proves possession of its session key. The key identifies
+the installation cryptographically but does not grant authority by itself.
 
-Admin UIs discover assignable Trellis capabilities through
-`Auth.Capabilities.List`, which merges platform capability metadata with known
-contract capability metadata. The list is a catalog for assignment UX; actual
-authority still comes from user grants, device grants, identity authority,
-deployment authority, grant overrides, and runtime contract proofs.
+## Authorization contexts
 
-For browser-app and session-keyed sessions, Trellis may also apply
-deployment-owned capability overlays from a matching authority grant override.
-Those capabilities are session-time policy, not user-owned grants.
+When a principal bootstraps or refreshes, Auth rereads the current credential,
+binding, installed participant, resource evidence, and online issuer in one
+transaction. It signs an authorization context containing that exact snapshot
+and stores it permanently by digest before use.
+
+Applications carry only the context digest, a message proof, message-specific
+metadata, and a small `session-key` header that must equal the key inside the
+signed context. The header is redundant checked metadata, never independent
+authority.
+
+Providers resolve an unknown context by digest, verify the issuer signature and
+explicit revocation state, verify the message proof, and authorize the exact
+action from the grant. Their bounded in-memory caches do not call Auth on a
+cache hit.
+
+## Bootstrap and NATS
+
+Services and devices send identity/proof inputs only. Auth resolves assignment,
+package/participant evidence, exact grants, resources, route JWT, inbox, and NATS
+endpoints server-side. The runtime verifies that complete response before its
+first CONNECT.
+
+NATS Auth Callout verifies the route token, nonce-bound connect proof, signed
+context, redundant fields, and current issuable state. It derives short-lived
+publish/subscribe permissions from structured grants and exact evidence.
+Subjects never create authority.
+
+## Browser login and the portal
+
+Browser authentication starts with a proof-bound request for an installed app
+participant. The portal performs local-password or OIDC authentication and
+approval under the browser-binding/CSRF controls. Bind proves session-key
+possession and creates a user login, but returns no authorization context. The
+client commits the login under its IndexedDB generation fence, then calls
+context refresh.
+
+Only the browser session seed, minimal login metadata, pending flow, and
+generation tombstone are durable. Contexts, route JWTs, issuer keys, grants, and
+transport endpoints remain in process memory.
+
+## Devices
+
+Device enrollment uses `/auth/device/enroll` to create or resume a review.
+Approval does not install runtime credentials. Once approved, the device calls
+`/bootstrap/device`, proves its durable identity plus fresh session key, and
+receives the same shared installation shape as a service.
+
+## Revocation and history
+
+Authorization-changing transactions commit state, affected-context
+revocations, typed events, and connection-kick intents together. Explicit
+revocation invalidates proofs. Ordinary expiry, connection closure, login
+revocation, grant replacement, and issuer rotation retain signed contexts for
+historical event validation.
+
+Events history stores context-digest references rather than duplicate contexts
+or grant sets. Events signed inside their validity window may remain historically
+valid after ordinary expiry, but never after an applicable explicit revocation.
+
+## Device companions
+
+A device may declare one named app or agent companion as its lexical child. The
+child cannot start a standalone browser or native bootstrap; the parent device's
+activation flow is its only admission path.
+
+The activation operation returns server-computed `companionConsent`. The
+approving user submits a separate child `Approval` fenced by its decision
+digest, installed revision, expected grant revision, and exact eligible
+capability and resource selections. Changed consent or authority makes that
+approval stale and Auth rejects it. Auth commits the approval and device
+authority before creating the child login session.
+
+The companion then runs as the user with its own `GrantBinding`, login session,
+authorization context, resources, and connection. Parent and child grants,
+connections, expiry, and revocation remain separate; device credentials never
+substitute for unavailable user authority.

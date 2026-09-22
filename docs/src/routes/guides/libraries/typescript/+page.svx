@@ -1,554 +1,60 @@
-The TypeScript libraries give apps, services, devices, portals, and CLIs a typed
-way to connect to Trellis and use the APIs their contracts allow.
+# TypeScript libraries
 
-Use this page as a practical map of the TypeScript surface. For exact signatures,
-see the [API Reference](/api).
-
-## Packages
-
-Common packages are:
-
-- `@qlever-llc/trellis`: browser-safe shared root for normal contract authoring,
-  app/device clients, Result helpers, operations, transfers, state, health, and
-  errors.
-- `@qlever-llc/trellis/contracts`: advanced contract-model and tooling surface;
-  use the root package for ordinary `defineAppContract(...)`,
-  `defineServiceContract(...)`, `defineDeviceContract(...)`, and
-  `defineAgentContract(...)` imports.
-- `@qlever-llc/trellis/service/deno`: service runtime entrypoint for Deno.
-- `@qlever-llc/trellis/service/node`: service runtime entrypoint for Node.js.
-- `@qlever-llc/trellis/service`: service-side helper types and utilities such as
-  outbox/inbox repositories.
-- `@qlever-llc/trellis/auth/browser`: browser auth helpers for login, portal, and
-  logout flows.
-- `@qlever-llc/trellis/device/deno`: Deno device activation helpers.
-- `@qlever-llc/trellis/sdk/*`: Trellis-owned generated SDK surfaces.
-- `@qlever-llc/trellis/telemetry`: OpenTelemetry helpers for tracing,
-  propagation, initialization, and Trellis error metrics.
-- `@qlever-llc/trellis-svelte`: Svelte and SvelteKit integration helpers.
-- generated SDK packages under `generated/packages/jsr/` and
-  `generated/packages/npm/` for contracts in your project.
-
-Generated SDKs include contract metadata, TypeScript schema-derived types,
-`use(...)` helpers for consumers, and `client.ts` facade types such as `Client`
-and `Service`.
-
-## Connect as an app or CLI
-
-Apps and CLIs usually connect with `TrellisClient.connect(...)`. The contract
-controls which surfaces are visible on the returned client.
+Application code imports runtime classes from `@qlever-llc/trellis` and the `apis`
+and `participants` namespaces from its ordinary generated package. With
+`[package]` and `[generate.typescript].output` in `trellis.toml`:
 
 ```ts
 import { TrellisClient } from "@qlever-llc/trellis";
-import appContract from "./contract.ts";
+import { participants } from "orders-trellis";
 
 const client = await TrellisClient.connect({
-  trellisUrl: "http://localhost:3000",
-  contract: appContract,
-}).orThrow();
-
-const me = await client.rpc.auth.sessionsMe({}).orThrow();
-console.log(me.participantKind);
-```
-
-Use the surface-first generated facade (`client.rpc.group.method(...)`) for
-application code instead of stringly typed RPC calls.
-
-```ts
-const order = await client.rpc.orders.get({ orderId: "ord_123" }).orThrow();
-```
-
-## Connect as a service
-
-Services connect through the service runtime. The runtime authenticates the
-service instance, presents contract evidence, resolves resource bindings, and
-returns a typed service object.
-
-Treat those resolved bindings as runtime internals. Service code should use the
-`service.kv`, `service.store`, and `service.jobs` handles returned by
-`TrellisService.connect(...)`; do not import the core SDK to bootstrap a service,
-call `Trellis.Bindings.Get`, construct `TrellisService` or `StoreHandle`, or pass
-binding/resource payloads into `Trellis` constructors.
-
-```ts
-import { TrellisService } from "@qlever-llc/trellis/service/deno";
-import { ordersService } from "./contracts/orders_service.ts";
-
-const service = await TrellisService.connect({
-  trellisUrl: Deno.env.get("TRELLIS_URL")!,
-  contract: ordersService,
-  name: "orders-service",
-  sessionKeySeed: Deno.env.get("ORDERS_SERVICE_SESSION_KEY_SEED")!,
-}).orThrow();
-
-await service.wait();
-```
-
-For Node.js, import from `@qlever-llc/trellis/service/node` and use your normal
-environment variable loader.
-
-### Service telemetry
-
-`TrellisService.connect(...)` initializes Trellis telemetry by default using the
-service `name`. This configures trace IDs on Trellis errors and, when the
-environment configures OpenTelemetry exporters, installs tracing and metrics
-runtime support.
-
-```ts
-const service = await TrellisService.connect({
-  trellisUrl: Deno.env.get("TRELLIS_URL")!,
-  contract: ordersService,
-  name: "orders-service",
-  sessionKeySeed: Deno.env.get("ORDERS_SERVICE_SESSION_KEY_SEED")!,
+  participant: participants.ordersApp.participant,
+  trellisUrl: "https://trellis.example.com",
+  auth: "browser",
 }).orThrow();
 ```
 
-Disable automatic telemetry only when your process owns OpenTelemetry setup and
-will initialize Trellis telemetry explicitly.
-
-```ts
-import { initTelemetry } from "@qlever-llc/trellis/telemetry";
-import { TrellisService } from "@qlever-llc/trellis/service/deno";
-
-initTelemetry("orders-service");
-
-const service = await TrellisService.connect({
-  trellisUrl: Deno.env.get("TRELLIS_URL")!,
-  contract: ordersService,
-  name: "orders-service",
-  sessionKeySeed: Deno.env.get("ORDERS_SERVICE_SESSION_KEY_SEED")!,
-  telemetry: false,
-}).orThrow();
-```
-
-The telemetry subpath also exports trace propagation helpers such as
-`injectTraceContext(...)`, `extractTraceContext(...)`, `getTracer(...)`, and
-`getActiveSpan(...)` for advanced runtime integration. The old
-`@qlever-llc/trellis/tracing` subpath is no longer published; use
-`@qlever-llc/trellis/telemetry`.
-
-Trellis records runtime error metrics with a `trellis.errors` OpenTelemetry
-counter. Metrics are low-cardinality by design: labels describe stable surfaces,
-directions, operations, phases, and Trellis error types. Do not attach user IDs,
-session keys, trace IDs, request IDs, payloads, raw NATS subjects, or error
-messages as metric attributes in application code.
-
-## Connect as a device
-
-Devices have their own activation and connection flow. Check activation first,
-then connect once the deployment has approved the device identity.
-
-```ts
-import { TrellisDevice } from "@qlever-llc/trellis";
-import { checkDeviceActivation } from "@qlever-llc/trellis/device/deno";
-import deviceContract from "./contract.ts";
-
-const activation = await checkDeviceActivation({
-  trellisUrl: "http://localhost:3000",
-  contract: deviceContract,
-  rootSecret: await Deno.readFile("./device-root-secret.bin"),
-});
-
-if (activation.status === "activation_required") {
-  console.log("Open", activation.activationUrl);
-  await activation.waitForOnlineApproval();
-}
-
-const device = await TrellisDevice.connect({
-  trellisUrl: "http://localhost:3000",
-  contract: deviceContract,
-  rootSecret: await Deno.readFile("./device-root-secret.bin"),
-}).orThrow();
-```
-
-## Use generated SDKs in contracts
-
-When one participant needs another contract, import that contract's generated
-SDK and use its `use(...)` helper.
-
-```ts
-import { defineAppContract } from "@qlever-llc/trellis";
-import { sdk as orders } from "@my-org/orders-service-sdk";
-
-export default defineAppContract(() => ({
-  id: "orders-console@v1",
-  displayName: "Orders Console",
-  description: "Operator UI for order lookup.",
-  uses: {
-    required: {
-      orders: orders.use({
-        rpc: { call: ["Orders.Get"] },
-        events: { subscribe: ["Orders.Shipped"] },
-        feeds: { subscribe: ["Orders.Live"] },
-        operations: { call: ["Orders.Process"] },
-      }),
-    },
-  },
-}));
-```
-
-Only selected surfaces appear on the connected client type.
-
-## Surface facades
-
-Trellis groups names by the first dot and lower-cases the first word. For
-example, `Orders.Get` becomes `client.rpc.orders.get(...)`.
-
-### RPC
-
-Use RPC for a typed request and response.
-
-```ts
-const result = await client.rpc.orders.get({ orderId: "ord_123" });
-const order = result.take();
-
-if (order.isErr()) {
-  console.warn(order.error.message);
-} else {
-  console.log(order.value.status);
-}
-```
-
-### Events
-
-Use events for durable facts that other participants can react to.
-
-```ts
-await client.event.orders.shipped.listen(async (event) => {
-  console.log("shipped", event.orderId);
-}, {}, { mode: "ephemeral", replay: "new" }).orThrow();
-```
-
-Service code that needs durable delivery must declare an `eventConsumers` group
-in its service contract and pass that logical group name from startup code when
-listening:
-
-```ts
-await service.event.orders.shipped.listen(async (event) => {
-  await projectShipment(event);
-  return Result.ok(undefined);
-}, {}, { group: "shipmentProjection" }).orThrow();
-```
-
-Do not pass `durableName`; Trellis provisions the physical JetStream consumer
-from the contract and returns the binding during service bootstrap. Use
-`mode: "ephemeral"` for live-only listeners that do not need a durable cursor.
-
-Register service listeners during startup, not inside RPC, job, operation, or
-feed handlers. Handler-injected clients are outbound-only for events: they can
-`publish(...)` and `prepare(...)`, but they cannot `listen(...)`.
-
-Services publish events from handler or job code through the scoped `client`
-passed to that code:
-
-```ts
-import { Result } from "@qlever-llc/trellis";
-
-await service.handle.rpc.orders.ship(async ({ input, client }) => {
-  await client.event.orders.shipped.publish({
-    orderId: input.orderId,
-    customerId: input.customerId,
-    shippedAt: new Date().toISOString(),
-  }).orThrow();
-
-  return Result.ok({ accepted: true });
-});
-```
-
-Direct `publish(...)` is the normal default. It prepares the event payload,
-assigns the event header, publishes to JetStream, and returns when the publish is
-acknowledged.
-
-Use `prepare(...)` plus an outbox only when the event must be committed together
-with service-local database state. The prepared form freezes the subject,
-encoded payload, event header, and publish headers so a worker can publish the
-same event later. `PreparedTrellisEvent` intentionally has no contract id or
-contract digest; persisted outbox rows should not be coupled to the publisher's
-current deployment metadata.
-
-```ts
-import {
-  OutboxDispatcher,
-  SqlOutboxRepository,
-  type SqlExecutor,
-} from "@qlever-llc/trellis/service";
-import { Result } from "@qlever-llc/trellis";
-
-// Create one dispatcher for the service process. Use a non-transactional
-// repository here; `outboundClient` is the publisher used by the dispatch
-// worker, and transactional handlers still create repositories over `tx`.
-const outboxRepository = new SqlOutboxRepository(dbExecutor, "postgres");
-const outboxDispatcher = new OutboxDispatcher(outboxRepository, outboundClient, {
-  idleRetryMs: 30_000,
-});
-
-await service.handle.rpc.orders.ship(async ({ input, client }) => {
-  const prepared = client.event.orders.shipped.prepare({
-    orderId: input.orderId,
-    customerId: input.customerId,
-    shippedAt: new Date().toISOString(),
-  }).orThrow();
-
-  await db.transaction(async (tx) => {
-    await tx.update(orders).set({ status: "shipped" });
-
-    // Wrap the same transaction executor so the local DB write and outbox row
-    // commit or roll back together.
-    const executor: SqlExecutor = drizzleTransactionExecutor(tx);
-    const outbox = new SqlOutboxRepository(executor, "postgres");
-    await outbox.enqueue(prepared);
-  });
-
-  // Signal after the transaction commits so rolled-back rows are never
-  // dispatched. Signals are debounced and only one drain loop runs at a time.
-  outboxDispatcher.notify();
-
-  return Result.ok({ accepted: true });
-});
-```
-
-SQL and Drizzle-based services own their schema migrations and transaction
-boundaries. Trellis provides SQL repository adapters and DDL helpers, but your
-service should put the outbox/inbox tables into its normal migration flow and use
-the same database transaction when coupling an outbox row to local state. The
-dispatcher is process-local coordination; `idleRetryMs` is optional, but useful
-as a low-frequency recovery scan for missed signals or rows left behind after a
-restart.
-
-Use an inbox only for handlers that are not naturally idempotent. If replaying a
-message would be harmless because the handler writes idempotently by business
-key, no inbox is needed.
-
-```ts
-import { SqlInboxRepository } from "@qlever-llc/trellis/service";
-
-await service.event.orders.shipped.listen(async (event) => {
-  const inbox = new SqlInboxRepository(db, "postgres");
-  if (!(await inbox.record(event.header.id))) return;
-
-  await applyNonIdempotentSideEffect(event);
-}, {}, { group: "shipmentProjection" }).orThrow();
-```
-
-`NatsKvOutboxRepository` and `NatsKvInboxRepository` are durable queue and dedupe
-helpers for services that do not have SQL state. They are not transactional with
-unrelated database side effects, so do not use them to claim that an arbitrary DB
-write and an event enqueue committed atomically.
-
-### Feeds
-
-Use feeds for filtered live views where the caller sends an input and receives a
-stream of typed events.
-
-```ts
-const subscription = await client.feed.orders.live({
-  customerId: "cust_456",
-}).orThrow();
-
-for await (const event of subscription) {
-  console.log(event.name, event.event);
-}
-```
-
-### Operations
-
-Use operations for caller-visible work that may take time and report progress.
-
-```ts
-const ref = await client.operation.orders.process
-  .start({ orderId: "ord_123" })
-  .orThrow();
-
-for await (const event of ref.watch()) {
-  if (event.type === "progress") {
-    console.log(event.snapshot.progress);
-  }
-
-  if (event.type === "completed") {
-    console.log(event.snapshot.output);
-    break;
-  }
-}
-```
-
-For the common case where you only need the terminal result:
-
-```ts
-const terminal = await ref.wait().orThrow();
-console.log(terminal.output);
-```
-
-## Service provider APIs
-
-Services register handlers through `service.handle`. The handler receives typed
-input, request context, and a typed outbound `client` for the service's allowed
-dependencies.
-
-Bind application-owned dependencies once with `service.with(deps)` when handlers
-need local repositories, loggers, clocks, or projections. Trellis keeps those
-dependencies separate from request context and passes them as `args.deps`.
-
-```ts
-import { Result } from "@qlever-llc/trellis";
-
-const app = service.with({ db, logger, clock, orders });
-
-await app.handle.rpc.orders.get(async ({ input, context, client, deps }) => {
-  deps.logger.info({ caller: context.caller }, "loading order");
-  const entry = await client.kv.orders.get(input.orderId);
-  if (entry.isErr()) return Result.err(entry.error);
-
-  return Result.ok(entry.value.value);
-});
-```
-
-Feed handlers receive an `emit(...)` helper and an abort signal.
-
-```ts
-await app.handle.feed.orders.live(async ({ input, emit, signal, deps }) => {
-  while (!signal.aborted) {
-    const update = await deps.orders.nextVisibleUpdate(input.customerId, signal);
-    if (!update) break;
-    await emit(update).orThrow();
-  }
-});
-```
-
-Operation handlers receive an operation control helper. Mark the operation
-started, publish progress if useful, then complete, fail, cancel, attach work, or
-defer completion to another durable path.
-
-```ts
-await app.handle.operation.orders.process(async ({ input, op, deps }) => {
-  await op.started().orThrow();
-  await op.progress({ step: "queued", message: "Queued" }).orThrow();
-
-  const output = await deps.orders.process(input.orderId);
-  return Result.ok(output);
-});
-```
-
-The same binding applies to `app.jobs.<queue>.handle(...)` and
-`app.event.<group>.<leaf>.listen(...)`. Registration options such as event
-subject data and listener options stay in their existing argument positions; do
-not pass dependencies as a settings object.
-
-## Result and AsyncResult
-
-Trellis TypeScript APIs model expected failures with `Result` and `AsyncResult`
-from `@qlever-llc/result`, re-exported by `@qlever-llc/trellis`.
-
-That means most calls do not throw for expected remote or validation failures.
-You can either branch explicitly or use `.orThrow()` when throwing is appropriate
-for your boundary.
-
-```ts
-const result = await client.rpc.orders.get({ orderId: "missing" });
-const value = result.take();
-
-if (value.isErr()) {
-  console.warn(value.error.message);
-  return;
-}
-
-console.log(value.value);
-```
-
-Use declared error classes for business failures callers are expected to handle.
-Use unexpected errors for bugs, infrastructure failures, or malformed responses.
-
-## Svelte integration
-
-Svelte and SvelteKit apps should use `@qlever-llc/trellis-svelte` for app-local
-connection state and login integration.
-
-```ts
-import {
-  createTrellisApp,
-  type TrellisClientFor,
-} from "@qlever-llc/trellis-svelte";
-import contract from "$lib/contract";
-
-type AppClient = TrellisClientFor<typeof contract>;
-
-export const trellisApp = createTrellisApp({
-  contract,
-  trellisUrl: "http://localhost:3000",
-});
-
-export function getTrellis(): AppClient {
-  return trellisApp.getTrellis();
-}
-```
-
-Mount the same app owner with `TrellisProvider` near the Svelte app root. Read
-connection status from `trellisApp.getConnection()`, which returns a
-Svelte-reactive `SvelteTrellisConnection`.
-
-Browser apps should pass the app source contract default export to Trellis
-helpers. The source contract returned by `defineAppContract(...)` already has the
-module shape Trellis needs: `CONTRACT`, `CONTRACT_DIGEST`, `API.trellis`, and
-contract metadata.
-
-```ts
-import { defineAppContract } from "@qlever-llc/trellis";
-import { sdk as orders } from "#trellis-generated-sdk/orders";
-
-const contract = defineAppContract(() => ({
-  id: "acme.dashboard@v1",
-  displayName: "Acme Dashboard",
-  description: "Browser app for order workflows.",
-  uses: {
-    required: {
-      orders: orders.use({
-        rpc: { call: ["Orders.Get"] },
-      }),
-    },
-  },
-}));
-
-export default contract;
-```
-
-If TypeScript reports that a contract is missing `API` or related contract
-properties, check whether the app passed the generated `CONTRACT` manifest
-constant instead of the app source contract default export. Avoid manually
-composing `{ CONTRACT, API: { owned: OWNED_API } }` for normal Svelte app
-bootstrap; that partial shape can lose `API.trellis`, `CONTRACT_DIGEST`, state
-metadata, and clean inferred client types.
-
-Generated SDKs are workspace artifacts. There is no separate published path for
-an app's generated SDK; use them from source contracts for `sdk.use(spec)` and
-keep imports pointed at the local generated output or an import-map alias owned by
-the consuming repo.
-
-For cross-contract app calls, declare the narrow `uses` selection the app needs
-and call the other contract SDK's `sdk.use(spec)` helper. Do not depend on broad
-generated surfaces just to make client types appear.
-
-## Vite, npm, JSR, and `svelte-check`
-
-Browser apps often combine Deno generation, JSR-style generated SDKs, npm
-packages, and Vite. Keep each resolver layer explicit:
-
-- Mirror `@nats-io/*` specifiers in `deno.json` so Deno generation and Vite/npm
-  builds resolve the same transport packages.
-- Preserve generated npm literals such as `npm:/typebox@^1.1.33/value`; do not
-  hand-normalize them to a different TypeBox entrypoint unless generation changes
-  the source.
-- If Vite aliases an `npm:` Trellis specifier, use a regex `find` that catches
-  subpaths as well as the package root, for example both
-  `npm:@qlever-llc/trellis` and `npm:@qlever-llc/trellis/...`.
-- If `svelte-check` cannot find Trellis types from the npm artifact, add a
-  `compilerOptions.paths` mapping in the app's typecheck config to the installed
-  package `mod.ts` and its subpath `.ts` files. The npm artifact is not the
-  source of generated app SDK types.
-
-See [Writing SvelteKit Apps](/guides/writing-sveltekit-apps) for the full app
-flow, including login pages, providers, and local workspace aliases.
-
-## API reference
-
-Use the [API Reference](/api) for generated TypeScript docs and exact exported
-symbols. Guides show common patterns; `/api` is the source to consult when you
-need precise signatures.
+Do not construct API or participant metadata in TypeScript. Author it in native
+IDL and run `trellis generate`. Configure output with
+`[generate.typescript].output`. Each language gets one package, not one per API
+or participant.
+
+The generated ESM package contains executable `.js`, `.d.ts`, and `package.json`,
+at the source package version, with the published runtime dependency matching the CLI.
+It needs no consumer transpiler or Trellis CLI. Install it with ordinary package
+tooling, for example `npm install ./trellis`; Deno projects can map the package
+name to `./trellis/index.js` in their own imports. Generation creates no Deno
+configuration and never edits the consumer's manifest. Commit output when clones
+should build without regeneration or the Trellis source-package cache.
+
+Use `@qlever-llc/trellis/service` for service bootstrap in Node or Deno.
+Pass `participant` and the immutable provisioned identity `seed` to
+`TrellisService.connect(...)`; `name` is optional. Automatic telemetry can be
+disabled with `telemetry: false`, while `runtime` configures service logging,
+default request timeout, event stream selection, no-responder retry, and health
+heartbeat interval. Use
+the connected service's generated handlers and `kv`, `store`, and `jobs` handles.
+The browser-safe root does not expose native filesystem helpers.
+
+Connected clients expose only the actions selected by their generated
+participant. RPCs return `Result`-style values; `.orThrow()` is convenient at an
+application boundary, while handlers should model expected failures explicitly.
+Do not import provider implementation source to call a service: depend on its
+source package, select exact actions in native IDL, and generate your local SDK.
+
+Find exact signatures through [/api](/api). Generate after every IDL change
+before checking extracted handler types.
+
+Generated paginated RPCs retain their one-page method and add lazy `.pages(...)`
+and `.items(...)` iterators. Missing `nextCursor` is the only end signal;
+pagination is keyset-based and does not generally promise a snapshot.
+
+State is one typed value per declared resource. KV is typed key/value history,
+and Store remains raw object bytes. Optional resources are `undefined`; an
+available but unwritten State resource returns no value. State/KV representation
+migrations happen in SDK memory and do not rewrite stored bytes.
+
+Generated service participants expose declared jobs through `service.jobs`.
+Keyed capacity waits happen before handler execution and do not consume retry
+attempts; retryable handler errors do. See [Jobs: TypeScript](/guides/using-jobs-ts).

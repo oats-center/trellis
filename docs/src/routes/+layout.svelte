@@ -47,11 +47,11 @@
       href: "/guides/concepts/contracts",
       label: "Contracts",
       docs: [
-        { href: "/guides/concepts/contracts#contract-kinds", label: "Contract kinds" },
-        { href: "/guides/concepts/contracts#contract-identity", label: "Contract identity" },
+        { href: "/guides/concepts/contracts#apis-and-participants", label: "APIs and participants" },
+        { href: "/guides/concepts/contracts#identity-and-evidence", label: "Identity and evidence" },
         {
-          href: "/guides/concepts/contracts#generated-contract-artifacts",
-          label: "Generated artifacts",
+          href: "/guides/concepts/contracts#generated-packages",
+          label: "Generated packages",
         },
       ],
     },
@@ -59,14 +59,11 @@
       href: "/guides/concepts/deployment-authority",
       label: "Deployment Authority",
       docs: [
-        { href: "/guides/concepts/deployment-authority#authority-model", label: "Authority model" },
-        { href: "/guides/concepts/deployment-authority#deployment-authority", label: "Deployment authority" },
-        { href: "/guides/concepts/deployment-authority#identity-authority", label: "Identity authority" },
-        { href: "/guides/concepts/deployment-authority#boundary-proposal-and-delta", label: "Proposal delta" },
-        { href: "/guides/concepts/deployment-authority#reconciliation-and-migration", label: "Reconciliation" },
-        { href: "/guides/concepts/deployment-authority#availability-and-liveness", label: "Availability and liveness" },
-        { href: "/guides/concepts/deployment-authority#grant-overrides", label: "Grant overrides" },
-        { href: "/guides/concepts/deployment-authority#contract-evidence", label: "Contract evidence" },
+        { href: "/guides/concepts/deployment-authority#installed-participant-revisions", label: "Installed revisions" },
+        { href: "/guides/concepts/deployment-authority#identity-grants", label: "Identity grants" },
+        { href: "/guides/concepts/deployment-authority#deployments-and-resources", label: "Resources" },
+        { href: "/guides/concepts/deployment-authority#administration", label: "Administration" },
+        { href: "/guides/concepts/deployment-authority#runtime-issuance", label: "Runtime issuance" },
       ],
     },
     {
@@ -87,7 +84,7 @@
           label: "Feeds",
         },
         {
-          href: "/guides/concepts/communication#cross-contract-dependencies-uses",
+          href: "/guides/concepts/communication#cross-api-dependencies",
           label: "Dependencies",
         },
         {
@@ -122,10 +119,10 @@
       href: "/guides/concepts/resources",
       label: "Resources",
       docs: [
-        { href: "/guides/concepts/resources#kv-buckets", label: "KV buckets" },
-        { href: "/guides/concepts/resources#store-resources", label: "Store resources" },
-        { href: "/guides/concepts/resources#public-app-state", label: "Public app state" },
-        { href: "/guides/concepts/resources#runtime-streams", label: "Runtime streams" },
+        { href: "/guides/concepts/resources#state", label: "State" },
+        { href: "/guides/concepts/resources#kv", label: "KV" },
+        { href: "/guides/concepts/resources#store", label: "Store" },
+        { href: "/guides/concepts/resources#consumers-and-jobs", label: "Consumers and jobs" },
       ],
     },
     {

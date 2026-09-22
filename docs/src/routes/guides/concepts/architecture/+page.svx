@@ -39,7 +39,10 @@ Cloud or domain repos own:
 
 Trellis-owned contracts are implemented by the Trellis runtime even when their source lives in this repo. Domain contracts are implemented by the service principal that owns the domain behavior.
 
-This distinction matters because deployment authority is contract-bound. A service, app, device, or CLI does not gain access because a package is installed or a helper exists. It gains access when its presented contract boundary fits the relevant identity authority or deployment authority.
+This distinction matters because authorization is participant-scoped. A service,
+app, device, or CLI does not gain access because a package is installed or a
+helper exists. It gains access only through its current `GrantBinding` to an
+installed participant revision.
 
 ## Public boundaries
 

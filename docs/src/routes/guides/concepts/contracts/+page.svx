@@ -1,41 +1,38 @@
-Every service and app in Trellis declares a **contract**: a source definition describing what the service does, what resources it needs, and what permissions it requires.
+# Contracts and source packages
 
-A contract declares:
+Trellis contracts are native `.trellis` source packages. A package manifest
+declares identity/version, explicitly listed source files, dependencies, and
+generated Rust or TypeScript destinations. `trellis.lock` freezes exact package
+versions and semantic/distribution digests.
 
-- **RPCs** the service handles (request/reply operations)
-- **operations** the service exposes as caller-visible async workflows
-- **events** the service publishes or subscribes to
-- **event consumer groups** the service wants Trellis to provision for durable event processing
-- **feeds** the service exposes as authorized live streams for apps and services
-- **resources** the service needs Trellis to provision (KV buckets, stores, and job queues)
-- **dependencies** on other contracts via `uses`
-- **capabilities** required to call each operation
+## APIs and participants
 
-Contracts are the source of truth for the boundary a participant asks to use. Trellis derives NATS subject permissions by checking the presented contract evidence against the relevant deployment or identity authority. If an operation is not explicitly declared in the presented contract and covered by the effective authority, the participant cannot access it.
+APIs define RPCs, durable Operations, Events, Feeds, API-scoped errors, and
+capabilities. Participants are services, devices, apps, or agents. A device may
+contain one named app or agent companion as its lexical child. The child is
+activated only through its parent device and has a separate user-owned grant,
+login session, authorization context, resources, and connection; parent and
+child authority never merge.
 
-## Contract kinds
+Companion consent is computed from the installed child revision and current
+user authority. Approval repeats the decision digest, installed revision, and
+expected grant revision and may select only the eligible capabilities and
+resources in that consent. Stale or mismatched approval is rejected.
 
-| Kind | Purpose |
-| --- | --- |
-| `service` | A backend process connected to NATS with a session key |
-| `app` | A browser client that connects via websocket |
-| `device` | An activated device participant provisioned through Trellis |
-| `cli` | A command-line tool |
+## Identity and evidence
 
-Portals are deployment-owned browser routing records, not a contract kind. A custom portal that calls Trellis after login uses a normal `app` contract. Activated devices use the same contract format as other Trellis participants. Provisioning mode lives in Trellis device deployments and instance records rather than in a special contract field.
+Capabilities explain groups of actions for approval but do not directly grant
+authority. Trellis derives exact selected runtime grants from approved scopes,
+public membership, current ceilings, and usable resource bindings. Concrete
+resource commitments are approvals; desired capacities are only hints.
 
-## Contract identity
+## Generated packages
 
-Each contract has a stable `id` like `graph@v1` or `trellis.auth@v1`. The `@vN` suffix is a major version; breaking changes require a new version. Within one Trellis runtime, a contract id is globally unique for subject ownership and generated SDK identity.
+The compiler builds a native semantic graph and package digest. Published OCI
+bundles contain source plus frozen resolution metadata. Generated codecs and
+descriptors are SDK projections, not canonical JSON artifacts or a
+contract-as-code builder surface.
 
-Cross-contract `uses` validation must resolve to compatible active surfaces, so compatible rollout is allowed but divergent active definitions for the same logical surface are rejected. Trellis compares resolved schema definitions, not only schema ref names: canonically equal schemas and optional fields that remain safely absent on the wire can coexist, while closed-object additions, required-field changes, and unproven schema changes fail closed.
-
-Contracts are content-addressed by a SHA-256 digest of a normalized runtime/interface projection derived from their canonical JSON form. Human-facing metadata such as `displayName`, `description`, exported-only schemas, and unused local schemas do not change the digest; callable surfaces, authorization requirements, resources, and reachable schemas do.
-
-`eventConsumers` are part of that runtime projection. They reference events already listed in `uses.events.subscribe`. Authority acceptance mutates desired state; reconciliation provisions the physical JetStream consumer. Service code uses the logical group name; it does not choose a durable consumer name.
-
-If a service instance presents a different digest for the same contract id, Trellis checks same-lineage compatibility. Compatible replacements can proceed without changing the major contract id. Incompatible same-contract replacements are authority migrations: production deployments default to `strict` and record a pending migration plan, while `mutable-dev` records and auto-accepts that same plan for unreleased iteration. Deployment authority and authority history remain durable either way.
-
-## Generated contract artifacts
-
-The canonical exchange artifact is `trellis.contract.v1` JSON, generated from contract source during build and release. TypeScript projects typically edit the contract module directly, while the current Rust workflow keeps a checked-in manifest JSON alongside a `contracts/*.rs` wrapper that exports it through `include_str!(...)`.
+Compatibility is selected-surface and direction-aware. Package versions are
+metadata, not authorization. Installed semantic revisions remain immutable for
+context explanation and retained event-history verification.

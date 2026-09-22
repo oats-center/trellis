@@ -13,7 +13,7 @@
     siteName: string;
     assetName: string;
     checklistName: string;
-    priority: "high" | "medium" | "low";
+    priority: string;
   };
   type SiteSummary = {
     siteId?: string;
@@ -52,7 +52,7 @@
 
   type InspectionRoute = "/inspection" | `/inspection?${string}`;
   type EvidenceRoute = "/evidence" | `/evidence?${string}`;
-  const listPage = { limit: 50, offset: 0 };
+  const listPage = { page: { limit: 50 } };
 
   let loadingAssignments = $state(true);
   let loadingSites = $state(true);
@@ -111,7 +111,7 @@
     error = null;
 
     try {
-      const response = await trellis.request("Sites.Get", { siteId }).orThrow();
+      const response = await trellis.sitesGet({ siteId }).orThrow();
       if (!mounted || requestId !== selectionRequestId || selectedSiteId !== siteId) return;
       selectedSite = response.site ?? null;
     } catch (cause) {
@@ -129,19 +129,19 @@
 
     try {
       const [assignmentResponse, siteResponse] = await Promise.all([
-        trellis.request("Assignments.List", listPage).orThrow(),
-        trellis.request("Sites.List", listPage).orThrow(),
+        trellis.assignmentsList(listPage).orThrow(),
+        trellis.sitesList(listPage).orThrow(),
       ]);
       if (!mounted || requestId !== loadRequestId) return;
 
-      assignments = assignmentResponse.entries;
-      sites = siteResponse.entries;
-      const siteIdToLoad = preferredSiteId ?? selectedSiteId ?? assignmentResponse.entries[0]?.siteId ?? siteResponse.entries[0]?.siteId;
+      assignments = assignmentResponse.items;
+      sites = siteResponse.items;
+      const siteIdToLoad = preferredSiteId ?? selectedSiteId ?? assignmentResponse.items[0]?.siteId ?? siteResponse.items[0]?.siteId;
 
       if (siteIdToLoad) {
         if (selectedSiteId !== siteIdToLoad) resetRefreshTrace();
         selectedSiteId = siteIdToLoad;
-        const detail = await trellis.request("Sites.Get", { siteId: siteIdToLoad }).orThrow();
+        const detail = await trellis.sitesGet({ siteId: siteIdToLoad }).orThrow();
         if (!mounted || requestId !== loadRequestId || selectedSiteId !== siteIdToLoad) return;
         selectedSite = detail.site ?? null;
       } else {
@@ -217,7 +217,7 @@
     };
 
     try {
-      const ref = await trellis.operation("Sites.Refresh").input({ siteId: selectedSiteId }).start().orThrow();
+      const ref = await trellis.sitesRefresh({ siteId: selectedSiteId }).start().orThrow();
       if (!mounted || runId !== refreshRunId) return;
       operationId = ref.id;
       dispatchLiveUpdate({

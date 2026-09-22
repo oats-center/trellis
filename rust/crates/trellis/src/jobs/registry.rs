@@ -13,6 +13,7 @@ use crate::jobs::types::WorkerHeartbeat;
 
 /// Errors returned while publishing or maintaining worker heartbeats.
 #[derive(Debug, thiserror::Error)]
+#[doc = concat!("Public Trellis value set `", stringify!(ServiceRegistryError), "`.")]
 pub enum ServiceRegistryError {
     #[error("worker heartbeat task failed: {details}")]
     HeartbeatTask { details: String },
@@ -23,12 +24,33 @@ pub enum ServiceRegistryError {
 }
 
 /// Handle for a background worker heartbeat loop.
+#[doc = concat!("Public Trellis data type `", stringify!(WorkerHeartbeatHandle), "`.")]
 pub struct WorkerHeartbeatHandle {
     task: tokio::task::JoinHandle<Result<(), ServiceRegistryError>>,
 }
 
+/// Identity and scheduling options for one worker heartbeat loop.
+#[derive(Debug, Clone)]
+pub struct WorkerHeartbeatOptions {
+    /// Service name recorded in the heartbeat payload.
+    pub service: String,
+    /// Service namespace used in the heartbeat subject.
+    pub subject_service: String,
+    /// Queue type processed by the worker.
+    pub job_type: String,
+    /// Worker-host instance identifier.
+    pub instance_id: String,
+    /// Queue concurrency advertised by the worker host.
+    pub concurrency: Option<u32>,
+    /// Optional worker version advertised in the heartbeat.
+    pub version: Option<String>,
+    /// Delay between heartbeat publications.
+    pub interval: Duration,
+}
+
 impl WorkerHeartbeatHandle {
     /// Stop the heartbeat task and swallow expected cancellation shutdown.
+    #[doc = concat!("Asynchronous Trellis API operation `", stringify!(stop), "`.")]
     pub async fn stop(self) -> Result<(), ServiceRegistryError> {
         self.task.abort();
         match self.task.await {
@@ -42,6 +64,7 @@ impl WorkerHeartbeatHandle {
 }
 
 #[derive(Clone, Default)]
+#[doc = concat!("Public Trellis data type `", stringify!(ActiveJobCancellationRegistry), "`.")]
 pub struct ActiveJobCancellationRegistry {
     inner: Arc<Mutex<ActiveJobCancellationRegistryInner>>,
 }
@@ -52,6 +75,7 @@ struct ActiveJobCancellationRegistryInner {
     pending: HashSet<String>,
 }
 
+#[doc = concat!("Public Trellis data type `", stringify!(ActiveJobCancellationGuard), "`.")]
 pub struct ActiveJobCancellationGuard {
     key: String,
     token: JobCancellationToken,
@@ -59,10 +83,12 @@ pub struct ActiveJobCancellationGuard {
 }
 
 impl ActiveJobCancellationRegistry {
+    #[doc = concat!("Trellis API operation `", stringify!(new), "`.")]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[doc = concat!("Trellis API operation `", stringify!(register), "`.")]
     pub fn register(
         &self,
         key: impl Into<String>,
@@ -85,6 +111,7 @@ impl ActiveJobCancellationRegistry {
         }
     }
 
+    #[doc = concat!("Trellis API operation `", stringify!(cancel), "`.")]
     pub fn cancel(&self, key: &str) -> bool {
         let mut found = false;
         let mut inner = self.inner.lock().expect("lock cancellation registry");
@@ -124,6 +151,7 @@ impl Drop for ActiveJobCancellationGuard {
 }
 
 /// Build a fresh worker heartbeat payload.
+#[doc = concat!("Trellis API operation `", stringify!(new_worker_heartbeat), "`.")]
 pub fn new_worker_heartbeat(
     service: &str,
     job_type: &str,
@@ -143,15 +171,21 @@ pub fn new_worker_heartbeat(
 }
 
 /// Publish one worker heartbeat immediately.
+#[doc = concat!("Asynchronous Trellis API operation `", stringify!(publish_worker_heartbeat), "`.")]
 pub async fn publish_worker_heartbeat(
     nats: async_nats::Client,
     heartbeat: &WorkerHeartbeat,
 ) -> Result<(), ServiceRegistryError> {
-    let subject = worker_heartbeat_subject(
-        &heartbeat.service,
-        &heartbeat.job_type,
-        &heartbeat.instance_id,
-    );
+    publish_worker_heartbeat_for_subject(nats, &heartbeat.service, heartbeat).await
+}
+
+async fn publish_worker_heartbeat_for_subject(
+    nats: async_nats::Client,
+    subject_service: &str,
+    heartbeat: &WorkerHeartbeat,
+) -> Result<(), ServiceRegistryError> {
+    let subject =
+        worker_heartbeat_subject(subject_service, &heartbeat.job_type, &heartbeat.instance_id);
     let payload = serde_json::to_vec(heartbeat).map_err(|error| {
         ServiceRegistryError::EncodeWorkerHeartbeat {
             subject: subject.clone(),
@@ -168,15 +202,20 @@ pub async fn publish_worker_heartbeat(
 }
 
 /// Start a background heartbeat loop for one worker-host queue type.
+#[doc = concat!("Asynchronous Trellis API operation `", stringify!(start_worker_heartbeat_loop), "`.")]
 pub async fn start_worker_heartbeat_loop(
     nats: async_nats::Client,
-    service: String,
-    job_type: String,
-    instance_id: String,
-    concurrency: Option<u32>,
-    version: Option<String>,
-    interval: Duration,
+    options: WorkerHeartbeatOptions,
 ) -> Result<WorkerHeartbeatHandle, ServiceRegistryError> {
+    let WorkerHeartbeatOptions {
+        service,
+        subject_service,
+        job_type,
+        instance_id,
+        concurrency,
+        version,
+        interval,
+    } = options;
     let publish = move |nats: async_nats::Client, timestamp: String| {
         let heartbeat = new_worker_heartbeat(
             &service,
@@ -186,7 +225,8 @@ pub async fn start_worker_heartbeat_loop(
             version.clone(),
             timestamp,
         );
-        async move { publish_worker_heartbeat(nats, &heartbeat).await }
+        let subject_service = subject_service.clone();
+        async move { publish_worker_heartbeat_for_subject(nats, &subject_service, &heartbeat).await }
     };
 
     publish(nats.clone(), now_timestamp_string()).await?;

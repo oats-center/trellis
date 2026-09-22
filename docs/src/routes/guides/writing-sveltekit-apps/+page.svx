@@ -1,350 +1,85 @@
-This tutorial walks through building a SvelteKit app that authenticates with Trellis and calls RPCs from the browser.
+# Write SvelteKit apps
 
-You should become familiar with the [Trellis Concepts](/guides/concepts) for background on contracts, auth, and packages, if you are not already.
-
-## What you need
-
-- a running Trellis environment from [Starting Trellis](/guides/starting-trellis)
-- the `trellis` CLI (see [Install the Trellis CLI](/guides/install-trellis-cli))
-
-## 1. Create the project
-
-```sh
-npx sv create my-app
-cd my-app
-```
-
-Install the Trellis packages:
-
-```sh
-deno add @qlever-llc/trellis @qlever-llc/trellis-svelte
-```
-
-### Local workspace aliases
-
-If your app consumes installed Trellis packages from the registry, you do not need
-Trellis aliases. Let Deno, Vite, and SvelteKit resolve the installed packages.
-
-If your app is in a local workspace and imports local generated SDK packages,
-configure both SvelteKit and Vite aliases for those package specifiers. SvelteKit
-uses `kit.alias` to generate `.svelte-kit/tsconfig.json`, which is the graph used
-by the editor and `svelte-check`; Vite aliases alone are not enough.
-
-Alias every local package specifier used by app code or generated SDK code. If you
-local-link Trellis itself, alias the Trellis package root and every Trellis
-subpath you import so they do not resolve to different package copies.
-
-```js
-// svelte.config.js
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const rootDir = dirname(fileURLToPath(import.meta.url));
-
-function aliasPath(path) {
-  return resolve(rootDir, path);
-}
-
-const config = {
-  kit: {
-    alias: {
-      // Only needed when developing against a local Trellis checkout.
-      "@qlever-llc/trellis": aliasPath("../trellis/js/packages/trellis/index.ts"),
-      "@qlever-llc/trellis/sdk/auth": aliasPath("../trellis/js/packages/trellis/sdk/auth.ts"),
-
-      // Needed for local generated SDKs that are not installed packages.
-      "@my-org/orders-service-sdk": aliasPath("generated/packages/jsr/orders-service/mod.ts"),
-    },
-  },
-};
-
-export default config;
-```
-
-Keep local package mappings in `svelte.config.js` under `kit.alias`. SvelteKit
-uses those aliases for generated TypeScript path mappings and for SvelteKit Vite
-builds, so do not duplicate the same local package aliases in `vite.config.js`.
-
-When aliasing a local Trellis checkout, list the specific subpaths before the
-`@qlever-llc/trellis` package root so Vite resolves the most specific match
-first.
-
-## 2. Define the app contract
-
-All Trellis apps and services define a contract that specifies the API they need access to. For browser applications, this also drives the approval screens that ask users to let your app sign in as them.
-
-Those approval screens are based on Trellis capabilities derived from the
-contract. They are not the OAuth scopes used between Trellis and an external
-identity provider.
-
-Start by creating `src/lib/contract.ts`. For this example, we only need the
-baseline Trellis auth features that app contracts receive automatically.
+This page covers the optional Svelte integration. Trellis does not require a
+frontend framework, CSS system, or a particular configuration source. Declare
+the browser app participant in `contract.trellis` and generate it before
+checking or building the app. For example, in `src/lib/trellis.ts`:
 
 ```ts
-import { defineAppContract } from "@qlever-llc/trellis";
+import { createTrellisApp } from "@qlever-llc/trellis-svelte";
+import { participants } from "orders-trellis";
 
-const contract = defineAppContract(() => ({
-  id: "my-app@v1",
-  displayName: "My App",
-  description: "A browser app that reads auth state.",
-}));
-
-export default contract;
+export const trellisApp = createTrellisApp({
+  participant: participants.ordersApp.participant,
+  trellisUrl: "https://trellis.example.com",
+});
 ```
 
-The implicit app auth surface includes `Auth.Sessions.Me` and `Auth.Sessions.Logout`, which most
-browser apps need. `Auth.Sessions.Me` returns a `{ user, device, service }` envelope, with
-the device branch carrying the device identity and the activating user when
-applicable.
+Here `orders-trellis` is the package name from `trellis.toml`, installed as an
+ordinary local package. Its JavaScript and declarations need no generation step
+during the app's normal build. Use the generated participant for browser connection and bind flows. Keep
+secrets and durable server credentials in server-only modules; browser trust
+state uses the Trellis browser storage adapter.
 
-Contract source files should prefer the kind-specific helpers from `@qlever-llc/trellis`; keep Svelte-specific helpers on `@qlever-llc/trellis-svelte`.
+## Declare app authority
 
-### Keep contract updates in your normal dev/build flow
+Add the APIs the app consumes to `trellis.toml`, resolve them with
+`trellis update`, and select exact actions in native IDL `use` blocks. Mark the
+implicated capabilities optional only when the user may decline them. Run
+`trellis generate` after changes, then run the app's normal check and build. Do
+not author `defineAppContract` objects or generate participant evidence in
+browser code.
 
-Contract edits should be checked as part of your normal app workflow rather than as a separate manual step.
+## Own one browser connection
 
-A simple setup that ensures this:
-
-```json
-{
-  "tasks": {
-    "prepare": "deno task -c ../../deno.json prepare",
-    "prepare:watch": "deno task -c ../../deno.json prepare:watch",
-    "dev": "deno task prepare && vite dev",
-    "build": "deno task prepare && vite build",
-    "check": "deno task prepare && svelte-kit sync && svelte-check --tsconfig ./tsconfig.check.json"
-  }
-}
-```
-
-`prepare` generates the app SDK under `generated/packages/jsr/my-app/` for consumers that need generated SDK modules. Svelte app-local helpers can derive the connected client type directly from the local contract. Regenerate whenever the contract changes.
-
-For active app or service-contract editing, keep `deno task prepare:watch`
-running in a separate terminal. It watches broadly but only prepares affected
-contract entries when safe. It ignores file changes that are not TypeScript,
-JavaScript, or Rust source unless they are recognized project/discovery inputs,
-plus `.git/`, `.worktrees/`, generated artifacts, and paths covered by
-`.gitignore`. It falls back to full prepare for project manifests and
-discovery-shape changes, and asks you to restart the watcher after
-generator/tooling changes. Use `trellis-generate prepare --watch --changes .`
-only when you need to see the event paths plus the watch decision and reason.
-
-## 3. Create one app-local Trellis module
-
-To keep the Trellis typing in one place, create `src/lib/trellis.ts` for static app metadata and local helpers:
-
-```ts
-import { env } from "$env/dynamic/public";
-import {
-  createTrellisApp,
-  type TrellisClientFor,
-} from "@qlever-llc/trellis-svelte";
-import contract from "$lib/contract";
-
-type MyAppClient = TrellisClientFor<typeof contract>;
-
-function publicTrellisUrl(): string {
-  return new URL(env.PUBLIC_TRELLIS_URL ?? "http://localhost:3000")
-    .toString()
-    .replace(/\/$/, "");
-}
-
-export const trellisUrl = publicTrellisUrl();
-
-export const trellisApp = createTrellisApp({ contract, trellisUrl });
-
-export function getTrellis(): MyAppClient {
-  return trellisApp.getTrellis();
-}
-
-export function getConnection() {
-  return trellisApp.getConnection();
-}
-
-export { contract };
-```
-
-For the common case where your browser app talks to one known Trellis server, resolve that fixed `trellisUrl` once and pass it into `createTrellisApp`. If users choose a Trellis instance at runtime, pass a resolver such as `trellisUrl: () => selectedUrl` and update the selected value before rendering `TrellisProvider`.
-
-The `MyAppClient` alias is contract-derived and local to the app. App code should not import through `generated/packages/jsr/.../client.ts` just to type `getTrellis()`.
-
-## 4. Build the login page
-
-To sign in to Trellis, your app needs a screen that kicks off the flow. Create `src/routes/login/+page.svelte`:
+Mount `TrellisProvider` with the app owner in `src/routes/+layout.svelte`:
 
 ```svelte
 <script lang="ts">
-  import { page } from "$app/state";
-  import { getOrCreateSessionKey } from "@qlever-llc/trellis";
-  import { startAuthRequest } from "@qlever-llc/trellis/auth";
-  import { contract, trellisUrl } from "$lib/trellis";
-
-  async function signIn() {
-    const redirectTo = new URL(page.url.searchParams.get("redirectTo") ?? "/dashboard", page.url);
-    const response = await startAuthRequest({
-      authUrl: trellisUrl,
-      redirectTo: redirectTo.toString(),
-      handle: await getOrCreateSessionKey(),
-      contract: contract.CONTRACT,
-      context: { subtitle: "Welcome back to the spring preview" },
-    });
-
-    if (response.status === "flow_started") {
-      window.location.href = response.loginUrl;
-      return;
-    }
-
-    window.location.href = redirectTo.toString();
-  }
-</script>
-
-<h1>Sign in</h1>
-<button onclick={signIn}>Continue to sign in</button>
-```
-
-The `redirectTo` query parameter lets protected routes send the user back to the page they originally requested. `TrellisProvider` also accepts an auth `redirectTo` option for the runtime connection path.
-
-The optional `context` object lets your app provide hints to custom portals for more integrated UX flows.
-
-## 5. Wrap authenticated routes with TrellisProvider
-
-The easiest way to ensure your private side of the app always has an authenticated Trellis connection is to put everything in a route group and wrap a `TrellisProvider` component around it all.
-
-To do this, create a layout group `(app)` and define its layout by creating `src/routes/(app)/+layout.svelte`:
-
-```svelte
-<script lang="ts">
+  import type { Snippet } from "svelte";
   import { TrellisProvider } from "@qlever-llc/trellis-svelte";
   import { trellisApp } from "$lib/trellis";
 
-  let { children } = $props();
+  let { children }: { children: Snippet } = $props();
 </script>
 
-<TrellisProvider
-  {trellisApp}
-  auth={{ redirectTo: () => window.location.href }}
->
-  <!-- Svelte 5 snippet syntax for rendering states -->
-  {#snippet loading()}
-    <p>Connecting...</p>
-  {/snippet}
-
-  {#snippet error(error)}
-    <p>Could not connect to Trellis: {error instanceof Error ? error.message : String(error)}</p>
-    <a href="/login">Try again</a>
-  {/snippet}
-
+<TrellisProvider {trellisApp}>
+  {#snippet loading()}<p>Connecting to Trellis...</p>{/snippet}
+  {#snippet error(cause)}<p>Connection failed: {String(cause)}</p>{/snippet}
   {@render children()}
 </TrellisProvider>
 ```
 
-After that point, pages do not need to recreate auth state. They read the live runtime through context-backed helpers.
+This is a minimal connection-state UI, not a required app layout or visual
+style. In child components, call `trellisApp.getTrellis()` during component
+initialization to obtain the typed generated caller.
+`trellisApp.getConnection()` returns a Svelte-reactive connection; read its
+`status` in markup or a derived expression. Show connecting, disconnected, and
+failed states rather than silently rendering an empty data view.
 
-There are also optional callbacks:
+The app owner can live in a module, but connected clients belong to Svelte
+context. Never put a user's connected client in module-global mutable state on
+the server. Keep server-only helpers under `$lib/server` or in `.server.ts`
+files. SSR versus client-only rendering is an application choice; in either
+case, open the browser connection on the client, not during server rendering.
 
-- `onAuthRequired` fires whenever `trellis-svelte` decides a new authentication flow is needed to continue, including when a previously valid browser session was revoked and Trellis returns `session_not_found`. If you do not provide `onAuthRequired`, the core browser client redirects to the Trellis login URL.
-- `error(error)` renders unexpected connection failures.
+## Call the generated API
 
-Trellis browser integrations treat `session_not_found` as an auth-required state.
-Route it through the configured login UX instead of showing it as a permanent RPC
-failure.
+Generated callers expose flat selected methods, for example `ordersGet(...)`,
+not a hand-constructed RPC namespace. Handle their `Result` values explicitly.
+Use operations for asynchronous workflows, generated event subscriptions for
+live delivery, and each API's abort signal or close method when leaving a view.
+Do not subscribe through raw NATS or recreate signed wire envelopes.
 
-Session-key persistence should be a visible product choice. Temporary sessions
-use a memory-only non-extractable WebCrypto key. Remembered sessions use a
-non-extractable IndexedDB key with expiry metadata; they still respect Trellis
-session TTL, revocation, and fresh per-request proofs.
+Let the provider own browser authentication redirects and the returned callback.
+An expired plain callback starts a new flow; explicit approval denial remains a
+user-visible outcome. The browser's durable trust floor survives logout, so do
+not clear IndexedDB as a routine recovery technique.
 
-`TrellisProvider` is the primary Svelte integration surface. It calls `TrellisClient.connect(...)` and fills the app-owned Trellis and connection contexts. It does not expose raw NATS handles; use your app-local `getTrellis()` for Trellis calls and `getConnection()` for connection status.
+## Verify a browser consumer
 
-## 6. Call RPCs
-
-Call RPCs directly from a page at `src/routes/(app)/dashboard/+page.svelte`:
-
-```svelte
-<script lang="ts">
-  import { onMount } from "svelte";
-  import { getTrellis } from "$lib/trellis";
-
-  const trellis = getTrellis();
-
-  let displayName = $state("loading");
-
-  async function loadMe() {
-    const me = await trellis.rpc.auth.sessionsMe({}).orThrow();
-    displayName = me.user?.name ?? me.user?.email ?? me.user?.id ?? "signed in";
-  }
-
-  onMount(() => {
-    void loadMe();
-  });
-</script>
-
-<h1>Welcome, {displayName}</h1>
-```
-
-`getTrellis()` and `getConnection()` are Svelte context getters. Call them during component initialization and store the returned client or connection in a top-level `const`. Do not call them inside `onMount`, event handlers, async helper functions, or later callbacks; doing so violates Svelte's context lifecycle rules.
-
-## 7. Subscribe to authorized feeds
-
-Use feeds when a page needs reactive updates that must be filtered by the owning
-service. The app contract declares the feed in `uses`, then Svelte components use
-the connected runtime from context.
-
-```svelte
-<script lang="ts">
-  import { onMount } from "svelte";
-  import { getTrellis } from "$lib/trellis";
-
-  const trellis = getTrellis();
-
-  let events = $state.raw<DeviceEvent[]>([]);
-  let error = $state<string | null>(null);
-
-  onMount(() => {
-    const controller = new AbortController();
-
-    void (async () => {
-      try {
-        const stream = await trellis.feed.device.events({ scope: "owned" })
-          .orThrow();
-
-        for await (const event of stream) {
-          events = [event, ...events].slice(0, 50);
-        }
-      } catch (cause) {
-        if (!controller.signal.aborted) {
-          error = cause instanceof Error ? cause.message : String(cause);
-        }
-      }
-    })();
-
-    return () => controller.abort();
-  });
-</script>
-```
-
-Do not replace this with direct `trellis.event(...)` subscriptions when the UI
-requires per-user or per-object filtering. Direct events are still useful when
-event-type authorization is sufficient, but feeds keep domain authorization in
-the service that owns the data.
-
-If the UI needs to distinguish "not authorized" from "authorized but no service
-is currently online", declare the advisory core status RPC in optional `uses` and
-check it before showing an empty or retrying live panel:
-
-```ts
-const status = await trellis.rpc.trellis.surfaceStatus({
-  contractId: "devices-service@v1",
-  kind: "feed",
-  surface: "Device.Events",
-  action: "subscribe",
-}).orThrow();
-
-if (status.status.state === "unavailable") {
-  error = "Device live updates are temporarily offline.";
-}
-```
-
-`Trellis.Surface.Status` is advisory only. It does not grant access to the feed;
-the app contract still needs the normal feed dependency in `uses.required` or
-`uses.optional`.
+Keep Vite aliases, npm/JSR imports, and TypeScript path mappings aligned with
+the generated module's imports. Run the app's normal `svelte-check` and
+production build, then exercise login, a generated call, disconnect/reconnect,
+and logout against a real runtime. See [the Svelte AI guide](/llms-svelte.txt)
+for resolver details and [/api](/api) for current package APIs.

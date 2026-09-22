@@ -1,6 +1,9 @@
 # Trellis AI guidance for Svelte browser apps
 
-Last verified against Trellis v0.10.13 (2026-06-10).
+Use the guide from the same Trellis revision as the installed libraries. This
+guide describes the optional Trellis Svelte integration. Trellis does not
+require Svelte, a UI design system, a configuration parser, or a particular
+application architecture.
 
 Use this file for AI coding agents working in a Svelte or SvelteKit browser app
 repository that consumes Trellis. The language-neutral guide is:
@@ -13,49 +16,71 @@ https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-types
 
 ## Browser app setup
 
-Svelte browser apps are contract-driven clients. Use the app source contract's
-default export as the app contract.
+Author the app in `contract.trellis`, run `trellis generate`, and pass its
+generated participant module to the Svelte integration. Set `[package]` and a
+package `name`, here `dashboard-trellis`, in `trellis.toml`. Install the resulting
+ordinary ESM package through your application's package manager.
 
 ```ts
 import {
   createTrellisApp,
   type TrellisClientFor,
 } from "@qlever-llc/trellis-svelte";
-import contract from "../../contract.ts";
+import { participants } from "dashboard-trellis";
 
-type AppClient = TrellisClientFor<typeof contract>;
+const participant = participants.acmeDashboard.participant;
+
+type AppClient = TrellisClientFor<typeof participant>;
 
 export const trellisApp = createTrellisApp({
-  contract,
+  participant,
   trellisUrl: "http://localhost:3000",
 });
 ```
 
-Rules:
+Trellis integration behavior:
 
 - `createTrellisApp(...)`, `TrellisProvider`, `SvelteTrellisConnection`, and
   browser client auth mode `"browser"` are the intended browser-app wiring.
-- Let Trellis-owned browser auth redirects complete through `TrellisProvider` and
-  the returned callback URL. A plain callback after an expired login attempt is a
-  restart opportunity, not a user-facing error; only explicit callback errors
-  such as `authError=approval_denied` should be surfaced as denial outcomes.
-- `TrellisClientFor<typeof contract>` and
-  `createTrellisApp(...)` require a module-shaped contract with `CONTRACT`,
-  `CONTRACT_DIGEST`, and `API.trellis`. The source contract returned by
-  `defineAppContract(...)` already has that shape.
-- Import `defineAppContract(...)` from the browser-safe `@qlever-llc/trellis`
-  root. Keep generated SDKs and browser auth helpers on their explicit subpaths
-  or local workspace aliases.
-- Do not pass the generated `CONTRACT` manifest constant to `createTrellisApp`.
-  `CONTRACT` alone is only the manifest and will fail with missing `API`, digest,
-  or metadata properties.
-- Do not manually compose `{ CONTRACT, API: { owned: OWNED_API } }` for normal
-  Svelte app bootstrap. That partial shape can lose `API.trellis`,
-  `CONTRACT_DIGEST`, state metadata, and clean inferred client types.
-- Generated SDKs are workspace delivery artifacts used by contract authoring and
-  generated clients. There is no separate published path for an app's generated
-  SDK; keep imports pointed at the local generated workspace output or an
-  import-map alias owned by the consuming repo.
+- Trellis browser HTTP is limited to browser flows, initial bootstrap,
+  proof-bound restart recovery, and portal assets. Connected control uses
+  generated APIs over NATS; do not add HTTP context, revocation, logout, or
+  client-bootstrap calls to Trellis. This does not restrict unrelated
+  application HTTP APIs.
+- Built-in browser routes are `/login/*` with `/assets/login/*` and `/console/*`
+  with `/console/assets/*`; auth APIs remain under `/auth/*`.
+- Browser bind verifies session-key possession and creates a user login, then a
+  separate refresh obtains and verifies the signed authorization context before
+  NATS opens. IndexedDB `trellis-auth` version 3 stores only the session seed,
+  nullable login metadata, pending flow, and generation tombstone, keyed by
+  canonical origin plus stable participant ID. Contexts, route JWTs, transports,
+  grants, and issuer keys remain in memory. Use `AuthorizationContextController` only when UI
+  needs explicit reactive loading, ready, refreshing, degraded, expired,
+  auth-required, or failed state; do not implement a second verifier in Svelte
+  or TypeScript code because Rust/WASM is authoritative.
+- Issuer verification resolves online issuer public keys and watches explicit
+  revocation. Context refresh returns current runtime/transport metadata with a
+  renewed route credential and context; pending devices poll
+  `/auth/device/enroll`, while `/bootstrap/device` admits only approved devices.
+- Let Trellis-owned browser auth redirects complete through `TrellisProvider`
+  and the returned callback URL. A plain callback after an expired login attempt
+  is a restart opportunity, not a user-facing error; only explicit callback
+  errors such as `authError=approval_denied` should be surfaced as denial
+  outcomes.
+- Portal approval is server-owned. `portal.approve()` selects required authority
+  only; pass only ids from `portal.state.optionalBundles` to select optional
+  authority. Never construct grant sets or capability lists in a Svelte portal.
+  Treat the returned consent proposal as immutable for the lifetime of the flow.
+- OIDC provider links must navigate the same browser so Trellis can verify its
+  state-specific `HttpOnly` cookie and current portal policy at callback.
+- Trusted portal policy is administered for one exact portal + participant.
+  Capability groups and provider-role mappings are server-side macros bounded by
+  the immutable proposal; Svelte portal code never expands or applies them.
+- `TrellisClientFor<typeof participant>` and `createTrellisApp(...)` consume the
+  generated participant directly. Do not reconstruct participant evidence in
+  application code.
+- Keep generated API SDKs and browser auth helpers on their explicit subpaths or
+  local workspace aliases.
 
 ## Svelte integration
 
@@ -68,53 +93,43 @@ Use Svelte context, not module-global mutable state, for app-scoped Trellis
 clients. `@qlever-llc/trellis-svelte` owns the app context created by
 `createTrellisApp(...)`.
 
-## Cross-contract clients
+## Cross-participant clients
 
-For cross-contract app calls, declare the narrow `uses` selection the app needs
-inside the app's source contract and call the other contract SDK's `sdk.use(spec)`
-helper there. Do not depend on broad generated surfaces just to make client types
-appear.
+For calls to another API, declare the narrow required or optional `use`
+selection in `contract.trellis`. Generated participant types expose only those
+selections.
 
-```ts
-import { defineAppContract } from "@qlever-llc/trellis";
-import { sdk as orders } from "#trellis-generated-sdk/orders";
+If the app needs labels for Trellis user ids already present on authorized
+records, `Auth.Users.Resolve` resolves explicit ids without requesting directory
+access. Application-owned profiles or user tables remain an application choice.
 
-const contract = defineAppContract(() => ({
-  id: "acme.dashboard@v1",
-  displayName: "Acme Dashboard",
-  description: "Browser app for order workflows.",
-  uses: {
-    required: {
-      orders: orders.use({
-        rpc: { call: ["Orders.Get"] },
-      }),
-    },
-  },
-}));
-
-export default contract;
+```trellis
+app Dashboard {
+  implements "acme.dashboard@v1";
+  use orders {
+    call rpc "Orders.Get";
+  }
+}
 ```
 
 ## Vite, npm, JSR, and `svelte-check`
 
-Trellis Svelte apps often combine Deno generation, JSR-style generated SDKs, npm
-packages, and Vite. Keep those resolver layers explicit:
+Native generation does not execute TypeScript or require a Vite plugin. The
+application's bundler and type checker still need to resolve imports from the
+one generated package and the installed Trellis packages. Its executable `.js`
+and `.d.ts` require no consumer transpilation or Trellis CLI. Commit generated
+output for ordinary clone builds. Use the
+resolver configuration appropriate to that application; the checked-in app demo
+illustrates one Deno/Vite setup, not a required frontend stack.
 
-- Mirror `@nats-io/*` specifiers in `deno.json` so Deno generation and Vite/npm
-  builds resolve the same transport packages.
-- Preserve generated npm literals such as `npm:/typebox@^1.1.33/value`; do not
-  hand-normalize them to a different TypeBox entrypoint unless generation changes
-  the source.
-- If Vite aliases an `npm:` Trellis specifier, use a regex `find` that catches
-  subpaths as well as the package root, for example both
-  `npm:@qlever-llc/trellis` and `npm:@qlever-llc/trellis/...`.
-- If `svelte-check` cannot find Trellis types from the npm artifact, add a
-  `compilerOptions.paths` mapping in the app's typecheck config to the installed
-  package `mod.ts` and its subpath `.ts` files. The npm artifact is not the
-  source of generated app SDK types.
+When an import fails, inspect its actual generated specifier and the installed
+package exports. Regenerate stale code rather than editing generated imports.
+Type the connected client with `TrellisClientFor<typeof participant>`; an extra
+API SDK is not needed just to type the app client.
 
 ## Verification
 
 Use the format, typecheck, lint, test, run, and migration commands configured by
 the app repository. If contract artifacts or generated SDKs changed, run
-`deno task prepare` and commit the generated outputs expected by that repo.
+`trellis generate` and commit `trellis.lock`; `.trellis` output remains
+disposable.

@@ -1,0 +1,13 @@
+format = 2
+root = "acme-orders"
+
+[[packages]]
+name = "acme-orders"
+version = "1.0.0"
+digest = "nLPCs5RNqC3-CfZtXptXFQ5tqIw5zcD_Vp-O6SvRNOY"
+distribution-digest = "sha256:be5e05e983bae320e4ce16600ad3f9a9a0847edc96aee826895602aa50a2ae6c"
+dependencies = []
+
+[packages.source]
+kind = "path"
+path = "."

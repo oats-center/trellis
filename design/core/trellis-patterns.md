@@ -13,7 +13,9 @@ None.
 ## Context
 
 Trellis is a distributed system for aggregating, processing, and distributing
-organizational data. Services communicate exclusively over NATS.
+organizational data. Connected Trellis contract calls use NATS. Applications can
+also use external HTTP APIs, databases, or other systems; Trellis does not
+prescribe their entire communication architecture.
 
 This document establishes the top-level cross-cutting system patterns for:
 
@@ -37,8 +39,9 @@ guidance is split into companion documents.
 | Processing     | Transform, enrich, derive knowledge    | Classification     |
 | Egress         | Push data to external systems          | Laserfiche         |
 
-Categories describe primary responsibility. Any service may still subscribe to
-events for cache invalidation or local state.
+These are example application roles, not Trellis participant kinds or required
+service boundaries. Any service may subscribe to events for cache invalidation
+or local state.
 
 ### Platform Boundary
 
@@ -54,7 +57,7 @@ Rules:
 - `@qlever-llc/trellis` is a runtime library, not a central registry for every
   service API
 - service APIs are defined with the service that owns them and consumed through
-  contract packages
+  native source-package dependencies and consumer-local generated SDKs
 
 ### Communication Patterns
 
@@ -65,15 +68,24 @@ Events announce state changes. Publishers fire and forget.
 Subject naming:
 
 ```text
-events.v1.<Domain>.<...tokens>
+events.v1.<A>.<Event>.<...tokens>
 ```
+
+`A` is the unpadded base64url encoding of the event's qualified API identity
+(`<package>.<api>@v<major>`). This keeps the wire subject aligned with the
+generated API descriptor and its ACL identity.
+
+Each parameter token is the unpadded base64url encoding of its canonical UTF-8
+value. The signed event descriptor carries the qualified API ID, exact dotted
+event name, and parameter count so overlapping textual subjects remain
+unambiguous during authorization and projection.
 
 Examples:
 
 ```text
-events.v1.Partner.Changed.<origin>.<id>
-events.v1.Identity.Changed.<origin>.<id>
-events.v1.Document.Uploaded.<contentType>.<partnerId>
+events.v1.YWNtZS5wYXJ0bmVyQHYx.Changed.<origin>.<id>
+events.v1.YWNtZS5pZGVudGl0eUB2MQ.Changed.<origin>.<id>
+events.v1.YWNtZS5kb2N1bWVudEB2MQ.Uploaded.<contentType>.<partnerId>
 ```
 
 Rules:
@@ -82,17 +94,24 @@ Rules:
   cardinality is bounded and stable
 - token order matters; put the most-filtered tokens first
 - event handlers must be idempotent because delivery is at-least-once
-- direct event publish is the default; use a prepared event and service-owned
-  outbox only when event publication must be coupled to service-local durable
-  state
+- direct event publish is the default; use a SQL outbox only when event
+  publication must be coupled to service-local SQL state
+- TypeScript services create a SQL outbox helper with
+  `service.createSqlOutbox(...)`; the returned object is a plain dependency that
+  handlers close over at registration rather than receiving it through handler
+  arguments. The same SQL outbox also supports transactional job submission.
+  Handlers receive a `job` facade alongside the `event` facade within
+  `outbox.transaction(...)`.
 - outbox dispatch MAY use a process-local wakeup helper to reduce latency, but
-  the wakeup MUST happen after the outbox write commits; enqueueing a row inside
-  a transaction must not directly publish work that can later roll back
+  the wakeup MUST happen after the outbox transaction commits; enqueueing a row
+  inside a transaction must not directly publish work that can later roll back
 - consumers should use an inbox only for handlers that are not naturally
   idempotent
-- SQL services own migrations and transactions for local state, outbox rows, and
-  inbox rows; NATS KV inbox/outbox helpers provide durable dedupe/queue storage
-  but are not transactional with unrelated database side effects
+- Trellis owns SQL outbox/inbox helper-table schema and versioned migration
+  artifacts; services own database lifecycle, migration execution, table names,
+  and transaction boundaries
+- NATS KV inbox/outbox helpers provide durable dedupe/queue storage but are not
+  transactional with unrelated database side effects
 - process-local outbox wakeups are latency optimizations only; durable retry and
   recovery still depend on persisted outbox state and an explicit dispatch or
   recovery scan
@@ -207,6 +226,8 @@ split by concern:
   `Result`, and errors
 - [service-development.md](./service-development.md) - service layout,
   lifecycle, and jobs vs operations usage
+- [testing-patterns.md](./testing-patterns.md) - smallest-real-boundary testing,
+  live discovery, and unit-test boundaries
 - [observability-patterns.md](./observability-patterns.md) - health, stats,
   docs, telemetry, and request correlation
 - [frontend-svelte-patterns.md](./frontend-svelte-patterns.md) - Svelte frontend

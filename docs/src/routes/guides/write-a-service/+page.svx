@@ -1,31 +1,18 @@
-This tutorial walks you through building your first Trellis service step by step. By the end, you will have a working `orders-service` that connects to the network, stores data, handles requests, listens to events, publishes its own events, and exposes a feed.
+# Write a service
 
-Before diving in, we recommend skimming [Trellis Concepts](/guides/concepts) to understand how contracts, RPCs, and NATS work together.
-
-Each implementation section uses language selectors for TypeScript and Rust. The service contract and runtime lifecycle are the same in both languages; Rust uses generated SDK artifacts plus the service runtime facade during service compilation.
-
-## What you need
-
-- A running Trellis environment (see [Starting Trellis](/guides/starting-trellis))
-- Deno or Node.js for the TypeScript path
-- Rust stable for the Rust path
-- The `trellis` CLI installed
-- `trellis-generate` available for Rust contract artifact generation
-
-## Tutorial path
+Trellis projects explicitly list `.trellis` files under `[sources]`. The compiler
+resolves native source-package semantics and generates private TypeScript or Rust
+packages.
 
 1. [Set up the project](/guides/write-a-service/setup)
-2. [Your first contract](/guides/write-a-service/first-contract)
-3. [The service entry point](/guides/write-a-service/service-entrypoint)
-4. [Adding a database](/guides/write-a-service/kv-store)
-5. [Writing our first RPC](/guides/write-a-service/first-rpc)
-6. [Retrieving an order with service errors](/guides/write-a-service/retrieve-order)
-7. [Listening to the outside world](/guides/write-a-service/listen-events)
-8. [Publishing your own events](/guides/write-a-service/publish-events)
-9. [Use a feed for filtered live views](/guides/write-a-service/feeds)
-10. [Handle graceful shutdown](/guides/write-a-service/shutdown)
-11. [Prepare SDKs and contract artifacts](/guides/write-a-service/contract-artifacts)
-12. [Declare optional dependencies](/guides/write-a-service/optional-dependencies)
-13. [Use the development loop](/guides/write-a-service/development-loop)
+2. [Declare the API and participant](/guides/write-a-service/first-contract)
+3. [Connect the generated service](/guides/write-a-service/service-entrypoint)
+4. [Install source packages and generate SDKs](/guides/write-a-service/contract-artifacts)
+5. [Use the development loop](/guides/write-a-service/development-loop)
 
-[Start with project setup](/guides/write-a-service/setup).
+6. [Call it in a real-runtime test](/guides/testing-trellis-services)
+
+This walkthrough implements one RPC end to end. The operations, jobs, State, and
+store guides expand those features independently; it is not a complete IDL
+grammar reference. Deno, environment variables, and UUIDs are demonstration
+choices, not Trellis requirements.

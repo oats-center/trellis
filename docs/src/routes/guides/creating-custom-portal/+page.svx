@@ -1,250 +1,130 @@
-This guide walks through building a custom Trellis portal for custom login and onboarding experiences. Trellis already ships with a built-in portal for both user login and generic device onboarding. The built-in device activation portal is the Trellis-owned app contract `trellis.portal.activation@v1`. Custom login portals are auth-owned portal records selected by global login route rules; custom device portals remain device-deployment routing configuration.
+# Create a custom login portal
 
-Before starting, read [Trellis Concepts](/guides/concepts) and [Write a SvelteKit app](/guides/writing-sveltekit-apps) for background on contracts, auth flows, and packages.
+A login portal is a browser UI for Trellis-owned authentication and consent
+flows. It can use any frontend framework. The login flow uses HTTP browser
+helpers; it does **not** require an already authenticated NATS client or a
+portal participant selecting administrative Auth RPCs.
 
-## What you need
+Device activation and other connected portal features are separate. They use an
+app participant and generated APIs; see [devices](/guides/devices). Do not give
+the login page administrative authority just to display a login form.
 
-- a running Trellis environment
-- the `trellis` CLI (see [Install the Trellis CLI](/guides/install-trellis-cli))
-- admin access to the Trellis instance
+## Register the portal
 
-## How the portal fits in
+First verify login through the built-in portal on a running Trellis instance.
+Then host your portal on a stable HTTPS URL, for example
+`https://login.example.com/login`.
 
-When a browser app starts a Trellis login with `POST /auth/requests`, Trellis creates a unique `flowId` for that login and returns the best matching portal URL for that flow.
+In Console, open **Admin / Portals**, create the portal with that entry URL, and
+configure its login providers and registration policy. Add a login route for the
+requesting application's origin and/or participant, or select a default portal.
+An app's origin selects a route; the registered portal's entry-URL origin is the
+trusted portal security principal. Registering that origin is an administrative
+trust decision, not a cosmetic redirect setting.
 
-For a normal user login, the portal usually shows the supported identity providers, starts the chosen provider flow, and then shows the approval screen so the user can allow the original app to access their account.
+For automation, the same administration is exposed through generated
+`Auth.Portals.Put`, `Auth.Portals.LoginSettings.Update`, and
+`Auth.Portals.Routes.Put` RPCs. They require appropriate administrator
+authority, idempotency keys, and expected versions on updates. Use [/api](/api)
+for their current request models rather than issuing those calls from the public
+login UI.
 
-That approval screen shows Trellis capabilities derived from the app contract.
-They are internal Trellis permissions, not OAuth scopes from the external login
-provider.
+## Load the existing flow
 
-Approval decisions belong to the Trellis user account and app identity. If the
-same account later signs in through another linked local or OIDC identity, Trellis
-can reuse the account's existing approval for that app; the provider identity
-shown during approval is audit context, not a separate grant key.
+The requesting app starts authentication through its Trellis browser client.
+Trellis redirects it to your registered portal with `flowId`. Preserve that
+identifier; a custom portal must not create a replacement browser flow.
 
-For device onboarding, the portal may need to do more than show login screens. For example, a user might be activating a new device and the portal may need to collect extra details, confirm payment, or call Trellis APIs to finish setup. In that kind of flow, the portal is not just a login screen anymore. It is also acting like a Trellis web app for that user.
-
-Some flows may also pause for administrative review before the final step is allowed. That review might be done manually by an admin user or by a local Trellis service that checks some outside condition first.
-
-For device-user authority resolution, a required review is still part of the
-original `Auth.DeviceUserAuthorities.Resolve` operation. The custom portal
-should keep watching or waiting on that operation; the admin review decision
-completes the same operation with either the activated output or a rejected
-terminal result.
-
-Trellis trusts a portal because a Trellis admin registered its URL. A portal
-record is routing configuration, not a `portal` contract kind. If the portal also
-talks to Trellis after login, it does so as the logged-in user through a normal
-browser `app` contract, not as a service.
-
-## 1. Create the project
-
-```sh
-deno run -A npm:sv create my-portal
-cd my-portal
-```
-
-Install Trellis packages:
-
-```sh
-deno add @qlever-llc/trellis @qlever-llc/trellis-svelte
-```
-
-## 2. Optionally define a portal app contract
-
-Passive portals that only handle sign-in and approval do not need a Trellis app contract, so this step can be skipped.
-
-Portals that keep going after login and call Trellis for the user need their own app contract. Keep it in `contracts/portal.ts` next to your project manifest:
+The following TypeScript runs in the browser, after installing
+`@qlever-llc/trellis`:
 
 ```ts
-import { defineAppContract } from "@qlever-llc/trellis";
+import {
+  fetchPortalFlowState,
+  getOrCreatePortalBinding,
+  portalFlowIdFromUrl,
+  portalProviderLoginUrl,
+  portalRedirectLocation,
+  submitPortalApproval,
+} from "@qlever-llc/trellis/auth/browser";
 
-export const portalContract = defineAppContract(() => ({
-  id: "my-portal@v1",
-  displayName: "My Portal",
-  description: "Portal-hosted app routes used after login.",
-}));
+const config = { authUrl: "https://trellis.example.com" };
+const flowId = portalFlowIdFromUrl(new URL(location.href));
+if (!flowId) {
+  throw new Error("Missing Trellis flowId; start login from the application.");
+}
+const binding = await getOrCreatePortalBinding(flowId, sessionStorage);
+let state = await fetchPortalFlowState(config, flowId, binding);
 ```
 
-Baseline app auth such as `Auth.Sessions.Me` and `Auth.Sessions.Logout` is derived automatically.
-Declare only additional Trellis-owned surfaces that the portal app needs.
+Use your configured Trellis URL, not a URL supplied by an arbitrary query
+parameter. The binding is the browser's private per-flow verifier; keep it in
+browser storage and never put its secret in a redirect URL or logs. Reloading
+the page must recover the same binding. `Origin` and `flowId` alone are not
+proof of browser possession.
 
-## 3. Implement the portal flow
+## Login, consent, and return
 
-The portal app needs one page that reads `flowId` from the URL, loads the current flow state, and renders the right user experience.
+Render according to the returned `state.status`:
 
-This flow state can also carry app-defined context from the original app. In this example, the portal accepts an optional subtitle supplied by the initiating app.
+| Status              | Portal behavior                                                                            |
+| ------------------- | ------------------------------------------------------------------------------------------ |
+| `choose_provider`   | Show only the returned providers and registration options.                                 |
+| `approval_required` | Show the requesting app, required authority, and optional bundles; offer approve and deny. |
+| `redirect`          | Navigate to the runtime-provided location.                                                 |
+| `approval_denied`   | Explain the denial and offer the returned application location, if present.                |
+| `expired`           | Explain expiry and return to the application to start a fresh flow.                        |
 
-### Flow state page
+For a selected OIDC provider from `state.providers`, navigate in the same
+browser:
 
-The intended Trellis developer experience is to use portal helpers rather than rebuilding the raw flow protocol by hand. The framework-agnostic helpers belong in `@qlever-llc/trellis`, while Svelte-specific wrappers belong in `@qlever-llc/trellis-svelte`.
-
-For a SvelteKit portal, the target shape is a page like `src/routes/login/+page.svelte`:
-
-```svelte
-<script lang="ts">
-  import { env } from "$env/dynamic/public";
-  import { page } from "$app/state";
-  import { onMount } from "svelte";
-  import { portalRedirectLocation, type BrowserPortalFlowState } from "@qlever-llc/trellis/auth/browser";
-  import { createPortalFlow } from "@qlever-llc/trellis-svelte";
-
-  const trellisUrl = env.PUBLIC_TRELLIS_URL ?? "http://localhost:3000";
-
-  const portal = createPortalFlow({
-    authUrl: trellisUrl,
-    getUrl: () => page.url,
-  });
-
-  function appContext(): { subtitle?: string } | null {
-    if (portal.state?.status !== "choose_provider") return null;
-    const value = portal.state.app.context;
-    if (!value || typeof value !== "object") return null;
-    const record = value as Record<string, unknown>;
-    return {
-      subtitle: typeof record.subtitle === "string" ? record.subtitle : undefined,
-    };
+```ts
+if (state.status === "choose_provider") {
+  const provider = state.providers.find((entry) => entry.id !== "local");
+  // Run in the matching provider button's click handler, not automatically.
+  if (provider) {
+    location.assign(
+      portalProviderLoginUrl(config, provider.id, flowId, binding),
+    );
   }
-
-  function followRedirect(state: BrowserPortalFlowState | null): void {
-    const location = portalRedirectLocation(state);
-    if (location) window.location.assign(location);
-  }
-
-  async function approve(): Promise<void> {
-    followRedirect(await portal.approve());
-  }
-
-  async function deny(): Promise<void> {
-    followRedirect(await portal.deny());
-  }
-
-  onMount(() => {
-    void portal.load().then(followRedirect);
-  });
-</script>
-
-{#if portal.loading}
-  <p>Loading...</p>
-{:else if portal.error}
-  <p class="text-error">{portal.error}</p>
-{:else if portal.state?.status === "choose_provider"}
-  <h1>Sign in to {portal.state.app.displayName}</h1>
-  {#if appContext()?.subtitle}
-    <p>{appContext()?.subtitle}</p>
-  {/if}
-  <ul>
-    {#each portal.state.providers as provider (provider.id)}
-      <li>
-        <a href={portal.providerUrl(provider.id)}>{provider.displayName}</a>
-      </li>
-    {/each}
-  </ul>
-{:else if portal.state?.status === "approval_required"}
-  <h1>Approve {portal.state.approval.displayName}</h1>
-  <p>Signed in as {portal.state.user.name ?? portal.state.user.email ?? portal.state.user.id}</p>
-  <p>{portal.state.approval.description}</p>
-  <p>Contract evidence: {portal.state.approval.contractId}</p>
-  <ul>
-    {#each Object.entries(portal.state.approval.capabilities) as [key, capability] (key)}
-      <li><strong>{capability.displayName}</strong>: {capability.description} <code>{key}</code></li>
-    {/each}
-  </ul>
-  <button onclick={approve}>Approve</button>
-  <button onclick={deny}>Deny</button>
-{:else if portal.state?.status === "approval_denied"}
-  <h1>Access denied</h1>
-  <p>You denied access to {portal.state.approval.displayName}.</p>
-{:else if portal.state?.status === "insufficient_capabilities"}
-  <h1>Missing capabilities</h1>
-  <p>Your account is missing: {portal.state.missingCapabilities.join(", ")}</p>
-{:else if portal.state?.status === "expired" && !portal.state.returnLocation}
-  <p>This login session has expired. Return to the app and try again.</p>
-{:else}
-  <p>Loading flow state...</p>
-{/if}
+}
 ```
 
-The helper shown above is the intended public shape. Under the hood it still uses the auth-owned flow endpoints and maps approve/deny actions to the canonical `approved: boolean` request body, but app authors should not need to rebuild those request details by hand.
+The digest in that URL is not the binding secret. Trellis owns the OIDC
+callback, provider verification, and replay cookies. Fetch the flow again after
+returning to the portal. For local password login and registration, follow the
+built-in portal's account-flow implementation under `web/src/routes/login`; the
+Svelte portal controller below does not implement password forms. The OIDC link
+above is not a local-password form. Do not proxy credentials to a made-up token
+endpoint.
 
-`portalRedirectLocation(...)` centralizes auth-owned continuation handling. It
-returns redirect targets for `redirect`, `approval_denied.returnLocation`, and
-restartable `expired.returnLocation` states. Custom portals should follow that
-location immediately and show an expiration message only when auth did not provide
-a return location.
+Only in response to the user's consent action:
 
-`portal.state.approval.capabilities` is the Trellis-side capability list that
-the app contract requested. A portal should present it as application access
-inside Trellis, not as provider-owned OAuth scopes.
-
-`portal.state.approval.contractDigest` is technical evidence for the reviewed
-contract body. Custom portals may show it in an advanced details view, but the
-user-facing decision should be framed around the app identity, requested
-capabilities, and contract evidence rather than a digest-only grant key.
-
-The `portal.state.app.context` payload is optional and app-defined. Portals must validate fields and should only access the fields they define.
-
-This is still a static SPA. The portal can read `flowId` straight from the browser URL, so it does not need a SvelteKit server route or redirect shim.
-
-Use `https://my-portal.example.com/login` as the portal entry URL when creating the auth-owned login portal record.
-
-Use HTTPS for public portal entry URLs. Trellis can run public CORS in
-credentialless mode for arbitrary browser apps, but portal flow routes still
-validate the selected portal origin and use credentialed flow handling where the
-OAuth/browser-flow protocol requires it. Do not rely on a broad CORS setting to
-make an unregistered portal trusted.
-
-## 4. Deploy the portal app
-
-Build and deploy the portal to a stable URL. The URL must be reachable by browsers that are logging into your Trellis deployment.
-
-For a basic static adapter deployment:
-
-```sh
-deno task build
+```ts
+state = await submitPortalApproval(config, flowId, binding, "approved", []);
+const next = portalRedirectLocation(state);
+if (next) location.assign(next);
 ```
 
-Deploy the `build/` output to your hosting provider and note the base URL, for example `https://my-portal.example.com`.
+Use `"denied"` for the deny action. An empty optional-bundle list selects
+required authority only; otherwise send IDs from the returned optional bundles.
+The helper binds approval to the current consent-view digest. Do not construct
+new grant sets or broaden the proposal in the UI. Surface typed HTTP errors and
+expiry to the user instead of silently starting another approval attempt.
 
-## 5. Configure portal routing
+For Svelte, `createPortalFlow({ authUrl, getUrl })` from
+`@qlever-llc/trellis-svelte` wraps this flow with reactive state, provider URLs,
+approval, and denial. Call `load()` in the browser and use
+`portalRedirectLocation(controller.state)` when a state supplies a return URL.
+The checked-in browser entry `web/src/lib/portal_login.ts` shows that
+integration. See the [Svelte guide](/guides/writing-sveltekit-apps) and
+generated API docs for its methods.
 
-Use Console **Portals** or `Auth.Portals.*` admin RPCs to create the custom login
-portal record, configure registration policy, and add global route rules. Use
-`Auth.Portals.Put` to create or update non-built-in login portal records,
-`Auth.Portals.Remove` to remove non-built-in portals that are no longer targeted
-by routes, and `Auth.Portals.LoginRoutes.*` to manage route selectors.
+## Verify with a real browser
 
-The built-in login portal is always visible, cannot be removed, and cannot be
-replaced by portal upsert. Route ids are internal RPC keys; normal operator UI
-should present contract/origin match fields and selected portals instead.
-
-For login flows, route by the app identity being authenticated. For device
-activation, route by the device deployment. Leaving login routes unset uses the
-built-in Trellis login portal.
-
-Portal settings can limit federated providers per portal. The default
-`allowedFederatedProviders: null` allows all configured providers, `[]` allows no
-federated providers, and a non-empty list allows only that subset.
-
-## 6. Test the flow
-
-Open the Trellis-connected browser app or device flow you want to test. The browser should redirect to your custom portal, let you complete the flow, and then continue into a normal authenticated user session or device activation.
-
-## Updating the portal route
-
-Update the auth-owned login portal record when the login portal `entryUrl`
-changes. Update auth-owned login route rules when the route match changes. Device
-activation portal URL changes remain deployment-owned device routing metadata.
-
-If the portal app contract changes, treat it like any other browser app contract
-change: the portal presents the new contract during login, and Trellis resolves
-it through the user's identity authority and any deployment grant overrides. It
-does not receive service deployment authority.
-
-## Disabling a custom portal
-
-Remove the auth-owned login route or point it back to the built-in portal.
-Remove the custom portal record only after no routes target it. Existing user
-approvals and device activations remain governed by identity and deployment
-authority records; disabling a portal route only changes future browser flow routing.
+Use your configured portal with a real requesting app. Check successful OIDC
+login, explicit denial, expiry, reload recovery, optional-bundle selection, and
+return to the requesting app. If enabling local accounts, also check password
+login and registration under that portal's configured policy. Keep TLS, allowed
+origins, callback URLs, and proxy routing consistent. A compiled snippet alone
+does not prove cookies, CORS, or portal policy are configured correctly.
