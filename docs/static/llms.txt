@@ -27,6 +27,7 @@ installed release.
   callers, providers, resources, and lifecycle.
 - [Svelte](llms-svelte.txt): browser authentication and the Svelte integration.
 - Human service walkthrough: `/guides/write-a-service`.
+- Human IDL authoring guide: `/guides/authoring-contracts`.
 - Human testing walkthrough: `/guides/testing-trellis-services`.
 - Public API reference: `/api` on the docs site. Generated participant source
   defines the exact names available for a project's declared actions.

@@ -642,6 +642,13 @@ export const guideDocs: DocEntry[] = [
     href: "/guides/starting-trellis",
     section: "Installing Trellis",
   },
+  {
+    title: "Author contracts with Trellis IDL",
+    description:
+      "Declare APIs and participants in .trellis files, lock dependencies, and generate TypeScript or Rust packages.",
+    href: "/guides/authoring-contracts",
+    section: "Getting started",
+  },
   ...typescriptServiceTutorialDocs,
   {
     title: "Jobs: TypeScript",

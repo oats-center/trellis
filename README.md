@@ -5,20 +5,31 @@ NATS JetStream. Contract definitions live with the code that owns them. Build
 and release tooling derives canonical JSON artifacts, SDKs, authorization
 scopes, and runtime wiring from those contract sources.
 
+Trellis 2.0 was a joint effort between the OATS Center and The Qlever Company,
+LLC from the beginning. Qlever made major contributions and developed Trellis
+into production systems used by several companies. After incubation at Qlever,
+Trellis 2.0 moved to public stewardship under the OATS Center. The Trellis 2.0
+initiative begins releasing on the `0.100.x` line; earlier versions belong to
+the TypeScript-based Trellis lineage.
+
 ## Repository layout
 
 ```
+Cargo.toml      Rust workspace: public libraries, CLI, server, and tooling
+crates/         Rust platform crates and public facades
+xtask/          Rust repository build, generation, and release tooling
 conformance/    Shared TypeScript/Rust test vectors (canonical JSON, auth proofs)
 demos/          Shared demo app plus TypeScript and Rust service/device examples
 docs/           Trellis documentation site (SvelteKit static site, published to GitHub Pages)
-ts/             TypeScript packages, services, and apps (Deno workspace)
-rust/           Rust crates (public facades plus internal CLI, codegen, and runtime support)
+ts/             TypeScript client libraries, adapters, and browser integration tests
+web/            Official embedded Console and login portal
 generated/      Derived manifests and SDKs when generated locally (usually absent from a clean checkout)
 deploy/         Deployment assets, including quadlets and NATS templates
 design/         Trellis design docs
 ```
 
-See `/guides/write-a-service/contract-artifacts` for regeneration details. See
+See `/guides/authoring-contracts` for the native IDL workflow and
+`/guides/write-a-service/contract-artifacts` for regeneration details. See
 `/guides/releasing-trellis` for repository testing, versioning, and release
 checklists.
 
