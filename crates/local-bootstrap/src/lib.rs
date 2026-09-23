@@ -529,8 +529,8 @@ ws_nats_servers = [{nats_websocket_url}]
 [leases]
 bucket = "trellis_runtime_leases"
 replicas = 1
-ttl_ms = 9000
-renew_ms = 3000
+ttl_ms = 30000
+renew_ms = 5000
 
 [auth.local_identity]
 enabled = true

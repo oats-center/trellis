@@ -289,7 +289,7 @@ fn trellis_config_uses_expected_paths_urls_and_name() {
     assert!(!config.contains("authorization-root.seed"));
     assert!(config.contains("[leases]"));
     assert!(config.contains("replicas = 1"));
-    assert!(config.contains("ttl_ms = 15000"));
+    assert!(config.contains("ttl_ms = 30000"));
     assert!(config.contains("renew_ms = 5000"));
     assert!(config.contains("redirect_base = \"https://trellis.example.test/auth/callback\""));
     assert!(!config.contains("providers"));

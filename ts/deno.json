@@ -40,10 +40,10 @@
         "test:ui-tools"
       ]
     },
-    "test:browser": "deno task browser:embedded && deno test -A -c browser/deno.json browser/*.browser_test.ts",
+    "test:browser": "deno task browser:embedded && deno test --parallel -A -c browser/deno.json browser/*.browser_test.ts",
     "test:browser:ui-hosting": "deno test -A -c browser/deno.json browser/ui_hosting.browser_test.ts",
     "test:browser:auth": "deno test -A -c browser/deno.json browser/console_login.browser_test.ts browser/cli_login.browser_test.ts browser/device_agent.browser_test.ts browser/consent_restart.browser_test.ts",
-    "test:browser:console": "deno test -A -c browser/deno.json browser/console_services_devices.browser_test.ts browser/console_portals_grants.browser_test.ts browser/console_users_sessions.browser_test.ts browser/console_observability.browser_test.ts browser/console_navigation_permissions.browser_test.ts",
+    "test:browser:console": "deno test --parallel -A -c browser/deno.json browser/console_services_devices.browser_test.ts browser/console_portals_grants.browser_test.ts browser/console_users_sessions.browser_test.ts browser/console_observability.browser_test.ts browser/console_navigation_permissions.browser_test.ts",
     "test:browser:functional": "deno task test:browser:auth && deno task test:browser:console",
     "test:browser:coverage": "TRELLIS_BROWSER_COVERAGE_SOURCEMAP=1 deno task browser:embedded && deno test -A -c browser/deno.json browser/*.browser_test.ts && deno task coverage:browser",
     "coverage:browser": "deno run -A tools/browser_v8_to_lcov.ts",

@@ -16,14 +16,10 @@ use trellis_local_nats::{
 };
 use ulid::Ulid;
 
-/// NATS client port of the server-managed nats-server.
-const NATS_PORT: u16 = 4222;
-/// All three ports the managed config listens on: NATS, HTTP monitor, websocket.
-const MANAGED_PORTS: [u16; 3] = [4222, 8222, 8080];
 /// Deliberately bogus NATS URLs baked into the bundle so managed mode's endpoint
 /// override is observable: nothing listens on these, yet the report must be valid.
-const BOGUS_NATS_URL: &str = "nats://127.0.0.1:4999";
-const BOGUS_WS_URL: &str = "ws://localhost:9999";
+const BOGUS_NATS_URL: &str = "nats://nats.invalid:4222";
+const BOGUS_WS_URL: &str = "ws://browser.invalid:8080";
 /// The first managed run downloads the pinned nats-server binary into an empty
 /// cache, so startup allows 600s for that initial acquisition.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(600);
@@ -223,12 +219,6 @@ fn pid_alive(pid: i32) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// A free TCP port on 127.0.0.1, released before use (portable port pick).
-fn free_port() -> u16 {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind free port");
-    listener.local_addr().expect("local addr").port()
-}
-
 fn log_tail(path: &Path) -> String {
     fs::read_to_string(path)
         .map(|content| {
@@ -284,7 +274,13 @@ async fn cli_server_managed_nats() {
     fs::create_dir_all(&cache_dir).expect("create managed-NATS cache dir");
     fs::set_permissions(&cache_dir, fs::Permissions::from_mode(0o700))
         .expect("make managed-NATS cache dir private");
-    let runtime_port = free_port();
+    let reservations = [(); 4].map(|_| TcpListener::bind(("127.0.0.1", 0)).expect("reserve port"));
+    let [runtime_port, nats_port, monitor_port, websocket_port] = reservations
+        .each_ref()
+        .map(|socket| socket.local_addr().expect("port address").port());
+    let managed_ports = [nats_port, monitor_port, websocket_port];
+    drop(reservations);
+    let ports_arg = format!("{nats_port},{monitor_port},{websocket_port}");
 
     // 1. `trellis init config` renders the bundle the managed server expects, with
     //    deliberately bogus NATS URLs so the managed endpoint override is observable.
@@ -362,6 +358,8 @@ async fn cli_server_managed_nats() {
                 "--config",
                 config_path.to_str().expect("UTF-8 config path"),
                 "--nats-download",
+                "--local-nats-ports",
+                &ports_arg,
             ])
             .stdout(Stdio::from(
                 fs::File::create(&run_stdout).expect("create run stdout log"),
@@ -389,7 +387,7 @@ async fn cli_server_managed_nats() {
         .parse::<i32>()
         .expect("parse pid");
     wait_until(
-        || MANAGED_PORTS.iter().all(|port| port_accepts(*port)),
+        || managed_ports.iter().all(|port| port_accepts(*port)),
         &mut child,
         &run_stderr,
         "all managed ports to accept connections",
@@ -424,7 +422,7 @@ async fn cli_server_managed_nats() {
         "managed nats-server (pid {managed_pid}) is still alive after shutdown"
     );
     assert!(
-        !MANAGED_PORTS.iter().any(|port| port_accepts(*port)),
+        !managed_ports.iter().any(|port| port_accepts(*port)),
         "managed ports still accept connections after shutdown"
     );
     let nats_log = effective_root.join("logs/nats-server.log");
@@ -468,8 +466,8 @@ async fn cli_server_managed_nats() {
     );
 
     // 3. Managed-mode `check` after the first run: valid preflight report (proving
-    //    the managed endpoint override — the bundle points at the bogus 4999/9999
-    //    URLs, yet the checks connect to the managed server), JSON-only stdout, exit
+    //    the managed endpoint override — the bundle points at invalid hosts, yet
+    //    the checks connect to the managed server), JSON-only stdout, exit
     //    0, and the check's own server fully stopped.
     let check_stdout = workdir.0.join("cli-check.stdout.log");
     let check_stderr = workdir.0.join("cli-check.stderr.log");
@@ -481,6 +479,8 @@ async fn cli_server_managed_nats() {
                 "--config",
                 config_path.to_str().expect("UTF-8 config path"),
                 "--nats-download",
+                "--local-nats-ports",
+                &ports_arg,
                 "all",
             ])
             .stdout(Stdio::from(
@@ -524,7 +524,7 @@ async fn cli_server_managed_nats() {
         "check left a managed nats-server pid file behind"
     );
     assert!(
-        !port_accepts(NATS_PORT),
+        !port_accepts(nats_port),
         "managed nats-server is still accepting connections after check"
     );
 
@@ -536,7 +536,11 @@ async fn cli_server_managed_nats() {
         .binary(NatsBinarySource::Path(binary))
         .source(bundle.join("nats"))
         .state(workdir.0.join("external-nats-state"))
-        .ports(LocalNatsPorts::default())
+        .ports(LocalNatsPorts {
+            nats: nats_port,
+            monitor: monitor_port,
+            websocket: websocket_port,
+        })
         .pid_file(&external_pid_file)
         .output(NatsOutput::Log {
             path: workdir.0.join("external-nats-server.log"),
@@ -553,8 +557,8 @@ async fn cli_server_managed_nats() {
         .expect("connect to external NATS");
     let jetstream = jetstream::new(nats);
     let external_config = config_toml
-        .replace(BOGUS_NATS_URL, &format!("nats://127.0.0.1:{NATS_PORT}"))
-        .replace(BOGUS_WS_URL, "ws://localhost:8080");
+        .replace(BOGUS_NATS_URL, &format!("nats://127.0.0.1:{nats_port}"))
+        .replace(BOGUS_WS_URL, &format!("ws://localhost:{websocket_port}"));
     fs::write(&config_path, external_config).expect("write external NATS config");
 
     for (name, subjects, max_messages_per_subject, discard_new_per_subject) in [
@@ -778,7 +782,7 @@ async fn cli_server_managed_nats() {
         log_tail(&external_stderr)
     );
     assert!(
-        port_accepts(NATS_PORT),
+        port_accepts(nats_port),
         "external mode must not stop a nats-server it did not spawn"
     );
     assert!(

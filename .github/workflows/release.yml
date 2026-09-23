@@ -254,7 +254,7 @@ jobs:
   package-js:
     name: Verify JavaScript packages
     needs: prepare-release
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
 
     steps:
       - name: Check out repository

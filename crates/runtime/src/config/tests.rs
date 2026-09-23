@@ -549,7 +549,7 @@ replicas = 1
     let leases = config.resolve_leases().expect("resolve leases");
     assert_eq!(leases.bucket, "trellis_runtime_leases");
     assert_eq!(leases.replicas, 1);
-    assert_eq!(leases.ttl_ms, 15_000);
+    assert_eq!(leases.ttl_ms, 30_000);
     assert_eq!(leases.renew_ms, 5_000);
 }
 

@@ -329,6 +329,23 @@ export class TrellisTestRuntime implements AsyncDisposable {
     if (options?.trellis?.command === undefined) {
       throw new Error("TrellisTestRuntime.start requires trellis.command");
     }
+    for (let attempt = 1;; attempt++) {
+      try {
+        return await TrellisTestRuntime.#startOnce(options);
+      } catch (error) {
+        if (
+          attempt >= 3 ||
+          !String(error).toLowerCase().includes("address already in use")
+        ) {
+          throw error;
+        }
+      }
+    }
+  }
+
+  static async #startOnce(
+    options: TrellisTestRuntimeStartOptions,
+  ): Promise<TrellisTestRuntime> {
     const workdir = await Deno.makeTempDir({ prefix: WORKDIR_PREFIX });
     await writeTrellisTestOwnerMarker(workdir, WORKDIR_OWNER_MARKER);
     await removeStaleMarkedDirectories({
@@ -353,48 +370,32 @@ export class TrellisTestRuntime implements AsyncDisposable {
       if (options.rotatableWebsocketProxy) {
         websocketProxy = TcpProxy.start(nats.websocketUrl);
       }
-      let config: ReturnType<typeof buildControlPlaneConfig>;
-      let configPath: string;
-      let startedControlPlane: TrellisProcessHandle;
-      for (let attempt = 1;; attempt++) {
-        portLease = reserveLocalPort();
-        const port = portLease.port;
-        const trellisUrl = `http://localhost:${port}`;
-        config = buildControlPlaneConfig({
-          workdir,
-          natsUrl: nats.natsUrl,
-          websocketUrl: websocketProxy?.url ?? nats.websocketUrl,
-          manifest: nats.manifest,
-          port,
-          oauthProviders: options.oauthProviders,
-          webOrigins: options.webOrigins,
-          webSource: options.webSource,
-          portalSource: options.portalSource,
-          consoleSource: options.consoleSource,
-          ttlMs: options.ttlMs,
-        });
-        configPath = await writeTrellisConfig({ workdir, config });
-        try {
-          startedControlPlane = await startTrellisProcess({
-            trellisUrl,
-            configPath,
-            options: options.trellis,
-            startupTimeoutMs: timeouts.startupMs,
-            shutdownTimeoutMs: timeouts.shutdownMs,
-            portLease,
-          });
-          portLease = undefined;
-          break;
-        } catch (error) {
-          portLease = undefined;
-          if (
-            attempt >= 3 ||
-            !String(error).toLowerCase().includes("address already in use")
-          ) {
-            throw error;
-          }
-        }
-      }
+      portLease = reserveLocalPort();
+      const port = portLease.port;
+      const trellisUrl = `http://localhost:${port}`;
+      const config = buildControlPlaneConfig({
+        workdir,
+        natsUrl: nats.natsUrl,
+        websocketUrl: websocketProxy?.url ?? nats.websocketUrl,
+        manifest: nats.manifest,
+        port,
+        oauthProviders: options.oauthProviders,
+        webOrigins: options.webOrigins,
+        webSource: options.webSource,
+        portalSource: options.portalSource,
+        consoleSource: options.consoleSource,
+        ttlMs: options.ttlMs,
+      });
+      const configPath = await writeTrellisConfig({ workdir, config });
+      const startedControlPlane = await startTrellisProcess({
+        trellisUrl,
+        configPath,
+        options: options.trellis,
+        startupTimeoutMs: timeouts.startupMs,
+        shutdownTimeoutMs: timeouts.shutdownMs,
+        portLease,
+      });
+      portLease = undefined;
       const deployment = options.deployment ?? "test";
       const adminPassword = options.adminPassword ??
         `trellis-test-${generateSessionSeed()}`;

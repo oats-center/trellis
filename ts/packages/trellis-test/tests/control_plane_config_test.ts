@@ -1,4 +1,9 @@
-import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { join } from "@std/path";
 import {
   buildControlPlaneConfig,
@@ -36,32 +41,20 @@ function testManifest(): LocalNatsBootstrapManifest {
   };
 }
 
-Deno.test("reserveLocalPort records a process-wide host lease", async () => {
-  const lease = reserveLocalPort();
-  const port = lease.port;
-  const lockRoot = Deno.env.get("TRELLIS_TEST_PORT_LOCK_DIR") ??
-    (Deno.build.os === "windows" ? Deno.env.get("TEMP") : "/tmp");
-  if (lockRoot === undefined) {
-    throw new Error("no temporary directory is configured");
-  }
-  const lockPath = `${lockRoot}/trellis-test-port-${port}.lock`;
-
+Deno.test("reserveLocalPort lets the OS choose distinct ports", () => {
+  const first = reserveLocalPort();
+  const second = reserveLocalPort();
   try {
-    assertEquals((await Deno.readTextFile(lockPath)).trim(), String(Deno.pid));
+    assertNotEquals(first.port, second.port);
     assertThrows(
-      () => Deno.listen({ hostname: "127.0.0.1", port }),
+      () => reserveLocalPort(first.port),
       Deno.errors.AddrInUse,
     );
-    lease.releaseForSpawn();
-    assertThrows(
-      () => reserveLocalPort(port),
-      Error,
-      "reserved by another test",
-    );
-    const listener = Deno.listen({ hostname: "127.0.0.1", port });
-    listener.close();
+    first.releaseForSpawn();
+    reserveLocalPort(first.port).release();
   } finally {
-    lease.release();
+    first.release();
+    second.release();
   }
 });
 

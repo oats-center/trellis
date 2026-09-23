@@ -67,7 +67,7 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
         leases: Some(LeasesConfig {
             bucket: Some("trellis_runtime_leases".to_string()),
             replicas: Some(1),
-            ttl_ms: Some(15_000),
+            ttl_ms: Some(30_000),
             renew_ms: Some(5_000),
         }),
         auth: Some(AuthConfig {

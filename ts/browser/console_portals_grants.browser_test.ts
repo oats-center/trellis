@@ -1,5 +1,6 @@
 // Console portal and grant journeys. Real runtime, real generated client.
 
+import { waitFor } from "@oatscenter/trellis-test";
 import { assertEquals } from "@std/assert";
 import { ulid } from "ulid";
 
@@ -415,19 +416,13 @@ Deno.test("B15 built-in settings save uses the real built-in identity", async ()
         initialRegistration,
       );
       await page.getByRole("button", { name: "Save login settings" }).click();
-      // The success notice is cleared when the save begins and republished
-      // only after the write commits, so its reappearance is the terminal
-      // condition. Reading the record before that races the write.
-      await page.getByText("Portal settings saved.").waitFor({
-        state: "hidden",
-        timeout: 10_000,
-      });
+      const secondSave = await waitFor(async () => {
+        const next = await runtime.callAdminRpc("authPortalsGet", { portalId });
+        return next.portal.version === portal.portal.version + 2n ? next : null;
+      }, { timeoutMs: 30_000, intervalMs: 100 });
       await page.getByText("Portal settings saved.").waitFor({
         state: "visible",
         timeout: 30_000,
-      });
-      const secondSave = await runtime.callAdminRpc("authPortalsGet", {
-        portalId,
       });
       assertEquals(
         secondSave.portal.loginSettings.localRegistration,

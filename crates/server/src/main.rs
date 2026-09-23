@@ -14,10 +14,6 @@ use trellis_runtime::{
 
 mod telemetry;
 
-const NATS_PORT: u16 = 4222;
-const NATS_HTTP_PORT: u16 = 8222;
-const NATS_WS_PORT: u16 = 8080;
-
 #[derive(Debug, Parser)]
 #[command(version, about = "Run the Trellis server")]
 struct Args {
@@ -66,6 +62,9 @@ struct ServerArgs {
     /// Manage the explicitly downloaded, checksum-verified pinned NATS release.
     #[arg(long, global = true)]
     nats_download: bool,
+    /// Managed NATS client, monitor, and websocket ports (default: 4222,8222,8080).
+    #[arg(long, global = true, num_args = 1, value_delimiter = ',')]
+    local_nats_ports: Option<Vec<u16>>,
     /// User-profile local development preset: PATH NATS and verbose attached logs.
     #[arg(short, long, global = true)]
     dev: bool,
@@ -92,6 +91,7 @@ struct StartupPolicy {
     mode: RuntimeMode,
     paths: ServerPaths,
     nats: NatsPolicy,
+    nats_ports: LocalNatsPorts,
     verbose: bool,
     reset_admin: bool,
 }
@@ -156,11 +156,39 @@ impl StartupPolicy {
         } else {
             NatsPolicy::ExternalConfigured
         };
+        if server.local_nats_ports.is_some() && matches!(nats, NatsPolicy::ExternalConfigured) {
+            return Err(miette!("--local-nats-ports requires managed NATS"));
+        }
+        let nats_ports = match server.local_nats_ports {
+            Some(ports) => {
+                let [nats, monitor, websocket]: [u16; 3] = ports
+                    .try_into()
+                    .map_err(|_| miette!("--local-nats-ports requires three ports"))?;
+                if nats == 0
+                    || monitor == 0
+                    || websocket == 0
+                    || nats == monitor
+                    || nats == websocket
+                    || monitor == websocket
+                {
+                    return Err(miette!(
+                        "--local-nats-ports requires three distinct nonzero ports"
+                    ));
+                }
+                LocalNatsPorts {
+                    nats,
+                    monitor,
+                    websocket,
+                }
+            }
+            None => LocalNatsPorts::default(),
+        };
         Ok(Self {
             operation,
             mode,
             paths,
             nats,
+            nats_ports,
             verbose: server.verbose || server.dev,
             reset_admin,
         })
@@ -404,11 +432,7 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
                 .binary(source.clone())
                 .source(managed_paths.source)
                 .state(managed_paths.state)
-                .ports(LocalNatsPorts {
-                    nats: NATS_PORT,
-                    monitor: NATS_HTTP_PORT,
-                    websocket: NATS_WS_PORT,
-                })
+                .ports(policy.nats_ports)
                 .cache_dir(managed_paths.cache)
                 .pid_file(managed_paths.pid)
                 .output(NatsOutput::Log {
@@ -511,6 +535,19 @@ mod tests {
             policy(&["trellis-server", "--local-nats", "--nats-download"]).nats,
             NatsPolicy::Local(NatsBinarySource::DownloadPinned)
         );
+        assert_eq!(
+            policy(&[
+                "trellis-server",
+                "--local-nats",
+                "--local-nats-ports=14222,18222,18080",
+            ])
+            .nats_ports,
+            LocalNatsPorts {
+                nats: 14222,
+                monitor: 18222,
+                websocket: 18080,
+            }
+        );
         let dev = policy(&["trellis-server", "--dev"]);
         assert_eq!(dev.nats, NatsPolicy::Local(NatsBinarySource::PathLookup));
         assert!(dev.verbose);
@@ -531,6 +568,29 @@ mod tests {
         ])
         .expect("clap accepts policy conflict");
         assert!(StartupPolicy::resolve(explicit).is_err());
+        assert!(StartupPolicy::resolve(
+            Args::try_parse_from(["trellis-server", "--local-nats-ports=14222,18222,18080"])
+                .expect("parse ports")
+        )
+        .is_err());
+        assert!(StartupPolicy::resolve(
+            Args::try_parse_from([
+                "trellis-server",
+                "--local-nats",
+                "--local-nats-ports=14222,14222,18080",
+            ])
+            .expect("parse duplicate ports")
+        )
+        .is_err());
+        assert!(StartupPolicy::resolve(
+            Args::try_parse_from([
+                "trellis-server",
+                "--local-nats",
+                "--local-nats-ports=14222,18222",
+            ])
+            .expect("parse incomplete ports")
+        )
+        .is_err());
         let error = Args::try_parse_from(["trellis-server", "--dev", "--system"])
             .expect_err("dev and system conflict");
         assert_eq!(error.kind(), ErrorKind::ArgumentConflict);

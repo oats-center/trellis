@@ -54,6 +54,12 @@ Useful local flags:
 | `--nats-server-url nats://127.0.0.1:4222` | `nats://127.0.0.1:4222` | Server-side clients reach NATS somewhere else |
 | `--nats-websocket-url ws://localhost:8080` | `ws://localhost:8080` | Browser clients reach NATS somewhere else |
 
+Generated local configs use a 30-second runtime-owner lease renewed every 5
+seconds. When running another managed-NATS instance on the same machine, pass
+`--local-nats-ports=4223,8223,8081` to `trellis-server --dev` (client, monitor,
+and WebSocket ports, respectively) and give that instance its own HTTP port and
+working bundle. The default managed-NATS ports remain 4222, 8222, and 8080.
+
 ## 2. Check out the source tree
 
 ```sh
@@ -153,7 +159,7 @@ unchanged.
 
 The runtime OCI image ships the `trellis` CLI and the pinned nats-server
 (v2.14.4) baked in at `/usr/local/bin/nats-server` — downloaded and
-checksum-verified at image build time against `conformance/nats-binaries.json`,
+checksum-verified at image build time against `crates/local-nats/nats-binaries.json`,
 never at container runtime; `nsc` is not in the image because the Rust bootstrap
 material is generated natively. The image's `ENTRYPOINT` remains
 `trellis-server` for the external-NATS/quadlet deployment path (unchanged). For

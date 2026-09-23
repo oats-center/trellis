@@ -135,6 +135,12 @@ browser assets. Connected Trellis control uses generated APIs over NATS. Use the
 browser client's `logout()` for normal sign-out so local installation and
 connection state are updated together.
 
+For multiple local managed-NATS servers, give each its own bundle and HTTP port,
+and pass `--local-nats-ports=4223,8223,8081` with `trellis-server --dev` for a
+second NATS client, monitor, and WebSocket port set. The default set is
+4222/8222/8080; generated local configs use a 30-second owner lease renewed
+every 5 seconds.
+
 Requests/events carry context digest, matching redundant `session-key`, and the
 message proof; complete contexts and GrantSets are not message metadata. Proofs
 are verified before application handlers run. Ordinary context expiry allows
