@@ -299,7 +299,7 @@ async fn cli_server_managed_nats() {
             "--nats-monitor-port",
             &monitor_port.to_string(),
             "--nats-ws-port",
-            &ws_port.to_string(),
+            &websocket_port.to_string(),
             "--nats-server-url",
             BOGUS_NATS_URL,
             "--nats-websocket-url",
@@ -440,7 +440,7 @@ async fn cli_server_managed_nats() {
     for (label, port) in [
         ("listen", nats_port),
         ("http", monitor_port),
-        ("listen", ws_port),
+        ("listen", websocket_port),
     ] {
         assert!(
             effective_nats.contains(&format!("{label}: 127.0.0.1:{port}")),
@@ -602,7 +602,7 @@ async fn cli_server_managed_nats() {
             "--nats-monitor-port",
             &monitor_port.to_string(),
             "--nats-ws-port",
-            &ws_port.to_string(),
+            &websocket_port.to_string(),
         ])
         .output()
         .expect("run trellis init config for broken bundle");

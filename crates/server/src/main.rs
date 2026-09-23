@@ -108,7 +108,7 @@ struct StartupPolicy {
     mode: RuntimeMode,
     paths: ServerPaths,
     nats: NatsPolicy,
-    nats_ports: LocalNatsPorts,
+    nats_ports: Option<LocalNatsPorts>,
     verbose: bool,
     reset_admin: bool,
     bootstrap_admin: Option<BootstrapAdminArgs>,
@@ -211,13 +211,13 @@ impl StartupPolicy {
                         "--local-nats-ports requires three distinct nonzero ports"
                     ));
                 }
-                LocalNatsPorts {
+                Some(LocalNatsPorts {
                     nats,
                     monitor,
                     websocket,
-                }
+                })
             }
-            None => LocalNatsPorts::default(),
+            None => None,
         };
         Ok(Self {
             operation,
@@ -478,11 +478,28 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
                 prepare_directory(&managed_paths.cache)?;
             }
             info!(log = %managed_paths.log.display(), "starting managed NATS");
+            // Managed listeners follow the authored bundle's nats.conf unless an
+            // operator passes an explicit --local-nats-ports override. There is no
+            // default substitution at startup: a bundle without explicit listeners
+            // is a configuration error, never a silent fallback to 4222/8222/8080.
+            let nats_ports = match policy.nats_ports {
+                Some(ports) => ports,
+                None => {
+                    let nats_config = managed_paths.source.join("nats.conf");
+                    let listeners = trellis_bootstrap::read_nats_listen_ports(&nats_config)
+                        .into_diagnostic()?;
+                    LocalNatsPorts {
+                        nats: listeners.native,
+                        monitor: listeners.monitor,
+                        websocket: listeners.websocket,
+                    }
+                }
+            };
             let server = LocalNats::builder()
                 .binary(source.clone())
                 .source(managed_paths.source)
                 .state(managed_paths.state)
-                .ports(policy.nats_ports)
+                .ports(nats_ports)
                 .cache_dir(managed_paths.cache)
                 .pid_file(managed_paths.pid)
                 .output(NatsOutput::Log {
@@ -592,11 +609,11 @@ mod tests {
                 "--local-nats-ports=14222,18222,18080",
             ])
             .nats_ports,
-            LocalNatsPorts {
+            Some(LocalNatsPorts {
                 nats: 14222,
                 monitor: 18222,
                 websocket: 18080,
-            }
+            })
         );
         let dev = policy(&["trellis-server", "--dev"]);
         assert_eq!(dev.nats, NatsPolicy::Local(NatsBinarySource::PathLookup));
