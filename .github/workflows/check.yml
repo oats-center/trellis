@@ -382,8 +382,8 @@ jobs:
   live:
     name: Live integration
     needs: [install, wasm, portal]
-    runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -444,8 +444,8 @@ jobs:
   ui-hosting:
     name: Built-in UI hosting
     needs: [install, wasm, portal]
-    runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -475,6 +475,9 @@ jobs:
         with:
           deno-version: ${{ env.DENO_VERSION }}
 
+      - name: Install Playwright Chromium
+        run: npx --yes playwright@1.59.1 install --with-deps chromium
+
       - name: Build Trellis server and CLI
         run: cargo build --manifest-path Cargo.toml -p trellis-server -p trellis-cli
 
@@ -494,11 +497,10 @@ jobs:
   console:
     name: Console (${{ matrix.suite }})
     needs: [install, wasm, portal]
-    runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 2
       matrix:
         suite:
           - services_devices
@@ -534,6 +536,9 @@ jobs:
         uses: denoland/setup-deno@v2
         with:
           deno-version: ${{ env.DENO_VERSION }}
+
+      - name: Install Playwright Chromium
+        run: npx --yes playwright@1.59.1 install --with-deps chromium
 
       - name: Build Trellis server and CLI
         run: cargo build --manifest-path Cargo.toml -p trellis-server -p trellis-cli
