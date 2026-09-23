@@ -12,7 +12,10 @@ mod release;
 #[derive(Debug, Clone, Eq, PartialEq, Subcommand)]
 enum XtaskCommand {
     #[command(name = "install")]
-    Install,
+    Install {
+        #[arg(long)]
+        update: bool,
+    },
     #[command(name = "protocol-wasm")]
     ProtocolWasm,
     #[command(name = "build", disable_help_flag = true)]
@@ -49,7 +52,7 @@ fn run() -> Result<()> {
         return Ok(());
     };
     match command {
-        XtaskCommand::Install => run_install(),
+        XtaskCommand::Install { update } => run_install(update),
         XtaskCommand::ProtocolWasm => generate_protocol_wasm(),
         XtaskCommand::Build { args } => run_build(&args),
         XtaskCommand::Release { command } => release::run_release(&repo_root()?, command),
@@ -114,19 +117,40 @@ const TRELLIS_PROJECTS: &[&str] = &[
     "docs/examples/orders",
 ];
 
-fn run_install() -> Result<()> {
+fn run_install(update: bool) -> Result<()> {
     let root = repo_root()?;
-    generate_builtin_package(&root).wrap_err("generating built-in package")?;
     let runtime = tokio::runtime::Runtime::new().into_diagnostic()?;
+    if update {
+        runtime.block_on(trellis_cli::package::update(
+            trellis_cli::cli::OutputFormat::Text,
+            &trellis_cli::cli::UpdateArgs {
+                dependency_alias: None,
+                project: trellis_cli::cli::ProjectRootArgs {
+                    root: root.join("crates/runtime"),
+                },
+            },
+        ))?;
+    }
+    generate_builtin_package(&root).wrap_err("generating built-in package")?;
     for project in TRELLIS_PROJECTS {
         let project = root.join(project);
         let project_label = project.display().to_string();
-        runtime
-            .block_on(trellis_cli::package::install(
+        if update {
+            runtime.block_on(trellis_cli::package::update(
                 trellis_cli::cli::OutputFormat::Text,
-                &trellis_cli::cli::ProjectRootArgs { root: project },
-            ))
-            .wrap_err_with(|| format!("installing {project_label}"))?;
+                &trellis_cli::cli::UpdateArgs {
+                    dependency_alias: None,
+                    project: trellis_cli::cli::ProjectRootArgs { root: project },
+                },
+            ))?;
+        } else {
+            runtime
+                .block_on(trellis_cli::package::install(
+                    trellis_cli::cli::OutputFormat::Text,
+                    &trellis_cli::cli::ProjectRootArgs { root: project },
+                ))
+                .wrap_err_with(|| format!("installing {project_label}"))?;
+        }
     }
     std::fs::copy(
         root.join("crates/local-nats/nats-binaries.json"),
@@ -320,7 +344,7 @@ fn base64(bytes: &[u8]) -> String {
 }
 
 fn run_build(args: &[String]) -> Result<()> {
-    run_install()?;
+    run_install(false)?;
     generate_protocol_wasm()?;
     build_embedded_browser_apps()?;
     let workspace_root = repo_root()?;
@@ -367,7 +391,11 @@ mod tests {
         let command = parse_command(["install".to_string()].into_iter())
             .expect("parse install")
             .expect("install command");
-        assert_eq!(command, XtaskCommand::Install);
+        assert_eq!(command, XtaskCommand::Install { update: false });
+        let command = parse_command(["install", "--update"].into_iter().map(str::to_string))
+            .expect("parse install update")
+            .expect("install update command");
+        assert_eq!(command, XtaskCommand::Install { update: true });
     }
 
     #[test]

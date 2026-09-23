@@ -156,14 +156,7 @@ jobs:
         run: time cargo run --manifest-path xtask/Cargo.toml -- release prepare --tag "${RELEASE_TAG}"
 
       - name: Install release API dependencies
-        env:
-          TRELLIS_CACHE: ${{ runner.temp }}/trellis-cache
-        run: |
-          rm -rf "$TRELLIS_CACHE"
-          for project in crates/runtime ts/packages/trellis-test web; do
-            time cargo run --package trellis-cli --bin trellis -- update --root "$project"
-          done
-          time cargo xtask install
+        run: rm -rf "$RUNNER_TEMP/trellis-cache" && TRELLIS_CACHE="$RUNNER_TEMP/trellis-cache" time cargo xtask install --update
 
       - name: Build protocol WASM
         run: time cargo run --manifest-path xtask/Cargo.toml -- protocol-wasm
