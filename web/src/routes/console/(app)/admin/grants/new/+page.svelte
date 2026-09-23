@@ -1,6 +1,6 @@
 <script lang="ts">
   import { ulid } from "ulid";
-  import { isErr } from "@qlever-llc/result";
+  import { isErr } from "@oats-center/result";
   import { type apis } from "trellis-web-generated";
   import { goto } from "$app/navigation";
   import { resolve } from "$lib/console_paths";

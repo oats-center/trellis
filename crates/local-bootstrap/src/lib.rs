@@ -12,7 +12,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 const DEFAULT_NATS_BOX_IMAGE: &str = "docker.io/natsio/nats-box:0.19.7";
-const DEFAULT_OPERATOR_NAME: &str = "Qlever";
+const DEFAULT_OPERATOR_NAME: &str = "OATS Center";
 const DEFAULT_SYSTEM_ACCOUNT: &str = "SYS";
 const DEFAULT_AUTH_ACCOUNT: &str = "AUTH";
 const DEFAULT_TRELLIS_ACCOUNT: &str = "TRELLIS";

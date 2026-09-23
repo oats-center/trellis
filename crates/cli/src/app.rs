@@ -26,7 +26,7 @@ mod runtime;
 mod self_cmd;
 
 const SELF_UPDATE_TARGET: SelfUpdateTarget = SelfUpdateTarget::new(
-    "qlever-llc",
+    "oats-center",
     "trellis",
     "trellis",
     env!("CARGO_PKG_VERSION"),

@@ -1,5 +1,5 @@
-import { UnexpectedError } from "@qlever-llc/trellis";
-import type { OperationHandler } from "@qlever-llc/trellis/service";
+import { UnexpectedError } from "@oats-center/trellis";
+import type { OperationHandler } from "@oats-center/trellis/service";
 import { participants } from "../../../trellis/index.js";
 
 import { recordActivity } from "../activity/index.ts";

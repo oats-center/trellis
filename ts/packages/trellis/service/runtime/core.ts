@@ -17,7 +17,7 @@ import {
   isErr,
   ok,
   Result,
-} from "@qlever-llc/result";
+} from "@oats-center/result";
 import { ulid } from "ulid";
 
 import { encodeSchema, type JsonValue, parseSchema } from "../../codec.ts";

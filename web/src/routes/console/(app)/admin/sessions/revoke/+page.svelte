@@ -1,6 +1,6 @@
 <script lang="ts">
   import { ulid } from "ulid";
-  import { isErr } from "@qlever-llc/result";
+  import { isErr } from "@oats-center/result";
   import { goto } from "$app/navigation";
   import { resolve, consoleUrl } from "$lib/console_paths";
   import { page } from "$app/state";

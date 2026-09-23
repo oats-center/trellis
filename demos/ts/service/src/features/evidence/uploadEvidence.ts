@@ -1,4 +1,4 @@
-import type { OperationHandler } from "@qlever-llc/trellis/service";
+import type { OperationHandler } from "@oats-center/trellis/service";
 import { participants } from "../../../trellis/index.js";
 import { recordActivity } from "../activity/index.ts";
 

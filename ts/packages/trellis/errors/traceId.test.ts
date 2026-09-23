@@ -10,7 +10,7 @@ import {
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
-import { UnexpectedError } from "@qlever-llc/result";
+import { UnexpectedError } from "@oats-center/result";
 import { assertEquals, assertExists } from "@std/assert";
 import {
   configureErrorTraceId,

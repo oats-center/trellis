@@ -1,4 +1,4 @@
-import { AsyncResult, Result } from "@qlever-llc/result";
+import { AsyncResult, Result } from "@oats-center/result";
 import { StoreError } from "./errors/index.ts";
 import type { StoreInfo } from "./store.ts";
 

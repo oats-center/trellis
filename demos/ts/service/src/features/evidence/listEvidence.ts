@@ -1,5 +1,5 @@
-import { ok } from "@qlever-llc/trellis";
-import type { RpcHandler } from "@qlever-llc/trellis/service";
+import { ok } from "@oats-center/trellis";
+import type { RpcHandler } from "@oats-center/trellis/service";
 import { type participants } from "../../../trellis/index.js";
 
 type Handler = RpcHandler<

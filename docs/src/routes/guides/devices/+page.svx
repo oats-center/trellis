@@ -44,7 +44,7 @@ import {
   checkDeviceActivation,
   deriveDeviceIdentity,
   waitForDeviceActivation,
-} from "@qlever-llc/trellis/device";
+} from "@oats-center/trellis/device";
 import { participants } from "field-device-trellis";
 
 const identity = await deriveDeviceIdentity(rootSecret);

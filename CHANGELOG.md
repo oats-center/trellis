@@ -8,8 +8,13 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.1] - 2026-09-22
+
 ### Added
 
+- Prepared Trellis 2.0 for its first `0.100.x` release under OATS Center
+  stewardship, with native Trellis IDL authoring guidance and joint OATS/Qlever
+  contribution credit.
 - Added deployment-owned authorization trust initialization and direct-key
   issuer rotation, strict startup validation, generation rollback floors, and
   immutable NATS KV manifest/context history.
@@ -49,10 +54,13 @@ and this project adheres to
 
 ### Changed
 
+- Made the Rust workspace the repository root and moved current source,
+  generated packages, container builds, and release publication to
+  `OATS-Center/trellis` and `@oats-center/*` identities.
 - Replaced repository prepare/watch and producer-published generated SDK
   workflows with project-local `trellis.toml`, committed `trellis.lock`,
-  lock-stable `trellis install`, consumer-local `@trellis/apis/*` and
-  `trellis_apis::*` SDKs, and canonical API-only OCI publication.
+  lock-stable `trellis install`, consumer-local generated TypeScript and Rust
+  packages, and canonical API-only OCI publication.
 - Replaced the obsolete TypeScript Trellis runtime image with the Rust
   `trellis-server` image and removed the withdrawn TypeScript runtime source and
   release path.
@@ -85,8 +93,8 @@ and this project adheres to
   one file per subsystem.
 - Made the normal `Check` workflow the sole correctness gate, including
   generated freshness and the shared live matrix. Release now verifies only
-  metadata, packages, archives, images, and publication inputs from a green `rs`
-  base.
+  metadata, packages, archives, images, and publication inputs from a green
+  `main` base.
 - The final self-hosted `Check` baseline is approximately 26 minutes. The
   prebuilt live bundle takes 3m57s and Auth is the remaining critical live slice
   at 19m31s; every other semantic live slice completes in under 8 minutes.
@@ -480,7 +488,7 @@ and this project adheres to
   `DeploymentAuthorityNeed` union was replaced by `DeploymentAuthorityNeeds` and
   family-specific need types.
 - Renamed the runnable Trellis control-plane service JSR package from
-  `@qlever-llc/trellis-service-trellis` to `@qlever-llc/trellis-control-plane`
+  `@oats-center/trellis-service-trellis` to `@oats-center/trellis-control-plane`
   and now publishes it directly from `js/services/trellis` instead of a
   generated staged package tree.
 - Changed `TrellisTestRuntime.start(...)` so callers must provide an explicit
@@ -514,13 +522,13 @@ and this project adheres to
 - Added public TypeScript event metadata types, including `TrellisEventHeader`
   and `TrellisEventMessage`, for metadata-aware event handling after event
   bodies stopped carrying runtime headers.
-- Added the TypeScript `@qlever-llc/trellis/service/drizzle` helper for Drizzle
+- Added the TypeScript `@oats-center/trellis/service/drizzle` helper for Drizzle
   SQL-backed outbox/inbox tables.
-- Added the Deno-first `@qlever-llc/trellis-test` JSR package for service
+- Added the Deno-first `@oats-center/trellis-test` JSR package for service
   boundary integration tests that need an isolated NATS/JetStream environment
   and a spawned Trellis control-plane process.
-- Added the internal `@qlever-llc/trellis/host/control-plane` export used by the
-  Trellis control-plane service package to access runtime host primitives
+- Added the internal `@oats-center/trellis/host/control-plane` export used by
+  the Trellis control-plane service package to access runtime host primitives
   without repo-relative package imports.
 - Added `service.withSqlOutbox(...)` for SQL outbox-backed service wrappers.
 - Added handler-injected `outbox` for RPC, feed, operation, event-listener, and
@@ -544,11 +552,11 @@ and this project adheres to
   storage migrations, and subsystem scaffolds.
 - Added generated Jobs admin service registration plus live projection RPC
   handlers for listing, reading, and cancelling jobs.
-- Added live decoded event capture to `@qlever-llc/trellis-test` through
+- Added live decoded event capture to `@oats-center/trellis-test` through
   `TrellisTestRuntime.captureEvents(...)` and `TrellisTestEventCapture`, so
   integration tests can subscribe to selected contract events with normal
   Trellis authority and generated event facades.
-- Added `@qlever-llc/trellis-test` assertion helpers for RPC results, eventual
+- Added `@oats-center/trellis-test` assertion helpers for RPC results, eventual
   RPC success, captured event presence and context, no-event windows, and
   terminal job and operation completion.
 - Added expanded JS and Rust integration coverage for granular matrix cases,
@@ -572,7 +580,7 @@ and this project adheres to
   `defineError(...)` instances are accepted when their serialized data matches
   the declared generated error data.
 - Changed release verification and publishing so the Trellis control-plane
-  service, `@qlever-llc/trellis-test`, and direct JSR packages run through the
+  service, `@oats-center/trellis-test`, and direct JSR packages run through the
   normal release package set.
 - Changed release retry and publish workflows so manual existing-tag retries can
   publish after successful release gates, publish jobs still run when unrelated
@@ -620,11 +628,12 @@ and this project adheres to
   while preserving structured `BootstrapError` diagnostics.
 - Fixed `Auth.Sessions.Logout` cleanup ordering so durable session and
   connection records are removed before runtime access is kicked.
-- Fixed `@qlever-llc/trellis-test` assertion helpers so generated event captures
-  from `TrellisTestRuntime.captureEvents(...)` and generated service job refs
-  can be passed directly to `assertEventCaptured`, `assertEventsCaptured`, and
-  `assertJobCompleted` without downstream casts, wrappers, or local adapters.
-- Fixed `@qlever-llc/trellis-test` live integration helpers so service approval
+- Fixed `@oats-center/trellis-test` assertion helpers so generated event
+  captures from `TrellisTestRuntime.captureEvents(...)` and generated service
+  job refs can be passed directly to `assertEventCaptured`,
+  `assertEventsCaptured`, and `assertJobCompleted` without downstream casts,
+  wrappers, or local adapters.
+- Fixed `@oats-center/trellis-test` live integration helpers so service approval
   and generated-client connection flows can run against the release candidate.
 
 ### Removed
@@ -644,8 +653,8 @@ and this project adheres to
 
 ### Fixed
 
-- Rebuilt and republished `@qlever-llc/trellis` so the npm
-  `@qlever-llc/trellis/auth/browser` subpath includes `completeSessionLogout`,
+- Rebuilt and republished `@oats-center/trellis` so the npm
+  `@oats-center/trellis/auth/browser` subpath includes `completeSessionLogout`,
   and added npm smoke coverage for that export.
 - Fixed the Trellis service image build by freezing the login portal static
   build to `js/deno.lock` and using Deno 2.8.3 for the portal build stage.
@@ -663,7 +672,7 @@ and this project adheres to
 ### Changed
 
 - Clarified TypeScript package guidance so ordinary `define*Contract(...)`
-  imports use the browser-safe `@qlever-llc/trellis` root, with advanced
+  imports use the browser-safe `@oats-center/trellis` root, with advanced
   contract tooling and runtime-specific helpers kept on explicit subpaths.
 - Updated Trellis service, console, and demo TypeScript imports to use the
   browser-safe root for normal contract helpers and shared JSON/schema helpers.
@@ -741,8 +750,8 @@ and this project adheres to
 
 ### Fixed
 
-- Fixed the `@qlever-llc/trellis` npm root export so browser bundlers select the
-  browser-safe entrypoint without app-level Vite aliases, preventing DNT and
+- Fixed the `@oats-center/trellis` npm root export so browser bundlers select
+  the browser-safe entrypoint without app-level Vite aliases, preventing DNT and
   Node/Deno builtin shims from leaking into browser client bundles.
 - Fixed Trellis contract catalog startup and lookup behavior so invalid cached
   manifests are pruned from the SQLite `contracts` cache, stale derived
@@ -789,7 +798,7 @@ and this project adheres to
   proposal analysis, design docs, and service-author AI guidance updated for the
   grouped form.
 - Added package artifact smoke coverage for the Trellis browser graph and the
-  `@qlever-llc/trellis-svelte` package output, including declaration files,
+  `@oats-center/trellis-svelte` package output, including declaration files,
   public export declarations, and JSR publish targets.
 - Added Auth0 organization support to OIDC provider configuration and login
   routing.
@@ -803,7 +812,7 @@ and this project adheres to
   keeping low-level NATS access behind internal APIs and using curated
   connection/status APIs for public consumers.
 - Changed release publishing to dry-run and publish the prepared
-  `@qlever-llc/trellis-svelte` JSR package artifact alongside the existing
+  `@oats-center/trellis-svelte` JSR package artifact alongside the existing
   staged JSR packages.
 - Updated the release guide to preserve release marker branches after
   publication.
@@ -816,7 +825,7 @@ and this project adheres to
 - Fixed browser npm artifacts so the browser graph excludes DNT polyfills and
   Node-only shims, including environment detection paths that need to remain
   safe in bundled browser builds.
-- Fixed `@qlever-llc/trellis-svelte` package builds to emit declaration files,
+- Fixed `@oats-center/trellis-svelte` package builds to emit declaration files,
   compiled JavaScript component output for JSR, self-type directives, rewritten
   Svelte component imports, and the runtime dependency metadata needed by
   consumers.
@@ -1024,7 +1033,7 @@ and this project adheres to
 
 ### Fixed
 
-- Fixed the JSR `@qlever-llc/trellis/generate` wrapper so `deno task prepare`
+- Fixed the JSR `@oats-center/trellis/generate` wrapper so `deno task prepare`
   can read package metadata when the wrapper is loaded from a remote module URL,
   avoiding Deno's file-URL-only read path before the release binary starts.
 
@@ -1040,15 +1049,15 @@ and this project adheres to
 ### Fixed
 
 - Fixed npm package smoke failures by rewriting bundled generated SDK imports to
-  public `@qlever-llc/trellis` package subpaths and correcting npm `generate`
+  public `@oats-center/trellis` package subpaths and correcting npm `generate`
   manifest discovery for Deno `npm:` execution.
 
 ## [0.10.3-rc.3] - 2026-05-29
 
 ### Fixed
 
-- Fixed JSR publishing for `@qlever-llc/trellis` by replacing published
-  same-package `@qlever-llc/trellis/*` imports with relative imports, including
+- Fixed JSR publishing for `@oats-center/trellis` by replacing published
+  same-package `@oats-center/trellis/*` imports with relative imports, including
   the embedded generated SDKs that JSR analyzes without the workspace import
   map.
 
@@ -1074,9 +1083,9 @@ and this project adheres to
 
 ### Fixed
 
-- Enabled GitHub Actions JSR publishing for the staged `@qlever-llc/result` and
-  `@qlever-llc/trellis` packages.
-- Fixed the `@qlever-llc/trellis` JSR package layout so first-party generated
+- Enabled GitHub Actions JSR publishing for the staged `@oats-center/result` and
+  `@oats-center/trellis` packages.
+- Fixed the `@oats-center/trellis` JSR package layout so first-party generated
   SDK exports publish from package-local generated files instead of private
   workspace aliases.
 
@@ -1342,9 +1351,9 @@ and this project adheres to
   portal, and runtime flows.
 - Fixed generator TypeScript compiler discovery from repository-root workflows
   that use the JavaScript workspace `node_modules` directory.
-- Fixed npm package export normalization so the `@qlever-llc/trellis/generate`
+- Fixed npm package export normalization so the `@oats-center/trellis/generate`
   subpath remains available in freshly built publish artifacts.
-- Fixed the published npm `@qlever-llc/trellis/generate` subpath so it reads
+- Fixed the published npm `@oats-center/trellis/generate` subpath so it reads
   package metadata from the packed package instead of requiring a source
   `deno.json` next to the generated JavaScript entrypoint.
 - Fixed prerelease npm smoke validation to invoke the packed Trellis CLI by its
@@ -1377,7 +1386,7 @@ and this project adheres to
 
 ### Fixed
 
-- Fixed the `@qlever-llc/trellis-svelte` npm package to publish built runtime
+- Fixed the `@oats-center/trellis-svelte` npm package to publish built runtime
   JavaScript under `dist/` so Vite can optimize Svelte 5 rune modules without
   parsing raw `.svelte.ts` source from `node_modules`.
 
@@ -1578,7 +1587,7 @@ and this project adheres to
 - Changed local SvelteKit app aliasing so each app owns explicit `kit.alias`
   mappings, with Vite relying on SvelteKit-provided aliases and the old shared
   frontend workspace alias helper removed.
-- Changed `@qlever-llc/trellis-svelte` so `createTrellisApp(...)` owns both the
+- Changed `@oats-center/trellis-svelte` so `createTrellisApp(...)` owns both the
   contract and Trellis URL and `TrellisProvider` takes a single `trellisApp`
   prop instead of separate app and `trellisUrl` props.
 - Changed TypeScript contract authoring so manifest `exports` are declared in
@@ -1596,7 +1605,7 @@ and this project adheres to
   origin, device identity, and contract digest, and the JS device demos, design
   docs, and device guide now follow the `checkDeviceActivation(...)` then
   `connect(...)` flow.
-- Redesigned `@qlever-llc/trellis-svelte` around app-owned separate contexts:
+- Redesigned `@oats-center/trellis-svelte` around app-owned separate contexts:
   `createTrellisProviderContexts<TContract>()` now bundles Trellis, auth, and
   connection-state contexts for `TrellisProvider`, the old runtime-bag design is
   gone, and the design docs, SvelteKit guide, and browser demo app now show the
@@ -1616,7 +1625,7 @@ and this project adheres to
   updated design and guide docs to describe that layout, and migrated the JS
   demos from one-file `contracts/` folders to root `contract.ts` modules.
 - Renamed the TypeScript service runtime package from
-  `@qlever-llc/trellis/host*` to `@qlever-llc/trellis/service*`, aligned the
+  `@oats-center/trellis/host*` to `@oats-center/trellis/service*`, aligned the
   extracted service handler types to `RpcHandler`, `JobHandler`, and
   `OperationHandler`, and updated design docs and demo examples to show the
   canonical single-object handler callback shape with the narrow injected
@@ -1636,7 +1645,7 @@ and this project adheres to
   authenticated device activation to a single
   `Auth.DeviceUserAuthorities.Resolve` operation.
 - Made the TypeScript service runtime surface v1-clean by removing the legacy
-  `TrellisServer` public name, making `@qlever-llc/trellis/service*` explicit
+  `TrellisServer` public name, making `@oats-center/trellis/service*` explicit
   service-author entrypoints, hiding raw runtime and NATS transport internals
   from root and generated client facades, and using `TrellisConnection` for
   lifecycle control.
@@ -1730,47 +1739,48 @@ and this project adheres to
 - Stabilized console profile loading across reconnects, supported optional
   portal app contracts, and trimmed login portal files from the runtime image.
 
-[Unreleased]: https://github.com/Qlever-LLC/trellis/compare/v0.11.0...HEAD
-[0.11.0]: https://github.com/Qlever-LLC/trellis/compare/v0.11.0-rc.8...v0.11.0
-[0.11.0-rc.8]: https://github.com/Qlever-LLC/trellis/compare/v0.11.0-rc.7...v0.11.0-rc.8
-[0.11.0-rc.7]: https://github.com/Qlever-LLC/trellis/compare/v0.11.0-rc.6...v0.11.0-rc.7
-[0.11.0-rc.6]: https://github.com/Qlever-LLC/trellis/compare/v0.11.0-rc.5...v0.11.0-rc.6
-[0.11.0-rc.5]: https://github.com/Qlever-LLC/trellis/compare/v0.11.0-rc.4...v0.11.0-rc.5
-[0.11.0-rc.4]: https://github.com/Qlever-LLC/trellis/compare/v0.11.0-rc.3...v0.11.0-rc.4
-[0.11.0-rc.3]: https://github.com/Qlever-LLC/trellis/compare/v0.11.0-rc.2...v0.11.0-rc.3
-[0.11.0-rc.2]: https://github.com/Qlever-LLC/trellis/compare/v0.11.0-rc.1...v0.11.0-rc.2
-[0.11.0-rc.1]: https://github.com/Qlever-LLC/trellis/compare/v0.10.22...v0.11.0-rc.1
-[0.10.22]: https://github.com/Qlever-LLC/trellis/compare/v0.10.21...v0.10.22
-[0.10.21]: https://github.com/Qlever-LLC/trellis/compare/v0.10.20...v0.10.21
-[0.10.20]: https://github.com/Qlever-LLC/trellis/compare/v0.10.19...v0.10.20
-[0.10.19]: https://github.com/Qlever-LLC/trellis/compare/v0.10.18...v0.10.19
-[0.10.18]: https://github.com/Qlever-LLC/trellis/compare/v0.10.18-rc.1...v0.10.18
-[0.10.18-rc.1]: https://github.com/Qlever-LLC/trellis/compare/v0.10.17...v0.10.18-rc.1
-[0.10.17]: https://github.com/Qlever-LLC/trellis/compare/v0.10.16...v0.10.17
-[0.10.16]: https://github.com/Qlever-LLC/trellis/compare/v0.10.15...v0.10.16
-[0.10.15]: https://github.com/Qlever-LLC/trellis/compare/v0.10.14...v0.10.15
-[0.10.14]: https://github.com/Qlever-LLC/trellis/compare/v0.10.13...v0.10.14
-[0.10.13]: https://github.com/Qlever-LLC/trellis/compare/v0.10.12...v0.10.13
-[0.10.12]: https://github.com/Qlever-LLC/trellis/compare/v0.10.11...v0.10.12
-[0.10.11]: https://github.com/Qlever-LLC/trellis/compare/v0.10.10...v0.10.11
-[0.10.10]: https://github.com/Qlever-LLC/trellis/compare/v0.10.9...v0.10.10
-[0.10.9]: https://github.com/Qlever-LLC/trellis/compare/v0.10.8...v0.10.9
-[0.10.8]: https://github.com/Qlever-LLC/trellis/compare/v0.10.7...v0.10.8
-[0.10.7]: https://github.com/Qlever-LLC/trellis/compare/v0.10.6...v0.10.7
-[0.10.6]: https://github.com/Qlever-LLC/trellis/compare/v0.10.5...v0.10.6
-[0.10.5]: https://github.com/Qlever-LLC/trellis/compare/v0.10.4...v0.10.5
-[0.10.4]: https://github.com/Qlever-LLC/trellis/compare/v0.10.3...v0.10.4
-[0.10.3]: https://github.com/Qlever-LLC/trellis/compare/v0.10.3-rc.4...v0.10.3
-[0.10.3-rc.4]: https://github.com/Qlever-LLC/trellis/compare/v0.10.3-rc.3...v0.10.3-rc.4
-[0.10.3-rc.3]: https://github.com/Qlever-LLC/trellis/compare/v0.10.3-rc.2...v0.10.3-rc.3
-[0.10.3-rc.2]: https://github.com/Qlever-LLC/trellis/compare/v0.10.3-rc.1...v0.10.3-rc.2
-[0.10.3-rc.1]: https://github.com/Qlever-LLC/trellis/compare/v0.10.2...v0.10.3-rc.1
-[0.10.2]: https://github.com/Qlever-LLC/trellis/compare/v0.10.1...v0.10.2
-[0.10.1]: https://github.com/Qlever-LLC/trellis/compare/v0.10.0...v0.10.1
-[0.10.0]: https://github.com/Qlever-LLC/trellis/compare/v0.9.0...v0.10.0
-[0.9.0]: https://github.com/Qlever-LLC/trellis/compare/v0.8.4...v0.9.0
-[0.8.4]: https://github.com/Qlever-LLC/trellis/compare/v0.8.3...v0.8.4
-[0.8.3]: https://github.com/Qlever-LLC/trellis/compare/v0.8.2...v0.8.3
-[0.8.2]: https://github.com/Qlever-LLC/trellis/compare/v0.8.1...v0.8.2
-[0.8.0]: https://github.com/Qlever-LLC/trellis/compare/v0.7.0...v0.8.0
-[0.8.0-rc.1]: https://github.com/Qlever-LLC/trellis/compare/v0.7.0...v0.8.0-rc.1
+[Unreleased]: https://github.com/OATS-Center/trellis/compare/v0.100.0-rc.1...HEAD
+[0.100.0-rc.1]: https://github.com/OATS-Center/trellis/compare/eb659cabba5a8847e096159ebd641a70bbf252e6...v0.100.0-rc.1
+[0.11.0]: https://github.com/OATS-Center/trellis/compare/v0.11.0-rc.8...v0.11.0
+[0.11.0-rc.8]: https://github.com/OATS-Center/trellis/compare/v0.11.0-rc.7...v0.11.0-rc.8
+[0.11.0-rc.7]: https://github.com/OATS-Center/trellis/compare/v0.11.0-rc.6...v0.11.0-rc.7
+[0.11.0-rc.6]: https://github.com/OATS-Center/trellis/compare/v0.11.0-rc.5...v0.11.0-rc.6
+[0.11.0-rc.5]: https://github.com/OATS-Center/trellis/compare/v0.11.0-rc.4...v0.11.0-rc.5
+[0.11.0-rc.4]: https://github.com/OATS-Center/trellis/compare/v0.11.0-rc.3...v0.11.0-rc.4
+[0.11.0-rc.3]: https://github.com/OATS-Center/trellis/compare/v0.11.0-rc.2...v0.11.0-rc.3
+[0.11.0-rc.2]: https://github.com/OATS-Center/trellis/compare/v0.11.0-rc.1...v0.11.0-rc.2
+[0.11.0-rc.1]: https://github.com/OATS-Center/trellis/compare/v0.10.22...v0.11.0-rc.1
+[0.10.22]: https://github.com/OATS-Center/trellis/compare/v0.10.21...v0.10.22
+[0.10.21]: https://github.com/OATS-Center/trellis/compare/v0.10.20...v0.10.21
+[0.10.20]: https://github.com/OATS-Center/trellis/compare/v0.10.19...v0.10.20
+[0.10.19]: https://github.com/OATS-Center/trellis/compare/v0.10.18...v0.10.19
+[0.10.18]: https://github.com/OATS-Center/trellis/compare/v0.10.18-rc.1...v0.10.18
+[0.10.18-rc.1]: https://github.com/OATS-Center/trellis/compare/v0.10.17...v0.10.18-rc.1
+[0.10.17]: https://github.com/OATS-Center/trellis/compare/v0.10.16...v0.10.17
+[0.10.16]: https://github.com/OATS-Center/trellis/compare/v0.10.15...v0.10.16
+[0.10.15]: https://github.com/OATS-Center/trellis/compare/v0.10.14...v0.10.15
+[0.10.14]: https://github.com/OATS-Center/trellis/compare/v0.10.13...v0.10.14
+[0.10.13]: https://github.com/OATS-Center/trellis/compare/v0.10.12...v0.10.13
+[0.10.12]: https://github.com/OATS-Center/trellis/compare/v0.10.11...v0.10.12
+[0.10.11]: https://github.com/OATS-Center/trellis/compare/v0.10.10...v0.10.11
+[0.10.10]: https://github.com/OATS-Center/trellis/compare/v0.10.9...v0.10.10
+[0.10.9]: https://github.com/OATS-Center/trellis/compare/v0.10.8...v0.10.9
+[0.10.8]: https://github.com/OATS-Center/trellis/compare/v0.10.7...v0.10.8
+[0.10.7]: https://github.com/OATS-Center/trellis/compare/v0.10.6...v0.10.7
+[0.10.6]: https://github.com/OATS-Center/trellis/compare/v0.10.5...v0.10.6
+[0.10.5]: https://github.com/OATS-Center/trellis/compare/v0.10.4...v0.10.5
+[0.10.4]: https://github.com/OATS-Center/trellis/compare/v0.10.3...v0.10.4
+[0.10.3]: https://github.com/OATS-Center/trellis/compare/v0.10.3-rc.4...v0.10.3
+[0.10.3-rc.4]: https://github.com/OATS-Center/trellis/compare/v0.10.3-rc.3...v0.10.3-rc.4
+[0.10.3-rc.3]: https://github.com/OATS-Center/trellis/compare/v0.10.3-rc.2...v0.10.3-rc.3
+[0.10.3-rc.2]: https://github.com/OATS-Center/trellis/compare/v0.10.3-rc.1...v0.10.3-rc.2
+[0.10.3-rc.1]: https://github.com/OATS-Center/trellis/compare/v0.10.2...v0.10.3-rc.1
+[0.10.2]: https://github.com/OATS-Center/trellis/compare/v0.10.1...v0.10.2
+[0.10.1]: https://github.com/OATS-Center/trellis/compare/v0.10.0...v0.10.1
+[0.10.0]: https://github.com/OATS-Center/trellis/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/OATS-Center/trellis/compare/v0.8.4...v0.9.0
+[0.8.4]: https://github.com/OATS-Center/trellis/compare/v0.8.3...v0.8.4
+[0.8.3]: https://github.com/OATS-Center/trellis/compare/v0.8.2...v0.8.3
+[0.8.2]: https://github.com/OATS-Center/trellis/compare/v0.8.1...v0.8.2
+[0.8.0]: https://github.com/OATS-Center/trellis/compare/v0.7.0...v0.8.0
+[0.8.0-rc.1]: https://github.com/OATS-Center/trellis/compare/v0.7.0...v0.8.0-rc.1

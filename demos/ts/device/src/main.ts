@@ -1,9 +1,9 @@
 import {
   checkDeviceActivation,
   TrellisDevice,
-} from "@qlever-llc/trellis/device";
-import { TransportError } from "@qlever-llc/trellis/errors";
-import { TransferGrantSchema } from "@qlever-llc/trellis";
+} from "@oats-center/trellis/device";
+import { TransportError } from "@oats-center/trellis/errors";
+import { TransferGrantSchema } from "@oats-center/trellis";
 import { Value } from "typebox/value";
 import chalk from "chalk";
 import { readFile, writeFile } from "node:fs/promises";

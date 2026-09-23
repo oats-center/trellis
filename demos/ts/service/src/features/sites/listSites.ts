@@ -1,6 +1,6 @@
-import { isErr, ok } from "@qlever-llc/trellis";
+import { isErr, ok } from "@oats-center/trellis";
 import type { SiteSummary } from "../../../../shared/field_data.ts";
-import type { RpcHandler } from "@qlever-llc/trellis/service";
+import type { RpcHandler } from "@oats-center/trellis/service";
 import { type participants } from "../../../trellis/index.js";
 import { paginate } from "../../pagination.ts";
 

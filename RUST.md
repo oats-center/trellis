@@ -39,8 +39,8 @@ agents. Those files summarize the contract id, kind, crate/package name, owned
 RPC/event/feed/operation descriptors, facade methods, and used dependency
 surfaces. Use them together with the raw docs index:
 
-- https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms.txt
-- https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-full.txt
+- https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/llms.txt
+- https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/llms-full.txt
 
 Current Rust service code should prefer descriptor and facade APIs:
 `trellis_client.call::<RpcDescriptor>(...)`,

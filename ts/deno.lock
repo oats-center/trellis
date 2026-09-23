@@ -2555,7 +2555,7 @@
       },
       "packages/trellis-test": {
         "dependencies": [
-          "jsr:@qlever-llc/trellis@0.12",
+          "jsr:@oats-center/trellis@0.100",
           "jsr:@std/assert@^1.0.19",
           "jsr:@std/path@^1.1.4",
           "npm:@libsql/client@~0.15.15",

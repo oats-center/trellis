@@ -1,6 +1,6 @@
 import { assert, assertRejects } from "@std/assert";
 
-import { TrellisService } from "@qlever-llc/trellis/service";
+import { TrellisService } from "@oats-center/trellis/service";
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 

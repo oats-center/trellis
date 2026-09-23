@@ -3,11 +3,11 @@ import type {
   ReceiveTransferGrant,
   StoreError,
   TransferError,
-} from "@qlever-llc/trellis";
+} from "@oats-center/trellis";
 import type {
   ConnectedTrellisService,
   RpcHandler,
-} from "@qlever-llc/trellis/service";
+} from "@oats-center/trellis/service";
 import { type participants } from "../trellis/index.js";
 import type { getSiteSummary } from "../../shared/field_data.ts";
 

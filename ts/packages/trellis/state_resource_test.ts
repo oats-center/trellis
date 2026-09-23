@@ -1,5 +1,5 @@
 import { assertEquals, assertInstanceOf } from "@std/assert";
-import { Result } from "@qlever-llc/result";
+import { Result } from "@oats-center/result";
 
 import { codecs } from "./generated_support.ts";
 import { Conflict } from "./internal_sdk/generated/apis/state/mod.js";

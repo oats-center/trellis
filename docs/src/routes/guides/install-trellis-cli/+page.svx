@@ -2,7 +2,7 @@ The `trellis` CLI handles runtime and operator tasks such as service deployments
 
 ## Option A: Download a prebuilt binary
 
-Prebuilt binaries are published as [GitHub Releases](https://github.com/qlever-llc/trellis/releases) for every tagged version.
+Prebuilt binaries are published as [GitHub Releases](https://github.com/oats-center/trellis/releases) for every tagged version.
 
 Pick the archive that matches your platform:
 
@@ -16,8 +16,8 @@ Pick the archive that matches your platform:
 Download and extract:
 
 ```sh
-curl -LO https://github.com/qlever-llc/trellis/releases/latest/download/trellis-<version>-<target>.tar.gz
-curl -LO https://github.com/qlever-llc/trellis/releases/latest/download/trellis-<version>-<target>.tar.gz.sha256
+curl -LO https://github.com/oats-center/trellis/releases/latest/download/trellis-<version>-<target>.tar.gz
+curl -LO https://github.com/oats-center/trellis/releases/latest/download/trellis-<version>-<target>.tar.gz.sha256
 sha256sum -c trellis-<version>-<target>.tar.gz.sha256
 tar xzf trellis-*.tar.gz
 ```
@@ -45,7 +45,7 @@ This builds from source and places the `trellis` binary in your Cargo bin direct
 When working against unreleased docs or source, build the CLI from the repository checkout so the available commands match the code you are running:
 
 ```sh
-git clone https://github.com/qlever-llc/trellis.git
+git clone https://github.com/oats-center/trellis.git
 cd trellis
 cargo xtask install
 cargo install --path crates/cli

@@ -48,8 +48,8 @@ export {
   isOk,
   ok,
   Result,
-} from "@qlever-llc/result";
-export type { MaybeAsync } from "@qlever-llc/result";
+} from "@oats-center/result";
+export type { MaybeAsync } from "@oats-center/result";
 export type { ClientOpts } from "./client.ts";
 export type { CallerParticipant, CallerRuntime } from "./caller.ts";
 export { PaginationError } from "./pagination.ts";

@@ -20,9 +20,9 @@
     }
   },
   "imports": {
-    "@qlever-llc/result": "npm:@qlever-llc/result@^0.12.0",
-    "@qlever-llc/trellis-svelte": "npm:@qlever-llc/trellis-svelte@^0.12.0",
-    "@qlever-llc/trellis": "npm:@qlever-llc/trellis@^0.12.0",
+    "@oats-center/result": "npm:@oats-center/result@^0.100.0",
+    "@oats-center/trellis-svelte": "npm:@oats-center/trellis-svelte@^0.100.0",
+    "@oats-center/trellis": "npm:@oats-center/trellis@^0.100.0",
     "@sveltejs/acorn-typescript": "npm:@sveltejs/acorn-typescript@^1.0.9",
     "@sveltejs/adapter-auto": "npm:@sveltejs/adapter-auto@^7.0.1",
     "@sveltejs/adapter-static": "npm:@sveltejs/adapter-static@3.0.10",

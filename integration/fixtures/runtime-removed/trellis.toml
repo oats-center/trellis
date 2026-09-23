@@ -1,6 +1,6 @@
 [package]
 name = "runtime-trellis"
-version = "0.12.0"
+version = "0.100.0"
 
 [sources]
 runtime = "contract.trellis"

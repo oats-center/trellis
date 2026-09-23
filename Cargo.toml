@@ -41,10 +41,10 @@ resolver = "2"
 trellis-rs = { path = "crates/trellis" }
 
 [workspace.package]
-version = "0.12.0"
+version = "0.100.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/qlever-llc/trellis"
+repository = "https://github.com/oats-center/trellis"
 
 [workspace.lints]
 rust.missing_docs = "deny"
@@ -100,4 +100,4 @@ url = "2.5.8"
 self_update = { version = "0.44.0", default-features = false, features = ["archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "rustls", "ureq"] }
 toml = "1.1.2"
 toml_edit = { version = "0.23.7", features = ["serde"] }
-trellis-protocol = { path = "crates/protocol", version = "0.12.0" }
+trellis-protocol = { path = "crates/protocol", version = "0.100.0" }

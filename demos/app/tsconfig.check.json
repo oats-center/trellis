@@ -6,10 +6,10 @@
     "paths": {
       "$lib": ["src/lib"],
       "$lib/*": ["src/lib/*"],
-      "@qlever-llc/result": ["../../ts/packages/result/mod.ts"],
-      "@qlever-llc/trellis": ["../../ts/packages/trellis/index.ts"],
-      "@qlever-llc/trellis/*": ["../../ts/packages/trellis/*"],
-      "@qlever-llc/trellis-svelte": [
+      "@oats-center/result": ["../../ts/packages/result/mod.ts"],
+      "@oats-center/trellis": ["../../ts/packages/trellis/index.ts"],
+      "@oats-center/trellis/*": ["../../ts/packages/trellis/*"],
+      "@oats-center/trellis-svelte": [
         "../../ts/packages/trellis-svelte/src/index.ts"
       ]
     }

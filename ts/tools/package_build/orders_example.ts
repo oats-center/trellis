@@ -70,7 +70,8 @@ try {
   delete testConfig.extends;
   for (const [name, specifier] of Object.entries(testConfig.imports)) {
     if (
-      name === "@qlever-llc/trellis" || name.startsWith("@qlever-llc/trellis/")
+      name === "@oats-center/trellis" ||
+      name.startsWith("@oats-center/trellis/")
     ) {
       testConfig.imports[name] = specifier.replace(/^jsr:/, "npm:");
     }

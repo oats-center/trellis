@@ -1,4 +1,4 @@
-import type { AsyncResult, BaseError, Result } from "@qlever-llc/result";
+import type { AsyncResult, BaseError, Result } from "@oats-center/result";
 import { type CallerRuntime, createCallerRuntime } from "./caller.ts";
 import {
   type GeneratedParticipant,

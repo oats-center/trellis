@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn rewrite_json_manifest_preserves_layout() {
-        let original = "{\n  \"name\": \"@qlever-llc/trellis\",\n  \"version\": \"0.8.2\"\n}\n";
+        let original = "{\n  \"name\": \"@oats-center/trellis\",\n  \"version\": \"0.8.2\"\n}\n";
         let updated = rewrite_json_manifest_version(
             original,
             "0.8.2",
@@ -273,13 +273,13 @@ mod tests {
         .expect("rewrite json version");
         assert_eq!(
             updated,
-            "{\n  \"name\": \"@qlever-llc/trellis\",\n  \"version\": \"0.9.0\"\n}\n"
+            "{\n  \"name\": \"@oats-center/trellis\",\n  \"version\": \"0.9.0\"\n}\n"
         );
     }
 
     #[test]
     fn rewrite_json_manifest_updates_internal_jsr_dependencies() {
-        let original = "{\n  \"imports\": {\n    \"@qlever-llc/trellis\": \"jsr:@qlever-llc/trellis@^0.8.2\",\n    \"@qlever-llc/trellis/sdk/auth\": \"jsr:@qlever-llc/trellis@^0.8.2/sdk/auth\",\n    \"@std/path\": \"jsr:@std/path@^1.1.4\"\n  }\n}\n";
+        let original = "{\n  \"imports\": {\n    \"@oats-center/trellis\": \"jsr:@oats-center/trellis@^0.8.2\",\n    \"@oats-center/trellis/sdk/auth\": \"jsr:@oats-center/trellis@^0.8.2/sdk/auth\",\n    \"@std/path\": \"jsr:@std/path@^1.1.4\"\n  }\n}\n";
         let updated = rewrite_json_manifest_internal_jsr_dependency_versions(
             original,
             "0.8.2",
@@ -287,7 +287,7 @@ mod tests {
             std::path::Path::new("deno.json"),
         )
         .expect("rewrite jsr dependencies");
-        assert!(updated.contains("@qlever-llc/trellis@^0.8.2-rc.1"));
+        assert!(updated.contains("@oats-center/trellis@^0.8.2-rc.1"));
         assert!(updated.contains("@std/path@^1.1.4"));
     }
 
@@ -305,7 +305,7 @@ mod tests {
             .expect("mkdir manifest parent");
         fs::write(
             &manifest,
-            "{\n  \"name\": \"@qlever-llc/trellis-test\",\n  \"version\": \"0.8.2\",\n  \"imports\": {\n    \"@qlever-llc/trellis\": \"jsr:@qlever-llc/trellis@^0.8.2\"\n  }\n}\n",
+            "{\n  \"name\": \"@oats-center/trellis-test\",\n  \"version\": \"0.8.2\",\n  \"imports\": {\n    \"@oats-center/trellis\": \"jsr:@oats-center/trellis@^0.8.2\"\n  }\n}\n",
         )
         .expect("write manifest");
         prepare_release(
@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn rewrite_js_internal_npm_dependency_versions_updates_build_scripts() {
-        let original = "const dependencies = {\n  \"@qlever-llc/result\": \"^0.8.2\",\n  \"@qlever-llc/trellis\": \"~0.8.2\",\n};\n";
+        let original = "const dependencies = {\n  \"@oats-center/result\": \"^0.8.2\",\n  \"@oats-center/trellis\": \"~0.8.2\",\n};\n";
         let updated = rewrite_js_internal_npm_dependency_versions(
             original,
             "0.8.2",

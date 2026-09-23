@@ -2,16 +2,16 @@ import type { KvRepresentation } from "../kv.ts";
 import type { SchemaLike } from "./api.ts";
 
 export const PARTICIPANT_JOBS_METADATA = Symbol.for(
-  "@qlever-llc/trellis/participant/jobs",
+  "@oats-center/trellis/participant/jobs",
 );
 export const PARTICIPANT_KV_METADATA = Symbol.for(
-  "@qlever-llc/trellis/participant/kv",
+  "@oats-center/trellis/participant/kv",
 );
 export const PARTICIPANT_STORE_METADATA = Symbol.for(
-  "@qlever-llc/trellis/participant/store",
+  "@oats-center/trellis/participant/store",
 );
 export const PARTICIPANT_EVENT_CONSUMERS_METADATA = Symbol.for(
-  "@qlever-llc/trellis/participant/event-consumers",
+  "@oats-center/trellis/participant/event-consumers",
 );
 
 export type ParticipantJobsMetadata = Record<string, {

@@ -36,7 +36,7 @@ Trellis redirects it to your registered portal with `flowId`. Preserve that
 identifier; a custom portal must not create a replacement browser flow.
 
 The following TypeScript runs in the browser, after installing
-`@qlever-llc/trellis`:
+`@oats-center/trellis`:
 
 ```ts
 import {
@@ -46,7 +46,7 @@ import {
   portalProviderLoginUrl,
   portalRedirectLocation,
   submitPortalApproval,
-} from "@qlever-llc/trellis/auth/browser";
+} from "@oats-center/trellis/auth/browser";
 
 const config = { authUrl: "https://trellis.example.com" };
 const flowId = portalFlowIdFromUrl(new URL(location.href));
@@ -113,7 +113,7 @@ new grant sets or broaden the proposal in the UI. Surface typed HTTP errors and
 expiry to the user instead of silently starting another approval attempt.
 
 For Svelte, `createPortalFlow({ authUrl, getUrl })` from
-`@qlever-llc/trellis-svelte` wraps this flow with reactive state, provider URLs,
+`@oats-center/trellis-svelte` wraps this flow with reactive state, provider URLs,
 approval, and denial. Call `load()` in the browser and use
 `portalRedirectLocation(controller.state)` when a state supplies a return URL.
 The checked-in browser entry `web/src/lib/portal_login.ts` shows that

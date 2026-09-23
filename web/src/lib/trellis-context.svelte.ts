@@ -1,7 +1,7 @@
 import {
   createTrellisApp,
   type TrellisClientFor,
-} from "@qlever-llc/trellis-svelte";
+} from "@oats-center/trellis-svelte";
 import { participant as consoleParticipant } from "../../../ts/packages/trellis/internal_sdk/generated/participants/console/mod.js";
 import { APP_CONFIG } from "./config.ts";
 

@@ -1,6 +1,6 @@
 import { type KV, type KvEntry, Kvm } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/nats-core/internal";
-import { AsyncResult, type BaseError, Result } from "@qlever-llc/result";
+import { AsyncResult, type BaseError, Result } from "@oats-center/result";
 
 import type { Codec } from "./generated.ts";
 import { KVError, ValidationError } from "./errors/index.ts";

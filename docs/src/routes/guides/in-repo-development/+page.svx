@@ -23,7 +23,7 @@ separate NATS setup step is needed.
 ## 2. Clone and prepare the repo
 
 ```sh
-git clone https://github.com/qlever-llc/trellis.git
+git clone https://github.com/oats-center/trellis.git
 cd trellis
 ```
 

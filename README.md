@@ -77,7 +77,7 @@ Install locked API dependencies and regenerate project-local artifacts with:
 - `cd ts && deno task install`
 - `cargo xtask build`
 - `cargo xtask release check-versions`
-- `cargo xtask release prepare --tag v0.9.0-rc.1`
+- `cargo xtask release prepare --tag v0.100.0-rc.1`
 
 Each contract project owns `trellis.toml`, commits `trellis.lock`, and consumes
 its private generated SDK through the configured TypeScript or Rust output.

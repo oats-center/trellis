@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "@qlever-llc/trellis": "^0.12.0"
+    "@oats-center/trellis": "^0.100.0"
   },
   "description": "Generated Trellis APIs and participants.",
   "exports": {
@@ -9,10 +9,10 @@
       "types": "./index.d.ts"
     }
   },
-  "name": "@qlever-llc/trellis-internal-sdk",
+  "name": "@oats-center/trellis-internal-sdk",
   "private": true,
   "sideEffects": false,
   "trellisGenerated": true,
   "type": "module",
-  "version": "0.12.0"
+  "version": "0.100.0"
 }

@@ -1,6 +1,6 @@
-import { BaseError, isErr, ok, Result, StoreError } from "@qlever-llc/trellis";
-import type { TransferError } from "@qlever-llc/trellis";
-import type { RpcHandler } from "@qlever-llc/trellis/service";
+import { BaseError, isErr, ok, Result, StoreError } from "@oats-center/trellis";
+import type { TransferError } from "@oats-center/trellis";
+import type { RpcHandler } from "@oats-center/trellis/service";
 import { type participants } from "../../../trellis/index.js";
 import type { FieldOpsDeps } from "../../deps.ts";
 

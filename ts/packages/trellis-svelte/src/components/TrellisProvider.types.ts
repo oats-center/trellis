@@ -2,7 +2,7 @@ import type {
   ClientAuthOptions,
   ClientAuthRequiredContext,
   ClientOpts,
-} from "@qlever-llc/trellis";
+} from "@oats-center/trellis";
 import type { Snippet } from "svelte";
 import type {
   TrellisAppOwner,

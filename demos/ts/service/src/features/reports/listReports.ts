@@ -1,5 +1,5 @@
-import { ok } from "@qlever-llc/trellis";
-import type { RpcHandler } from "@qlever-llc/trellis/service";
+import { ok } from "@oats-center/trellis";
+import type { RpcHandler } from "@oats-center/trellis/service";
 import { type participants } from "../../../trellis/index.js";
 import { listReports as listReportRecords } from "./reportStore.ts";
 import { paginate } from "../../pagination.ts";

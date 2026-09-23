@@ -2,7 +2,7 @@ import {
   type ClientAuthContinuation,
   type ClientAuthRequiredContext,
   TrellisClient,
-} from "@qlever-llc/trellis";
+} from "@oats-center/trellis";
 
 import {
   adminAccountTokenFromUrl,

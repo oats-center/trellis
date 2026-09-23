@@ -9,7 +9,7 @@ import {
   AsyncResult,
   Result,
   type Result as ResultType,
-} from "@qlever-llc/result";
+} from "@oats-center/result";
 import { StoreError } from "./errors/index.ts";
 import {
   decodePaginationCursor,

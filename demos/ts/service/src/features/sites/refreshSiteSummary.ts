@@ -1,5 +1,5 @@
-import { Result, UnexpectedError } from "@qlever-llc/trellis";
-import type { ActiveJob } from "@qlever-llc/trellis/service";
+import { Result, UnexpectedError } from "@oats-center/trellis";
+import type { ActiveJob } from "@oats-center/trellis/service";
 import type {
   SiteRefreshJobPayload,
   SiteRefreshJobResult,

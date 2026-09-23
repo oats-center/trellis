@@ -2,6 +2,6 @@
 
 Shared OpenTelemetry helpers for Trellis packages.
 
-- surfaced publicly through `@qlever-llc/trellis/telemetry`
+- surfaced publicly through `@oats-center/trellis/telemetry`
 
 Shared internally by Trellis packages that need telemetry.

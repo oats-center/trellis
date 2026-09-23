@@ -8,11 +8,11 @@ application architecture.
 Use this file for AI coding agents working in a Svelte or SvelteKit browser app
 repository that consumes Trellis. The language-neutral guide is:
 
-https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-full.txt
+https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/llms-full.txt
 
 The TypeScript service guide is:
 
-https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-typescript.txt
+https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/llms-typescript.txt
 
 ## Browser app setup
 
@@ -25,7 +25,7 @@ ordinary ESM package through your application's package manager.
 import {
   createTrellisApp,
   type TrellisClientFor,
-} from "@qlever-llc/trellis-svelte";
+} from "@oats-center/trellis-svelte";
 import { participants } from "dashboard-trellis";
 
 const participant = participants.acmeDashboard.participant;
@@ -90,7 +90,7 @@ the typed client with `trellisApp.getTrellis()` and connection status with
 `SvelteTrellisConnection`.
 
 Use Svelte context, not module-global mutable state, for app-scoped Trellis
-clients. `@qlever-llc/trellis-svelte` owns the app context created by
+clients. `@oats-center/trellis-svelte` owns the app context created by
 `createTrellisApp(...)`.
 
 ## Cross-participant clients

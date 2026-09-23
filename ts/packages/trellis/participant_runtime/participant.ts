@@ -1,4 +1,4 @@
-import type { BaseError } from "@qlever-llc/result";
+import type { BaseError } from "@oats-center/result";
 import type { Codec } from "../generated.ts";
 import type {
   EventDesc,

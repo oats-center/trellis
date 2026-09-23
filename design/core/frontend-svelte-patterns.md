@@ -17,8 +17,8 @@ This document defines contributor conventions for Trellis-owned Svelte apps and
 components. Its state, layout, styling, and file-organization preferences are
 not requirements for applications that consume Trellis. Those applications
 choose their own frontend architecture; the optional
-`@qlever-llc/trellis-svelte` package's connection/context APIs are documented in
-the Svelte integration guide.
+`@oats-center/trellis-svelte` package's connection/context APIs are documented
+in the Svelte integration guide.
 
 ## Svelte 5 State Pattern
 
@@ -106,7 +106,7 @@ import { env } from "$env/dynamic/public";
 import {
   createTrellisApp,
   type TrellisClientFor,
-} from "@qlever-llc/trellis-svelte";
+} from "@oats-center/trellis-svelte";
 import contract from "$lib/contract";
 
 type MyAppClient = TrellisClientFor<typeof contract>;
@@ -191,7 +191,7 @@ Rules:
 - local generated service SDK packages need SvelteKit aliases unless they are
   installed packages
 - if Trellis itself is local-linked, alias the package root
-  `@qlever-llc/trellis` and every Trellis subpath the app or generated SDKs
+  `@oats-center/trellis` and every Trellis subpath the app or generated SDKs
   import
 - keep local frontend aliases in the app's `svelte.config.js` `kit.alias`
   object; SvelteKit generates the `.svelte-kit/tsconfig.json` path mappings used
@@ -199,7 +199,7 @@ Rules:
   SvelteKit builds
 - do not duplicate the same local package mappings in `vite.config.js`
 - order explicit alias entries from most specific to least specific, with
-  Trellis subpaths before the `@qlever-llc/trellis` package root, because Vite
+  Trellis subpaths before the `@oats-center/trellis` package root, because Vite
   resolves aliases by prefix
 
 The Trellis repo's local frontend apps keep explicit `kit.alias` objects in each

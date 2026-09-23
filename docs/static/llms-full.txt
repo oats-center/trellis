@@ -246,7 +246,7 @@ Declare these dependencies only when the application uses them:
 
 Choose application testing tools independently. For a test that needs real
 Trellis transport, authority, or restart behavior, the Deno package
-`@qlever-llc/trellis-test` provides `TrellisTestRuntime`. It can also launch a
+`@oats-center/trellis-test` provides `TrellisTestRuntime`. It can also launch a
 Rust service process. There is no equivalent public Rust test-runtime helper.
 The helper runs real NATS child processes; first use downloads pinned binaries.
 Provide the `trellis-server` and `trellis` executables as described in

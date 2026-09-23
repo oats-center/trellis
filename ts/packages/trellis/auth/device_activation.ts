@@ -1,5 +1,5 @@
-import type { BaseError } from "@qlever-llc/result";
-import type { AsyncResult } from "@qlever-llc/result";
+import type { BaseError } from "@oats-center/result";
+import type { AsyncResult } from "@oats-center/result";
 import type { StaticDecode } from "typebox";
 import { Type } from "typebox";
 import { Value } from "typebox/value";

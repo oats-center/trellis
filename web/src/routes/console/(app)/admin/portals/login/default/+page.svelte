@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { isErr } from "@qlever-llc/result";
+  import { isErr } from "@oats-center/result";
   import { onMount } from "svelte";
   import { catalogPage } from "$lib/console/paging.ts";
   import { resolve } from "$lib/console_paths";

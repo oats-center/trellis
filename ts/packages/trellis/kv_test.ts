@@ -1,5 +1,5 @@
 import { assertEquals, assertRejects } from "@std/assert";
-import { Result, UnexpectedError } from "@qlever-llc/result";
+import { Result, UnexpectedError } from "@oats-center/result";
 
 import {
   decodeResourceValue,

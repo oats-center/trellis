@@ -1,7 +1,7 @@
 const SEMVER_RE =
   /^(?<base>\d+\.\d+\.\d+)(?<suffix>-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
-const INTERNAL_NPM_SCOPE = "@qlever-llc/";
+const INTERNAL_NPM_SCOPE = "@oats-center/";
 
 type ParsedReleaseVersion = {
   version: string;

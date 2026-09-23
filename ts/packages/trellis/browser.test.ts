@@ -3,7 +3,7 @@
  */
 
 import { assertEquals, assertExists } from "@std/assert";
-import { AsyncResult, isErr, isOk, Result } from "@qlever-llc/result";
+import { AsyncResult, isErr, isOk, Result } from "@oats-center/result";
 
 // Import everything from browser.ts to verify exports exist
 import {

@@ -3,7 +3,7 @@ import {
   type SchemaLike,
   unwrapSchema,
 } from "./participant.ts";
-import { Result } from "@qlever-llc/result";
+import { Result } from "@oats-center/result";
 import type { StaticDecode, TSchema } from "typebox";
 import { EncodeError, ParseError, Value } from "typebox/value";
 import {

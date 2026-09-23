@@ -2,10 +2,10 @@
   "workspace": [],
   "imports": {
     "orders-trellis": "./trellis/index.js",
-    "@qlever-llc/trellis": "npm:@qlever-llc/trellis@^0.12.0",
-    "@qlever-llc/trellis/generated": "npm:@qlever-llc/trellis@^0.12.0/generated",
-    "@qlever-llc/trellis/service": "npm:@qlever-llc/trellis@^0.12.0/service",
-    "@qlever-llc/trellis-test": "jsr:@qlever-llc/trellis-test@^0.12.0",
+    "@oats-center/trellis": "npm:@oats-center/trellis@^0.100.0",
+    "@oats-center/trellis/generated": "npm:@oats-center/trellis@^0.100.0/generated",
+    "@oats-center/trellis/service": "npm:@oats-center/trellis@^0.100.0/service",
+    "@oats-center/trellis-test": "jsr:@oats-center/trellis-test@^0.100.0",
     "@std/assert": "jsr:@std/assert@^1.0.19"
   },
   "tasks": {

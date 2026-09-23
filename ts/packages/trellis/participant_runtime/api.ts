@@ -1,6 +1,6 @@
 import type { StaticDecode, TSchema } from "typebox";
 
-import type { BaseError } from "@qlever-llc/result";
+import type { BaseError } from "@oats-center/result";
 import type { Codec } from "../generated.ts";
 import { sha256Base64urlSync } from "./json.ts";
 type SubjectParam = `/${string}`;

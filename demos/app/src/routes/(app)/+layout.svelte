@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { resolve } from "$app/paths";
-  import { TrellisProvider } from "@qlever-llc/trellis-svelte";
+  import { TrellisProvider } from "@oats-center/trellis-svelte";
   import AppShell from "$lib/components/AppShell.svelte";
   import { trellisApp } from "$lib/trellis";
 

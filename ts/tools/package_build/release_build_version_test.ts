@@ -27,13 +27,13 @@ Deno.test("resolveInternalNpmDependenciesForBuild uses exact internal prerelease
   withReleaseEnv("0.8.2-rc.1", "0.8.2", () => {
     assertEquals(
       resolveInternalNpmDependenciesForBuild({
-        "@qlever-llc/result": "^0.8.2",
-        "@qlever-llc/trellis": "~0.8.2",
+        "@oats-center/result": "^0.8.2",
+        "@oats-center/trellis": "~0.8.2",
         typebox: "^1.0.15",
       }),
       {
-        "@qlever-llc/result": "0.8.2-rc.1",
-        "@qlever-llc/trellis": "0.8.2-rc.1",
+        "@oats-center/result": "0.8.2-rc.1",
+        "@oats-center/trellis": "0.8.2-rc.1",
         typebox: "^1.0.15",
       },
     );
@@ -44,13 +44,13 @@ Deno.test("resolveInternalNpmDependenciesForBuild preserves internal stable pack
   withReleaseEnv("0.8.2", "0.8.2", () => {
     assertEquals(
       resolveInternalNpmDependenciesForBuild({
-        "@qlever-llc/result": "^0.8.2",
-        "@qlever-llc/trellis": "~0.8.2",
+        "@oats-center/result": "^0.8.2",
+        "@oats-center/trellis": "~0.8.2",
         typebox: "^1.0.15",
       }),
       {
-        "@qlever-llc/result": "^0.8.2",
-        "@qlever-llc/trellis": "~0.8.2",
+        "@oats-center/result": "^0.8.2",
+        "@oats-center/trellis": "~0.8.2",
         typebox: "^1.0.15",
       },
     );
@@ -61,11 +61,11 @@ Deno.test("resolveInternalNpmDependenciesForBuild uses exact prepared prerelease
   withoutReleaseEnv(() => {
     assertEquals(
       resolveInternalNpmDependenciesForBuild({
-        "@qlever-llc/result": "^0.8.2",
+        "@oats-center/result": "^0.8.2",
         typebox: "^1.0.15",
       }, "0.8.2-rc.1"),
       {
-        "@qlever-llc/result": "0.8.2-rc.1",
+        "@oats-center/result": "0.8.2-rc.1",
         typebox: "^1.0.15",
       },
     );
@@ -77,10 +77,10 @@ Deno.test("resolveInternalNpmDependenciesForBuild rejects mismatched base versio
     assertThrows(
       () =>
         resolveInternalNpmDependenciesForBuild({
-          "@qlever-llc/trellis": "^0.8.2",
+          "@oats-center/trellis": "^0.8.2",
         }),
       Error,
-      "@qlever-llc/trellis dependency uses 0.8.2",
+      "@oats-center/trellis dependency uses 0.8.2",
     );
   });
 });

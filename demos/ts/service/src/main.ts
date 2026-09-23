@@ -1,5 +1,5 @@
-import { isErr } from "@qlever-llc/trellis";
-import { TrellisService } from "@qlever-llc/trellis/service";
+import { isErr } from "@oats-center/trellis";
+import { TrellisService } from "@oats-center/trellis/service";
 import process from "node:process";
 import chalk from "chalk";
 import { getSiteSummary, SITE_SUMMARIES } from "../../shared/field_data.ts";

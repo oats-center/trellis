@@ -2,9 +2,9 @@
 
 Internal runtime implementation for TypeScript Trellis services.
 
-- `@qlever-llc/trellis/service` — shared service core, types, and service
+- `@oats-center/trellis/service` — shared service core, types, and service
   helpers
-- `@qlever-llc/trellis/service` — shared Node-compatible native service runtime
+- `@oats-center/trellis/service` — shared Node-compatible native service runtime
 
 Use the runtime-specific subpath when connecting a service.
 

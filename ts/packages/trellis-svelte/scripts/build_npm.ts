@@ -8,7 +8,7 @@ import {
 
 const description =
   "Svelte components and state helpers for Trellis browser applications.";
-const repositoryUrl = "git+https://github.com/Qlever-LLC/trellis.git";
+const repositoryUrl = "git+https://github.com/OATS-Center/trellis.git";
 const outDir = "./npm";
 const jsrDir = "./jsr";
 
@@ -46,8 +46,8 @@ const jsrRuntimeDependencyVersion =
 const dependencies = resolveInternalNpmDependenciesForBuild(
   {
     "@nats-io/nats-core": "^3.3.1",
-    "@qlever-llc/result": "^0.12.0",
-    "@qlever-llc/trellis": "^0.12.0",
+    "@oats-center/result": "^0.100.0",
+    "@oats-center/trellis": "^0.100.0",
     typebox: "^1.0.15",
     ulid: "^3.0.2",
   },
@@ -363,9 +363,9 @@ await writeJson(
     type: "module",
     description,
     license: "Apache-2.0",
-    homepage: "https://github.com/Qlever-LLC/trellis#readme",
+    homepage: "https://github.com/OATS-Center/trellis#readme",
     bugs: {
-      url: "https://github.com/Qlever-LLC/trellis/issues",
+      url: "https://github.com/OATS-Center/trellis/issues",
     },
     repository: {
       type: "git",
@@ -403,14 +403,14 @@ await writeJson(
       exclude: ["!dist/**", "!README.md", "!deno.json"],
     },
     imports: {
-      "@qlever-llc/result":
-        `jsr:@qlever-llc/result@^${jsrRuntimeDependencyVersion}`,
-      "@qlever-llc/trellis":
-        `jsr:@qlever-llc/trellis@^${jsrRuntimeDependencyVersion}`,
-      "@qlever-llc/trellis/auth":
-        `jsr:@qlever-llc/trellis@^${jsrRuntimeDependencyVersion}/auth`,
-      "@qlever-llc/trellis/auth/browser":
-        `jsr:@qlever-llc/trellis@^${jsrRuntimeDependencyVersion}/auth/browser`,
+      "@oats-center/result":
+        `jsr:@oats-center/result@^${jsrRuntimeDependencyVersion}`,
+      "@oats-center/trellis":
+        `jsr:@oats-center/trellis@^${jsrRuntimeDependencyVersion}`,
+      "@oats-center/trellis/auth":
+        `jsr:@oats-center/trellis@^${jsrRuntimeDependencyVersion}/auth`,
+      "@oats-center/trellis/auth/browser":
+        `jsr:@oats-center/trellis@^${jsrRuntimeDependencyVersion}/auth/browser`,
       "svelte": "npm:svelte@^5.0.0",
       "svelte/internal/client": "npm:svelte@^5.0.0/internal/client",
       "svelte/internal/disclose-version":

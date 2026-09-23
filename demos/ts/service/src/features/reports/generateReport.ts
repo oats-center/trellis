@@ -1,6 +1,6 @@
-import type { OperationHandler } from "@qlever-llc/trellis/service";
-import { BaseError } from "@qlever-llc/result";
-import { isErr, UnexpectedError } from "@qlever-llc/trellis";
+import type { OperationHandler } from "@oats-center/trellis/service";
+import { BaseError } from "@oats-center/result";
+import { isErr, UnexpectedError } from "@oats-center/trellis";
 import { ASSIGNED_INSPECTIONS } from "../../../../shared/field_data.ts";
 import { participants } from "../../../trellis/index.js";
 import { recordActivity } from "../activity/index.ts";

@@ -33,7 +33,7 @@ Cloud or domain repos own:
 - apps and portals outside the platform repo
 - domain models unless a Trellis-owned contract or shared runtime library needs them
 
-`@qlever-llc/trellis` is a runtime library, not a handwritten central registry for every service API. Service APIs are defined with the service that owns them and consumed through contract packages or generated SDKs.
+`@oats-center/trellis` is a runtime library, not a handwritten central registry for every service API. Service APIs are defined with the service that owns them and consumed through contract packages or generated SDKs.
 
 ## Runtime ownership
 

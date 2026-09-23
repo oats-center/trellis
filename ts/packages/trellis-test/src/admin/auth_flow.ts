@@ -1,11 +1,11 @@
-import type { ClientAuthContinuation } from "@qlever-llc/trellis";
+import type { ClientAuthContinuation } from "@oats-center/trellis";
 import {
   createPortalBinding,
   fetchPortalFlowState,
   type PortalBinding,
   type PortalFlowState,
   submitPortalApproval,
-} from "@qlever-llc/trellis/auth/browser";
+} from "@oats-center/trellis/auth/browser";
 
 import { ADMIN_USERNAME } from "./methods.ts";
 import { recordTrellisDuration } from "./metrics.ts";

@@ -17,7 +17,7 @@ Avoid forcing process exit before shutdown has completed.
 
 For tests, close clients and stop the service in `finally`; always stop the test
 runtime even when an assertion fails. The
-[checked-in test](https://github.com/qlever-llc/trellis/blob/main/docs/examples/orders/service_test.ts)
+[checked-in test](https://github.com/oats-center/trellis/blob/main/docs/examples/orders/service_test.ts)
 shows this sequence.
 
 Rust uses its generated service `run()` lifecycle rather than TypeScript's

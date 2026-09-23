@@ -118,12 +118,12 @@ The `Deploy Site to GitHub Pages` workflow is separate from release publishing. 
 
 The JSR publish set is:
 
-- `@qlever-llc/result`
-- `@qlever-llc/trellis`
-- `@qlever-llc/trellis-test`
-- `@qlever-llc/trellis-svelte` from `ts/packages/trellis-svelte/jsr`
+- `@oats-center/result`
+- `@oats-center/trellis`
+- `@oats-center/trellis-test`
+- `@oats-center/trellis-svelte` from `ts/packages/trellis-svelte/jsr`
 
-The workflow runs JSR dry-runs for the publishable core packages before the release gate. The source `@qlever-llc/trellis-svelte` package is built and smoke-tested before release, then staged and published after the matching core JSR version is available; a prepublication JSR dry-run cannot resolve that unreleased dependency.
+The workflow runs JSR dry-runs for the publishable core packages before the release gate. The source `@oats-center/trellis-svelte` package is built and smoke-tested before release, then staged and published after the matching core JSR version is available; a prepublication JSR dry-run cannot resolve that unreleased dependency.
 
 ### Database schema baselines
 
@@ -139,7 +139,10 @@ add new ordered migrations instead of editing a shipped one.
 
 ## 1. Pick the release
 
-Identify the previous release tag and choose the next version.
+Identify the previous release tag and choose the next version. For the first
+OATS Center release (`0.100.0-rc.1`), there is no prior tag in the new
+repository: use the upstream Qlever `main` merge-base commit as `--since`
+when checking the initial changelog.
 
 Set variables for the release you are cutting:
 
@@ -246,12 +249,12 @@ less "$tmpdir/release-notes.md"
 ## 5. Confirm correctness and package locally
 
 Release preparation starts from a successful normal `Check` run for the final
-`rs` base. `Check` is the authoritative formatting, lint/type, generated
+`main` base. `Check` is the authoritative formatting, lint/type, generated
 freshness, package-test, and full live-integration gate. The Release workflow
 does not rerun those correctness suites.
 
 Keep the release commit limited to the release preparation listed below. If it
-changes product behavior, return that change to `rs`, obtain a new successful
+changes product behavior, return that change to `main`, obtain a new successful
 `Check`, and rebuild the release commit from that base.
 
 For focused package confidence before pushing the release marker, install once
@@ -347,7 +350,7 @@ Push the release commit to the matching release branch. The branch name is the r
 git push origin HEAD:refs/heads/release/$RELEASE_TAG
 ```
 
-For example, `RELEASE_TAG=v0.9.0-rc.1` pushes `release/v0.9.0-rc.1`.
+For example, `RELEASE_TAG=v0.100.0-rc.1` pushes `release/v0.100.0-rc.1`.
 
 The `Release` workflow fails early if the final release tag already exists. If the release gate fails, fix the release commit and push the release branch again; the version is not consumed because no tag has been created.
 

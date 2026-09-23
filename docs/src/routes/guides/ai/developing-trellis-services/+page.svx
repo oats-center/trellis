@@ -9,15 +9,15 @@ cover Trellis-owned contracts and runtime behavior, not your application's
 configuration parser, databases, architecture, or general development policies.
 
 - Short guide:
-  <https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms.txt>
+  <https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/llms.txt>
 - Full guide:
-  <https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-full.txt>
+  <https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/llms-full.txt>
 - TypeScript guide:
-  <https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-typescript.txt>
+  <https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/llms-typescript.txt>
 - Svelte guide:
-  <https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-svelte.txt>
+  <https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/llms-svelte.txt>
 - Rust guide:
-  <https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-rust.txt>
+  <https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/llms-rust.txt>
 - TypeScript AGENTS template: `/templates/trellis-service-typescript-AGENTS.md`
 - Rust AGENTS template: `/templates/trellis-service-rust-AGENTS.md`
 - Combined AGENTS template: `/templates/trellis-service-AGENTS.md`
@@ -59,7 +59,7 @@ remains available for mixed-language repositories.
 
    ```sh
    curl -fsSL \
-     https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/templates/trellis-service-typescript-AGENTS.md \
+     https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/templates/trellis-service-typescript-AGENTS.md \
       -o trellis-AGENTS.example.md
    ```
 

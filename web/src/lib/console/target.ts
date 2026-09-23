@@ -18,8 +18,8 @@
  * - `incomplete` — a later page failed, so absence is not established.
  */
 
-import type { BaseError, Result } from "@qlever-llc/result";
-import { isErr } from "@qlever-llc/result";
+import type { BaseError, Result } from "@oats-center/result";
+import { isErr } from "@oats-center/result";
 
 import { projectConsoleError } from "./display_value.ts";
 import { catalogPage, type CursorPage, type PageRequest } from "./paging.ts";

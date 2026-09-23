@@ -23,8 +23,8 @@ service OrdersService {
 Run `trellis generate`, then register the handler before waiting on the service:
 
 ```ts
-import { Result } from "@qlever-llc/trellis";
-import { RetryJobError } from "@qlever-llc/trellis/service";
+import { Result } from "@oats-center/trellis";
+import { RetryJobError } from "@oats-center/trellis/service";
 
 service.jobs.reconcile.handle(async ({ job }) => {
   const result = await reconcile(job.payload);

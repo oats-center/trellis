@@ -417,10 +417,10 @@ fn internal_jsr_dependency_spec(spec: &str) -> Option<InternalJsrDependency> {
 
 fn internal_js_package_names() -> &'static [&'static str] {
     &[
-        "@qlever-llc/result",
-        "@qlever-llc/trellis",
-        "@qlever-llc/trellis-svelte",
-        "@qlever-llc/trellis-test",
+        "@oats-center/result",
+        "@oats-center/trellis",
+        "@oats-center/trellis-svelte",
+        "@oats-center/trellis-test",
     ]
 }
 
@@ -432,7 +432,7 @@ struct InternalJsrDependency {
 }
 
 fn json_like_string_property(trimmed: &str) -> Option<(String, String)> {
-    let property_start = trimmed.find("\"@qlever-llc/")?;
+    let property_start = trimmed.find("\"@oats-center/")?;
     let rest = trimmed[property_start..].strip_prefix('"')?;
     let (name, after_name) = rest.split_once('"')?;
     let after_colon = after_name.trim_start().strip_prefix(':')?.trim_start();
@@ -738,7 +738,7 @@ fn is_internal_rust_crate(name: &str) -> bool {
 fn is_internal_npm_package(name: &str) -> bool {
     matches!(
         name,
-        "@qlever-llc/result" | "@qlever-llc/trellis" | "@qlever-llc/trellis-svelte"
+        "@oats-center/result" | "@oats-center/trellis" | "@oats-center/trellis-svelte"
     )
 }
 
@@ -756,7 +756,7 @@ pub(super) fn parse_release_tag(tag: &str) -> Result<ReleaseVersion> {
     let tag = tag.trim();
     let Some(version) = tag.strip_prefix('v') else {
         return Err(miette!(
-            "invalid release tag `{tag}`; expected a tag like v0.9.0 or v0.9.0-rc.1"
+            "invalid release tag `{tag}`; expected a tag like v0.100.0 or v0.100.0-rc.1"
         ));
     };
     let base_version = version_base(version)?;

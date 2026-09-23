@@ -19,37 +19,37 @@ const config = {
       fallback: "200.html",
     }),
     alias: {
-      "@qlever-llc/result": resolve(rootDir, "../ts/packages/result/mod.ts"),
-      "@qlever-llc/trellis-svelte": resolve(
+      "@oats-center/result": resolve(rootDir, "../ts/packages/result/mod.ts"),
+      "@oats-center/trellis-svelte": resolve(
         rootDir,
         "../ts/packages/trellis-svelte/src/index.ts",
       ),
-      "@qlever-llc/trellis/auth/browser": resolve(
+      "@oats-center/trellis/auth/browser": resolve(
         rootDir,
         "../ts/packages/trellis/auth/browser.ts",
       ),
-      "@qlever-llc/trellis/auth": resolve(
+      "@oats-center/trellis/auth": resolve(
         rootDir,
         "../ts/packages/trellis/auth.ts",
       ),
-      "@qlever-llc/trellis/generated": resolve(
+      "@oats-center/trellis/generated": resolve(
         rootDir,
         "../ts/packages/trellis/generated.ts",
       ),
-      "@qlever-llc/trellis/device": resolve(
+      "@oats-center/trellis/device": resolve(
         rootDir,
         "../ts/packages/trellis/device.ts",
       ),
       "trellis-web-generated": resolve(rootDir, "trellis"),
-      "@qlever-llc/trellis/service": resolve(
+      "@oats-center/trellis/service": resolve(
         rootDir,
         "../ts/packages/trellis/service/mod.ts",
       ),
-      "@qlever-llc/trellis/telemetry": resolve(
+      "@oats-center/trellis/telemetry": resolve(
         rootDir,
         "../ts/packages/trellis/telemetry.ts",
       ),
-      "@qlever-llc/trellis": resolve(
+      "@oats-center/trellis": resolve(
         rootDir,
         "../ts/packages/trellis/index.ts",
       ),

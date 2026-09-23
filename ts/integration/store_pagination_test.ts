@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { Result } from "@qlever-llc/trellis";
+import { Result } from "@oats-center/trellis";
 import { participants as webParticipants } from "trellis-web-generated";
 import { TrellisService } from "../packages/trellis/service/mod.ts";
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";

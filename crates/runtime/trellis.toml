@@ -2,7 +2,7 @@ default-registry = "trellis"
 
 [package]
 name = "trellis"
-version = "0.12.0"
+version = "0.100.0"
 
 [sources]
 types = "src/builtin_source/types.trellis"
@@ -15,4 +15,4 @@ events = "src/builtin_source/events.trellis"
 participants = "src/builtin_source/participants.trellis"
 
 [registries.trellis]
-prefix = "ghcr.io/qlever-llc/trellis-apis"
+prefix = "ghcr.io/oats-center/trellis-apis"

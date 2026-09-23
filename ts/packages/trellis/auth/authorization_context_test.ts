@@ -5,7 +5,7 @@ import type {
   Subscription,
 } from "@nats-io/nats-core";
 import { headers as natsHeaders } from "@nats-io/nats-core";
-import { isErr } from "@qlever-llc/result";
+import { isErr } from "@oats-center/result";
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 
 import vectors from "../../../../conformance/authorization-context/vectors.json" with {

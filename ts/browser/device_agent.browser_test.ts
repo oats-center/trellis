@@ -1,11 +1,11 @@
 import { assert, assertEquals } from "@std/assert";
 
-import { Result } from "@qlever-llc/result";
+import { Result } from "@oats-center/result";
 import {
   checkDeviceActivation,
   TrellisDevice,
-} from "@qlever-llc/trellis/device";
-import { TrellisService } from "@qlever-llc/trellis/service";
+} from "@oats-center/trellis/device";
+import { TrellisService } from "@oats-center/trellis/service";
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {

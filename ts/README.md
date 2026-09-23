@@ -3,7 +3,7 @@
 TypeScript packages, services, and apps for Trellis. This is a Deno workspace.
 
 ```
-packages/       Shared source libraries behind @qlever-llc/trellis, @qlever-llc/trellis-svelte, and @qlever-llc/result
+packages/       Shared source libraries behind @oats-center/trellis, @oats-center/trellis-svelte, and @oats-center/result
 services/       Backend services (trellis runtime, activity)
 apps/           SvelteKit frontends (trellis control panel, activity viewer)
 ```

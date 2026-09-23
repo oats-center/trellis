@@ -1455,7 +1455,7 @@
       "packages/trellis-test": {
         "dependencies": [
           "jsr:@nats-io/transport-deno@^3.3.1",
-          "jsr:@qlever-llc/trellis@0.19",
+          "jsr:@oats-center/trellis@0.19",
           "jsr:@std/assert@^1.0.19",
           "jsr:@std/path@^1.1.4",
           "npm:@nats-io/jetstream@^3.3.1",

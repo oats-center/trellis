@@ -6,7 +6,7 @@ import {
   utf8,
 } from "./utils.ts";
 import { importEd25519PublicKeyFromBase64url } from "./keys.ts";
-import { AsyncResult } from "@qlever-llc/result";
+import { AsyncResult } from "@oats-center/result";
 
 export type ProofParams = {
   contextDigest: string;

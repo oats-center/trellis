@@ -1,6 +1,6 @@
 import { type Histogram, type Meter, metrics } from "@opentelemetry/api";
 
-const TRELLIS_METER_NAME = "@qlever-llc/trellis";
+const TRELLIS_METER_NAME = "@oats-center/trellis";
 const MAX_ATTRIBUTE_LENGTH = 96;
 const LOW_CARDINALITY_PATTERN = /^[A-Za-z0-9_.:-]+$/;
 const UUID_PATTERN =

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { ulid } from "ulid";
-  import { isErr } from "@qlever-llc/result";
+  import { isErr } from "@oats-center/result";
   import { type apis } from "trellis-web-generated";
   import { page } from "$app/state";
   import { onDestroy, untrack } from "svelte";

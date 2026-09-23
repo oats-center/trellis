@@ -3,15 +3,15 @@
 Start with the generated project from
 [the previous page](/guides/write-a-service/first-contract). The complete files
 are in
-[`docs/examples/orders`](https://github.com/qlever-llc/trellis/tree/main/docs/examples/orders).
+[`docs/examples/orders`](https://github.com/oats-center/trellis/tree/main/docs/examples/orders).
 
 ## Write the handler
 
 Create `service.ts`:
 
 ```ts
-import { Result } from "@qlever-llc/trellis";
-import type { RpcHandler } from "@qlever-llc/trellis/service";
+import { Result } from "@oats-center/trellis";
+import type { RpcHandler } from "@oats-center/trellis/service";
 import { participants } from "orders-trellis";
 
 /** Returns an example order receipt; this walkthrough does not persist orders. */
@@ -30,7 +30,7 @@ database here. Trellis does not choose either.
 Replace `main.ts` with:
 
 ```ts
-import { TrellisService } from "@qlever-llc/trellis/service";
+import { TrellisService } from "@oats-center/trellis/service";
 import { participants } from "orders-trellis";
 import { createOrder } from "./service.ts";
 

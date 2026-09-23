@@ -6,7 +6,7 @@ import {
   Result,
   StoreError,
   TransferError,
-} from "@qlever-llc/trellis";
+} from "@oats-center/trellis";
 import type { FieldOpsDeps } from "../../deps.ts";
 import { createDownloadEvidenceHandler } from "./downloadEvidence.ts";
 

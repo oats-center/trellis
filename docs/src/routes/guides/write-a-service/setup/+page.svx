@@ -27,7 +27,7 @@ documentation from that release rather than combining authoring generations.
 mkdir orders-service
 cd orders-service
 deno init
-deno add npm:@qlever-llc/trellis jsr:@qlever-llc/trellis-test jsr:@std/assert
+deno add npm:@oats-center/trellis jsr:@oats-center/trellis-test jsr:@std/assert
 ```
 
 Select matching released versions when installing packages. Keep the import
@@ -73,7 +73,7 @@ orders-service/
 ## Run the checked-in example instead
 
 The same source is checked in under
-[`docs/examples/orders`](https://github.com/qlever-llc/trellis/tree/main/docs/examples/orders).
+[`docs/examples/orders`](https://github.com/oats-center/trellis/tree/main/docs/examples/orders).
 Its generated package is committed. Its tasks use ordinary installed libraries,
 not parent-repository paths, so a copied checkout needs no Trellis CLI or API
 cache for its normal check and test:

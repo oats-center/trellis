@@ -136,7 +136,7 @@ cat > "$WORK_DIR/generated/metadata.json" <<EOF
 EOF`;
 
   return `set -eu
-OPERATOR_NAME='Qlever'
+OPERATOR_NAME='OATS Center'
 SYSTEM_ACCOUNT_NAME='SYS'
 WORK_DIR=${shQuote(outDir)}
 export NKEYS_PATH="$WORK_DIR/.nkeys"

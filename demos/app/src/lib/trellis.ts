@@ -2,7 +2,7 @@ import { env } from "$env/dynamic/public";
 import {
   createTrellisApp,
   type TrellisClientFor,
-} from "@qlever-llc/trellis-svelte";
+} from "@oats-center/trellis-svelte";
 import { participants } from "../../trellis/index.js";
 
 export type TrellisDemoAppClient = TrellisClientFor<

@@ -14,8 +14,8 @@
     "rootDir": ".",
     "outDir": "npm",
     "paths": {
-      "@qlever-llc/result": ["../result/npm/mod.d.ts"],
-      "@qlever-llc/trellis/generated": ["./generated.ts"]
+      "@oats-center/result": ["../result/npm/mod.d.ts"],
+      "@oats-center/trellis/generated": ["./generated.ts"]
     }
   },
   "files": [

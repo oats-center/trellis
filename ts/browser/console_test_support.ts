@@ -3,8 +3,8 @@
 
 import { assertEquals } from "@std/assert";
 import type { Page } from "playwright";
-import { TrellisService } from "@qlever-llc/trellis/service";
-import type { TrellisTestRuntime } from "@qlever-llc/trellis-test";
+import { TrellisService } from "@oats-center/trellis/service";
+import type { TrellisTestRuntime } from "@oats-center/trellis-test";
 import { ulid } from "ulid";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";

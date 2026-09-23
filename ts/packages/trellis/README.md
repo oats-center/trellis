@@ -1,4 +1,4 @@
-# @qlever-llc/trellis
+# @oats-center/trellis
 
 JavaScript Trellis client runtime. Provides generated-participant client helpers
 and runtime error types.
@@ -11,11 +11,11 @@ publication remains supported.
 For AI-agent context, start with the generated package `TRELLIS.md` files and
 the raw docs index:
 
-- https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms.txt
-- https://raw.githubusercontent.com/qlever-llc/trellis/main/docs/static/llms-full.txt
+- https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/llms.txt
+- https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/llms-full.txt
 
 ```typescript
-import { TrellisClient } from "@qlever-llc/trellis";
+import { TrellisClient } from "@oats-center/trellis";
 import { participants } from "example-trellis";
 
 const client = await TrellisClient.connect({
@@ -48,12 +48,12 @@ physical JetStream consumer and grants only the bound consumer subjects to the
 service token. Use `{ mode: "ephemeral", replay: "new" }` for live-only
 listeners.
 
-Service connection helpers live in `@qlever-llc/trellis/service*` to keep the
+Service connection helpers live in `@oats-center/trellis/service*` to keep the
 root package browser-safe. Browser login and portal-flow helpers live on
-`@qlever-llc/trellis/auth` and `@qlever-llc/trellis/auth/browser`.
+`@oats-center/trellis/auth` and `@oats-center/trellis/auth/browser`.
 
 Service authors should not use the core package to recreate service bootstrap or
 fetch resource bindings. Connect with `TrellisService.connect(...)` from
-`@qlever-llc/trellis/service` and use the returned resource handles instead of
+`@oats-center/trellis/service` and use the returned resource handles instead of
 calling `Trellis.Bindings.Get`, constructing `TrellisService` or `StoreHandle`,
 or passing binding/resource data into `Trellis` constructors.

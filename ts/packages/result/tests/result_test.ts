@@ -1,5 +1,5 @@
 import { assertEquals, assertInstanceOf } from "@std/assert";
-import { BaseError, UnexpectedError } from "@qlever-llc/result";
+import { BaseError, UnexpectedError } from "@oats-center/result";
 import {
   AsyncResult,
   type Infer,

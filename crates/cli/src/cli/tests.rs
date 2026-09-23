@@ -66,20 +66,20 @@ fn parses_remote_add_and_publish_commands() {
         "--version",
         "^1.4",
         "--registry",
-        "qlever",
+        "oats-center",
     ]);
     match cli.command {
         TopLevelCommand::Add(args) => {
             assert_eq!(args.source, "acme.orders@v1");
             assert_eq!(args.version.as_deref(), Some("^1.4"));
-            assert_eq!(args.registry.as_deref(), Some("qlever"));
+            assert_eq!(args.registry.as_deref(), Some("oats-center"));
         }
         other => panic!("unexpected top-level command: {other:?}"),
     }
 
-    let cli = Cli::parse_from(["trellis", "publish", "--registry", "qlever"]);
+    let cli = Cli::parse_from(["trellis", "publish", "--registry", "oats-center"]);
     match cli.command {
-        TopLevelCommand::Publish(args) => assert_eq!(args.registry.as_deref(), Some("qlever")),
+        TopLevelCommand::Publish(args) => assert_eq!(args.registry.as_deref(), Some("oats-center")),
         other => panic!("unexpected top-level command: {other:?}"),
     }
 }

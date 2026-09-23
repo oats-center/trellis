@@ -1,5 +1,5 @@
-import { createAuth } from "@qlever-llc/trellis";
-import { machineErrorCode } from "@qlever-llc/trellis/errors";
+import { createAuth } from "@oats-center/trellis";
+import { machineErrorCode } from "@oats-center/trellis/errors";
 import { ulid } from "ulid";
 import { generateSessionSeed } from "../control_plane_config.ts";
 import type {

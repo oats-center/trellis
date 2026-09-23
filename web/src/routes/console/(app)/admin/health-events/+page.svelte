@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { isErr } from "@qlever-llc/result";
+  import { isErr } from "@oats-center/result";
   import { type apis } from "trellis-web-generated";
   import { onDestroy, untrack } from "svelte";
   import DataTable from "$lib/components/DataTable.svelte";

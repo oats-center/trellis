@@ -10,8 +10,8 @@ Deno.test("resolveTrellisUrl prefers explicit public URL", () => {
 
 Deno.test("resolveTrellisUrl falls back to browser origin", () => {
   assertEquals(
-    resolveTrellisUrl(undefined, "http://krishi.trellis.qlever.io"),
-    "http://krishi.trellis.qlever.io",
+    resolveTrellisUrl(undefined, "http://trellis.example.com"),
+    "http://trellis.example.com",
   );
 });
 

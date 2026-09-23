@@ -1,7 +1,7 @@
 {
   "extends": "../../deno.json",
-  "name": "@qlever-llc/result",
-  "version": "0.12.0",
+  "name": "@oats-center/result",
+  "version": "0.100.0",
   "license": "Apache-2.0",
   "exports": "./mod.ts",
   "imports": {

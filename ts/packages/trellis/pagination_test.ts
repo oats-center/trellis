@@ -1,5 +1,5 @@
 import { assertEquals, assertInstanceOf } from "@std/assert";
-import { AsyncResult, BaseError, err, ok } from "@qlever-llc/result";
+import { AsyncResult, BaseError, err, ok } from "@oats-center/result";
 import { cursorItems, cursorPages, PaginationError } from "./pagination.ts";
 import type { CallerRuntime } from "./caller.ts";
 import { normalizeCursorQuery } from "./participant_runtime/schemas.ts";

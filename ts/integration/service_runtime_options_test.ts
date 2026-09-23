@@ -1,4 +1,4 @@
-import { TrellisService } from "@qlever-llc/trellis/service";
+import { TrellisService } from "@oats-center/trellis/service";
 import { assertEquals, assertGreater } from "@std/assert";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";

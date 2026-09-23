@@ -6,5 +6,5 @@ const level = getEnv("PINO_LEVEL") || "info";
 
 export const serviceRuntimeLogger: LoggerLike = pino({
   level,
-  base: { library: "@qlever-llc/trellis" },
+  base: { library: "@oats-center/trellis" },
 });

@@ -2,7 +2,7 @@ import { copy, ensureDir } from "@std/fs";
 import { dirname, fromFileUrl, join } from "@std/path";
 import { z } from "zod";
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { TrellisTestRuntime } from "@qlever-llc/trellis-test";
+import { TrellisTestRuntime } from "@oats-center/trellis-test";
 import { ulid } from "ulid";
 import { participants as serviceParticipants } from "../../../demos/ts/service/trellis/index.js";
 import { participants as deviceParticipants } from "../../../demos/ts/device/trellis/index.js";
