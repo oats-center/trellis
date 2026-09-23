@@ -35,7 +35,10 @@ pub(super) fn bump_versions(repo_root: &Path, from: &str, to: &str) -> Result<Ve
         let updated = if is_json_manifest(&path) {
             let updated = rewrite_json_manifest_version(&original, from, to, &path)?;
             rewrite_json_manifest_internal_jsr_dependency_versions(&updated, from, to, &path)?
-        } else if path.file_name().is_some_and(|name| name == "Cargo.toml") {
+        } else if path
+            .file_name()
+            .is_some_and(|name| name == "Cargo.toml" || name == "trellis.toml")
+        {
             rewrite_cargo_manifest_versions(&original, from, to, &path)?
         } else if is_release_js_internal_npm_version_file(repo_root, &path) {
             rewrite_js_internal_npm_dependency_versions(&original, from, to, &path)?
@@ -71,7 +74,10 @@ pub(super) fn prepare_release(repo_root: &Path, release: &ReleaseVersion) -> Res
                 &release.version,
                 &path,
             )?
-        } else if path.file_name().is_some_and(|name| name == "Cargo.toml") {
+        } else if path
+            .file_name()
+            .is_some_and(|name| name == "Cargo.toml" || name == "trellis.toml")
+        {
             rewrite_cargo_manifest_versions_for_release(
                 &original,
                 &release.version,
@@ -122,7 +128,10 @@ pub(super) fn collect_versions(repo_root: &Path) -> Result<Vec<VersionEntry>> {
             continue;
         }
 
-        if path.file_name().is_some_and(|name| name == "Cargo.toml") {
+        if path
+            .file_name()
+            .is_some_and(|name| name == "Cargo.toml" || name == "trellis.toml")
+        {
             collect_cargo_versions(repo_root, &path, &contents, &mut versions);
             continue;
         }
@@ -140,6 +149,16 @@ fn release_manifest_paths(repo_root: &Path) -> Result<Vec<PathBuf>> {
     collect_manifest_paths(&repo_root.join("ts"), &mut paths)?;
     paths.push(repo_root.join("Cargo.toml"));
     collect_manifest_paths(&repo_root.join("crates"), &mut paths)?;
+    for relative_path in [
+        "crates/runtime/trellis.toml",
+        "ts/packages/trellis-test/trellis.toml",
+        "web/trellis.toml",
+    ] {
+        let path = repo_root.join(relative_path);
+        if path.exists() {
+            paths.push(path);
+        }
+    }
     for relative_path in RELEASE_JS_INTERNAL_NPM_VERSION_FILES {
         let path = repo_root.join(relative_path);
         if path.exists() {
@@ -500,7 +519,9 @@ fn collect_cargo_versions(
             }
         }
         if matches!(section, CargoSection::Package)
-            && package_name.as_deref().is_some_and(is_internal_rust_crate)
+            && package_name
+                .as_deref()
+                .is_some_and(|name| is_release_managed_package(name, path))
         {
             if let Some(version) = cargo_version_assignment(trimmed) {
                 if is_non_release_sentinel_version(&version) {
@@ -546,7 +567,9 @@ pub(super) fn rewrite_cargo_manifest_versions(
 
         let should_update_package_version = matches!(section, CargoSection::WorkspacePackage)
             || (matches!(section, CargoSection::Package)
-                && package_name.as_deref().is_some_and(is_internal_rust_crate));
+                && package_name
+                    .as_deref()
+                    .is_some_and(|name| is_release_managed_package(name, path)));
         if should_update_package_version {
             if let Some(version) = cargo_version_assignment(trimmed) {
                 if is_non_release_sentinel_version(&version) {
@@ -628,7 +651,9 @@ pub(super) fn rewrite_cargo_manifest_versions_for_release(
 
         let should_update_package_version = matches!(section, CargoSection::WorkspacePackage)
             || (matches!(section, CargoSection::Package)
-                && package_name.as_deref().is_some_and(is_internal_rust_crate));
+                && package_name
+                    .as_deref()
+                    .is_some_and(|name| is_release_managed_package(name, path)));
         if should_update_package_version {
             if let Some(version) = cargo_version_assignment(trimmed) {
                 if is_non_release_sentinel_version(&version) {
@@ -744,6 +769,11 @@ fn quoted_value_after_equals(value: &str) -> Option<String> {
 
 fn is_internal_rust_crate(name: &str) -> bool {
     name.starts_with("trellis-")
+}
+
+fn is_release_managed_package(name: &str, path: &Path) -> bool {
+    is_internal_rust_crate(name)
+        || (name == "trellis" && path.file_name().is_some_and(|file| file == "trellis.toml"))
 }
 
 fn is_internal_npm_package(name: &str) -> bool {

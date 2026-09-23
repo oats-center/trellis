@@ -323,6 +323,45 @@ mod tests {
     }
 
     #[test]
+    fn prepare_release_versions_first_party_idl_packages() {
+        let root = temp_repo_root();
+        fs::create_dir_all(&root).expect("mkdir repo");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace.package]\nversion = \"0.100.0\"\n",
+        )
+        .expect("write workspace manifest");
+        for (project, name) in [
+            ("crates/runtime", "trellis"),
+            ("ts/packages/trellis-test", "trellis-test-generated"),
+            ("web", "trellis-web-generated"),
+        ] {
+            let dir = root.join(project);
+            fs::create_dir_all(&dir).expect("mkdir project");
+            fs::write(
+                dir.join("trellis.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"0.100.0\"\n"),
+            )
+            .expect("write IDL manifest");
+        }
+        prepare_release(
+            &root,
+            &ReleaseVersion {
+                version: "0.100.0-rc.1".to_string(),
+                base_version: "0.100.0".to_string(),
+            },
+        )
+        .expect("prepare release");
+        for project in ["crates/runtime", "ts/packages/trellis-test", "web"] {
+            assert!(fs::read_to_string(root.join(project).join("trellis.toml"))
+                .expect("read IDL manifest")
+                .contains("version = \"0.100.0-rc.1\""));
+        }
+        assert!(super::versioning::check_versions(&root).is_ok());
+        fs::remove_dir_all(root).expect("remove temp repo");
+    }
+
+    #[test]
     fn rewrite_cargo_manifest_updates_workspace_and_internal_dependencies() {
         let original = "[workspace.package]\nversion = \"0.8.2\"\n\n[dependencies]\ntrellis-rs = { path = \"../trellis\", version = \"0.8.2\" }\ntrellis-protocol = \"0.8.2\"\nserde = { version = \"1.0\" }\n";
         let updated = rewrite_cargo_manifest_versions(
