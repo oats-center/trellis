@@ -399,7 +399,7 @@ jobs:
   verify-images:
     name: Build verified ${{ matrix.image }} image
     if: needs.prepare-release.outputs.release-tag != ''
-    needs: prepare-release
+    needs: [prepare-release, package-js]
     runs-on: [self-hosted, Linux, X64]
     env:
       RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}

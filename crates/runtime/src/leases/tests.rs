@@ -15,7 +15,7 @@ fn lease_manager_uses_config_defaults() {
 
     assert_eq!(manager.bucket, "trellis_runtime_leases");
     assert_eq!(manager.owner_id, "runtime-a");
-    assert_eq!(manager.ttl.as_millis(), 15_000);
+    assert_eq!(manager.ttl.as_millis(), 30_000);
     assert_eq!(manager.renew.as_millis(), 5_000);
     assert_eq!(manager.replicas, 1);
 }
