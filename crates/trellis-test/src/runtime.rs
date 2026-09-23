@@ -104,9 +104,7 @@ impl TrellisTestRuntime {
     /// Returns an error when the bundle cannot be generated, the managed NATS server cannot be
     /// started, or the control plane does not become ready before `startup_ms`.
     pub async fn start(options: TrellisTestRuntimeOptions) -> Result<Self, TrellisTestError> {
-        let temp = tempfile::Builder::new()
-            .prefix("trellis-test-")
-            .tempdir()?;
+        let temp = tempfile::Builder::new().prefix("trellis-test-").tempdir()?;
         let workdir = temp.path().to_path_buf();
 
         // The pinned NATS binary lives in a test-only cache shared by every run, so a suite
@@ -186,7 +184,9 @@ impl TrellisTestRuntime {
             &options.admin_password,
         )
         .await
-        .map_err(|error| TrellisTestError::Runtime(format!("seeding the administrator: {error}")))?;
+        .map_err(|error| {
+            TrellisTestError::Runtime(format!("seeding the administrator: {error}"))
+        })?;
 
         let nats_override = NatsEndpointOverride {
             servers: nats.nats_url().to_string(),
@@ -260,7 +260,11 @@ impl TrellisTestRuntime {
             if let Some(message) = self.outcome() {
                 return Err(TrellisTestError::Runtime(message));
             }
-            if let Ok(response) = client.get(format!("{}/readyz", self.trellis_url)).send().await {
+            if let Ok(response) = client
+                .get(format!("{}/readyz", self.trellis_url))
+                .send()
+                .await
+            {
                 if response.status().is_success() {
                     return Ok(());
                 }
@@ -337,7 +341,11 @@ impl TrellisTestRuntime {
     /// # Errors
     ///
     /// Returns a timeout error when no value arrives inside `timeout_ms`.
-    pub async fn wait_for<T, F, Fut>(&self, timeout_ms: u64, mut check: F) -> Result<T, TrellisTestError>
+    pub async fn wait_for<T, F, Fut>(
+        &self,
+        timeout_ms: u64,
+        mut check: F,
+    ) -> Result<T, TrellisTestError>
     where
         F: FnMut() -> Fut,
         Fut: std::future::Future<Output = Option<T>>,
@@ -373,7 +381,8 @@ impl TrellisTestRuntime {
     /// log tail; callers that need logs read `logs/` under [`Self::workdir`].
     #[must_use]
     pub fn control_plane_output(&self) -> String {
-        self.outcome().unwrap_or_else(|| "control plane running".to_owned())
+        self.outcome()
+            .unwrap_or_else(|| "control plane running".to_owned())
     }
 
     /// Stops the control plane, NATS, and (unless kept) the work directory.

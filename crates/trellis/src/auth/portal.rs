@@ -71,7 +71,9 @@ fn http_client() -> Result<HttpClient, TrellisAuthError> {
 }
 
 fn base_url(trellis_url: &str) -> Result<String, TrellisAuthError> {
-    Ok(canonical_trellis_origin(trellis_url)?.trim_end_matches('/').to_owned())
+    Ok(canonical_trellis_origin(trellis_url)?
+        .trim_end_matches('/')
+        .to_owned())
 }
 
 async fn get_flow(base: &str, flow_id: &str) -> Result<FlowWire, TrellisAuthError> {
@@ -386,7 +388,10 @@ mod tests {
             .decode(&binding.secret)
             .expect("secret is base64url");
         assert_eq!(secret.len(), 32);
-        assert_eq!(binding.digest, URL_SAFE_NO_PAD.encode(Sha256::digest(&secret)));
+        assert_eq!(
+            binding.digest,
+            URL_SAFE_NO_PAD.encode(Sha256::digest(&secret))
+        );
     }
 
     #[test]
@@ -407,7 +412,10 @@ mod tests {
     fn consent_summary_falls_back_to_the_contract_id() {
         let consent = serde_json::json!({ "contractId": "tsd-operator.Operator" });
         let summary = consent_summary(&consent);
-        assert_eq!(summary.participant_id.as_deref(), Some("tsd-operator.Operator"));
+        assert_eq!(
+            summary.participant_id.as_deref(),
+            Some("tsd-operator.Operator")
+        );
         assert!(summary.capabilities.is_empty());
     }
 

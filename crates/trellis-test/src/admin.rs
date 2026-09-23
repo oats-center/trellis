@@ -4,27 +4,27 @@ use std::path::Path;
 
 use serde::Serialize;
 use serde_json::Value;
+use trellis_rs::auth::{
+    complete_local_login, connect_admin_client_async, start_agent_login, StartAgentLoginOpts,
+};
 use trellis_rs::client::CallError;
 use trellis_runtime_apis::apis::trellis_auth_v1::rpc::{
     DeploymentsApplyError, ParticipantsGetError as AuthParticipantsGetError,
-};
-use trellis_rs::auth::{
-    complete_local_login, connect_admin_client_async, start_agent_login, StartAgentLoginOpts,
 };
 use trellis_runtime_apis::apis::trellis_auth_v1::Client as AuthClient;
 use trellis_runtime_apis::types::{
     Approval, ApprovalMode, ApprovedCapability, ApprovedResource, AuthDeploymentsApplyRequest,
     AuthDeploymentsCreateRequest, AuthDeploymentsCreateRequestKind, AuthParticipantsGetRequest,
-    AuthParticipantsInstallRequest,
-    AuthPortalsGrantOverridesPutRequest, AuthServiceInstancesProvisionRequest, ConsentRequest,
+    AuthParticipantsInstallRequest, AuthPortalsGrantOverridesPutRequest,
+    AuthServiceInstancesProvisionRequest, ConsentRequest,
 };
 
 use crate::error::TrellisTestError;
 use crate::runtime::TrellisTestRuntime;
 
 fn wire<T: serde::de::DeserializeOwned>(value: impl Serialize) -> Result<T, TrellisTestError> {
-    let value = serde_json::to_value(value)
-        .map_err(|error| TrellisTestError::Config(error.to_string()))?;
+    let value =
+        serde_json::to_value(value).map_err(|error| TrellisTestError::Config(error.to_string()))?;
     serde_json::from_value(value).map_err(|error| TrellisTestError::Config(error.to_string()))
 }
 
@@ -94,7 +94,9 @@ impl TrellisTestRuntime {
         let outcome = challenge
             .complete_without_persistence(self.trellis_url())
             .await
-            .map_err(|error| TrellisTestError::Runtime(format!("login completion failed: {error}")))?;
+            .map_err(|error| {
+                TrellisTestError::Runtime(format!("login completion failed: {error}"))
+            })?;
         let generated = connect_admin_client_async(&outcome.state)
             .await
             .map_err(|error| TrellisTestError::Runtime(error.to_string()))?;
@@ -307,7 +309,9 @@ impl TrellisTestAdmin {
                 platform_trust: Some(false),
             })
             .await
-            .map_err(|error| TrellisTestError::Runtime(format!("installing participant: {error}")))?;
+            .map_err(|error| {
+                TrellisTestError::Runtime(format!("installing participant: {error}"))
+            })?;
         Ok(())
     }
 }
