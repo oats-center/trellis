@@ -209,6 +209,7 @@ jobs:
             demos/ts
             demos/app
             ts
+            web
             crates
             Cargo.toml
             Cargo.lock

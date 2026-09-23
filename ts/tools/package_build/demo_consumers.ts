@@ -79,7 +79,10 @@ try {
       await copy(join(repository, project, output), join(destination, output));
     }
     const configPath = join(destination, "deno.json");
-    const config = z.object({ links: z.array(z.string()).optional() })
+    const config = z.object({
+      imports: z.record(z.string(), z.string()),
+      links: z.array(z.string()).optional(),
+    })
       .passthrough().parse(JSON.parse(await Deno.readTextFile(configPath)));
     config.links = [];
     for (
@@ -92,6 +95,16 @@ try {
         join(destination, ".sdk", name),
       );
       config.links.push(`./.sdk/${name}`);
+      const manifest = z.object({ name: z.string(), version: z.string() })
+        .parse(
+          JSON.parse(
+            await Deno.readTextFile(
+              join(destination, ".sdk", name, "package.json"),
+            ),
+          ),
+        );
+      config.imports[manifest.name] =
+        `npm:${manifest.name}@${manifest.version}`;
     }
     await Deno.writeTextFile(configPath, JSON.stringify(config, null, 2));
     await run(["install"], destination);

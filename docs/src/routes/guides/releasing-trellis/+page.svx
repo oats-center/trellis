@@ -217,10 +217,11 @@ For a new stable base release, bump release-managed TypeScript and Rust manifest
 CURRENT_BASE_VERSION=<current-base-version>
 NEXT_BASE_VERSION=<next-base-version>
 cargo run --manifest-path xtask/Cargo.toml -- release bump --from "$CURRENT_BASE_VERSION" --to "$NEXT_BASE_VERSION"
+cargo xtask install --update
 cargo run --manifest-path xtask/Cargo.toml -- release check-versions
 ```
 
-`release bump` updates release-managed `deno.json`, `deno.npm.json`, and `Cargo.toml` manifests while preserving file layout. App and demo manifests that intentionally use `0.0.0` are skipped.
+`release bump` updates release-managed `deno.json`, `deno.npm.json`, `Cargo.toml`, and Trellis-owned `trellis.toml` manifests while preserving file layout. `cargo xtask install --update` refreshes their dependent IDL locks and generated SDKs. App and demo manifests that intentionally use `0.0.0` are skipped. For prereleases, the Release workflow prepares the RC versions and runs `install --update` in its prepared workspace; the checked-in base stays unchanged.
 
 Do not run `release bump` just to add a prerelease suffix like `-rc.1`. Prerelease suffixes are handled from the tag by `release prepare` in the publish workflow.
 
@@ -335,8 +336,8 @@ Then commit the release preparation:
 
 ```sh
 git status
-/usr/bin/git diff -- CHANGELOG.md js rust docs .github/workflows
-git add CHANGELOG.md js rust docs .github/workflows
+/usr/bin/git diff -- CHANGELOG.md Cargo.toml crates xtask ts web demos integration docs .github/workflows
+git add CHANGELOG.md Cargo.toml crates xtask ts web demos integration docs .github/workflows
 git commit -m "Prepare $RELEASE_TAG release"
 ```
 
@@ -400,4 +401,6 @@ If you want checked-in base versions to immediately move to the next line, do th
 OLD_BASE_VERSION=<released-base-version>
 NEW_BASE_VERSION=<next-base-version>
 cargo run --manifest-path xtask/Cargo.toml -- release bump --from "$OLD_BASE_VERSION" --to "$NEW_BASE_VERSION"
+cargo xtask install --update
+cargo run --manifest-path xtask/Cargo.toml -- release check-versions
 ```
