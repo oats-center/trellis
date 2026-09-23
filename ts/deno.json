@@ -10,8 +10,8 @@
   "tasks": {
     "install": "cargo run --manifest-path ../xtask/Cargo.toml -- install",
     "protocol:wasm": "cargo run --manifest-path ../xtask/Cargo.toml -- protocol-wasm",
-    "browser:embedded": "deno task -c ../web/deno.json build:embedded",
-    "build:runtime": "deno task install && deno task protocol:wasm && deno task browser:embedded",
+    "browser:embedded": "deno task install && deno task protocol:wasm && deno task -c ../web/deno.json build:embedded",
+    "build:runtime": "deno task browser:embedded",
     "packages:build:npm": "deno task -c packages/result/deno.json build:npm && deno task -c packages/trellis/deno.json build:npm && deno task -c packages/trellis-svelte/deno.json build:npm",
     "packages:build:npm:installed": "deno task -c packages/result/deno.json build:npm && deno task -c packages/trellis/deno.json build:npm:installed && deno task -c packages/trellis-svelte/deno.json build:npm",
     "test:packaging:built": "deno test -A tools/package_build && deno run -A tools/package_build/demo_consumers.ts",

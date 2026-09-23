@@ -75,24 +75,21 @@ mod tests {
         let crates_dir = crate_dir
             .parent()
             .expect("trellis crate should live under crates");
-        for manifest in [
-            "cli/Cargo.toml",
-            "codegen-Cargo.toml",
-            "codegen-ts/Cargo.toml",
-            "bootstrap/Cargo.toml",
-            "local-bootstrap/Cargo.toml",
-            "protocol-wasm/Cargo.toml",
-            "runtime-apis/Cargo.toml",
-            "runtime/Cargo.toml",
-            "events-runtime/Cargo.toml",
-            "jobs-runtime/Cargo.toml",
-            "trellis-test/Cargo.toml",
-        ] {
-            let contents = fs::read_to_string(crates_dir.join(manifest))
-                .expect("internal crate manifest should be readable");
+        for entry in fs::read_dir(crates_dir).expect("workspace crates should be readable") {
+            let entry = entry.expect("crate directory should be readable");
+            if entry.file_name() == "trellis" || entry.file_name() == "protocol" {
+                continue;
+            }
+            let manifest = entry.path().join("Cargo.toml");
+            if !manifest.is_file() {
+                continue;
+            }
+            let contents =
+                fs::read_to_string(&manifest).expect("internal crate manifest should be readable");
             assert!(
                 contents.contains("publish = false"),
-                "{manifest} must stay non-publishable"
+                "{} must stay non-publishable",
+                manifest.display()
             );
         }
     }

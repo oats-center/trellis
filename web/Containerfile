@@ -6,6 +6,9 @@ COPY ts /app/ts
 COPY web /app/web
 COPY art /app/art
 
+WORKDIR /app/ts
+RUN deno install
+
 WORKDIR /app/web
 
 RUN deno run -A npm:vite build

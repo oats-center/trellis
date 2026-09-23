@@ -3,11 +3,12 @@ FROM docker.io/denoland/deno:2.9.4 AS browser-apps
 WORKDIR /src
 
 COPY ts /src/ts
+COPY web /src/web
 COPY art /src/art
 
 RUN mkdir -p /src/crates/runtime/generated \
     && deno install --config ts/deno.json --lock ts/deno.lock --frozen \
-    && deno task --config ts/deno.json browser:embedded
+    && deno run --allow-all --config web/deno.json web/scripts/build_embedded.ts
 
 FROM docker.io/library/rust:bookworm AS build
 
