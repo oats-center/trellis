@@ -859,7 +859,7 @@ fn render_participant(
         )
     }).unwrap_or_else(|| "None".to_owned());
     let mut subscribe_needs: BTreeSet<String> = BTreeSet::new();
-    for (_api, selection) in participant.uses() {
+    for selection in participant.uses().values() {
         for selected in &selection.actions {
             if selected.action.kind == ActionKind::Event
                 && selected.direction == InteractionDirection::Subscribe

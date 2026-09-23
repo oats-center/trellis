@@ -276,10 +276,9 @@ where
             caller: validation.caller,
             ..context
         };
-        Ok(self
-            .router
+        self.router
             .handle_request_response(subject, payload, context)
-            .await?)
+            .await
     }
 
     fn context_with_required_capabilities(

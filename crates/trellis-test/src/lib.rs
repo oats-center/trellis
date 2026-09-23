@@ -37,10 +37,7 @@ pub fn terminate_on_parent_exit(_command: &mut std::process::Command) {
                     return Err(std::io::Error::last_os_error());
                 }
                 if libc::getppid() == 1 {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "parent already exited before exec",
-                    ));
+                    return Err(std::io::Error::other("parent already exited before exec"));
                 }
                 Ok(())
             });

@@ -958,6 +958,88 @@ fn advertised_endpoints(
     }
 }
 
+/// Seed a usable first local administrator with a username and password, without a browser
+/// or account-flow round trip.
+///
+/// # Errors
+///
+/// Returns a platform error when the platform store cannot be opened or migrated, when the
+/// built-in CLI/console participant bindings cannot be installed, or when the credentials do
+/// not satisfy the configured password policy.
+pub async fn seed_admin_credentials(
+    config: &RuntimeConfig,
+    username: &str,
+    password: &str,
+) -> Result<String, RuntimeError> {
+    let crate::StorageBackend::Sqlite(storage) = config
+        .platform_storage_backend()
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let store = crate::storage::SqliteStore::new(SubsystemName::Platform, storage);
+    store
+        .migrate()
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let auth_store = SqliteAuthorizationStore::open(&store)
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?
+        .as_millis()
+        .try_into()
+        .map_err(|_| RuntimeError::Platform("current time exceeds i64 milliseconds".to_owned()))?;
+
+    let mut targets = Vec::with_capacity(2);
+    for binding in [
+        auth::cli_participant_binding(now)
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?,
+        auth::console_participant_binding(now)
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?,
+    ] {
+        auth_store
+            .put_participant_binding(binding.clone())
+            .await
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+        let revision = auth_store
+            .get_installed_participant_record(binding.participant_id.clone(), None)
+            .await
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?
+            .ok_or_else(|| {
+                RuntimeError::Platform(format!(
+                    "{} participant installation missing",
+                    binding.participant_id
+                ))
+            })?
+            .0;
+        targets.push(FirstAdminAuthorityTarget {
+            participant_id: binding.participant_id,
+            installed_revision: revision,
+        });
+    }
+
+    let password_min_length = config
+        .auth
+        .as_ref()
+        .and_then(|auth| auth.local_identity.as_ref())
+        .and_then(|local| local.password_min_length)
+        .map_or(12, usize::from);
+    let service = AuthService::new(
+        auth_store,
+        auth::AuthServiceConfig {
+            password_min_length,
+            ..Default::default()
+        },
+    )
+    .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let public_origin = config
+        .http
+        .as_ref()
+        .and_then(|http| http.public_origin.clone())
+        .unwrap_or_else(|| "http://localhost:3000".to_owned());
+    service
+        .seed_local_admin(&public_origin, &targets, username, password, now)
+        .await
+        .map_err(|error| RuntimeError::Platform(error.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1101,89 +1183,4 @@ ws_nats_servers = ["ws://advertised.example:8080"]
             assert_eq!(profile.state, DeploymentProfileState::Active);
         }
     }
-}
-
-/// Seed a usable first local administrator with a username and password, without a browser
-/// or account-flow round trip.
-///
-/// # Errors
-///
-/// Returns a platform error when the platform store cannot be opened or migrated, when the
-/// built-in CLI/console participant bindings cannot be installed, or when the credentials do
-/// not satisfy the configured password policy.
-pub async fn seed_admin_credentials(
-    config: &RuntimeConfig,
-    username: &str,
-    password: &str,
-) -> Result<String, RuntimeError> {
-    let storage = match config
-        .platform_storage_backend()
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?
-    {
-        crate::StorageBackend::Sqlite(storage) => storage,
-    };
-    let store = crate::storage::SqliteStore::new(SubsystemName::Platform, storage);
-    store
-        .migrate()
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let auth_store = SqliteAuthorizationStore::open(&store)
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?
-        .as_millis()
-        .try_into()
-        .map_err(|_| RuntimeError::Platform("current time exceeds i64 milliseconds".to_owned()))?;
-
-    let mut targets = Vec::with_capacity(2);
-    for binding in [
-        auth::cli_participant_binding(now)
-            .map_err(|error| RuntimeError::Platform(error.to_string()))?,
-        auth::console_participant_binding(now)
-            .map_err(|error| RuntimeError::Platform(error.to_string()))?,
-    ] {
-        auth_store
-            .put_participant_binding(binding.clone())
-            .await
-            .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-        let revision = auth_store
-            .get_installed_participant_record(binding.participant_id.clone(), None)
-            .await
-            .map_err(|error| RuntimeError::Platform(error.to_string()))?
-            .ok_or_else(|| {
-                RuntimeError::Platform(format!(
-                    "{} participant installation missing",
-                    binding.participant_id
-                ))
-            })?
-            .0;
-        targets.push(FirstAdminAuthorityTarget {
-            participant_id: binding.participant_id,
-            installed_revision: revision,
-        });
-    }
-
-    let password_min_length = config
-        .auth
-        .as_ref()
-        .and_then(|auth| auth.local_identity.as_ref())
-        .and_then(|local| local.password_min_length)
-        .map_or(12, usize::from);
-    let service = AuthService::new(
-        auth_store,
-        auth::AuthServiceConfig {
-            password_min_length,
-            ..Default::default()
-        },
-    )
-    .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let public_origin = config
-        .http
-        .as_ref()
-        .and_then(|http| http.public_origin.clone())
-        .unwrap_or_else(|| "http://localhost:3000".to_owned());
-    service
-        .seed_local_admin(&public_origin, &targets, username, password, now)
-        .await
-        .map_err(|error| RuntimeError::Platform(error.to_string()))
 }

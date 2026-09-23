@@ -569,6 +569,28 @@ async fn main() -> miette::Result<()> {
     result
 }
 
+/// Resolve the bootstrap password from argv or standard input. Stdin is preferred so the
+/// secret does not appear in the process list or shell history.
+fn resolve_bootstrap_password(args: &BootstrapAdminArgs) -> miette::Result<String> {
+    if let Some(password) = args.password.as_ref() {
+        return Ok(password.clone());
+    }
+    if args.password_stdin {
+        let mut password = String::new();
+        std::io::stdin()
+            .read_line(&mut password)
+            .into_diagnostic()?;
+        let password = password.trim_end_matches(['\n', '\r']).to_owned();
+        if password.is_empty() {
+            return Err(miette!("--password-stdin received an empty password"));
+        }
+        return Ok(password);
+    }
+    Err(miette!(
+        "bootstrap-admin requires --password or --password-stdin"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -989,26 +1011,4 @@ kind = "sqlite"
             }
         );
     }
-}
-
-/// Resolve the bootstrap password from argv or standard input. Stdin is preferred so the
-/// secret does not appear in the process list or shell history.
-fn resolve_bootstrap_password(args: &BootstrapAdminArgs) -> miette::Result<String> {
-    if let Some(password) = args.password.as_ref() {
-        return Ok(password.clone());
-    }
-    if args.password_stdin {
-        let mut password = String::new();
-        std::io::stdin()
-            .read_line(&mut password)
-            .into_diagnostic()?;
-        let password = password.trim_end_matches(['\n', '\r']).to_owned();
-        if password.is_empty() {
-            return Err(miette!("--password-stdin received an empty password"));
-        }
-        return Ok(password);
-    }
-    Err(miette!(
-        "bootstrap-admin requires --password or --password-stdin"
-    ))
 }
