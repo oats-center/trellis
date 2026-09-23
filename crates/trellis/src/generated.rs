@@ -296,11 +296,11 @@ impl OptionalAction {
         }
     }
 
-    /// Declare an optional feed subscription.
-    pub const fn feed(api_id: &'static str, name: &'static str) -> Self {
+    /// Declare an optional live subscription.
+    pub const fn live(api_id: &'static str, name: &'static str) -> Self {
         Self {
             api_id,
-            surface: trellis_protocol::ApiSurfaceKind::Feed,
+            surface: trellis_protocol::ApiSurfaceKind::Live,
             name,
             action: trellis_protocol::PermissionAction::Subscribe,
         }
@@ -422,14 +422,14 @@ pub trait EventDescriptor {
     }
 }
 
-/// Metadata emitted for one generated feed action.
-pub trait FeedDescriptor {
-    /// Feed subscription input type.
+/// Metadata emitted for one generated live action.
+pub trait LiveDescriptor {
+    /// Live subscription input type.
     type Input: Codec + Serialize + DeserializeOwned;
-    /// Feed event payload type.
+    /// Live event payload type.
     type Event: Codec + Serialize + DeserializeOwned;
 
-    /// Qualified API identity owning this feed.
+    /// Qualified API identity owning this live.
     const API_ID: &'static str;
     /// Exact generated descriptor name.
     const DESCRIPTOR_NAME: &'static str;
@@ -650,7 +650,7 @@ impl Client {
         })?;
         let output = self
             .client
-            .request_json_value(
+            .request_json_value_routed(
                 &self
                     .client
                     .bound_key_subject("rpc", D::API_ID, D::KEY)
@@ -658,6 +658,10 @@ impl Client {
                         crate::client::CallError::from_client(error, D::decode_error)
                     })?,
                 &input,
+                crate::telemetry::instruments::route_token(
+                    crate::telemetry::instruments::RouteFamily::Rpc,
+                    &format!("{}:{}", D::API_ID, D::KEY),
+                ),
             )
             .await
             .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))?;
@@ -703,26 +707,23 @@ impl Client {
         self.client.subscribe_with_options::<D>(options).await
     }
 
-    /// Subscribe to one generated feed descriptor.
-    pub async fn feed<D>(
+    /// Subscribe to one generated live descriptor.
+    pub async fn live<D>(
         &self,
         input: &D::Input,
     ) -> Result<
-        futures_util::stream::BoxStream<
-            'static,
-            Result<D::Event, crate::client::TrellisClientError>,
-        >,
+        crate::live::subscription::LiveSubscription<D::Event>,
         crate::client::TrellisClientError,
     >
     where
-        D: FeedDescriptor,
-        D::Event: Send + 'static,
+        D: LiveDescriptor,
+        D::Event: Codec + Send + 'static,
     {
-        self.ensure_available(OptionalAction::feed(
+        self.ensure_available(OptionalAction::live(
             D::API_ID,
             action_name(D::DESCRIPTOR_NAME),
         ))?;
-        self.client.feed::<D>(input).await
+        self.client.live::<D>(input).await
     }
 
     /// Create a typed facade for one complete generated Operation.
@@ -1036,20 +1037,16 @@ where
             .await
     }
 
-    /// Watch durable lifecycle snapshots from the current runtime.
-    pub async fn watch(
+    /// Observe durable lifecycle snapshots from the current runtime.
+    pub async fn live(
         &self,
     ) -> Result<
-        futures_util::stream::BoxStream<
-            'a,
-            Result<
-                crate::client::OperationEvent<D::Progress, D::Output, serde_json::Value>,
-                crate::client::TrellisClientError,
-            >,
+        crate::live::subscription::LiveSubscription<
+            crate::client::OperationEvent<D::Progress, D::Output, serde_json::Value>,
         >,
         crate::client::TrellisClientError,
     > {
-        self.inner.watch().await
+        self.inner.live().await
     }
 
     /// Upload the declared Operation transfer body through the accepted grant.
@@ -1115,6 +1112,11 @@ pub trait ParticipantDescriptor {
 
     /// APIs completely implemented by this participant.
     const IMPLEMENTED_API_IDS: &'static [&'static str] = &[];
+
+    /// `event:<Name>` descriptor names this participant explicitly declares as
+    /// subscribe needs. A declared durable consumer is not included: consumer
+    /// `Consume` and event `Subscribe` are independent authorities.
+    const EVENT_SUBSCRIBE_NEEDS: &'static [&'static str] = &[];
 
     /// Exact package evidence embedded by generation.
     fn package_evidence() -> PackageEvidence;

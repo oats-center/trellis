@@ -463,6 +463,36 @@ fn parses_init_config_infra_init_keys_upgrade_version_and_completion() {
                     trellis_bootstrap::DEFAULT_SYSTEM_ACCOUNT
                 );
                 assert_eq!(args.server_name, None);
+                assert_eq!(args.nats_port, 4222);
+                assert_eq!(args.nats_monitor_port, 8222);
+                assert_eq!(args.nats_ws_port, 8080);
+                assert_eq!(args.nats_server_url, None);
+                assert_eq!(args.nats_websocket_url, None);
+            }
+            other => panic!("unexpected init command: {other:?}"),
+        },
+        other => panic!("unexpected top-level command: {other:?}"),
+    }
+
+    let cli = Cli::parse_from([
+        "trellis",
+        "init",
+        "config",
+        "--out",
+        "./trellis",
+        "--nats-port",
+        "4322",
+        "--nats-monitor-port",
+        "8322",
+        "--nats-ws-port",
+        "8180",
+    ]);
+    match cli.command {
+        TopLevelCommand::Init(command) => match command.command {
+            InitSubcommand::Config(args) => {
+                assert_eq!(args.nats_port, 4322);
+                assert_eq!(args.nats_monitor_port, 8322);
+                assert_eq!(args.nats_ws_port, 8180);
             }
             other => panic!("unexpected init command: {other:?}"),
         },

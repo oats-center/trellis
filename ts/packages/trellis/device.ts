@@ -62,6 +62,8 @@ import { Value } from "typebox/value";
 import {
   installConnectionAvailability,
   observeNatsTrellisConnection,
+  startConnectionTelemetry,
+  transitionConnectionAvailability,
 } from "./connection.ts";
 import {
   type AuthorizationContextBundle,
@@ -79,6 +81,7 @@ import {
   participantEvidence,
   refreshApiRoutes,
 } from "./participant_runtime/participant.ts";
+import { recordCatalogCounter } from "./telemetry/metrics.ts";
 
 type DeviceContract = GeneratedParticipant;
 
@@ -559,24 +562,49 @@ async function fetchDeviceBootstrap(args: {
       ),
     };
   }
-  const response = await fetch(
-    new URL("/bootstrap/device", args.trellisUrl),
-    {
+  const body = JSON.stringify({
+    ...unsigned,
+    proof: await identityAuth.signSessionProof({
+      purpose: "deviceBootstrap",
+      origin: new URL(args.trellisUrl).origin,
+      unsignedRequest: unsigned,
+    }),
+  });
+  let response: Response;
+  let refreshOutcome = "error";
+  try {
+    response = await fetch(new URL("/bootstrap/device", args.trellisUrl), {
       method: "POST",
       signal: args.signal,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...unsigned,
-        proof: await identityAuth.signSessionProof({
-          purpose: "deviceBootstrap",
-          origin: new URL(args.trellisUrl).origin,
-          unsignedRequest: unsigned,
-        }),
-      }),
-    },
-  );
+      body,
+    });
+    if (!response.ok) throw await decodeTrellisHttpError(response);
+    refreshOutcome = "ok";
+  } catch (error) {
+    if (error instanceof TrellisHttpError) {
+      refreshOutcome =
+        new AuthorizationContextRefreshError(error.status, error.code)
+            .terminal
+          ? "terminal"
+          : error.code === "resource_pending"
+          ? "pending"
+          : error.status === 503
+          ? "unavailable"
+          : "error";
+    } else if (error instanceof DOMException && error.name === "AbortError") {
+      refreshOutcome = "cancelled";
+    }
+    throw error;
+  } finally {
+    if (args.connectionId) {
+      recordCatalogCounter("trellis.auth.refresh.attempts", 1, {
+        "trellis.participant.kind": "device",
+        "trellis.outcome": refreshOutcome,
+      });
+    }
+  }
   const responseReceivedAtMs = args.now();
-  if (!response.ok) throw await decodeTrellisHttpError(response);
   const payload = await readJsonResponse(response, {
     code: "trellis.bootstrap.invalid_response",
     message: "Trellis returned an invalid device bootstrap response.",
@@ -838,6 +866,7 @@ export async function connectDeviceWithDeps<
   });
   let nc: NatsConnection | undefined;
   let authorizationProviderCache: AuthorizationProviderCache | undefined;
+  const connectionTelemetry = startConnectionTelemetry("device");
   try {
     nc = await transport.connect({
       servers: selectRuntimeTransportServers(connectInfo.transports),
@@ -861,6 +890,7 @@ export async function connectDeviceWithDeps<
       authorizationProviderCache?.stop();
     });
   } catch (cause) {
+    connectionTelemetry.dispose();
     authorizationProviderCache?.stop();
     if (nc && !nc.isClosed()) await nc.close();
     throw createTransportError({
@@ -880,6 +910,7 @@ export async function connectDeviceWithDeps<
   const connection = observeNatsTrellisConnection({
     kind: "device",
     nc,
+    telemetry: connectionTelemetry,
     availability: participantAvailability(
       args.participant,
       connectInfo.apiBindings,
@@ -898,15 +929,25 @@ export async function connectDeviceWithDeps<
     connectInfo.apiBindings,
     connectInfo.resourceBindings,
   );
-  authorizationProviderCache.onOwnInvalidated(() =>
+  authorizationProviderCache.onOwnInvalidated(() => {
+    transitionConnectionAvailability(connection, false, "coverage_lost");
     installConnectionAvailability(
       connection,
       participantAvailability(args.participant, {}, {}, []),
-    )
-  );
+    );
+  });
   authorizationProviderCache.onOwnResumed(() => {
+    if (connection.status.phase === "connected") {
+      transitionConnectionAvailability(connection, true, "resumed");
+    }
     installConnectionAvailability(connection, installedAvailability);
   });
+  if (
+    authorizationProviderCache.ownUsable() &&
+    connection.status.phase === "connected"
+  ) {
+    transitionConnectionAvailability(connection, true, "connected");
+  }
   connection.subscribe((status) =>
     authorizationProviderCache.observeConnectionPhase(status.phase)
   );

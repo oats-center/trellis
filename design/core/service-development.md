@@ -11,7 +11,7 @@ facades. TypeScript services import `TrellisService` from
 the provisioned identity and Trellis URL. Deployment assignment, package
 evidence, exact grants, routes, and resource bindings are resolved server-side.
 
-Register generated RPC, Operation, Feed, Event Consumer, and Job handlers before
+Register generated RPC, Operation, Live, Event Consumer, and Job handlers before
 waiting on the service lifecycle. Use generated callers/publishers and the
 connected `service.kv`, `service.store`, and `service.jobs` handles. Do not
 fetch bindings, derive physical subjects, construct raw handles, or
@@ -31,7 +31,7 @@ value, KV is typed history, and Store is raw bytes.
 
 Use Operations for caller-visible durable workflows. They are restartable and at
 least once. Use Jobs for private queued work. Consumer concurrency is local per
-process; retry and Events DLQ behavior are runtime-managed. Feeds are live and
+process; retry and Events DLQ behavior are runtime-managed. Live observations are transient and
 owner-cancelled, not durable replay.
 
 Expected domain failures use generated Result-style errors. Preserve request

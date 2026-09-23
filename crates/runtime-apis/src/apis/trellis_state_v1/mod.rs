@@ -430,7 +430,7 @@ pub mod rpc {
 }
 pub mod operations {}
 pub mod events {}
-pub mod feeds {}
+pub mod lives {}
 /// Registers metadata for every RPC in this API.
 pub fn register_rpc_metadata(router: &mut trellis_rs::service::Router) {
     let _ = router;

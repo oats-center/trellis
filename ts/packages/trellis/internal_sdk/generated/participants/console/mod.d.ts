@@ -96,13 +96,13 @@ type __ActionNames = {
 	readonly "trellis.events@v1:rpc:Inspect": "events.Inspect";
 	readonly "trellis.events@v1:rpc:Metrics": "events.Metrics";
 	readonly "trellis.events@v1:rpc:Query": "events.Query";
-	readonly "trellis.events@v1:feed:Watch": "events.Watch";
+	readonly "trellis.events@v1:live:Watch": "events.Watch";
 	readonly "trellis.health@v1:rpc:Inspect": "health.Inspect";
 	readonly "trellis.health@v1:rpc:Metrics": "health.Metrics";
 	readonly "trellis.health@v1:rpc:Query": "health.Query";
 	readonly "trellis.health@v1:rpc:Summary": "health.Summary";
 	readonly "trellis.health@v1:event:StatusChanged": "StatusChanged";
-	readonly "trellis.health@v1:feed:Watch": "health.Watch";
+	readonly "trellis.health@v1:live:Watch": "health.Watch";
 	readonly "trellis.jobs@v1:rpc:Cancel": "Cancel";
 	readonly "trellis.jobs@v1:rpc:DismissDLQ": "DismissDLQ";
 	readonly "trellis.jobs@v1:rpc:GetKey": "GetKey";
@@ -114,7 +114,7 @@ type __ActionNames = {
 	readonly "trellis.jobs@v1:rpc:ReplayDLQ": "ReplayDLQ";
 	readonly "trellis.jobs@v1:rpc:Retry": "Retry";
 	readonly "trellis.jobs@v1:rpc:Summary": "jobs.Summary";
-	readonly "trellis.jobs@v1:feed:Watch": "jobs.Watch";
+	readonly "trellis.jobs@v1:live:Watch": "jobs.Watch";
 	readonly "trellis.state@v1:rpc:Delete": "Delete";
 	readonly "trellis.state@v1:rpc:Get": "Get";
 	readonly "trellis.state@v1:rpc:Put": "Put";
@@ -367,7 +367,7 @@ declare const __participant: {
 			readonly descriptorName: "rpc:Query";
 			readonly direction: "call";
 		}, {
-			readonly descriptorName: "feed:Watch";
+			readonly descriptorName: "live:Watch";
 			readonly direction: "subscribe";
 		}];
 		readonly optionalCapabilities: readonly [];
@@ -386,7 +386,7 @@ declare const __participant: {
 			readonly descriptorName: "rpc:Summary";
 			readonly direction: "call";
 		}, {
-			readonly descriptorName: "feed:Watch";
+			readonly descriptorName: "live:Watch";
 			readonly direction: "subscribe";
 		}];
 		readonly optionalCapabilities: readonly [];
@@ -426,7 +426,7 @@ declare const __participant: {
 			readonly descriptorName: "rpc:Summary";
 			readonly direction: "call";
 		}, {
-			readonly descriptorName: "feed:Watch";
+			readonly descriptorName: "live:Watch";
 			readonly direction: "subscribe";
 		}];
 		readonly optionalCapabilities: readonly [];
@@ -472,7 +472,7 @@ export declare const participant: {
 	readonly __runtimeTypes?: typeof __participant.__runtimeTypes;
 	readonly packageEvidence: unknown;
 };
-export declare const PARTICIPANT_DIGEST: "OooTgvMtds9s5rVdwdehT6yTzx0vpezHOU7RcFcjoDc";
+export declare const PARTICIPANT_DIGEST: "NzZo2klb949iyS-hvDknsWhTtnpKIK8rIPu0og1t6HQ";
 export type Participant = typeof participant;
 export type ResourceDescriptors = typeof participant.resources;
 export type ResourceHandles<Handles extends { readonly [Name in keyof ResourceDescriptors] : unknown }> = { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "required" ? Name : never] : Handles[Name] } & { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "optional" ? Name : never] : Handles[Name] | undefined };

@@ -1,0 +1,457 @@
+# Deterministic policy tests. No Trellis instance or machine-speed assertion.
+rule_files:
+  - recording-rules.yml
+  - expected-components.yml
+  - alert-rules.yml
+evaluation_interval: 30s
+tests:
+  - name: quiet-consumer-is-not-stalled
+    interval: 15s
+    input_series:
+      - series: 'trellis_consumer_pending{telemetry_pipeline="native",trellis_cluster="example"}'
+        values: '0x80'
+      - series: 'trellis_consumer_ack_pending{telemetry_pipeline="native",trellis_cluster="example"}'
+        values: '0x80'
+      - series: 'trellis_consumer_progress_age{telemetry_pipeline="native",trellis_cluster="example"}'
+        values: '600x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",trellis_source="events"}'
+        values: '0+15x80'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: TrellisConsumerStalled
+        exp_alerts: []
+  - name: stale-snapshot-does-not-assert-current-consumer-stall
+    interval: 15s
+    input_series:
+      - series: 'trellis_consumer_pending{telemetry_pipeline="native",trellis_cluster="example"}'
+        values: '10x80'
+      - series: 'trellis_consumer_ack_pending{telemetry_pipeline="native",trellis_cluster="example"}'
+        values: '0x80'
+      - series: 'trellis_consumer_progress_age{telemetry_pipeline="native",trellis_cluster="example"}'
+        values: '600x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",trellis_source="events"}'
+        values: '0x80'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: TrellisConsumerStalled
+        exp_alerts: []
+  - name: outstanding-work-with-current-snapshot-does-alert
+    interval: 15s
+    input_series:
+      - series: 'trellis_runtime_component_ready{telemetry_pipeline="native",trellis_cluster="example",trellis_component="events"}'
+        values: '1x80'
+      - series: 'trellis_runtime_component_observed_time{telemetry_pipeline="native",trellis_cluster="example",trellis_component="events"}'
+        values: '0+15x80'
+      - series: 'trellis_consumer_pending{telemetry_pipeline="native",trellis_cluster="example"}'
+        values: '10x80'
+      - series: 'trellis_consumer_ack_pending{telemetry_pipeline="native",trellis_cluster="example"}'
+        values: '0x80'
+      - series: 'trellis_consumer_progress_age{telemetry_pipeline="native",trellis_cluster="example"}'
+        values: '600x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",trellis_source="events"}'
+        values: '0+15x80'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: TrellisConsumerStalled
+        exp_alerts:
+          - exp_labels: {trellis_cluster: example, severity: warning}
+            exp_annotations:
+              summary: A Consumer has outstanding work without observed ACK progress
+              description: 'Cluster example. Current value: 600. Check telemetry freshness before interpreting last-known gauges.'
+              runbook: docs/observability/runbooks.md#consumer-stalled
+  - name: dlq-projection-stalled-with-fresh-events-and-stale-sql
+    interval: 15s
+    input_series:
+      - series: 'trellis_runtime_component_ready{telemetry_pipeline="native",trellis_cluster="example",trellis_component="events"}'
+        values: '1x80'
+      - series: 'trellis_runtime_component_observed_time{telemetry_pipeline="native",trellis_cluster="example",trellis_component="events"}'
+        values: '0+15x80'
+      - series: 'trellis_projection_pending{telemetry_pipeline="native",trellis_cluster="example",trellis_component="events_dlq"}'
+        values: '10x80'
+      - series: 'trellis_projection_progress_age{telemetry_pipeline="native",trellis_cluster="example",trellis_component="events_dlq"}'
+        values: '600x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",trellis_source="events"}'
+        values: '0+15x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",trellis_source="events_dlq"}'
+        values: '0x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",trellis_source="jobs"}'
+        values: '0+15x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",trellis_source="health"}'
+        values: '0+15x80'
+    promql_expr_test:
+      - expr: trellis:projection_snapshot_fresh
+        eval_time: 15m
+        exp_samples:
+          - labels: 'trellis:projection_snapshot_fresh{trellis_cluster="example",trellis_source="events",trellis_component="events"}'
+            value: 1
+          - labels: 'trellis:projection_snapshot_fresh{trellis_cluster="example",trellis_source="events",trellis_component="events_dlq"}'
+            value: 1
+          - labels: 'trellis:projection_snapshot_fresh{trellis_cluster="example",trellis_source="jobs",trellis_component="jobs"}'
+            value: 1
+          - labels: 'trellis:projection_snapshot_fresh{trellis_cluster="example",trellis_source="health",trellis_component="health"}'
+            value: 1
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: TrellisProjectionStalled
+        exp_alerts:
+          - exp_labels: {trellis_cluster: example, trellis_component: events_dlq, severity: warning}
+            exp_annotations:
+              summary: A projector has backlog without observed progress
+              description: 'Cluster example. Current value: 600. Check telemetry freshness before interpreting last-known gauges.'
+              runbook: docs/observability/runbooks.md#projection-stalled
+  - name: dlq-projection-stale-events-fresh-sql-does-not-alert
+    interval: 15s
+    input_series:
+      - series: 'trellis_projection_pending{telemetry_pipeline="native",trellis_cluster="example",trellis_component="events_dlq"}'
+        values: '10x80'
+      - series: 'trellis_projection_progress_age{telemetry_pipeline="native",trellis_cluster="example",trellis_component="events_dlq"}'
+        values: '600x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",trellis_source="events"}'
+        values: '0x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",trellis_source="events_dlq"}'
+        values: '0+15x80'
+    promql_expr_test:
+      - expr: trellis:projection_snapshot_fresh
+        eval_time: 15m
+        exp_samples:
+          - labels: 'trellis:projection_snapshot_fresh{trellis_cluster="example",trellis_source="events",trellis_component="events"}'
+            value: 0
+          - labels: 'trellis:projection_snapshot_fresh{trellis_cluster="example",trellis_source="events",trellis_component="events_dlq"}'
+            value: 0
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: TrellisProjectionStalled
+        exp_alerts: []
+  - name: dlq-projection-zero-pending-does-not-alert
+    interval: 15s
+    input_series:
+      - series: 'trellis_projection_pending{telemetry_pipeline="native",trellis_cluster="example",trellis_component="events_dlq"}'
+        values: '0x80'
+      - series: 'trellis_projection_progress_age{telemetry_pipeline="native",trellis_cluster="example",trellis_component="events_dlq"}'
+        values: '600x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",trellis_source="events"}'
+        values: '0+15x80'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: TrellisProjectionStalled
+        exp_alerts: []
+  - name: no-reporting-process-does-not-look-healthy
+    interval: 15s
+    input_series: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: TrellisRequiredComponentUnavailable
+        exp_alerts:
+          - exp_labels: {trellis_cluster: example, trellis_component: platform, severity: critical}
+            exp_annotations:
+              summary: A configured Trellis component is absent or not healthy
+              description: 'Cluster example. Current value: 1. Check telemetry freshness before interpreting last-known gauges.'
+              runbook: docs/observability/runbooks.md#component-unavailable
+          - exp_labels: {trellis_cluster: example, trellis_component: jobs, severity: critical}
+            exp_annotations:
+              summary: A configured Trellis component is absent or not healthy
+              description: 'Cluster example. Current value: 1. Check telemetry freshness before interpreting last-known gauges.'
+              runbook: docs/observability/runbooks.md#component-unavailable
+          - exp_labels: {trellis_cluster: example, trellis_component: events, severity: critical}
+            exp_annotations:
+              summary: A configured Trellis component is absent or not healthy
+              description: 'Cluster example. Current value: 1. Check telemetry freshness before interpreting last-known gauges.'
+              runbook: docs/observability/runbooks.md#component-unavailable
+          - exp_labels: {trellis_cluster: example, trellis_component: health, severity: critical}
+            exp_annotations:
+              summary: A configured Trellis component is absent or not healthy
+              description: 'Cluster example. Current value: 1. Check telemetry freshness before interpreting last-known gauges.'
+              runbook: docs/observability/runbooks.md#component-unavailable
+  - name: stale-process-cannot-authorize-another-process-backlog
+    interval: 15s
+    input_series:
+      - series: 'trellis_runtime_component_ready{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_component="jobs"}'
+        values: '1x80'
+      - series: 'trellis_runtime_component_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_component="jobs"}'
+        values: '0+15x80'
+      - series: 'trellis_runtime_component_ready{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_component="jobs"}'
+        values: '1x80'
+      - series: 'trellis_runtime_component_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_component="jobs"}'
+        values: '0+15x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_source="jobs"}'
+        values: '0x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_source="jobs"}'
+        values: '0+15x80'
+      - series: 'trellis_jobs_ready{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a"}'
+        values: '10x80'
+      - series: 'trellis_jobs_ready{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b"}'
+        values: '0x80'
+      - series: 'trellis_jobs_oldest_ready_age{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a"}'
+        values: '600x80'
+      - series: 'trellis_jobs_oldest_ready_age{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b"}'
+        values: '0x80'
+      - series: 'trellis_projection_pending{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_component="jobs"}'
+        values: '10x80'
+      - series: 'trellis_projection_pending{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_component="jobs"}'
+        values: '0x80'
+      - series: 'trellis_projection_progress_age{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_component="jobs"}'
+        values: '600x80'
+      - series: 'trellis_projection_progress_age{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_component="jobs"}'
+        values: '0x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_source="health"}'
+        values: '0x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_source="health"}'
+        values: '0x80'
+    promql_expr_test:
+      - expr: trellis:process_snapshot_fresh{trellis_source="jobs"}
+        eval_time: 15m
+        exp_samples:
+          - labels: 'trellis:process_snapshot_fresh{trellis_cluster="example",job="native",instance="a",trellis_source="jobs"}'
+            value: 0
+          - labels: 'trellis:process_snapshot_fresh{trellis_cluster="example",job="native",instance="b",trellis_source="jobs"}'
+            value: 1
+      - expr: trellis:jobs_ready
+        eval_time: 15m
+        exp_samples:
+          - labels: 'trellis:jobs_ready{trellis_cluster="example"}'
+            value: 0
+      - expr: trellis:projection_pending
+        eval_time: 15m
+        exp_samples:
+          - labels: 'trellis:projection_pending{trellis_cluster="example",trellis_component="jobs"}'
+            value: 0
+      - expr: trellis:source_owner_fresh{trellis_source="health"}
+        eval_time: 15m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: TrellisJobsBacklogOld
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: TrellisProjectionStalled
+        exp_alerts: []
+  - name: fresh-jobs-backlog-and-stale-worker-count
+    interval: 15s
+    input_series:
+      - series: 'trellis_runtime_component_ready{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_component="jobs"}'
+        values: '1x80'
+      - series: 'trellis_runtime_component_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_component="jobs"}'
+        values: '0+15x80'
+      - series: 'trellis_runtime_component_ready{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_component="jobs"}'
+        values: '1x80'
+      - series: 'trellis_runtime_component_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_component="jobs"}'
+        values: '0+15x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_source="jobs"}'
+        values: '0x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_source="jobs"}'
+        values: '0+15x80'
+      - series: 'trellis_jobs_ready{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a"}'
+        values: '0x80'
+      - series: 'trellis_jobs_ready{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b"}'
+        values: '10x80'
+      - series: 'trellis_jobs_oldest_ready_age{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b"}'
+        values: '600x80'
+      - series: 'trellis_jobs_worker_registrations{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a"}'
+        values: '12x80'
+      - series: 'trellis_jobs_worker_registrations{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b"}'
+        values: '0x80'
+      - series: 'trellis_projection_pending{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_component="jobs"}'
+        values: '10x80'
+      - series: 'trellis_projection_progress_age{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_component="jobs"}'
+        values: '600x80'
+    promql_expr_test:
+      - expr: trellis:jobs_worker_registrations
+        eval_time: 15m
+        exp_samples:
+          - labels: 'trellis:jobs_worker_registrations{trellis_cluster="example"}'
+            value: 0
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: TrellisJobsNoWorkers
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: TrellisJobsNoWorkers
+        exp_alerts:
+          - exp_labels: {trellis_cluster: example, severity: critical}
+            exp_annotations:
+              summary: Ready Jobs exist but no fresh worker registrations are observed
+              description: 'Cluster example. Current value: 10. Check telemetry freshness before interpreting last-known gauges.'
+              runbook: docs/observability/runbooks.md#jobs-workers
+      - eval_time: 5m
+        alertname: TrellisJobsBacklogOld
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: TrellisJobsBacklogOld
+        exp_alerts:
+          - exp_labels: {trellis_cluster: example, severity: warning}
+            exp_annotations:
+              summary: Eligible Jobs are waiting more than five minutes
+              description: 'Cluster example. Current value: 600. Check telemetry freshness before interpreting last-known gauges.'
+              runbook: docs/observability/runbooks.md#jobs-backlog
+      - eval_time: 2m
+        alertname: TrellisProjectionStalled
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: TrellisProjectionStalled
+        exp_alerts:
+          - exp_labels: {trellis_cluster: example, trellis_component: jobs, severity: warning}
+            exp_annotations:
+              summary: A projector has backlog without observed progress
+              description: 'Cluster example. Current value: 600. Check telemetry freshness before interpreting last-known gauges.'
+              runbook: docs/observability/runbooks.md#projection-stalled
+  - name: two-processes-without-fresh-source-are-unknown-not-zero
+    interval: 15s
+    input_series:
+      - series: 'trellis_runtime_component_ready{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_component="jobs"}'
+        values: '1x80'
+      - series: 'trellis_runtime_component_ready{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_component="jobs"}'
+        values: '1x80'
+      - series: 'trellis_runtime_component_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_component="jobs"}'
+        values: '0+15x80'
+      - series: 'trellis_runtime_component_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_component="jobs"}'
+        values: '0+15x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_source="jobs"}'
+        values: '0x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_source="jobs"}'
+        values: '0x80'
+      - series: 'trellis_jobs_ready{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a"}'
+        values: '10x80'
+      - series: 'trellis_jobs_ready{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b"}'
+        values: '0x80'
+    promql_expr_test:
+      - expr: trellis:jobs_ready
+        eval_time: 15m
+        exp_samples: []
+      - expr: trellis:snapshot_fresh{trellis_source="jobs"}
+        eval_time: 15m
+        exp_samples:
+          - labels: 'trellis:snapshot_fresh{trellis_cluster="example",trellis_source="jobs"}'
+            value: 0
+  - name: eligible-dlq-state-reports-are-not-independent-stores
+    interval: 15s
+    input_series:
+      - series: 'trellis_runtime_component_ready{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_component="events"}'
+        values: '1x80'
+      - series: 'trellis_runtime_component_ready{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_component="events"}'
+        values: '1x80'
+      - series: 'trellis_runtime_component_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_component="events"}'
+        values: '0+15x80'
+      - series: 'trellis_runtime_component_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_component="events"}'
+        values: '0+15x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_source="events_dlq"}'
+        values: '0+15x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_source="events_dlq"}'
+        values: '0+15x80'
+      - series: 'trellis_dlq_entries{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_state="open"}'
+        values: '4x80'
+      - series: 'trellis_dlq_entries{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_state="open"}'
+        values: '4x80'
+      - series: 'trellis_dlq_entries{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_state="replay_pending"}'
+        values: '2x80'
+      - series: 'trellis_dlq_entries{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_state="replay_pending"}'
+        values: '2x80'
+    promql_expr_test:
+      - expr: trellis:dlq_entries
+        eval_time: 15m
+        exp_samples:
+          - labels: 'trellis:dlq_entries{trellis_cluster="example"}'
+            value: 6
+  - name: stale-auth-events-and-sql-values-do-not-cross-processes
+    interval: 15s
+    input_series:
+      - series: 'trellis_runtime_component_ready{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_component="platform"}'
+        values: '1x80'
+      - series: 'trellis_runtime_component_ready{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_component="platform"}'
+        values: '1x80'
+      - series: 'trellis_runtime_component_ready{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_component="events"}'
+        values: '1x80'
+      - series: 'trellis_runtime_component_ready{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_component="events"}'
+        values: '1x80'
+      - series: 'trellis_runtime_component_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_component="platform"}'
+        values: '0+15x80'
+      - series: 'trellis_runtime_component_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_component="platform"}'
+        values: '0+15x80'
+      - series: 'trellis_runtime_component_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_component="events"}'
+        values: '0+15x80'
+      - series: 'trellis_runtime_component_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_component="events"}'
+        values: '0+15x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_source="auth"}'
+        values: '0x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_source="auth"}'
+        values: '0+15x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_source="events"}'
+        values: '0x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_source="events"}'
+        values: '0+15x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_source="events_dlq"}'
+        values: '0x80'
+      - series: 'trellis_snapshot_observed_time{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_source="events_dlq"}'
+        values: '0+15x80'
+      - series: 'trellis_auth_post_commit_pending{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a"}'
+        values: '10x80'
+      - series: 'trellis_auth_post_commit_pending{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b"}'
+        values: '0x80'
+      - series: 'trellis_auth_post_commit_oldest_age{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a"}'
+        values: '600x80'
+      - series: 'trellis_auth_post_commit_oldest_age{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b"}'
+        values: '0x80'
+      - series: 'trellis_consumer_pending{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a"}'
+        values: '10x80'
+      - series: 'trellis_consumer_pending{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b"}'
+        values: '0x80'
+      - series: 'trellis_consumer_ack_pending{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a"}'
+        values: '10x80'
+      - series: 'trellis_consumer_ack_pending{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b"}'
+        values: '0x80'
+      - series: 'trellis_consumer_progress_age{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a"}'
+        values: '600x80'
+      - series: 'trellis_consumer_progress_age{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b"}'
+        values: '0x80'
+      - series: 'trellis_consumer_missing{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a"}'
+        values: '1x80'
+      - series: 'trellis_consumer_missing{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b"}'
+        values: '0x80'
+      - series: 'trellis_dlq_entries{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_state="open"}'
+        values: '10x80'
+      - series: 'trellis_dlq_entries{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_state="open"}'
+        values: '0x80'
+      - series: 'trellis_projection_pending{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_component="events_dlq"}'
+        values: '10x80'
+      - series: 'trellis_projection_pending{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_component="events_dlq"}'
+        values: '0x80'
+      - series: 'trellis_projection_progress_age{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="a",trellis_component="events_dlq"}'
+        values: '600x80'
+      - series: 'trellis_projection_progress_age{telemetry_pipeline="native",trellis_cluster="example",job="native",instance="b",trellis_component="events_dlq"}'
+        values: '0x80'
+    promql_expr_test:
+      - expr: trellis:auth_post_commit_pending
+        eval_time: 15m
+        exp_samples:
+          - labels: 'trellis:auth_post_commit_pending{trellis_cluster="example"}'
+            value: 0
+      - expr: trellis:consumer_pending
+        eval_time: 15m
+        exp_samples:
+          - labels: 'trellis:consumer_pending{trellis_cluster="example"}'
+            value: 0
+      - expr: trellis:dlq_entries
+        eval_time: 15m
+        exp_samples:
+          - labels: 'trellis:dlq_entries{trellis_cluster="example"}'
+            value: 0
+      - expr: trellis:projection_pending{trellis_component="events_dlq"}
+        eval_time: 15m
+        exp_samples:
+          - labels: 'trellis:projection_pending{trellis_cluster="example",trellis_component="events_dlq"}'
+            value: 0
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: TrellisAuthDeliveryStalled
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: TrellisConsumerStalled
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: TrellisConsumerMissing
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: TrellisDeadLettersOpen
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: TrellisProjectionStalled
+        exp_alerts: []

@@ -128,4 +128,15 @@ pub enum ProtocolError {
         /// Safe diagnostic that omits secrets and signed payloads.
         message: String,
     },
+
+    /// A live-session protocol value or provider proof failed validation.
+    #[error("live protocol validation failed at '{path}' ({code:?}): {message}")]
+    Live {
+        /// Stable failure category.
+        code: crate::LiveProtocolErrorCode,
+        /// Exact authored RFC 6901 path.
+        path: Box<PointerBuf>,
+        /// Safe diagnostic that omits secrets and payloads.
+        message: String,
+    },
 }

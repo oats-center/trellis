@@ -43,6 +43,8 @@ import type { ClientOpts } from "./client.ts";
 import {
   installConnectionAvailability,
   observeNatsTrellisConnection,
+  startConnectionTelemetry,
+  transitionConnectionAvailability,
   type TrellisConnection,
 } from "./connection.ts";
 import {
@@ -67,7 +69,10 @@ import {
   type TrellisOpts,
 } from "./session.ts";
 import { TypedStore } from "./store.ts";
-import { recordTrellisDuration } from "./telemetry/mod.ts";
+import {
+  recordCatalogDuration,
+  recordTrellisDuration,
+} from "./telemetry/mod.ts";
 
 type ClientContract = GeneratedParticipant;
 
@@ -158,24 +163,54 @@ function createConnectedClient(args: {
 
 function clientConnectResult<T>(
   promise: Promise<T>,
+  observation?: { startedAt: number },
 ): AsyncResult<T, TransportError | UnexpectedError | ClientAuthHandledError> {
+  const finish = (outcome: "ok" | "error", value?: unknown): void => {
+    if (!observation) return;
+    recordCatalogDuration(
+      "trellis.connect.duration",
+      performance.now() - observation.startedAt,
+      {
+        "trellis.phase": "total",
+        ...(outcome === "ok"
+          ? { "trellis.participant.kind": connectParticipantKind(value) }
+          : {}),
+        "trellis.outcome": outcome,
+      },
+    );
+  };
   return AsyncResult.from(
     promise.then(
       (value): Result<
         T,
         TransportError | UnexpectedError | ClientAuthHandledError
-      > => Result.ok(value),
+      > => {
+        finish("ok", value);
+        return Result.ok(value);
+      },
       (
         cause,
-      ): Result<T, TransportError | UnexpectedError | ClientAuthHandledError> =>
-        Result.err(
+      ): Result<
+        T,
+        TransportError | UnexpectedError | ClientAuthHandledError
+      > => {
+        finish("error");
+        return Result.err(
           cause instanceof TransportError ||
             cause instanceof ClientAuthHandledError
             ? cause
             : new UnexpectedError({ cause }),
-        ),
+        );
+      },
     ),
   );
+}
+
+/** Bounded participant kind for one connected client, when it is known. */
+function connectParticipantKind(value: unknown): "user" | "service" | "device" {
+  const kind = (value as { session?: { principalKind?: unknown } } | undefined)
+    ?.session?.principalKind;
+  return kind === "user" || kind === "device" ? kind : "service";
 }
 
 type BrowserClientAuthOptions = {
@@ -741,6 +776,8 @@ async function recoverClientBootstrapWithRetry(args: {
   deps: ClientConnectDeps;
   offsetState: ClockOffsetState;
   onTerminalSession?: () => Promise<void>;
+  bootstrapTimeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<ClientBootstrapResponse> {
   if (!args.identity.sessionId) {
     return {
@@ -749,7 +786,20 @@ async function recoverClientBootstrapWithRetry(args: {
     };
   }
 
-  for (let attempt = 0; attempt < 10; attempt += 1) {
+  let attempts = 0;
+  // The pending window is bounded by the connect budget; a service whose
+  // resources never materialize fails as the retryable pending error rather
+  // than looping forever or disguising itself as bad credentials.
+  const deadlineMs = performance.now() + (args.bootstrapTimeoutMs ?? 30_000);
+  while (true) {
+    if (args.signal?.aborted) {
+      throw createTransportError({
+        code: "trellis.bootstrap.aborted",
+        message: "Trellis client bootstrap was aborted.",
+        hint: "Retry the connection when the caller is ready.",
+        context: { trellisUrl: args.trellisUrl },
+      });
+    }
     const attemptStartedAt = performance.now();
     const requestStartedAtMs = args.deps.now();
     try {
@@ -820,25 +870,27 @@ async function recoverClientBootstrapWithRetry(args: {
       }
       if (
         error instanceof AuthorizationContextRefreshError &&
-        attempt < 9
+        error.code === "resource_pending"
       ) {
+        if (performance.now() >= deadlineMs) throw error;
         await new Promise((resolve) => setTimeout(resolve, 100));
         continue;
       }
-      if (attempt === 0) {
+      if (
+        error instanceof AuthorizationContextRefreshError &&
+        attempts < 9
+      ) {
+        attempts += 1;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        continue;
+      }
+      if (attempts === 0) {
+        attempts += 1;
         continue;
       }
       throw error;
     }
   }
-
-  throw createTransportError({
-    code: "trellis.bootstrap.time_sync_failed",
-    message: "Trellis could not confirm the client time window.",
-    hint:
-      "Retry the connection. If it keeps happening, check the client and Trellis clocks.",
-    context: { trellisUrl: args.trellisUrl },
-  });
 }
 
 async function createRuntimeUserAuthenticator(args: {
@@ -1088,6 +1140,8 @@ export async function connectClientWithDeps<
         cache: authorizationContexts,
         deps,
         offsetState,
+        bootstrapTimeoutMs: args.timeout,
+        signal: args.signal,
       });
     } catch (error) {
       if (currentUrl && isExpiredBindError(error)) {
@@ -1106,6 +1160,8 @@ export async function connectClientWithDeps<
       cache: authorizationContexts,
       deps,
       offsetState,
+      bootstrapTimeoutMs: args.timeout,
+      signal: args.signal,
       onTerminalSession: async () => {
         if (
           browserInstallation &&
@@ -1263,6 +1319,7 @@ export async function connectClientWithDeps<
   });
   let nc: NatsConnection | undefined;
   let authorizationProviderCache: AuthorizationProviderCache | undefined;
+  const connectionTelemetry = startConnectionTelemetry("client");
   try {
     const natsStartedAt = performance.now();
     nc = await transport.connect({
@@ -1299,6 +1356,7 @@ export async function connectClientWithDeps<
       },
     );
   } catch (error) {
+    connectionTelemetry.dispose();
     authorizationProviderCache?.stop();
     if (nc && !nc.isClosed()) await nc.close();
     runtimeAuth.stop();
@@ -1329,6 +1387,7 @@ export async function connectClientWithDeps<
     kind: "client",
     nc,
     log: false,
+    telemetry: connectionTelemetry,
     availability: participantAvailability(
       args.participant,
       bootstrap.apiBindings,
@@ -1370,6 +1429,7 @@ export async function connectClientWithDeps<
     authorizationContexts.current().context.grants.permissions,
   );
   authorizationProviderCache.onOwnInvalidated(() => {
+    transitionConnectionAvailability(connection, false, "coverage_lost");
     resourceState.current.active.value = false;
     installConnectionAvailability(
       connection,
@@ -1377,9 +1437,18 @@ export async function connectClientWithDeps<
     );
   });
   authorizationProviderCache.onOwnResumed(() => {
+    if (connection.status.phase === "connected") {
+      transitionConnectionAvailability(connection, true, "resumed");
+    }
     resourceState.current.active.value = true;
     installConnectionAvailability(connection, installedAvailability);
   });
+  if (
+    authorizationProviderCache.ownUsable() &&
+    connection.status.phase === "connected"
+  ) {
+    transitionConnectionAvailability(connection, true, "connected");
+  }
   const stopContextRefresh = startAuthorizationContextRefresh({
     trellisUrl: args.trellisUrl,
     sessionId: runtimeState.sessionId,
@@ -1661,6 +1730,8 @@ async function resolveAuthRequired<
       cache,
       deps,
       offsetState,
+      bootstrapTimeoutMs: args.timeout,
+      signal: args.signal,
     });
   }
 
@@ -1690,6 +1761,8 @@ export class TrellisClient {
     unknown,
     TransportError | UnexpectedError | ClientAuthHandledError
   > {
-    return clientConnectResult(connectClientWithDeps(args, defaultDeps));
+    return clientConnectResult(connectClientWithDeps(args, defaultDeps), {
+      startedAt: performance.now(),
+    });
   }
 }

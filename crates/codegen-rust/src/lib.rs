@@ -535,7 +535,7 @@ fn render_api(graph: &PackageGraph, api: &ApiDefinition) -> Result<String, Codeg
         ActionKind::Rpc,
         ActionKind::Operation,
         ActionKind::Event,
-        ActionKind::Feed,
+        ActionKind::Live,
     ] {
         out.push_str(&format!("\npub mod {} {{\n", action_module(kind)));
         for (id, action) in api.actions().iter().filter(|(id, _)| id.kind == kind) {
@@ -594,9 +594,9 @@ fn render_api_facades(graph: &PackageGraph, api: &ApiDefinition) -> String {
                     "pub async fn publish_{method}(&self, event: &events::{name}Event) -> Result<(), trellis_rs::client::TrellisClientError> {{ self.inner.publish::<events::{name}>(event).await }}\npub async fn subscribe_{method}(&self, options: trellis_rs::client::EventSubscribeOptions) -> Result<futures_util::stream::BoxStream<'static, Result<events::{name}Event, trellis_rs::client::TrellisClientError>>, trellis_rs::client::TrellisClientError> {{ self.inner.subscribe::<events::{name}>(options).await }}\n"
                 ));
             }
-            ActionDefinition::Feed { .. } => {
+            ActionDefinition::Live { .. } => {
                 out.push_str(&format!(
-                    "pub async fn {method}(&self, input: &feeds::{name}Input) -> Result<futures_util::stream::BoxStream<'static, Result<feeds::{name}Event, trellis_rs::client::TrellisClientError>>, trellis_rs::client::TrellisClientError> {{ self.inner.feed::<feeds::{name}>(input).await }}\n"
+                    "pub async fn {method}(&self, input: &lives::{name}Input) -> Result<trellis_rs::LiveSubscription<lives::{name}Event>, trellis_rs::client::TrellisClientError> {{ self.inner.live::<lives::{name}>(input).await }}\n"
                 ));
             }
             ActionDefinition::Operation { .. } => out.push_str(&format!(
@@ -609,7 +609,7 @@ fn render_api_facades(graph: &PackageGraph, api: &ApiDefinition) -> String {
         matches!(
             action,
             ActionDefinition::Rpc { .. }
-                | ActionDefinition::Feed { .. }
+                | ActionDefinition::Live { .. }
                 | ActionDefinition::Operation { .. }
         )
     }) {
@@ -621,8 +621,8 @@ fn render_api_facades(graph: &PackageGraph, api: &ApiDefinition) -> String {
                 ActionDefinition::Rpc { .. } => out.push_str(&format!(
                     "pub fn register_{method}<F, Fut>(&mut self, handler: F) where F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::{name}Input) -> Fut + Send + Sync + 'static, Fut: std::future::Future<Output = trellis_rs::service::HandlerResult<rpc::{name}Output>> + Send + 'static {{ self.runtime.register_rpc::<rpc::{name}, _, _>(handler); }}\n"
                 )),
-                ActionDefinition::Feed { .. } => out.push_str(&format!(
-                    "pub fn register_{method}<F, S>(&mut self, handler: F) where F: Fn(trellis_rs::service::ServiceHandlerContext, feeds::{name}Input) -> S + Send + Sync + 'static, S: futures_util::Stream<Item = Result<feeds::{name}Event, trellis_rs::service::ServerError>> + Send + 'static {{ self.runtime.register_feed::<feeds::{name}, _, _>(handler); }}\n"
+                ActionDefinition::Live { .. } => out.push_str(&format!(
+                    "pub fn register_{method}<F, S>(&mut self, handler: F) where F: Fn(trellis_rs::service::ServiceLiveHandlerContext, lives::{name}Input) -> S + Send + Sync + 'static, S: futures_util::Stream<Item = Result<lives::{name}Event, trellis_rs::service::ServerError>> + Send + 'static {{ self.runtime.register_live::<lives::{name}, _, _>(handler); }}\n"
                 )),
                 ActionDefinition::Operation { .. } => out.push_str(&format!(
                     "pub fn register_{method}<F, Fut>(&mut self, handler: F) where F: Fn(trellis_rs::service::RequestContext, operations::{name}Input, trellis_rs::service::OperationControl<trellis_rs::generated::OperationAdapter<operations::{name}>>) -> Fut + Send + Sync + 'static, Fut: std::future::Future<Output = Result<(), trellis_rs::service::ServerError>> + Send + 'static {{ self.runtime.register_operation_handler::<trellis_rs::generated::OperationAdapter<operations::{name}>, F, Fut>(handler); }}\n"
@@ -700,9 +700,9 @@ fn render_action(
                 string_slice(capabilities(InteractionDirection::Subscribe)),
             ))
         }
-        ActionDefinition::Feed { input, event } => Ok(format!(
-            "pub type {rust_name}Input = {};\npub type {rust_name}Event = {};\npub struct {rust_name};\nimpl {rust_name} {{ pub const API_ID: &'static str = super::API_ID; pub const DESCRIPTOR_NAME: &'static str = {:?}; pub const KEY: &'static str = {key:?}; pub const SUBJECT: &'static str = {:?}; pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &{}; }}\nimpl trellis_rs::generated::FeedDescriptor for {rust_name} {{ type Input = {rust_name}Input; type Event = {rust_name}Event; const API_ID: &'static str = super::API_ID; const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME; const SUBJECT: &'static str = Self::SUBJECT; const KEY: &'static str = Self::KEY; const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = Self::SUBSCRIBE_CAPABILITIES; }}\n",
-            type_path(input), type_path(event), format!("feed.{name}"), format!("feed.{version}.{key}"),
+        ActionDefinition::Live { input, event } => Ok(format!(
+            "pub type {rust_name}Input = {};\npub type {rust_name}Event = {};\npub struct {rust_name};\nimpl {rust_name} {{ pub const API_ID: &'static str = super::API_ID; pub const DESCRIPTOR_NAME: &'static str = {:?}; pub const KEY: &'static str = {key:?}; pub const SUBJECT: &'static str = {:?}; pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &{}; }}\nimpl trellis_rs::generated::LiveDescriptor for {rust_name} {{ type Input = {rust_name}Input; type Event = {rust_name}Event; const API_ID: &'static str = super::API_ID; const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME; const SUBJECT: &'static str = Self::SUBJECT; const KEY: &'static str = Self::KEY; const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = Self::SUBSCRIBE_CAPABILITIES; }}\n",
+            type_path(input), type_path(event), format!("live.{name}"), format!("live.{version}.{key}"),
             string_slice(capabilities(InteractionDirection::Subscribe)),
         )),
         ActionDefinition::Operation { input, output, update, errors, signals, upload } => {
@@ -858,8 +858,19 @@ fn render_participant(
             !companion.optional
         )
     }).unwrap_or_else(|| "None".to_owned());
+    let mut subscribe_needs: BTreeSet<String> = BTreeSet::new();
+    for (_api, selection) in participant.uses() {
+        for selected in &selection.actions {
+            if selected.action.kind == ActionKind::Event
+                && selected.direction == InteractionDirection::Subscribe
+            {
+                subscribe_needs.insert(format!("event:{}", selected.action.name));
+            }
+        }
+    }
+    let needs = string_slice(subscribe_needs.iter().map(String::as_str));
     let mut out = format!(
-        "//! Generated participant `{}`.\n\npub const PARTICIPANT_ID: &str = {:?};\npub const PARTICIPANT_PATH: &str = {path:?};\npub const PARTICIPANT_DIGEST: &str = {digest:?};\npub const IMPLEMENTED_API_IDS: &[&str] = &{};\n\npub struct Participant;\nimpl trellis_rs::generated::ParticipantDescriptor for Participant {{ const ID: &'static str = PARTICIPANT_ID; const PATH: &'static str = PARTICIPANT_PATH; const KIND: trellis_rs::generated::ParticipantKind = trellis_rs::generated::ParticipantKind::{kind}; const COMPANION: Option<trellis_rs::generated::CompanionDescriptor> = {companion}; const IMPLEMENTED_API_IDS: &'static [&'static str] = IMPLEMENTED_API_IDS; fn package_evidence() -> trellis_rs::generated::PackageEvidence {{ PACKAGE_EVIDENCE }} }}\n\n{evidence}\n",
+        "//! Generated participant `{}`.\n\npub const PARTICIPANT_ID: &str = {:?};\npub const PARTICIPANT_PATH: &str = {path:?};\npub const PARTICIPANT_DIGEST: &str = {digest:?};\npub const IMPLEMENTED_API_IDS: &[&str] = &{};\npub const EVENT_SUBSCRIBE_NEEDS: &[&str] = &{needs};\n\npub struct Participant;\nimpl trellis_rs::generated::ParticipantDescriptor for Participant {{ const ID: &'static str = PARTICIPANT_ID; const PATH: &'static str = PARTICIPANT_PATH; const KIND: trellis_rs::generated::ParticipantKind = trellis_rs::generated::ParticipantKind::{kind}; const COMPANION: Option<trellis_rs::generated::CompanionDescriptor> = {companion}; const IMPLEMENTED_API_IDS: &'static [&'static str] = IMPLEMENTED_API_IDS; const EVENT_SUBSCRIBE_NEEDS: &'static [&'static str] = EVENT_SUBSCRIBE_NEEDS; fn package_evidence() -> trellis_rs::generated::PackageEvidence {{ PACKAGE_EVIDENCE }} }}\n\n{evidence}\n",
         participant.identity(), participant.identity().as_str(),
         string_slice(participant.implements().iter().map(ApiId::as_str)),
     );
@@ -998,7 +1009,7 @@ fn render_participant_facades(graph: &PackageGraph, participant: &ParticipantDef
                         matches!(
                             action,
                             ActionDefinition::Rpc { .. }
-                                | ActionDefinition::Feed { .. }
+                                | ActionDefinition::Live { .. }
                                 | ActionDefinition::Operation { .. }
                         )
                     })
@@ -1444,7 +1455,7 @@ fn optional_action(
         (ActionKind::Operation, InteractionDirection::Invoke) => "operation",
         (ActionKind::Event, InteractionDirection::Publish) => "publish_event",
         (ActionKind::Event, InteractionDirection::Subscribe) => "subscribe_event",
-        (ActionKind::Feed, InteractionDirection::Subscribe) => "feed",
+        (ActionKind::Live, InteractionDirection::Subscribe) => "live",
         _ => unreachable!("validated participant action direction"),
     };
     format!("trellis_rs::generated::OptionalAction::{constructor}({api:?}, {name:?})")
@@ -1637,7 +1648,7 @@ fn type_contains_special(graph: &PackageGraph, reference: &TypeRef, wanted: Prim
 fn action_references(action: &ActionDefinition) -> Vec<&TypeRef> {
     match action {
         ActionDefinition::Rpc { input, output, .. }
-        | ActionDefinition::Feed {
+        | ActionDefinition::Live {
             input,
             event: output,
         } => vec![input, output],
@@ -1661,7 +1672,7 @@ fn action_kind(action: &ActionDefinition) -> ActionKind {
         ActionDefinition::Rpc { .. } => ActionKind::Rpc,
         ActionDefinition::Operation { .. } => ActionKind::Operation,
         ActionDefinition::Event { .. } => ActionKind::Event,
-        ActionDefinition::Feed { .. } => ActionKind::Feed,
+        ActionDefinition::Live { .. } => ActionKind::Live,
     }
 }
 
@@ -1696,7 +1707,7 @@ fn action_module(kind: ActionKind) -> &'static str {
         ActionKind::Rpc => "rpc",
         ActionKind::Operation => "operations",
         ActionKind::Event => "events",
-        ActionKind::Feed => "feeds",
+        ActionKind::Live => "lives",
     }
 }
 
@@ -1919,7 +1930,7 @@ mod tests {
 
     #[test]
     fn generated_crate_compiles_against_current_abi() {
-        let graph = graph("type Name = string; enum Status { ready; } model OldValues {} model Values { name: Name; status: Status; signed: int64; unsigned: uint64; finite: number; bytes: bytes; } api main@v1 { title \"Main\"; description \"Main API.\"; error Bad(Values); rpc Get { input Values; output Values; errors [Bad]; download; } capabilities { public { allows { rpc Get; operation Work; } } } operation Work { input Values; output Values; progress Values; errors [Bad]; signals { resume Values; } upload; } } api other@v2 { title \"Other\"; description \"Other API.\"; capabilities { public { allows { publish event Changed; subscribe event Changed; feed Watch; } } } event Changed { payload Values; } feed Watch { input Values; event Values; } } service Backend { implements main; implements other; kv cache { title \"Cache\"; description \"Value cache.\"; schema Values; version 2; accepts { 1: OldValues; } } } app Caller { use main { rpc Get; operation Work; } use other { subscribe event Changed; feed Watch; } }");
+        let graph = graph("type Name = string; enum Status { ready; } model OldValues {} model Values { name: Name; status: Status; signed: int64; unsigned: uint64; finite: number; bytes: bytes; } api main@v1 { title \"Main\"; description \"Main API.\"; error Bad(Values); rpc Get { input Values; output Values; errors [Bad]; download; } capabilities { public { allows { rpc Get; operation Work; } } } operation Work { input Values; output Values; progress Values; errors [Bad]; signals { resume Values; } upload; } } api other@v2 { title \"Other\"; description \"Other API.\"; capabilities { public { allows { publish event Changed; subscribe event Changed; live Watch; } } } event Changed { payload Values; } live Watch { input Values; event Values; } } service Backend { implements main; implements other; kv cache { title \"Cache\"; description \"Value cache.\"; schema Values; version 2; accepts { 1: OldValues; } } } app Caller { use main { rpc Get; operation Work; } use other { subscribe event Changed; live Watch; } }");
         let output = tempfile::tempdir().unwrap();
         generate_rust_package(&graph, output.path(), "fixture-sdk").unwrap();
         let types = fs::read_to_string(output.path().join("src/__types.rs")).unwrap();
@@ -1954,7 +1965,7 @@ mod tests {
         rpc::Get,
         Client as MainClient,
     },
-    apis::fixture_other_v2::{events::Changed, feeds::Watch},
+    apis::fixture_other_v2::{events::Changed, lives::Watch},
     participants::{fixture_backend, fixture_caller},
     types::{Name, Status, Values},
 };
@@ -1962,7 +1973,7 @@ use trellis_rs::generated::ParticipantDescriptor as _;
 
 fn accepts_rpc<D: trellis_rs::generated::RpcDescriptor>() {}
 fn accepts_event<D: trellis_rs::generated::EventDescriptor>() {}
-fn accepts_feed<D: trellis_rs::generated::FeedDescriptor>() {}
+fn accepts_live<D: trellis_rs::generated::LiveDescriptor>() {}
 fn accepts_operation<D: trellis_rs::generated::OperationDescriptor>() {}
 fn accepts_signal<S: trellis_rs::generated::OperationSignal<Operation = Work>>() {}
 
@@ -1998,7 +2009,7 @@ fn descriptors_and_facades_use_generated_support() {
     assert_eq!(*fixture_sdk::__types::Int64::from(1), 1);
     accepts_rpc::<Get>();
     accepts_event::<Changed>();
-    accepts_feed::<Watch>();
+    accepts_live::<Watch>();
     accepts_operation::<Work>();
     accepts_signal::<WorkResumeSignal>();
     assert_eq!(Get::API_ID, "fixture.main@v1");

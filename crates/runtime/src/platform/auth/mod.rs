@@ -127,4 +127,5 @@ pub(crate) use policy::{
 pub(crate) use portal_reconciliation::{
     portal_policy_reconciliation, PortalPolicyReconciliationHandle,
 };
+pub(crate) use sqlite::AuthTelemetrySnapshot;
 pub use sqlite::SqliteAuthorizationStore;

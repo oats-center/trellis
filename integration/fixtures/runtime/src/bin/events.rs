@@ -6,8 +6,12 @@ use runtime_trellis::apis::runtime_trellis_events_v1::events::{Alpha, Beta};
 use runtime_trellis::apis::runtime_trellis_events_v1::rpc::ObservedOutput;
 use runtime_trellis::participants::runtime_trellis_event_service::{Participant, Provider};
 use runtime_trellis::types::{Empty, Sample};
+use tracing_subscriber::prelude::*;
 use trellis_rs::generated::EventDescriptor;
-use trellis_rs::service::{ServerError, ServiceConnectOptions, ServiceEventListenOptions};
+use trellis_rs::service::{
+    ServerError, ServiceConnectOptions, ServiceEventListenOptions, ServiceEventListenerMode,
+};
+use trellis_rs::telemetry::{init_from_env, TelemetryIdentity, TelemetryRole};
 
 #[derive(Default)]
 struct DeliveryStats {
@@ -20,6 +24,18 @@ struct DeliveryStats {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let telemetry = init_from_env(TelemetryIdentity::new(
+        "events-rust",
+        TelemetryRole::Service,
+        env!("CARGO_PKG_VERSION"),
+    ));
+    tracing_subscriber::registry()
+        .with(
+            telemetry
+                .tracer()
+                .map(|tracer| tracing_opentelemetry::layer().with_tracer(tracer)),
+        )
+        .init();
     assert_eq!(
         Beta::publish_subject(&Sample {
             site: "rust".to_owned(),
@@ -29,9 +45,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let url = std::env::var("TRELLIS_URL")?;
     let identity = std::env::var("TRELLIS_IDENTITY_SEED")?;
+    if std::env::var("CONSUMER_ONLY").as_deref() == Ok("true") {
+        return run_consumer_only(&url, &identity).await;
+    }
     let mut service = Participant::connect(ServiceConnectOptions::new(&url, &identity)).await?;
     let seen = Arc::new(Mutex::new(BTreeSet::new()));
     let stats = Arc::new(Mutex::new(DeliveryStats::default()));
+    let event_options = if std::env::var("EPHEMERAL").as_deref() == Ok("true") {
+        ServiceEventListenOptions {
+            mode: ServiceEventListenerMode::Ephemeral,
+            group: None,
+        }
+    } else {
+        ServiceEventListenOptions::default()
+    };
     let alpha = || {
         let seen = Arc::clone(&seen);
         let stats = Arc::clone(&stats);
@@ -75,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(())
                 }
             },
-            ServiceEventListenOptions::default(),
+            event_options.clone(),
         )
     };
     let beta = || {
@@ -85,7 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 seen.lock().unwrap().insert(event.value);
                 async { Ok(()) }
             },
-            ServiceEventListenOptions::default(),
+            event_options.clone(),
         )
     };
     let (alpha, _beta) = if std::env::var("REVERSE")?.parse::<bool>()? {
@@ -122,5 +149,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             async { Ok(ObservedOutput { values }) }
         });
     service.run().await?;
+    telemetry.shutdown().await;
+    Ok(())
+}
+
+/// Consumer-only participant: a declared durable consumer grants no raw
+/// Event Subscribe authority, so explicit ephemeral must fail fast.
+async fn run_consumer_only(url: &str, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use runtime_trellis::participants::runtime_trellis_event_service_consumer_only::Participant as ConsumerOnly;
+    let service = ConsumerOnly::connect(ServiceConnectOptions::new(url, identity)).await?;
+    let outcome = service
+        .listen_event::<Alpha, _, _>(
+            |_event, _| async { Ok(()) },
+            ServiceEventListenOptions {
+                mode: ServiceEventListenerMode::Ephemeral,
+                group: None,
+            },
+        )
+        .await;
+    match outcome {
+        Ok(_) => println!("EPHEMERAL_ACCEPTED"),
+        Err(error) => println!("EPHEMERAL_REJECTED {error}"),
+    }
     Ok(())
 }

@@ -802,7 +802,7 @@ api events@v1 {
     output EventsDeadLettersDismissResponse;
     errors [Conflict, Forbidden, NotFoundError, Unavailable, ValidationError];
   }
-  feed Watch {
+  live Watch {
     input EventsWatchRequest;
     event EventsWatchFrame;
   }
@@ -826,7 +826,7 @@ api events@v1 {
       title "Stream";
       description "Allows stream.";
       consequence "The caller can use stream.";
-      allows { feed Watch; }
+      allows { live Watch; }
     }
   }
 }

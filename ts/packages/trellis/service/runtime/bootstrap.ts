@@ -11,6 +11,7 @@ import {
 } from "../../auth.ts";
 import {
   type AuthorizationContextBundle,
+  AuthorizationContextRefreshError,
 } from "../../auth/authorization_context.ts";
 import { AuthorizationContextRefreshResponseSchema } from "../../auth/authorization/types.ts";
 import {
@@ -24,6 +25,7 @@ import { TransportError } from "../../errors/index.ts";
 import type { LoggerLike } from "../../globals.ts";
 import { loadDefaultRuntimeTransport } from "../../runtime_transport.ts";
 import { initTelemetry } from "../../telemetry/init.ts";
+import { recordCatalogCounter } from "../../telemetry/metrics.ts";
 import type { TrellisServiceRuntimeDeps } from "./runtime.ts";
 import type {
   GeneratedServiceParticipant,
@@ -133,6 +135,8 @@ async function fetchServiceBootstrapInfoOnce(args: {
   sessionAuth: SessionAuth;
   connectionId: string;
   name?: string;
+  /** Whether this issued request is a credential-bound refresh. */
+  refreshAttempt: boolean;
 }): Promise<{
   response: Response;
   payload: unknown;
@@ -162,6 +166,7 @@ async function fetchServiceBootstrapInfoOnce(args: {
       unsignedRequest: unsigned,
     }),
   });
+  let outcome = "error";
   let response: Response;
   try {
     response = await fetch(args.bootstrapUrl, {
@@ -169,12 +174,45 @@ async function fetchServiceBootstrapInfoOnce(args: {
       headers: { "Content-Type": "application/json" },
       body,
     });
+    if (!response.ok) {
+      const error = await decodeTrellisHttpError(response);
+      outcome = new AuthorizationContextRefreshError(
+          error.status,
+          error.code,
+        ).terminal
+        ? "terminal"
+        : error.code === "resource_pending"
+        ? "pending"
+        : error.status === 503
+        ? "unavailable"
+        : "error";
+      throw error;
+    }
+    outcome = "ok";
   } catch (cause) {
-    throw new ServiceBootstrapEndpointUnavailableError(cause);
+    if (cause instanceof DOMException && cause.name === "AbortError") {
+      outcome = "cancelled";
+      throw cause;
+    }
+    if (!(cause instanceof TrellisHttpError)) {
+      outcome = "unavailable";
+      throw new ServiceBootstrapEndpointUnavailableError(cause);
+    }
+    throw cause;
+  } finally {
+    if (args.refreshAttempt) {
+      try {
+        recordCatalogCounter("trellis.auth.refresh.attempts", 1, {
+          "trellis.participant.kind": "service",
+          "trellis.outcome": outcome,
+        });
+      } catch {
+        // Optional telemetry must never replace the bootstrap result.
+      }
+    }
   }
   const responseReceivedAtMs = Date.now();
 
-  if (!response.ok) throw await decodeTrellisHttpError(response);
   let payload: unknown;
   try {
     payload = await response.json();
@@ -212,6 +250,7 @@ export async function fetchServiceBootstrapInfo(args: {
         ...args,
         bootstrapUrl,
         connectionId,
+        refreshAttempt: args.connectionId !== undefined,
       });
       unavailableAttempt = 0;
     } catch (cause) {

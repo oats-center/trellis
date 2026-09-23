@@ -69,7 +69,7 @@ export declare const AuthApiSurfaceTargetNameCodec: {
 	decode(value: unknown): AuthApiSurfaceTargetName;
 	encode(value: AuthApiSurfaceTargetName): unknown;
 };
-export type AuthApiSurfaceTargetSurface = "event" | "feed" | "operation" | "rpc" | "state" | (string & {
+export type AuthApiSurfaceTargetSurface = "event" | "live" | "operation" | "rpc" | "state" | (string & {
 	readonly __openEnum?: never;
 });
 export declare const AuthApiSurfaceTargetSurfaceCodec: {
@@ -219,7 +219,7 @@ export declare const AuthCapabilitiesListResponseentriesItemallowsItemtarget1Nam
 	decode(value: unknown): AuthCapabilitiesListResponseentriesItemallowsItemtarget1Name;
 	encode(value: AuthCapabilitiesListResponseentriesItemallowsItemtarget1Name): unknown;
 };
-export type AuthCapabilitiesListResponseentriesItemallowsItemtarget1Surface = "event" | "feed" | "operation" | "rpc" | "state" | (string & {
+export type AuthCapabilitiesListResponseentriesItemallowsItemtarget1Surface = "event" | "live" | "operation" | "rpc" | "state" | (string & {
 	readonly __openEnum?: never;
 });
 export declare const AuthCapabilitiesListResponseentriesItemallowsItemtarget1SurfaceCodec: {
@@ -13372,7 +13372,7 @@ export declare const TrellisSurfaceStatusRequestContractIdCodec: {
 	decode(value: unknown): TrellisSurfaceStatusRequestContractId;
 	encode(value: TrellisSurfaceStatusRequestContractId): unknown;
 };
-export type TrellisSurfaceStatusRequestKind = "event" | "feed" | "operation" | "rpc" | (string & {
+export type TrellisSurfaceStatusRequestKind = "event" | "live" | "operation" | "rpc" | (string & {
 	readonly __openEnum?: never;
 });
 export declare const TrellisSurfaceStatusRequestKindCodec: {

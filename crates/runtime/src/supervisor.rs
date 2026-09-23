@@ -576,6 +576,8 @@ pub(crate) struct RuntimeContext {
     /// Runtime-local Auth verifier installed by the platform subsystem once the
     /// validator cache is ready; absent in platform-less modes (fail closed).
     pub(crate) platform_verifier: Arc<tokio::sync::OnceCell<RuntimeAuthVerifier>>,
+    /// Per-role delivery slots for built-in live provider owners.
+    pub(crate) live_providers: crate::platform::LiveProviderSlots,
 }
 
 impl RuntimeContext {
@@ -586,6 +588,23 @@ impl RuntimeContext {
             .ok_or(RuntimeError::OwnerContextMissing {
                 subsystem: group.subsystem(),
             })
+    }
+
+    /// Resolve the public origin used for provider bootstrap and advertised URLs.
+    pub(crate) fn public_origin(&self) -> String {
+        self.config
+            .http
+            .as_ref()
+            .and_then(|http| http.public_origin.clone())
+            .unwrap_or_else(|| format!("http://localhost:{}", self.config.http_port()))
+    }
+
+    /// Return whether the configured non-loopback HTTP origin is allowed.
+    pub(crate) fn allows_insecure_origin(&self, origin: &str) -> bool {
+        self.config
+            .http
+            .as_ref()
+            .is_some_and(|http| http.allows_insecure_origin(origin))
     }
 
     pub(crate) fn register_http_router(&self, router: axum::Router) -> Result<(), RuntimeError> {
@@ -627,6 +646,17 @@ enum RuntimeStopCause {
 
 /// Loads configuration, validates selected subsystem storage, and runs the runtime.
 pub async fn run(options: RuntimeOptions) -> Result<(), RuntimeError> {
+    run_with_stop(options, None).await
+}
+
+/// Runs the runtime until the host shutdown signal or the owner's stop handle fires.
+///
+/// An owner-supplied handle lets an in-process caller (a test harness owning the runtime,
+/// a supervisor restarting it) request the same cooperative shutdown a host signal triggers.
+pub async fn run_with_stop(
+    options: RuntimeOptions,
+    stop: Option<crate::shutdown::StopHandle>,
+) -> Result<(), RuntimeError> {
     let config = options.config;
     config.validate_for_mode(options.mode)?;
     let nats = config
@@ -653,6 +683,7 @@ pub async fn run(options: RuntimeOptions) -> Result<(), RuntimeError> {
         options.nats_override,
         trellis_nats.clone(),
         &mut ownership,
+        stop,
     )
     .await;
     let release_result = ownership.shutdown().await;
@@ -693,6 +724,20 @@ fn preserve_primary(
     primary.map_or(Ok(()), Err)
 }
 
+/// Resolves when the host shutdown signal fires or the owner requests a stop. With no owner
+/// handle the signal is the only trigger, preserving host behavior exactly.
+async fn shutdown_or_stop(stop: Option<crate::shutdown::StopHandle>) {
+    match stop {
+        Some(handle) => {
+            tokio::select! {
+                () = crate::shutdown::shutdown_signal() => {}
+                () = handle.stopped() => {}
+            }
+        }
+        None => crate::shutdown::shutdown_signal().await,
+    }
+}
+
 async fn run_owned(
     config: RuntimeConfig,
     mode: RuntimeMode,
@@ -700,6 +745,7 @@ async fn run_owned(
     nats_override: Option<NatsEndpointOverride>,
     trellis_nats: async_nats::Client,
     ownership: &mut RuntimeOwnership,
+    stop: Option<crate::shutdown::StopHandle>,
 ) -> Result<(), RuntimeError> {
     ExpectedRuntimeResources::for_mode(mode, &config)
         .converge_streams(trellis_nats.clone())
@@ -716,24 +762,121 @@ async fn run_owned(
         owners: ownership.contexts(),
         http_router: std::sync::Mutex::new(axum::Router::new()),
         platform_verifier: Arc::new(tokio::sync::OnceCell::new()),
+        live_providers: crate::platform::LiveProviderSlots::new(),
     };
     let mut handles = start_subsystems(&context).await?;
     let root_stop = StopHandle::new();
+    // Only components selected by the runtime mode report ready; others are
+    // absent rather than failed. Readiness is written here from the real
+    // lifecycle: ready once the bootstrap listener serves and the built-in
+    // live providers have authenticated, not-ready as soon as the runtime
+    // begins stopping.
+    let component_readiness =
+        std::sync::Arc::new(crate::telemetry::snapshots::ComponentReadiness::default());
+    let component_names: Vec<&'static str> = handles
+        .iter()
+        .map(|handle| component_label(handle.name))
+        .collect();
+    let _component_sampler = crate::telemetry::snapshots::spawn_component_sampler(
+        component_names.clone(),
+        std::sync::Arc::clone(&component_readiness),
+        root_stop.clone(),
+    );
     let server_stop = root_stop.clone();
     let http_router = context.take_http_router()?;
-    let mut server = Box::pin(crate::run_http_server(
-        &context.config,
+    // Readiness stays false until built-in live providers have finished their
+    // bootstrap, so callers never begin work against half-started routes.
+    let http_ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Register the OS shutdown signal before the HTTP listener becomes
+    // observable. A host can connect to the bound port immediately, so a
+    // SIGTERM delivered during startup must already be observed cooperatively
+    // instead of terminating the process with its runtime lease held.
+    let shutdown = shutdown_or_stop(stop);
+    tokio::pin!(shutdown);
+    std::future::poll_fn(|cx| {
+        let _ = std::future::Future::poll(shutdown.as_mut(), cx);
+        std::task::Poll::Ready(())
+    })
+    .await;
+    let listener = match crate::bind_http_listener(&context.config).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            root_stop.stop();
+            if let Err(cleanup) = stop_subsystems(handles).await {
+                tracing::error!(error = %cleanup, "runtime startup cleanup also failed");
+            }
+            return Err(RuntimeError::from(error));
+        }
+    };
+    let mut server = Box::pin(crate::serve_http_listener(
+        listener,
         context.mode,
         http_router,
+        std::sync::Arc::clone(&http_ready),
         async move { server_stop.stopped().await },
     ));
+    // The bootstrap listener serves while the built-in live providers
+    // authenticate through the ordinary native bootstrap. A provider failure
+    // or an early listener exit is a startup failure, never a dispatch-time
+    // fallback.
+    // The readiness endpoint answers as soon as this listener serves, so a
+    // restart can deliver the host shutdown signal while built-in live
+    // providers are still bootstrapping. Observe that signal from the first
+    // serve poll so the stop stays cooperative and runtime ownership is
+    // released instead of the process being terminated with its lease held.
+    let mut signalled_during_bootstrap = false;
+    let bootstrap_result: Result<(), RuntimeError> = tokio::select! {
+        result = bootstrap_live_providers(&context) => result,
+        result = server.as_mut() => result.map_err(RuntimeError::from),
+        () = shutdown.as_mut() => {
+            signalled_during_bootstrap = true;
+            Ok(())
+        }
+    };
+    if signalled_during_bootstrap {
+        http_ready.store(false, std::sync::atomic::Ordering::SeqCst);
+        for name in &component_names {
+            component_readiness.set(name, 0.0);
+        }
+        root_stop.stop();
+        let shutdown_result = finish_shutdown(
+            server,
+            false,
+            handles,
+            RuntimeStopCause::Signal,
+            HTTP_SHUTDOWN_TIMEOUT,
+            SUBSYSTEM_SHUTDOWN_TIMEOUT,
+        )
+        .await;
+        return preserve_run_primary(Ok(()), shutdown_result);
+    }
+    if let Err(error) = bootstrap_result {
+        http_ready.store(false, std::sync::atomic::Ordering::SeqCst);
+        root_stop.stop();
+        if let Err(cleanup) = stop_subsystems(handles).await {
+            tracing::error!(error = %cleanup, "runtime startup cleanup also failed");
+        }
+        return Err(error);
+    }
+    for name in &component_names {
+        component_readiness.set(name, 1.0);
+    }
+    http_ready.store(true, std::sync::atomic::Ordering::SeqCst);
     let (primary, server_finished, cause) = wait_for_runtime_event(
         server.as_mut(),
         &mut handles,
-        crate::shutdown::shutdown_signal(),
+        shutdown.as_mut(),
         ownership.wait_for_renewal_failure(),
+        &component_readiness,
+        &component_names,
     )
     .await;
+    // From this point the runtime is stopping, so selected components stop
+    // being ready regardless of how the stop was triggered.
+    http_ready.store(false, std::sync::atomic::Ordering::SeqCst);
+    for name in &component_names {
+        component_readiness.set(name, 0.0);
+    }
 
     root_stop.stop();
     let shutdown = finish_shutdown(
@@ -762,18 +905,52 @@ fn preserve_run_primary(
     }
 }
 
+/// Bound on one built-in live provider's ordinary native bootstrap.
+const BUILTIN_LIVE_PROVIDER_CONNECT_TIMEOUT_MS: u64 = 30_000;
+
+/// Connect every built-in live provider role selected by the runtime mode.
+///
+/// This runs after the bootstrap HTTP listener begins serving so a built-in
+/// provider authenticates through the ordinary native service bootstrap and
+/// Auth Callout. Each connected owner is delivered to the subsystem that
+/// serves its live routes; a role whose subsystem is selected but whose owner
+/// cannot be connected fails startup before any live router serves traffic.
+async fn bootstrap_live_providers(context: &RuntimeContext) -> Result<(), RuntimeError> {
+    let trellis_url = context.public_origin();
+    let allow_insecure_origin = context.allows_insecure_origin(&trellis_url);
+    for role in crate::platform::LiveProviderRole::roles_for_mode(context.mode) {
+        let identity_seed = crate::platform::load_live_provider_seed(&context.config, role)?;
+        let client = crate::platform::connect_builtin_live_provider(
+            role,
+            &identity_seed,
+            crate::platform::BuiltinLiveProviderConnectOptions {
+                trellis_url: &trellis_url,
+                timeout_ms: BUILTIN_LIVE_PROVIDER_CONNECT_TIMEOUT_MS,
+                allow_insecure_origin,
+            },
+        )
+        .await?;
+        context.live_providers.install(
+            role,
+            trellis_rs::service::LiveProviderOwner::from_connected_client(Arc::new(client)),
+        );
+    }
+    Ok(())
+}
+
 async fn wait_for_runtime_event<F, S, R>(
     mut server: Pin<&mut F>,
     handles: &mut Vec<SubsystemHandle>,
-    signal: S,
+    mut signal: Pin<&mut S>,
     renewal: R,
+    readiness: &crate::telemetry::snapshots::ComponentReadiness,
+    component_names: &[&'static str],
 ) -> (Result<(), RuntimeError>, bool, RuntimeStopCause)
 where
     F: Future<Output = Result<(), ServerError>>,
     S: Future<Output = ()>,
     R: Future<Output = RuntimeError>,
 {
-    tokio::pin!(signal);
     tokio::pin!(renewal);
     tokio::select! {
         biased;
@@ -782,7 +959,7 @@ where
             false,
             RuntimeStopCause::OwnershipLost,
         ),
-        () = &mut signal => (Ok(()), false, RuntimeStopCause::Signal),
+        () = signal.as_mut() => (Ok(()), false, RuntimeStopCause::Signal),
         server_result = server.as_mut() => (
             server_result.map_err(RuntimeError::from),
             true,
@@ -790,6 +967,12 @@ where
         ),
         (index, task_result) = wait_for_subsystem(handles), if !handles.is_empty() => {
             let failed = handles.swap_remove(index);
+            // The failing component is no longer ready; the supervisor records
+            // the transition before reporting the failure.
+            let label = component_label(failed.name);
+            if component_names.contains(&label) {
+                readiness.set(label, 0.0);
+            }
             let result = match task_result {
                 Ok(Ok(())) => Err(RuntimeError::SubsystemExited { subsystem: failed.name }),
                 Ok(Err(error)) => Err(error),
@@ -951,6 +1134,15 @@ async fn join_subsystems(
     first_error.map_or(Ok(()), Err)
 }
 
+fn component_label(name: SubsystemName) -> &'static str {
+    match name {
+        SubsystemName::Platform => "platform",
+        SubsystemName::Jobs => "jobs",
+        SubsystemName::Events => "events",
+        SubsystemName::Health => "health",
+    }
+}
+
 async fn start_subsystems(context: &RuntimeContext) -> Result<Vec<SubsystemHandle>, RuntimeError> {
     let mut handles = Vec::new();
     for subsystem in context.mode.subsystems() {
@@ -1014,15 +1206,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn owner_stop_handle_ends_the_runtime_without_a_signal() {
+        let handle = crate::shutdown::StopHandle::new();
+        let stopper = handle.clone();
+        let waiter = tokio::spawn(shutdown_or_stop(Some(handle)));
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        stopper.stop();
+        tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
+            .await
+            .expect("owner stop is observed")
+            .expect("waiter task joined");
+    }
+
+    #[tokio::test]
     async fn shutdown_signal_is_observed_outside_http_future() {
         let mut server = Box::pin(std::future::pending::<Result<(), ServerError>>());
         let mut handles = Vec::new();
 
+        let readiness = crate::telemetry::snapshots::ComponentReadiness::default();
+        let signal = std::future::ready(());
+        tokio::pin!(signal);
         let (result, server_finished, cause) = wait_for_runtime_event(
             server.as_mut(),
             &mut handles,
-            std::future::ready(()),
+            signal.as_mut(),
             std::future::pending(),
+            &readiness,
+            &[],
         )
         .await;
 
@@ -1040,13 +1250,18 @@ mod tests {
             join: tokio::spawn(async { Ok(()) }),
         }];
 
+        let readiness = crate::telemetry::snapshots::ComponentReadiness::default();
+        let signal = std::future::ready(());
+        tokio::pin!(signal);
         let (result, server_finished, cause) = wait_for_runtime_event(
             server.as_mut(),
             &mut handles,
-            std::future::ready(()),
+            signal.as_mut(),
             std::future::ready(RuntimeError::OwnerRenewalRoundTimeout {
                 owner_id: "owner".to_owned(),
             }),
+            &readiness,
+            &["jobs"],
         )
         .await;
 

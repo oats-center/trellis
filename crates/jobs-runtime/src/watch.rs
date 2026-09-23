@@ -1,10 +1,10 @@
-//! `Jobs.Watch` feed implementation.
+//! `Jobs.Watch` live implementation.
 
 use futures_util::{stream, Stream, StreamExt};
 use trellis_rs::jobs::types::{JobEvent, JobState, JobTriggerKind};
 use trellis_rs::jobs::{JobsRuntime, JobsRuntimeMessageStream};
 use trellis_rs::service::{Router, ServerError};
-use trellis_runtime_apis::apis::trellis_jobs_v1::feeds::Watch;
+use trellis_runtime_apis::apis::trellis_jobs_v1::lives::Watch;
 use trellis_runtime_apis::types::{
     Bytes, JobsWatchFrame as JobsWatchEvent, JobsWatchRequest as JobsWatchInput,
     JobsWatchRequestquery as JobsWatchInputQuery,
@@ -12,13 +12,13 @@ use trellis_runtime_apis::types::{
 
 const JOBS_EVENTS_SUBJECT_WILDCARD: &str = "trellis.jobs.>";
 
-/// Register the `Jobs.Watch` feed on a built-in Jobs router.
-pub fn register_jobs_watch_feed(
+/// Register the `Jobs.Watch` live on a built-in Jobs router.
+pub fn register_jobs_watch_live(
     router: &mut Router,
     jobs_runtime: JobsRuntime,
     jobs_stream: String,
 ) {
-    router.register_feed::<Watch, _, _>(move |_ctx, input| {
+    router.register_live::<Watch, _, _>(move |_ctx, input| {
         watch_jobs(input, jobs_runtime.clone(), jobs_stream.clone())
     });
 }

@@ -12,9 +12,10 @@ nullable `T | null`. Optional absence differs from null. There is no raw JSON,
 general union/generic, default, pattern, or arbitrary string format.
 
 On JSON wires, int64/uint64 are canonical decimal strings, bytes are padded
-base64, timestamps decode RFC3339 (except leap seconds) and emit canonical UTC RFC3339,
-ULIDs are uppercase, and numbers must be finite. Administrative JSON documents use bytes with documented UTF-8
-JSON media semantics rather than an untyped JSON contract value.
+base64, timestamps decode RFC3339 (except leap seconds) and emit canonical UTC
+RFC3339, ULIDs are uppercase, and numbers must be finite. Administrative JSON
+documents use bytes with documented UTF-8 JSON media semantics rather than an
+untyped JSON contract value.
 
 Compatibility is semantic, selected-surface, and direction-aware: providers
 accept all caller inputs, while callers decode all promised outputs/events/

@@ -133,7 +133,7 @@ inspection desk workflow. Field Inspection Desk is the client identity; Trellis
 appears as the server/platform relationship through copy such as "Powered by
 Trellis" and route callouts.
 
-- `Dashboard`: today's field board with queue, status, evidence, and live feed
+- `Dashboard`: today's field board with queue, status, evidence, and cross-contract dependencies
   context.
 - `Assignments`: inspection queue backed by bounded `Assignments.List` pages and
   `Sites.Get` RPC requests.
@@ -143,7 +143,7 @@ Trellis" and route callouts.
   completion, and cancel.
 - `Evidence`: evidence locker with `Evidence.Upload` send transfer and
   `Evidence.Download` receive transfer previews.
-- `Activity`: live feed using event subscriptions.
+- `Activity`: cross-contract dependencies using event subscriptions.
 - `Workspace`: operator notes backed by app/device state.
 
 The device TUI exposes the same concepts as menu actions: page through

@@ -1,14 +1,11 @@
 use std::collections::HashMap;
 use std::future::Future;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
+use std::sync::Arc;
 
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use futures_util::{Stream, StreamExt};
 use serde::Deserialize;
-use tokio::sync::oneshot;
 
 use serde_json::Value;
 use trellis_protocol::{
@@ -20,10 +17,23 @@ use super::operations::ServiceOperationProvider;
 use super::request_loop::{HandlerResponse, ResponseStream};
 use super::schema_validation::validate_input_schema;
 use super::{
-    control_subject, FeedDescriptor, HandlerResult, OperationControlRequest, OperationDescriptor,
+    control_subject, HandlerResult, LiveDescriptor, OperationControlRequest, OperationDescriptor,
     OperationLiveEvent, OperationLiveWatch, OperationSignalAccepted, OperationSnapshot,
     OperationSnapshotFrame, RpcDescriptor, ServerError,
 };
+
+/// Low-level context for one verified live Live invocation.
+///
+/// Supplied only after the router verified the opening request and reserved the
+/// session. The cancellation token is cloneable and exposes no authority
+/// constructor to applications.
+#[derive(Clone)]
+pub struct LiveRequestContext {
+    /// Request metadata, unchanged from ordinary handlers.
+    pub request: RequestContext,
+    /// Cancellation for this source scope.
+    pub cancellation: crate::live::LiveCancellation,
+}
 
 /// Request metadata forwarded to mounted RPC handlers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -112,6 +122,12 @@ struct Route {
     handler: BoxedHandler,
     capabilities: RouteCapabilities,
     permission: RoutePermissionSpec,
+    /// Bounded registered route token for metric labels.
+    route_token: &'static str,
+    /// Whether this registered surface is a unary request/reply RPC.
+    unary_rpc: bool,
+    /// Whether this route is a live observation opening or lifecycle control.
+    live: bool,
 }
 
 /// Exact permission surface recorded at registration time for one route.
@@ -193,48 +209,18 @@ impl RouteCapabilities {
     }
 }
 
-enum FeedCancellationState {
-    Active {
-        cancel: oneshot::Sender<()>,
-        reply_to: String,
-        principal_id: String,
-        participant_id: String,
-    },
-}
-
-type FeedCancellations = Arc<Mutex<HashMap<(String, String), FeedCancellationState>>>;
-
-struct FeedCancellation {
-    receiver: oneshot::Receiver<()>,
-    key: (String, String),
-    cancellations: FeedCancellations,
-}
-
-impl Future for FeedCancellation {
-    type Output = ();
-
-    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.receiver).poll(context).map(|_| ())
-    }
-}
-
-impl Drop for FeedCancellation {
-    fn drop(&mut self) {
-        self.cancellations
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&self.key);
-    }
-}
-
 /// An in-memory subject router for descriptor-backed RPC handlers.
 #[derive(Default)]
 pub struct Router {
     handlers: HashMap<String, Route>,
-    feed_cancellations: FeedCancellations,
     provider_deployment_id: Option<String>,
     provider_instance_id: Option<String>,
     operation_recoveries: Vec<OperationRecovery>,
+    /// Live owner for Live/Operation observation routes on this connection.
+    ///
+    /// Shared so a route registered before its owner is installed still
+    /// resolves the owner at dispatch time.
+    live_owner: Arc<std::sync::RwLock<Option<super::live_router::LiveProviderOwner>>>,
 }
 
 type OperationRecovery = Box<dyn Fn() -> BoxFuture<'static, Result<(), ServerError>> + Send + Sync>;
@@ -257,9 +243,52 @@ impl Router {
         self.provider_deployment_id = Some(deployment_id.into());
     }
 
-    /// Bind Feed control routes to this service instance.
+    /// Bind Live control routes to this service instance.
     pub fn set_provider_instance_id(&mut self, instance_id: impl Into<String>) {
         self.provider_instance_id = Some(instance_id.into());
+    }
+
+    /// Bind live Live/Operation observation routes to one connected owner.
+    pub fn set_live_owner(&mut self, owner: super::live_router::LiveProviderOwner) {
+        if let Ok(mut live_owner) = self.live_owner.write() {
+            *live_owner = Some(owner);
+        }
+    }
+
+    /// Return whether this router contains any live Live or Operation route.
+    #[must_use]
+    pub fn serves_live_surface(&self) -> bool {
+        self.handlers.values().any(|route| route.live)
+    }
+
+    /// Return whether a live provider owner is installed.
+    #[must_use]
+    pub fn has_live_owner(&self) -> bool {
+        self.live_owner
+            .read()
+            .map(|owner| owner.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Fail when a live route is registered without a live provider owner.
+    ///
+    /// This is a construction/startup invariant: a router that serves a Live
+    /// or Operation watch route must be given its connection's provider owner
+    /// before it serves traffic. Missing ownership is an immediate
+    /// configuration failure, never a dispatch-time fallback.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::Nats`] when this router serves a live surface
+    /// without an installed live provider owner.
+    pub fn require_live_owner(&self) -> Result<(), ServerError> {
+        if self.serves_live_surface() && !self.has_live_owner() {
+            return Err(ServerError::Nats(
+                "a router serving a Live or Operation watch route requires a live provider owner"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     fn descriptor_subject(
@@ -278,7 +307,7 @@ impl Router {
             "operation" => {
                 trellis_protocol::derive_bound_operation_subject(api_id, deployment_id, &action)
             }
-            "feed" => trellis_protocol::derive_bound_feed_subject(api_id, deployment_id, &action),
+            "live" => trellis_protocol::derive_bound_live_subject(api_id, deployment_id, &action),
             _ => unreachable!("only request route families are deployment-bound"),
         };
         subject.expect("generated route metadata must form a valid bound subject")
@@ -289,6 +318,34 @@ impl Router {
             .iter()
             .map(|capability| (*capability).to_string())
             .collect()
+    }
+
+    /// Interns one bounded route token at registration time.
+    ///
+    /// Live surfaces share the request-route family: their open is a
+    /// request/response RPC at the shared dispatch boundary, while the live's
+    /// own lifetime is observed by the live instruments, not this token.
+    fn intern_route(&self, api: &str, key: &str) -> &'static str {
+        crate::telemetry::instruments::route_token(
+            crate::telemetry::instruments::RouteFamily::Rpc,
+            &format!("{api}:{key}"),
+        )
+    }
+
+    /// Registered route token for one inbound request subject.
+    pub(crate) fn route_token(&self, subject: &str) -> Option<&'static str> {
+        self.route(subject).map(|route| route.route_token)
+    }
+
+    /// Whether one registered subject is a unary request/reply RPC surface.
+    pub(crate) fn is_unary_rpc_route(&self, subject: &str) -> bool {
+        self.route(subject).is_some_and(|route| route.unary_rpc)
+    }
+
+    /// Whether one registered subject is a live observation opening or
+    /// lifecycle-control route.
+    pub(crate) fn is_live_route(&self, subject: &str) -> bool {
+        self.route(subject).is_some_and(|route| route.live)
     }
 
     fn descriptor_name(&self, name: &str) -> String {
@@ -316,6 +373,9 @@ impl Router {
                     self.descriptor_name(D::KEY),
                     PermissionAction::Call,
                 ),
+                route_token: self.intern_route(D::API_ID, D::KEY),
+                unary_rpc: true,
+                live: false,
                 handler: Box::new(
                 move |ctx, payload| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
                     let handler = Arc::clone(&handler);
@@ -370,6 +430,9 @@ impl Router {
                     self.descriptor_name(D::KEY),
                     PermissionAction::Call,
                 ),
+                route_token: self.intern_route(D::API_ID, D::KEY),
+                unary_rpc: true,
+                live: false,
                 handler: Box::new(|_, _| {
                     Box::pin(async {
                         Err(ServerError::Nats(
@@ -399,6 +462,7 @@ impl Router {
                 },
             ) as BoxedHandler
         };
+        let operation_token = self.intern_route(D::API_ID, &name);
         self.handlers.insert(
             subject.clone(),
             Route {
@@ -411,6 +475,9 @@ impl Router {
                     name.clone(),
                     PermissionAction::Invoke,
                 ),
+                route_token: operation_token,
+                unary_rpc: false,
+                live: true,
                 handler: metadata_handler(),
             },
         );
@@ -423,183 +490,120 @@ impl Router {
                     control: self.descriptor_capabilities(D::CONTROL_CAPABILITIES),
                 },
                 permission: RoutePermissionSpec::OperationControl(D::API_ID.to_owned(), name),
+                route_token: operation_token,
+                unary_rpc: false,
+                live: true,
                 handler: metadata_handler(),
             },
         );
     }
 
-    /// Register one descriptor-backed feed handler.
-    pub fn register_feed<D, F, S>(&mut self, handler: F)
+    /// Register one descriptor-backed live Live handler.
+    ///
+    /// The opening request is verified and the session reserved before the
+    /// handler runs; handler output starts only after the delivery-path
+    /// challenge is answered. The response is one signed offer, never an
+    /// infinite reply loop.
+    pub fn register_live<D, F, S>(&mut self, handler: F)
     where
-        D: FeedDescriptor + 'static,
-        F: Fn(RequestContext, D::Input) -> S + Send + Sync + 'static,
+        D: LiveDescriptor + 'static,
+        D::Input: Send + 'static,
+        F: Fn(LiveRequestContext, D::Input) -> S + Send + Sync + 'static,
         S: Stream<Item = Result<D::Event, ServerError>> + Send + 'static,
     {
         let handler = Arc::new(handler);
-        let cancellations = Arc::clone(&self.feed_cancellations);
-        let subject = self.descriptor_subject("feed", D::API_ID, D::KEY, D::SUBJECT);
-        let control_subject = trellis_protocol::derive_feed_control_subject(
-            &subject,
-            self.provider_instance_id
-                .as_deref()
-                .unwrap_or("unbound-instance"),
-        );
-        let handler_subject = subject.clone();
-        let owner_instance_id = self
+        let live_owner = Arc::clone(&self.live_owner);
+        let subject = self.descriptor_subject("live", D::API_ID, D::KEY, D::SUBJECT);
+        let provider_deployment_id = self
+            .provider_deployment_id
+            .clone()
+            .unwrap_or_else(|| "unbound-deployment".to_owned());
+        let provider_instance_id = self
             .provider_instance_id
             .clone()
             .unwrap_or_else(|| "unbound-instance".to_owned());
         let capabilities = self.descriptor_capabilities(D::SUBSCRIBE_CAPABILITIES);
+        let handler_subject = subject.clone();
         self.handlers.insert(
-            subject.clone(),
-            Route {
-                capabilities: RouteCapabilities::Static(capabilities.clone()),
-                permission: RoutePermissionSpec::Static(
-                    D::API_ID.to_owned(),
-                    ApiSurfaceKind::Feed,
-                    self.descriptor_name(D::KEY),
-                    PermissionAction::Subscribe,
-                ),
-                handler: Box::new(
-                move |ctx, payload| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
-                    let handler = Arc::clone(&handler);
-                    let cancellations = Arc::clone(&cancellations);
-                    let handler_subject = handler_subject.clone();
-                    let owner_instance_id = owner_instance_id.clone();
-                    Box::pin(async move {
-                        let input = decode_generated_input::<D::Input>(&payload)?;
-                        let reply_to = ctx.reply_to.clone().ok_or_else(|| {
-                            ServerError::Nats("feed request is missing a reply inbox".to_string())
-                        })?;
-                        let caller = ctx.caller.as_ref().ok_or_else(|| ServerError::RequestDenied {
-                            subject: handler_subject.clone(),
-                            session_key: ctx.session_key.clone().unwrap_or_default(),
-                        })?;
-                        let feed_id = ctx.request_id.clone().ok_or_else(|| ServerError::Nats(
-                            "feed request is missing a request id".to_owned(),
-                        ))?;
-                        let key = (handler_subject.clone(), feed_id.clone());
-                        let (cancel, receiver) = oneshot::channel();
-                        let mut states = cancellations
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner());
-                        match states.remove(&key) {
-                            Some(FeedCancellationState::Active { cancel: previous, .. }) => {
-                                let _ = previous.send(());
-                                states.insert(key.clone(), FeedCancellationState::Active {
-                                    cancel,
-                                    reply_to: reply_to.clone(),
-                                    principal_id: caller.principal_id.clone(),
-                                    participant_id: caller.participant_id.clone(),
-                                });
-                            }
-                            None => {
-                                states.insert(key.clone(), FeedCancellationState::Active {
-                                    cancel,
-                                    reply_to: reply_to.clone(),
-                                    principal_id: caller.principal_id.clone(),
-                                    participant_id: caller.participant_id.clone(),
-                                });
-                            }
-                        }
-                        drop(states);
-                        let cancellation = FeedCancellation {
-                            receiver,
-                            key,
-                            cancellations,
-                        };
-                        Ok(HandlerResponse::FeedStream {
-                            stream: feed_response_stream(handler(ctx, input).take_until(cancellation)),
-                            control_subject: trellis_protocol::derive_feed_instance_control_subject(
-                                &handler_subject,
-                                &owner_instance_id,
-                                &feed_id,
-                            ),
-                            feed_id,
-                        })
-                    })
-                },
-            ),
-            },
-        );
-        let cancellation_subject = subject;
-        let cancellations = Arc::clone(&self.feed_cancellations);
-        let owner_instance_id = self
-            .provider_instance_id
-            .clone()
-            .unwrap_or_else(|| "unbound-instance".to_owned());
-        self.handlers.insert(
-            control_subject,
+            subject,
             Route {
                 capabilities: RouteCapabilities::Static(capabilities),
                 permission: RoutePermissionSpec::Static(
                     D::API_ID.to_owned(),
-                    ApiSurfaceKind::Feed,
+                    ApiSurfaceKind::Live,
                     self.descriptor_name(D::KEY),
                     PermissionAction::Subscribe,
                 ),
-                handler: Box::new(move |ctx, payload| {
-                    let cancellations = Arc::clone(&cancellations);
-                    let cancellation_subject = cancellation_subject.clone();
-                    let owner_instance_id = owner_instance_id.clone();
-                    Box::pin(async move {
-                        let (feed_id, reply_to) =
-                            feed_cancel_metadata(&payload).ok_or_else(|| {
-                                ServerError::Nats("invalid feed cancellation payload".to_owned())
-                            })?;
-                        if ctx.reply_to.as_deref() != Some(reply_to.as_str()) {
-                            return Err(ServerError::Nats(
-                                "feed cancellation reply inbox does not match".to_owned(),
-                            ));
-                        }
-                        if ctx.subject
-                            != trellis_protocol::derive_feed_instance_control_subject(
-                                &cancellation_subject,
-                                &owner_instance_id,
-                                &feed_id,
-                            )
-                        {
-                            return Err(ServerError::RequestDenied {
-                                subject: ctx.subject,
-                                session_key: ctx.session_key.unwrap_or_default(),
-                            });
-                        }
-                        let key = (cancellation_subject, feed_id);
-                        let mut states = cancellations
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner());
-                        let allowed = states.get(&key).is_some_and(|state| {
-                            match (state, ctx.caller.as_ref()) {
-                                (
-                                    FeedCancellationState::Active {
-                                        reply_to: active_reply,
-                                        principal_id,
-                                        participant_id,
-                                        ..
-                                    },
-                                    Some(caller),
-                                ) => {
-                                    active_reply == &reply_to
-                                        && principal_id == &caller.principal_id
-                                        && participant_id == &caller.participant_id
+                route_token: self.intern_route(D::API_ID, D::KEY),
+                unary_rpc: false,
+                live: true,
+                handler: Box::new(
+                    move |ctx, payload| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
+                        let handler = Arc::clone(&handler);
+                        let live_owner = live_owner.clone();
+                        let provider_deployment_id = provider_deployment_id.clone();
+                        let provider_instance_id = provider_instance_id.clone();
+                        let handler_subject = handler_subject.clone();
+                        Box::pin(async move {
+                            let owner = live_owner
+                                .read()
+                                .ok()
+                                .and_then(|owner| owner.clone())
+                                .ok_or_else(|| {
+                                    ServerError::Nats(format!(
+                                        "live route '{handler_subject}' has no live provider owner"
+                                    ))
+                                })?;
+                            let opening = crate::service::live_router::parse_live_open::<D::Input>(
+                                &payload,
+                            )?;
+                            let encoded_input = crate::generated::Codec::encode(&opening.input)
+                                .map_err(|error| ServerError::Nats(error.to_string()))?;
+                            let input = opening.input;
+                            let meta = crate::service::live_router::LiveOpeningMeta {
+                                open_id: opening.open_id.clone(),
+                                receive_max_payload_bytes: opening.receive_max_payload_bytes,
+                            };
+                            let cancellation = crate::live::LiveCancellation::new();
+                            let factory_cancellation = cancellation.clone();
+                            let source_factory = {
+                                let handler = Arc::clone(&handler);
+                                let request = ctx.clone();
+                                move || {
+                                    let stream = handler(
+                                        LiveRequestContext {
+                                            request,
+                                            cancellation: factory_cancellation.clone(),
+                                        },
+                                        input,
+                                    );
+                                    crate::service::live_router::source_from_handler::<D::Event, S>(
+                                        stream,
+                                    )
                                 }
-                                _ => false,
-                            }
-                        });
-                        if !allowed {
-                            return Err(ServerError::RequestDenied {
-                                subject: ctx.subject,
-                                session_key: ctx.session_key.unwrap_or_default(),
-                            });
-                        }
-                        if let Some(FeedCancellationState::Active { cancel, .. }) =
-                            states.remove(&key)
-                        {
-                            let _ = cancel.send(());
-                        }
-                        Ok(HandlerResponse::Frames(Vec::new()))
-                    })
-                }),
+                            };
+                            let reserved = crate::service::live_router::reserve_live::<D, _>(
+                                owner.client(),
+                                owner.manager()?,
+                                &crate::service::live_router::LiveOpenRequest {
+                                    request: ctx,
+                                    inputs: crate::service::live_router::LiveOpenInputs {
+                                        api_id: D::API_ID.to_owned(),
+                                        base_subject: handler_subject,
+                                        provider_instance_id,
+                                        provider_deployment_id,
+                                    },
+                                    opening: meta,
+                                    encoded_input,
+                                    cancellation,
+                                },
+                                source_factory,
+                            )
+                            .await?;
+                            Ok(HandlerResponse::LivePrepared(Box::new(reserved.prepared)))
+                        })
+                    },
+                ),
             },
         );
     }
@@ -619,6 +623,15 @@ impl Router {
         let update_schema_json = D::UPDATE_SCHEMA_JSON;
         let subject = self.descriptor_subject("operation", D::API_ID, D::KEY, D::SUBJECT);
         let handler_subject = subject.clone();
+        let live_owner = Arc::clone(&self.live_owner);
+        let provider_deployment_id = self
+            .provider_deployment_id
+            .clone()
+            .unwrap_or_else(|| "unbound-deployment".to_owned());
+        let provider_instance_id = self
+            .provider_instance_id
+            .clone()
+            .unwrap_or_else(|| "unbound-instance".to_owned());
         let caller_capabilities = self.descriptor_capabilities(D::CALLER_CAPABILITIES);
         let observe_capabilities = self.descriptor_capabilities(D::OBSERVE_CAPABILITIES);
         let cancel_capabilities = self.descriptor_capabilities(D::CANCEL_CAPABILITIES);
@@ -634,6 +647,9 @@ impl Router {
                     self.descriptor_name(D::KEY),
                     PermissionAction::Invoke,
                 ),
+                route_token: self.intern_route(D::API_ID, D::KEY),
+                unary_rpc: false,
+                live: false,
                 handler: Box::new(
                 move |ctx, payload| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
                     let start = Arc::clone(&start);
@@ -671,27 +687,32 @@ impl Router {
                     D::API_ID.to_owned(),
                     self.descriptor_name(D::KEY),
                 ),
+                route_token: self.intern_route(D::API_ID, D::KEY),
+                unary_rpc: false,
+                live: true,
                 handler: Box::new(
                 move |ctx, payload| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
                     let get = Arc::clone(&get);
                     let watch = Arc::clone(&watch);
                     let cancel = Arc::clone(&cancel);
                     let signal = Arc::clone(&signal);
+                    let live_owner = live_owner.clone();
+                    let provider_deployment_id = provider_deployment_id.clone();
+                    let provider_instance_id = provider_instance_id.clone();
                     let subject = handler_subject.clone();
-                    let request = serde_json::from_slice::<OperationControlRequest>(&payload)
-                        .map_err(ServerError::Json);
                     Box::pin(async move {
-                        let request = request?;
+                        let request = serde_json::from_slice::<OperationControlRequest>(&payload)
+                            .map_err(ServerError::Json)?;
                         tracing::debug!(
                             subject = %subject,
                             action = %request.action,
                             operation_id = %request.operation_id,
                             "operation control request"
                         );
-                        let frames = match request.action.as_str() {
-                            "get" => HandlerResponse::Frames(vec![snapshot_frame::<D>(
+                        match request.action.as_str() {
+                            "get" => Ok(HandlerResponse::Frames(vec![snapshot_frame::<D>(
                                 get.get(ctx, request.operation_id).await?,
-                            )?]),
+                            )?])),
                             "watch" => {
                                 let include_updates = request.include_updates.unwrap_or(false);
                                 if include_updates && update_schema_json.is_none() {
@@ -700,16 +721,59 @@ impl Router {
                                         action: "watch:updates".to_string(),
                                     });
                                 }
-                                HandlerResponse::Stream(watch_response_stream::<D, D::Update>(
-                                    watch.watch(ctx, request.operation_id),
-                                    include_updates,
-                                    update_schema_json,
-                                ))
+                                let owner = live_owner
+                                    .read()
+                                    .ok()
+                                    .and_then(|owner| owner.clone())
+                                    .ok_or_else(|| {
+                                        ServerError::Nats(format!(
+                                            "operation route '{subject}' has no live provider owner"
+                                        ))
+                                    })?;
+                                let opening =
+                                    crate::service::live_router::parse_operation_watch_open(
+                                        &payload,
+                                    )?;
+                                let include_updates = opening.include_updates;
+                                let cancellation = crate::live::LiveCancellation::new();
+                                let factory_watch = Arc::clone(&watch);
+                                let factory_ctx = ctx.clone();
+                                let factory_operation_id = opening.operation_id.clone();
+                                let source_factory = move || {
+                                    crate::service::live_router::source_from_watch_frames(
+                                        watch_response_stream::<D, D::Update>(
+                                            factory_watch
+                                                .watch(factory_ctx, factory_operation_id),
+                                            include_updates,
+                                            update_schema_json,
+                                        ),
+                                    )
+                                };
+                                let reserved = crate::service::live_router::reserve_operation_watch::<
+                                    D,
+                                    _,
+                                >(
+                                    owner.client(),
+                                    owner.manager()?,
+                                    &crate::service::live_router::OperationWatchOpenRequest {
+                                        request: ctx,
+                                        inputs: crate::service::live_router::OperationWatchOpenInputs {
+                                            base_subject: subject,
+                                            provider_instance_id,
+                                            provider_deployment_id,
+                                        },
+                                        opening,
+                                        cancellation,
+                                    },
+                                    source_factory,
+                                )
+                                .await?;
+                                Ok(HandlerResponse::LivePrepared(Box::new(reserved.prepared)))
                             }
                             "cancel" if D::CANCELABLE => {
-                                HandlerResponse::Frames(vec![snapshot_frame::<D>(
+                                Ok(HandlerResponse::Frames(vec![snapshot_frame::<D>(
                                     cancel.cancel(ctx, request.operation_id).await?,
-                                )?])
+                                )?]))
                             }
                             "signal" => {
                                 let signal_name = request.signal.ok_or_else(|| {
@@ -735,19 +799,16 @@ impl Router {
                                         format!("failed to serialize signal schema: {e}")
                                     ))?;
                                 validate_input_schema(&signal_schema_str, signal_value)?;
-                                HandlerResponse::Frames(vec![signal_frame::<D>(
+                                Ok(HandlerResponse::Frames(vec![signal_frame::<D>(
                                     signal.signal(ctx, request.operation_id, signal_name, request.input)
                                         .await?,
-                                )?])
+                                )?]))
                             }
-                            action => {
-                                return Err(ServerError::InvalidOperationControlAction {
-                                    subject,
-                                    action: action.to_string(),
-                                })
-                            }
-                        };
-                        Ok(frames)
+                            action => Err(ServerError::InvalidOperationControlAction {
+                                subject,
+                                action: action.to_string(),
+                            }),
+                        }
                     })
                 },
             ),
@@ -847,20 +908,9 @@ impl Router {
         {
             HandlerResponse::Frames(frames) => Ok(frames),
             HandlerResponse::Error(payload) => Ok(vec![payload]),
-            HandlerResponse::Stream(mut stream) => {
-                let mut frames = Vec::new();
-                while let Some(frame) = stream.next().await {
-                    frames.push(frame?);
-                }
-                Ok(frames)
-            }
-            HandlerResponse::FeedStream { mut stream, .. } => {
-                let mut frames = Vec::new();
-                while let Some(frame) = stream.next().await {
-                    frames.push(frame?);
-                }
-                Ok(frames)
-            }
+            HandlerResponse::LivePrepared(_) => Err(ServerError::Nats(
+                "a live response requires a live owner and cannot be collected".to_owned(),
+            )),
         }
     }
 
@@ -876,20 +926,6 @@ impl Router {
             .ok_or_else(|| ServerError::MissingHandler(subject.to_string()))?;
         (route.handler)(context, payload).await
     }
-}
-
-fn feed_cancel_metadata(payload: &[u8]) -> Option<(String, String)> {
-    let value = serde_json::from_slice::<Value>(payload).ok()?;
-    let object = value.as_object()?;
-    if object.len() != 2 {
-        return None;
-    }
-    let reply = object
-        .get("_trellisFeedCancel")
-        .and_then(Value::as_str)
-        .map(ToString::to_string)?;
-    let feed_id = object.get("feedId").and_then(Value::as_str)?.to_owned();
-    Some((feed_id, reply))
 }
 
 fn decode_generated_input<T>(payload: &[u8]) -> Result<T, ServerError>
@@ -924,21 +960,6 @@ where
         })?;
     validate_input_schema(schema_json, &value)?;
     serde_json::from_value(value).map_err(ServerError::from)
-}
-
-fn feed_response_stream<TEvent>(
-    events: impl Stream<Item = Result<TEvent, ServerError>> + Send + 'static,
-) -> ResponseStream
-where
-    TEvent: crate::generated::Codec + 'static,
-{
-    Box::pin(events.map(|event| {
-        event.and_then(|event| {
-            let event = crate::generated::Codec::encode(&event)
-                .map_err(|error| ServerError::Nats(error.to_string()))?;
-            Ok(Bytes::from(serde_json::to_vec(&event)?))
-        })
-    }))
 }
 
 fn validate_provider_value(
@@ -1100,9 +1121,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
 
-    use futures_util::{stream, StreamExt};
+    use futures_util::stream;
 
     use super::*;
 
@@ -1200,17 +1220,11 @@ mod tests {
                 Bytes::from_static(br#"{"action":"watch","operationId":"op-1"}"#),
                 context(),
             )
-            .await
-            .expect("open default watch");
-        let HandlerResponse::Stream(mut stream) = response else {
-            panic!("watch should stream");
-        };
-        let frame = stream.next().await.expect("terminal frame").expect("frame");
-        assert_eq!(
-            serde_json::from_slice::<Value>(&frame).unwrap()["snapshot"]["state"],
-            "completed"
+            .await;
+        assert!(
+            matches!(response, Err(ServerError::Nats(message)) if message.contains("live provider owner")),
+            "a watch route without a live owner must fail closed, not stream"
         );
-        assert!(stream.next().await.is_none());
 
         for payload in [
             br#"{"action":"cancel","operationId":"op-1"}"#.as_slice(),
@@ -1225,186 +1239,61 @@ mod tests {
         }
     }
 
-    struct TestFeed;
+    struct TestLive;
 
-    impl FeedDescriptor for TestFeed {
+    impl LiveDescriptor for TestLive {
         type Input = Value;
         type Event = Value;
 
         const API_ID: &'static str = "test@v1";
-        const DESCRIPTOR_NAME: &'static str = "feed.Live";
+        const DESCRIPTOR_NAME: &'static str = "live.Live";
         const KEY: &'static str = "Test.Live";
-        const SUBJECT: &'static str = "feeds.v1.Test.Live";
+        const SUBJECT: &'static str = "live.v1.route.Test.Live";
         const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[];
     }
 
     #[tokio::test]
-    async fn feed_cancel_frame_stops_the_active_response_stream() {
+    async fn live_routes_require_a_live_provider_owner() {
         let mut router = Router::new();
         router.set_provider_instance_id("provider-instance");
-        router.register_feed::<TestFeed, _, _>(|_, _| {
+        router.register_live::<TestLive, _, _>(|_, _| {
             stream::pending::<Result<Value, ServerError>>()
         });
-        let reply_to = "_INBOX.test.feed";
-        let caller = crate::service::VerifiedCaller {
-            session_key: "caller-session".to_owned(),
-            inbox_prefix: "_INBOX.test".to_owned(),
-            context_digest: "context".to_owned(),
-            connection_id: "connection".to_owned(),
-            login_session_id: Some("login".to_owned()),
-            principal_id: "creator".to_owned(),
-            principal_kind: trellis_protocol::AuthorizationPrincipalKind::User,
-            participant_id: "caller-participant".to_owned(),
-            platform_privileges: Vec::new(),
-            deployment_id: None,
-            instance_id: None,
-        };
-        let context = || RequestContext {
-            subject: TestFeed::SUBJECT.to_string(),
-            reply_to: Some(reply_to.to_string()),
-            session_key: Some(caller.session_key.clone()),
-            request_id: Some("feed-id".to_owned()),
-            caller: Some(caller.clone()),
-            ..Default::default()
-        };
         let response = router
-            .handle_request_response(TestFeed::SUBJECT, Bytes::from_static(b"{}"), context())
-            .await
-            .expect("open feed");
-        let HandlerResponse::FeedStream {
-            mut stream,
-            control_subject,
-            ..
-        } = response
-        else {
-            panic!("feed registration should return a response stream");
-        };
-
-        let second_reply = "_INBOX.test.feed.second";
-        let mut second_context = context();
-        second_context.reply_to = Some(second_reply.to_owned());
-        second_context.request_id = Some("feed-id-2".to_owned());
-        let second_response = router
-            .handle_request_response(TestFeed::SUBJECT, Bytes::from_static(b"{}"), second_context)
-            .await
-            .expect("open second feed");
-        let HandlerResponse::FeedStream {
-            stream: mut second_stream,
-            control_subject: second_control_subject,
-            ..
-        } = second_response
-        else {
-            panic!("second feed registration should return a response stream");
-        };
-
-        let forged = router
             .handle_request_response(
-                &control_subject,
-                Bytes::from(
-                    serde_json::to_vec(&serde_json::json!({
-                        "_trellisFeedCancel": reply_to,
-                        "feedId": "feed-id-2",
-                    }))
-                    .expect("serialize forged cancellation"),
-                ),
+                TestLive::SUBJECT,
+                Bytes::from_static(b"{}"),
                 RequestContext {
-                    subject: control_subject.clone(),
-                    reply_to: Some(reply_to.to_string()),
-                    session_key: Some(caller.session_key.clone()),
-                    caller: Some(caller.clone()),
+                    subject: TestLive::SUBJECT.to_owned(),
                     ..Default::default()
                 },
             )
             .await;
-        assert!(matches!(forged, Err(ServerError::RequestDenied { .. })));
-        let mut intruder = caller.clone();
-        intruder.principal_id = "different-principal".to_owned();
-        let denied = router
+        assert!(
+            matches!(response, Err(ServerError::Nats(message)) if message.contains("live provider owner")),
+            "a Live route without a live owner must fail closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_open_rejects_a_non_live_envelope_before_reserving() {
+        let mut router = Router::new();
+        router.set_provider_instance_id("provider-instance");
+        router.register_live::<TestLive, _, _>(|_, _| {
+            stream::pending::<Result<Value, ServerError>>()
+        });
+        // A legacy finite request body is an explicit incompatible-protocol
+        // error, never a silent fallback to an old transport.
+        let response = router
             .handle_request_response(
-                &control_subject,
-                Bytes::from(
-                    serde_json::to_vec(&serde_json::json!({
-                        "_trellisFeedCancel": reply_to,
-                        "feedId": "feed-id",
-                    }))
-                    .expect("serialize unauthorized cancellation"),
-                ),
+                TestLive::SUBJECT,
+                Bytes::from_static(b"{}"),
                 RequestContext {
-                    subject: control_subject.clone(),
-                    reply_to: Some(reply_to.to_string()),
-                    session_key: Some(intruder.session_key.clone()),
-                    caller: Some(intruder),
+                    subject: TestLive::SUBJECT.to_owned(),
                     ..Default::default()
                 },
             )
             .await;
-        assert!(matches!(denied, Err(ServerError::RequestDenied { .. })));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(10), stream.next())
-                .await
-                .is_err()
-        );
-        assert!(
-            tokio::time::timeout(Duration::from_millis(10), second_stream.next())
-                .await
-                .is_err()
-        );
-
-        let mut reconnected_caller = caller.clone();
-        reconnected_caller.session_key = "reconnected-session".to_owned();
-        router
-            .handle_request_response(
-                &control_subject,
-                Bytes::from(
-                    serde_json::to_vec(&serde_json::json!({
-                        "_trellisFeedCancel": reply_to,
-                        "feedId": "feed-id",
-                    }))
-                    .expect("serialize cancellation"),
-                ),
-                RequestContext {
-                    subject: control_subject.clone(),
-                    reply_to: Some(reply_to.to_string()),
-                    session_key: Some(reconnected_caller.session_key.clone()),
-                    caller: Some(reconnected_caller),
-                    ..Default::default()
-                },
-            )
-            .await
-            .expect("cancel feed");
-
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), stream.next())
-                .await
-                .expect("feed should stop promptly")
-                .is_none()
-        );
-
-        router
-            .handle_request_response(
-                &second_control_subject,
-                Bytes::from(
-                    serde_json::to_vec(&serde_json::json!({
-                        "_trellisFeedCancel": second_reply,
-                        "feedId": "feed-id-2",
-                    }))
-                    .expect("serialize second cancellation"),
-                ),
-                RequestContext {
-                    subject: second_control_subject.clone(),
-                    reply_to: Some(second_reply.to_owned()),
-                    session_key: Some(caller.session_key.clone()),
-                    caller: Some(caller),
-                    ..Default::default()
-                },
-            )
-            .await
-            .expect("cancel second feed");
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), second_stream.next())
-                .await
-                .expect("second feed should stop promptly")
-                .is_none()
-        );
+        assert!(response.is_err());
     }
 }

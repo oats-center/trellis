@@ -32,7 +32,7 @@ export const AuthApiSurfaceTargetKindCodec = codecs.recursive(() => codecs.named
 export const AuthApiSurfaceTargetNameCodec = codecs.recursive(() => codecs.named("trellis.AuthApiSurfaceTargetName", codecs.string));
 export const AuthApiSurfaceTargetSurfaceCodec = codecs.recursive(() => codecs.named("trellis.AuthApiSurfaceTargetSurface", codecs.openEnum([
 	"event",
-	"feed",
+	"live",
 	"operation",
 	"rpc",
 	"state"
@@ -118,7 +118,7 @@ export const AuthCapabilitiesListResponseentriesItemallowsItemtarget1KindCodec =
 export const AuthCapabilitiesListResponseentriesItemallowsItemtarget1NameCodec = codecs.recursive(() => codecs.named("trellis.AuthCapabilitiesListResponseentriesItemallowsItemtarget1Name", codecs.string));
 export const AuthCapabilitiesListResponseentriesItemallowsItemtarget1SurfaceCodec = codecs.recursive(() => codecs.named("trellis.AuthCapabilitiesListResponseentriesItemallowsItemtarget1Surface", codecs.openEnum([
 	"event",
-	"feed",
+	"live",
 	"operation",
 	"rpc",
 	"state"
@@ -6059,7 +6059,7 @@ export const TrellisSurfaceStatusRequestActionCodec = codecs.recursive(() => cod
 export const TrellisSurfaceStatusRequestContractIdCodec = codecs.recursive(() => codecs.named("trellis.TrellisSurfaceStatusRequestContractId", codecs.string));
 export const TrellisSurfaceStatusRequestKindCodec = codecs.recursive(() => codecs.named("trellis.TrellisSurfaceStatusRequestKind", codecs.openEnum([
 	"event",
-	"feed",
+	"live",
 	"operation",
 	"rpc"
 ])));

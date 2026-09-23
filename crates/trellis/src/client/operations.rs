@@ -1,7 +1,8 @@
 use std::future::Future;
 use std::marker::PhantomData;
 
-use futures_util::stream::{self, BoxStream};
+use bytes::Bytes;
+use futures_util::Stream;
 use futures_util::StreamExt;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -9,6 +10,7 @@ use tokio::io::AsyncRead;
 
 use crate::client::transfer::{FileInfo, TransferCancellation, UploadTransferGrant};
 use crate::client::TrellisClientError;
+use crate::live::subscription::{LiveMapDecision, LiveSubscription};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -211,15 +213,6 @@ pub trait OperationTransport {
         subject: String,
         body: Value,
     ) -> impl Future<Output = Result<Value, TrellisClientError>> + Send + 'a;
-
-    fn watch_json_value<'a>(
-        &'a self,
-        subject: String,
-        body: Value,
-    ) -> impl Future<
-        Output = Result<BoxStream<'a, Result<Value, TrellisClientError>>, TrellisClientError>,
-    > + Send
-           + 'a;
 
     fn put_upload_transfer<'a>(
         &'a self,
@@ -641,23 +634,6 @@ where
         decode_snapshot_response::<D>(response)
     }
 
-    pub async fn wait(
-        &self,
-    ) -> Result<OperationSnapshot<D::Progress, D::Output>, TrellisClientError> {
-        let mut events = self.watch().await?;
-        while let Some(event) = events.next().await {
-            match event? {
-                OperationEvent::Completed { snapshot }
-                | OperationEvent::Failed { snapshot }
-                | OperationEvent::Cancelled { snapshot } => return Ok(snapshot),
-                _ => {}
-            }
-        }
-        Err(TrellisClientError::OperationProtocol(
-            "operation watch ended before a terminal snapshot".to_string(),
-        ))
-    }
-
     pub async fn cancel(
         &self,
     ) -> Result<OperationSnapshot<D::Progress, D::Output>, TrellisClientError> {
@@ -746,135 +722,6 @@ where
         decode_signal_response::<D>(response)
     }
 
-    pub async fn watch(
-        &self,
-    ) -> Result<
-        BoxStream<'a, Result<OperationEvent<D::Progress, D::Output, Value>, TrellisClientError>>,
-        TrellisClientError,
-    > {
-        let control = control_subject(&self.transport.operation_subject(
-            D::API_ID,
-            D::KEY,
-            D::SUBJECT,
-        )?);
-        let body = json!({
-            "action": "watch",
-            "operationId": self.id(),
-        });
-        let response = self.transport.watch_json_value(control, body).await?;
-        Ok(Box::pin(stream::try_unfold(
-            (response, false),
-            move |(mut response, done)| async move {
-                if done {
-                    return Ok(None);
-                }
-
-                loop {
-                    match response.next().await {
-                        Some(frame) => {
-                            let event = match frame {
-                                Ok(value) => {
-                                    match decode_watch_frame::<D::Progress, Value, D::Output>(
-                                        value,
-                                        D::PROGRESS_SCHEMA_JSON,
-                                        None,
-                                        D::OUTPUT_SCHEMA_JSON,
-                                    ) {
-                                        Ok(Some(event)) => event,
-                                        Ok(None) => continue,
-                                        Err(error) => return Err(error),
-                                    }
-                                }
-                                Err(error) => return Err(error),
-                            };
-
-                            let terminal = is_terminal_event(&event);
-                            return Ok(Some((event, (response, terminal))));
-                        }
-                        None => return Ok(None),
-                    }
-                }
-            },
-        )))
-    }
-
-    /// Watch durable lifecycle events plus declared live-only updates.
-    pub async fn watch_with_updates(
-        &self,
-    ) -> Result<
-        BoxStream<
-            'a,
-            Result<OperationEvent<D::Progress, D::Output, D::Update>, TrellisClientError>,
-        >,
-        TrellisClientError,
-    >
-    where
-        D::UpdateEvidence: HasOperationUpdates,
-    {
-        let update_schema = D::UPDATE_SCHEMA_JSON.ok_or_else(|| {
-            TrellisClientError::OperationProtocol("operation does not declare live updates".into())
-        })?;
-        let response = self
-            .transport
-            .watch_json_value(
-                control_subject(&self.transport.operation_subject(
-                    D::API_ID,
-                    D::KEY,
-                    D::SUBJECT,
-                )?),
-                json!({
-                    "action": "watch",
-                    "operationId": self.id(),
-                    "includeUpdates": true,
-                }),
-            )
-            .await?;
-        Ok(Box::pin(stream::try_unfold(
-            (response, false),
-            move |(mut response, done)| async move {
-                if done {
-                    return Ok(None);
-                }
-                loop {
-                    let Some(frame) = response.next().await else {
-                        return Ok(None);
-                    };
-                    let Some(event) = decode_watch_frame::<D::Progress, D::Update, D::Output>(
-                        frame?,
-                        D::PROGRESS_SCHEMA_JSON,
-                        Some(update_schema),
-                        D::OUTPUT_SCHEMA_JSON,
-                    )?
-                    else {
-                        continue;
-                    };
-                    let terminal = is_terminal_event(&event);
-                    return Ok(Some((event, (response, terminal))));
-                }
-            },
-        )))
-    }
-
-    /// Subscribe to declared live-only updates until the operation becomes terminal.
-    pub async fn updates(
-        &self,
-    ) -> Result<
-        BoxStream<'a, Result<OperationUpdateEvent<D::Update>, TrellisClientError>>,
-        TrellisClientError,
-    >
-    where
-        D::UpdateEvidence: HasOperationUpdates,
-    {
-        let events = self.watch_with_updates().await?;
-        Ok(Box::pin(events.filter_map(|event| async move {
-            match event {
-                Ok(OperationEvent::Update { update }) => Some(Ok(update)),
-                Ok(_) => None,
-                Err(error) => Some(Err(error)),
-            }
-        })))
-    }
-
     pub async fn transfer(&self, body: impl AsRef<[u8]>) -> Result<FileInfo, TrellisClientError> {
         self.transfer_vec(body.as_ref().to_vec()).await
     }
@@ -926,6 +773,174 @@ where
         })?;
         self.transport.put_upload_transfer(grant, body).await
     }
+}
+
+impl<'a, D> OperationRef<'a, super::TrellisClient, D>
+where
+    D: OperationDescriptor,
+{
+    /// Watch until a terminal snapshot, then dispose the observer.
+    ///
+    /// Business `failed` and `cancelled` snapshots are returned as success.
+    /// Transport failures stay as client errors.
+    pub async fn wait(
+        &self,
+    ) -> Result<OperationSnapshot<D::Progress, D::Output>, TrellisClientError> {
+        let mut events = self.live().await?;
+        let result = wait_for_terminal_snapshot(&mut events).await;
+        let _ = events.close().await;
+        result
+    }
+
+    /// Open a live Operation observation without declared update envelopes.
+    pub async fn live(
+        &self,
+    ) -> Result<LiveSubscription<OperationEvent<D::Progress, D::Output, Value>>, TrellisClientError>
+    {
+        self.open_operation_watch::<Value>(false, None).await
+    }
+
+    /// Observe durable lifecycle events plus declared live-only updates.
+    pub async fn live_with_updates(
+        &self,
+    ) -> Result<
+        LiveSubscription<OperationEvent<D::Progress, D::Output, D::Update>>,
+        TrellisClientError,
+    >
+    where
+        D::UpdateEvidence: HasOperationUpdates,
+    {
+        let update_schema = D::UPDATE_SCHEMA_JSON.ok_or_else(|| {
+            TrellisClientError::OperationProtocol("operation does not declare live updates".into())
+        })?;
+        self.open_operation_watch::<D::Update>(true, Some(update_schema))
+            .await
+    }
+
+    /// Subscribe to declared live-only updates until the operation becomes terminal.
+    pub async fn updates(
+        &self,
+    ) -> Result<
+        impl Stream<Item = Result<OperationUpdateEvent<D::Update>, TrellisClientError>> + Unpin,
+        TrellisClientError,
+    >
+    where
+        D::UpdateEvidence: HasOperationUpdates,
+    {
+        let events = self.live_with_updates().await?;
+        Ok(events.map_items(|event| match event {
+            OperationEvent::Update { update } => LiveMapDecision::Emit(update),
+            event if is_terminal_event(&event) => LiveMapDecision::Complete,
+            _ => LiveMapDecision::Skip,
+        }))
+    }
+
+    async fn open_operation_watch<TUpdate>(
+        &self,
+        include_updates: bool,
+        update_schema_json: Option<&'static str>,
+    ) -> Result<LiveSubscription<OperationEvent<D::Progress, D::Output, TUpdate>>, TrellisClientError>
+    where
+        TUpdate: DeserializeOwned + Send + 'static,
+    {
+        let base_subject = self
+            .transport
+            .operation_subject(D::API_ID, D::KEY, D::SUBJECT)?;
+        let publish_subject = control_subject(&base_subject);
+        let open_id = trellis_protocol::generate_nonce()
+            .map_err(|error| TrellisClientError::LiveProtocol(error.to_string()))?;
+        let receive_max_payload_bytes = self.transport.nats().max_payload() as u64;
+        let body = operation_watch_open_value(
+            self.id(),
+            include_updates,
+            &open_id,
+            receive_max_payload_bytes,
+        );
+        let action_name = D::KEY.split_once('.').map_or(D::KEY, |(_, action)| action);
+        let permission = trellis_protocol::PermissionAtom::new(
+            trellis_protocol::PermissionTarget::api_surface(
+                D::API_ID,
+                trellis_protocol::ApiSurfaceKind::Operation,
+                action_name.to_owned(),
+            )
+            .map_err(|error| TrellisClientError::LiveProtocol(error.to_string()))?,
+            trellis_protocol::PermissionAction::Observe,
+        )
+        .map_err(|error| TrellisClientError::LiveProtocol(error.to_string()))?;
+        let open = crate::live::client_open::ClientOpen {
+            kind: trellis_protocol::LiveSessionKind::Operation,
+            api_id: D::API_ID,
+            base_subject: &base_subject,
+            publish_subject: &publish_subject,
+            body: Bytes::from(serde_json::to_vec(&body)?),
+            open_id,
+            receive_max_payload_bytes,
+            permission,
+        };
+        let prepared = crate::live::client_open::open_client_session(
+            self.transport,
+            self.transport.authorization_provider(),
+            open,
+        )
+        .await?;
+        let progress_schema = D::PROGRESS_SCHEMA_JSON;
+        let output_schema = D::OUTPUT_SCHEMA_JSON;
+        crate::live::client_open::install_operation_watch_handle(
+            self.transport,
+            prepared,
+            move |value| {
+                decode_watch_frame::<D::Progress, TUpdate, D::Output>(
+                    value,
+                    progress_schema,
+                    update_schema_json,
+                    output_schema,
+                )
+            },
+        )
+        .await
+    }
+}
+
+fn operation_watch_open_value(
+    operation_id: &str,
+    include_updates: bool,
+    open_id: &str,
+    receive_max_payload_bytes: u64,
+) -> Value {
+    let mut body = json!({
+        "action": "watch",
+        "operationId": operation_id,
+        "observation": {
+            "format": trellis_protocol::LIVE_VERSION,
+            "type": "open",
+            "openId": open_id,
+            "receiveMaxPayloadBytes": receive_max_payload_bytes,
+        }
+    });
+    if include_updates {
+        body["includeUpdates"] = json!(true);
+    }
+    body
+}
+
+async fn wait_for_terminal_snapshot<S, TProgress, TOutput, TUpdate>(
+    events: &mut S,
+) -> Result<OperationSnapshot<TProgress, TOutput>, TrellisClientError>
+where
+    S: Stream<Item = Result<OperationEvent<TProgress, TOutput, TUpdate>, TrellisClientError>>
+        + Unpin,
+{
+    while let Some(event) = events.next().await {
+        match event? {
+            OperationEvent::Completed { snapshot }
+            | OperationEvent::Failed { snapshot }
+            | OperationEvent::Cancelled { snapshot } => return Ok(snapshot),
+            _ => {}
+        }
+    }
+    Err(TrellisClientError::OperationProtocol(
+        "operation watch ended before a terminal snapshot".to_string(),
+    ))
 }
 
 fn decode_watch_frame<
@@ -1159,15 +1174,16 @@ pub fn control_subject(subject: &str) -> String {
 mod tests {
     use std::sync::Mutex;
 
-    use futures_util::stream::{self, BoxStream};
+    use futures_util::stream;
     use futures_util::StreamExt;
     use serde::{Deserialize, Serialize};
     use serde_json::{json, Value};
     use tokio::io::AsyncRead;
 
     use super::{
-        control_subject, FileInfo, OperationDescriptor, OperationEvent, OperationInvoker,
-        OperationSignalAccepted, OperationTransferProgress, OperationTransport,
+        control_subject, decode_watch_frame, operation_watch_open_value,
+        wait_for_terminal_snapshot, FileInfo, OperationDescriptor, OperationEvent,
+        OperationInvoker, OperationSignalAccepted, OperationTransferProgress, OperationTransport,
         TransferCancellation, TransferOperationDescriptor, UploadTransferGrant,
     };
     use crate::client::TrellisClientError;
@@ -1219,7 +1235,6 @@ mod tests {
     struct RecordingTransport {
         requests: Mutex<Vec<(String, Value)>>,
         responses: Mutex<Vec<Value>>,
-        watch_frames: Mutex<Vec<Value>>,
     }
 
     impl RecordingTransport {
@@ -1227,15 +1242,6 @@ mod tests {
             Self {
                 requests: Mutex::new(Vec::new()),
                 responses: Mutex::new(responses),
-                watch_frames: Mutex::new(Vec::new()),
-            }
-        }
-
-        fn with_watch_frames(watch_frames: Vec<Value>) -> Self {
-            Self {
-                requests: Mutex::new(Vec::new()),
-                responses: Mutex::new(Vec::new()),
-                watch_frames: Mutex::new(watch_frames),
             }
         }
 
@@ -1256,19 +1262,6 @@ mod tests {
                 .push((subject, body));
             let response = self.responses.lock().expect("responses lock").remove(0);
             Ok(response)
-        }
-
-        async fn watch_json_value<'a>(
-            &'a self,
-            subject: String,
-            body: Value,
-        ) -> Result<BoxStream<'a, Result<Value, TrellisClientError>>, TrellisClientError> {
-            self.requests
-                .lock()
-                .expect("requests lock")
-                .push((subject, body));
-            let frames = std::mem::take(&mut *self.watch_frames.lock().expect("watch lock"));
-            Ok(Box::pin(stream::iter(frames.into_iter().map(Ok))))
         }
 
         async fn put_upload_transfer(
@@ -1359,20 +1352,24 @@ mod tests {
 
     #[tokio::test]
     async fn resumed_operation_reference_preserves_typed_output() {
-        let transport = RecordingTransport::with_watch_frames(vec![json!({
-            "kind": "snapshot",
-            "snapshot": {
-                "revision": 8,
-                "state": "completed",
-                "output": { "refund_id": "rf_resumed" }
-            }
-        })]);
-        let invoker = OperationInvoker::<_, RefundOperation>::new(&transport);
+        let frame = decode_watch_frame::<RefundProgress, Value, RefundOutput>(
+            json!({
+                "kind": "snapshot",
+                "snapshot": {
+                    "revision": 8,
+                    "state": "completed",
+                    "output": { "refund_id": "rf_resumed" }
+                }
+            }),
+            None,
+            None,
+            RefundOperation::OUTPUT_SCHEMA_JSON,
+        )
+        .expect("decode snapshot")
+        .expect("event");
+        let mut events = stream::iter([Ok(frame)]);
 
-        let snapshot = invoker
-            .control("op_done")
-            .expect("operation id is valid")
-            .wait()
+        let snapshot = wait_for_terminal_snapshot(&mut events)
             .await
             .expect("wait succeeds");
 
@@ -1472,9 +1469,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn watch_uses_control_subject_skips_keepalive_and_stops_after_terminal_event() {
+        assert_eq!(
+            control_subject(RefundOperation::SUBJECT),
+            "operations.v1.Billing.Refund.control"
+        );
+        let body = operation_watch_open_value("op_123", false, "open-nonce", 1024);
+        assert_eq!(body["action"], "watch");
+        assert_eq!(body["operationId"], "op_123");
+        assert!(body.get("includeUpdates").is_none());
+        assert_eq!(
+            body["observation"]["format"],
+            trellis_protocol::LIVE_VERSION
+        );
+        assert_eq!(body["observation"]["type"], "open");
+        assert_eq!(body["observation"]["openId"], "open-nonce");
+        assert_eq!(body["observation"]["receiveMaxPayloadBytes"], 1024);
+
+        let with_updates = operation_watch_open_value("op_123", true, "open-nonce", 1024);
+        assert_eq!(with_updates["includeUpdates"], true);
+    }
+
     #[tokio::test]
-    async fn watch_uses_control_subject_skips_keepalive_and_stops_after_terminal_event() {
-        let transport = RecordingTransport::with_watch_frames(vec![
+    async fn watch_decode_skips_keepalive_and_wait_stops_after_terminal_event() {
+        let frames = [
             json!({
                 "kind": "snapshot",
                 "snapshot": {
@@ -1517,27 +1536,66 @@ mod tests {
                     }
                 }
             }),
-        ]);
-        let invoker = OperationInvoker::<_, RefundOperation>::new(&transport);
+        ];
+        let mut decoded = Vec::new();
+        for frame in frames {
+            if let Some(event) = decode_watch_frame::<RefundProgress, Value, RefundOutput>(
+                frame,
+                None,
+                None,
+                RefundOperation::OUTPUT_SCHEMA_JSON,
+            )
+            .expect("decode watch frame")
+            {
+                decoded.push(event);
+            }
+        }
+        assert_eq!(decoded.len(), 4);
+        assert!(matches!(decoded[0], OperationEvent::Started { .. }));
+        assert!(matches!(decoded[1], OperationEvent::Progress { .. }));
+        assert!(matches!(decoded[2], OperationEvent::Completed { .. }));
+        assert!(matches!(decoded[3], OperationEvent::Progress { .. }));
 
-        let operation = invoker.control("op_123").expect("operation id is valid");
-        let events: Vec<_> = operation
-            .watch()
+        let mut events = stream::iter(decoded.into_iter().map(Ok));
+        let snapshot = wait_for_terminal_snapshot(&mut events)
             .await
-            .expect("watch succeeds")
-            .collect()
-            .await;
-
+            .expect("wait succeeds");
         assert_eq!(
-            transport.requests(),
-            vec![(
-                control_subject(RefundOperation::SUBJECT),
-                json!({ "action": "watch", "operationId": "op_123" })
-            )]
+            snapshot.output,
+            Some(RefundOutput {
+                refund_id: "rf_123".to_string(),
+            })
         );
-        assert_eq!(events.len(), 3);
-        assert!(matches!(events[0], Ok(OperationEvent::Started { .. })));
-        assert!(matches!(events[1], Ok(OperationEvent::Progress { .. })));
-        assert!(matches!(events[2], Ok(OperationEvent::Completed { .. })));
+        // Remaining frames after the terminal event are not consumed by wait.
+        assert!(matches!(
+            events.next().await,
+            Some(Ok(OperationEvent::Progress { .. }))
+        ));
+    }
+
+    #[tokio::test]
+    async fn wait_returns_failed_snapshot_without_transport_error() {
+        let event = decode_watch_frame::<RefundProgress, Value, RefundOutput>(
+            json!({
+                "kind": "event",
+                "event": {
+                    "type": "failed",
+                    "snapshot": {
+                        "revision": 2,
+                        "state": "failed"
+                    }
+                }
+            }),
+            None,
+            None,
+            RefundOperation::OUTPUT_SCHEMA_JSON,
+        )
+        .expect("decode failed")
+        .expect("event");
+        let mut events = stream::iter([Ok(event)]);
+        let snapshot = wait_for_terminal_snapshot(&mut events)
+            .await
+            .expect("failed is a business terminal");
+        assert_eq!(snapshot.state, super::OperationState::Failed);
     }
 }

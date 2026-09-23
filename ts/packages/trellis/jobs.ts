@@ -4,6 +4,11 @@ import { type StaticDecode, Type } from "typebox";
 
 import { UnexpectedError } from "./errors/index.ts";
 import { setActiveJobWaitHook } from "./operations.ts";
+import {
+  recordCatalogDuration,
+  routeToken,
+  UNKNOWN_ROUTE,
+} from "./telemetry/mod.ts";
 
 export const JobLogEntrySchema = Type.Object({
   timestamp: Type.String({ format: "date-time" }),
@@ -617,6 +622,7 @@ export class JobQueue<TPayload, TResult, TUpdate = never> {
   readonly #submit: (
     payload: TPayload,
   ) => AsyncResult<JobSubmitOutcome<TPayload, TResult, TUpdate>, BaseError>;
+  readonly #route: string;
   readonly #updates: (
     jobId: string,
     options?: JobUpdatesOptions,
@@ -639,8 +645,12 @@ export class JobQueue<TPayload, TResult, TUpdate = never> {
       jobId: string,
       options?: JobUpdatesOptions,
     ) => AsyncResult<JobUpdateSubscription<TUpdate>, BaseError>;
+    jobType?: string;
   }) {
     this.#create = impl.create;
+    this.#route = impl.jobType === undefined
+      ? UNKNOWN_ROUTE
+      : routeToken("job", impl.jobType);
     this.#handle = impl.handle;
     this.#submit = impl.submit ??
       ((payload) =>
@@ -654,11 +664,24 @@ export class JobQueue<TPayload, TResult, TUpdate = never> {
   create(
     payload: TPayload,
   ): AsyncResult<JobRef<TPayload, TResult, TUpdate>, BaseError> {
-    try {
-      return this.#create(payload);
-    } catch (cause) {
-      return AsyncResult.err(toUnexpectedError(cause));
-    }
+    return AsyncResult.from((async () => {
+      const startedAt = performance.now();
+      let result: Result<JobRef<TPayload, TResult, TUpdate>, BaseError>;
+      try {
+        result = await this.#create(payload);
+      } catch (cause) {
+        result = Result.err(toUnexpectedError(cause));
+      }
+      recordCatalogDuration(
+        "trellis.job.submission.duration",
+        performance.now() - startedAt,
+        {
+          "trellis.route": this.#route,
+          "trellis.outcome": result.isOk() ? "accepted" : "error",
+        },
+      );
+      return result;
+    })());
   }
 
   /** Subscribes to transient updates for a known or preallocated job id. */
@@ -680,11 +703,29 @@ export class JobQueue<TPayload, TResult, TUpdate = never> {
   submit(
     payload: TPayload,
   ): AsyncResult<JobSubmitOutcome<TPayload, TResult, TUpdate>, BaseError> {
-    try {
-      return this.#submit(payload);
-    } catch (cause) {
-      return AsyncResult.err(toUnexpectedError(cause));
-    }
+    return AsyncResult.from((async () => {
+      const startedAt = performance.now();
+      let result: Result<
+        JobSubmitOutcome<TPayload, TResult, TUpdate>,
+        BaseError
+      >;
+      try {
+        result = await this.#submit(payload);
+      } catch (cause) {
+        result = Result.err(toUnexpectedError(cause));
+      }
+      recordCatalogDuration(
+        "trellis.job.submission.duration",
+        performance.now() - startedAt,
+        {
+          "trellis.route": this.#route,
+          "trellis.outcome": result.isOk()
+            ? jobSubmissionOutcome(result.take())
+            : "error",
+        },
+      );
+      return result;
+    })());
   }
 
   handle(
@@ -748,3 +789,12 @@ export type JobsFacadeOf<TJobs extends Record<string, JobTypeMetadata>> =
     >;
   }
   & JobsFacade;
+
+/** Bounded job submission outcome for catalog observation. */
+function jobSubmissionOutcome(outcome: unknown): string {
+  const kind = (outcome as { kind?: unknown } | undefined)?.kind;
+  return kind === "accepted" || kind === "rejected" ||
+      kind === "coalesced" || kind === "replaced"
+    ? kind
+    : "error";
+}

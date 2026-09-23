@@ -162,9 +162,9 @@ declare const __api: {
 			readonly download: false;
 			readonly pagination: undefined;
 		};
-		readonly "feed:Watch": {
-			readonly kind: "feed";
-			readonly descriptorName: "feed:Watch";
+		readonly "live:Watch": {
+			readonly kind: "live";
+			readonly descriptorName: "live:Watch";
 			readonly input: typeof Types1.JobsWatchRequestCodec;
 			readonly event: typeof Types1.JobsWatchFrameCodec;
 		};
@@ -172,5 +172,5 @@ declare const __api: {
 	readonly packageEvidence: unknown;
 };
 export declare const API: typeof __api;
-export declare const API_DIGEST: "pgIp9PftLViyn-1-PKqw2kkCsEWAJYHurAEA158ylso";
+export declare const API_DIGEST: "dCRMNYjg9sZNN3dKFBoBlVJ3gMvPwPjZsPH6n16ECtc";
 export {};

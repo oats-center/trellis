@@ -1,7 +1,18 @@
 import { assertEquals, assertInstanceOf } from "@std/assert";
+import { metrics } from "@opentelemetry/api";
+import {
+  AggregationTemporality,
+  InMemoryMetricExporter,
+  MeterProvider,
+  PeriodicExportingMetricReader,
+} from "npm:@opentelemetry/sdk-metrics@^2.7.0";
+import { trackConnection, trackCoverage } from "./telemetry/lifecycle.ts";
 
 import {
+  installConnectionAvailability,
   observeTrellisConnection,
+  startConnectionTelemetry,
+  transitionConnectionAvailability,
   TrellisConnection,
   type TrellisConnectionStatus,
   type TrellisConnectionStatusTransport,
@@ -82,6 +93,219 @@ class FakeStatusStream implements TrellisConnectionStatusTransport {
 function delay(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
+
+Deno.test("numeric connection and coverage sources survive first collection and clear to zero", async () => {
+  const exporter = new InMemoryMetricExporter(
+    AggregationTemporality.CUMULATIVE,
+  );
+  const reader = new PeriodicExportingMetricReader({
+    exporter,
+    exportIntervalMillis: 60_000,
+  });
+  const provider = new MeterProvider({ readers: [reader] });
+  metrics.setGlobalMeterProvider(provider);
+  const first = trackConnection("user");
+  const stopFirst = trackCoverage(() => ({
+    own: false,
+    peerCovered: 0,
+    peerUnavailable: 0,
+  }));
+  await provider.forceFlush();
+  first.dispose();
+  stopFirst();
+  const second = trackConnection("service");
+  second.transition("usable", "connected");
+  const stopSecond = trackCoverage(() => ({
+    own: true,
+    peerCovered: 2,
+    peerUnavailable: 0,
+  }));
+  await provider.forceFlush();
+  const samples =
+    exporter.getMetrics().at(-1)?.scopeMetrics.flatMap((scope) =>
+      scope.metrics
+    ) ?? [];
+  const points = (name: string) =>
+    samples.find((metric) => metric.descriptor.name === name)
+      ?.dataPoints ?? [];
+  assertEquals(
+    points("trellis.connection.count").some((point) =>
+      point.attributes["trellis.participant.kind"] === "service" &&
+      point.attributes["trellis.state"] === "usable" && point.value === 1
+    ),
+    true,
+  );
+  assertEquals(
+    points("trellis.connection.count").some((point) =>
+      point.attributes["trellis.participant.kind"] === "user" &&
+      point.value === 0
+    ),
+    true,
+  );
+  assertEquals(
+    points("trellis.auth.coverage.count").some((point) =>
+      point.attributes["trellis.kind"] === "peer" &&
+      point.attributes["trellis.state"] === "covered" && point.value === 2
+    ),
+    true,
+  );
+  second.dispose();
+  stopSecond();
+  await provider.forceFlush();
+  assertEquals(
+    (exporter.getMetrics().at(-1)?.scopeMetrics.flatMap((scope) =>
+      scope.metrics
+    )
+      .find((metric) => metric.descriptor.name === "trellis.connection.count")
+      ?.dataPoints ?? []).some((point) =>
+        point.attributes["trellis.participant.kind"] === "service" &&
+        point.attributes["trellis.state"] === "usable" && point.value === 0
+      ),
+    true,
+  );
+  await provider.shutdown();
+  metrics.disable();
+});
+
+Deno.test("production connection owner publishes usable, suspended, resumed, and clears on terminal", async () => {
+  const exporter = new InMemoryMetricExporter(
+    AggregationTemporality.CUMULATIVE,
+  );
+  const reader = new PeriodicExportingMetricReader({
+    exporter,
+    exportIntervalMillis: 60_000,
+  });
+  const provider = new MeterProvider({ readers: [reader] });
+  metrics.setGlobalMeterProvider(provider);
+  const states = async () => {
+    await provider.forceFlush();
+    return (exporter.getMetrics().at(-1)?.scopeMetrics.flatMap((scope) =>
+      scope.metrics
+    ).find((metric) => metric.descriptor.name === "trellis.connection.count")
+      ?.dataPoints ?? []).map((point) =>
+        [
+          String(point.attributes["trellis.participant.kind"]),
+          String(point.attributes["trellis.state"]),
+          point.value,
+        ] as const
+      );
+  };
+  for (const kind of ["service", "device"] as const) {
+    const stream = new FakeStatusStream();
+    const connection = observeTrellisConnection({
+      kind,
+      transport: stream,
+      telemetry: startConnectionTelemetry(kind),
+    });
+    try {
+      // The attempt is counted from creation, before any promotion.
+      assertEquals(
+        (await states()).some(([participantKind, state, value]) =>
+          participantKind === kind && state === "connecting" && value === 1
+        ),
+        true,
+      );
+      // Bootstrap publication promotes the attempt after verification.
+      transitionConnectionAvailability(connection, true, "connected");
+      const usable = await states();
+      assertEquals(
+        usable.some(([participantKind, state, value]) =>
+          participantKind === kind && state === "usable" && value === 1
+        ),
+        true,
+      );
+      assertEquals(
+        usable.some(([participantKind, state, value]) =>
+          participantKind === kind && state === "connecting" && value === 0
+        ),
+        true,
+      );
+      // A verified same-context refresh must not suspend usable coverage.
+      transitionConnectionAvailability(connection, true, "refreshed");
+      assertEquals(
+        (await states()).some(([participantKind, state, value]) =>
+          participantKind === kind && state === "usable" && value === 1
+        ),
+        true,
+      );
+      // Withdrawn own coverage suspends without counting a second connection.
+      transitionConnectionAvailability(connection, false, "coverage_lost");
+      const suspended = await states();
+      assertEquals(
+        suspended.some(([participantKind, state, value]) =>
+          participantKind === kind && state === "usable" && value === 0
+        ),
+        true,
+      );
+      assertEquals(
+        suspended.some(([participantKind, state, value]) =>
+          participantKind === kind && state === "suspended" && value === 1
+        ),
+        true,
+      );
+      transitionConnectionAvailability(connection, true, "resumed");
+      const resumed = await states();
+      assertEquals(
+        resumed.filter(([participantKind, state]) =>
+          participantKind === kind && state === "usable"
+        ).every(([, , value]) => value === 1),
+        true,
+      );
+      assertEquals(
+        resumed.some(([participantKind, state, value]) =>
+          participantKind === kind && state === "suspended" && value === 0
+        ),
+        true,
+      );
+      // A diagnostic transport error is not a terminal authority decision:
+      // the semantic count stays usable until a real close disposes it.
+      stream.push({ type: "error", error: new Error("diagnostic") });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const diagnostic = await states();
+      assertEquals(
+        diagnostic.some(([participantKind, state, value]) =>
+          participantKind === kind && state === "usable" && value === 1
+        ),
+        true,
+      );
+      assertEquals(
+        diagnostic.some(([participantKind, state, value]) =>
+          participantKind === kind && state === "terminal" && value === 1
+        ),
+        false,
+      );
+      // A real close still records terminal exactly once.
+      stream.resolveClosed();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const terminal = await states();
+      assertEquals(
+        terminal.some(([participantKind, state, value]) =>
+          participantKind === kind && state === "terminal" && value === 1
+        ),
+        true,
+      );
+      assertEquals(
+        terminal.some(([participantKind, state, value]) =>
+          participantKind === kind && state === "usable" && value === 0
+        ),
+        true,
+      );
+      await connection.close();
+      // Final cleanup unregisters the attempt and clears its aggregates to zero.
+      const cleared = await states();
+      assertEquals(
+        cleared.filter(([participantKind]) => participantKind === kind).every(
+          ([, , value]) => value === 0,
+        ),
+        true,
+      );
+    } finally {
+      await connection.close();
+    }
+  }
+  await provider.shutdown();
+  metrics.disable();
+});
 
 Deno.test("TrellisConnection starts connected and delivers current status on subscribe", () => {
   const connection = new TrellisConnection({ kind: "client" });

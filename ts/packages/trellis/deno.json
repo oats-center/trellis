@@ -11,6 +11,7 @@
     "./device": "./device.ts",
     "./service": "./service/mod.ts",
     "./telemetry": "./telemetry.ts",
+    "./telemetry/browser": "./telemetry/browser.ts",
     "./errors": "./errors/index.ts"
   },
   "publish": {

@@ -1,0 +1,225 @@
+groups:
+- name: trellis.alerts
+  interval: 30s
+  rules:
+  - alert: TrellisRequiredComponentUnavailable
+    expr: trellis:component_expected unless on (trellis_cluster, trellis_component) (trellis:component_present > 0)
+    for: 2m
+    labels:
+      severity: critical
+    annotations:
+      summary: A configured Trellis component is absent or not healthy
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#component-unavailable
+  - alert: TrellisSnapshotStale
+    expr: (time() - trellis_snapshot_observed_time{telemetry_pipeline="native"}) > 45
+    for: 3m
+    labels:
+      severity: warning
+    annotations:
+      summary: A telemetry snapshot is stale; zero backlog cannot be assumed
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#snapshot-stale
+  - alert: TrellisRpcErrorBudgetFast
+    expr: (trellis:rpc_error_ratio:1h > 0.0144 and on (trellis_cluster) trellis:rpc_error_ratio:5m > 0.0144) and on (trellis_cluster) (trellis:rpc_requests:5m
+      > 0.333333)
+    for: 2m
+    labels:
+      severity: critical
+    annotations:
+      summary: Fast burn of the reference 99.9% RPC availability budget
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#rpc-budget
+  - alert: TrellisRpcErrorBudgetSlow
+    expr: (trellis:rpc_error_ratio:6h > 0.006 and on (trellis_cluster) trellis:rpc_error_ratio:30m > 0.006) and on (trellis_cluster) (trellis:rpc_requests:30m
+      > 0.055556)
+    for: 15m
+    labels:
+      severity: warning
+    annotations:
+      summary: Sustained RPC service-error budget burn
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#rpc-budget
+  - alert: TrellisAuthRefreshSlow
+    expr: (trellis:auth_refresh:p95 > 1) and on (trellis_cluster) (sum by (trellis_cluster) (increase(trellis_auth_flow_duration_count{telemetry_pipeline="native",trellis_operation="context_refresh",trellis_phase="total"}[5m]))
+      >= 100)
+    for: 15m
+    labels:
+      severity: warning
+    annotations:
+      summary: Auth refresh p95 exceeds the reference one-second operating budget
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#auth-refresh
+  - alert: TrellisAuthDeliveryStalled
+    expr: (trellis:auth_post_commit_oldest_age > 120) and on (trellis_cluster) (trellis:auth_post_commit_pending > 0)
+    for: 1m
+    labels:
+      severity: critical
+    annotations:
+      summary: Auth post-commit delivery is not draining
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#auth-delivery
+  - alert: TrellisJobsBacklogOld
+    expr: (trellis:jobs_oldest_ready_age > 300) and on (trellis_cluster) (trellis:jobs_ready > 0)
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: Eligible Jobs are waiting more than five minutes
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#jobs-backlog
+  - alert: TrellisJobsNoWorkers
+    expr: (trellis:jobs_ready > 0) and on (trellis_cluster) (trellis:jobs_worker_registrations == 0)
+    for: 3m
+    labels:
+      severity: critical
+    annotations:
+      summary: Ready Jobs exist but no fresh worker registrations are observed
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#jobs-workers
+  - alert: TrellisConsumerStalled
+    expr: (trellis:consumer_progress_age > 300) and on (trellis_cluster) ((trellis:consumer_pending + trellis:consumer_ack_pending) > 0)
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: A Consumer has outstanding work without observed ACK progress
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#consumer-stalled
+  - alert: TrellisConsumerMissing
+    expr: trellis:consumer_missing > 0
+    for: 3m
+    labels:
+      severity: critical
+    annotations:
+      summary: Declared Consumer infrastructure is authoritatively missing
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#consumer-missing
+  - alert: TrellisDeadLettersOpen
+    expr: trellis:dlq_entries > 0
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: Unresolved Event dead letters require inspection
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#dead-letters
+  - alert: TrellisJobsDead
+    expr: trellis:jobs_dead > 0
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: Undismissed dead Jobs require inspection
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#dead-letters
+  - alert: TrellisProjectionStalled
+    expr: (trellis:projection_progress_age > 120) and on (trellis_cluster, trellis_component) (trellis:projection_pending > 0)
+    for: 3m
+    labels:
+      severity: warning
+    annotations:
+      summary: A projector has backlog without observed progress
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#projection-stalled
+  - alert: TrellisNativeConnectionsSuspended
+    expr: sum by (trellis_cluster) (trellis_connection_count{telemetry_pipeline="native",trellis_state="suspended",trellis_participant_kind=~"service|device"})
+      > 0
+    for: 3m
+    labels:
+      severity: warning
+    annotations:
+      summary: Native connections remain suspended
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#connection-suspended
+  - alert: TrellisTelemetryRouteOverflow
+    expr: sum by (trellis_cluster) (increase(trellis_telemetry_route_overflow{telemetry_pipeline="native"}[15m])) > 0
+    for: 0m
+    labels:
+      severity: warning
+    annotations:
+      summary: Telemetry route registration exceeded the bounded catalog
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#route-overflow
+  - alert: TrellisCollectorUnavailable
+    expr: up{job="otel-collector"} == 0
+    for: 2m
+    labels:
+      severity: critical
+    annotations:
+      summary: The OTel Collector self-metrics endpoint is unavailable
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#collector
+  - alert: TrellisNativeMetricsScrapeFailed
+    expr: up{job="trellis-native"} == 0
+    for: 2m
+    labels:
+      severity: critical
+    annotations:
+      summary: The native metrics export endpoint cannot be scraped
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#collector
+  - alert: TrellisCollectorQueuePressure
+    expr: (otelcol_exporter_queue_size / clamp_min(otelcol_exporter_queue_capacity, 1)) > 0.8 and otelcol_exporter_queue_capacity > 0
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: Collector export queue is over 80% full
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#collector
+  - alert: TrellisHttpUnreachable
+    expr: probe_success{job="trellis-http"} == 0
+    for: 2m
+    labels:
+      severity: critical
+    annotations:
+      summary: Trellis HTTP is unreachable (not a complete readiness test)
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#http-reachability
+  - alert: TrellisNatsUnhealthy
+    expr: probe_success{job="nats-health"} == 0
+    for: 2m
+    labels:
+      severity: critical
+    annotations:
+      summary: NATS health endpoint is unavailable or unhealthy
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#nats
+  - alert: TrellisDataDiskLow
+    expr: (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"}) < 0.10 and node_filesystem_readonly
+      == 0
+    for: 15m
+    labels:
+      severity: warning
+    annotations:
+      summary: Host disk available space is below 10%
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#host-capacity
+  - alert: TrellisHostMemoryLow
+    expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+    for: 15m
+    labels:
+      severity: warning
+    annotations:
+      summary: Host available memory is below 10%
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#host-capacity
+  - alert: TrellisHostClockOffset
+    expr: abs(node_timex_offset_seconds) > 1
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: Host clock offset exceeds one second
+      description: 'Cluster {{ $labels.trellis_cluster }}. Current value: {{ $value }}. Check telemetry freshness before interpreting last-known gauges.'
+      runbook: docs/observability/runbooks.md#clock
+  - alert: TrellisMetricSeriesOverflow
+    expr: count by (trellis_cluster, job, instance) ({__name__=~"trellis_.*", telemetry_pipeline="native", otel_metric_overflow="true"}) > 0
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: An OTel instrument is losing dimension detail to cardinality overflow
+      description: Inspect label registration. Total observations may remain while filtered SLO attributes are absent.
+      runbook: docs/observability/runbooks.md#route-overflow

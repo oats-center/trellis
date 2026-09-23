@@ -14,7 +14,7 @@ runtime is Trellis infrastructure that implements its admin behavior:
 - **Global RPCs** — `Jobs.Query`, `Jobs.Summary`, `Jobs.Inspect`, `Jobs.GetKey`,
   `Jobs.Cancel`, `Jobs.Retry`, `Jobs.ReplayDLQ`, `Jobs.DismissDLQ`,
   `Jobs.ListDLQ`, `Jobs.ListServices`
-- **Workbench feed** — `Jobs.Watch` invalidation frames for live query and
+- **Workbench live** — `Jobs.Watch` invalidation frames for live query and
   inspection views
 - **Janitor** — background cleanup of expired jobs and stale projection entries
 
@@ -174,10 +174,10 @@ re-processed.
 ## Watching for changes
 
 Use `Jobs.Watch` when a workbench or detail view needs live updates without
-polling every row. The feed emits `ready`, `jobChanged`,
+polling every row. The live emits `ready`, `jobChanged`,
 `jobInspectChanged`, and `queryInvalidated` frames. Treat those frames as
 invalidations: rerun `Jobs.Query` for a workbench view or `Jobs.Inspect` for
-a detail view. The feed does not provide a precise row-delta protocol.
+a detail view. The live does not provide a precise row-delta protocol.
 
 ## Worker presence
 

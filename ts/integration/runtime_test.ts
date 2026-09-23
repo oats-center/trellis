@@ -259,7 +259,7 @@ Deno.test("generated TypeScript caller reaches Rust provider", async () => {
         (await resumedLive.get().orThrow()).progress,
         persistedProgress,
       );
-      const watched = (await resumedLive.watch({ updates: true }).orThrow())
+      const watched = (await resumedLive.live({ updates: true }).orThrow())
         [Symbol.asyncIterator]();
       const initial = (await watched.next()).value;
       assert(initial?.type !== "update");
@@ -284,7 +284,7 @@ Deno.test("generated TypeScript caller reaches Rust provider", async () => {
         const intruderOperation = intruder.work.resume(live);
         assert((await intruderOperation.get()).isErr());
         await assertRejects(async () => {
-          const deniedWatch = await intruderOperation.watch().orThrow();
+          const deniedWatch = await intruderOperation.live().orThrow();
           await deniedWatch[Symbol.asyncIterator]().next();
         });
         assert((await intruderOperation.signal("Continue", {
@@ -297,14 +297,17 @@ Deno.test("generated TypeScript caller reaches Rust provider", async () => {
         }).orThrow();
         let update = (await watched.next()).value;
         while (update?.type !== "update") update = (await watched.next()).value;
-        assert(update);
-        assertEquals(update.update.value, "transient");
+        assert(update?.type === "update");
+        assertEquals(
+          (update.update as typeof transientProgress).value,
+          "transient",
+        );
         assertEquals(update.update, transientProgress);
         const afterUpdate = await resumedLive.get().orThrow();
         assert(afterUpdate.revision >= signal.snapshot.revision);
         assertEquals(afterUpdate.progress, signal.snapshot.progress);
 
-        const late = (await resumedLive.watch({ updates: true }).orThrow())
+        const late = (await resumedLive.live({ updates: true }).orThrow())
           [Symbol.asyncIterator]();
         const lateInitial = (await late.next()).value;
         assert(lateInitial?.type !== "update");
@@ -808,8 +811,8 @@ Deno.test("generated runtime workflows", async (t) => {
                   console.error("TRELLIS_TRACE replica_watches_begin");
                 }
                 const watches = await Promise.all([
-                  resumed.watch({ updates: true }).orThrow(),
-                  resumed.watch({ updates: true }).orThrow(),
+                  resumed.live({ updates: true }).orThrow(),
+                  resumed.live({ updates: true }).orThrow(),
                 ]).then((streams) =>
                   streams.map((stream) => stream[Symbol.asyncIterator]())
                 );
@@ -884,14 +887,14 @@ Deno.test("generated runtime workflows", async (t) => {
                       }`,
                     );
                   }
-                  assert(update);
+                  assert(update?.type === "update");
                   assertEquals(update.update, transientProgress);
                 }
               } finally {
                 await siblingService.stop();
                 assertEquals(await siblingExit, undefined);
               }
-              const late = (await resumed.watch({ updates: true }).orThrow())
+              const late = (await resumed.live({ updates: true }).orThrow())
                 [Symbol.asyncIterator]();
               assert((await late.next()).value?.type !== "update");
               const cancel = await resumed.cancel();

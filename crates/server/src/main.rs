@@ -33,6 +33,8 @@ struct Args {
 enum OperationArgs {
     /// Validate configuration and runtime dependencies, then exit.
     Check(CheckArgs),
+    /// Seed the first local administrator, then exit.
+    BootstrapAdmin(BootstrapAdminArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -40,6 +42,20 @@ struct CheckArgs {
     /// Runtime mode to validate: all, platform, jobs, health, or events.
     #[arg(default_value = "all")]
     mode: RuntimeMode,
+}
+
+/// Seed the first local administrator with a username and password without a browser flow.
+#[derive(Clone, Debug, Eq, PartialEq, clap::Args)]
+struct BootstrapAdminArgs {
+    /// Login username for the first administrator.
+    #[arg(long)]
+    username: String,
+    /// Password in argv. Prefer --password-stdin outside interactive shells.
+    #[arg(long, conflicts_with = "password_stdin")]
+    password: Option<String>,
+    /// Read the password from standard input.
+    #[arg(long)]
+    password_stdin: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -77,6 +93,7 @@ struct ServerArgs {
 enum Operation {
     Run,
     Check,
+    BootstrapAdmin,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -94,6 +111,7 @@ struct StartupPolicy {
     nats_ports: LocalNatsPorts,
     verbose: bool,
     reset_admin: bool,
+    bootstrap_admin: Option<BootstrapAdminArgs>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -126,14 +144,32 @@ impl StartupPolicy {
         args: Args,
         get: impl Fn(&str) -> Option<std::ffi::OsString>,
     ) -> miette::Result<Self> {
-        let (operation, server, mode, reset_admin) = match args.operation {
+        let (operation, server, mode, reset_admin, bootstrap_admin) = match args.operation {
             Some(OperationArgs::Check(check)) => {
                 if args.reset_admin {
                     return Err(miette!("--reset-admin is not valid with check"));
                 }
-                (Operation::Check, args.server, check.mode, false)
+                (Operation::Check, args.server, check.mode, false, None)
             }
-            None => (Operation::Run, args.server, args.mode, args.reset_admin),
+            Some(OperationArgs::BootstrapAdmin(bootstrap)) => {
+                if args.reset_admin {
+                    return Err(miette!("--reset-admin is not valid with bootstrap-admin"));
+                }
+                (
+                    Operation::BootstrapAdmin,
+                    args.server,
+                    args.mode,
+                    false,
+                    Some(bootstrap),
+                )
+            }
+            None => (
+                Operation::Run,
+                args.server,
+                args.mode,
+                args.reset_admin,
+                None,
+            ),
         };
         let paths = if server.system {
             ServerPaths::system(server.config)?
@@ -191,6 +227,7 @@ impl StartupPolicy {
             nats_ports,
             verbose: server.verbose || server.dev,
             reset_admin,
+            bootstrap_admin,
         })
     }
 }
@@ -393,6 +430,19 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
         ));
     }
     let (config, paths) = load_runtime_config(&policy)?;
+
+    if let Some(bootstrap) = policy.bootstrap_admin.as_ref() {
+        let password = resolve_bootstrap_password(bootstrap)?;
+        let principal = trellis_runtime::platform::seed_admin_credentials(
+            &config,
+            &bootstrap.username,
+            &password,
+        )
+        .await
+        .into_diagnostic()?;
+        println!("seeded local administrator '{principal}'");
+        return Ok(());
+    }
     if let Some(root) = &policy.paths.runtime_fallback_root {
         if paths.runtime.starts_with(root) {
             ensure_private_runtime_fallback(root)?;
@@ -498,7 +548,7 @@ async fn main() -> miette::Result<()> {
     let policy = StartupPolicy::resolve(Args::parse())?;
     let telemetry = telemetry::init(policy.verbose, policy.operation == Operation::Check)?;
     let result = run(policy).await;
-    telemetry.shutdown();
+    telemetry.shutdown().await;
     result
 }
 
@@ -922,4 +972,26 @@ kind = "sqlite"
             }
         );
     }
+}
+
+/// Resolve the bootstrap password from argv or standard input. Stdin is preferred so the
+/// secret does not appear in the process list or shell history.
+fn resolve_bootstrap_password(args: &BootstrapAdminArgs) -> miette::Result<String> {
+    if let Some(password) = args.password.as_ref() {
+        return Ok(password.clone());
+    }
+    if args.password_stdin {
+        let mut password = String::new();
+        std::io::stdin()
+            .read_line(&mut password)
+            .into_diagnostic()?;
+        let password = password.trim_end_matches(['\n', '\r']).to_owned();
+        if password.is_empty() {
+            return Err(miette!("--password-stdin received an empty password"));
+        }
+        return Ok(password);
+    }
+    Err(miette!(
+        "bootstrap-admin requires --password or --password-stdin"
+    ))
 }

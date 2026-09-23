@@ -6,6 +6,13 @@ import type {
 } from "@nats-io/nats-core";
 import { headers as natsHeaders } from "@nats-io/nats-core";
 import { isErr } from "@oatscenter/result";
+import { metrics } from "@opentelemetry/api";
+import {
+  AggregationTemporality,
+  InMemoryMetricExporter,
+  MeterProvider,
+  PeriodicExportingMetricReader,
+} from "npm:@opentelemetry/sdk-metrics@^2.7.0";
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 
 import vectors from "../../../../conformance/authorization-context/vectors.json" with {
@@ -658,6 +665,7 @@ async function provider(
     throw new Error("unexpected issuer fetch");
   },
   installed?: AuthorizationContextCache,
+  now: () => number = () => policy.nowUnixSeconds,
 ) {
   const cache = installed ?? await installedCache(issuerFetch);
   const value = await AuthorizationProviderCache.attach(
@@ -665,7 +673,7 @@ async function provider(
     cache.bundle().authorizationRegistry,
     "_INBOX.test",
     cache,
-    { now: () => policy.nowUnixSeconds },
+    { now },
   );
   value.start();
   await value.waitReady();
@@ -1150,6 +1158,170 @@ Deno.test("provider treats a missing local verification policy as unavailable", 
   }
 });
 
+Deno.test("outer verifier rejects an invalid proof with telemetry disabled and installed", async () => {
+  const message = () => ({
+    data: new Uint8Array(),
+    headers: (() => {
+      const headers = natsHeaders();
+      headers.set("authorization-context", chain.contextDigest);
+      headers.set("session-key", request().sessionKey);
+      headers.set("proof", "invalid");
+      headers.set("iat", String(vectors.defaults.request.iat));
+      headers.set("request-id", vectors.defaults.request.requestId);
+      return headers;
+    })(),
+    reply: vectors.defaults.request.reply,
+    subject: vectors.defaults.request.subject,
+  });
+  const permission = {
+    apiId: "documents",
+    apiVersion: "v1",
+    surfaceKind: "rpc",
+    surfaceName: "Documents.Get",
+    action: "call",
+  } satisfies DescriptorPermissionAtom;
+  // No collector reader is installed: the optional observation must not
+  // change the verifier's rejected outcome.
+  metrics.disable();
+  const value = await provider({
+    contexts: new Map([[chain.contextDigest, chain.contextCanonicalJson]]),
+    reads: [],
+  });
+  try {
+    const disabled = await verifyLocalAuthorization({
+      kind: "request",
+      cache: value,
+      message: message(),
+      permission,
+      requiredCapabilities: [],
+    });
+    assertEquals(disabled.isErr(), true);
+  } finally {
+    value.stop();
+  }
+  const verifierExporter = new InMemoryMetricExporter(
+    AggregationTemporality.CUMULATIVE,
+  );
+  const verifierProvider = new MeterProvider({
+    readers: [
+      new PeriodicExportingMetricReader({
+        exporter: verifierExporter,
+        exportIntervalMillis: 60_000,
+      }),
+    ],
+  });
+  metrics.setGlobalMeterProvider(verifierProvider);
+  const installed = await provider({
+    contexts: new Map([[chain.contextDigest, chain.contextCanonicalJson]]),
+    reads: [],
+  });
+  try {
+    const withTelemetry = await verifyLocalAuthorization({
+      kind: "request",
+      cache: installed,
+      message: message(),
+      permission,
+      requiredCapabilities: [],
+    });
+    assertEquals(withTelemetry.isErr(), true);
+    // Without an installed provider cache the outer boundary reports an
+    // explicit unavailable outcome rather than silently succeeding.
+    const unavailable = await verifyLocalAuthorization({
+      kind: "request",
+      cache: undefined,
+      message: message(),
+      permission,
+      requiredCapabilities: [],
+    });
+    assertEquals(unavailable.isErr(), true);
+    // A valid proof through the same outer boundary records success.
+    const validHeaders = natsHeaders();
+    validHeaders.set("authorization-context", chain.contextDigest);
+    validHeaders.set("session-key", request().sessionKey);
+    validHeaders.set("proof", chain.requestProof);
+    validHeaders.set("iat", String(vectors.defaults.request.iat));
+    validHeaders.set("request-id", vectors.defaults.request.requestId);
+    const success = await verifyLocalAuthorization({
+      kind: "request",
+      cache: installed,
+      message: {
+        data: utf8(vectors.defaults.request.payload),
+        headers: validHeaders,
+        reply: vectors.defaults.request.reply,
+        subject: vectors.defaults.request.subject,
+      },
+      permission,
+      requiredCapabilities: [],
+    });
+    assertEquals(success.isOk(), true);
+    await verifierProvider.forceFlush();
+    const points = verifierExporter.getMetrics().at(-1)?.scopeMetrics
+      .flatMap((scope) => scope.metrics)
+      .find((metric) =>
+        metric.descriptor.name === "trellis.auth.verification.duration"
+      )
+      ?.dataPoints ?? [];
+    const outcomes = new Set(
+      points.map((point) =>
+        `${point.attributes["trellis.purpose"]}:${
+          point.attributes["trellis.outcome"]
+        }`
+      ),
+    );
+    assertEquals(outcomes.has("request:invalid"), true);
+    assertEquals(outcomes.has("request:unavailable"), true);
+    assertEquals(outcomes.has("request:ok"), true);
+    // The Event path through the same outer boundary records its own purpose.
+    const eventHeaders = natsHeaders();
+    eventHeaders.set("authorization-context", chain.contextDigest);
+    eventHeaders.set("session-key", event().sessionKey);
+    eventHeaders.set("proof", chain.eventProof);
+    eventHeaders.set("Nats-Msg-Id", vectors.defaults.event.eventId);
+    eventHeaders.set("Trellis-Event-Time", vectors.defaults.event.eventTime);
+    eventHeaders.set(
+      "Trellis-Event-Descriptor",
+      vectors.defaults.event.descriptorIdentity,
+    );
+    const eventSuccess = await verifyLocalAuthorization({
+      kind: "event",
+      cache: installed,
+      message: {
+        data: utf8(vectors.defaults.event.payload),
+        headers: eventHeaders,
+        subject: vectors.defaults.event.subject,
+      },
+      permission: {
+        apiId: "documents",
+        apiVersion: "v1",
+        surfaceKind: "event",
+        surfaceName: "Documents.Changed",
+        action: "publish",
+      } satisfies DescriptorPermissionAtom,
+      descriptorIdentity: vectors.defaults.event.descriptorIdentity,
+      requiredCapabilities: [],
+    });
+    assert(eventSuccess.isOk(), JSON.stringify(eventSuccess));
+    await verifierProvider.forceFlush();
+    const eventPoints = verifierExporter.getMetrics().at(-1)?.scopeMetrics
+      .flatMap((scope) => scope.metrics)
+      .find((metric) =>
+        metric.descriptor.name === "trellis.auth.verification.duration"
+      )
+      ?.dataPoints ?? [];
+    assertEquals(
+      eventPoints.some((point) =>
+        point.attributes["trellis.purpose"] === "event" &&
+        point.attributes["trellis.outcome"] === "ok"
+      ),
+      true,
+    );
+  } finally {
+    installed.stop();
+    await verifierProvider.shutdown();
+    metrics.disable();
+  }
+});
+
 Deno.test("lean request and event verifier outputs are enriched from cached context", async () => {
   const value = await provider({
     contexts: new Map([[chain.contextDigest, chain.contextCanonicalJson]]),
@@ -1272,5 +1444,259 @@ Deno.test("provider LRU stays at 256 entries and evicts the oldest context", asy
     assertEquals(value.ioCounters().contextGets, 258);
   } finally {
     value.stop();
+  }
+});
+
+Deno.test("provider coverage gauge follows the retained own and peer installation", async () => {
+  const coverageExporter = new InMemoryMetricExporter(
+    AggregationTemporality.CUMULATIVE,
+  );
+  const coverageMeterProvider = new MeterProvider({
+    readers: [
+      new PeriodicExportingMetricReader({
+        exporter: coverageExporter,
+        exportIntervalMillis: 60_000,
+      }),
+    ],
+  });
+  metrics.setGlobalMeterProvider(coverageMeterProvider);
+  const installed = await installedCache();
+  const [peerDigest, peerContext] = await signedContext("peer-connection");
+  const registry: Registry = {
+    contexts: new Map([
+      [chain.contextDigest, chain.contextCanonicalJson],
+      [peerDigest, peerContext],
+    ]),
+    reads: [],
+  };
+  const value = await provider(registry, undefined, installed);
+  const coverage = async () => {
+    await coverageMeterProvider.forceFlush();
+    const points = coverageExporter.getMetrics().at(-1)?.scopeMetrics
+      .flatMap(
+        (scope) => scope.metrics,
+      )
+      .find((metric) =>
+        metric.descriptor.name === "trellis.auth.coverage.count"
+      )
+      ?.dataPoints ?? [];
+    return Object.fromEntries(
+      points.map((point) => [
+        `${point.attributes["trellis.kind"]}:${
+          point.attributes["trellis.state"]
+        }`,
+        point.value,
+      ]),
+    );
+  };
+  try {
+    await value.waitReady();
+    await value.retainOwnContext();
+    assertEquals(await coverage(), {
+      "own:covered": 1,
+      "own:unavailable": 0,
+      "peer:covered": 0,
+      "peer:unavailable": 0,
+    });
+    await value.resolveContext(peerDigest);
+    assertEquals(await coverage(), {
+      "own:covered": 1,
+      "own:unavailable": 0,
+      "peer:covered": 1,
+      "peer:unavailable": 0,
+    });
+    value.observeConnectionPhase("disconnected");
+    assertEquals(await coverage(), {
+      "own:covered": 0,
+      "own:unavailable": 1,
+      "peer:covered": 0,
+      "peer:unavailable": 0,
+    });
+    value.observeConnectionPhase("connected");
+    await value.waitReady();
+    await value.retainOwnContext();
+    assertEquals(await coverage(), {
+      "own:covered": 1,
+      "own:unavailable": 0,
+      "peer:covered": 0,
+      "peer:unavailable": 0,
+    });
+  } finally {
+    value.stop();
+    await coverageMeterProvider.shutdown();
+    metrics.disable();
+  }
+});
+Deno.test("provider coverage gauge marks a retained peer unavailable before eviction", async () => {
+  const exporter = new InMemoryMetricExporter(
+    AggregationTemporality.CUMULATIVE,
+  );
+  const meterProvider = new MeterProvider({
+    readers: [
+      new PeriodicExportingMetricReader({
+        exporter,
+        exportIntervalMillis: 60_000,
+      }),
+    ],
+  });
+  metrics.setGlobalMeterProvider(meterProvider);
+  let now = policy.nowUnixSeconds;
+  const installed = await installedCache();
+  const [peerDigest, peerContext] = await signedContext("peer-unavailable");
+  const registry: Registry = {
+    contexts: new Map([
+      [chain.contextDigest, chain.contextCanonicalJson],
+      [peerDigest, peerContext],
+    ]),
+    reads: [],
+  };
+  const value = await provider(registry, undefined, installed, () => now);
+  const coverage = async () => {
+    await meterProvider.forceFlush();
+    const points = exporter.getMetrics().at(-1)?.scopeMetrics
+      .flatMap((scope) => scope.metrics)
+      .find((metric) =>
+        metric.descriptor.name === "trellis.auth.coverage.count"
+      )
+      ?.dataPoints ?? [];
+    return Object.fromEntries(
+      points.map((point) => [
+        `${point.attributes["trellis.kind"]}:${
+          point.attributes["trellis.state"]
+        }`,
+        point.value,
+      ]),
+    );
+  };
+  try {
+    await value.waitReady();
+    await value.retainOwnContext();
+    await value.resolveContext(peerDigest);
+    assertEquals(await coverage(), {
+      "own:covered": 1,
+      "own:unavailable": 0,
+      "peer:covered": 1,
+      "peer:unavailable": 0,
+    });
+    // Advance the controllable clock past the retained peer's validity: it
+    // stays indexed but is reported unavailable instead of covered.
+    now = policy.nowUnixSeconds + 10_000_000;
+    assertEquals(await coverage(), {
+      "own:covered": 0,
+      "own:unavailable": 1,
+      "peer:covered": 0,
+      "peer:unavailable": 1,
+    });
+    // Removing the source (evicting the cache) returns unavailable to zero.
+    value.stop();
+    assertEquals(await coverage(), {
+      "own:covered": 0,
+      "own:unavailable": 0,
+      "peer:covered": 0,
+      "peer:unavailable": 0,
+    });
+  } finally {
+    value.stop();
+    await meterProvider.shutdown();
+    metrics.disable();
+  }
+});
+Deno.test("outer verifier records bounded outcomes for request and event verification", async () => {
+  const verifierExporter = new InMemoryMetricExporter(
+    AggregationTemporality.CUMULATIVE,
+  );
+  const verifierProvider = new MeterProvider({
+    readers: [
+      new PeriodicExportingMetricReader({
+        exporter: verifierExporter,
+        exportIntervalMillis: 60_000,
+      }),
+    ],
+  });
+  metrics.setGlobalMeterProvider(verifierProvider);
+  const value = await provider({
+    contexts: new Map([[chain.contextDigest, chain.contextCanonicalJson]]),
+    revocations: new Map([[chain.contextDigest, 1_150]]),
+    reads: [],
+  });
+  const verificationCounts = async () => {
+    await verifierProvider.forceFlush();
+    const points = verifierExporter.getMetrics().at(-1)?.scopeMetrics
+      .flatMap((scope) => scope.metrics)
+      .find((metric) =>
+        metric.descriptor.name === "trellis.auth.verification.duration"
+      )
+      ?.dataPoints ?? [];
+    const counts = new Map<string, number>();
+    for (const point of points) {
+      const label = `${point.attributes["trellis.purpose"]}:${
+        point.attributes["trellis.outcome"]
+      }`;
+      counts.set(
+        label,
+        (counts.get(label) ?? 0) +
+          (typeof point.value === "number" ? 1 : point.value.count),
+      );
+    }
+    return counts;
+  };
+  try {
+    const denied = await verifyLocalAuthorization({
+      kind: "request",
+      cache: value,
+      message: {
+        data: new Uint8Array(),
+        headers: natsHeaders(),
+        reply: "_INBOX.test.reply",
+        subject: "rpc.v1.documents.Documents.Get",
+      },
+      permission: undefined,
+      requiredCapabilities: [],
+    });
+    assertEquals(denied.isErr(), true);
+    const missing = await verifyLocalAuthorization({
+      kind: "request",
+      cache: value,
+      message: {
+        data: new Uint8Array(),
+        headers: natsHeaders(),
+        reply: "_INBOX.test.reply",
+        subject: "rpc.v1.documents.Documents.Get",
+      },
+      permission: {
+        apiId: "documents",
+        apiVersion: "v1",
+        surfaceKind: "rpc",
+        surfaceName: "Documents.Get",
+        action: "call",
+      } satisfies DescriptorPermissionAtom,
+      requiredCapabilities: [],
+    });
+    assertEquals(missing.isErr(), true);
+    const revoked = await verifyLocalAuthorization({
+      kind: "event",
+      cache: value,
+      message: {
+        data: new Uint8Array(),
+        headers: natsHeaders(),
+        subject: "events.v1.documents.Documents.Changed",
+      },
+      permission: undefined,
+      descriptorIdentity: "documents@v1",
+      requiredCapabilities: [],
+    });
+    assertEquals(revoked.isErr(), true);
+    const counts = await verificationCounts();
+    assertEquals((counts.get("request:denied") ?? 0) >= 1, true);
+    assertEquals((counts.get("request:invalid") ?? 0) >= 1, true);
+    assertEquals(
+      (counts.get("event:denied") ?? 0) + (counts.get("event:revoked") ?? 0) >=
+        1,
+      true,
+    );
+  } finally {
+    value.stop();
+    await verifierProvider.shutdown();
+    metrics.disable();
   }
 });

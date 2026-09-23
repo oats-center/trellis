@@ -906,7 +906,7 @@ app console {
     rpc Metrics;
     rpc Query;
     rpc Summary;
-    feed Watch;
+    live Watch;
   }
   use jobs {
     rpc Cancel;
@@ -920,7 +920,7 @@ app console {
     rpc Summary;
     rpc ReplayDLQ;
     rpc Retry;
-    feed Watch;
+    live Watch;
   }
   use events {
     rpc Consumers.Inspect;
@@ -934,6 +934,6 @@ app console {
     rpc Inspect;
     rpc Metrics;
     rpc Query;
-    feed Watch;
+    live Watch;
   }
 }

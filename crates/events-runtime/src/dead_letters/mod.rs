@@ -10,7 +10,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 pub use journal::{dead_letter_id, DeadLetterJournal, JournalError};
-pub use projector::{start_dead_letter_projector, DeadLetterProjectorHandle};
+pub use projector::{
+    dead_letters_projector_consumer_name, start_dead_letter_projector, DeadLetterProjectorHandle,
+};
 pub use replay::{start_replay_dispatcher, ReplayDispatcherHandle};
 
 /// Authoritative Consumer dead-letter stream.

@@ -18,6 +18,9 @@ const stats = {
   successes: [] as string[],
 };
 const attemptsByValue = new Map<string, number>();
+const eventOptions = Deno.env.get("EPHEMERAL") === "true"
+  ? { mode: "ephemeral" as const }
+  : { mode: "durable" as const, group: "events" };
 
 await service.onAlpha(
   async ({ event }) => {
@@ -39,10 +42,10 @@ await service.onAlpha(
     stats.successes.push(event.value);
   },
   {},
-  { mode: "durable", group: "events" },
+  eventOptions,
 ).orThrow();
 
-await service.onBeta(() => {}, {}, { mode: "durable", group: "events" })
+await service.onBeta(() => {}, {}, eventOptions)
   .orThrow();
 await service.handleDeliveryStats(() => Result.ok({ ...stats }));
 await service.handleObserved(() =>

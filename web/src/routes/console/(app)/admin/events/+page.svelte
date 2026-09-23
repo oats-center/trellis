@@ -23,7 +23,12 @@
     projectEventsHealthLedger,
     runDeadLetterMutation,
   } from "$lib/console/events_detail.ts";
-  import { LiveSubscription, RefreshScheduler } from "$lib/console/live_refresh.ts";
+  import {
+    beginOwnedWatch,
+    LiveSubscription,
+    RefreshScheduler,
+    type WatchAttempt,
+  } from "$lib/console/live_refresh.ts";
   import { classifyMutationError } from "$lib/console/mutation.ts";
   import { type apis } from "trellis-web-generated";
   import { subjectMatches } from "./subject";
@@ -158,15 +163,30 @@
 
   let loadSequence = 0;
   let deadLetterSequence = 0;
+  let deadLetterBusyGeneration = 0;
   let disposed = false;
+  let queryEpoch = 0;
+  let selectionEpoch = 0;
   /**
    * Semantic identity of the committed list query. Changing focus, filters,
    * window, or page invalidates every detail read that belonged to the old
    * query, so a late response cannot repopulate the detail area.
    */
   let listKey = $state("");
+  type DesiredQuery = {
+    key: string;
+    eventQuery: apis.events.QueryInput;
+    metricsInput: apis.events.MetricsInput;
+    window: WindowValue;
+  };
+  let desiredQuery: DesiredQuery = {
+    key: "",
+    eventQuery: { page: { limit: pageLimit }, window: "1h" },
+    metricsInput: { window: "1h" },
+    window: "1h",
+  };
   const detailOwnership = new DetailOwnership();
-  let watchController: AbortController | null = null;
+  let watchAttempt: WatchAttempt<unknown> | null = null;
   let subscription: LiveSubscription | null = null;
   let consumerError = $state<string | null>(null);
   let metricsError = $state<string | null>(null);
@@ -453,37 +473,53 @@
     return null;
   }
 
+  function commitQueryChange(): void {
+    const key = currentListKey();
+    if (key === desiredQuery.key && key === listKey) return;
+    queryEpoch += 1;
+    listKey = key;
+    desiredQuery = {
+      key,
+      eventQuery: buildEventQuery(),
+      metricsInput: { window: windowValue },
+      window: windowValue,
+    };
+    detailOwnership.setListKey(key);
+  }
+
   function requestSnapshot(showLoading = true) {
+    commitQueryChange();
     if (showLoading) snapshotShowsLoading = true;
     return refreshScheduler.refreshNow();
   }
 
   async function readSnapshot(showLoading = true) {
+    if (disposed) return;
     const sequence = ++loadSequence;
-    // The key this read belongs to, captured before any await so a later
-    // filter change cannot make an old response look current.
-    const requestedListKey = currentListKey();
-    const requestedWindow = windowValue;
-    listKey = requestedListKey;
-    // A semantic query change ends the previous detail reads and clears the
-    // selection before the new list read starts.
-    detailOwnership.setListKey(requestedListKey);
+    const capturedQuery = desiredQuery;
+    const capturedEpoch = queryEpoch;
+    const capturedSelectionEpoch = selectionEpoch;
+    const requestedWindow = capturedQuery.window;
     if (showLoading) loading = true;
     else refreshing = true;
-    const metricsInput: apis.events.MetricsInput = { window: requestedWindow };
     const selectedResourceId = selectedConsumer?.row.resourceId;
     // The event query is primary. Consumer query, metrics, diagnostics, and the
     // dead-letter query are independent: a denied or failed optional read must
     // not blank permitted event rows.
     const [eventResult, consumerResult, metricsResult, diagnosticsResult, deadLetterResult] =
       await Promise.allSettled([
-        trellis.eventsQuery(buildEventQuery(), { timeout: rpcTimeout }).orThrow(),
+        trellis.eventsQuery(capturedQuery.eventQuery, { timeout: rpcTimeout }).orThrow(),
         loadConsumers(),
-        trellis.eventsMetrics(metricsInput, { timeout: rpcTimeout }).orThrow(),
+        trellis.eventsMetrics(capturedQuery.metricsInput, { timeout: rpcTimeout }).orThrow(),
         trellis.diagnostics({}, { timeout: rpcTimeout }).orThrow(),
         selectedResourceId ? loadDeadLetters(selectedResourceId) : Promise.resolve(null),
       ]);
-    if (sequence !== loadSequence || disposed || listKey !== requestedListKey) return;
+    if (
+      disposed ||
+      sequence !== loadSequence ||
+      capturedEpoch !== queryEpoch ||
+      capturedQuery.key !== desiredQuery.key
+    ) return;
     try {
       if (eventResult.status === "fulfilled") {
         error = null;
@@ -532,15 +568,28 @@
         diagnostics = null;
         diagnosticsError = diagnosticsResult.status === "rejected" ? errorMessage(diagnosticsResult.reason) : "Event diagnostics are not permitted.";
       }
-      if (deadLetterResult.status === "fulfilled" && deadLetterResult.value !== null && selectedResourceId === selectedConsumer?.row.resourceId) {
+      if (
+        capturedSelectionEpoch === selectionEpoch &&
+        deadLetterResult.status === "fulfilled" &&
+        deadLetterResult.value !== null &&
+        selectedResourceId === selectedConsumer?.row.resourceId
+      ) {
         deadLetters = deadLetterResult.value;
         deadLetterPanelError = null;
-      } else if (selectedResourceId === selectedConsumer?.row.resourceId) {
+      } else if (
+        capturedSelectionEpoch === selectionEpoch &&
+        selectedResourceId === selectedConsumer?.row.resourceId
+      ) {
         deadLetters = [];
         if (selectedResourceId) deadLetterPanelError = deadLetterResult.status === "rejected" ? errorMessage(deadLetterResult.reason) : "Dead-letter query is not permitted.";
       }
     } finally {
-      if (sequence === loadSequence && !disposed) {
+      if (
+        sequence === loadSequence &&
+        !disposed &&
+        capturedEpoch === queryEpoch &&
+        capturedQuery.key === desiredQuery.key
+      ) {
         loading = false;
         refreshing = false;
       }
@@ -566,6 +615,7 @@
    */
   function invalidateDetails(): void {
     detailOwnership.invalidate();
+    selectionEpoch += 1;
     ++deadLetterSequence;
     selectedEvent = null;
     selectedConsumer = null;
@@ -651,6 +701,7 @@
   }
 
   async function inspectConsumer(row: ConsumerRow) {
+    selectionEpoch += 1;
     const token = detailOwnership.begin("consumer", row.consumerName);
     ++deadLetterSequence;
     detailLoading = true;
@@ -693,6 +744,15 @@
   async function changeDeadLetter(deadLetter: apis.events.DeadLettersQueryOutput["items"][number], action: "replay" | "dismiss") {
     const resourceId = selectedConsumer?.row.resourceId;
     if (resourceId !== deadLetter.resourceId) return;
+    const capturedQueryEpoch = queryEpoch;
+    const capturedKey = desiredQuery.key;
+    const capturedSelectionEpoch = selectionEpoch;
+    const mutationToken = ++deadLetterBusyGeneration;
+    const owned = () =>
+      !disposed &&
+      capturedQueryEpoch === queryEpoch &&
+      capturedKey === desiredQuery.key &&
+      capturedSelectionEpoch === selectionEpoch;
     const input = { resourceId: deadLetter.resourceId, deadLetterId: deadLetter.deadLetterId, expectedRevision: deadLetter.revision, requestId: crypto.randomUUID() };
     const confirmed = await confirmationModal?.confirm({
       title: `${action === "replay" ? "Replay" : "Dismiss"} dead letter?`,
@@ -701,21 +761,23 @@
       targetLabel: "Dead letter",
       targetName: deadLetter.deadLetterId,
     });
-    if (!confirmed || disposed || selectedConsumer?.row.resourceId !== resourceId ||
-
+    if (!confirmed || !owned() || selectedConsumer?.row.resourceId !== resourceId ||
       !deadLetters.some((item) => item.deadLetterId === input.deadLetterId && item.revision === input.expectedRevision)) return;
     deadLetterBusy = deadLetter.deadLetterId;
     deadLetterError = { ...deadLetterError, [deadLetter.deadLetterId]: "" };
     try {
       await runDeadLetterMutation({
-        mounted: () => !disposed,
+        mounted: owned,
         mutate: async () => {
           if (action === "replay") await trellis.deadLettersReplay(input, { timeout: rpcTimeout }).orThrow();
           else await trellis.deadLettersDismiss(input, { timeout: rpcTimeout }).orThrow();
         },
-        followUp: () => requestSnapshot(false),
+        followUp: () => {
+          if (!owned()) return;
+          return requestSnapshot(false);
+        },
         onError: (cause) => {
-          if (selectedConsumer?.row.resourceId !== resourceId) return;
+          if (!owned() || selectedConsumer?.row.resourceId !== resourceId) return;
           deadLetterError = {
             ...deadLetterError,
             [deadLetter.deadLetterId]: classifyMutationError(cause).kind === "unknown"
@@ -725,7 +787,7 @@
         },
       });
     } finally {
-      if (!disposed) deadLetterBusy = null;
+      if (owned() && deadLetterBusy === mutationToken) deadLetterBusy = null;
     }
   }
 
@@ -749,28 +811,25 @@
 
   function startWatch() {
     stopWatch();
-    // Each open owns its own controller, so disposal releases the subscription
-    // it belongs to rather than whichever controller happens to be current.
     const live = new LiveSubscription({
       subscribe: async () => {
-        const controller = new AbortController();
-        watchController = controller;
-        const stream = await trellis.eventsWatch({}, { signal: controller.signal }).orThrow();
-        void (async () => {
-          try {
-            for await (const frame of stream) {
-              if (controller.signal.aborted || disposed) return;
-              if (objectRecord(frame).kind !== "ready") refreshScheduler.notify();
-            }
-            if (!controller.signal.aborted) live.closed();
-          } catch (cause) {
-            if (!controller.signal.aborted) live.closed(cause);
-          }
-        })();
+        const attempt = beginOwnedWatch({
+          open: (signal) => trellis.eventsWatch({}, { signal }).orThrow(),
+          onFrame: (frame) => {
+            if (objectRecord(frame).kind !== "ready") refreshScheduler.notify();
+          },
+          stillOwned: () => !disposed && watchAttempt === attempt,
+          onUnexpectedEnd: (cause) => live.closed(cause),
+        });
+        watchAttempt = attempt;
+        await attempt.ready;
       },
-      unsubscribe: () => {
-        watchController?.abort();
-        watchController = null;
+      unsubscribe: async () => {
+        const attempt = watchAttempt;
+        watchAttempt = null;
+        attempt?.controller.abort();
+        attempt?.stream?.close?.();
+        await attempt?.pump;
       },
       onStatus: (status, detail) => {
         if (disposed) return;
@@ -785,8 +844,10 @@
   }
 
   function stopWatch() {
-    watchController?.abort();
-    watchController = null;
+    const attempt = watchAttempt;
+    watchAttempt = null;
+    attempt?.controller.abort();
+    attempt?.stream?.close?.();
     void subscription?.dispose();
     subscription = null;
     feedOnline = false;

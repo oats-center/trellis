@@ -1,6 +1,6 @@
 //! Generated API `trellis.jobs@v1`.
 pub const API_ID: &str = "trellis.jobs@v1";
-pub const API_DIGEST: &str = "pgIp9PftLViyn-1-PKqw2kkCsEWAJYHurAEA158ylso";
+pub const API_DIGEST: &str = "dCRMNYjg9sZNN3dKFBoBlVJ3gMvPwPjZsPH6n16ECtc";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;
@@ -748,18 +748,18 @@ pub mod rpc {
 }
 pub mod operations {}
 pub mod events {}
-pub mod feeds {
+pub mod lives {
     pub type WatchInput = crate::__types::trellis::JobsWatchRequest;
     pub type WatchEvent = crate::__types::trellis::JobsWatchFrame;
     pub struct Watch;
     impl Watch {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "feed.Watch";
+        pub const DESCRIPTOR_NAME: &'static str = "live.Watch";
         pub const KEY: &'static str = "jobs.Watch";
-        pub const SUBJECT: &'static str = "feed.v1.jobs.Watch";
+        pub const SUBJECT: &'static str = "live.v1.jobs.Watch";
         pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::stream"];
     }
-    impl trellis_rs::generated::FeedDescriptor for Watch {
+    impl trellis_rs::generated::LiveDescriptor for Watch {
         type Input = WatchInput;
         type Event = WatchEvent;
         const API_ID: &'static str = super::API_ID;
@@ -1132,15 +1132,12 @@ impl Client {
     }
     pub async fn watch(
         &self,
-        input: &feeds::WatchInput,
+        input: &lives::WatchInput,
     ) -> Result<
-        futures_util::stream::BoxStream<
-            'static,
-            Result<feeds::WatchEvent, trellis_rs::client::TrellisClientError>,
-        >,
+        trellis_rs::LiveSubscription<lives::WatchEvent>,
         trellis_rs::client::TrellisClientError,
     > {
-        self.inner.feed::<feeds::Watch>(input).await
+        self.inner.live::<lives::Watch>(input).await
     }
 }
 pub struct Provider<'a, P> {
@@ -1286,14 +1283,14 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
     }
     pub fn register_watch<F, S>(&mut self, handler: F)
     where
-        F: Fn(trellis_rs::service::ServiceHandlerContext, feeds::WatchInput) -> S
+        F: Fn(trellis_rs::service::ServiceLiveHandlerContext, lives::WatchInput) -> S
             + Send
             + Sync
             + 'static,
-        S: futures_util::Stream<Item = Result<feeds::WatchEvent, trellis_rs::service::ServerError>>
+        S: futures_util::Stream<Item = Result<lives::WatchEvent, trellis_rs::service::ServerError>>
             + Send
             + 'static,
     {
-        self.runtime.register_feed::<feeds::Watch, _, _>(handler);
+        self.runtime.register_live::<lives::Watch, _, _>(handler);
     }
 }

@@ -18,6 +18,7 @@ mod bootstrap_ports;
 mod core_bootstrap;
 mod error;
 mod events_runtime;
+mod live_router;
 mod local_validator;
 mod operation_repository;
 mod operations;
@@ -37,7 +38,7 @@ mod transfer;
 pub(crate) use transfer::transfer_frame_proof_payload;
 
 #[doc(hidden)]
-pub use crate::generated::{EventDescriptor, FeedDescriptor, RpcDescriptor};
+pub use crate::generated::{EventDescriptor, LiveDescriptor, RpcDescriptor};
 pub use crate::jobs::{ActiveJob, JobDescriptor, JobRef, JobUpdateDescriptor, JobsError};
 #[doc(hidden)]
 pub use authenticated_router::{AuthenticatedRouter, RequestValidation, RequestValidator};
@@ -52,13 +53,15 @@ pub use error::{
     DeclaredRpcError, HandlerResult, SchemaValidationIssue, ServerError, ValidationIssue,
 };
 pub use events_runtime::{EventsMessageStream, EventsRuntime};
+#[cfg(feature = "runtime-internals")]
+pub use live_router::LiveProviderOwner;
 #[doc(hidden)]
 pub use local_validator::{
     payload_hash_base64url, EventVerificationFailure, LocalAuthVerifier, VerifiedCaller,
 };
 pub use operation_repository::{
     operation_invocation_digest, DurableOperationRecord, DurableOperationSignal,
-    KvOperationRepository, OperationRepository, RevisionedOperationRecord,
+    KvOperationRepository, OperationRepository, OperationTraceCarrier, RevisionedOperationRecord,
     MAX_OPERATION_ERROR_BYTES, MAX_OPERATION_INPUT_BYTES, MAX_OPERATION_OUTPUT_BYTES,
     MAX_OPERATION_PROGRESS_BYTES, MAX_OPERATION_RECORD_BYTES, MAX_OPERATION_SIGNALS,
     MAX_OPERATION_SIGNAL_BYTES,
@@ -85,7 +88,7 @@ pub use runtime_facade::{ConnectedServiceRuntime, CoreBootstrapBinding, ServiceH
 pub use runtime_facade::{
     ServiceConnectOptions, ServiceEventListenOptions, ServiceEventListenerContext,
     ServiceEventListenerHandle, ServiceEventListenerMode, ServiceEventPublisherContext,
-    ServiceHandlerContext, ServiceRuntimeError, DEFAULT_TIMEOUT_MS,
+    ServiceHandlerContext, ServiceLiveHandlerContext, ServiceRuntimeError, DEFAULT_TIMEOUT_MS,
 };
 #[doc(hidden)]
 pub use schema_validation::validate_input_schema;
@@ -139,52 +142,87 @@ pub mod internal {
                 )))
             }
         };
-        let bound = subjects
-            .iter()
-            .map(|subject| {
-                let family = subject.split('.').next().unwrap_or_default();
-                let wildcard = subject.ends_with(".>");
-                let subject = subject.strip_suffix(".>").unwrap_or(subject);
-                let action = if wildcard {
-                    "Route"
-                } else if family == "operations" {
-                    subject.splitn(5, '.').nth(4).unwrap_or_default()
+        let mut bound: Vec<String> = Vec::new();
+        for subject in subjects {
+            let family = subject.split('.').next().unwrap_or_default();
+            let wildcard = subject.ends_with(".>");
+            let subject = subject.strip_suffix(".>").unwrap_or(subject);
+            // An operation action name may contain dots (`Auth.X.Y`), so it
+            // spans every segment after the `operations.v1.<api>` prefix. RPC
+            // and Live wildcard entries keep the derived `Route` prefix form.
+            let action = if wildcard && family != "operations" {
+                "Route"
+            } else {
+                let logical = subject.splitn(4, '.').nth(3).unwrap_or_default();
+                // A live descriptor's logical name is `<ApiShortName>.<Action>`
+                // (for example `Health.Watch`); the bound route drops the API
+                // short-name group so it matches the client's bound subject.
+                if family == "live" {
+                    logical
+                        .split_once('.')
+                        .map_or(logical, |(_, action)| action)
                 } else {
-                    subject.splitn(4, '.').nth(3).unwrap_or_default()
-                };
-                match family {
-                    "rpc" => {
-                        trellis_protocol::derive_bound_rpc_subject(api_id, deployment_id, action)
-                    }
-                    "feed" => {
-                        trellis_protocol::derive_bound_feed_subject(api_id, deployment_id, action)
-                    }
-                    "operations" => trellis_protocol::derive_bound_operation_subject(
-                        api_id,
-                        deployment_id,
-                        action,
-                    ),
-                    _ => {
-                        return Err(super::ServerError::Nats(format!(
-                            "unsupported built-in subject {subject}"
-                        )))
-                    }
+                    logical
                 }
-                .map(|subject| {
-                    if wildcard {
-                        subject
+            };
+            match family {
+                "rpc" => {
+                    let derived =
+                        trellis_protocol::derive_bound_rpc_subject(api_id, deployment_id, action)
+                            .map_err(|error| super::ServerError::Nats(error.to_string()))?;
+                    bound.push(if wildcard {
+                        derived
                             .strip_suffix("Route")
                             .expect("derived subject contains action")
                             .to_owned()
                             + ">"
                     } else {
-                        subject
+                        derived
+                    });
+                }
+                "live" => {
+                    let derived =
+                        trellis_protocol::derive_bound_live_subject(api_id, deployment_id, action)
+                            .map_err(|error| super::ServerError::Nats(error.to_string()))?;
+                    bound.push(if wildcard {
+                        derived
+                            .strip_suffix("Route")
+                            .expect("derived subject contains action")
+                            .to_owned()
+                            + ">"
+                    } else {
+                        derived
+                    });
+                }
+                "operations" => {
+                    let base = trellis_protocol::derive_bound_operation_subject(
+                        api_id,
+                        deployment_id,
+                        action,
+                    )
+                    .map_err(|error| super::ServerError::Nats(error.to_string()))?;
+                    if wildcard {
+                        // The provider transport grants this exact operation
+                        // subject, its `.control` lane, and its `.updates.*`
+                        // lane; a deployment-wide wildcard would exceed them.
+                        bound.push(format!("{base}.control"));
+                        bound.push(format!("{base}.updates.*"));
+                    } else {
+                        bound.push(base);
                     }
-                })
-                .map_err(|error| super::ServerError::Nats(error.to_string()))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+                }
+                _ => {
+                    return Err(super::ServerError::Nats(format!(
+                        "unsupported built-in subject {subject}"
+                    )))
+                }
+            }
+        }
         let subjects = bound.iter().map(String::as_str).collect::<Vec<_>>();
+        // A live-capable router must be given its connection's provider owner
+        // before it serves any traffic; fail loudly here instead of surfacing
+        // the mistake to the first caller.
+        router.require_live_owner()?;
         let router = super::AuthenticatedRouter::new(router, validator);
         super::runtime::run_multi_subject_service(nats, &subjects, router).await
     }

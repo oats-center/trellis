@@ -8,7 +8,7 @@ type __ActionNames = {
 	readonly "runtime-trellis.runtime@v1:operation:Upload": "Upload";
 	readonly "runtime-trellis.runtime@v1:operation:Work": "Work";
 	readonly "runtime-trellis.runtime@v1:event:Changed": "Changed";
-	readonly "runtime-trellis.runtime@v1:feed:Watch": "Watch";
+	readonly "runtime-trellis.runtime@v1:live:Watch": "Watch";
 };
 type __Resources = {};
 declare const __participant: {
@@ -35,7 +35,7 @@ declare const __participant: {
 			readonly descriptorName: "event:Changed";
 			readonly direction: "subscribe";
 		}, {
-			readonly descriptorName: "feed:Watch";
+			readonly descriptorName: "live:Watch";
 			readonly direction: "subscribe";
 		}];
 		readonly optionalCapabilities: readonly [];
@@ -62,7 +62,7 @@ export declare const participant: {
 	readonly __runtimeTypes?: typeof __participant.__runtimeTypes;
 	readonly packageEvidence: unknown;
 };
-export declare const PARTICIPANT_DIGEST: "6xbctPUz_RVhIrsA5EDgO4osdpMUWggqddXu6Y9SdqE";
+export declare const PARTICIPANT_DIGEST: "dtrmFlXQgzeI9AywEU7roHkTrW2YKPzGqwQ-NWFSrIg";
 export type Participant = typeof participant;
 export type ResourceDescriptors = typeof participant.resources;
 export type ResourceHandles<Handles extends { readonly [Name in keyof ResourceDescriptors] : unknown }> = { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "required" ? Name : never] : Handles[Name] } & { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "optional" ? Name : never] : Handles[Name] | undefined };

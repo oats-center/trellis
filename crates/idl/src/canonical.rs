@@ -144,7 +144,7 @@ pub fn selected_surface_digest(
                     &serde_json::to_string(parameters).expect("event paths serialize"),
                 );
             }
-            ActionDefinition::Feed { input, event } => {
+            ActionDefinition::Live { input, event } => {
                 append_schema(&mut output, graph, input)?;
                 append_schema(&mut output, graph, event)?;
             }
@@ -586,7 +586,7 @@ fn render_action(output: &mut String, id: &ActionId, value: &ActionDefinition, i
                 .unwrap();
             }
         }
-        ActionDefinition::Feed { input, event } => {
+        ActionDefinition::Live { input, event } => {
             writeln!(output, "    input {};", imports.ty(input)).unwrap();
             writeln!(output, "    event {};", imports.ty(event)).unwrap();
         }
@@ -612,7 +612,7 @@ fn render_selection(output: &mut String, value: &ActionSelection, indent: &str) 
         InteractionDirection::Subscribe if value.action.kind == ActionKind::Event => {
             "subscribe event"
         }
-        InteractionDirection::Subscribe => "feed",
+        InteractionDirection::Subscribe => "live",
     };
     writeln!(output, "{indent}{prefix} {};", value.action.name).unwrap();
 }
@@ -855,7 +855,7 @@ fn selection_key(value: &ActionSelection) -> String {
         InteractionDirection::Subscribe if value.action.kind == ActionKind::Event => {
             "subscribe event"
         }
-        InteractionDirection::Subscribe => "feed",
+        InteractionDirection::Subscribe => "live",
     };
     format!("{prefix} {}", value.action.name)
 }
@@ -934,7 +934,7 @@ fn collect_action(
                 .for_each(|value| collect_ref(value, root, refs));
         }
         ActionDefinition::Event { payload, .. } => collect_ref(payload, root, refs),
-        ActionDefinition::Feed { input, event } => {
+        ActionDefinition::Live { input, event } => {
             collect_ref(input, root, refs);
             collect_ref(event, root, refs);
         }
@@ -956,7 +956,7 @@ fn action_refs<'a>(value: &'a ActionDefinition, refs: &mut Vec<&'a TypeRef>) {
             refs.extend(signals.values());
         }
         ActionDefinition::Event { payload, .. } => refs.push(payload),
-        ActionDefinition::Feed { input, event } => refs.extend([input, event]),
+        ActionDefinition::Live { input, event } => refs.extend([input, event]),
     }
 }
 
@@ -1052,7 +1052,7 @@ fn raw_kind(value: ActionKind) -> &'static str {
         ActionKind::Rpc => "rpc",
         ActionKind::Operation => "operation",
         ActionKind::Event => "event",
-        ActionKind::Feed => "feed",
+        ActionKind::Live => "live",
     }
 }
 fn participant_kind(value: ParticipantKind) -> &'static str {

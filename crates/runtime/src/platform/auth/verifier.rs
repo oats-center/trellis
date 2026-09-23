@@ -129,6 +129,27 @@ impl RuntimeAuthVerifier {
         &self,
         input: RuntimeAuthorizationRequestVerificationInput<'_>,
     ) -> Result<VerifiedRequest, AuthorizationStateError> {
+        let observation = trellis_rs::telemetry::lifecycle::Observation::start(
+            trellis_rs::telemetry::instruments::DurationFamily::AuthVerification,
+            vec![trellis_rs::telemetry::KeyValue::new(
+                "trellis.purpose",
+                "request",
+            )],
+            "cancelled",
+        );
+        let result = self.verify_request_inner(input).await;
+        let outcome = match &result {
+            Ok(_) => "ok",
+            Err(error) => verification_outcome(error),
+        };
+        observation.finish(outcome);
+        result
+    }
+
+    async fn verify_request_inner(
+        &self,
+        input: RuntimeAuthorizationRequestVerificationInput<'_>,
+    ) -> Result<VerifiedRequest, AuthorizationStateError> {
         let RuntimeAuthorizationRequestVerificationInput {
             subject,
             payload,
@@ -536,6 +557,37 @@ fn now_seconds() -> Result<i64, AuthorizationStateError> {
 
 fn denied(message: impl Into<String>) -> AuthorizationStateError {
     AuthorizationStateError::InvalidRecord(message.into())
+}
+
+/// Bounded verification outcome for one authorization error.
+fn verification_outcome(error: &AuthorizationStateError) -> &'static str {
+    match error {
+        AuthorizationStateError::NotAuthorized
+        | AuthorizationStateError::PrincipalInactive
+        | AuthorizationStateError::DeploymentInactive
+        | AuthorizationStateError::InstanceInactive
+        | AuthorizationStateError::DeviceInactive
+        | AuthorizationStateError::ParticipantMissing
+        | AuthorizationStateError::IdentityMissing => "denied",
+        AuthorizationStateError::SessionRevoked
+        | AuthorizationStateError::AuthorityRevoked
+        | AuthorizationStateError::PortalPolicyChanged => "revoked",
+        AuthorizationStateError::SessionExpired
+        | AuthorizationStateError::AuthorityExpired
+        | AuthorizationStateError::DelegationExpired => "expired",
+        AuthorizationStateError::RequiredDependencyUnavailable(_)
+        | AuthorizationStateError::RequiredResourceUnavailable(_)
+        | AuthorizationStateError::MaterializationStale
+        | AuthorizationStateError::AuthorityPending
+        | AuthorizationStateError::ContextLifetimeUnavailable => "unavailable",
+        AuthorizationStateError::InvalidRecord(_)
+        | AuthorizationStateError::WrongPrincipalKind
+        | AuthorizationStateError::ParticipantDigestMismatch
+        | AuthorizationStateError::NeedsDigestMismatch
+        | AuthorizationStateError::SessionMissing
+        | AuthorizationStateError::ContextSnapshotChanged => "invalid",
+        _ => "error",
+    }
 }
 
 #[cfg(test)]

@@ -18,6 +18,10 @@ import { buildProofInput } from "./auth/proof.ts";
 import { base64urlEncode, sha256 } from "./auth/utils.ts";
 import { TransferError } from "./errors/TransferError.ts";
 import {
+  recordCatalogCounter,
+  recordCatalogDuration,
+} from "./telemetry/mod.ts";
+import {
   createNatsHeaderCarrier,
   injectTraceContext,
   recordTrellisError,
@@ -564,183 +568,201 @@ export class SendTransferHandle extends BaseTransferHandle {
   }
 
   send(body: TransferBody): AsyncResult<FileInfo, TransferError> {
+    const startedAt = performance.now();
     return AsyncResult.from(
       (async (): Promise<ResultType<FileInfo, TransferError>> => {
-        const valid = this.validateGrant(this.#grant, "send").take();
-        if (isErr(valid)) {
-          return Result.err(recordTransferError(valid.error, "send", "grant"));
-        }
-
-        let sentBytes = 0;
-        let seq = 0;
-        const hasher = incrementalSha256.create();
-        const abort = () =>
-          this.cancelTransfer(this.#grant.subject).catch(() => {});
-
-        try {
-          for await (const chunk of chunkBody(body, this.#grant.chunkBytes)) {
-            sentBytes += chunk.length;
-            if (
-              this.#grant.maxBytes !== undefined &&
-              sentBytes > this.#grant.maxBytes
-            ) {
-              await abort();
-              return Result.err(
-                recordTransferError(
-                  new TransferError({
-                    operation: "send",
-                    context: {
-                      reason: "max_bytes_exceeded",
-                      maxBytes: this.#grant.maxBytes,
-                      attemptedBytes: sentBytes,
-                    },
-                  }),
-                  "send",
-                  "validation",
-                ),
-              );
-            }
-
-            const reply = createInbox(this.inboxPrefix);
-            const headers = await this.buildHeaders(
-              this.#grant.subject,
-              reply,
-              chunk,
-              seq,
-              undefined,
+        const result = await (async (): Promise<
+          ResultType<FileInfo, TransferError>
+        > => {
+          const valid = this.validateGrant(this.#grant, "send").take();
+          if (isErr(valid)) {
+            return Result.err(
+              recordTransferError(valid.error, "send", "grant"),
             );
-            const response = await AsyncResult.try(() =>
-              requestTransfer(
-                this.nc,
-                this.#grant.subject,
-                chunk,
-                headers,
-                reply,
-                this.timeoutMs,
-              )
-            ).take();
-            if (isErr(response)) {
-              await abort();
-              return Result.err(
-                recordTransferError(
-                  new TransferError({
-                    operation: "send",
-                    cause: response.error,
-                  }),
-                  "send",
-                  "send",
-                ),
-              );
-            }
-
-            const ack = parseTransferAck(response, "send").take();
-            if (isErr(ack)) {
-              await abort();
-              return Result.err(recordTransferError(ack.error, "send", "ack"));
-            }
-            if (ack.status === "complete") {
-              await abort();
-              return Result.err(
-                recordTransferError(
-                  new TransferError({
-                    operation: "send",
-                    context: { reason: "premature_completion" },
-                  }),
-                  "send",
-                  "ack",
-                ),
-              );
-            }
-            hasher.update(chunk);
-            seq += 1;
           }
-        } catch (cause) {
-          await abort();
-          return Result.err(
-            recordTransferError(
-              new TransferError({ operation: "send", cause }),
-              "send",
-              "source",
-            ),
-          );
-        }
 
-        const sentDigest = `SHA-256=${base64urlEncode(hasher.digest())}`;
-        const completion = new TextEncoder().encode(JSON.stringify({
-          action: "complete",
-          size: sentBytes,
-          digest: sentDigest,
-        }));
-        const reply = createInbox(this.inboxPrefix);
-        const finalHeaders = await this.buildHeaders(
-          this.#grant.subject,
-          reply,
-          completion,
-          seq,
-          "complete",
-        );
-        const finalResponse = await AsyncResult.try(() =>
-          requestTransfer(
-            this.nc,
+          let sentBytes = 0;
+          let seq = 0;
+          const hasher = incrementalSha256.create();
+          const abort = () =>
+            this.cancelTransfer(this.#grant.subject).catch(() => {});
+
+          try {
+            for await (const chunk of chunkBody(body, this.#grant.chunkBytes)) {
+              sentBytes += chunk.length;
+              if (
+                this.#grant.maxBytes !== undefined &&
+                sentBytes > this.#grant.maxBytes
+              ) {
+                await abort();
+                return Result.err(
+                  recordTransferError(
+                    new TransferError({
+                      operation: "send",
+                      context: {
+                        reason: "max_bytes_exceeded",
+                        maxBytes: this.#grant.maxBytes,
+                        attemptedBytes: sentBytes,
+                      },
+                    }),
+                    "send",
+                    "validation",
+                  ),
+                );
+              }
+
+              const reply = createInbox(this.inboxPrefix);
+              const headers = await this.buildHeaders(
+                this.#grant.subject,
+                reply,
+                chunk,
+                seq,
+                undefined,
+              );
+              const response = await AsyncResult.try(() =>
+                requestTransfer(
+                  this.nc,
+                  this.#grant.subject,
+                  chunk,
+                  headers,
+                  reply,
+                  this.timeoutMs,
+                )
+              ).take();
+              if (isErr(response)) {
+                await abort();
+                return Result.err(
+                  recordTransferError(
+                    new TransferError({
+                      operation: "send",
+                      cause: response.error,
+                    }),
+                    "send",
+                    "send",
+                  ),
+                );
+              }
+
+              const ack = parseTransferAck(response, "send").take();
+              if (isErr(ack)) {
+                await abort();
+                return Result.err(
+                  recordTransferError(ack.error, "send", "ack"),
+                );
+              }
+              if (ack.status === "complete") {
+                await abort();
+                return Result.err(
+                  recordTransferError(
+                    new TransferError({
+                      operation: "send",
+                      context: { reason: "premature_completion" },
+                    }),
+                    "send",
+                    "ack",
+                  ),
+                );
+              }
+              hasher.update(chunk);
+              seq += 1;
+            }
+          } catch (cause) {
+            await abort();
+            return Result.err(
+              recordTransferError(
+                new TransferError({ operation: "send", cause }),
+                "send",
+                "source",
+              ),
+            );
+          }
+
+          const sentDigest = `SHA-256=${base64urlEncode(hasher.digest())}`;
+          const completion = new TextEncoder().encode(JSON.stringify({
+            action: "complete",
+            size: sentBytes,
+            digest: sentDigest,
+          }));
+          const reply = createInbox(this.inboxPrefix);
+          const finalHeaders = await this.buildHeaders(
             this.#grant.subject,
-            completion,
-            finalHeaders,
             reply,
-            this.timeoutMs,
-          )
-        ).take();
-        if (isErr(finalResponse)) {
-          return Result.err(
-            recordTransferError(
-              new TransferError({
-                operation: "send",
-                cause: finalResponse.error,
-              }),
-              "send",
-              "send",
-            ),
+            completion,
+            seq,
+            "complete",
           );
-        }
+          const finalResponse = await AsyncResult.try(() =>
+            requestTransfer(
+              this.nc,
+              this.#grant.subject,
+              completion,
+              finalHeaders,
+              reply,
+              this.timeoutMs,
+            )
+          ).take();
+          if (isErr(finalResponse)) {
+            return Result.err(
+              recordTransferError(
+                new TransferError({
+                  operation: "send",
+                  cause: finalResponse.error,
+                }),
+                "send",
+                "send",
+              ),
+            );
+          }
 
-        const finalAck = parseTransferAck(finalResponse, "send").take();
-        if (isErr(finalAck)) {
-          return Result.err(recordTransferError(finalAck.error, "send", "ack"));
+          const finalAck = parseTransferAck(finalResponse, "send").take();
+          if (isErr(finalAck)) {
+            return Result.err(
+              recordTransferError(finalAck.error, "send", "ack"),
+            );
+          }
+          if (finalAck.status !== "complete") {
+            return Result.err(
+              recordTransferError(
+                new TransferError({
+                  operation: "send",
+                  context: { reason: "missing_completion" },
+                }),
+                "send",
+                "ack",
+              ),
+            );
+          }
+          if (
+            finalAck.info.size !== sentBytes ||
+            finalAck.info.digest?.replace(/=+$/, "") !==
+              sentDigest.replace(/=+$/, "")
+          ) {
+            return Result.err(
+              recordTransferError(
+                new TransferError({
+                  operation: "send",
+                  context: {
+                    reason: "result_metadata_mismatch",
+                    expectedSize: sentBytes,
+                    actualSize: finalAck.info.size,
+                    expectedDigest: sentDigest,
+                    actualDigest: finalAck.info.digest,
+                  },
+                }),
+                "send",
+                "ack",
+              ),
+            );
+          }
+          return Result.ok(finalAck.info);
+        })();
+        if (result.isOk()) {
+          const info = result.take() as FileInfo;
+          recordTransferObservation("upload", startedAt, "ok", info.size ?? 0);
+          return Result.ok(info);
         }
-        if (finalAck.status !== "complete") {
-          return Result.err(
-            recordTransferError(
-              new TransferError({
-                operation: "send",
-                context: { reason: "missing_completion" },
-              }),
-              "send",
-              "ack",
-            ),
-          );
-        }
-        if (
-          finalAck.info.size !== sentBytes ||
-          finalAck.info.digest?.replace(/=+$/, "") !==
-            sentDigest.replace(/=+$/, "")
-        ) {
-          return Result.err(
-            recordTransferError(
-              new TransferError({
-                operation: "send",
-                context: {
-                  reason: "result_metadata_mismatch",
-                  expectedSize: sentBytes,
-                  actualSize: finalAck.info.size,
-                  expectedDigest: sentDigest,
-                  actualDigest: finalAck.info.digest,
-                },
-              }),
-              "send",
-              "ack",
-            ),
-          );
-        }
-        return Result.ok(finalAck.info);
+        recordTransferObservation("upload", startedAt, "error", 0);
+        return Result.err(result.error);
       })(),
     );
   }
@@ -802,11 +824,25 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
   bytes(): AsyncResult<Uint8Array, TransferError> {
     return AsyncResult.from(
       (async (): Promise<ResultType<Uint8Array, TransferError>> => {
+        const startedAt = performance.now();
         const streamResult = await this.stream().take();
         if (isErr(streamResult)) {
+          recordTransferObservation("download", startedAt, "error", 0);
           return Result.err(streamResult.error);
         }
-        return await collectStream(streamResult);
+        const collected = await collectStream(streamResult);
+        if (collected.isOk()) {
+          const bytes = collected.take() as Uint8Array;
+          recordTransferObservation(
+            "download",
+            startedAt,
+            "ok",
+            bytes.length,
+          );
+          return Result.ok(bytes);
+        }
+        recordTransferObservation("download", startedAt, "error", 0);
+        return Result.err(collected.error);
       })(),
     );
   }
@@ -845,4 +881,23 @@ export function createTransferHandle(
   return grant.direction === "send"
     ? new SendTransferHandle(nc, auth, timeoutMs, grant, inboxPrefix)
     : new ReceiveTransferHandle(nc, auth, timeoutMs, grant, inboxPrefix);
+}
+
+/** Records one logical transfer duration and, on success, its wire bytes. */
+function recordTransferObservation(
+  direction: "upload" | "download",
+  startedAt: number,
+  outcome: "ok" | "error",
+  bytes: number,
+): void {
+  recordCatalogDuration(
+    "trellis.transfer.duration",
+    performance.now() - startedAt,
+    { "trellis.direction": direction, "trellis.outcome": outcome },
+  );
+  if (outcome === "ok") {
+    recordCatalogCounter("trellis.transfer.wire.bytes", bytes, {
+      "trellis.direction": direction,
+    });
+  }
 }

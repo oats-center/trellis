@@ -1,0 +1,15 @@
+# Trace backend for case-owned evidence capture; never deployed in production.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4322
+exporters:
+  file:
+    path: /capture/traces.json
+    format: json
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [file]

@@ -30,14 +30,18 @@ export function eventDescriptorIdentity(
 
 /** Derives one deployment-bound API request subject. */
 export function boundApiSubject(
-  family: "rpc" | "operation" | "feed",
+  family: "rpc" | "operation" | "live",
   apiId: string,
   providerDeploymentId: string,
   action: string,
 ): string {
-  return `${family}.v1.${subjectToken(apiId)}.${
-    subjectToken(providerDeploymentId)
-  }.${action}`;
+  return family === "live"
+    ? `live.v1.route.${subjectToken(apiId)}.${
+      subjectToken(providerDeploymentId)
+    }.${action}`
+    : `${family}.v1.${subjectToken(apiId)}.${
+      subjectToken(providerDeploymentId)
+    }.${action}`;
 }
 
 /** Derives one API-qualified event subject template. */
@@ -45,18 +49,18 @@ export function eventSubject(apiId: string, action: string): string {
   return `events.v1.${subjectToken(apiId)}.${action}`;
 }
 
-/** Derives an owner control subscription or an exact subject for one Feed instance. */
-export function feedControlSubject(
-  feedSubject: string,
+/** Derives an owner control subscription or an exact subject for one Live instance. */
+export function liveControlSubject(
+  liveSubject: string,
   ownerInstanceId: string,
-  feedId?: string,
+  liveId?: string,
 ): string {
-  const ownerSubject = `${feedSubject}.control.${
+  const ownerSubject = `${liveSubject}.control.${
     subjectToken(ownerInstanceId)
   }`;
-  return feedId === undefined
+  return liveId === undefined
     ? `${ownerSubject}.*`
-    : `${ownerSubject}.${subjectToken(feedId)}`;
+    : `${ownerSubject}.${subjectToken(liveId)}`;
 }
 
 /** Derives the stable queue shared by replicas subscribed to an exact route. */
@@ -126,7 +130,7 @@ export type PermissionAtom = Readonly<{
   /** Version of the source API surface. */
   apiVersion: `v${number}`;
   /** API surface family. */
-  surfaceKind: "rpc" | "operation" | "event" | "feed" | "state";
+  surfaceKind: "rpc" | "operation" | "event" | "live" | "state";
   /** Exact API-local surface name. */
   surfaceName: string;
   /** Exact action required for the surface. */
@@ -181,14 +185,14 @@ export type EventDesc<S extends SchemaLike = SchemaLike> = {
   subscribeCapabilities: readonly string[];
 };
 
-export type FeedDesc<
+export type LiveDesc<
   I extends SchemaLike = SchemaLike,
   E extends SchemaLike = SchemaLike,
 > = {
   subject: string;
   input: I;
   event: E;
-  /** Exact permission required to subscribe to this feed. */
+  /** Exact permission required to subscribe to this live observation. */
   permission: PermissionAtom;
   subscribeCapabilities: readonly string[];
 };
@@ -239,6 +243,6 @@ export type RuntimeApi = {
   rpc: Record<string, RPCDesc>;
   operations: Record<string, OperationDesc>;
   events: Record<string, EventDesc>;
-  feeds?: Record<string, FeedDesc>;
+  lives?: Record<string, LiveDesc>;
   subjects: Record<string, unknown>;
 };

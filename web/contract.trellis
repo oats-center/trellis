@@ -77,9 +77,9 @@ app Console {
     rpc Inspect;
     rpc Metrics;
     rpc Query;
-    feed Watch;
+    live Watch;
   }
-  use health { rpc Inspect; rpc Metrics; rpc Query; rpc Summary; subscribe event StatusChanged; feed Watch; }
-  use jobs { rpc Cancel; rpc DismissDLQ; rpc GetKey; rpc Inspect; rpc ListDLQ; rpc ListServices; rpc Metrics; rpc Query; rpc ReplayDLQ; rpc Retry; rpc Summary; feed Watch; }
+  use health { rpc Inspect; rpc Metrics; rpc Query; rpc Summary; subscribe event StatusChanged; live Watch; }
+  use jobs { rpc Cancel; rpc DismissDLQ; rpc GetKey; rpc Inspect; rpc ListDLQ; rpc ListServices; rpc Metrics; rpc Query; rpc ReplayDLQ; rpc Retry; rpc Summary; live Watch; }
   use state { rpc Delete; rpc Resources.Inspect; rpc Resources.Query; }
 }

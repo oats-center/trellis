@@ -10,6 +10,8 @@ export type ClientOpts = {
   name?: string;
   log?: LoggerLike;
   timeout?: number;
+  /** Abandons an in-progress bootstrap and NATS connect when aborted. */
+  signal?: AbortSignal;
   stream?: string;
   noResponderRetry?: NoResponderRetryOpts;
 };

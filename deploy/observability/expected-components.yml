@@ -1,0 +1,24 @@
+# Operator-owned inventory: replace example and remove ONLY components not deployed.
+groups:
+- name: trellis.expected_inventory
+  rules:
+  - record: trellis:component_expected
+    expr: vector(1)
+    labels:
+      trellis_cluster: example
+      trellis_component: platform
+  - record: trellis:component_expected
+    expr: vector(1)
+    labels:
+      trellis_cluster: example
+      trellis_component: jobs
+  - record: trellis:component_expected
+    expr: vector(1)
+    labels:
+      trellis_cluster: example
+      trellis_component: events
+  - record: trellis:component_expected
+    expr: vector(1)
+    labels:
+      trellis_cluster: example
+      trellis_component: health

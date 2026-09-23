@@ -1,11 +1,9 @@
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
-use futures_util::{stream, StreamExt};
 use std::sync::Arc;
-use std::time::Duration;
 
 use super::local_validator::VerifiedCaller;
-use super::request_loop::{HandlerResponse, ResponseStream};
+use super::request_loop::HandlerResponse;
 use super::{RequestContext, Router, ServerError};
 
 /// Result returned by request validators after checking caller authorization.
@@ -122,6 +120,21 @@ impl<V> AuthenticatedRouter<V>
 where
     V: RequestValidator + 'static,
 {
+    /// Registered route token for one inbound request subject.
+    pub(crate) fn route_token(&self, subject: &str) -> Option<&'static str> {
+        self.router.route_token(subject)
+    }
+
+    /// Whether one subject is a registered unary request/reply RPC surface.
+    pub(crate) fn is_unary_rpc_route(&self, subject: &str) -> bool {
+        self.router.is_unary_rpc_route(subject)
+    }
+
+    /// Whether one subject is a registered live observation route.
+    pub(crate) fn is_live_route(&self, subject: &str) -> bool {
+        self.router.is_live_route(subject)
+    }
+
     #[doc = concat!("Trellis API operation `", stringify!(new), "`.")]
     pub fn new(router: Router, validator: V) -> Self {
         Self {
@@ -263,19 +276,10 @@ where
             caller: validation.caller,
             ..context
         };
-        let stream_context = context.clone();
-        let response = self
+        Ok(self
             .router
             .handle_request_response(subject, payload, context)
-            .await?;
-        Ok(match response {
-            HandlerResponse::Stream(stream) => HandlerResponse::Stream(revalidating_stream(
-                stream,
-                Arc::clone(&self.validator),
-                stream_context,
-            )),
-            response => response,
-        })
+            .await?)
     }
 
     fn context_with_required_capabilities(
@@ -290,30 +294,6 @@ where
             ..context
         })
     }
-}
-
-fn revalidating_stream<V: RequestValidator + 'static>(
-    stream: ResponseStream,
-    validator: Arc<V>,
-    context: RequestContext,
-) -> ResponseStream {
-    Box::pin(stream::unfold(
-        (stream, validator, context),
-        |(mut frames, validator, context)| async move {
-            loop {
-                tokio::select! {
-                    frame = frames.next() => return frame.map(|frame| (frame, (frames, validator, context))),
-                    _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                        match validator.revalidate_current(&context).await {
-                            Ok(true) => {}
-                            Ok(false) => return None,
-                            Err(error) => return Some((Err(error), (frames, validator, context))),
-                        }
-                    }
-                }
-            }
-        },
-    ))
 }
 
 fn validate_reply_inbox(
@@ -338,47 +318,4 @@ fn validate_reply_inbox(
         reply_to: reply_to.to_string(),
         expected_prefix: prefix.to_string(),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    struct RevocableValidator(AtomicBool);
-
-    impl RequestValidator for RevocableValidator {
-        fn validate<'a>(
-            &'a self,
-            _subject: &'a str,
-            _payload: &'a Bytes,
-            _context: &'a RequestContext,
-        ) -> BoxFuture<'a, Result<RequestValidation, ServerError>> {
-            Box::pin(async { Ok(RequestValidation::allowed()) })
-        }
-
-        fn revalidate_current<'a>(
-            &'a self,
-            _context: &'a RequestContext,
-        ) -> BoxFuture<'a, Result<bool, ServerError>> {
-            Box::pin(async { Ok(self.0.load(Ordering::SeqCst)) })
-        }
-    }
-
-    #[tokio::test]
-    async fn admitted_stream_ends_after_current_authorization_is_revoked() {
-        let validator = Arc::new(RevocableValidator(AtomicBool::new(false)));
-        let mut stream = revalidating_stream(
-            Box::pin(stream::pending()),
-            validator,
-            RequestContext::default(),
-        );
-
-        assert!(
-            tokio::time::timeout(Duration::from_millis(1_500), stream.next())
-                .await
-                .expect("authorization recheck should finish")
-                .is_none()
-        );
-    }
 }

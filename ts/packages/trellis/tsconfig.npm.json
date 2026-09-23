@@ -26,6 +26,7 @@
     "device.ts",
     "errors/index.ts",
     "service/mod.ts",
-    "telemetry.ts"
+    "telemetry.ts",
+    "telemetry/browser.ts"
   ]
 }

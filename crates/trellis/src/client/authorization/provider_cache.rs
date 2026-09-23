@@ -169,6 +169,9 @@ pub struct AuthorizationProviderCache {
     closed: Arc<AtomicBool>,
     context_resolves: Arc<AtomicU64>,
     access_clock: Arc<AtomicU64>,
+    coverage_probe: Arc<CoverageProbe>,
+    /// Wakes retained live guards when coverage, revocation or epoch state moves.
+    live_changes: Arc<tokio::sync::broadcast::Sender<()>>,
 }
 
 impl AuthorizationProviderCache {
@@ -185,6 +188,75 @@ impl AuthorizationProviderCache {
                 .flatten()
                 .is_some_and(|context| context.allows(permission))
             && self.revocation_time(digest).ok().flatten().is_none()
+    }
+
+    /// Retain one live-authority lease for an exact digest and epoch.
+    ///
+    /// Resolves the digest through the ordinary single-flight cache when it is
+    /// not already retained, then returns a lease only when the exact entry is
+    /// covered on the expected local transport epoch. The caller keeps the
+    /// lease for the session lifetime, so the cache's ordinary cleanup retains
+    /// the revocation watch and coverage evidence.
+    pub(crate) async fn retain_live_guard_lease(
+        &self,
+        digest: &str,
+        expected_epoch: u64,
+    ) -> Result<AuthorizationContextLease, TrellisClientError> {
+        if self.epoch() != expected_epoch || !self.health()?.healthy {
+            return Err(TrellisClientError::AuthorizationUnavailable(
+                "transport epoch changed before live retention".into(),
+            ));
+        }
+        let lease = self
+            .resolve_context(digest, self.now_seconds()?)
+            .await
+            .or_else(|error| match error {
+                // A retained covered entry is already sufficient; a resolution
+                // failure for a second copy must not drop usable retention.
+                TrellisClientError::AuthorizationUnavailable(_) => {
+                    self.lease_cached_context(digest, false)?.ok_or(error)
+                }
+                other => Err(other),
+            })?;
+        if lease.context_digest() != digest
+            || lease.epoch() != expected_epoch
+            || self.epoch() != expected_epoch
+            || !self.health()?.healthy
+            || !self.live_guard_entry_is_covered(&lease)
+        {
+            return Err(TrellisClientError::AuthorizationUnavailable(
+                "live authority coverage changed before retention".into(),
+            ));
+        }
+        Ok(lease)
+    }
+
+    /// Return the consumer's selected provider deployment for one API.
+    pub(crate) fn provider_deployment_id(
+        &self,
+        api_id: &str,
+    ) -> Result<String, TrellisClientError> {
+        let own = self.own.as_ref().ok_or_else(|| {
+            TrellisClientError::AuthorizationUnavailable(
+                "selected deployment requires an installed own context".into(),
+            )
+        })?;
+        own.provider_deployment_id(api_id)
+    }
+
+    /// Return whether one lease still points at the current covered entry.
+    pub(crate) fn live_guard_entry_is_covered(&self, lease: &AuthorizationContextLease) -> bool {
+        let Ok(state) = self.read_state() else {
+            return false;
+        };
+        state
+            .contexts
+            .get(lease.context_digest())
+            .is_some_and(|entry| {
+                Arc::ptr_eq(entry, lease.entry())
+                    && entry.covered.load(Ordering::Acquire)
+                    && entry.epoch == lease.epoch()
+            })
     }
 
     pub(crate) async fn attach(
@@ -243,6 +315,24 @@ impl AuthorizationProviderCache {
                 .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
         }
         let registry = AuthorizationRegistryReader::open(nats.clone(), binding).await?;
+        let state = Arc::new(RwLock::new(ProviderState {
+            issuers: issuer
+                .into_iter()
+                .map(|issuer| (issuer.key_id.clone(), issuer))
+                .collect(),
+            ..Default::default()
+        }));
+        let coverage_probe = Arc::new(CoverageProbe {
+            closed: Arc::new(AtomicBool::new(false)),
+            epoch: Arc::new(AtomicU64::new(
+                nats.statistics().connects.load(Ordering::Acquire),
+            )),
+            connected: Arc::new(AtomicBool::new(
+                nats.connection_state() == async_nats::connection::State::Connected,
+            )),
+        });
+        let closed = Arc::new(AtomicBool::new(false));
+        register_coverage_gauges(&state, &own, &coverage_probe);
         Ok(Self {
             nats,
             registry,
@@ -250,18 +340,14 @@ impl AuthorizationProviderCache {
             own,
             own_lease: Arc::new(Mutex::new(None)),
             verification_policy,
-            state: Arc::new(RwLock::new(ProviderState {
-                issuers: issuer
-                    .into_iter()
-                    .map(|issuer| (issuer.key_id.clone(), issuer))
-                    .collect(),
-                ..Default::default()
-            })),
+            state,
             in_flight: Arc::new(Mutex::new(HashMap::new())),
             issuer_resolution: Arc::new(tokio::sync::Mutex::new(())),
-            closed: Arc::new(AtomicBool::new(false)),
+            closed,
             context_resolves: Arc::new(AtomicU64::new(0)),
             access_clock: Arc::new(AtomicU64::new(0)),
+            coverage_probe,
+            live_changes: Arc::new(tokio::sync::broadcast::channel(64).0),
         })
     }
 
@@ -298,6 +384,7 @@ impl AuthorizationProviderCache {
         *self.own_lease.lock().map_err(|_| {
             TrellisClientError::AuthorizationUnavailable("own context lease lock poisoned".into())
         })? = Some(lease);
+        self.notify_live_changes();
         tracing::info!(
             context_digest = digest,
             transport_epoch = expected_epoch,
@@ -319,15 +406,22 @@ impl AuthorizationProviderCache {
                     let epoch = self.epoch();
                     let connected = self.health()?.healthy;
                     let mut state = self.write_state()?;
+                    let before = state.contexts.len();
                     state.contexts.retain(|_, entry| {
                         entry.leases.load(Ordering::Acquire) > 0
                             || (connected && entry.epoch == epoch && entry.covered.load(Ordering::Acquire))
                     });
                     state.revocations.retain(|_, (_, expires_at)| *expires_at > now);
+                    let changed = state.contexts.len() != before;
+                    drop(state);
+                    if changed {
+                        self.notify_live_changes();
+                    }
                 }
             }
         }
         self.closed.store(true, Ordering::Release);
+        self.coverage_probe.observe(true, self.epoch(), false);
         Ok(())
     }
 
@@ -363,11 +457,16 @@ impl AuthorizationProviderCache {
         Ok(())
     }
 
+    /// Returns current provider health and mirrors the lifecycle for gauges.
+    ///
+    /// This is a read-only observation of the owner's existing state; it never
+    /// issues network reads or changes authority.
     pub(crate) fn health(&self) -> Result<AuthorizationProviderCacheHealth, TrellisClientError> {
-        Ok(AuthorizationProviderCacheHealth {
-            healthy: !self.closed.load(Ordering::Acquire)
-                && self.nats.connection_state() == async_nats::connection::State::Connected,
-        })
+        let closed = self.closed.load(Ordering::Acquire);
+        let healthy =
+            !closed && self.nats.connection_state() == async_nats::connection::State::Connected;
+        self.coverage_probe.observe(closed, self.epoch(), healthy);
+        Ok(AuthorizationProviderCacheHealth { healthy })
     }
 
     #[cfg(feature = "runtime-internals")]
@@ -387,6 +486,16 @@ impl AuthorizationProviderCache {
 
     pub(crate) fn epoch(&self) -> u64 {
         self.nats.statistics().connects.load(Ordering::Acquire)
+    }
+
+    /// Subscribe to local coverage/revocation changes that can invalidate a
+    /// retained live guard. Lagged receivers observe a change and re-check.
+    pub(crate) fn subscribe_live_changes(&self) -> tokio::sync::broadcast::Receiver<()> {
+        self.live_changes.subscribe()
+    }
+
+    fn notify_live_changes(&self) {
+        let _ = self.live_changes.send(());
     }
 
     #[cfg(feature = "runtime-internals")]
@@ -807,6 +916,7 @@ impl AuthorizationProviderCache {
             watch_covered,
             watch_digest,
             revocation_deadline,
+            self.live_changes.clone(),
         ));
         let mut verifications = CachedVerifications::default();
         if historical {
@@ -958,6 +1068,7 @@ async fn observe_context_revocation(
     watch_covered: Arc<AtomicBool>,
     watch_digest: String,
     revocation_deadline: i64,
+    live_changes: Arc<tokio::sync::broadcast::Sender<()>>,
 ) {
     let entry = watch.next().await;
     let revoked_at = match entry {
@@ -1019,6 +1130,9 @@ async fn observe_context_revocation(
     if revoked_at.is_none() && !was_current_entry {
         return;
     }
+    // Wake retained live guards so a quiet session fences without waiting for
+    // the next frame or a timer tick.
+    let _ = live_changes.send(());
     if let (Some(own), Some(transition)) = (&own, transition.as_ref()) {
         if own
             .stored_context_digest()
@@ -1162,6 +1276,28 @@ mod wire_tests {
         })
     }
 
+    #[tokio::test]
+    async fn peer_coverage_requires_live_signed_interval_active_issuer_and_no_revocation() {
+        let (signed, issuer, verified) = test_context();
+        let entry = test_entry(&signed, &issuer, &verified, 0, Arc::default());
+        let probe = CoverageProbe {
+            closed: Arc::new(AtomicBool::new(false)),
+            epoch: Arc::new(AtomicU64::new(1)),
+            connected: Arc::new(AtomicBool::new(true)),
+        };
+        let now = signed.unsigned.not_before;
+        assert!(probe.peer_is_live(&entry, now, false));
+        assert!(!probe.peer_is_live(&entry, now - 1, false));
+        assert!(!probe.peer_is_live(&entry, signed.unsigned.expires_at, false));
+        assert!(!probe.peer_is_live(&entry, now, true));
+        let mut inactive = issuer.clone();
+        inactive.state = AuthorizationIssuerState::Retired;
+        let inactive_entry = test_entry(&signed, &inactive, &verified, 0, Arc::default());
+        assert!(!probe.peer_is_live(&inactive_entry, now, false));
+        assert_eq!(entry.leases.load(Ordering::Acquire), 0);
+        assert_eq!(entry.last_used.load(Ordering::Acquire), 0);
+    }
+
     #[test]
     fn revocation_is_additively_tolerant() {
         assert_eq!(
@@ -1235,6 +1371,7 @@ mod wire_tests {
             covered.clone(),
             "digest".into(),
             2_000,
+            Arc::new(tokio::sync::broadcast::channel(4).0),
         )
         .await;
 
@@ -1315,6 +1452,177 @@ mod wire_tests {
     }
 }
 
+/// One live provider-cache registration for the aggregate coverage gauge.
+type CoverageRegistry = std::sync::Mutex<Vec<WeakCoverageEntry>>;
+
+/// Weak references to one live provider cache.
+struct WeakCoverageEntry {
+    state: std::sync::Weak<RwLock<ProviderState>>,
+    own: std::sync::Weak<AuthorizationContextCache>,
+    probe: std::sync::Weak<CoverageProbe>,
+}
+
+/// Transport-free lifecycle mirror for the aggregate coverage gauge.
+///
+/// The provider owner updates these atomics from its existing state; the gauge
+/// reads them without holding the transport, issuing network reads, or keeping
+/// a credential alive after the owner is gone.
+pub(crate) struct CoverageProbe {
+    /// Whether the provider owner has been closed.
+    closed: Arc<AtomicBool>,
+    /// Connect epoch of the owner, mirrored from its existing counter.
+    epoch: Arc<AtomicU64>,
+    /// Whether the owner's transport is currently usable.
+    connected: Arc<AtomicBool>,
+}
+
+impl CoverageProbe {
+    /// Updates the mirrored lifecycle state from the live owner.
+    pub(crate) fn observe(&self, closed: bool, epoch: u64, connected: bool) {
+        self.closed.store(closed, Ordering::Release);
+        self.epoch.store(epoch, Ordering::Release);
+        self.connected.store(connected, Ordering::Release);
+    }
+
+    /// Whether one peer entry at the given epoch is live coverage.
+    fn peer_is_live(&self, entry: &CachedContext, now: i64, revoked: bool) -> bool {
+        !revoked
+            && entry.covered.load(Ordering::Acquire)
+            && entry.issuer.state == AuthorizationIssuerState::Active
+            && entry.signed.unsigned.not_before <= now
+            && entry.signed.unsigned.expires_at > now
+            && !self.closed.load(Ordering::Acquire)
+            && self.connected.load(Ordering::Acquire)
+            && entry.epoch == self.epoch.load(Ordering::Acquire)
+    }
+}
+
+static COVERAGE_REGISTRY: std::sync::OnceLock<CoverageRegistry> = std::sync::OnceLock::new();
+
+/// Process-lifetime coverage gauge registration.
+///
+/// Retained for the process lifetime: dropping it would remove the family
+/// callback while the registry keeps updating.
+static COVERAGE_GAUGE: std::sync::OnceLock<crate::telemetry::instruments::ObservationRegistration> =
+    std::sync::OnceLock::new();
+
+/// Registers one provider-cache pair for the aggregate coverage gauge.
+///
+/// The registry holds weak references only, so a dropped client disappears
+/// from the aggregate without any deregistration step and no connection or
+/// credential is retained strongly by telemetry.
+fn register_coverage_gauges(
+    state: &std::sync::Arc<RwLock<ProviderState>>,
+    own: &Option<std::sync::Arc<AuthorizationContextCache>>,
+    probe: &std::sync::Arc<CoverageProbe>,
+) {
+    let registry = COVERAGE_REGISTRY.get_or_init(|| std::sync::Mutex::new(Vec::new()));
+    if let Ok(mut entries) = registry.lock() {
+        entries.push(WeakCoverageEntry {
+            state: std::sync::Arc::downgrade(state),
+            own: own
+                .as_ref()
+                .map_or_else(std::sync::Weak::new, std::sync::Arc::downgrade),
+            probe: std::sync::Arc::downgrade(probe),
+        });
+    }
+    COVERAGE_GAUGE.get_or_init(|| {
+        crate::telemetry::instruments::register_observable(
+            crate::telemetry::instruments::ObservableFamily::AuthCoverageCount,
+            std::sync::Arc::new(|| {
+                let mut own_covered = 0u64;
+                let mut own_unavailable = 0u64;
+                let mut peer_covered = 0u64;
+                let mut peer_unavailable = 0u64;
+                if let Some(registry) = COVERAGE_REGISTRY.get() {
+                    if let Ok(mut entries) = registry.lock() {
+                        // Prune dead weak entries so a closed client stops
+                        // contributing without a deregistration step.
+                        entries.retain(|entry| {
+                            entry.state.strong_count() > 0 || entry.own.strong_count() > 0
+                        });
+                        for entry in entries.iter() {
+                            let own = entry.own.upgrade();
+                            // Read the corrected clock before acquiring provider state.
+                            let now = own.as_ref().map_or_else(
+                                || system_now_millis().map(|ms| ms.div_euclid(1000)),
+                                |own| own.corrected_now_seconds(),
+                            );
+                            if let Some(own) = own.as_ref() {
+                                // The authoritative own-installation predicate,
+                                // not the mere retention of the cache object.
+                                if own.availability().is_usable() {
+                                    own_covered += 1;
+                                } else {
+                                    own_unavailable += 1;
+                                }
+                            }
+                            if let Some(state) = entry.state.upgrade() {
+                                if let Ok(state) = state.read() {
+                                    let own_digest = own
+                                        .as_ref()
+                                        .and_then(|own| own.stored_context_digest().ok());
+                                    let probe = entry.probe.upgrade();
+                                    for (digest, cached) in state.contexts.iter() {
+                                        // The retained own lease is not a peer.
+                                        if own_digest.as_deref() == Some(digest.as_str()) {
+                                            continue;
+                                        }
+                                        let live = probe.as_ref().is_some_and(|probe| {
+                                            now.as_ref().is_ok_and(|now| {
+                                                probe.peer_is_live(
+                                                    cached,
+                                                    *now,
+                                                    state.revocations.contains_key(digest),
+                                                )
+                                            })
+                                        });
+                                        if live {
+                                            peer_covered += 1;
+                                        } else {
+                                            peer_unavailable += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                vec![
+                    (
+                        own_covered as f64,
+                        vec![
+                            crate::telemetry::KeyValue::new("trellis.kind", "own"),
+                            crate::telemetry::KeyValue::new("trellis.state", "covered"),
+                        ],
+                    ),
+                    (
+                        own_unavailable as f64,
+                        vec![
+                            crate::telemetry::KeyValue::new("trellis.kind", "own"),
+                            crate::telemetry::KeyValue::new("trellis.state", "unavailable"),
+                        ],
+                    ),
+                    (
+                        peer_covered as f64,
+                        vec![
+                            crate::telemetry::KeyValue::new("trellis.kind", "peer"),
+                            crate::telemetry::KeyValue::new("trellis.state", "covered"),
+                        ],
+                    ),
+                    (
+                        peer_unavailable as f64,
+                        vec![
+                            crate::telemetry::KeyValue::new("trellis.kind", "peer"),
+                            crate::telemetry::KeyValue::new("trellis.state", "unavailable"),
+                        ],
+                    ),
+                ]
+            }),
+        )
+    });
+}
+
 #[cfg(test)]
 mod retired_watch_tests {
     use futures_util::stream;
@@ -1376,6 +1684,7 @@ mod retired_watch_tests {
             covered,
             digest.to_owned(),
             now_seconds() + 3_600,
+            Arc::new(tokio::sync::broadcast::channel(4).0),
         )
         .await;
     }

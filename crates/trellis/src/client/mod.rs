@@ -18,6 +18,7 @@ mod subject;
 mod transfer;
 
 pub use auth::SessionAuth;
+pub(crate) use authorization::AuthorizationContextLease;
 #[cfg(any(test, feature = "runtime-internals"))]
 pub use authorization::AuthorizationRegistryBinding;
 pub use authorization::{
@@ -34,14 +35,13 @@ pub use authorization::{
 #[cfg(feature = "runtime-internals")]
 pub use authorization::{RuntimeAuthorizationIoCounters, RuntimeAuthorizationTrust};
 
-pub use crate::generated::{EventDescriptor, FeedDescriptor, RpcDescriptor};
+pub use crate::generated::{EventDescriptor, LiveDescriptor, RpcDescriptor};
 pub(crate) use connection::fetch_device_activation;
 pub(crate) use connection::DeviceEnrollmentResponse;
-pub(crate) use connection::ServiceConnectWithContractOptions;
-pub(crate) use connection::TrellisClient;
 pub use connection::{
     DeviceConnectOptions, EventMessage, EventReplayPolicy, EventSubscribeOptions,
-    EventSubscriptionMode, UserConnectOptions, UserSessionCredentials,
+    EventSubscriptionMode, ServiceConnectWithContractOptions, TrellisClient, UserConnectOptions,
+    UserSessionCredentials,
 };
 pub use error::{
     AuthenticationError, CallError, ProtocolError, RemoteErrorPayload, RpcErrorPayload,
@@ -63,6 +63,7 @@ pub use operations::{
     OperationTransferStartError, OperationTransport, OperationUpdateEvent, OperationUpdateEvidence,
     StartedOperationTransfer, TransferOperationDescriptor,
 };
+pub(crate) use proof::{new_request_id, now_iat_seconds};
 pub use proof::{verify_event_proof, VerifyEventProofInput};
 #[doc(hidden)]
 pub use resources::{BoundStateResourceClient, ConnectedStateHandle};

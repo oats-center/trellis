@@ -67,8 +67,8 @@ replacement, login revocation, and issuer rotation never delete them. Explicit
 revocation is separate associated state. Startup rebuilds the NATS KV context
 mirror from all SQL rows before readiness.
 
-The Events journal stores only context-digest references and useful projections. It
-resolves immutable context history from Auth when validating old events.
+The Events journal stores only context-digest references and useful projections.
+It resolves immutable context history from Auth when validating old events.
 
 ## Transactions And Events
 

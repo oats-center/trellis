@@ -134,12 +134,29 @@ impl AuthPostCommitRuntime {
         else {
             return Ok(());
         };
-        match self.dispatch(&claim.action, &claim.token).await {
+        // One claimed action execution through its persisted acknowledge or
+        // failure result.
+        let observation = trellis_rs::telemetry::lifecycle::Observation::start(
+            trellis_rs::telemetry::instruments::DurationFamily::AuthPostCommit,
+            Vec::new(),
+            "cancelled",
+        );
+        let result = match self.dispatch(&claim.action, &claim.token).await {
             Ok(()) => {
-                self.repository
+                let acknowledged = self
+                    .repository
                     .acknowledge_post_commit_action(&claim.action.action_id, &claim.token)
-                    .await
+                    .await;
+                observation.finish(if acknowledged.is_ok() { "ok" } else { "error" });
+                acknowledged
             }
+            Err(error) => {
+                observation.finish("retry");
+                Err(error)
+            }
+        };
+        match result {
+            Ok(()) => Ok(()),
             Err(error) => {
                 tracing::warn!(
                     action_id = %claim.action.action_id,

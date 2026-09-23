@@ -7,7 +7,7 @@ use serde_json::json;
 use super::super::AuthorizationStateError;
 
 #[derive(Debug)]
-pub(super) struct HttpError {
+pub(crate) struct HttpError {
     pub(super) status: StatusCode,
     pub(super) code: &'static str,
 }

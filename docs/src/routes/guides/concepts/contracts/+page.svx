@@ -7,7 +7,7 @@ versions and semantic/distribution digests.
 
 ## APIs and participants
 
-APIs define RPCs, durable Operations, Events, Feeds, API-scoped errors, and
+APIs define RPCs, durable Operations, Events, Live observations, API-scoped errors, and
 capabilities. Participants are services, devices, apps, or agents. A device may
 contain one named app or agent companion as its lexical child. The child is
 activated only through its parent device and has a separate user-owned grant,

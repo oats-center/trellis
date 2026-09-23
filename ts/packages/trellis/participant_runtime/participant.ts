@@ -2,7 +2,7 @@ import type { BaseError } from "@oatscenter/result";
 import type { Codec } from "../generated.ts";
 import type {
   EventDesc,
-  FeedDesc,
+  LiveDesc,
   OperationDesc,
   PermissionAtom,
   RPCDesc,
@@ -24,8 +24,8 @@ type GeneratedCodec = Readonly<{
 }>;
 
 export type GeneratedActionDescriptor = Readonly<{
-  kind: "rpc" | "operation" | "event" | "feed";
-  descriptorName: `${"rpc" | "operation" | "event" | "feed"}:${string}`;
+  kind: "rpc" | "operation" | "event" | "live";
+  descriptorName: `${"rpc" | "operation" | "event" | "live"}:${string}`;
   input?: GeneratedCodec;
   output?: GeneratedCodec;
   payload?: GeneratedCodec;
@@ -107,8 +107,8 @@ type GeneratedDescriptorRuntime<T> = T extends
         : {})
   : T extends { kind: "event"; payload: infer E }
     ? EventDesc<GeneratedSchema<E>>
-  : T extends { kind: "feed"; input: infer I; event: infer E }
-    ? FeedDesc<GeneratedSchema<I>, GeneratedSchema<E>>
+  : T extends { kind: "live"; input: infer I; event: infer E }
+    ? LiveDesc<GeneratedSchema<I>, GeneratedSchema<E>>
   : never;
 
 type GeneratedRuntimeEntries<
@@ -154,7 +154,7 @@ export type RuntimeApiFromGenerated<
   rpc: GeneratedRuntimeFamily<TApi, TNames, "rpc">;
   operations: GeneratedRuntimeFamily<TApi, TNames, "operation">;
   events: GeneratedRuntimeFamily<TApi, TNames, "event">;
-  feeds: GeneratedRuntimeFamily<TApi, TNames, "feed">;
+  lives: GeneratedRuntimeFamily<TApi, TNames, "live">;
   subjects: Record<string, unknown>;
 };
 
@@ -285,7 +285,7 @@ function subject(
 function runtimeDescriptor(
   api: GeneratedApiDescriptor,
   descriptor: GeneratedActionDescriptor,
-): RPCDesc | OperationDesc | EventDesc | FeedDesc {
+): RPCDesc | OperationDesc | EventDesc | LiveDesc {
   const transportSubject = subject(api, descriptor);
   const errors = descriptor.errors?.map((error) => error.type);
   const declaredErrors = runtimeErrors(descriptor.errors);
@@ -358,7 +358,7 @@ function runtimeDescriptor(
         subscribeCapabilities: [],
       };
     }
-    case "feed":
+    case "live":
       return {
         subject: transportSubject,
         input: descriptor.input as Codec<unknown>,
@@ -374,9 +374,9 @@ export function bindApiRoutes(
   api: RuntimeApi,
   apiBindings: Readonly<Record<string, unknown>>,
 ): RuntimeApi {
-  const bind = <T extends RPCDesc | OperationDesc | FeedDesc>(
+  const bind = <T extends RPCDesc | OperationDesc | LiveDesc>(
     descriptor: T,
-    family: "rpc" | "operation" | "feed",
+    family: "rpc" | "operation" | "live",
   ): T => {
     const permission = "permissions" in descriptor
       ? descriptor.permissions.invoke
@@ -415,10 +415,10 @@ export function bindApiRoutes(
         bind(descriptor, "operation"),
       ]),
     ),
-    feeds: Object.fromEntries(
-      Object.entries(api.feeds ?? {}).map(([name, descriptor]) => [
+    lives: Object.fromEntries(
+      Object.entries(api.lives ?? {}).map(([name, descriptor]) => [
         name,
-        bind(descriptor, "feed"),
+        bind(descriptor, "live"),
       ]),
     ),
   };
@@ -430,7 +430,7 @@ export function refreshApiRoutes(
   apiBindings: Readonly<Record<string, unknown>>,
 ): void {
   const next = bindApiRoutes(api, apiBindings);
-  for (const family of ["rpc", "operations", "feeds"] as const) {
+  for (const family of ["rpc", "operations", "lives"] as const) {
     for (const [name, descriptor] of Object.entries(next[family] ?? {})) {
       const current = api[family]?.[name];
       if (current) current.subject = descriptor.subject;
@@ -451,9 +451,9 @@ function addAction(
   } else if (descriptor.kind === "event") {
     target.events[name] = runtime as EventDesc;
   } else {
-    const feeds = target.feeds ?? {};
-    feeds[name] = runtime as FeedDesc;
-    target.feeds = feeds;
+    const lives = target.lives ?? {};
+    lives[name] = runtime as LiveDesc;
+    target.lives = lives;
   }
 }
 
@@ -470,7 +470,7 @@ function generatedActionName(
 }
 
 function emptyApi(): RuntimeApi {
-  return { rpc: {}, operations: {}, events: {}, feeds: {}, subjects: {} };
+  return { rpc: {}, operations: {}, events: {}, lives: {}, subjects: {} };
 }
 
 /** Projects generated descriptors into the participant runtime. */
@@ -568,7 +568,7 @@ export function getParticipantRuntime(
       rpc: { ...ownedApi.rpc, ...usedApi.rpc },
       operations: { ...ownedApi.operations, ...usedApi.operations },
       events: { ...ownedApi.events, ...usedApi.events },
-      feeds: { ...ownedApi.feeds, ...usedApi.feeds },
+      lives: { ...ownedApi.lives, ...usedApi.lives },
       subjects: {},
     },
     actions,

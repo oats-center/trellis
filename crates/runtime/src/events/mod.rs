@@ -15,7 +15,7 @@ use trellis_protocol::{
 use trellis_rs::service::{
     internal::run_builtin_authenticated_router, RequestContext, RequestValidator, ServerError,
 };
-use trellis_runtime_apis::apis::trellis_events_v1::{self as events, feeds, rpc};
+use trellis_runtime_apis::apis::trellis_events_v1::{self as events, lives, rpc};
 
 use crate::shutdown::StopHandle;
 use crate::supervisor::{RuntimeContext, RuntimeError, SubsystemHandle};
@@ -33,12 +33,28 @@ const EVENTS_SUBJECTS: &[&str] = &[
     rpc::Inspect::SUBJECT,
     rpc::Metrics::SUBJECT,
     rpc::Query::SUBJECT,
-    feeds::Watch::SUBJECT,
+    lives::Watch::SUBJECT,
 ];
 
 #[derive(Clone)]
 struct SqliteConsumerResolver {
     path: std::path::PathBuf,
+}
+
+/// Owner-captured inventory reader; telemetry never calls the business resolver.
+#[derive(Clone)]
+pub(crate) struct ConsumerTelemetryReader {
+    path: std::path::PathBuf,
+}
+
+impl ConsumerTelemetryReader {
+    pub(crate) fn new(path: std::path::PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub(crate) fn read(&self) -> Result<Vec<ConsumerBinding>, String> {
+        list_consumers(&self.path)
+    }
 }
 
 impl ConsumerBindingResolver for SqliteConsumerResolver {
@@ -194,6 +210,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let resolver: Arc<dyn ConsumerBindingResolver> = Arc::new(SqliteConsumerResolver {
         path: platform_storage.path.clone(),
     });
+    let consumer_telemetry = ConsumerTelemetryReader::new(platform_storage.path.clone());
     let query = EventsQuery::new(store.clone(), events_runtime.clone(), Arc::clone(&resolver));
     let mut router = trellis_events_runtime::build_router_with_query(query.clone());
     let verifier = context.platform_verifier.get().cloned().ok_or_else(|| {
@@ -244,7 +261,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 >
         },
     );
-    trellis_events_runtime::register_events_watch_feed(
+    trellis_events_runtime::register_events_watch_live(
         &mut router,
         events_runtime.clone(),
         event_verifier.clone(),
@@ -339,6 +356,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     secure_consumer_routes(&mut router, query, authorizer.clone());
     EventsManagement::new(store.clone(), journal.clone(), delivery.clone(), authorizer)
         .register(&mut router);
+    let consumer_runtime = events_runtime.clone();
     let mut projector = start_events_projector(events_runtime, store.clone(), event_verifier)
         .await
         .map_err(runtime_error)?;
@@ -349,6 +367,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let mut replay_dispatcher = start_replay_dispatcher(context.trellis_nats.clone(), journal)
         .await
         .map_err(runtime_error)?;
+    let sampler_store = store.clone();
     let mut advisories = start_exhaustion_advisory_loop(
         context.trellis_nats.clone(),
         crate::resources::JOBS_ADVISORIES_STREAM,
@@ -357,16 +376,42 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     )
     .await
     .map_err(runtime_error)?;
-    let nats = context.trellis_nats.clone();
+    let live_owner = context
+        .live_providers
+        .receiver(crate::platform::LiveProviderRole::Events);
     let join = tokio::spawn(async move {
         let _owner = owner;
-        let api_loop = run_builtin_authenticated_router(
-            nats,
-            events::API_ID,
-            EVENTS_SUBJECTS,
-            router,
-            validator,
-        );
+        let _samplers = crate::telemetry::snapshots::SamplerOwner::start(vec![
+            Box::pin(crate::telemetry::snapshots::run_events_sampler(
+                sampler_store.clone(),
+                task_stop.clone(),
+            )),
+            Box::pin(crate::telemetry::snapshots::run_consumer_sampler(
+                consumer_runtime,
+                consumer_telemetry,
+                sampler_store.clone(),
+                task_stop.clone(),
+            )),
+        ]);
+        let api_stop = task_stop.clone();
+        let api_loop = async move {
+            let mut live_owner = live_owner;
+            let Some(owner) = crate::platform::await_live_owner(&mut live_owner, &api_stop).await
+            else {
+                return Ok(());
+            };
+            let api_nats = owner.runtime_nats();
+            let mut router = router;
+            router.set_live_owner(owner);
+            run_builtin_authenticated_router(
+                api_nats,
+                events::API_ID,
+                EVENTS_SUBJECTS,
+                router,
+                validator,
+            )
+            .await
+        };
         tokio::pin!(api_loop);
         let result = {
             let validator_exit = async {
@@ -427,6 +472,8 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             }
         };
         task_stop.stop();
+        // Telemetry samplers own their tasks and never own business lifetime.
+        _samplers.stop().await;
         projector.stop().await;
         dead_letter_projector.stop().await;
         replay_dispatcher.stop().await;

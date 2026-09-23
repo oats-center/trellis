@@ -30,16 +30,42 @@ import {
   OperationAlreadyTerminalError,
   OperationNotFoundError,
   TransferError,
+  TransportError,
   type TrellisErrorInstance,
   UnexpectedError,
   ValidationError,
 } from "../../errors/index.ts";
+import { LiveProvider } from "../../live/provider.ts";
+import {
+  parseOperationWatchOpen,
+  runDelayedOperationSource,
+} from "../../live/operation_source.ts";
 import type { LoggerLike } from "../../globals.ts";
 import { serviceRuntimeLogger } from "./logger.ts";
 import {
   recordTrellisError,
   type TrellisErrorMetricAttributes,
 } from "../../telemetry/mod.ts";
+import {
+  recordCatalogCounter,
+  recordCatalogDuration,
+  recordCatalogUpDown,
+  routeToken,
+} from "../../telemetry/metrics.ts";
+import {
+  createMapCarrier,
+  extractTraceContext,
+  validateTraceparent,
+  validateTracestate,
+} from "../../telemetry/carrier.ts";
+import { getTrellisTracer } from "../../telemetry/trace.ts";
+import {
+  type Context,
+  context as otelContext,
+  ROOT_CONTEXT,
+  SpanKind,
+  trace,
+} from "@opentelemetry/api";
 import {
   annotateHandlerBoundaryError,
   buildRuntimeOperationSnapshot,
@@ -68,6 +94,7 @@ import {
   type RuntimeOperationSnapshot,
   type RuntimeOperationState,
   safeJson,
+  toVerifierPermission,
   Trellis,
   type TrellisAuth,
   type TrellisMode,
@@ -75,6 +102,7 @@ import {
   type VerifiedCaller,
   verifyLocalAuthorization,
 } from "../../session.ts";
+import { LiveAuthorityGuard } from "../../live/authority.ts";
 import {
   type FileInfo,
   FileInfoSchema,
@@ -89,7 +117,6 @@ type TrellisServiceRuntimeOpts<TA extends RuntimeApi> =
     version?: string;
     operationDeploymentId?: string;
     operationConnectionId?: string;
-    feedOwnerId?: string;
   };
 
 export type TrellisServiceRuntimeFor<TA extends RuntimeApi = RuntimeApi> =
@@ -146,6 +173,92 @@ type RuntimeOperationFence = Readonly<{
 }>;
 
 const CANONICAL_POSITIVE_INTEGER = /^[1-9][0-9]*$/u;
+
+/** Maximum admitted-but-not-yet-emitted observer entries. */
+const OBSERVER_ARBITER_BOUND = 16;
+
+/**
+ * Serializes one Operation observer's backend notifications.
+ *
+ * A snapshot waiting to be emitted is coalesced to the latest authoritative
+ * one; admitted updates are never dropped. The bounded buffer rejects further
+ * updates so only that observer fails with a slow-consumer outcome.
+ */
+export class OperationObserverArbiter {
+  readonly #emit: (value: unknown) => Promise<void>;
+  readonly #updates: unknown[] = [];
+  #pendingSnapshot: unknown | undefined;
+  #snapshotDeferred: PromiseWithResolvers<void> | undefined;
+  #draining = false;
+  #failed = false;
+
+  constructor(emit: (value: unknown) => Promise<void>) {
+    this.#emit = emit;
+  }
+
+  /** Queue one authoritative snapshot, coalescing with a pending one. */
+  snapshot(value: unknown): Promise<void> {
+    this.#pendingSnapshot = value;
+    // Capture the deferred locally: the drain loop starts synchronously inside
+    // `#kick` and may clear `#snapshotDeferred` before this returns.
+    const deferred = (this.#snapshotDeferred ??= Promise.withResolvers<void>());
+    this.#kick();
+    return deferred.promise;
+  }
+
+  /** Admit one transient update; false means the bound was exceeded. */
+  update(value: unknown): boolean {
+    if (this.#failed || this.#updates.length >= OBSERVER_ARBITER_BOUND) {
+      return false;
+    }
+    this.#updates.push(value);
+    this.#kick();
+    return true;
+  }
+
+  #kick(): void {
+    if (this.#draining || this.#failed) return;
+    this.#draining = true;
+    void (async () => {
+      try {
+        while (true) {
+          const nextUpdate = this.#updates.shift();
+          if (nextUpdate !== undefined) {
+            await this.#emit(nextUpdate);
+            continue;
+          }
+          if (this.#pendingSnapshot !== undefined) {
+            const deferred = this.#snapshotDeferred;
+            const value = this.#pendingSnapshot;
+            this.#pendingSnapshot = undefined;
+            this.#snapshotDeferred = undefined;
+            await this.#emit(value);
+            deferred?.resolve();
+            continue;
+          }
+          // Clear the draining flag and re-check without awaiting, so a
+          // snapshot or update queued during the last emit is never lost.
+          this.#draining = false;
+          if (
+            this.#updates.length === 0 && this.#pendingSnapshot === undefined
+          ) {
+            return;
+          }
+          this.#draining = true;
+        }
+      } catch {
+        this.#failed = true;
+        this.#updates.splice(0);
+        this.#snapshotDeferred?.reject(
+          new Error("operation observer emit failed"),
+        );
+        this.#snapshotDeferred = undefined;
+      } finally {
+        this.#draining = false;
+      }
+    })();
+  }
+}
 
 function asStringPointerValue(
   operation: string,
@@ -268,12 +381,58 @@ function isOperationRevisionConflict(cause: unknown): boolean {
     message.includes("sequence mismatch");
 }
 
+/**
+ * Whether a verified caller is the creator of one durable operation.
+ *
+ * Observation and control authority is scoped to the exact creating principal
+ * and participant. A foreign principal, or the same principal on a different
+ * participant, is denied — the operation is not disclosed to a guesser.
+ */
+export function operationObserveAuthorized(
+  runtime: { creatorPrincipalId: string; creatorParticipantId: string },
+  caller?: { principalId: string; participantId: string },
+): boolean {
+  return !caller ||
+    (runtime.creatorPrincipalId === caller.principalId &&
+      runtime.creatorParticipantId === caller.participantId);
+}
+
+/**
+ * Whether a durable-operation update's executor fence still owns the operation.
+ *
+ * A legitimately signed internal update from a former executor — a stale epoch,
+ * or a different instance — is rejected before any outer Live delivery.
+ */
+export function operationOwnerFenceHolds(
+  runtime: { ownerInstanceId: string; ownerEpoch: number },
+  fence: { ownerInstanceId: string; ownerEpoch: number },
+): boolean {
+  return runtime.ownerInstanceId === fence.ownerInstanceId &&
+    runtime.ownerEpoch === fence.ownerEpoch;
+}
+
 export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
   #nats: NatsConnection;
   #version?: string;
   #log: LoggerLike;
   #operations = new Map<string, RuntimeOperationRecord>();
   #activeOperationFences = new Map<string, RuntimeOperationFence>();
+  #executionObservations = new Map<
+    RuntimeOperationRecord,
+    {
+      fence: RuntimeOperationFence;
+      attemptContext: Context;
+      finish: (
+        outcome:
+          | "completed"
+          | "failed"
+          | "cancelled"
+          | "lease_lost"
+          | "interrupted"
+          | "error",
+      ) => void;
+    }
+  >();
   #operationUpdateSequences = new Map<string, number>();
   #mountedOperationControls = new Set<string>();
   #stopPromise?: Promise<void>;
@@ -296,7 +455,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     if (opts?.operationDeploymentId) {
       this.setOperationDeploymentId(opts.operationDeploymentId);
     }
-    if (opts?.feedOwnerId) this.setFeedOwnerId(opts.feedOwnerId);
+
     this.#nats = nats;
     this.#version = opts?.version;
     this.#log = (opts?.log ?? serviceRuntimeLogger).child({
@@ -458,6 +617,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       creatorParticipantId: durable.creatorParticipantId,
       apiId: durable.apiId,
       input: durable.input,
+      ...(durable.telemetry ? { telemetry: durable.telemetry } : {}),
       revision: durable.revision,
       ownerInstanceId: durable.ownerInstanceId,
       ownerConnectionId: durable.ownerConnectionId,
@@ -516,7 +676,13 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     runtime.leaseExpiresAt = new Date(Date.now() + 30_000).toISOString();
     try {
       await this.saveOperationRecord(runtime);
-    } catch {
+    } catch (cause) {
+      recordCatalogCounter("trellis.operation.ownership.events", 1, {
+        "trellis.action": "recover",
+        "trellis.outcome": isOperationRevisionConflict(cause)
+          ? "conflict"
+          : "error",
+      });
       if (this.#operations.get(runtime.id) === runtime) {
         this.#operations.delete(runtime.id);
       }
@@ -524,6 +690,10 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     }
     runtime.reclaimed = true;
     this.#activeOperationFences.set(runtime.id, this.#operationFence(runtime));
+    recordCatalogCounter("trellis.operation.ownership.events", 1, {
+      "trellis.action": "recover",
+      "trellis.outcome": "ok",
+    });
     return runtime;
   }
 
@@ -573,6 +743,10 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         for (let retry = 0;; retry++) {
           const durable = await this.loadOperationRecord(runtime.id);
           if (!durable || !this.#ownsOperation(durable, fence)) {
+            recordCatalogCounter("trellis.operation.ownership.events", 1, {
+              "trellis.action": "control",
+              "trellis.outcome": "lost",
+            });
             runtime.cancellation.abort("operation ownership lost");
             return err(this.#operationAlreadyTerminalError(runtime));
           }
@@ -582,7 +756,13 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             durable.snapshot.state === "cancelled" ||
             durable.cancelRequestedAt ||
             runtime.cancellation.signal.aborted
-          ) return err(this.#operationAlreadyTerminalError(runtime));
+          ) {
+            recordCatalogCounter("trellis.operation.ownership.events", 1, {
+              "trellis.action": "control",
+              "trellis.outcome": "rejected",
+            });
+            return err(this.#operationAlreadyTerminalError(runtime));
+          }
           runtime.revision = durable.revision;
           runtime.snapshot = durable.snapshot;
           runtime.sequence = durable.sequence + 1;
@@ -598,9 +778,19 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             state === "cancelled";
           try {
             await this.saveOperationRecord(runtime);
+            recordCatalogCounter("trellis.operation.ownership.events", 1, {
+              "trellis.action": "control",
+              "trellis.outcome": "ok",
+            });
             break;
           } catch (cause) {
             if (retry >= 3 || !isOperationRevisionConflict(cause)) {
+              recordCatalogCounter("trellis.operation.ownership.events", 1, {
+                "trellis.action": "control",
+                "trellis.outcome": isOperationRevisionConflict(cause)
+                  ? "conflict"
+                  : "error",
+              });
               runtime.cancellation.abort("operation ownership lost");
               throw cause;
             }
@@ -608,6 +798,15 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         }
 
         if (runtime.terminal) {
+          const observation = this.#executionObservations.get(runtime);
+          if (
+            observation &&
+            observation.fence.ownerInstanceId === fence.ownerInstanceId &&
+            observation.fence.ownerConnectionId === fence.ownerConnectionId &&
+            observation.fence.ownerEpoch === fence.ownerEpoch &&
+            (state === "completed" || state === "failed" ||
+              state === "cancelled")
+          ) observation.finish(state);
           this.#releaseOperationFence(runtime.id, fence);
           this.#rejectSignalWaiters(runtime);
         }
@@ -815,10 +1014,11 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     },
   ): AsyncResult<RuntimeOperationSnapshot, BaseError> {
     return AsyncResult.from((async () => {
-      if (
-        runtime.ownerInstanceId !== fence.ownerInstanceId ||
-        runtime.ownerEpoch !== fence.ownerEpoch
-      ) {
+      if (!operationOwnerFenceHolds(runtime, fence)) {
+        recordCatalogCounter("trellis.operation.ownership.events", 1, {
+          "trellis.action": "control",
+          "trellis.outcome": "lost",
+        });
         return err(
           new UnexpectedError({
             cause: new Error("operation update rejected by owner fence"),
@@ -967,9 +1167,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     return runtime.apiId === apiId && runtime.operation === operation &&
       runtime.snapshot.id === invocationId &&
       runtime.snapshot.operation === operation &&
-      (!caller ||
-        (runtime.creatorPrincipalId === caller.principalId &&
-          runtime.creatorParticipantId === caller.participantId));
+      operationObserveAuthorized(runtime, caller);
   }
 
   #rejectSignalWaiters(runtime: RuntimeOperationRecord): void {
@@ -1102,8 +1300,18 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           );
         }
       }
+      recordCatalogCounter("trellis.operation.ownership.events", 1, {
+        "trellis.action": "control",
+        "trellis.outcome": isOperationRevisionConflict(cause)
+          ? "conflict"
+          : "error",
+      });
       throw cause;
     }
+    recordCatalogCounter("trellis.operation.ownership.events", 1, {
+      "trellis.action": "control",
+      "trellis.outcome": "ok",
+    });
     const result = ok(signal);
     for (const waiter of runtime.signalWaiters) {
       waiter(result);
@@ -1159,9 +1367,19 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           signal.acknowledged = true;
           try {
             await this.saveOperationRecord(runtime);
+            recordCatalogCounter("trellis.operation.ownership.events", 1, {
+              "trellis.action": "control",
+              "trellis.outcome": "ok",
+            });
             return ok(undefined);
           } catch (cause) {
             if (retry >= 3 || !isOperationRevisionConflict(cause)) {
+              recordCatalogCounter("trellis.operation.ownership.events", 1, {
+                "trellis.action": "control",
+                "trellis.outcome": isOperationRevisionConflict(cause)
+                  ? "conflict"
+                  : "error",
+              });
               runtime.cancellation.abort("operation ownership lost");
               throw cause;
             }
@@ -1251,17 +1469,6 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     }
     this.#mountedOperationControls.add(controlSubject);
 
-    const publishFrame = async (reply: string, frame: unknown) => {
-      await this.#nats.publish(reply, JSON.stringify(frame));
-    };
-
-    const publishSnapshot = async (
-      reply: string,
-      snapshot: RuntimeOperationSnapshot,
-    ) => {
-      await publishFrame(reply, { kind: "snapshot", snapshot });
-    };
-
     const respondControlError = (msg: Msg, error: Error | BaseError) => {
       const trellisError = error instanceof BaseError
         ? error
@@ -1280,6 +1487,15 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       queue: routeQueueGroup(controlSubject),
     });
     void (async () => {
+      let liveProvider: LiveProvider | undefined;
+      try {
+        liveProvider = await this.#createOperationLiveProvider(ctx);
+      } catch (error) {
+        this.#log.warn(
+          { error, operation: String(operation) },
+          "Operation live observation unavailable",
+        );
+      }
       for await (const msg of controlSub) {
         const request = safeJson(msg).take();
         if (isErr(request)) {
@@ -1369,173 +1585,72 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           );
           continue;
         }
-        const snapshot = runtime.snapshot;
         if (control.action === "watch") {
-          if (msg.reply) {
-            const reply = msg.reply;
-            const updateSub = control.includeUpdates
-              ? this.#nats.subscribe(
-                `${ctx.subject}.updates.${control.operationId}`,
-              )
-              : undefined;
-            void (async () => {
-              let ownerEpoch = 0;
-              let updateSequence = 0;
-              let revision = runtime.revision;
-              const durableWatch = (await (await this.operationStoreHandle())
-                .watch(
-                  control.operationId,
-                ).orThrow())[Symbol.asyncIterator]();
-              if (updateSub) await this.#nats.flush();
-              await publishSnapshot(reply, runtime.snapshot);
-              const updates = updateSub
-                ? (async () => {
-                  for await (const updateMsg of updateSub) {
-                    try {
-                      const cache = this.auth.authorizationProviderCache;
-                      if (!cache) throw new Error("authorization unavailable");
-                      await cache.resolveContext(value.caller.contextDigest);
-                    } catch {
-                      updateSub.unsubscribe();
-                      await durableWatch.return?.();
-                      break;
-                    }
-                    const providerAuthorization =
-                      await verifyLocalAuthorization({
-                        kind: "request",
-                        cache: this.auth.authorizationProviderCache,
-                        message: updateMsg,
-                        permission: undefined,
-                        requiredCapabilities: [],
-                        identityOnly: true,
-                      });
-                    const provider = providerAuthorization.take();
-                    if (isErr(provider)) continue;
-                    const decoded = safeJson(updateMsg).take();
-                    if (
-                      isErr(decoded) || !decoded ||
-                      typeof decoded !== "object" || Array.isArray(decoded)
-                    ) continue;
-                    const envelope = decoded as Record<string, unknown>;
-                    const current = await this.loadOperationRecord(
-                      control.operationId,
-                    );
-                    const executor = envelope.ownerExecutorId;
-                    const connectionId = envelope.ownerConnectionId;
-                    const epoch = typeof envelope.ownerEpoch === "string" &&
-                        CANONICAL_POSITIVE_INTEGER.test(envelope.ownerEpoch)
-                      ? Number(envelope.ownerEpoch)
-                      : NaN;
-                    const sequence = typeof envelope.sequence === "string" &&
-                        CANONICAL_POSITIVE_INTEGER.test(envelope.sequence)
-                      ? Number(envelope.sequence)
-                      : NaN;
-                    const parsedUpdate = this.#decodeOperationValue(
-                      ctx,
-                      "update",
-                      envelope.update,
-                    ).take();
-                    if (
-                      isErr(parsedUpdate) ||
-                      typeof executor !== "string" ||
-                      typeof connectionId !== "string" ||
-                      typeof envelope.occurredAt !== "string" ||
-                      envelope.operationId !== control.operationId ||
-                      envelope.apiId !== current?.apiId ||
-                      envelope.operation !== current?.operation ||
-                      envelope.deploymentId !== this.#operationDeploymentId ||
-                      !current ||
-                      !this.#matchesOperationRoute(
-                        current,
-                        operation,
-                        ctx,
-                        value.caller,
-                      ) || current.snapshot.state === "completed" ||
-                      current.snapshot.state === "failed" ||
-                      current.snapshot.state === "cancelled" ||
-                      current.cancelRequestedAt ||
-                      Date.parse(current.leaseExpiresAt) <= Date.now() ||
-                      current.ownerEpoch !== epoch ||
-                      current.ownerInstanceId !== executor ||
-                      current.ownerConnectionId !== connectionId ||
-                      provider.participantId !== this.contractId ||
-                      provider.deploymentId !== this.#operationDeploymentId ||
-                      provider.connectionId !== current.ownerConnectionId ||
-                      !Number.isSafeInteger(epoch) ||
-                      !Number.isSafeInteger(sequence) ||
-                      epoch < ownerEpoch ||
-                      (epoch === ownerEpoch && sequence <= updateSequence)
-                    ) continue;
-                    ownerEpoch = epoch;
-                    updateSequence = sequence;
-                    const wireUpdate = this.#encodeOperationValue(
-                      ctx,
-                      "update",
-                      parsedUpdate,
-                    ).take();
-                    if (isErr(wireUpdate)) continue;
-                    await publishFrame(reply, {
-                      kind: "event",
-                      sequence: current.sequence,
-                      event: {
-                        type: "update",
-                        update: wireUpdate,
-                        snapshot: current.snapshot,
-                      },
-                    });
-                  }
-                })()
-                : Promise.resolve();
-              try {
-                for (;;) {
-                  const next = await durableWatch.next();
-                  if (next.done) break;
-                  const changed = next.value;
-                  const durable = changed.take();
-                  if (isErr(durable)) throw durable.error;
-                  if (!durable.value) break;
-                  if (durable.value.revision <= revision) continue;
-                  revision = durable.value.revision;
-                  if (
-                    !this.#matchesOperationRoute(
-                      durable.value,
+          const opening = parseOperationWatchOpen(request);
+          if (!opening) {
+            respondControlError(
+              msg,
+              new TransportError({
+                code: "trellis.live.invalid_request",
+                message:
+                  "Operation watch requires a live observation envelope.",
+                hint: "Use the live Operation watch client.",
+              }),
+            );
+            continue;
+          }
+          if (!liveProvider) {
+            respondControlError(
+              msg,
+              new AuthError({ reason: "authorization_unavailable" }),
+            );
+            continue;
+          }
+          try {
+            await liveProvider.offer(
+              msg,
+              ctx.subject,
+              opening.observation,
+              {
+                connectionId: value.caller.connectionId,
+                sessionKey: value.caller.sessionKey,
+                principalId: value.caller.principalId,
+                participantId: value.caller.participantId,
+                deploymentId: value.caller.deploymentId ?? undefined,
+                instanceId: value.caller.instanceId ?? undefined,
+                contextDigest: value.caller.contextDigest,
+              },
+              async (session) => {
+                await runDelayedOperationSource(
+                  session,
+                  async ({ emit, signal }) => {
+                    await this.#runOperationWatchSource({
                       operation,
                       ctx,
-                      value.caller,
-                    )
-                  ) break;
-                  try {
-                    const cache = this.auth.authorizationProviderCache;
-                    if (!cache) throw new Error("authorization unavailable");
-                    await cache.resolveContext(value.caller.contextDigest);
-                  } catch {
-                    break;
-                  }
-                  await publishSnapshot(reply, durable.value.snapshot);
-                  if (
-                    durable.value.snapshot.state === "completed" ||
-                    durable.value.snapshot.state === "failed" ||
-                    durable.value.snapshot.state === "cancelled"
-                  ) break;
-                }
-              } finally {
-                updateSub?.unsubscribe();
-                await updates;
-              }
-            })().catch((error) => {
-              if (!this.#nats.isClosed()) {
-                this.#log.warn(
-                  { error, operation: String(operation) },
-                  "Operation watch stopped",
+                      operationId: opening.operationId,
+                      includeUpdates: opening.includeUpdates,
+                      caller: value.caller,
+                      emit,
+                      signal,
+                    });
+                  },
                 );
-              }
-            });
+              },
+              "operation",
+            );
+          } catch (cause) {
+            respondControlError(
+              msg,
+              cause instanceof Error ? cause : new Error(String(cause)),
+            );
           }
           continue;
         }
 
         if (control.action === "get") {
-          msg.respond(JSON.stringify({ kind: "snapshot", snapshot }));
+          msg.respond(
+            JSON.stringify({ kind: "snapshot", snapshot: runtime.snapshot }),
+          );
           continue;
         }
 
@@ -1560,6 +1675,10 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               current.terminal = true;
               try {
                 await this.saveOperationRecord(current);
+                recordCatalogCounter("trellis.operation.ownership.events", 1, {
+                  "trellis.action": "control",
+                  "trellis.outcome": "ok",
+                });
                 break;
               } catch (cause) {
                 this.#operations.delete(current.id);
@@ -1571,6 +1690,14 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                 current = reloaded;
               }
             }
+            const observation = this.#executionObservations.get(current);
+            if (
+              observation &&
+              observation.fence.ownerInstanceId === current.ownerInstanceId &&
+              observation.fence.ownerConnectionId ===
+                current.ownerConnectionId &&
+              observation.fence.ownerEpoch === current.ownerEpoch
+            ) observation.finish("cancelled");
             current.cancellation.abort("operation cancelled");
             msg.respond(
               JSON.stringify({ kind: "snapshot", snapshot: current.snapshot }),
@@ -1627,6 +1754,306 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     })();
   }
 
+  async #createOperationLiveProvider(
+    ctx: RegisteredRuntimeOperationDesc,
+  ): Promise<LiveProvider | undefined> {
+    const cache = this.auth.authorizationProviderCache;
+    const digest = typeof this.auth.contextDigest === "function"
+      ? this.auth.contextDigest()
+      : this.auth.contextDigest;
+    if (!cache || !digest) return undefined;
+    const own = await cache.resolveContext(digest);
+    const observe = ctx.permissions?.observe;
+    if (!observe) return undefined;
+    const ownGuard = await LiveAuthorityGuard.retain(cache, digest, {
+      kind: "local-provider",
+    });
+    const provider = new LiveProvider({
+      nats: this.#nats,
+      identity: {
+        connectionId: own.context.connectionId,
+        sessionKey: own.context.sessionKey,
+        principalId: own.context.principalId,
+        participantId: own.context.participantId,
+        deploymentId: own.context.deploymentId ?? "",
+        instanceId: own.context.instanceId ?? "",
+      },
+      sign: async (bytes) => await this.auth.sign(bytes),
+      ownGuard,
+      permission: toVerifierPermission(observe),
+      retainCallerAuthority: (callerDigest, permission) =>
+        LiveAuthorityGuard.retain(cache, callerDigest, {
+          kind: "observer",
+          permission,
+        }),
+      manager: this.connection.live,
+    });
+    const observeSub = this.#nats.subscribe(
+      provider.wildcardSubject(ctx.subject),
+    );
+    void (async () => {
+      for await (const msg of observeSub) {
+        await provider.handleControl(msg, async (controlMsg) => {
+          const validated = await this.#authenticateOperationMessage(
+            controlMsg,
+            ctx,
+            false,
+            ctx.permissions?.observe,
+            ctx.observeCapabilities ?? [],
+          );
+          const authenticated = validated.take();
+          if (isErr(authenticated)) return undefined;
+          const caller = authenticated.caller;
+          return {
+            connectionId: caller.connectionId,
+            sessionKey: caller.sessionKey,
+            principalId: caller.principalId,
+            participantId: caller.participantId,
+            deploymentId: caller.deploymentId ?? undefined,
+            instanceId: caller.instanceId ?? undefined,
+            contextDigest: caller.contextDigest,
+          };
+        });
+      }
+    })();
+    return provider;
+  }
+
+  async #runOperationWatchSource(args: {
+    operation: string;
+    ctx: RegisteredRuntimeOperationDesc;
+    operationId: string;
+    includeUpdates: boolean;
+    caller: VerifiedCaller;
+    emit: (value: unknown) => Promise<void>;
+    signal: AbortSignal;
+  }): Promise<void> {
+    const {
+      operation,
+      ctx,
+      operationId,
+      includeUpdates,
+      caller,
+      emit,
+      signal,
+    } = args;
+    if (signal.aborted) throw new Error("operation watch aborted");
+    const cache = this.auth.authorizationProviderCache;
+    const observe = ctx.permissions?.observe;
+    if (!cache || !observe) throw new Error("authorization unavailable");
+    // The current observer guard is retained before any async allocation and
+    // follows identity-preserving refresh; `caller.contextDigest` is only the
+    // opening evidence.
+    const observerGuard = await LiveAuthorityGuard.retain(
+      cache,
+      caller.contextDigest,
+      { kind: "observer", permission: toVerifierPermission(observe) },
+    );
+    let updateSub: ReturnType<NatsConnection["subscribe"]> | undefined;
+    let durableWatch: AsyncIterator<unknown> | undefined;
+    let updates: Promise<void> = Promise.resolve();
+    let terminalSeen = false;
+    const stop = () => {
+      updateSub?.unsubscribe();
+      void durableWatch?.return?.();
+    };
+    signal.addEventListener("abort", stop, { once: true });
+    // Both backend sources funnel through this single arbiter; the provider's
+    // concurrent-emit rule is never violated, snapshots conflate to the latest
+    // authoritative value, and admitted updates are never dropped.
+    const arbiter = new OperationObserverArbiter(emit);
+
+    try {
+      updateSub = includeUpdates
+        ? this.#nats.subscribe(`${ctx.subject}.updates.${operationId}`)
+        : undefined;
+      const watchIterator = (await (await this.operationStoreHandle())
+        .watch(operationId)
+        .orThrow())[Symbol.asyncIterator]();
+      durableWatch = watchIterator as AsyncIterator<unknown>;
+      if (signal.aborted) throw new Error("operation watch aborted");
+      if (updateSub) await this.#nats.flush();
+      const current = await this.#resolveOperation(operationId);
+      if (
+        !current ||
+        !this.#matchesOperationRoute(current, operation, ctx, caller)
+      ) {
+        throw this.#operationNotFoundError(operationId);
+      }
+      await arbiter.snapshot({ kind: "snapshot", snapshot: current.snapshot });
+      if (
+        current.snapshot.state === "completed" ||
+        current.snapshot.state === "failed" ||
+        current.snapshot.state === "cancelled"
+      ) {
+        return;
+      }
+
+      let ownerEpoch = 0;
+      let updateSequence = 0;
+      let revision = current.revision;
+      let lastSnapshot = JSON.stringify(current.snapshot);
+      updates = updateSub
+        ? (async () => {
+          for await (const updateMsg of updateSub) {
+            if (signal.aborted) break;
+            if (observerGuard.checkNow() || terminalSeen) {
+              stop();
+              break;
+            }
+            const providerAuthorization = await verifyLocalAuthorization({
+              kind: "request",
+              cache: this.auth.authorizationProviderCache,
+              message: updateMsg,
+              permission: undefined,
+              requiredCapabilities: [],
+              identityOnly: true,
+            });
+            const provider = providerAuthorization.take();
+            if (isErr(provider)) continue;
+            const decoded = safeJson(updateMsg).take();
+            if (
+              isErr(decoded) || !decoded ||
+              typeof decoded !== "object" || Array.isArray(decoded)
+            ) continue;
+            const envelope = decoded as Record<string, unknown>;
+            const latest = await this.loadOperationRecord(operationId);
+            const executor = envelope.ownerExecutorId;
+            const connectionId = envelope.ownerConnectionId;
+            const epoch = typeof envelope.ownerEpoch === "string" &&
+                CANONICAL_POSITIVE_INTEGER.test(envelope.ownerEpoch)
+              ? Number(envelope.ownerEpoch)
+              : NaN;
+            const sequence = typeof envelope.sequence === "string" &&
+                CANONICAL_POSITIVE_INTEGER.test(envelope.sequence)
+              ? Number(envelope.sequence)
+              : NaN;
+            const parsedUpdate = this.#decodeOperationValue(
+              ctx,
+              "update",
+              envelope.update,
+            ).take();
+            // A verified peer's update that does not match the declared codec
+            // is a protocol failure, not silently discarded traffic.
+            if (isErr(parsedUpdate)) {
+              throw new Error(
+                "operation update did not match the declared codec",
+              );
+            }
+            if (
+              typeof executor !== "string" ||
+              typeof connectionId !== "string" ||
+              typeof envelope.occurredAt !== "string" ||
+              envelope.operationId !== operationId ||
+              envelope.apiId !== latest?.apiId ||
+              envelope.operation !== latest?.operation ||
+              envelope.deploymentId !== this.#operationDeploymentId ||
+              !latest ||
+              !this.#matchesOperationRoute(
+                latest,
+                operation,
+                ctx,
+                caller,
+              ) || latest.snapshot.state === "completed" ||
+              latest.snapshot.state === "failed" ||
+              latest.snapshot.state === "cancelled" ||
+              latest.cancelRequestedAt ||
+              Date.parse(latest.leaseExpiresAt) <= Date.now() ||
+              latest.ownerEpoch !== epoch ||
+              latest.ownerInstanceId !== executor ||
+              latest.ownerConnectionId !== connectionId ||
+              provider.participantId !== this.contractId ||
+              provider.deploymentId !== this.#operationDeploymentId ||
+              provider.connectionId !== latest.ownerConnectionId ||
+              !Number.isSafeInteger(epoch) ||
+              !Number.isSafeInteger(sequence) ||
+              epoch < ownerEpoch ||
+              (epoch === ownerEpoch && sequence <= updateSequence)
+            ) continue;
+            ownerEpoch = epoch;
+            updateSequence = sequence;
+            const wireUpdate = this.#encodeOperationValue(
+              ctx,
+              "update",
+              parsedUpdate,
+            ).take();
+            if (isErr(wireUpdate)) {
+              throw new Error("operation update could not be re-encoded");
+            }
+            if (terminalSeen) break;
+            if (
+              !arbiter.update({
+                kind: "event",
+                sequence: latest.sequence,
+                event: {
+                  type: "update",
+                  update: wireUpdate,
+                  snapshot: latest.snapshot,
+                },
+              })
+            ) {
+              // The bounded observer buffer cannot admit another valid update:
+              // fail only this observer with a slow-consumer outcome.
+              throw new Error("operation observer update buffer overflow");
+            }
+          }
+        })()
+        : Promise.resolve();
+
+      for (;;) {
+        if (signal.aborted) throw new Error("operation watch aborted");
+        const next = await watchIterator.next();
+        if (next.done) {
+          throw new Error("operation watch source ended");
+        }
+        const changed = next.value;
+        const durable = changed.take();
+        if (isErr(durable)) throw durable.error;
+        if (!durable.value) {
+          throw new Error("operation watch source ended");
+        }
+        if (durable.value.revision <= revision) continue;
+        revision = durable.value.revision;
+        if (
+          !this.#matchesOperationRoute(
+            durable.value,
+            operation,
+            ctx,
+            caller,
+          )
+        ) {
+          throw new Error("operation watch source ended");
+        }
+        if (observerGuard.checkNow()) {
+          throw new Error("authorization unavailable");
+        }
+        const terminal = durable.value.snapshot.state === "completed" ||
+          durable.value.snapshot.state === "failed" ||
+          durable.value.snapshot.state === "cancelled";
+        // Lease-only writes advance the storage revision without changing the
+        // business snapshot; they must not invent progress.
+        const snapshotJson = JSON.stringify(durable.value.snapshot);
+        if (snapshotJson === lastSnapshot && !terminal) continue;
+        lastSnapshot = snapshotJson;
+        if (terminal) {
+          // Freeze further update admission before the authoritative terminal
+          // snapshot; already admitted updates are already queued ahead of it.
+          terminalSeen = true;
+        }
+        await arbiter.snapshot({
+          kind: "snapshot",
+          snapshot: durable.value.snapshot,
+        });
+        if (terminal) return;
+      }
+    } finally {
+      stop();
+      observerGuard.release();
+      signal.removeEventListener("abort", stop);
+      await updates.catch(() => {});
+    }
+  }
+
   mountRuntime(
     method: string,
     fn: Parameters<Trellis<RuntimeApi, TrellisMode>["mount"]>[1],
@@ -1661,6 +2088,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         `Unknown operation '${operation.toString()}'. Did you forget to include its API module?`,
       );
     }
+    const route = routeToken("operation", String(operation));
 
     return {
       control: (operationId) => {
@@ -1824,58 +2252,152 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           runtime.revision = admitted.revision;
           runtime.leaseExpiresAt = admitted.leaseExpiresAt;
           runtime.snapshot = admitted.snapshot;
-          const op = makeOperation(runtime, fence, operationContext);
-          try {
-            const handlerResult: unknown = await handler(
-              transferSession
-                ? {
-                  input: runtime.input,
-                  op,
-                  caller,
-                  signal: runtime.cancellation.signal,
-                  resuming,
-                  ...(runtime.snapshot.progress !== undefined
-                    ? { progress: runtime.snapshot.progress }
-                    : {}),
-                  transfer: transferSession.transfer,
-                }
-                : {
-                  input: runtime.input,
-                  op,
-                  caller,
-                  signal: runtime.cancellation.signal,
-                  resuming,
-                  ...(runtime.snapshot.progress !== undefined
-                    ? { progress: runtime.snapshot.progress }
-                    : {}),
-                },
+          const carrier = createMapCarrier();
+          if (admitted.telemetry) {
+            carrier.set("traceparent", admitted.telemetry.traceparent);
+            if (admitted.telemetry.tracestate) {
+              carrier.set("tracestate", admitted.telemetry.tracestate);
+            }
+          }
+          const producer = trace.getSpanContext(extractTraceContext(carrier));
+          const links = producer ? [{ context: producer }] : [];
+          const startedAt = performance.now();
+          const existingObservation = this.#executionObservations.get(runtime);
+          const startSpan = existingObservation
+            ? undefined
+            : getTrellisTracer().startSpan(
+              "trellis.operation.execute.start",
+              {
+                kind: SpanKind.CONSUMER,
+                attributes: { "trellis.route": route },
+                links,
+              },
+              ROOT_CONTEXT,
             );
-            const handlerOutcome = isResultLike(handlerResult)
-              ? handlerResult.take()
-              : handlerResult;
-            if (isErr(handlerOutcome)) {
-              const error = annotateHandlerBoundaryError(handlerOutcome.error, {
-                operation: String(operation),
-                requestId: operationContext.requestId,
-                service: this.name,
-                contractId: this.contractId,
-                contractDigest: this.contractDigest,
-                traceId: operationContext.traceId,
+          const observation = existingObservation ?? {
+            fence,
+            attemptContext: trace.setSpanContext(
+              ROOT_CONTEXT,
+              startSpan!.spanContext(),
+            ),
+            finish: (
+              outcome:
+                | "completed"
+                | "failed"
+                | "cancelled"
+                | "lease_lost"
+                | "interrupted"
+                | "error",
+            ) => {
+              if (this.#executionObservations.get(runtime) !== observation) {
+                return;
+              }
+              this.#executionObservations.delete(runtime);
+              runtime.cancellation.signal.removeEventListener("abort", onAbort);
+              recordCatalogDuration(
+                "trellis.operation.execution.duration",
+                performance.now() - startedAt,
+                { "trellis.route": route, "trellis.outcome": outcome },
+              );
+              recordCatalogUpDown("trellis.operation.active", -1, {
+                "trellis.route": route,
               });
-              recordOperationServiceError(error, {
-                operation: String(operation),
-                phase: "handler_result",
+              otelContext.with(observation.attemptContext, () => {
+                getTrellisTracer().startSpan(
+                  "trellis.operation.execute.finish",
+                  {
+                    kind: SpanKind.CONSUMER,
+                    attributes: {
+                      "trellis.route": route,
+                      "trellis.outcome": outcome,
+                    },
+                    links,
+                  },
+                  observation.attemptContext,
+                ).end();
               });
-              await op.fail(error);
-              return;
-            }
-            if (isOperationDeferred(handlerOutcome)) return;
-            if (isTerminalRuntimeOperationSnapshot(handlerOutcome)) {
-              return;
-            }
-            if (!runtime.terminal) await op.complete(handlerOutcome);
+            },
+          };
+          const onAbort = () => observation.finish("lease_lost");
+          if (!existingObservation) {
+            this.#executionObservations.set(runtime, observation);
+            recordCatalogUpDown("trellis.operation.active", 1, {
+              "trellis.route": route,
+            });
+            runtime.cancellation.signal.addEventListener("abort", onAbort, {
+              once: true,
+            });
+            if (runtime.cancellation.signal.aborted) onAbort();
+          }
+          const op = makeOperation(runtime, fence, operationContext);
+          let deferred = false;
+          let unfinishedOutcome: "interrupted" | "error" = "interrupted";
+          try {
+            const execution = otelContext.with(
+              observation.attemptContext,
+              async () => {
+                const handlerResult: unknown = await handler(
+                  transferSession
+                    ? {
+                      input: runtime.input,
+                      op,
+                      caller,
+                      signal: runtime.cancellation.signal,
+                      resuming,
+                      ...(runtime.snapshot.progress !== undefined
+                        ? { progress: runtime.snapshot.progress }
+                        : {}),
+                      transfer: transferSession.transfer,
+                    }
+                    : {
+                      input: runtime.input,
+                      op,
+                      caller,
+                      signal: runtime.cancellation.signal,
+                      resuming,
+                      ...(runtime.snapshot.progress !== undefined
+                        ? { progress: runtime.snapshot.progress }
+                        : {}),
+                    },
+                );
+                const handlerOutcome = isResultLike(handlerResult)
+                  ? handlerResult.take()
+                  : handlerResult;
+                if (isErr(handlerOutcome)) {
+                  unfinishedOutcome = "error";
+                  const error = annotateHandlerBoundaryError(
+                    handlerOutcome.error,
+                    {
+                      operation: String(operation),
+                      requestId: operationContext.requestId,
+                      service: this.name,
+                      contractId: this.contractId,
+                      contractDigest: this.contractDigest,
+                      traceId: operationContext.traceId,
+                    },
+                  );
+                  recordOperationServiceError(error, {
+                    operation: String(operation),
+                    phase: "handler_result",
+                  });
+                  await op.fail(error);
+                  return;
+                }
+                if (isOperationDeferred(handlerOutcome)) {
+                  deferred = true;
+                  return;
+                }
+                if (isTerminalRuntimeOperationSnapshot(handlerOutcome)) {
+                  return;
+                }
+                if (!runtime.terminal) await op.complete(handlerOutcome);
+              },
+            );
+            startSpan?.end();
+            await execution;
           } catch (cause) {
             if (runtime.cancellation.signal.aborted) return;
+            unfinishedOutcome = "error";
             const error = annotateHandlerBoundaryError(cause, {
               operation: String(operation),
               requestId: operationContext.requestId,
@@ -1896,6 +2418,15 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                 phase: "failure_persist",
               });
             }
+          } finally {
+            startSpan?.end();
+            if (!deferred) {
+              observation.finish(
+                runtime.cancellation.signal.aborted
+                  ? "lease_lost"
+                  : unfinishedOutcome,
+              );
+            }
           }
         };
 
@@ -1909,28 +2440,43 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               return;
             }
             void this.#queueOperationFrame(runtime, async () => {
-              for (let retry = 0;; retry++) {
-                const durable = await this.loadOperationRecord(runtime.id);
-                if (
-                  !durable || durable.cancelRequestedAt ||
-                  durable.snapshot.state === "cancelled" ||
-                  !this.#ownsOperation(durable, fence)
-                ) throw new Error("operation ownership lost");
-                runtime.revision = durable.revision;
-                runtime.snapshot = durable.snapshot;
-                runtime.sequence = durable.sequence;
-                runtime.signalSequence = durable.signalSequence;
-                runtime.signals = durable.signals;
-                runtime.leaseExpiresAt = new Date(Date.now() + 30_000)
-                  .toISOString();
-                try {
-                  await this.saveOperationRecord(runtime);
-                  return;
-                } catch (cause) {
-                  if (retry >= 3 || !isOperationRevisionConflict(cause)) {
-                    throw cause;
+              let outcome = "error";
+              try {
+                for (let retry = 0;; retry++) {
+                  const durable = await this.loadOperationRecord(runtime.id);
+                  if (
+                    !durable || durable.cancelRequestedAt ||
+                    durable.snapshot.state === "cancelled" ||
+                    !this.#ownsOperation(durable, fence)
+                  ) {
+                    outcome = "lost";
+                    throw new Error("operation ownership lost");
+                  }
+                  runtime.revision = durable.revision;
+                  runtime.snapshot = durable.snapshot;
+                  runtime.sequence = durable.sequence;
+                  runtime.signalSequence = durable.signalSequence;
+                  runtime.signals = durable.signals;
+                  runtime.leaseExpiresAt = new Date(Date.now() + 30_000)
+                    .toISOString();
+                  try {
+                    await this.saveOperationRecord(runtime);
+                    outcome = "ok";
+                    return;
+                  } catch (cause) {
+                    if (retry >= 3 || !isOperationRevisionConflict(cause)) {
+                      outcome = isOperationRevisionConflict(cause)
+                        ? "conflict"
+                        : "error";
+                      throw cause;
+                    }
                   }
                 }
+              } finally {
+                recordCatalogCounter("trellis.operation.ownership.events", 1, {
+                  "trellis.action": "renew",
+                  "trellis.outcome": outcome,
+                });
               }
             }).catch(() => {
               runtime.cancellation.abort("operation ownership lost");
@@ -2323,6 +2869,20 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             }
 
             const createdAt = now();
+            const traceparents = msg.headers?.values("traceparent") ?? [];
+            const tracestates = msg.headers?.values("tracestate") ?? [];
+            const traceparent = traceparents.length === 1
+              ? traceparents[0]
+              : undefined;
+            const telemetry = validateTraceparent(traceparent)
+              ? {
+                traceparent,
+                ...(tracestates.length === 1 &&
+                    validateTracestate(tracestates[0])
+                  ? { tracestate: tracestates[0] }
+                  : {}),
+              }
+              : undefined;
             const runtime: RuntimeOperationRecord = reclaimed ?? {
               id: operationId,
               service: this.name,
@@ -2334,6 +2894,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               creatorParticipantId: value.caller.participantId,
               apiId,
               input: value.input,
+              ...(telemetry ? { telemetry } : {}),
               revision: 1,
               ownerInstanceId: this.#operationOwnerId,
               ownerConnectionId: this.#operationConnectionId,
@@ -2366,7 +2927,17 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               this.#operations.set(operationId, runtime);
               try {
                 await this.saveOperationRecord(runtime);
+                recordCatalogCounter("trellis.operation.ownership.events", 1, {
+                  "trellis.action": "claim",
+                  "trellis.outcome": "ok",
+                });
               } catch (cause) {
+                recordCatalogCounter("trellis.operation.ownership.events", 1, {
+                  "trellis.action": "claim",
+                  "trellis.outcome": isOperationRevisionConflict(cause)
+                    ? "conflict"
+                    : "error",
+                });
                 this.#operations.delete(operationId);
                 const accepted = await this.#resolveOperation(operationId);
                 if (!accepted) {
@@ -2474,6 +3045,9 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
 
   async stop(): Promise<void> {
     this.#stopPromise ??= (async () => {
+      for (const observation of this.#executionObservations.values()) {
+        observation.finish("interrupted");
+      }
       if (this.#nats.isClosed()) {
         return;
       }

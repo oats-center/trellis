@@ -65,6 +65,31 @@ Check runs both discovered suites against real Trellis infrastructure. Focused
 local runs select tests through the native Rust and Deno test runners rather
 than a second registry or scheduler.
 
+### Live Observation Timing Proof
+
+Live observation sessions have bounded deadlines (reservation, control,
+heartbeat, peer inactivity, consumption stall, cleanup, close exchange) that
+otherwise require real elapsed time to exercise. Prove them at three distinct
+boundaries, and record which boundary each test establishes:
+
+- **Deterministic clock:** exercise the actual production deadline owner under a
+  controllable local clock. In Rust that is `tokio::time::Instant` with paused
+  test time; in TypeScript it is an injected monotonic clock. Advance time in
+  ordered due events and await an explicit completion signal for each
+  transition; advancing time alone does not prove the handler ran. This is the
+  production reducer, not a copied algorithm or a test-only fake runtime.
+- **Real broker:** prove NATS response-permission expiry and count with a real
+  isolated broker using a deliberately short response allowance, and prove that
+  compiler-derived static live subjects are independent of it.
+- **Real interoperability:** exercise ordinary builds, real infrastructure, and
+  bounded meaningful cross-language traffic with real lifecycle events and
+  validated frame order. Virtual elapsed-time evidence is not a real multi-hour
+  soak, and a kept-alive quiet session is not a throughput benchmark.
+
+Do not add a user-facing fast mode, timeout scale, product test endpoint, or
+second wire version to shorten a test, and do not treat a CI job's upper timeout
+as a required minimum duration.
+
 ### Smaller Test Boundary
 
 Real component and adapter integration tests may cover transaction, repository,

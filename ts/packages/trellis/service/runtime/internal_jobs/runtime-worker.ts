@@ -3,6 +3,7 @@ import type { ConsumerInfo, JsMsg } from "@nats-io/jetstream";
 import type { NatsConnection, Subscription } from "@nats-io/nats-core";
 
 import { recordTrellisError } from "../../../telemetry/mod.ts";
+import { recordCatalogCounter } from "../../../telemetry/metrics.ts";
 import type { JobsQueueBinding, JobsRuntimeBinding } from "./bindings.ts";
 import { ActiveJobCancellationRegistry } from "./cancellation-registry.ts";
 import { startWorkerHeartbeatLoop } from "./heartbeat.ts";
@@ -292,35 +293,49 @@ export async function startQueueWorkerLoop<TResult>(
 
   const workTask = (async () => {
     for await (const msg of messages) {
+      const disposition = async (action: "ack" | "nak", delay?: number) => {
+        let outcome = "error";
+        try {
+          if (action === "ack") await msg.ack();
+          else await msg.nak(delay);
+          outcome = "ok";
+        } finally {
+          recordCatalogCounter("trellis.delivery.dispositions", 1, {
+            "trellis.family": "job",
+            "trellis.action": action,
+            "trellis.outcome": outcome,
+          });
+        }
+      };
       try {
         const event = parseWorkPayloadEvent(msg.data);
         if (!event) {
-          await msg.ack();
+          await disposition("ack");
           continue;
         }
         const job = jobFromWorkEvent(event) as
           | Job<unknown, TResult>
           | undefined;
         if (!job) {
-          await msg.ack();
+          await disposition("ack");
           continue;
         }
         const key = `${job.service}.${job.type}.${job.id}`;
         if (hostCancellation?.isHostShutdown()) {
-          await msg.nak();
+          await disposition("nak");
           continue;
         }
         const latestLifecycle = options.getLatestLifecycleEvent
           ? await options.getLatestLifecycleEvent(job)
           : undefined;
         if (hostCancellation?.isHostShutdown()) {
-          await msg.nak();
+          await disposition("nak");
           continue;
         }
         if (lifecycleWorkDecision(latestLifecycle) === "skip-ack") {
           await cleanupTerminalKeyState(options.manager, job);
           registry.clearPending(key);
-          await msg.ack();
+          await disposition("ack");
           continue;
         }
         if (!latestLifecycle) {
@@ -328,13 +343,13 @@ export async function startQueueWorkerLoop<TResult>(
             ? await options.getProjectedJob(job)
             : undefined;
           if (hostCancellation?.isHostShutdown()) {
-            await msg.nak();
+            await disposition("nak");
             continue;
           }
           if (projectedWorkDecision(projected, job) === "skip-ack") {
             await cleanupTerminalKeyState(options.manager, job);
             registry.clearPending(key);
-            await msg.ack();
+            await disposition("ack");
             continue;
           }
         }
@@ -401,13 +416,16 @@ export async function startQueueWorkerLoop<TResult>(
           } while (outcome.outcome === "deferred" && !token.isCancelled());
           const ackAction = ackActionForOutcome(outcome, job.maxTries);
           if (ackAction === "ack") {
-            await msg.ack();
+            await disposition("ack");
           } else if (ackAction === "await-max-deliver") {
             continue;
           } else if (outcome?.outcome === "deferred") {
-            await msg.nak(options.deferralBackoffMs ?? 1_000);
+            await disposition("nak", options.deferralBackoffMs ?? 1_000);
           } else {
-            await msg.nak(retryDelayMs(outcome?.tries ?? 1, options.backoffMs));
+            await disposition(
+              "nak",
+              retryDelayMs(outcome?.tries ?? 1, options.backoffMs),
+            );
           }
         } finally {
           guard.dispose();
@@ -421,7 +439,7 @@ export async function startQueueWorkerLoop<TResult>(
           messagingSystem: "nats",
         });
         try {
-          await msg.nak(options.deferralBackoffMs ?? 1_000);
+          await disposition("nak", options.deferralBackoffMs ?? 1_000);
         } catch (nakError) {
           recordTrellisError(nakError, {
             surface: "job",

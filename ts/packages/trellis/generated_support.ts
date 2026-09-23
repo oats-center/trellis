@@ -325,7 +325,7 @@ function isCodec(value: unknown): value is Codec<unknown> {
 
 function validateAction(name: string, action: Record<string, unknown>): void {
   if (
-    !["rpc", "operation", "event", "feed"].includes(String(action.kind)) ||
+    !["rpc", "operation", "event", "live"].includes(String(action.kind)) ||
     action.descriptorName !== name || !name.startsWith(`${action.kind}:`) ||
     name.length === String(action.kind).length + 1
   ) {
@@ -358,9 +358,9 @@ function validateAction(name: string, action: Record<string, unknown>): void {
         )
       ) fail("generated event descriptor");
       break;
-    case "feed":
+    case "live":
       if (!isCodec(action.input) || !isCodec(action.event)) {
-        fail("generated feed descriptor");
+        fail("generated live descriptor");
       }
       break;
   }
@@ -510,7 +510,7 @@ export function participantDescriptor<
         (kind === "operation" && selected.direction !== "invoke") ||
         (kind === "event" && selected.direction !== "publish" &&
           selected.direction !== "subscribe") ||
-        (kind === "feed" && selected.direction !== "subscribe")
+        (kind === "live" && selected.direction !== "subscribe")
       ) fail("generated action direction");
     }
     if (

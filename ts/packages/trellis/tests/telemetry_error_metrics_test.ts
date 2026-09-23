@@ -151,19 +151,19 @@ Deno.test("RPC client template failures record trellis error metric", async () =
   assertEquals(dataPoint.attributes["trellis.error.type"], "ValidationError");
 });
 
-Deno.test("Feed client template failures record trellis error metric", async () => {
+Deno.test("Live client template failures record trellis error metric", async () => {
   exporter.reset();
-  const { Trellis } = await import(`../session.ts?feed=${ulid()}`);
+  const { Trellis } = await import(`../session.ts?live=${ulid()}`);
   const api = {
     rpc: {},
     events: {},
-    feeds: {
+    lives: {
       "Test.Stream": {
-        subject: "feeds.v1.Test.Stream.{id}",
+        subject: "lives.v1.Test.Stream.{id}",
         permission: Object.freeze({
           apiId: "test@v1",
           apiVersion: "v1",
-          surfaceKind: "feed",
+          surfaceKind: "live",
           surfaceName: "Test.Stream",
           action: "subscribe",
         }),
@@ -183,11 +183,11 @@ Deno.test("Feed client template failures record trellis error metric", async () 
     { api },
   );
 
-  await runtime.feedHandle("Test.Stream").input({}).subscribe().take();
+  await runtime.liveHandle("Test.Stream").input({}).subscribe().take();
   await reader.forceFlush();
 
   const dataPoint = findTrellisErrorDataPoint({
-    "trellis.surface": "feed",
+    "trellis.surface": "live",
     "trellis.direction": "client",
     "trellis.operation": "Test.Stream",
     "trellis.phase": "request_template",

@@ -185,7 +185,8 @@ async fn state_acceptance() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
     println!("rust login {}", challenge.login_url());
     std::io::stdout().flush()?;
-    let _ = challenge.complete(&url).await;
+    let outcome = challenge.complete_without_persistence(&url).await?;
+    trellis_rs::auth::save_admin_session(&outcome.state)?;
     let session = load_admin_session()?;
     let client = Client::connect(UserConnectOptions::new(
         &url,

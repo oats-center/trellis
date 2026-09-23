@@ -465,13 +465,13 @@ const typescriptServiceTutorialDocs: DocEntry[] = [
     sidebarLabel: "8. Publish Events",
   },
   {
-    title: "Use a feed for filtered live views",
+    title: "Use a live observation for filtered live views",
     description:
       "Expose caller-filtered live views instead of forwarding broad service events to browsers.",
-    href: "/guides/write-a-service/feeds",
+    href: "/guides/write-a-service/live",
     section: "Getting started",
     sidebarGroup: typescriptServiceTutorialGroup,
-    sidebarLabel: "9. Feeds",
+    sidebarLabel: "9. Live observations",
   },
   {
     title: "Handle graceful shutdown",
@@ -550,7 +550,7 @@ const conceptDocs: DocEntry[] = [
   {
     title: "Communication",
     description:
-      "RPCs, operations, events, feeds, cross-contract dependencies, and surface availability.",
+      "RPCs, operations, events, live observations, cross-contract dependencies, and surface availability.",
     href: "/guides/concepts/communication",
     section: "Trellis Concepts",
   },

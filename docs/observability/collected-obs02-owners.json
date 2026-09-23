@@ -1,0 +1,616 @@
+{
+  "sourceId": "obs02-ts-owners-94caa7ee",
+  "sourceSha": "94caa7ee1809f703d5cb4eaaf2f8b17bfdb092ff",
+  "includedRs": "aae0b66dd43990924395c4483d4ac5c904c67645",
+  "capturedAtUtc": "2026-09-18T00:35:55Z",
+  "tools": {
+    "deno": "2.9.4",
+    "rustc": "1.96.0",
+    "collector": "otel/opentelemetry-collector-contrib:0.160.0@sha256:5b66b0dc6921f2a439cf50b942ccb9e2a4375f136239a9fdf709ef33e4bfc668",
+    "promtool": "prom/prometheus:v3.13.1",
+    "browser": "repository-cached Chromium"
+  },
+  "configuration": {
+    "nativeOtlp": "http://127.0.0.1:4318",
+    "prometheus": "http://127.0.0.1:9464/metrics",
+    "traceBackend": "case-owned file exporter via OTLP HTTP 127.0.0.1:4322",
+    "signals": "metrics and traces enabled; sampler=always_on; metric interval=1000ms; trace batch delay=100ms",
+    "browser": "same-origin /otel forwarded to the case-owned receiver; traceRatio=1",
+    "build": "cargo xtask install plus cargo build -p trellis-server -p trellis on 94caa7ee with the OBS-02 completion corrections"
+  },
+  "scenarios": {
+    "tsWork": "TRELLIS_OBS_CAPTURE_ENDPOINT=http://127.0.0.1:4318 TRELLIS_OBS_PROMETHEUS_URL=http://127.0.0.1:9464/metrics deno test -A -c ts/integration/deno.json ts/integration/observability_test.ts --filter 'collector enabled'",
+    "serviceConnection": "deno test -A -c ts/integration/deno.json ts/integration/observability_test.ts --filter 'TS service connection observes'",
+    "standaloneOwner": "deno test -A -c ts/integration/deno.json ts/integration/observability_test.ts --filter 'TS standalone live telemetry'",
+    "rustWork": "deno test -A -c ts/integration/deno.json ts/integration/observability_test.ts --filter 'durable attempt links'",
+    "kv": "TRELLIS_OBS_CAPTURE_ENDPOINT=http://127.0.0.1:4318 deno test -A -c ts/integration/deno.json ts/integration/kv_telemetry_test.ts --filter 'one bounded storage'",
+    "delivery": "deno test -A -c ts/integration/deno.json ts/integration/events_test.ts --filter 'typescript durable delivery leases'",
+    "browser": "TRELLIS_OBS_BROWSER_CAPTURE_ENDPOINT=http://127.0.0.1:4318 deno test -A -c ts/browser/deno.json ts/browser/console_login.browser_test.ts --filter 'browser admin bootstrap'",
+    "commonEnvironment": "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 OTEL_TRACES_SAMPLER=always_on OTEL_METRIC_EXPORT_INTERVAL=1000 OTEL_BSP_SCHEDULE_DELAY=100",
+    "rustDelivery": "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 deno test -A -c ts/integration/deno.json ts/integration/events_test.ts --filter 'rust durable delivery leases'"
+  },
+  "samples": [
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "own",
+      "trellis.state": "covered",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "own",
+      "trellis.state": "unavailable",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "peer",
+      "trellis.state": "covered",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "peer",
+      "trellis.state": "unavailable",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "own",
+      "trellis.state": "covered",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "own",
+      "trellis.state": "unavailable",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "peer",
+      "trellis.state": "covered",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "peer",
+      "trellis.state": "unavailable",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "own",
+      "trellis.state": "covered",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "own",
+      "trellis.state": "unavailable",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "peer",
+      "trellis.state": "covered",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "peer",
+      "trellis.state": "unavailable",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "own",
+      "trellis.state": "covered",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "own",
+      "trellis.state": "unavailable",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "peer",
+      "trellis.state": "covered",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "peer",
+      "trellis.state": "unavailable",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "own",
+      "trellis.state": "covered",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "own",
+      "trellis.state": "unavailable",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "peer",
+      "trellis.state": "covered",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "peer",
+      "trellis.state": "unavailable",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "own",
+      "trellis.state": "covered",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "own",
+      "trellis.state": "unavailable",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "peer",
+      "trellis.state": "covered",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "peer",
+      "trellis.state": "unavailable",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "own",
+      "trellis.state": "covered",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "own",
+      "trellis.state": "unavailable",
+      "value": 0.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "peer",
+      "trellis.state": "covered",
+      "value": 4.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis_auth_coverage_count",
+      "trellis.kind": "peer",
+      "trellis.state": "unavailable",
+      "value": 0.0
+    },
+    {
+      "scenario": "serviceConnection",
+      "owner": "trellis/connection-owner-observability",
+      "metric": "trellis_auth_refresh_attempts",
+      "trellis.participant.kind": "service",
+      "trellis.outcome": "terminal",
+      "value": 1.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/events-ts",
+      "metric": "trellis_auth_verification_duration_count",
+      "trellis.purpose": "event",
+      "trellis.outcome": "ok",
+      "value": 9.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/events-ts",
+      "metric": "trellis_auth_verification_duration_count",
+      "trellis.purpose": "request",
+      "trellis.outcome": "ok",
+      "value": 166.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/provider",
+      "metric": "trellis_auth_verification_duration_count",
+      "trellis.purpose": "event",
+      "trellis.outcome": "ok",
+      "value": 1.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/provider",
+      "metric": "trellis_auth_verification_duration_count",
+      "trellis.purpose": "request",
+      "trellis.outcome": "ok",
+      "value": 17.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/provider",
+      "metric": "trellis_auth_verification_duration_count",
+      "trellis.purpose": "event",
+      "trellis.outcome": "ok",
+      "value": 1.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/provider",
+      "metric": "trellis_auth_verification_duration_count",
+      "trellis.purpose": "request",
+      "trellis.outcome": "ok",
+      "value": 17.0
+    },
+    {
+      "scenario": "serviceConnection",
+      "owner": "trellis/connection-owner-observability",
+      "metric": "trellis_connection_count",
+      "trellis.participant.kind": "service",
+      "trellis.state": "connecting",
+      "value": 0.0
+    },
+    {
+      "scenario": "serviceConnection",
+      "owner": "trellis/connection-owner-observability",
+      "metric": "trellis_connection_count",
+      "trellis.participant.kind": "service",
+      "trellis.state": "suspended",
+      "value": 0.0
+    },
+    {
+      "scenario": "serviceConnection",
+      "owner": "trellis/connection-owner-observability",
+      "metric": "trellis_connection_count",
+      "trellis.participant.kind": "service",
+      "trellis.state": "terminal",
+      "value": 0.0
+    },
+    {
+      "scenario": "serviceConnection",
+      "owner": "trellis/connection-owner-observability",
+      "metric": "trellis_connection_count",
+      "trellis.participant.kind": "service",
+      "trellis.state": "usable",
+      "value": 0.0
+    },
+    {
+      "scenario": "serviceConnection",
+      "owner": "trellis/connection-owner-observability",
+      "metric": "trellis_connection_count",
+      "trellis.participant.kind": "user",
+      "trellis.state": "connecting",
+      "value": 0.0
+    },
+    {
+      "scenario": "serviceConnection",
+      "owner": "trellis/connection-owner-observability",
+      "metric": "trellis_connection_count",
+      "trellis.participant.kind": "user",
+      "trellis.state": "usable",
+      "value": 1.0
+    },
+    {
+      "scenario": "serviceConnection",
+      "owner": "trellis/connection-owner-observability",
+      "metric": "trellis_connection_transitions",
+      "trellis.participant.kind": "service",
+      "trellis.reason": "connected",
+      "value": 1.0
+    },
+    {
+      "scenario": "serviceConnection",
+      "owner": "trellis/connection-owner-observability",
+      "metric": "trellis_connection_transitions",
+      "trellis.participant.kind": "service",
+      "trellis.reason": "coverage_lost",
+      "value": 1.0
+    },
+    {
+      "scenario": "serviceConnection",
+      "owner": "trellis/connection-owner-observability",
+      "metric": "trellis_connection_transitions",
+      "trellis.participant.kind": "service",
+      "trellis.reason": "terminal",
+      "value": 1.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/events-ts",
+      "metric": "trellis_event_process_duration_count",
+      "trellis.route": "Alpha",
+      "trellis.outcome": "error",
+      "value": 6.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/events-ts",
+      "metric": "trellis_event_process_duration_count",
+      "trellis.route": "Alpha",
+      "trellis.outcome": "ok",
+      "value": 3.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/provider",
+      "metric": "trellis_event_process_duration_count",
+      "trellis.route": "Changed",
+      "trellis.outcome": "ok",
+      "value": 1.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/provider",
+      "metric": "trellis_event_process_duration_count",
+      "trellis.route": "Changed",
+      "trellis.outcome": "ok",
+      "value": 1.0
+    },
+    {
+      "scenario": "standaloneOwner",
+      "owner": "trellis/live-owner-observability",
+      "metric": "trellis_live_sessions",
+      "trellis.side": "client",
+      "value": 0.0
+    },
+    {
+      "scenario": "standaloneOwner",
+      "owner": "trellis/live-owner-observability",
+      "metric": "trellis_live_sessions",
+      "trellis.side": "server",
+      "value": 0.0
+    },
+    {
+      "scenario": "standaloneOwner",
+      "owner": "trellis/live-owner-observability",
+      "metric": "trellis_live_ends",
+      "trellis.side": "client",
+      "trellis.reason": "cancelled",
+      "value": 2.0
+    },
+    {
+      "scenario": "standaloneOwner",
+      "owner": "trellis/live-owner-observability",
+      "metric": "trellis_live_ends",
+      "trellis.side": "server",
+      "trellis.reason": "cancelled",
+      "value": 2.0
+    },
+    {
+      "scenario": "rustDelivery",
+      "owner": "trellis/events-rust",
+      "metric": "trellis_delivery_dispositions",
+      "value": 5.0,
+      "trellis.family": "event",
+      "trellis.action": "ack",
+      "trellis.outcome": "ok"
+    },
+    {
+      "scenario": "rustDelivery",
+      "owner": "trellis/events-rust",
+      "metric": "trellis_delivery_dispositions",
+      "value": 4.0,
+      "trellis.family": "event",
+      "trellis.action": "nak",
+      "trellis.outcome": "ok"
+    },
+    {
+      "scenario": "rustDelivery",
+      "owner": "trellis/events-rust",
+      "metric": "trellis_event_process_duration_count",
+      "value": 2.0,
+      "trellis.route": "Alpha",
+      "trellis.outcome": "exhausted"
+    },
+    {
+      "scenario": "rustDelivery",
+      "owner": "trellis/events-rust",
+      "metric": "trellis_event_process_duration_count",
+      "value": 3.0,
+      "trellis.route": "Alpha",
+      "trellis.outcome": "ok"
+    },
+    {
+      "scenario": "rustDelivery",
+      "owner": "trellis/events-rust",
+      "metric": "trellis_event_process_duration_count",
+      "value": 4.0,
+      "trellis.route": "Alpha",
+      "trellis.outcome": "retry"
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/events-ts",
+      "metric": "trellis_delivery_dispositions",
+      "trellis.family": "event",
+      "trellis.action": "ack",
+      "trellis.outcome": "ok",
+      "value": 5.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/events-ts",
+      "metric": "trellis_delivery_dispositions",
+      "trellis.family": "event",
+      "trellis.action": "exhausted_report",
+      "trellis.outcome": "ok",
+      "value": 2.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/events-ts",
+      "metric": "trellis_delivery_dispositions",
+      "trellis.family": "event",
+      "trellis.action": "nak",
+      "trellis.outcome": "ok",
+      "value": 4.0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/events-ts",
+      "metric": "trellis_delivery_dispositions",
+      "trellis.family": "event",
+      "trellis.action": "replay_report",
+      "trellis.outcome": "ok",
+      "value": 1.0
+    },
+    {
+      "scenario": "rustWork",
+      "owner": "trellis/runtime-rust-caller",
+      "metric": "trellis_live_sessions",
+      "trellis.side": "client",
+      "value": 0.0
+    },
+    {
+      "scenario": "rustWork",
+      "owner": "trellis/runtime-rust-caller",
+      "metric": "trellis_live_sessions",
+      "trellis.side": "client",
+      "value": 0.0
+    },
+    {
+      "scenario": "rustWork",
+      "owner": "trellis/runtime-rust-caller",
+      "metric": "trellis_live_ends",
+      "trellis.side": "client",
+      "value": 1.0,
+      "trellis.reason": "cancelled"
+    },
+    {
+      "scenario": "rustWork",
+      "owner": "trellis/runtime-rust-caller",
+      "metric": "trellis_live_ends",
+      "trellis.side": "client",
+      "value": 1.0,
+      "trellis.reason": "cancelled"
+    }
+  ],
+  "spans": {
+    "browserToRust": {
+      "traceId": "f42b3ee26dd8faa58577c89207d37fd6",
+      "clientSpanId": "1d0585d48541bbca",
+      "serverSpanId": "0b943c7be3f62d2c"
+    },
+    "rustToTypeScript": {
+      "traceId": "ebe58ae404c1b8ea292407decbd7ba36",
+      "clientSpanId": "94507f0c0c346fa0",
+      "serverSpanId": "27637b6da55f763c"
+    },
+    "durableOperation": {
+      "executionTraceId": "860f09a7fe6b242ab42c8c42ebdf3f94",
+      "executionSpanId": "2ff11b4bf2a4c583",
+      "linkTraceId": "20b72e84144030c9b9cb16cd424e1e9f",
+      "linkSpanId": "12ec2005ce858a7c"
+    },
+    "typeScriptOperation": {
+      "executionTraceId": "8ddd1b9a7e7b66f11b80b19b263869cc",
+      "executionSpanId": "ab3f51349a604899",
+      "linkTraceId": "e7f2e51a84963e7eb1f525256a3d9005",
+      "linkSpanId": "84f2010cac8d850d"
+    },
+    "typeScriptJob": {
+      "retryTraceId": "dfa42e2697a9b6668482ec73bfb71794",
+      "retrySpanId": "4f0232191fc1df2c",
+      "completedTraceId": "5f8e733c4f4abae80f3de8be298f04ef",
+      "completedSpanId": "cbb7f87693e80e74",
+      "producerLinkTraceId": "83298958cb90f2bbf3b09596c2167568",
+      "producerLinkSpanId": "1ae1380fdb4eb86b",
+      "distinctAttemptContexts": true
+    },
+    "downstreamRpc": {
+      "traceId": "dfa42e2697a9b6668482ec73bfb71794",
+      "spanId": "f3480ed4554d4618",
+      "parentAttemptSpanId": "249759e389df047c"
+    },
+    "rustConsumerAttempt": {
+      "traceId": "b3aafaf626f19864f4f1315a18cf1de3",
+      "spanId": "f1167f5027bb0284",
+      "attemptContext": "new short context per delivered attempt; producer link added only after proof verification"
+    }
+  },
+  "validation": {
+    "captureChecker": {
+      "browserToRust": true,
+      "rustToTypeScript": true,
+      "durableOperation": true,
+      "typeScriptOperation": true,
+      "attemptContextChildOfAttempt": true,
+      "downstreamRpcChildOfAttempt": true,
+      "receiverChildOfExportedClient": true,
+      "durableJob": true,
+      "distinctAttemptContexts": true,
+      "noLifetimeAttemptSpan": true,
+      "noSecretAttributes": true
+    },
+    "numericPoints": "Every selected sample matched a Prometheus scrape taken immediately after its named scenario.",
+    "privacy": "Selected static labels, counts and random OTel IDs only; no payload, principal, connection, subject, credential or raw span attributes retained. The raw capture lived in a private case-owned directory."
+  }
+}

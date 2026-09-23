@@ -16,8 +16,8 @@ import type {
   ParticipantKvMetadata,
 } from "./participant_runtime/metadata.ts";
 import type {
-  FeedHandler,
   GeneratedServiceParticipant,
+  LiveHandler,
   OperationHandler,
   RpcHandler,
 } from "./service/runtime/service.ts";
@@ -81,9 +81,9 @@ type ProviderRegistrations<TContract extends GeneratedParticipant> =
   & {
     readonly [
       K in
-        & keyof NonNullable<OwnedApi<TContract>["feeds"]>
+        & keyof NonNullable<OwnedApi<TContract>["lives"]>
         & string as `handle${PascalActionName<K>}`
-    ]: (handler: FeedHandler<ServiceContract<TContract>, K>) => unknown;
+    ]: (handler: LiveHandler<ServiceContract<TContract>, K>) => unknown;
   }
   & {
     readonly [
@@ -291,11 +291,11 @@ export function createProviderRuntime<
   }
   for (
     const name of Object.keys(
-      getParticipantRuntime(contract).ownedApi.feeds ?? {},
+      getParticipantRuntime(contract).ownedApi.lives ?? {},
     )
   ) {
     const [group, leaf] = surfacePath(name);
-    const register = service.handle.feed![group]![leaf]!;
+    const register = service.handle.live![group]![leaf]!;
     provider[`handle${pascalSurfaceName(name)}`] = (
       handler: (args: Record<string, unknown>) => unknown,
     ) => register((args) => handler(args));

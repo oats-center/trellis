@@ -752,9 +752,9 @@ use crate::supervisor::RuntimeError;
 const OPERATION: &str = "Auth.DeviceUserAuthorities.Resolve";
 
 pub(crate) struct AuthOperationRuntime {
-    client: async_nats::Client,
     router: Router,
     verifier: super::auth::verifier::RuntimeAuthVerifier,
+    live_owner: tokio::sync::watch::Receiver<Option<trellis_rs::service::LiveProviderOwner>>,
 }
 
 impl AuthOperationRuntime {
@@ -763,6 +763,7 @@ impl AuthOperationRuntime {
         _auth: SessionAuth,
         service: AuthService<SqliteAuthorizationStore>,
         verifier: super::auth::verifier::RuntimeAuthVerifier,
+        live_owner: tokio::sync::watch::Receiver<Option<trellis_rs::service::LiveProviderOwner>>,
     ) -> Result<Self, RuntimeError> {
         const DEPLOYMENT_ID: &str = "trellis-auth-runtime";
         super::auth::resources::ensure_operation_store(&client, DEPLOYMENT_ID)
@@ -821,9 +822,9 @@ impl AuthOperationRuntime {
             },
         );
         Ok(Self {
-            client,
             router,
             verifier,
+            live_owner,
         })
     }
 
@@ -832,15 +833,25 @@ impl AuthOperationRuntime {
             .recover_operations()
             .await
             .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+        // The public Operation routes are served over the Platform provider's
+        // own authenticated observer transport, while the durable executor and
+        // storage keep the existing privileged runtime handle.
+        let mut live_owner = self.live_owner;
+        let Some(owner) = super::await_live_owner(&mut live_owner, &stop).await else {
+            return Ok(());
+        };
+        let observer_nats = owner.runtime_nats();
+        let mut router = self.router;
+        router.set_live_owner(owner);
         tokio::select! {
             result = trellis_rs::service::internal::run_builtin_authenticated_router(
-                self.client,
+                observer_nats,
                 "trellis.auth@v1",
                 &[
                     "operations.v1.Auth.DeviceUserAuthorities.Resolve",
                     "operations.v1.Auth.DeviceUserAuthorities.Resolve.>",
                 ],
-                self.router,
+                router,
                 self.verifier,
             ) => result.map_err(|error| RuntimeError::Platform(error.to_string())),
             () = stop.stopped() => Ok(()),

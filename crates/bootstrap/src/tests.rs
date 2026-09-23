@@ -249,6 +249,7 @@ fn trellis_config_uses_expected_paths_urls_and_name() {
     options.runtime.nats_server_url = "nats://nats.example.test:4222".to_string();
     options.runtime.nats_websocket_url = "wss://nats.example.test/ws".to_string();
     options.runtime.public_origin = "https://trellis.example.test/".to_string();
+    options.runtime.extra_origins = vec!["http://localhost:5174".to_string()];
     let config = render_trellis_config(&options);
 
     assert!(config.contains("instance_name = \"Acme Trellis\""));
@@ -256,6 +257,18 @@ fn trellis_config_uses_expected_paths_urls_and_name() {
     assert!(config.contains("[http]"));
     assert!(config.contains("port = 4242"));
     assert!(config.contains("public_origin = \"https://trellis.example.test/\""));
+    assert!(
+        config.contains(
+            "origins = [\n    \"https://trellis.example.test/\",\n    \"http://localhost:5174\",\n]"
+        ),
+        "extra origins join the accepted origins: {config}"
+    );
+    assert!(
+        config.contains(
+            "allow_insecure_origins = [\n    \"https://trellis.example.test/\",\n    \"http://localhost:5174\",\n]"
+        ),
+        "extra origins join the insecure-origin allow-list: {config}"
+    );
     assert!(config.contains("[nats]"));
     assert!(config.contains("servers = \"nats://nats.example.test:4222\""));
     assert!(config.contains("[nats.runtime]"));
@@ -367,7 +380,7 @@ fn trellis_options_use_shared_defaults() {
 
 #[test]
 fn nats_config_uses_rendered_server_name() {
-    let config = render_nats_config("trellis");
+    let config = render_nats_config("trellis", 4222, 8222, 8080);
 
     assert!(config.contains("server_name: trellis"));
     assert!(config.contains("listen: 0.0.0.0:4222"));
@@ -377,6 +390,331 @@ fn nats_config_uses_rendered_server_name() {
     assert!(config.contains("no_tls: true"));
     assert!(config.contains("store_dir: /data"));
     assert!(config.contains("include ./jwt.conf"));
+}
+
+#[test]
+fn nats_config_render_round_trips_custom_ports() {
+    let config = render_nats_config("trellis", 4322, 8322, 8180);
+
+    assert_eq!(
+        parse_config(&config).expect("parse rendered config"),
+        NatsListeners {
+            native: 4322,
+            monitor: 8322,
+            websocket: 8180,
+        }
+    );
+}
+
+#[test]
+fn local_nats_config_render_round_trips_custom_ports() {
+    let config = render_local_nats_config(
+        "trellis",
+        "/tmp/trellis/nats/data",
+        "/tmp/trellis/nats/jwt.local.conf",
+        4322,
+        8180,
+        8322,
+    );
+
+    assert_eq!(
+        parse_config(&config).expect("parse local rendered config"),
+        NatsListeners {
+            native: 4322,
+            monitor: 8322,
+            websocket: 8180,
+        }
+    );
+}
+
+#[test]
+fn managed_listener_parser_accepts_comments_whitespace_quotes_and_detached_separators() {
+    let config = r#"
+server_name: "quoted { # // /* structure is not structure"
+# native listener
+listen = "127.0.0.1:4322" // trailing comment
+/* monitoring listener */
+http : '127.0.0.1:8322'
+websocket = {
+  listen: `[::1]:8180` # bracketed IPv6 loopback
+  no_tls = true
+}
+"#;
+
+    assert_eq!(
+        parse_config(config).expect("parse commented config"),
+        NatsListeners {
+            native: 4322,
+            monitor: 8322,
+            websocket: 8180,
+        }
+    );
+}
+
+#[test]
+fn managed_listener_parser_accepts_inline_stream_and_colon_values() {
+    let config = "listen:127.0.0.1:4322 http:127.0.0.1:8322 websocket { listen:127.0.0.1:8180 }";
+
+    assert_eq!(
+        parse_config(config).expect("parse inline listeners"),
+        NatsListeners {
+            native: 4322,
+            monitor: 8322,
+            websocket: 8180,
+        }
+    );
+}
+
+#[test]
+fn managed_listener_parser_ignores_nested_unrelated_listeners() {
+    let config = r#"
+listen: 127.0.0.1:4322
+http: 127.0.0.1:8322
+websocket {
+  listen: 127.0.0.1:8180
+}
+cluster {
+  listen: 127.0.0.1:6222
+}
+gateway {
+  listen: 127.0.0.1:7222
+}
+leafnodes {
+  listen: 127.0.0.1:7422
+}
+tls {
+  cert_file: "./cert.pem"
+  listen: 127.0.0.1:7522
+}
+"#;
+
+    assert_eq!(
+        parse_config(config).expect("parse nested listeners"),
+        NatsListeners {
+            native: 4322,
+            monitor: 8322,
+            websocket: 8180,
+        }
+    );
+}
+
+#[test]
+fn managed_listener_parser_rejects_duplicate_listeners() {
+    let error = parse_config("listen: 127.0.0.1:4222\nlisten: 127.0.0.1:4322\nhttp: 127.0.0.1:8222\nwebsocket {\nlisten: 127.0.0.1:8080\n}\n")
+        .expect_err("duplicate native listener must fail");
+    assert!(matches!(
+        error,
+        NatsConfigError::DuplicateListener {
+            listener: "listen",
+            first: 1,
+            second: 2,
+            ..
+        }
+    ));
+
+    let error =
+        parse_config("listen: 4222\nhttp: 8222\nwebsocket {\nlisten: 8080\nlisten: 8180\n}\n")
+            .expect_err("duplicate websocket listener must fail");
+    assert!(matches!(
+        error,
+        NatsConfigError::DuplicateListener {
+            listener: "websocket listen",
+            first: 4,
+            second: 5,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn managed_listener_parser_requires_every_listener() {
+    for (config, listener) in [
+        ("http: 8222\nwebsocket { listen: 8080 }\n", "listen"),
+        ("listen: 4222\nwebsocket { listen: 8080 }\n", "http"),
+        ("listen: 4222\nhttp: 8222\n", "websocket listen"),
+    ] {
+        let error = parse_config(config).expect_err("missing listener must fail");
+        assert!(
+            matches!(error, NatsConfigError::MissingListener { listener: actual, .. } if actual == listener),
+            "expected missing {listener}, got {error}"
+        );
+        assert!(error
+            .to_string()
+            .contains("explicit supported listener literals"));
+    }
+}
+
+#[test]
+fn managed_listener_parser_rejects_include_only_configuration() {
+    let error =
+        parse_config("include ./other-listeners.conf\n").expect_err("indirect listeners must fail");
+    assert!(matches!(
+        error,
+        NatsConfigError::MissingListener {
+            listener: "listen",
+            ..
+        }
+    ));
+    assert!(error
+        .to_string()
+        .contains("explicit supported listener literals"));
+}
+
+#[test]
+fn managed_listener_parser_rejects_unsupported_expressions_and_malformed_values() {
+    for config in [
+        "listen: $NATS_PORT\nhttp: 8222\nwebsocket { listen: 8080 }\n",
+        "listen: 127.0.0.1:\nhttp: 8222\nwebsocket { listen: 8080 }\n",
+        "listen: 0\nhttp: 8222\nwebsocket { listen: 8080 }\n",
+        "listen: [::1]\nhttp: 8222\nwebsocket { listen: 8080 }\n",
+        "listen: [not-an-address]:4222\nhttp: 8222\nwebsocket { listen: 8080 }\n",
+        "listen: ::1:4222\nhttp: 8222\nwebsocket { listen: 8080 }\n",
+    ] {
+        assert!(
+            matches!(
+                parse_config(config),
+                Err(NatsConfigError::InvalidListener { .. })
+            ),
+            "{config:?} must be rejected as an invalid listener"
+        );
+    }
+}
+
+#[test]
+fn managed_listener_parser_rejects_malformed_blocks() {
+    for config in [
+        "listen: 4222\nhttp: 8222\nwebsocket { listen: 8080\n",
+        "}\n",
+        "listen: 4222\nhttp: 8222\nwebsocket { listen: 8080 }\nlisten:\n",
+        "listen: \"4222\nhttp: 8222\nwebsocket { listen: 8080 }\n",
+        "listen: 4222\n/* unterminated\n",
+    ] {
+        assert!(
+            matches!(parse_config(config), Err(NatsConfigError::Malformed { .. })),
+            "{config:?} must be rejected as malformed"
+        );
+    }
+}
+
+#[test]
+fn managed_listener_parse_failure_does_not_select_defaults() {
+    let error = parse_config("server_name: trellis\n")
+        .expect_err("a config without listeners must not fall back to defaults");
+
+    assert!(matches!(
+        error,
+        NatsConfigError::MissingListener {
+            listener: "listen",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn managed_listener_read_reports_missing_file() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let error = read_nats_listen_ports(&temp.path().join("missing.conf"))
+        .expect_err("missing config must fail");
+
+    assert!(matches!(error, NatsConfigError::Read { .. }));
+}
+
+#[test]
+fn generated_bundle_listeners_round_trip_through_managed_parser() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let out = temp.path().join("out");
+    let mut options = trellis_options(&out);
+    options.runtime.trellis_port = 3444;
+    options.nats.nats_port = 4333;
+    options.nats.monitor_port = 8333;
+    options.nats.websocket_port = 8183;
+
+    generate_trellis_bootstrap(&options).expect("generate Trellis");
+
+    assert_eq!(
+        read_nats_listen_ports(&out.join("nats/nats.conf")).expect("read listeners"),
+        NatsListeners {
+            native: 4333,
+            monitor: 8333,
+            websocket: 8183,
+        }
+    );
+}
+
+#[test]
+fn nats_bootstrap_rejects_zero_and_duplicate_ports_before_writing() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let zero_out = temp.path().join("zero");
+    let mut options = nats_options(&zero_out);
+    options.config.nats_port = 0;
+
+    assert!(matches!(
+        generate_nats_bootstrap(&options),
+        Err(BootstrapError::InvalidListenerPort { listener: "native" })
+    ));
+    assert!(!zero_out.exists(), "invalid ports must not create output");
+
+    let duplicate_out = temp.path().join("duplicate");
+    let mut options = nats_options(&duplicate_out);
+    options.config.websocket_port = options.config.monitor_port;
+
+    assert!(matches!(
+        generate_nats_bootstrap(&options),
+        Err(BootstrapError::DuplicateListenerPort {
+            first: "monitor",
+            second: "websocket",
+            ..
+        })
+    ));
+    assert!(
+        !duplicate_out.exists(),
+        "invalid ports must not create output"
+    );
+}
+
+#[test]
+fn trellis_bootstrap_rejects_http_collision_before_replacing_output() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let out = temp.path().join("out");
+    fs::create_dir_all(&out).expect("create output dir");
+    fs::write(out.join("keep"), "keep").expect("write sentinel");
+    let mut options = trellis_options(&out);
+    options.force = true;
+    options.nats.nats_port = options.runtime.trellis_port;
+
+    assert!(matches!(
+        generate_trellis_bootstrap(&options),
+        Err(BootstrapError::TrellisListenerPortCollision {
+            listener: "native",
+            ..
+        })
+    ));
+    assert!(
+        out.join("keep").is_file(),
+        "validation failure must not replace existing output"
+    );
+}
+
+#[test]
+fn trellis_bootstrap_rejects_each_trellis_http_collision() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    for (listener, port) in [("monitor", 3000), ("websocket", 3000)] {
+        let out = temp.path().join(listener);
+        let mut options = trellis_options(&out);
+        match listener {
+            "monitor" => options.nats.monitor_port = port,
+            _ => options.nats.websocket_port = port,
+        }
+
+        assert!(matches!(
+            generate_trellis_bootstrap(&options),
+            Err(BootstrapError::TrellisListenerPortCollision {
+                listener: actual,
+                port: 3000,
+            }) if actual == listener
+        ));
+        assert!(!out.exists());
+    }
 }
 
 #[test]
@@ -406,7 +744,7 @@ fn local_nats_config_uses_host_paths() {
 
 #[test]
 fn container_nats_config_keeps_public_bindings() {
-    let config = render_nats_config("trellis");
+    let config = render_nats_config("trellis", 4222, 8222, 8080);
 
     assert!(config.contains("listen: 0.0.0.0:4222"));
     assert!(config.contains("http: 0.0.0.0:8222"));
@@ -445,6 +783,13 @@ fn trellis_bootstrap_generates_private_session_seed_matching_expected_format() {
             "session seed must be private like the other secret files"
         );
     }
+}
+
+fn parse_config(config: &str) -> Result<NatsListeners, NatsConfigError> {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("nats.conf");
+    fs::write(&path, config).expect("write nats config");
+    read_nats_listen_ports(&path)
 }
 
 fn nats_options(out: impl Into<PathBuf>) -> NatsBootstrapOptions {

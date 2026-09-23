@@ -22,7 +22,7 @@ Default to adding or updating integration tests when a change affects:
 - NATS subjects, auth-callout, proofs, or transport permissions
 - contracts, generated SDKs, manifests, or permission derivation
 - service bootstrap, device activation, participant installation, or GrantBinding mutation
-- jobs, operations, events, feeds, state, resources, or transfer behavior
+- jobs, operations, events, live observations, state, resources, or transfer behavior
 - Rust/TypeScript cross-runtime behavior
 
 Unit tests are the exception. Keep them only for code that is not Trellis runtime

@@ -210,9 +210,9 @@ declare const __api: {
 			readonly download: false;
 			readonly pagination: "cursor";
 		};
-		readonly "feed:Watch": {
-			readonly kind: "feed";
-			readonly descriptorName: "feed:Watch";
+		readonly "live:Watch": {
+			readonly kind: "live";
+			readonly descriptorName: "live:Watch";
 			readonly input: typeof Types1.EventsWatchRequestCodec;
 			readonly event: typeof Types1.EventsWatchFrameCodec;
 		};
@@ -220,5 +220,5 @@ declare const __api: {
 	readonly packageEvidence: unknown;
 };
 export declare const API: typeof __api;
-export declare const API_DIGEST: "ByInt82orMBbflrAMLFBGWM8wUI97_J8ci4ra39Sby0";
+export declare const API_DIGEST: "VnKi_htsISQvdvdTIQyNKNDwsWTeeXELZtL8AXUCrnQ";
 export {};

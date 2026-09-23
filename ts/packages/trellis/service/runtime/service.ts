@@ -75,12 +75,12 @@ import type {
   ActiveEventPublishFacade,
   EventListenerContext,
   EventOpts,
-  FeedEventOf,
-  FeedHandlerContext,
-  FeedInputOf,
-  FeedRegistration as RootFeedRegistration,
-  FeedsOf,
   HandlerTrellis,
+  LiveEventOf,
+  LiveHandlerContext,
+  LiveInputOf,
+  LiveRegistration as RootLiveRegistration,
+  LivesOf,
   OperationHandlerContext,
   OperationHandlerErrorOf,
   OperationOutputOf,
@@ -166,6 +166,8 @@ import {
 } from "./internal_jobs/types.ts";
 import {
   observeNatsTrellisConnection,
+  startConnectionTelemetry,
+  transitionConnectionAvailability,
   type TrellisConnection,
 } from "../../connection.ts";
 import { recordTrellisDuration } from "../../telemetry/mod.ts";
@@ -613,13 +615,13 @@ type ContractOperationName<
   >,
 > = keyof ParticipantOwnedApi<TContract>["operations"] & string;
 
-type ContractFeedName<
+type ContractLiveName<
   TContract extends GeneratedServiceParticipant<
     RuntimeApi,
     RuntimeApi | undefined,
     ParticipantJobsMetadata
   >,
-> = FeedsOf<ParticipantOwnedApi<TContract>>;
+> = LivesOf<ParticipantOwnedApi<TContract>>;
 
 type ContractJobName<
   TContract extends GeneratedServiceParticipant<
@@ -700,19 +702,19 @@ export type OperationHandler<
     },
 ) => unknown | Promise<unknown>;
 
-/** Typed feed handler function for an extracted Trellis service handler. */
-export type FeedHandler<
+/** Typed live handler function for an extracted Trellis service handler. */
+export type LiveHandler<
   TContract extends GeneratedServiceParticipant<
     RuntimeApi,
     RuntimeApi | undefined,
     ParticipantJobsMetadata,
     ParticipantKvMetadata
   >,
-  F extends ContractFeedName<TContract>,
+  F extends ContractLiveName<TContract>,
 > = (
-  context: FeedHandlerContext<
-    FeedInputOf<ParticipantOwnedApi<TContract>, F>,
-    FeedEventOf<ParticipantOwnedApi<TContract>, F>
+  context: LiveHandlerContext<
+    LiveInputOf<ParticipantOwnedApi<TContract>, F>,
+    LiveEventOf<ParticipantOwnedApi<TContract>, F>
   >,
 ) => unknown | Promise<unknown>;
 
@@ -921,7 +923,7 @@ type ServiceHandleFacade = {
     string,
     Record<string, (handler: (args: unknown) => unknown) => Promise<void>>
   >;
-  readonly feed: Record<
+  readonly live: Record<
     string,
     Record<string, (handler: (args: unknown) => unknown) => Promise<void>>
   >;
@@ -1000,15 +1002,15 @@ type TypedServiceHandleFacade<
       ) => Promise<void>;
     };
   };
-  readonly feed: {
-    readonly [TGroup in SurfaceGroupName<keyof TOwnedApi["feeds"] & string>]: {
+  readonly live: {
+    readonly [TGroup in SurfaceGroupName<keyof TOwnedApi["lives"] & string>]: {
       readonly [
         F in SurfaceKeysForGroup<
-          keyof TOwnedApi["feeds"] & string,
+          keyof TOwnedApi["lives"] & string,
           TGroup
         > as SurfaceLeafName<F>
       ]: (
-        handler: FeedHandleFn<TOwnedApi, TTrellisApi, F, TKv, TJobs>,
+        handler: LiveHandleFn<TOwnedApi, TTrellisApi, F, TKv, TJobs>,
       ) => Promise<void>;
     };
   };
@@ -1048,18 +1050,18 @@ type RpcHandleFn<
   >
   | Result<RpcMethodOutput<TOwnedApi, M>, RpcHandlerErrorOf<TOwnedApi, M>>;
 
-type FeedHandleFn<
+type LiveHandleFn<
   TOwnedApi extends RuntimeApi,
   TTrellisApi extends RuntimeApi,
-  F extends keyof TOwnedApi["feeds"] & string,
+  F extends keyof TOwnedApi["lives"] & string,
   TKv extends ParticipantKvMetadata,
   TJobs extends ParticipantJobsMetadata,
 > = (context: {
-  input: FeedInputOf<TOwnedApi, F>;
+  input: LiveInputOf<TOwnedApi, F>;
   caller: unknown;
   signal: AbortSignal;
   emit(
-    event: FeedEventOf<TOwnedApi, F>,
+    event: LiveEventOf<TOwnedApi, F>,
   ): AsyncResult<void, ValidationError | UnexpectedError>;
   client: Trellis<TTrellisApi, TKv, TJobs>;
 }) => unknown | Promise<unknown>;
@@ -1108,10 +1110,10 @@ export type OperationRegistration<
   ): Promise<void>;
 };
 
-export type FeedRegistration<
+export type LiveRegistration<
   TOwnedApi extends RuntimeApi,
-  F extends keyof TOwnedApi["feeds"] & string,
-> = RootFeedRegistration<FeedInputOf<TOwnedApi, F>, FeedEventOf<TOwnedApi, F>>;
+  F extends keyof TOwnedApi["lives"] & string,
+> = RootLiveRegistration<LiveInputOf<TOwnedApi, F>, LiveEventOf<TOwnedApi, F>>;
 
 export type TrellisServiceConnectArgs<
   TContract extends GeneratedServiceParticipant<
@@ -1172,6 +1174,8 @@ export async function createConnectedService<
   contractKv: TKv;
   contractEventConsumers?: ContractEventConsumers;
   apiBindings?: Readonly<Record<string, unknown>>;
+  /** `event:<Name>` subscribe needs explicitly declared by this participant. */
+  ephemeralEventNeeds?: ReadonlySet<string>;
   runtime: TrellisServiceRuntimeCreateOpts<TOwnedApi, TTrellisApi>;
   bindings: ResourceBindings;
   availability: TrellisAvailability;
@@ -1180,6 +1184,8 @@ export async function createConnectedService<
     deploymentId: string;
   };
   authorizationProviderCache?: AuthorizationProviderCache;
+  /** Process-local connection handle started before the transport connected. @internal */
+  telemetry?: ReturnType<typeof startConnectionTelemetry>;
 }): Promise<TrellisServiceSession<TOwnedApi, TTrellisApi, TJobs, TKv>> {
   const resolvedLog = resolveServiceLogger(args.runtime.log);
   const connection = observeNatsTrellisConnection({
@@ -1193,6 +1199,7 @@ export async function createConnectedService<
       log: resolvedLog,
       context: { service: args.name },
     },
+    ...(args.telemetry ? { telemetry: args.telemetry } : {}),
   });
   if (args.authorizationProviderCache) {
     connection.subscribe((status) =>
@@ -1249,7 +1256,6 @@ export async function createConnectedService<
       },
       operationDeploymentId: args.healthIdentity?.deploymentId,
       operationConnectionId: args.operationConnectionId,
-      feedOwnerId: args.healthIdentity?.instanceId ?? ulid(),
     },
   );
 
@@ -1276,6 +1282,7 @@ export async function createConnectedService<
         bindings: args.bindings.eventConsumers,
       },
       apiBindings: args.apiBindings,
+      ephemeralEventNeeds: args.ephemeralEventNeeds ?? new Set(),
       connection,
     },
   );
@@ -1306,7 +1313,7 @@ export async function createConnectedService<
   const handlerTrellis: Trellis<TTrellisApi, TKv, TJobs> = {
     rpc: outbound.rpc,
     event: createServiceEventPublishFacade(outbound),
-    feed: outbound.feed,
+    live: outbound.live,
     operation: outbound.operation,
     request: outbound.request.bind(outbound),
     prepare: (event, data) => outbound.prepare(event, data),
@@ -2640,7 +2647,8 @@ export function connectTrellisServiceWithRuntimeDeps<
       } satisfies TrellisServiceRuntimeDeps;
       const serviceName = args.name ?? args.participant.identity;
       if (args.telemetry !== false && args.telemetry?.enabled !== false) {
-        runtimeDeps.initTelemetry?.(serviceName);
+        // Await the single owner before the first instrument starts.
+        await runtimeDeps.initTelemetry?.(serviceName);
       }
       const identityAuth = await createAuth({
         sessionKeySeed: args.seed,
@@ -2712,6 +2720,7 @@ export function connectTrellisServiceWithRuntimeDeps<
       let nc: NatsConnection | undefined;
       let authorizationProviderCache: AuthorizationProviderCache | undefined;
       let stopContextRefresh: (() => void) | undefined;
+      const connectionTelemetry = startConnectionTelemetry("service");
       try {
         const natsStartedAt = performance.now();
         nc = await runtimeDeps.connect({
@@ -2754,6 +2763,7 @@ export function connectTrellisServiceWithRuntimeDeps<
           },
         );
       } catch (cause) {
+        connectionTelemetry.dispose();
         authorizationProviderCache?.stop();
         stopContextRefresh?.();
         if (nc && !nc.isClosed()) await nc.close();
@@ -2806,6 +2816,7 @@ export function connectTrellisServiceWithRuntimeDeps<
           name: serviceName,
           auth: serviceAuth,
           nc,
+          telemetry: connectionTelemetry,
           inboxPrefix,
           contextDigest: () => authorizationContexts.current().contextDigest,
           operationConnectionId: verifiedContext.context.connectionId,
@@ -2820,6 +2831,7 @@ export function connectTrellisServiceWithRuntimeDeps<
           >,
           contractEventConsumers: contractRuntime.eventConsumers,
           apiBindings: bootstrap.binding.apiBindings,
+          ephemeralEventNeeds: participantEphemeralEventNeeds(args.participant),
           runtime,
           bindings: bootstrap.binding.resources,
           availability: participantAvailability(
@@ -2838,18 +2850,40 @@ export function connectTrellisServiceWithRuntimeDeps<
           bootstrap.binding.apiBindings,
           bootstrap.binding.resources,
         );
-        authorizationProviderCache.onOwnInvalidated(() =>
+        authorizationProviderCache.onOwnInvalidated(() => {
+          transitionConnectionAvailability(
+            service.connection,
+            false,
+            "coverage_lost",
+          );
           installConnectionAvailability(
             service.connection,
             participantAvailability(args.participant, {}, {}, []),
-          )
-        );
+          );
+        });
         authorizationProviderCache.onOwnResumed(() => {
+          if (service.connection.status.phase === "connected") {
+            transitionConnectionAvailability(
+              service.connection,
+              true,
+              "resumed",
+            );
+          }
           installConnectionAvailability(
             service.connection,
             installedAvailability,
           );
         });
+        if (
+          authorizationProviderCache.ownUsable() &&
+          service.connection.status.phase === "connected"
+        ) {
+          transitionConnectionAvailability(
+            service.connection,
+            true,
+            "connected",
+          );
+        }
         stopContextRefresh = startAuthorizationContextRefresh({
           trellisUrl: args.trellisUrl,
           sessionId: bootstrap.connectInfo.connectionId,
@@ -2960,6 +2994,34 @@ export function connectTrellisServiceWithRuntimeDeps<
       );
     }
   })());
+}
+
+/**
+ * Collect the `event:<Name>` descriptor names this participant explicitly
+ * declares as subscribe needs. A declared durable consumer is not included:
+ * `Consume` and `Subscribe` are independent authorities.
+ */
+function participantEphemeralEventNeeds(
+  participant: unknown,
+): ReadonlySet<string> {
+  const needs = new Set<string>();
+  const uses = Reflect.get(participant as object, "uses");
+  if (!Array.isArray(uses)) return needs;
+  for (const entry of uses) {
+    const actions = Reflect.get(entry as object, "actions");
+    if (!Array.isArray(actions)) continue;
+    for (const action of actions) {
+      const descriptorName = Reflect.get(action as object, "descriptorName");
+      const direction = Reflect.get(action as object, "direction");
+      if (
+        direction === "subscribe" && typeof descriptorName === "string" &&
+        descriptorName.startsWith("event:")
+      ) {
+        needs.add(descriptorName);
+      }
+    }
+  }
+  return needs;
 }
 
 /** Connected session implementation backing the public service type. */
@@ -3097,13 +3159,13 @@ export class TrellisServiceSession<
         ));
     }
 
-    const feed: ServiceHandleFacade["feed"] = {};
-    for (const feedName of Object.keys(this.#runtime.api.feeds ?? {})) {
+    const live: ServiceHandleFacade["live"] = {};
+    for (const liveName of Object.keys(this.#runtime.api.lives ?? {})) {
       addSurfaceLeaf(
-        feed,
-        feedName,
+        live,
+        liveName,
         (handler) =>
-          this.#runtime.feedHandle(feedName).handle((context) =>
+          this.#runtime.liveHandle(liveName).handle((context) =>
             (handler as (args: unknown) => unknown | Promise<unknown>)({
               ...context,
               client: this.#handlerTrellis,
@@ -3132,7 +3194,7 @@ export class TrellisServiceSession<
       addSurfaceLeaf(operation, operationName, leaf);
     }
 
-    return { rpc, feed, operation };
+    return { rpc, live, operation };
   }
 
   #createSqlOutboxBinding<TTx>(

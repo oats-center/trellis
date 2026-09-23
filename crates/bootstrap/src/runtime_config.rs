@@ -31,12 +31,21 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
         instance_name: Some(options.runtime.name.clone()),
         event_session_seed_file: Some(PathBuf::from("./session.seed")),
         event_context_digest_file: None,
+        live_provider_seed_files: None,
         paths: None,
         http: Some(HttpConfig {
             port: Some(options.runtime.trellis_port),
             public_origin: Some(options.runtime.public_origin.clone()),
-            origins: Some(vec![options.runtime.public_origin.clone()]),
-            allow_insecure_origins: Some(vec![options.runtime.public_origin.clone()]),
+            origins: Some({
+                let mut origins = vec![options.runtime.public_origin.clone()];
+                origins.extend(options.runtime.extra_origins.iter().cloned());
+                origins
+            }),
+            allow_insecure_origins: Some({
+                let mut origins = vec![options.runtime.public_origin.clone()];
+                origins.extend(options.runtime.extra_origins.iter().cloned());
+                origins
+            }),
             web_source: None,
             portal_source: None,
             console_source: None,

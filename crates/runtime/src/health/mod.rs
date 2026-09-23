@@ -23,7 +23,7 @@ use trellis_rs::service::{
 };
 use trellis_runtime_apis::__types::trellis::HealthHeartbeatSample;
 use trellis_runtime_apis::apis::trellis_health_v1::events::StatusChanged as HealthStatusChangedEvent;
-use trellis_runtime_apis::apis::trellis_health_v1::feeds::Watch as HealthWatchFeedDescriptor;
+use trellis_runtime_apis::apis::trellis_health_v1::lives::Watch as HealthWatchLiveDescriptor;
 use trellis_runtime_apis::apis::trellis_health_v1::rpc::{
     Inspect as HealthInspectRpc, Metrics as HealthMetricsRpc, Query as HealthQueryRpc,
     Summary as HealthSummaryRpc,
@@ -53,7 +53,7 @@ const RPC_SUBJECTS: &[&str] = &[
     "rpc.v1.Health.Inspect",
     "rpc.v1.Health.Metrics",
     "rpc.v1.Health.Summary",
-    "feed.v1.Health.Watch",
+    "live.v1.route.Health.Watch",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -126,6 +126,9 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             Some(verifier) => std::sync::Arc::new(verifier.clone()),
             None => std::sync::Arc::new(crate::platform::auth::verifier::DenyAllValidator),
         };
+    let live_owner = context
+        .live_providers
+        .receiver(crate::platform::LiveProviderRole::Health);
     let join = tokio::spawn(async move {
         let invalidation_loop = run_invalidation_subscriber(
             nats.clone(),
@@ -145,13 +148,25 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             event_auth,
             task_stop.clone(),
         );
-        let api_loop = run_builtin_authenticated_router(
-            nats,
-            "trellis.health@v1",
-            RPC_SUBJECTS,
-            router,
-            verifier,
-        );
+        let api_stop = task_stop.clone();
+        let api_loop = async move {
+            let mut live_owner = live_owner;
+            let Some(owner) = crate::platform::await_live_owner(&mut live_owner, &api_stop).await
+            else {
+                return Ok(());
+            };
+            let api_nats = owner.runtime_nats();
+            let mut router = router;
+            router.set_live_owner(owner);
+            run_builtin_authenticated_router(
+                api_nats,
+                "trellis.health@v1",
+                RPC_SUBJECTS,
+                router,
+                verifier,
+            )
+            .await
+        };
         tokio::pin!(invalidation_loop, owner_loop, api_loop);
         let result = {
             let validator_exit = async {
@@ -231,9 +246,9 @@ fn build_router(store: HealthStore, invalidations: broadcast::Sender<Invalidatio
         let store = metrics_store.clone();
         async move { store.metrics(&input, now_ns()).map_err(map_store_error) }
     });
-    let feed_store = store.clone();
-    router.register_feed::<HealthWatchFeedDescriptor, _, _>(move |_context, input| {
-        let store = feed_store.clone();
+    let live_store = store.clone();
+    router.register_live::<HealthWatchLiveDescriptor, _, _>(move |_context, input| {
+        let store = live_store.clone();
         let receiver = invalidations.subscribe();
         let ready = health_watch_frame(json!({
             "type": "ready",
@@ -313,6 +328,15 @@ async fn run_owner(
         fence = owner.fence.acquisition_revision(),
         "starting health owner loop"
     );
+    // Telemetry samplers own their tasks and never own business lifetime.
+    let _samplers = crate::telemetry::snapshots::SamplerOwner::start(vec![Box::pin(
+        crate::telemetry::snapshots::run_health_sampler(
+            nats.clone(),
+            HEALTH_STREAM.to_string(),
+            config.projection_id.clone(),
+            stop.clone(),
+        ),
+    )]);
     let stream = jetstream
         .get_stream(HEALTH_STREAM)
         .await
@@ -367,7 +391,10 @@ async fn run_owner(
                     publish_invalidation(&nats, &config.invalidation_subject, commit).await?;
                 }
             }
-            () = stop.stopped() => return Ok(()),
+            () = stop.stopped() => {
+                _samplers.stop().await;
+                return Ok(());
+            }
         }
     }
 }

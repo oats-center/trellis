@@ -12,6 +12,8 @@ import {
   TransportError,
   UnexpectedError,
 } from "./errors/index.ts";
+import type { LiveSubscription } from "./live/subscription.ts";
+import { LiveEnd, LiveStreamError } from "./live/types.ts";
 import type { FileInfo, SendTransferGrant, TransferBody } from "./transfer.ts";
 
 type ActiveJobWaitTarget = {
@@ -134,14 +136,19 @@ export type OperationRef<
     OperationSnapshot<TProgress, TOutput>,
     OperationControlError | UnexpectedError
   >;
-  wait(): AsyncResult<
+  wait(options?: OperationWaitOptions): AsyncResult<
     TerminalOperation<TProgress, TOutput>,
     OperationControlError | UnexpectedError
   >;
-  watch(options?: OperationWatchOptions): AsyncResult<
-    AsyncIterable<OperationEvent<TProgress, TOutput, TUpdate>>,
+  live(options?: OperationWatchOptions): AsyncResult<
+    LiveSubscription<OperationEvent<TProgress, TOutput, TUpdate>>,
     OperationControlError | UnexpectedError
   >;
+  /** Resolves when the automatic callback observer ends, if start created one. */
+  readonly observationClosed?: Promise<LiveEnd>;
+  /** Stop only the automatic callback observer. Does not cancel the Operation. */
+  stopObserving(): AsyncResult<null, UnexpectedError>;
+  [Symbol.asyncDispose](): Promise<void>;
   cancel(): AsyncResult<
     OperationSnapshot<TProgress, TOutput>,
     OperationControlError | UnexpectedError
@@ -159,11 +166,21 @@ export type OperationRef<
 export type OperationWatchOptions = {
   /** Include transient typed update events. */
   updates?: boolean;
+  /** Abort only this observation; not a business cancel. */
+  signal?: AbortSignal;
+};
+
+/** Options controlling the observation phase of one wait. */
+export type OperationWaitOptions = {
+  /** Stop only this observer loop; never dispatches a business cancel. */
+  observationSignal?: AbortSignal;
 };
 
 /** Options that identify an idempotent operation invocation. */
 export type OperationStartOptions = {
   invocationId?: string;
+  /** Abort only automatic callback observation; not a business cancel. */
+  observationSignal?: AbortSignal;
 };
 
 export type AcceptedOperationEvent<TProgress = unknown, TOutput = unknown> = {
@@ -267,6 +284,10 @@ export type OperationObserverCallbacks<
   ) => void | Promise<void>;
   onEvent?: (
     event: OperationEvent<TProgress, TOutput, TUpdate>,
+  ) => void | Promise<void>;
+  /** Automatic observer transport/callback failure. Does not cancel business work. */
+  onObservationError?: (
+    error: LiveStreamError,
   ) => void | Promise<void>;
 };
 
@@ -451,11 +472,12 @@ export interface OperationTransport {
     subject: string,
     body: JsonValue,
   ): AsyncResult<JsonValue, TransportError | UnexpectedError>;
-  watchJson(
+  watchJson<T>(
     subject: string,
     body: JsonValue,
+    decodeEvent: (value: unknown) => T | undefined,
   ): AsyncResult<
-    AsyncIterable<Result<JsonValue, TransportError | UnexpectedError>>,
+    LiveSubscription<T>,
     TransportError | UnexpectedError
   >;
   putTransfer(
@@ -806,7 +828,7 @@ class RuntimeOperationRef<
     return this.#controlSnapshot("get");
   }
 
-  wait(): AsyncResult<
+  wait(options?: OperationWaitOptions): AsyncResult<
     TerminalOperation<TProgress, TOutput>,
     OperationControlError | UnexpectedError
   > {
@@ -819,17 +841,24 @@ class RuntimeOperationRef<
         return ok(initialTerminal);
       }
 
-      const eventsValue = await this.watch().take();
+      const eventsValue = await this.live({
+        signal: options?.observationSignal,
+      })
+        .take();
       if (isErr(eventsValue)) {
         const terminal = await this.#terminalSnapshotFromGet().take();
         if (!isErr(terminal) && terminal !== null) {
           return ok(terminal);
         }
+        if (options?.observationSignal?.aborted) {
+          return err(this.#observationCancelledError());
+        }
         return eventsValue;
       }
 
+      const subscription = eventsValue;
       try {
-        for await (const event of eventsValue) {
+        for await (const event of subscription) {
           if (isTerminalEvent(event)) {
             return ok(event.snapshot);
           }
@@ -839,17 +868,22 @@ class RuntimeOperationRef<
         if (!isErr(terminal) && terminal !== null) {
           return ok(terminal);
         }
-        return err(
-          cause instanceof TransportError || cause instanceof UnexpectedError ||
-            isOperationLifecycleError(cause)
-            ? cause
-            : new UnexpectedError({ cause }),
-        );
+        if (options?.observationSignal?.aborted) {
+          return err(this.#observationCancelledError());
+        }
+        return err(watchFailure(cause));
+      } finally {
+        await subscription[Symbol.asyncDispose]();
       }
 
       const terminal = await this.#terminalSnapshotFromGet().take();
       if (!isErr(terminal) && terminal !== null) {
         return ok(terminal);
+      }
+      // A local observation stop is a normal cancellation, not an incomplete
+      // watch: it never dispatches a business cancel or invents a terminal.
+      if (options?.observationSignal?.aborted) {
+        return err(this.#observationCancelledError());
       }
 
       return err(createTransportError({
@@ -860,6 +894,15 @@ class RuntimeOperationRef<
         context: { operationId: this.id, operation: this.operation },
       }));
     })());
+  }
+
+  #observationCancelledError(): TransportError {
+    return createTransportError({
+      code: "trellis.operation.observation_cancelled",
+      message: "The operation observation was cancelled locally.",
+      hint: "The durable Operation itself was not cancelled.",
+      context: { operationId: this.id, operation: this.operation },
+    });
   }
 
   #terminalSnapshotFromGet(): AsyncResult<
@@ -945,56 +988,61 @@ class RuntimeOperationRef<
     return this.#transport.putTransfer(grant, body);
   }
 
-  watch(options: OperationWatchOptions = {}): AsyncResult<
-    AsyncIterable<OperationEvent<TProgress, TOutput, TUpdate>>,
+  live(options: OperationWatchOptions = {}): AsyncResult<
+    LiveSubscription<OperationEvent<TProgress, TOutput, TUpdate>>,
     OperationControlError | UnexpectedError
   > {
     return AsyncResult.from((async () => {
-      const rawIterable = await this.#transport.watchJson(
+      if (options.signal?.aborted) {
+        return err(createTransportError({
+          code: "trellis.operation.watch_aborted",
+          message: "The operation watch was aborted before it opened.",
+          hint: "Retry watching the operation if it is still needed.",
+          context: { operationId: this.id, operation: this.operation },
+        }));
+      }
+      const decodeEvent = this.#decodeEvent.bind(this);
+      const subscription = await this.#transport.watchJson(
         controlSubject(this.#descriptor.subject),
         {
           action: "watch",
           operationId: this.id,
           ...(options.updates ? { includeUpdates: true } : {}),
         },
-      ).take();
-      if (isErr(rawIterable)) {
-        return err(rawIterable.error);
-      }
-      const iterable = rawIterable as AsyncIterable<
-        Result<JsonValue, TransportError | UnexpectedError>
-      >;
-      const decodeEvent = this.#decodeEvent.bind(this);
-
-      async function* events() {
-        for await (const frame of iterable) {
-          const frameValue = frame.take();
-          if (isErr(frameValue)) {
-            throw frameValue.error;
-          }
+        (value) => {
           const decoded = decodeWatchFrame<TProgress, TOutput, TUpdate>(
-            frameValue,
-          );
-          const decodedValue = decoded.take();
-          if (isErr(decodedValue)) {
-            throw decodedValue.error;
-          }
-          if (decodedValue === null) {
-            continue;
-          }
-          const normalized = normalizeOperationEvent(decodedValue).take();
-          if (isErr(normalized)) {
-            throw normalized.error;
-          }
-          const event = decodeEvent(normalized);
-          yield event;
-          if (isTerminalEvent(event)) {
-            break;
-          }
-        }
+            value as JsonValue,
+          ).take();
+          if (isErr(decoded)) throw decoded.error;
+          if (decoded === null) return;
+          const normalized = normalizeOperationEvent(decoded).take();
+          if (isErr(normalized)) throw normalized.error;
+          return decodeEvent(normalized);
+        },
+      ).take();
+      if (isErr(subscription)) {
+        return err(subscription.error);
       }
-
-      return ok(events());
+      if (options.signal) {
+        const close = () => {
+          subscription.close();
+        };
+        if (options.signal.aborted) {
+          close();
+          return err(createTransportError({
+            code: "trellis.operation.watch_aborted",
+            message: "The operation watch was aborted while it opened.",
+            hint: "Retry watching the operation if it is still needed.",
+            context: { operationId: this.id, operation: this.operation },
+          }));
+        }
+        options.signal.addEventListener("abort", close, { once: true });
+        // The listener is owned by this observation and removed at settlement.
+        void subscription.closed.finally(() => {
+          options.signal?.removeEventListener("abort", close);
+        });
+      }
+      return ok(subscription);
     })());
   }
 
@@ -1081,11 +1129,35 @@ type OperationWatchObservation<TProgress, TOutput> = {
     >
   >;
   close?: () => Promise<void>;
+  closed?: Promise<LiveEnd>;
 };
+
+function watchFailure(
+  cause: unknown,
+): OperationControlError | UnexpectedError {
+  if (
+    cause instanceof TransportError || cause instanceof UnexpectedError ||
+    isOperationLifecycleError(cause)
+  ) {
+    return cause;
+  }
+  if (cause instanceof LiveStreamError) {
+    return createTransportError({
+      code: cause.codeString(),
+      message: cause.message,
+      hint:
+        "Retry watching the operation. If it keeps failing, check Trellis runtime health.",
+      cause,
+    });
+  }
+  return new UnexpectedError({ cause });
+}
 
 type ObservedWatchOptions<TProgress, TOutput, TUpdate> = {
   ready?: Promise<void>;
   skipEvent?: (event: OperationEvent<TProgress, TOutput, TUpdate>) => boolean;
+  /** Stops only this automatic observer; never a business cancel. */
+  observationSignal?: AbortSignal;
 };
 
 type InvokedOperation<
@@ -1163,17 +1235,27 @@ function beginObservedWatch<
   }
 
   return AsyncResult.from((async () => {
-    const watchValue = await operation.watch({
+    const liveValue = await operation.live({
       updates: callbacks.onUpdate !== undefined,
     }).take();
-    if (isErr(watchValue)) {
-      return watchValue;
+    if (isErr(liveValue)) {
+      return liveValue;
     }
 
-    const iterator = watchValue[Symbol.asyncIterator]();
+    const subscription = liveValue;
+    let stopped = false;
     const close = async () => {
-      await iterator.return?.();
+      stopped = true;
+      await subscription[Symbol.asyncDispose]();
     };
+    const signal = options.observationSignal;
+    const onAbort = () => {
+      void close();
+    };
+    if (signal) {
+      if (signal.aborted) void close();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
 
     const task = (async (): Promise<
       Result<
@@ -1184,19 +1266,19 @@ function beginObservedWatch<
       try {
         await options.ready;
 
-        while (true) {
-          const next = await iterator.next();
-          if (next.done) {
-            break;
-          }
-
-          const event = next.value;
+        for await (const event of subscription) {
           if (options.skipEvent?.(event)) {
             continue;
           }
           try {
             await dispatchObservedOperationEvent(callbacks, event);
           } catch (cause) {
+            await close();
+            const callbackError = new LiveStreamError(
+              "callback_failed",
+              cause instanceof Error ? cause.message : String(cause),
+            );
+            await reportObservationError(callbacks, callbackError);
             return err(toObservedCallbackError(cause));
           }
           if (isTerminalEvent(event)) {
@@ -1207,24 +1289,44 @@ function beginObservedWatch<
           }
         }
 
-        return err(createTransportError({
+        if (stopped) {
+          // A local stop is a normal observation cancellation: no
+          // `watch_incomplete` and no unsolicited error callback.
+          return err(createTransportError({
+            code: "trellis.operation.observation_cancelled",
+            message: "The operation observation was stopped locally.",
+            hint: "The durable Operation itself was not cancelled.",
+            context: { operationId: operation.id },
+          }));
+        }
+        const incomplete = createTransportError({
           code: "trellis.operation.watch_incomplete",
           message: "Trellis ended the operation watch before completion.",
           hint:
             "Retry watching the operation. If it keeps happening, reconnect to Trellis and try again.",
           cause: new Error("operation watch ended before terminal event"),
-        }));
-      } catch (cause) {
-        return err(
-          cause instanceof TransportError || cause instanceof UnexpectedError ||
-            isOperationLifecycleError(cause)
-            ? cause
-            : new UnexpectedError({ cause }),
+        });
+        await reportObservationError(
+          callbacks,
+          new LiveStreamError("source_error", incomplete.message),
         );
+        return err(incomplete);
+      } catch (cause) {
+        const failure = watchFailure(cause);
+        await reportObservationError(
+          callbacks,
+          cause instanceof LiveStreamError
+            ? cause
+            : new LiveStreamError("source_error", failure.message),
+        );
+        return err(failure);
+      } finally {
+        signal?.removeEventListener("abort", onAbort);
+        await close();
       }
     })();
 
-    return ok({ task, close });
+    return ok({ task, close, closed: subscription.closed });
   })());
 }
 
@@ -1269,7 +1371,16 @@ function startObservedOperation<
         skipEvent: createAcceptedReplayFilter(startedValue.accepted),
       },
     ).take();
-    const observation = isErr(observedValue) ? {} : observedValue;
+    if (isErr(observedValue)) {
+      await reportObservationError(
+        callbacks,
+        new LiveStreamError("source_error", observedValue.error.message),
+      );
+    }
+    const observation: OperationWatchObservation<TProgress, TOutput> =
+      isErr(observedValue)
+        ? failedObservation<TProgress, TOutput>(observedValue.error)
+        : observedValue;
 
     const accepted = await dispatchOperationEventResult(
       callbacks,
@@ -1330,6 +1441,7 @@ function startObservedTransfer<
     const observedValue = await beginObservedWatch(operation, callbacks, {
       ready: ready.promise,
       skipEvent: createAcceptedReplayFilter(startedValue.accepted),
+      observationSignal: options?.observationSignal,
     }).take();
     const observation = isErr(observedValue) ? {} : observedValue;
 
@@ -1403,15 +1515,41 @@ function createPublicOperationRef<
     service: operation.service,
     operation: operation.operation,
     get: () => operation.get(),
-    wait: () =>
+    wait: (options?: OperationWaitOptions) =>
       AsyncResult.from((async () => {
-        const waited = activeJobWaitHook?.({
-          kind: "operation",
-          id: operation.id,
-          operationId: operation.id,
-          service: operation.service,
-          type: operation.operation,
-        }, async () => {
+        // The observation-only signal stops the automatic callback observer; it
+        // never dispatches a business cancel.
+        const signal = options?.observationSignal;
+        const stopObserving = () => {
+          void observation.close?.();
+        };
+        if (signal) {
+          if (signal.aborted) stopObserving();
+          else signal.addEventListener("abort", stopObserving, { once: true });
+        }
+        try {
+          const waited = activeJobWaitHook?.({
+            kind: "operation",
+            id: operation.id,
+            operationId: operation.id,
+            service: operation.service,
+            type: operation.operation,
+          }, async () => {
+            if (observation.task) {
+              const terminal = await observation.task;
+              const terminalValue = terminal.take();
+              if (!isErr(terminalValue)) {
+                return ok(terminalValue);
+              }
+              if (isObservedCallbackError(terminalValue.error)) {
+                return terminalValue;
+              }
+            }
+
+            return await operation.wait(options);
+          });
+          if (waited) return await waited;
+
           if (observation.task) {
             const terminal = await observation.task;
             const terminalValue = terminal.take();
@@ -1423,27 +1561,25 @@ function createPublicOperationRef<
             }
           }
 
-          return await operation.wait();
-        });
-        if (waited) return await waited;
-
-        if (observation.task) {
-          const terminal = await observation.task;
-          const terminalValue = terminal.take();
-          if (!isErr(terminalValue)) {
-            return ok(terminalValue);
-          }
-          if (isObservedCallbackError(terminalValue.error)) {
-            return terminalValue;
-          }
+          return await operation.wait(options);
+        } finally {
+          signal?.removeEventListener("abort", stopObserving);
         }
-
-        return await operation.wait();
       })()),
-    watch: (options?: OperationWatchOptions) => operation.watch(options),
+    live: (options?: OperationWatchOptions) => operation.live(options),
     cancel: () => operation.cancel(),
     signal: (signal: string, input?: unknown) =>
       operation.signal(signal, input),
+    observationClosed: observation.closed,
+    stopObserving: () =>
+      AsyncResult.from((async () => {
+        if (!observation.close) return ok(null);
+        await observation.close();
+        return ok(null);
+      })()),
+    [Symbol.asyncDispose]: async () => {
+      await observation.close?.();
+    },
   };
 
   return base as OperationRef<TDesc, TProgress, TOutput, TUpdate>;
@@ -1856,7 +1992,24 @@ function failedObservation<TProgress, TOutput>(
 ): OperationWatchObservation<TProgress, TOutput> {
   return {
     task: Promise.resolve(err(error)),
+    closed: Promise.resolve(
+      new LiveEnd(
+        "source_error",
+        new LiveStreamError("source_error", error.message),
+      ),
+    ),
   };
+}
+
+async function reportObservationError<TProgress, TOutput, TUpdate>(
+  callbacks: OperationObserverCallbacks<TProgress, TOutput, TUpdate>,
+  error: LiveStreamError,
+): Promise<void> {
+  try {
+    await callbacks.onObservationError?.(error);
+  } catch {
+    // The observation-error callback must not reject or change durable state.
+  }
 }
 
 async function dispatchOperationEventResult<TProgress, TOutput, TUpdate>(

@@ -56,6 +56,7 @@ fn record(id: String) -> DurableOperationRecord {
             "updatedAt": null,
             "contentType": null
         })),
+        telemetry: None,
     }
 }
 

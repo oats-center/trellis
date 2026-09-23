@@ -53,6 +53,7 @@ fn runtime_config() -> RuntimeConfig {
         instance_name: None,
         event_session_seed_file: Some(PathBuf::from("session.seed")),
         event_context_digest_file: None,
+        live_provider_seed_files: None,
         paths: None,
         http: None,
         nats: Some(crate::NatsConfig {

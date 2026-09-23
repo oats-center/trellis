@@ -44,6 +44,15 @@
 #[doc(hidden)]
 pub mod client;
 
+pub(crate) mod live;
+
+pub use live::subscription::LiveSubscription;
+pub use live::LiveSessionManager;
+pub use live::{
+    CloseCleanupState, CloseRemoteState, LiveCancellation, LiveCloseReceipt, LiveEnd,
+    LiveEndReason, LiveErrorCode, LiveStreamError,
+};
+
 #[doc(hidden)]
 pub mod generated;
 
@@ -55,6 +64,9 @@ pub mod auth;
 
 #[doc(hidden)]
 pub mod jobs;
+
+/// Reusable OpenTelemetry ownership and instrumentation.
+pub mod telemetry;
 
 extern crate self as trellis_rs;
 

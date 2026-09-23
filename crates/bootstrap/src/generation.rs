@@ -9,12 +9,14 @@ use crate::output::{create_layout, write_nats_material, write_private_file};
 use crate::runtime_config::render_trellis_config;
 use crate::types::{NatsBootstrapOptions, TrellisBootstrapOptions};
 use crate::validate::{
-    validate_output_dir, validate_required_nats_names, validate_required_trellis_options,
+    validate_nats_listener_ports, validate_output_dir, validate_required_nats_names,
+    validate_required_trellis_options, validate_trellis_listener_collision,
 };
 
 /// Generate the NATS bootstrap output directory.
 pub fn generate_nats_bootstrap(options: &NatsBootstrapOptions) -> Result<(), BootstrapError> {
     validate_required_nats_names(&options.config.names)?;
+    validate_nats_listener_ports(&options.config)?;
     prepare_output_dir(&options.out, options.force)?;
 
     generate_nats_bootstrap_inner(options, DEFAULT_TRELLIS_NAME)
@@ -27,7 +29,12 @@ fn generate_nats_bootstrap_inner(
     create_layout(&options.out)?;
     fs::write(
         options.out.join("nats.conf"),
-        render_nats_config(&resolved_server_name(&options.config.names, trellis_name)),
+        render_nats_config(
+            &resolved_server_name(&options.config.names, trellis_name),
+            options.config.nats_port,
+            options.config.monitor_port,
+            options.config.websocket_port,
+        ),
     )?;
     let material = generate_nats_material(&options.config.names)?;
     write_nats_material(&options.out, &material)?;
@@ -37,6 +44,8 @@ fn generate_nats_bootstrap_inner(
 /// Generate a complete Trellis bootstrap bundle.
 pub fn generate_trellis_bootstrap(options: &TrellisBootstrapOptions) -> Result<(), BootstrapError> {
     validate_required_trellis_options(options)?;
+    validate_nats_listener_ports(&options.nats)?;
+    validate_trellis_listener_collision(options)?;
     prepare_output_dir(&options.out, options.force)?;
 
     let nats_out = options.out.join("nats");

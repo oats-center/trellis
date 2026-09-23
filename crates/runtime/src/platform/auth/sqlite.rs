@@ -21,6 +21,7 @@ mod resources;
 mod rollback_tests;
 mod sessions;
 pub(in crate::platform::auth) mod validation;
+pub(crate) use common::AuthTelemetrySnapshot;
 use common::SqliteConnectionPool;
 
 /// Owner-scoped SQLite implementation of every authorization repository port.

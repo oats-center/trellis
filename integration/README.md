@@ -25,7 +25,7 @@ Deno runs test modules serially by default; do not add `--parallel`. Each live
 test owns and stops its real NATS and Trellis processes. First use downloads
 pinned NATS tools. The generated `fixtures/runtime/contract.trellis` project
 exercises one cross-language RPC plus authorization/revocation, operation,
-event, state restart, job retry, transfer integrity, and feed cancellation.
+event, state restart, job retry, transfer integrity, and live observation cancellation.
 
 Use the cheapest real boundary. SQLite outbox commit/rollback belongs in the
 ordinary Deno package suite, not a live server test. Generated consumers should

@@ -12,8 +12,8 @@ export type NatsConnectOpts = {
 
 export type NatsConnectFn = (opts: NatsConnectOpts) => Promise<NatsConnection>;
 
-/** Initializes telemetry for a service runtime. */
-export type InitTelemetryFn = (serviceName: string) => void;
+/** Initializes telemetry for a service runtime and resolves when ready. */
+export type InitTelemetryFn = (serviceName: string) => void | Promise<void>;
 
 export type TrellisServiceRuntimeDeps = {
   connect: NatsConnectFn;

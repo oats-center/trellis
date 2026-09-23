@@ -15,7 +15,7 @@ type __ActionNames = {
 	readonly "trellis.events@v1:rpc:Inspect": "Inspect";
 	readonly "trellis.events@v1:rpc:Metrics": "Metrics";
 	readonly "trellis.events@v1:rpc:Query": "Query";
-	readonly "trellis.events@v1:feed:Watch": "Watch";
+	readonly "trellis.events@v1:live:Watch": "Watch";
 };
 type __Resources = {};
 declare const __participant: {
@@ -47,7 +47,7 @@ export declare const participant: {
 	readonly __runtimeTypes?: typeof __participant.__runtimeTypes;
 	readonly packageEvidence: unknown;
 };
-export declare const PARTICIPANT_DIGEST: "bmr6kjzYp_7zLZ3P2pxE4b5-rnunq8xYkXzpgx79o80";
+export declare const PARTICIPANT_DIGEST: "o7tkMWeETdl1YsHXnMMF9CfWqXV_5r4Syl24pNK6ilc";
 export type Participant = typeof participant;
 export type ResourceDescriptors = typeof participant.resources;
 export type ResourceHandles<Handles extends { readonly [Name in keyof ResourceDescriptors] : unknown }> = { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "required" ? Name : never] : Handles[Name] } & { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "optional" ? Name : never] : Handles[Name] | undefined };

@@ -1,0 +1,26 @@
+[
+  {
+    "bodyUtf8": "{\"format\":\"trellis.live.v1\",\"type\":\"data\",\"sessionId\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"seq\":\"1\",\"value\":{\"x\":1}}",
+    "contextDigest": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk",
+    "keySeedHex": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+    "name": "data",
+    "proof": "Xt407-dLKt6s2KmMEhyeXtHNAtcPdanT7MmgVlqldtSkIi2GzIMdzgA9x02GVs2j-tOF934tanhghgnlQmNYCQ",
+    "subject": "live.v1.data.cHJvdmlkZXI.Y29uc3VtZXI.AAAAAAAAAAAAAAAAAAAAAA"
+  },
+  {
+    "bodyUtf8": "{\"format\":\"trellis.live.v1\",\"type\":\"challenge\",\"sessionId\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"challengeId\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"lastSentSeq\":\"1\"}",
+    "contextDigest": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk",
+    "keySeedHex": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+    "name": "challenge",
+    "proof": "hsy9uVms9BAPHm8rL3rgZioW6LBzIrDMx_6ftThbClBvjF6jaxk39a2-DprCVAgksR7B9hrR9NHXFQ7f_VkMDw",
+    "subject": "live.v1.data.cHJvdmlkZXI.Y29uc3VtZXI.AAAAAAAAAAAAAAAAAAAAAA"
+  },
+  {
+    "bodyUtf8": "",
+    "contextDigest": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk",
+    "keySeedHex": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+    "name": "empty-body",
+    "proof": "FU7CHokDTUnQcmNXonbB_talbxfgiHJUJEaCi85pvVeDx6qgfw93cOwd-Q82rMrkscuVWfEgMIlWF1f4NaTEBA",
+    "subject": "rpc.v1.X.Y"
+  }
+]

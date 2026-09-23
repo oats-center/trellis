@@ -1,1 +1,6 @@
-export { getTrellisTracer, startClientSpan, startServerSpan } from "./trace.ts";
+export {
+  getTrellisTracer,
+  startClientSpan,
+  startServerSpan,
+  trellisRoute,
+} from "./trace.ts";

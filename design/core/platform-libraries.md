@@ -87,7 +87,7 @@ Rules:
 - browser auth uses a session key stored in IndexedDB plus a bind flow;
   SvelteKit apps may layer on `@oatscenter/trellis-svelte`
 - app, agent, device, service, and CLI code should communicate through
-  contract-derived RPC, operation, event, feed, state, and transfer facades
+  contract-derived RPC, operation, event, live, state, and transfer facades
   rather than raw NATS subjects
 - RPCs are timeout-bounded and expected remote failures use explicit `Result`
   conventions rather than exception-driven control flow

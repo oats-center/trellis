@@ -251,21 +251,34 @@ async fn verify_message(
 }
 
 async fn persist_message(store: EventsStore, message: jetstream::Message, event: ProjectedEvent) {
+    // One projection apply through SQL result and message disposition. A
+    // projector rebuild re-observes apply work, not business transitions.
+    let observation = trellis_rs::telemetry::lifecycle::Observation::start(
+        trellis_rs::telemetry::instruments::DurationFamily::Projection,
+        vec![trellis_rs::telemetry::KeyValue::new(
+            "trellis.component",
+            "events",
+        )],
+        "cancelled",
+    );
     match tokio::task::spawn_blocking(move || store.insert_event(&event)).await {
         Ok(Ok(())) => {
             let _ = message.ack().await;
+            observation.finish("ok");
         }
         Ok(Err(error)) => {
             tracing::warn!(%error, subject = %message.subject, "retrying Events persistence");
             let _ = message
                 .ack_with(AckKind::Nak(Some(Duration::from_secs(5))))
                 .await;
+            observation.finish("retry");
         }
         Err(error) => {
             tracing::warn!(%error, subject = %message.subject, "retrying Events persistence task");
             let _ = message
                 .ack_with(AckKind::Nak(Some(Duration::from_secs(5))))
                 .await;
+            observation.finish("error");
         }
     }
 }
@@ -558,7 +571,11 @@ fn trace_id_from_traceparent(traceparent: &str) -> Option<&str> {
         .filter(|value| value.len() == 32)
 }
 
-fn projector_consumer_name(projection_id: &str) -> String {
+/// Exact durable consumer name for one Events projection identity.
+///
+/// The runtime telemetry sampler uses this instead of prefix-matching every
+/// historical projector consumer.
+pub fn projector_consumer_name(projection_id: &str) -> String {
     format!(
         "events-projector-{}",
         sanitize_consumer_token(projection_id)

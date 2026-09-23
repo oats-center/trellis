@@ -470,6 +470,7 @@ where
         .merge(static_routes)
         .fallback(web_fallback::<R, E>)
         .layer(RequestBodyLimitLayer::new(MAX_AUTH_REQUEST_BODY_BYTES))
+        .layer(middleware::from_fn(super::telemetry::observe_http))
         .layer(cors)
         .layer(middleware::from_fn_with_state(
             content_security_policy,

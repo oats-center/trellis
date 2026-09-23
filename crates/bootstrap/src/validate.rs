@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::error::BootstrapError;
-use crate::types::{NatsBootstrapNames, TrellisBootstrapOptions};
+use crate::types::{NatsBootstrapConfig, NatsBootstrapNames, TrellisBootstrapOptions};
 
 /// Validate whether an output directory can be used for generation.
 pub fn validate_output_dir(out: &Path, force: bool) -> Result<(), BootstrapError> {
@@ -59,6 +59,50 @@ pub(crate) fn validate_required_trellis_options(
     validate_required_nats_names(&options.nats.names)?;
     if options.runtime.name.trim().is_empty() {
         return Err(BootstrapError::MissingRequiredOption("name"));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_nats_listener_ports(
+    config: &NatsBootstrapConfig,
+) -> Result<(), BootstrapError> {
+    let listeners = [
+        ("native", config.nats_port),
+        ("monitor", config.monitor_port),
+        ("websocket", config.websocket_port),
+    ];
+    for (listener, port) in listeners {
+        if port == 0 {
+            return Err(BootstrapError::InvalidListenerPort { listener });
+        }
+    }
+    for first in 0..listeners.len() {
+        for second in first + 1..listeners.len() {
+            if listeners[first].1 == listeners[second].1 {
+                return Err(BootstrapError::DuplicateListenerPort {
+                    first: listeners[first].0,
+                    second: listeners[second].0,
+                    port: listeners[first].1,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_trellis_listener_collision(
+    options: &TrellisBootstrapOptions,
+) -> Result<(), BootstrapError> {
+    let trellis_port = options.runtime.trellis_port;
+    let listeners = [
+        ("native", options.nats.nats_port),
+        ("monitor", options.nats.monitor_port),
+        ("websocket", options.nats.websocket_port),
+    ];
+    for (listener, port) in listeners {
+        if port == trellis_port {
+            return Err(BootstrapError::TrellisListenerPortCollision { listener, port });
+        }
     }
     Ok(())
 }

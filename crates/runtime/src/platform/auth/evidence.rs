@@ -157,7 +157,7 @@ pub(crate) enum RuntimeActionKind {
     Rpc,
     Operation,
     Event,
-    Feed,
+    Live,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -354,7 +354,7 @@ fn project_api(
                     ActionDefinition::Event { parameters, .. } => {
                         (RuntimeActionKind::Event, false, false, parameters.len())
                     }
-                    ActionDefinition::Feed { .. } => (RuntimeActionKind::Feed, false, false, 0),
+                    ActionDefinition::Live { .. } => (RuntimeActionKind::Live, false, false, 0),
                 };
                 (
                     format!("{}:{}", action_kind(id.kind), id.name),
@@ -589,7 +589,7 @@ fn action_kind(kind: ActionKind) -> &'static str {
         ActionKind::Rpc => "rpc",
         ActionKind::Operation => "operation",
         ActionKind::Event => "event",
-        ActionKind::Feed => "feed",
+        ActionKind::Live => "live",
     }
 }
 

@@ -3,7 +3,7 @@ mod local;
 mod oidc;
 mod request;
 
-pub(super) fn complete_participant_grants(
+pub(crate) fn complete_participant_grants(
     binding: &crate::platform::auth::ParticipantBindingRecord,
 ) -> Result<trellis_protocol::GrantSet, super::HttpError> {
     let resolved = binding.resolve()?;

@@ -6,6 +6,7 @@ mod device_activation;
 mod device_identity;
 mod error;
 mod models;
+mod portal;
 mod protocol;
 mod session_store;
 
@@ -28,6 +29,11 @@ pub use error::TrellisAuthError;
 pub use models::{
     AdminLoginOutcome, AdminReauthOutcome, AdminSessionState, AgentLoginChallenge, BoundSession,
     DeviceCompanionIdentity, DeviceIdentity, StartAgentLoginOpts,
+};
+pub use portal::{
+    approve_local_login, begin_local_login, complete_local_login, create_portal_binding,
+    flow_id_from_url, perform_local_login, LocalLoginStep, PortalBinding, PortalConsentSummary,
+    PORTAL_BINDING_HEADER,
 };
 pub use protocol::AuthenticatedUser;
 pub use session_store::{clear_admin_session, load_admin_session, save_admin_session};

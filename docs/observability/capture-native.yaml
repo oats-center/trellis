@@ -1,0 +1,29 @@
+# Case-owned evidence capture only; production config is in deploy/observability/.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+exporters:
+  prometheus:
+    endpoint: 127.0.0.1:9464
+    translation_strategy: UnderscoreEscapingWithoutSuffixes
+    enable_open_metrics: true
+  otlp_http/traces:
+    endpoint: http://127.0.0.1:4322
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 8890
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [prometheus]
+    traces:
+      receivers: [otlp]
+      exporters: [otlp_http/traces]

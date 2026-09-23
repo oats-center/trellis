@@ -17,6 +17,7 @@ pub use core::{
     VerifiedCaller,
 };
 pub use own_context::AuthorizationContextCache;
+pub(crate) use provider_cache::AuthorizationContextLease;
 pub use provider_cache::AuthorizationProviderCache;
 #[cfg(feature = "runtime-internals")]
 pub use provider_cache::{RuntimeAuthorizationIoCounters, RuntimeAuthorizationTrust};

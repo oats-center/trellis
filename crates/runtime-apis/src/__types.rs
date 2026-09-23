@@ -303,7 +303,7 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum AuthApiSurfaceTargetSurface {
         Event,
-        Feed,
+        Live,
         Operation,
         Rpc,
         State,
@@ -313,7 +313,7 @@ pub mod trellis {
         pub fn as_str(&self) -> &str {
             match self {
                 Self::Event => "event",
-                Self::Feed => "feed",
+                Self::Live => "live",
                 Self::Operation => "operation",
                 Self::Rpc => "rpc",
                 Self::State => "state",
@@ -341,7 +341,7 @@ pub mod trellis {
             let value = <String as serde::Deserialize>::deserialize(deserializer)?;
             Ok(match value.as_str() {
                 "event" => Self::Event,
-                "feed" => Self::Feed,
+                "live" => Self::Live,
                 "operation" => Self::Operation,
                 "rpc" => Self::Rpc,
                 "state" => Self::State,
@@ -752,7 +752,7 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum AuthCapabilitiesListResponseentriesItemallowsItemtarget1Surface {
         Event,
-        Feed,
+        Live,
         Operation,
         Rpc,
         State,
@@ -762,7 +762,7 @@ pub mod trellis {
         pub fn as_str(&self) -> &str {
             match self {
                 Self::Event => "event",
-                Self::Feed => "feed",
+                Self::Live => "live",
                 Self::Operation => "operation",
                 Self::Rpc => "rpc",
                 Self::State => "state",
@@ -792,7 +792,7 @@ pub mod trellis {
             let value = <String as serde::Deserialize>::deserialize(deserializer)?;
             Ok(match value.as_str() {
                 "event" => Self::Event,
-                "feed" => Self::Feed,
+                "live" => Self::Live,
                 "operation" => Self::Operation,
                 "rpc" => Self::Rpc,
                 "state" => Self::State,
@@ -40984,7 +40984,7 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum TrellisSurfaceStatusRequestKind {
         Event,
-        Feed,
+        Live,
         Operation,
         Rpc,
         Unknown(String),
@@ -40993,7 +40993,7 @@ pub mod trellis {
         pub fn as_str(&self) -> &str {
             match self {
                 Self::Event => "event",
-                Self::Feed => "feed",
+                Self::Live => "live",
                 Self::Operation => "operation",
                 Self::Rpc => "rpc",
                 Self::Unknown(value) => value,
@@ -41020,7 +41020,7 @@ pub mod trellis {
             let value = <String as serde::Deserialize>::deserialize(deserializer)?;
             Ok(match value.as_str() {
                 "event" => Self::Event,
-                "feed" => Self::Feed,
+                "live" => Self::Live,
                 "operation" => Self::Operation,
                 "rpc" => Self::Rpc,
                 _ => Self::Unknown(value),

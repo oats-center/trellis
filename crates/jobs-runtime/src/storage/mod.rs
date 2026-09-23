@@ -395,6 +395,25 @@ impl SqliteJobsStore {
         Ok(())
     }
 
+    /// Return the already-established projection identity without writing.
+    ///
+    /// Telemetry polls use this pure read: it never inserts the identity and
+    /// never waits on the writer lock for a mutation. The owner establishes the
+    /// identity during normal initialization.
+    pub fn established_projection_id(&self) -> Result<String, SqliteJobsStoreError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| SqliteJobsStoreError::Poisoned)?;
+        connection
+            .query_row(
+                "SELECT value FROM projection_metadata WHERE name = 'projection_id'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(SqliteJobsStoreError::from)
+    }
+
     /// Return the stable identity for this local projection database.
     pub fn projection_id(&self) -> Result<String, SqliteJobsStoreError> {
         let connection = self
@@ -1424,6 +1443,53 @@ impl SqliteJobsStore {
                 })
             })
             .transpose()
+    }
+
+    /// Reads the telemetry snapshot without mutating or claiming any row.
+    ///
+    /// A malformed ready anchor fails the snapshot instead of counting as a
+    /// zero-age ready job.
+    pub fn telemetry_snapshot(
+        &self,
+        now_nanos: i64,
+        now: OffsetDateTime,
+    ) -> Result<crate::telemetry::JobsTelemetrySnapshot, SqliteJobsStoreError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| SqliteJobsStoreError::Poisoned)?;
+        let (ready, oldest_anchor): (i64, Option<i64>) = connection.query_row(
+            "SELECT COUNT(*), MIN(queue_age_anchor_nanos) FROM jobs_projection \
+             WHERE state = 'pending' \
+             AND queue_age_anchor_nanos IS NOT NULL \
+             AND queue_age_anchor_nanos <= ?1 \
+             AND (deadline_nanos IS NULL OR deadline_nanos > ?1)",
+            rusqlite::params![now_nanos],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let waiting_retry: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM jobs_projection WHERE state = 'retry'",
+            [],
+            |row| row.get(0),
+        )?;
+        let dead: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM jobs_projection WHERE state = 'dead'",
+            [],
+            |row| row.get(0),
+        )?;
+        let oldest_ready_age_seconds = oldest_anchor
+            .map(|anchor| ((now_nanos - anchor).max(0) as f64) / 1_000_000_000.0)
+            .unwrap_or(0.0);
+        let worker_registrations = self
+            .list_fresh_workers(now, crate::worker_presence::WORKER_PRESENCE_FRESH_FOR)?
+            .len() as u64;
+        Ok(crate::telemetry::JobsTelemetrySnapshot {
+            ready: ready.max(0) as u64,
+            oldest_ready_age_seconds,
+            waiting_retry: waiting_retry.max(0) as u64,
+            dead: dead.max(0) as u64,
+            worker_registrations,
+        })
     }
 
     /// List worker-presence rows whose heartbeat is still fresh at `now`.

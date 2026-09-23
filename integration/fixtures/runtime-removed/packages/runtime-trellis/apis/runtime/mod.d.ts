@@ -49,9 +49,9 @@ declare const __api: {
 			readonly payload: typeof Types0.ValueCodec;
 			readonly parameters: readonly [];
 		};
-		readonly "feed:Watch": {
-			readonly kind: "feed";
-			readonly descriptorName: "feed:Watch";
+		readonly "live:Watch": {
+			readonly kind: "live";
+			readonly descriptorName: "live:Watch";
 			readonly input: typeof Types0.EmptyCodec;
 			readonly event: typeof Types0.ValueCodec;
 		};
@@ -59,5 +59,5 @@ declare const __api: {
 	readonly packageEvidence: unknown;
 };
 export declare const API: typeof __api;
-export declare const API_DIGEST: "vFFD_x8YVvYflnnJHoHnBNSrsNmvYk2rx6bn59ZtuIY";
+export declare const API_DIGEST: "pKDM1H0SA9CSaCqndBit_rsYda4o1x5UTTgQMppk5IA";
 export {};

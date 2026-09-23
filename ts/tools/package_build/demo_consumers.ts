@@ -203,6 +203,46 @@ try {
               return response.isOk() ? response.orThrow() : false;
             }, { timeoutMs: 30_000 });
             assertEquals(result.items.length > 0, true);
+            // Direct use of the final owned Feed handle through the packaged
+            // SDK: the synchronous close receipt, the once-resolving `closed`
+            // promise, and async-disposal ownership.
+            {
+              const feed = await caller.auditFeed({}).orThrow();
+              const receipt = await feed.close().orThrow();
+              assertEquals(
+                typeof receipt.cleanup,
+                "string",
+                `${engine} feed close receipt`,
+              );
+              await feed.closed;
+              await using owned = await caller.auditFeed({}).orThrow();
+              assertEquals(
+                typeof owned[Symbol.asyncDispose],
+                "function",
+                `${engine} owned handle async disposal`,
+              );
+            }
+            // Direct use of the final owned Operation handle: starting durable
+            // work and closing its observation never cancels the operation.
+            {
+              const assignment = result.items[0];
+              const operation = await caller.reportsGenerate({
+                inspectionId: assignment.inspectionId,
+                reportComment: "packaged-consumer acceptance",
+              }).start().orThrow();
+              await using observation = await operation.watch({}).orThrow();
+              const receipt = await observation.close().orThrow();
+              assertEquals(
+                typeof receipt.cleanup,
+                "string",
+                `${engine} operation observation close receipt`,
+              );
+              assertEquals(
+                (await caller.reportsList({ page: { limit: 50 } })).isOk(),
+                true,
+                `${engine} durable operation survives observer close`,
+              );
+            }
             const sites = await caller.sitesList({ page: { limit: 50 } });
             if (sites.isErr()) {
               failures.push(

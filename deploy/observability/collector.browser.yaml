@@ -1,0 +1,139 @@
+# Isolated production reference; see deploy/observability/README.md
+extensions:
+  health_check:
+    endpoint: 127.0.0.1:13134
+  file_storage/traces:
+    create_directory: true
+    directory: /var/lib/otelcol/trellis-browser-traces
+receivers:
+  otlp/browser:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4319
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 128
+    spike_limit_mib: 32
+  resource/browser:
+    attributes:
+    - key: trellis.telemetry.origin
+      value: browser
+      action: upsert
+    - key: trellis.role
+      value: browser
+      action: upsert
+    - key: service.name
+      value: trellis-browser
+      action: upsert
+    - key: service.namespace
+      value: trellis
+      action: upsert
+    - key: trellis.cluster
+      value: ${env:TRELLIS_CLUSTER}
+      action: upsert
+    - key: deployment.environment.name
+      value: ${env:TRELLIS_ENVIRONMENT}
+      action: upsert
+  filter/browser:
+    error_mode: ignore
+    metrics:
+      metric:
+      - not (name == "trellis.browser.navigation.duration" or name == "trellis.browser.errors" or name == "trellis.connect.duration" or name == "trellis.rpc.client.duration" or name
+        == "trellis.rpc.client.attempts" or name == "trellis.auth.refresh.attempts")
+      - resource.attributes["service.instance.id"] == nil or not IsMatch(resource.attributes["service.instance.id"], "^[a-f0-9-]{36}$")
+  transform/browser:
+    error_mode: ignore
+    trace_statements:
+    - context: resource
+      statements:
+      - keep_keys(resource.attributes, ["service.name", "service.namespace", "service.version", "deployment.environment.name", "trellis.cluster", "trellis.role", "trellis.telemetry.origin"])
+    - context: span
+      statements:
+      - keep_keys(span.attributes, ["trellis.app", "trellis.route", "trellis.outcome", "trellis.operation", "error.type"])
+      - set(span.name, "trellis.browser.observed")
+      - set(span.status.message, "")
+    metric_statements:
+    - context: resource
+      statements:
+      - keep_keys(resource.attributes, ["service.name", "service.namespace", "service.instance.id", "deployment.environment.name", "trellis.cluster", "trellis.role", "trellis.telemetry.origin"])
+    - context: datapoint
+      statements:
+      - keep_keys(datapoint.attributes, ["trellis.app", "trellis.phase", "trellis.outcome", "trellis.kind", "trellis.participant.kind"])
+      - set(datapoint.attributes["trellis.app"], "external") where datapoint.attributes["trellis.app"] != nil and datapoint.attributes["trellis.app"] != "console" and datapoint.attributes["trellis.app"] != "portal"
+      - set(datapoint.attributes["trellis.phase"], "other") where datapoint.attributes["trellis.phase"] != nil and datapoint.attributes["trellis.phase"] != "shell" and datapoint.attributes["trellis.phase"] != "ready" and datapoint.attributes["trellis.phase"]
+        != "bootstrap" and datapoint.attributes["trellis.phase"] != "nats_connect" and datapoint.attributes["trellis.phase"] != "total"
+      - set(datapoint.attributes["trellis.outcome"], "other") where datapoint.attributes["trellis.outcome"] != nil and datapoint.attributes["trellis.outcome"] != "ok" and datapoint.attributes["trellis.outcome"] != "error"
+        and datapoint.attributes["trellis.outcome"] != "cancelled"
+      - set(datapoint.attributes["trellis.kind"], "other") where datapoint.attributes["trellis.kind"] != nil and datapoint.attributes["trellis.kind"] != "render" and datapoint.attributes["trellis.kind"] != "http" and datapoint.attributes["trellis.kind"]
+        != "sdk" and datapoint.attributes["trellis.kind"] != "unhandled"
+      - set(datapoint.attributes["trellis.participant.kind"], "user") where datapoint.attributes["trellis.participant.kind"] != nil
+  batch/browser:
+    timeout: 2s
+    send_batch_size: 128
+    send_batch_max_size: 256
+exporters:
+  prometheus/browser:
+    endpoint: 127.0.0.1:9465
+    translation_strategy: UnderscoreEscapingWithoutSuffixes
+    without_scope_info: true
+    metric_expiration: 90s
+    resource_constant_labels:
+      included:
+      - service.name
+      - service.namespace
+      - trellis.cluster
+      - deployment.environment.name
+      - trellis.role
+      - trellis.telemetry.origin
+      - service.instance.id
+  otlp_http/traces:
+    endpoint: ${env:TRELLIS_TRACE_BACKEND}
+    timeout: 5s
+    sending_queue:
+      enabled: true
+      num_consumers: 2
+      queue_size: 1000
+      storage: file_storage/traces
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 15s
+      max_elapsed_time: 300s
+service:
+  extensions:
+  - health_check
+  - file_storage/traces
+  telemetry:
+    metrics:
+      level: normal
+      readers:
+      - pull:
+          exporter:
+            prometheus:
+              host: 127.0.0.1
+              port: 8889
+              without_type_suffix: true
+              without_units: true
+  pipelines:
+    traces/browser:
+      receivers:
+      - otlp/browser
+      processors:
+      - memory_limiter
+      - resource/browser
+      - transform/browser
+      - batch/browser
+      exporters:
+      - otlp_http/traces
+    metrics/browser:
+      receivers:
+      - otlp/browser
+      processors:
+      - memory_limiter
+      - resource/browser
+      - filter/browser
+      - transform/browser
+      - batch/browser
+      exporters:
+      - prometheus/browser

@@ -28,15 +28,32 @@ with persisted progress and unacknowledged signals. Side effects can repeat and
 are not transactionally rolled back; handlers use operation ID/resume context to
 make them idempotent.
 
-Watch establishes the durable watch before reconciling current state, then emits
-strictly later revisions. Signals are persisted before acceptance and may repeat
-until handler acknowledgement. Cancellation is persisted; stale owners cannot
-complete after losing their fence. Typed updates are live-only and never replace
-durable progress.
+Watch installs its owned durable-watch and optional executor-update
+subscriptions, then rereads the authoritative durable record so
+watch-before-read readiness is established before the first emitted snapshot. A
+record that is already terminal emits its terminal snapshot followed by the
+normal observation END. Both sources then merge through one observer arbiter: a
+waiting snapshot is conflated to the latest authoritative value while admitted
+transient updates are never silently dropped, and the bounded per-observer
+buffer fails only that observer with a slow-consumer outcome. Lease-only writes
+do not invent business progress. When a terminal snapshot is observed, update
+admission freezes, already admitted updates are emitted, then the terminal
+snapshot and normal END follow. Signals are persisted before acceptance and may
+repeat until handler acknowledgement. Cancellation is persisted; stale owners
+cannot complete after losing their fence. Typed updates are live-only and never
+replace durable progress.
 
-Provider routing binds an API to a deployment. Queue groups derive only from the
-actual subscription subject. Feed cancellation uses owner-specific authenticated
-control routing, not the queued open subject.
+The observer is independent of durable execution: its lifetime is bound to the
+live session, its authority follows the current observer guard rather than the
+opening digest, a local stop or observation signal is observation-only
+cancellation that never dispatches a business cancel, and an executor may
+continue or finish with zero observers.
+
+Provider routing binds an API to a deployment; the selected provider deployment
+comes from the installed binding, and routine admission compiles delivery
+permissions from the participant evidence rather than from context atoms. Queue
+groups derive only from the actual subscription subject. Live cancellation uses
+owner-specific authenticated control routing, not the queued open subject.
 
 Upload/download staging is platform-managed rather than mapped to a participant
 Store. Committed staged bytes survive executor replacement. An interrupted

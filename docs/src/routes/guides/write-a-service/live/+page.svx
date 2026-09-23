@@ -1,28 +1,28 @@
-# Declare feeds
+# Declare live observations
 
-Feeds provide caller-filtered live views.
+Live observations provide caller-filtered live views.
 
 ```trellis
 model OrdersWatchInput { customerId: string; }
 model OrdersWatchEvent { orderId: string; status: string; }
-feed "Orders.Watch" {
+live "Orders.Watch" {
   version "v1";
   input OrdersWatchInput;
   event OrdersWatchEvent;
 }
 ```
 
-Generate the SDK and implement the generated feed registration in the service.
+Generate the SDK and implement the generated live registration in the service.
 
 Place these declarations in the API block. Register `service.handleOrdersWatch`
 before starting the service. Its handler returns an async iterable of typed
 events and observes `signal` for cancellation. Release upstream subscriptions
 in `finally` when iteration ends or the caller cancels.
 
-The caller selects `subscribe feed "Orders.Watch";` and calls the generated
+The caller selects `subscribe live "Orders.Watch";` and calls the generated
 `ordersWatch` method with its filter input and an `AbortSignal`. Consume the
-returned iterable and abort when the view or task no longer needs it. Feeds are
-live streams, not durable event replay or a replacement for state snapshots.
+returned iterable and abort when the view or task no longer needs it. Live observations are
+live observations, not durable event replay or a replacement for state snapshots.
 
 Use one live test that receives a frame and then cancels. Assert that the
 provider stops or iteration ends; fixed sleeps and internal frame counters do

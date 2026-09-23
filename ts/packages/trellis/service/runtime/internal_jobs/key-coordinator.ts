@@ -2,6 +2,7 @@ import { type KV, type KvEntry, Kvm } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/nats-core";
 import { ulid } from "ulid";
 
+import { recordCatalogCounter } from "../../../telemetry/metrics.ts";
 import type { JobContext, JobEvent, JobState } from "./types.ts";
 
 const JOBS_KEYS_BUCKET = "JOBS_KEYS";
@@ -829,25 +830,48 @@ export function createNatsJobKeyCoordinator(
       return { kind: "not-found" };
     },
     async acquireActiveSlot(request) {
-      const derived = await deriveJobKey({
-        service: request.service,
-        jobType: request.jobType,
-        payload: request.payload,
-        template: request.policy.key,
-      });
-      const slotToken = ulid();
-      return await updateState(
-        () => openKv(request.service),
-        derived,
-        (state) =>
-          reduceAcquireActiveSlot({
-            state,
-            derived,
-            request,
-            policy: request.policy,
-            slotToken,
-          }),
-      );
+      try {
+        const derived = await deriveJobKey({
+          service: request.service,
+          jobType: request.jobType,
+          payload: request.payload,
+          template: request.policy.key,
+        });
+        const slotToken = ulid();
+        const result = await updateState(
+          () => openKv(request.service),
+          derived,
+          (state) =>
+            reduceAcquireActiveSlot({
+              state,
+              derived,
+              request,
+              policy: request.policy,
+              slotToken,
+            }),
+        );
+        recordCatalogCounter("trellis.job.lease.events", 1, {
+          "trellis.action": "acquire",
+          "trellis.outcome": result.kind === "acquired" ? "ok" : "conflict",
+        });
+        if (result.kind === "acquired" && result.stale.length > 0) {
+          recordCatalogCounter(
+            "trellis.job.lease.events",
+            result.stale.length,
+            {
+              "trellis.action": "takeover",
+              "trellis.outcome": "ok",
+            },
+          );
+        }
+        return result;
+      } catch (error) {
+        recordCatalogCounter("trellis.job.lease.events", 1, {
+          "trellis.action": "acquire",
+          "trellis.outcome": "error",
+        });
+        throw error;
+      }
     },
     async renewHeartbeat(args) {
       const derived = {
@@ -857,18 +881,31 @@ export function createNatsJobKeyCoordinator(
         keyHash: args.lease.keyHash,
         kvKey: `${args.service}.${args.jobType}.${args.lease.keyHash}`,
       };
-      return await updateState(
-        () => openKv(args.service),
-        derived,
-        (state) =>
-          reduceRenewHeartbeat({
-            state,
-            jobId: args.jobId,
-            slotToken: args.lease.slotToken,
-            now: args.now,
-            policy: args.lease.policy,
-          }),
-      );
+      try {
+        const result = await updateState(
+          () => openKv(args.service),
+          derived,
+          (state) =>
+            reduceRenewHeartbeat({
+              state,
+              jobId: args.jobId,
+              slotToken: args.lease.slotToken,
+              now: args.now,
+              policy: args.lease.policy,
+            }),
+        );
+        recordCatalogCounter("trellis.job.lease.events", 1, {
+          "trellis.action": "renew",
+          "trellis.outcome": result.kind === "renewed" ? "ok" : "lost",
+        });
+        return result;
+      } catch (error) {
+        recordCatalogCounter("trellis.job.lease.events", 1, {
+          "trellis.action": "renew",
+          "trellis.outcome": "error",
+        });
+        throw error;
+      }
     },
     async releaseActiveSlot(args) {
       const derived = {
@@ -878,17 +915,30 @@ export function createNatsJobKeyCoordinator(
         keyHash: args.lease.keyHash,
         kvKey: `${args.service}.${args.jobType}.${args.lease.keyHash}`,
       };
-      return await updateState(
-        () => openKv(args.service),
-        derived,
-        (state) =>
-          reduceReleaseActiveSlot({
-            state,
-            jobId: args.jobId,
-            slotToken: args.lease.slotToken,
-            now: args.now,
-          }),
-      );
+      try {
+        const result = await updateState(
+          () => openKv(args.service),
+          derived,
+          (state) =>
+            reduceReleaseActiveSlot({
+              state,
+              jobId: args.jobId,
+              slotToken: args.lease.slotToken,
+              now: args.now,
+            }),
+        );
+        recordCatalogCounter("trellis.job.lease.events", 1, {
+          "trellis.action": "release",
+          "trellis.outcome": result.kind === "released" ? "ok" : "lost",
+        });
+        return result;
+      } catch (error) {
+        recordCatalogCounter("trellis.job.lease.events", 1, {
+          "trellis.action": "release",
+          "trellis.outcome": "error",
+        });
+        throw error;
+      }
     },
   };
 }

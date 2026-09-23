@@ -756,6 +756,27 @@ impl AuthorizationContextCache {
         })
     }
 
+    /// Return this connection owner's pinned identity tuple.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no installed context exists.
+    pub(crate) fn pinned_identity(
+        &self,
+    ) -> Result<crate::live::authority::PinnedPeerIdentity, TrellisClientError> {
+        let state = self.state_snapshot()?;
+        let current = state.current.ok_or_else(|| {
+            TrellisClientError::AuthorizationUnavailable(
+                "no installed authorization context".to_owned(),
+            )
+        })?;
+        let signed = trellis_protocol::parse_authorization_context(&current.bundle.context)
+            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
+        Ok(crate::live::authority::PinnedPeerIdentity::from_signed(
+            &signed,
+        ))
+    }
+
     pub(crate) fn provider_deployment_id(
         &self,
         api_id: &str,

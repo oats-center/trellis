@@ -428,16 +428,24 @@ impl DeadLetterJournal {
             )
             .await
             .map_err(|error| JournalError::Nats(error.to_string()))?;
+        // One authoritative dead-letter transition operation, recorded here
+        // and never re-emitted by a projector rebuild.
+        let action = transition_action(&transition.state, &transition.cause);
         match ack.await {
-            Ok(ack) => Ok((transition.clone(), ack.sequence)),
+            Ok(ack) => {
+                record_dead_letter_transition(action, "ok");
+                Ok((transition.clone(), ack.sequence))
+            }
             Err(error) => {
                 if let Some(existing) = self
                     .find_revision(&transition.id, transition.revision)
                     .await?
                 {
                     return if same_effect(&existing.0, transition) {
+                        record_dead_letter_transition(action, "ok");
                         Ok(existing)
                     } else {
+                        record_dead_letter_transition(action, "error");
                         Err(JournalError::Conflict(
                             "revision has different transition content".to_owned(),
                         ))
@@ -445,13 +453,41 @@ impl DeadLetterJournal {
                 }
                 match self.latest(&transition.id).await? {
                     Some((_, sequence)) if sequence != expected_subject_sequence => {
+                        record_dead_letter_transition(action, "error");
                         Err(JournalError::Conflict(error.to_string()))
                     }
-                    _ => Err(JournalError::Nats(error.to_string())),
+                    _ => {
+                        record_dead_letter_transition(action, "error");
+                        Err(JournalError::Nats(error.to_string()))
+                    }
                 }
             }
         }
     }
+}
+
+/// Bounded catalog action for one dead-letter transition.
+fn transition_action(state: &DeadLetterState, cause: &DeadLetterCause) -> &'static str {
+    match (state, cause) {
+        (DeadLetterState::ReplayPending, _) => "replay_requested",
+        (DeadLetterState::Replaying, _) => "replay_published",
+        (DeadLetterState::Resolved, _) => "replay_succeeded",
+        (DeadLetterState::Dismissed, _) => "dismissed",
+        (DeadLetterState::Dead, DeadLetterCause::Exhausted) => "exhausted",
+        (DeadLetterState::Dead, _) => "replay_failed",
+    }
+}
+
+/// Records one authoritative dead-letter transition operation.
+fn record_dead_letter_transition(action: &'static str, outcome: &'static str) {
+    trellis_rs::telemetry::instruments::add_counter(
+        trellis_rs::telemetry::instruments::CounterFamily::DeadLetterTransitions,
+        1,
+        &[
+            trellis_rs::telemetry::KeyValue::new("trellis.action", action),
+            trellis_rs::telemetry::KeyValue::new("trellis.outcome", outcome),
+        ],
+    );
 }
 
 /// Compute the independent per-Consumer dead-letter identity.

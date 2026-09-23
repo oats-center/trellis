@@ -120,37 +120,43 @@ Rules:
 - event subscribe permissions are event-type gates, not per-entity ACLs; do not
   encode user-owned object lists into Trellis runtime permissions
 
-#### Feeds
+#### Live observations
 
-Feeds expose caller-visible live views that are authorized by the owning
-service. They are request/reply streams: a caller requests a feed with typed
-input, and the service emits typed frames to the caller's reply inbox.
+Live observations expose caller-visible live views that are authorized by the owning
+service. A live is an **ephemeral live observation session**, not an indefinite
+request/reply stream: a caller sends one bounded opening request, and after a
+delivery-path activation round trip the service emits typed frames on a signed,
+connection-scoped live data subject. Liveness, cumulative credit, and closure
+travel as signed owner-directed controls.
 
-Subject naming:
-
-```text
-feeds.v1.<Domain>.<LiveView>
-```
-
-Examples:
+Contract-owned subject naming (deployment-bound route plus runtime-derived
+session subjects):
 
 ```text
-feeds.v1.Device.Events
-feeds.v1.Audit.Feed
-feeds.v1.Inspection.Updates
+live.v1.route.<b64(apiId)>.<b64(providerDeploymentId)>.<action>
+<base>.observe.<b64(providerConnectionId)>.<sessionId>
+live.v1.data.<b64(providerConnectionId)>.<b64(consumerConnectionId)>.<sessionId>
 ```
 
 Rules:
 
-- use feeds when normal apps need reactive UI updates filtered by application
-  authorization, such as devices visible to the logged-in user
-- feed subjects are request subjects, not raw event subjects
+- use live observations when normal apps need reactive UI updates filtered by application
+  authorization
+- live opening routes are request/reply request subjects; live delivery is a
+  signed, descriptor-derived subject, not a raw event subject and not the
+  opening reply inbox
 - the service owns fine-grained authorization against the authenticated caller,
-  feed input, and every emitted frame
-- normal apps that use feeds do not receive raw `events.v1.*` subscribe
+  live input, and every emitted frame; every provider-origin frame is
+  authenticated as the negotiated provider over its actual subject and bytes
+- normal apps that use live observations do not receive raw `events.v1.*` subscribe
   permissions for the backing domain events
-- feeds are live streams, not durable operations; use operations when the caller
+- live observations are transient views, not durable operations; use operations when the caller
   needs resumable workflow state or terminal completion
+- an Operation observation uses the same live transport but never owns or
+  cancels durable execution
+
+See `core/live-observation-sessions.md` for the full ownership, credit,
+liveness, and closure contract.
 
 #### RPCs
 
@@ -199,7 +205,7 @@ projections, and service-private transport protocols.
 Rules:
 
 - public and cross-service boundaries must be modeled as contract-owned RPCs,
-  operations, events, feeds, jobs, state, or resources rather than caller-
+  operations, events, live observations, jobs, state, or resources rather than caller-
   authored raw subject declarations
 - Trellis-owned runtime protocols may still use raw subjects behind a
   contract-owned public API; file transfer chunk subjects are an example of this

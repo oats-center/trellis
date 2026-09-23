@@ -15,6 +15,32 @@ Deno.test("browser admin bootstrap reaches the authorized console and survives r
   await withTrellisRuntime(async (runtime) => {
     const context = await launchProfile(runtime);
     try {
+      let browserExports = 0;
+      let traceExports = 0;
+      const captureEndpoint = Deno.env.get(
+        "TRELLIS_OBS_BROWSER_CAPTURE_ENDPOINT",
+      );
+      if (captureEndpoint) {
+        await context.route(
+          "**/assets/web/runtime-config.js",
+          (route) =>
+            route.fulfill({
+              contentType: "application/javascript",
+              body:
+                "globalThis.__TRELLIS_RUNTIME_CONFIG__ = { authUrl: location.origin, browserTelemetry: { enabled: true, path: '/otel', traceRatio: 1 } };",
+            }),
+        );
+        await context.route("**/otel/v1/*", async (route) => {
+          const response = await route.fetch({
+            url: `${captureEndpoint}${
+              new URL(route.request().url()).pathname.replace(/^\/otel/, "")
+            }`,
+          });
+          await route.fulfill({ response });
+          browserExports++;
+          if (route.request().url().endsWith("/v1/traces")) traceExports++;
+        });
+      }
       const page = await context.newPage();
       await completeAdminBootstrapInBrowser(page, runtime, BROWSER_ADMIN);
       await completeConsoleEntry(page, BROWSER_ADMIN);
@@ -22,6 +48,22 @@ Deno.test("browser admin bootstrap reaches the authorized console and survives r
 
       await page.reload({ waitUntil: "domcontentloaded" });
       await waitForConsoleReady(page);
+      if (captureEndpoint) {
+        const traceExportsBeforeEvents = traceExports;
+        await page.goto(`${runtime.trellisUrl}/console/admin/events`, {
+          waitUntil: "domcontentloaded",
+        });
+        await page.getByText(/^Updated /).waitFor({
+          state: "visible",
+          timeout: 30_000,
+        });
+        // The page must remain alive through its configured trace batch delay.
+        await page.waitForTimeout(6_000);
+        await runtime.waitFor(() => browserExports > 0, { timeoutMs: 30_000 });
+        await runtime.waitFor(() => traceExports > traceExportsBeforeEvents, {
+          timeoutMs: 30_000,
+        });
+      }
     } finally {
       await context.close();
     }

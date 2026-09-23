@@ -4,6 +4,10 @@
   import { onDestroy } from "svelte";
   import { buildConsoleLoginUrl } from "../auth";
   import {
+    completeNavigation,
+    currentNavigationToken,
+  } from "../browser_telemetry";
+  import {
     getVisibleNavSections,
     type NavSection,
   } from "../control-panel.ts";
@@ -56,6 +60,14 @@
     }
   }
 
+  function finishAuthorityLoad(
+    token: ReturnType<typeof currentNavigationToken>,
+    result: { state: string },
+  ): void {
+    if (result.state === "auth-required") redirectToLogin();
+    completeNavigation(token, result.state === "ready" ? "ok" : "error");
+  }
+
   // Exactly one initial Me request per usable connection, plus one after each
   // reconnection. Only a definitive expired/revoked/missing session redirects;
   // a recoverable failure stays a shell status with Retry.
@@ -69,15 +81,13 @@
     }
     if (wasConnected) return;
     wasConnected = true;
-    void authority.reload().then((result) => {
-      if (result.state === "auth-required") redirectToLogin();
-    });
+    const token = currentNavigationToken();
+    void authority.reload().then((result) => finishAuthorityLoad(token, result));
   });
 
   function retryAuthority(): void {
-    void authority.reload().then((result) => {
-      if (result.state === "auth-required") redirectToLogin();
-    });
+    const token = currentNavigationToken();
+    void authority.reload().then((result) => finishAuthorityLoad(token, result));
   }
 
   onDestroy(() => {

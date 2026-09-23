@@ -101,6 +101,7 @@ impl RuntimeOwnership {
             let key = LeaseKey::new(group.key());
             match manager.acquire(key.clone()).await {
                 Ok(guard) => {
+                    record_runtime_lease_event(group, "acquire", "ok");
                     owners.insert(
                         group,
                         OwnerContext {
@@ -112,6 +113,7 @@ impl RuntimeOwnership {
                     held.push(HeldLease { group, guard });
                 }
                 Err(source) => {
+                    record_runtime_lease_event(group, "acquire", "error");
                     let primary = map_acquisition_error(group, key, &owner_id, source);
                     if let Err(cleanup) = release_held(&manager, &owner_id, &mut held).await {
                         tracing::error!(error = %cleanup, "failed to clean up partially acquired runtime ownership");
@@ -308,12 +310,36 @@ async fn release_one(
                 message: "operation exceeded shutdown bound".to_owned(),
             })
         });
+    record_runtime_lease_event(
+        group,
+        "release",
+        if release.is_ok() { "ok" } else { "error" },
+    );
     release.map_err(|source| RuntimeError::OwnerRelease {
         subsystem: group.subsystem(),
         key,
         owner_id: owner_id.to_owned(),
         source: Box::new(source),
     })
+}
+
+/// Records one completed singleton lease action with its bounded outcome.
+fn record_runtime_lease_event(group: OwnerGroup, action: &'static str, outcome: &'static str) {
+    let component = match group {
+        OwnerGroup::Platform => "platform",
+        OwnerGroup::Jobs => "jobs",
+        OwnerGroup::Health => "health",
+        OwnerGroup::Events => "events",
+    };
+    trellis_rs::telemetry::instruments::add_counter(
+        trellis_rs::telemetry::instruments::CounterFamily::RuntimeLeaseEvents,
+        1,
+        &[
+            trellis_rs::telemetry::KeyValue::new("trellis.component", component),
+            trellis_rs::telemetry::KeyValue::new("trellis.action", action),
+            trellis_rs::telemetry::KeyValue::new("trellis.outcome", outcome),
+        ],
+    );
 }
 
 async fn release_held(

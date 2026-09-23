@@ -47,8 +47,8 @@ pub struct DerivedApiSubjects {
     pub operations: BTreeMap<String, String>,
     /// Event base and wildcard subjects keyed by logical name.
     pub events: BTreeMap<String, DerivedEventSubjects>,
-    /// Feed subjects keyed by logical name.
-    pub feeds: BTreeMap<String, String>,
+    /// Live subjects keyed by logical name.
+    pub lives: BTreeMap<String, String>,
 }
 
 /// Base, publish template, and wildcard subscription subjects for one event.
@@ -65,6 +65,12 @@ pub struct DerivedEventSubjects {
 
 fn subject_token(value: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value.as_bytes())
+}
+
+/// Encode one UTF-8 logical identity as its canonical unpadded base64url subject token.
+#[must_use]
+pub fn encode_subject_token(value: &str) -> String {
+    subject_token(value)
 }
 
 /// Encode one event descriptor identity into its canonical opaque wire form.
@@ -220,35 +226,51 @@ pub fn derive_bound_operation_subject(
     derive_bound_subject("operation", api_id, provider_deployment_id, action)
 }
 
-/// Derive a deployment-bound Feed open subject.
-pub fn derive_bound_feed_subject(
+/// Derive a deployment-bound standalone live open subject.
+///
+/// The standalone family is `live.v1.route.<token>.<token>.<action>`; the
+/// Operation family remains `operation.v1.<token>.<token>.<action>`.
+pub fn derive_bound_live_subject(
     api_id: &str,
     provider_deployment_id: &str,
     action: &str,
 ) -> Result<String, ProtocolError> {
-    derive_bound_subject("feed", api_id, provider_deployment_id, action)
+    crate::validate_api_id(api_id)?;
+    validate_logical_name(action)?;
+    if provider_deployment_id.is_empty() {
+        return Err(ProtocolError::InvalidIdentifier {
+            field: "provider deployment id",
+            reason: "must not be empty",
+        });
+    }
+    Ok(format!(
+        "live.v1.route.{}.{}.{}",
+        subject_token(api_id),
+        subject_token(provider_deployment_id),
+        action
+    ))
 }
 
-/// Derive the wildcard control subscription for one Feed owner instance.
+/// Derive the wildcard control subscription for one Live owner instance.
 #[must_use]
-pub fn derive_feed_control_subject(feed_subject: &str, owner_instance_id: &str) -> String {
+pub fn derive_live_control_subject(live_subject: &str, owner_instance_id: &str) -> String {
     format!(
-        "{feed_subject}.control.{}.*",
+        "{live_subject}.control.{}.*",
         subject_token(owner_instance_id)
     )
 }
 
-/// Derive the exact control subject for one Feed instance.
+/// Derive the exact control subject for one Live instance.
 #[must_use]
-pub fn derive_feed_instance_control_subject(
-    feed_subject: &str,
+pub fn derive_live_instance_control_subject(
+    live_subject: &str,
     owner_instance_id: &str,
-    feed_id: &str,
+    live_id: &str,
 ) -> String {
     format!(
-        "{feed_subject}.control.{}.{}",
+        "{live_subject}.control.{}.{}",
         subject_token(owner_instance_id),
-        subject_token(feed_id)
+        subject_token(live_id)
     )
 }
 
@@ -318,14 +340,16 @@ pub fn derive_event_wildcard_subject(
     Ok(subject)
 }
 
-/// Derive a feed subject from its version and logical name.
+/// Derive a live subject from its version and logical name.
 ///
 /// # Errors
 ///
 /// Returns [`ProtocolError::InvalidIdentifier`] for an invalid `vN` version or
 /// logical surface name.
-pub fn derive_feed_subject(version: &str, logical_name: &str) -> Result<String, ProtocolError> {
-    derive_subject("feed", version, logical_name)
+pub fn derive_live_subject(version: &str, logical_name: &str) -> Result<String, ProtocolError> {
+    validate_version(version)?;
+    validate_logical_name(logical_name)?;
+    Ok(format!("live.{version}.route.{logical_name}"))
 }
 
 /// Return whether two tokenized event subject patterns can match the same subject.

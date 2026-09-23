@@ -66,6 +66,23 @@ pub struct DurableOperationRecord {
     pub signals: Vec<DurableOperationSignal>,
     /// Runtime-owned transfer staging state, when this operation accepts bytes.
     pub transfer: Option<Value>,
+    /// Diagnostic creation trace carrier, omitted when tracing is disabled.
+    ///
+    /// Never part of the invocation digest, authorization, record identity,
+    /// lease calculation, or fence comparison.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<OperationTraceCarrier>,
+}
+
+/// Diagnostic trace carrier retained with one durable operation record.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationTraceCarrier {
+    /// Validated W3C `traceparent` captured at creation.
+    pub traceparent: String,
+    /// Validated optional W3C `tracestate` captured at creation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracestate: Option<String>,
 }
 
 /// One durable post-acceptance operation signal.

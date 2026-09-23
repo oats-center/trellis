@@ -1,6 +1,6 @@
 //! Generated API `trellis.core@v1`.
 pub const API_ID: &str = "trellis.core@v1";
-pub const API_DIGEST: &str = "aUohKUjAdrsQhEPqCsJQkF0Ehqmva2xK1Kju1yLRDxM";
+pub const API_DIGEST: &str = "ort4pZPv8EIhAelwexctvEIJhNuNaWCZPtIDF4XVLXM";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;
@@ -271,7 +271,7 @@ pub mod rpc {
 }
 pub mod operations {}
 pub mod events {}
-pub mod feeds {}
+pub mod lives {}
 /// Registers metadata for every RPC in this API.
 pub fn register_rpc_metadata(router: &mut trellis_rs::service::Router) {
     let _ = router;

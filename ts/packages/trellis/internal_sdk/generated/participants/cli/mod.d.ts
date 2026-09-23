@@ -91,13 +91,13 @@ type __ActionNames = {
 	readonly "trellis.events@v1:rpc:Inspect": "events.Inspect";
 	readonly "trellis.events@v1:rpc:Metrics": "events.Metrics";
 	readonly "trellis.events@v1:rpc:Query": "events.Query";
-	readonly "trellis.events@v1:feed:Watch": "events.Watch";
+	readonly "trellis.events@v1:live:Watch": "events.Watch";
 	readonly "trellis.health@v1:rpc:Inspect": "health.Inspect";
 	readonly "trellis.health@v1:rpc:Metrics": "health.Metrics";
 	readonly "trellis.health@v1:rpc:Query": "health.Query";
 	readonly "trellis.health@v1:rpc:Summary": "health.Summary";
 	readonly "trellis.health@v1:event:StatusChanged": "StatusChanged";
-	readonly "trellis.health@v1:feed:Watch": "health.Watch";
+	readonly "trellis.health@v1:live:Watch": "health.Watch";
 	readonly "trellis.jobs@v1:rpc:Cancel": "Cancel";
 	readonly "trellis.jobs@v1:rpc:DismissDLQ": "DismissDLQ";
 	readonly "trellis.jobs@v1:rpc:GetKey": "GetKey";
@@ -109,7 +109,7 @@ type __ActionNames = {
 	readonly "trellis.jobs@v1:rpc:ReplayDLQ": "ReplayDLQ";
 	readonly "trellis.jobs@v1:rpc:Retry": "Retry";
 	readonly "trellis.jobs@v1:rpc:Summary": "jobs.Summary";
-	readonly "trellis.jobs@v1:feed:Watch": "jobs.Watch";
+	readonly "trellis.jobs@v1:live:Watch": "jobs.Watch";
 	readonly "trellis.state@v1:rpc:Delete": "Delete";
 	readonly "trellis.state@v1:rpc:Get": "Get";
 	readonly "trellis.state@v1:rpc:Put": "Put";

@@ -294,6 +294,12 @@ async fn cli_server_managed_nats() {
             bundle.to_str().expect("UTF-8 bundle path"),
             "--trellis-port",
             &runtime_port.to_string(),
+            "--nats-port",
+            &nats_port.to_string(),
+            "--nats-monitor-port",
+            &monitor_port.to_string(),
+            "--nats-ws-port",
+            &ws_port.to_string(),
             "--nats-server-url",
             BOGUS_NATS_URL,
             "--nats-websocket-url",
@@ -425,6 +431,22 @@ async fn cli_server_managed_nats() {
         !managed_ports.iter().any(|port| port_accepts(*port)),
         "managed ports still accept connections after shutdown"
     );
+    let effective_nats = fs::read_to_string(effective_root.join("state/nats/nats.conf"))
+        .expect("read effective managed nats.conf");
+    assert!(
+        !effective_nats.contains("0.0.0.0"),
+        "the managed local effective config must bind loopback only: {effective_nats}"
+    );
+    for (label, port) in [
+        ("listen", nats_port),
+        ("http", monitor_port),
+        ("listen", ws_port),
+    ] {
+        assert!(
+            effective_nats.contains(&format!("{label}: 127.0.0.1:{port}")),
+            "effective managed config must bind {label} on loopback port {port}: {effective_nats}"
+        );
+    }
     let nats_log = effective_root.join("logs/nats-server.log");
     assert!(nats_log.is_file());
     assert!(
@@ -526,6 +548,104 @@ async fn cli_server_managed_nats() {
     assert!(
         !port_accepts(nats_port),
         "managed nats-server is still accepting connections after check"
+    );
+
+    // 3b. An occupied selected port is the owned PortInUse startup error; startup
+    //     must never silently change ports. The test owns the occupying listener and
+    //     releases it before the external phase reuses the port.
+    let occupied = TcpListener::bind(("127.0.0.1", nats_port)).expect("occupy selected port");
+    let occupied_stderr = workdir.0.join("cli-occupied.stderr.log");
+    let mut occupied_command = server_command(&workdir.0);
+    let mut occupied_child = ChildGuard::spawn(
+        occupied_command
+            .args([
+                "all",
+                "--config",
+                config_path.to_str().expect("UTF-8 config path"),
+                "--nats-download",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(
+                fs::File::create(&occupied_stderr).expect("create occupied stderr log"),
+            )),
+        "trellis-server occupied port startup",
+    );
+    let occupied_exit = occupied_child
+        .wait_for_exit(SHUTDOWN_TIMEOUT)
+        .expect("occupied selected port must fail startup");
+    assert!(
+        !occupied_exit.success(),
+        "occupied selected port must fail startup instead of changing ports"
+    );
+    assert!(
+        fs::read_to_string(&occupied_stderr)
+            .expect("read occupied stderr log")
+            .contains(&format!("port {nats_port} is already in use")),
+        "startup must report the occupied selected port\nstderr tail:\n{}",
+        log_tail(&occupied_stderr)
+    );
+    drop(occupied);
+
+    // 3c. A managed bundle without an explicit nats.conf listener set is a
+    //     configuration error, never a silent fallback to default ports.
+    let broken_bundle = workdir.0.join("broken-bundle");
+    let broken_init = cli_command()
+        .args([
+            "init",
+            "config",
+            "--out",
+            broken_bundle.to_str().expect("UTF-8 broken bundle path"),
+            "--trellis-port",
+            &runtime_port.to_string(),
+            "--nats-port",
+            &nats_port.to_string(),
+            "--nats-monitor-port",
+            &monitor_port.to_string(),
+            "--nats-ws-port",
+            &ws_port.to_string(),
+        ])
+        .output()
+        .expect("run trellis init config for broken bundle");
+    assert!(
+        broken_init.status.success(),
+        "trellis init config failed: {}",
+        String::from_utf8_lossy(&broken_init.stderr)
+    );
+    fs::remove_file(broken_bundle.join("nats/nats.conf")).expect("remove authored nats.conf");
+    let cached_binary =
+        NatsServerBinary::resolve(&NatsBinarySource::DownloadPinned, Some(&cache_dir))
+            .expect("cached nats-server binary");
+    let broken_stderr = workdir.0.join("cli-broken-nats.stderr.log");
+    let broken_config = broken_bundle.join("config.toml");
+    let local_nats = format!("--local-nats={}", cached_binary.display());
+    let mut broken_command = server_command(&workdir.0);
+    let mut broken = ChildGuard::spawn(
+        broken_command
+            .args([
+                "check",
+                "--config",
+                broken_config.to_str().expect("UTF-8 broken config path"),
+                local_nats.as_str(),
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(
+                fs::File::create(&broken_stderr).expect("create broken stderr log"),
+            )),
+        "trellis-server missing nats.conf startup",
+    );
+    let broken_exit = broken
+        .wait_for_exit(SHUTDOWN_TIMEOUT)
+        .expect("a managed bundle without nats.conf must fail startup");
+    assert!(
+        !broken_exit.success(),
+        "a managed bundle without nats.conf must not fall back to default ports"
+    );
+    assert!(
+        fs::read_to_string(&broken_stderr)
+            .expect("read broken stderr log")
+            .contains("failed to read managed NATS config"),
+        "startup must report the unreadable managed NATS config\nstderr tail:\n{}",
+        log_tail(&broken_stderr)
     );
 
     // 4. Plain startup uses configured external NATS and never owns that process.

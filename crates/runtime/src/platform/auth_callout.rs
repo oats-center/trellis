@@ -157,7 +157,10 @@ impl CalloutKeys {
                     && device_implements_apis))
                 .then_some(ResponsePermission {
                     max_messages: 65_535,
-                    ttl: Duration::ZERO,
+                    // A finite reply policy for ordinary bounded responses. Live
+                    // observation traffic uses its own connection-scoped grants
+                    // and never depends on an indefinitely retained reply allowance.
+                    ttl: Duration::from_secs(120),
                 }),
         };
         claims.encode(&self.target_signing_key).map_err(|error| {
@@ -682,7 +685,7 @@ impl CalloutProcessor {
                     health_watch = permissions
                         .publish
                         .iter()
-                        .any(|subject| subject == "feed.v1.Health.Watch"),
+                        .any(|subject| subject == "live.v1.route.Health.Watch"),
                     "compiled NATS authorization permissions"
                 );
                 let expires_at_ms = [

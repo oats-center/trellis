@@ -14,8 +14,8 @@ api runtime@v1 {
   operation Work { input Value; output Value; }
   operation Upload { input Value; output Value; upload; }
   event Changed { payload Value; }
-  feed Watch { input Empty; event Value; }
-  capabilities { public { allows { rpc Echo; operation Work; operation Upload; publish event Changed; subscribe event Changed; feed Watch; } } }
+  live Watch { input Empty; event Value; }
+  capabilities { public { allows { rpc Echo; operation Work; operation Upload; publish event Changed; subscribe event Changed; live Watch; } } }
 }
 
 api events@v1 {
@@ -30,7 +30,7 @@ api events@v1 {
 
 service Provider { implements runtime; }
 app Caller {
-  use runtime { rpc Echo; operation Work; operation Upload; publish event Changed; subscribe event Changed; feed Watch; }
+  use runtime { rpc Echo; operation Work; operation Upload; publish event Changed; subscribe event Changed; live Watch; }
 }
 app Denied { use runtime; }
 service AdminService { use auth { rpc Grants.Get; rpc Grants.Revoke; rpc Sessions.List; } }

@@ -4,8 +4,27 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Private Rust test process-lifecycle support for Trellis."
+description = "Private Rust test harness that owns a real Trellis/NATS runtime for service tests."
 publish = false
+
+[dependencies]
+async-nats.workspace = true
+base64.workspace = true
+rand = "0.10.0"
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile = "3.15.0"
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "process", "rt-multi-thread", "signal", "time"] }
+trellis-bootstrap = { path = "../bootstrap" }
+trellis-cli = { path = "../cli" }
+trellis-local-nats = { path = "../local-nats" }
+trellis-rs = { path = "../trellis" }
+trellis-runtime = { path = "../runtime" }
+trellis-runtime-apis = { path = "../runtime-apis" }
+ulid = "1.2.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2.186"

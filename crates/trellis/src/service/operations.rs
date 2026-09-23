@@ -578,12 +578,17 @@ where
                 &fence,
                 &mutation_gate,
                 &claimed.record.invocation_id,
+                None,
             )
             .await?;
             return Ok(());
         }
         let mut cancellation = repository.watch(&claimed.record.invocation_id).await?;
         let input = serde_json::from_value(claimed.record.input.clone())?;
+        let route = crate::telemetry::instruments::route_token(
+            crate::telemetry::instruments::RouteFamily::Operation,
+            &format!("{}:{}", D::API_ID, D::KEY),
+        );
         tokio::spawn(async move {
             // Final entry admission after asynchronous setup: the captured fence,
             // identity, lease, and nonterminal state must still hold immediately
@@ -607,6 +612,7 @@ where
                     &fence,
                     &mutation_gate,
                     &claimed.record.invocation_id,
+                    None,
                 )
                 .await;
                 return;
@@ -618,6 +624,8 @@ where
                 caller: admitted.record.caller,
                 ..RequestContext::default()
             };
+            // One telemetry-only terminal witness for this acquired execution.
+            let witness = Arc::new(TerminalWitness::default());
             let control = OperationControl {
                 operation_ref: OperationRefData {
                     id: claimed.record.invocation_id.clone(),
@@ -628,6 +636,7 @@ where
                     repository: repository.clone(),
                     fence: fence.clone(),
                     mutation_gate: Arc::clone(&mutation_gate),
+                    witness: Arc::clone(&witness),
                 },
                 nats,
                 publisher,
@@ -635,10 +644,36 @@ where
                 next_update_sequence,
                 _descriptor: PhantomData,
             };
+            // One acquired execution observation; it ends with the attempt's
+            // lifecycle disposition and never creates a lifetime-long span.
+            let observation = crate::telemetry::lifecycle::Observation::start_counted(
+                crate::telemetry::instruments::DurationFamily::OperationExecution,
+                crate::telemetry::instruments::UpDownFamily::OperationActive,
+                vec![crate::telemetry::KeyValue::new("trellis.route", route)],
+                "interrupted",
+            );
+            // A short execution-start span roots locally and links back to the
+            // operation's creation carrier when one was retained.
+            let start_span = tracing::info_span!(
+                "trellis.operation.execute.start",
+                "trellis.route" = route,
+                "trellis.outcome" = tracing::field::Empty,
+            );
+            if let Some(carrier) = admitted.record.telemetry.as_ref() {
+                crate::telemetry::propagation::link_span_to_carrier(
+                    &start_span,
+                    &carrier.traceparent,
+                    carrier.tracestate.as_deref(),
+                );
+            }
+            start_span.record("trellis.outcome", "admitted");
+            // The short execution-start span closes here; stream lifetime is
+            // not attributed to it.
+            drop(start_span);
             let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(10));
             heartbeat.tick().await;
             let mut execution = Box::pin(handler(context, input, control));
-            loop {
+            let outcome = loop {
                 tokio::select! {
                     result = &mut execution => {
                         drop(execution);
@@ -648,16 +683,29 @@ where
                             .ok()
                             .flatten()
                             .is_some_and(|current| current.record.cancellation_requested);
-                        if cancellation_requested {
-                            let _ = finalize_cancellation::<D>(
+                        // Telemetry attributes the durable result of the final
+                        // fenced mutation, never the handler's return value: a
+                        // handler that returns Ok(()) without a committed
+                        // terminal snapshot is not a completed operation.
+                        let durable = if cancellation_requested {
+                            match finalize_cancellation::<D>(
                                 &repository,
                                 &fence,
                                 &mutation_gate,
                                 &claimed.record.invocation_id,
-                            ).await;
-                        } else if let Err(error) = result {
+                                Some(&witness),
+                            )
+                            .await
+                            {
+                                Ok(_) => witness.get().unwrap_or("interrupted"),
+                                Err(error) => {
+                                    tracing::warn!(%error, "operation cancellation persistence failed");
+                                    "error"
+                                }
+                            }
+                        } else if let Err(error) = &result {
                             tracing::error!(%error, "operation handler failed");
-                            let _ = durable_snapshot_update::<D>(
+                            match durable_snapshot_update::<D>(
                                 &repository,
                                 &fence,
                                 &mutation_gate,
@@ -672,40 +720,68 @@ where
                                     }),
                                     cancellation_requested: false,
                                 },
-                            ).await;
-                        }
-                        break;
+                                Some(&witness),
+                            )
+                            .await
+                            {
+                                Ok(_) => witness.get().unwrap_or("interrupted"),
+                                Err(error) => {
+                                    tracing::warn!(%error, "operation failure persistence failed");
+                                    "error"
+                                }
+                            }
+                        } else {
+                            // The handler returned success; only this
+                            // execution's own confirmed terminal persistence
+                            // makes it a completed/failed/cancelled outcome.
+                            witness.get().unwrap_or("interrupted")
+                        };
+                        break durable;
                     }
                     changed = cancellation.next() => {
                         match changed {
                             Some(Ok(current)) if current.record.cancellation_requested => {
                                 drop(execution);
-                                let _ = finalize_cancellation::<D>(
+                                match finalize_cancellation::<D>(
                                     &repository,
                                     &fence,
                                     &mutation_gate,
                                     &claimed.record.invocation_id,
-                                ).await;
-                                break;
+                                    Some(&witness),
+                                )
+                                .await
+                                {
+                                    // A rejected or failed write is not a
+                                    // cancellation; the persisted terminal
+                                    // state is its actual outcome.
+                                    Ok(_) => break witness.get().unwrap_or("interrupted"),
+                                    Err(error) => {
+                                        tracing::warn!(%error, "operation cancellation persistence failed");
+                                        break "error";
+                                    }
+                                }
                             }
                             Some(Ok(current)) if fence.matches(&current.record) => {}
-                            Some(Ok(_)) => break,
+                            Some(Ok(_)) => break "lease_lost",
                             Some(Err(error)) => {
                                 tracing::warn!(%error, "operation cancellation watch failed");
-                                break;
+                                break "error";
                             }
-                            None => break,
+                            None => break "interrupted",
                         }
                     }
                     _ = heartbeat.tick() => {
                         let _guard = mutation_gate.lock().await;
                         let now = now_ms();
-                        if repository.renew(&claimed.record.invocation_id, &fence.executor_id, fence.owner_epoch, now, now + 30_000).await.is_err() {
-                            break;
+                        let renewed = repository.renew(&claimed.record.invocation_id, &fence.executor_id, fence.owner_epoch, now, now + 30_000).await;
+                        record_ownership_event("renew", renewed.is_ok());
+                        if renewed.is_err() {
+                            break "lease_lost";
                         }
                     }
                 }
-            }
+            };
+            observation.finish(outcome);
         });
         Ok(())
     }
@@ -788,7 +864,7 @@ where
                         let staging = staging.clone();
                         tokio::spawn(async move {
                             let now = now_ms();
-                            if let Ok(claimed) = repository
+                            let claim = repository
                                 .claim_for_connection(
                                     &operation_id,
                                     &executor_id,
@@ -796,8 +872,9 @@ where
                                     now,
                                     now + 30_000,
                                 )
-                                .await
-                            {
+                                .await;
+                            record_ownership_event("claim", claim.is_ok());
+                            if let Ok(claimed) = claim {
                                 let reconciled = async {
                                     if !D::UPLOAD {
                                         return Ok(claimed);
@@ -1009,6 +1086,21 @@ where
                     next_signal_sequence: 1,
                     signals: Vec::new(),
                     transfer: upload.as_ref().map(serde_json::to_value).transpose()?,
+                    // Diagnostic creation carrier; omitted when no valid
+                    // caller context exists and never part of the digest.
+                    telemetry: match context.traceparent.as_ref() {
+                        Some(parent) => crate::telemetry::propagation::TraceCarrier::new(
+                            parent.clone(),
+                            context.tracestate.clone(),
+                        ),
+                        None => crate::telemetry::propagation::TraceCarrier::capture(),
+                    }
+                    .map(|carrier| {
+                        super::operation_repository::OperationTraceCarrier {
+                            traceparent: carrier.traceparent,
+                            tracestate: carrier.tracestate,
+                        }
+                    }),
                 })
                 .await?;
             if created.record.snapshot.state.is_terminal() {
@@ -1056,7 +1148,9 @@ where
                     now,
                     now + 30_000,
                 )
-                .await?;
+                .await;
+            record_ownership_event("claim", claimed.is_ok());
+            let claimed = claimed?;
             let fence = OwnerFence::from(&claimed.record)?;
             if D::UPLOAD {
                 let mut upload: DurableOperationUpload =
@@ -1076,6 +1170,7 @@ where
                             error: None,
                             cancellation_requested: false,
                         },
+                        None,
                     )
                     .await?;
                     let claimed = repository.get(&invocation_id).await?.ok_or_else(|| {
@@ -1311,6 +1406,7 @@ where
                                             error: None,
                                             cancellation_requested: false,
                                         },
+                                        None,
                                     )
                                     .await
                                     .is_ok()
@@ -1396,6 +1492,7 @@ where
                     error: None,
                     cancellation_requested: false,
                 },
+                None,
             )
             .await?;
             let claimed = repository.get(&invocation_id).await?.ok_or_else(|| {
@@ -1953,6 +2050,41 @@ struct DurableOperationControl {
     repository: KvOperationRepository,
     fence: OwnerFence,
     mutation_gate: Arc<Mutex<()>>,
+    witness: Arc<TerminalWitness>,
+}
+
+/// Telemetry-only terminal witness for one acquired execution.
+///
+/// In-memory observation state only: it records which terminal state the
+/// existing fenced mutation actually persisted for this execution, so the
+/// catalog outcome is never inferred from a later unrelated record read.
+#[derive(Default, Debug)]
+struct TerminalWitness {
+    state: std::sync::Mutex<Option<&'static str>>,
+}
+
+impl TerminalWitness {
+    /// Records the outcome of a successful fenced terminal persistence.
+    fn set(&self, outcome: &'static str) {
+        if let Ok(mut state) = self.state.lock() {
+            *state = Some(outcome);
+        }
+    }
+
+    /// Returns the confirmed terminal outcome for this execution, if any.
+    fn get(&self) -> Option<&'static str> {
+        self.state.lock().ok().and_then(|state| *state)
+    }
+}
+
+/// Bounded catalog label for one persisted terminal operation state.
+fn terminal_state_label(state: OperationState) -> &'static str {
+    match state {
+        OperationState::Completed => "completed",
+        OperationState::Failed => "failed",
+        OperationState::Cancelled => "cancelled",
+        OperationState::Pending | OperationState::Running => "interrupted",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2435,7 +2567,7 @@ where
         error: Option<OperationError>,
     ) -> Result<OperationSnapshot<D::Progress, D::Output>, ServerError> {
         let durable = &self.durable;
-        durable_snapshot_update::<D>(
+        let updated = durable_snapshot_update::<D>(
             &durable.repository,
             &durable.fence,
             &durable.mutation_gate,
@@ -2447,8 +2579,10 @@ where
                 error,
                 cancellation_requested: state == OperationState::Cancelled,
             },
+            Some(&durable.witness),
         )
-        .await
+        .await?;
+        Ok(updated)
     }
 }
 
@@ -2499,6 +2633,7 @@ async fn durable_snapshot_update<D: OperationDescriptor>(
     gate: &Mutex<()>,
     operation_id: &str,
     update: SnapshotUpdate,
+    witness: Option<&TerminalWitness>,
 ) -> Result<OperationSnapshot<D::Progress, D::Output>, ServerError>
 where
     D::Progress: DeserializeOwned,
@@ -2553,6 +2688,11 @@ where
             record,
         )
         .await?;
+    if state.is_terminal() {
+        if let Some(witness) = witness {
+            witness.set(terminal_state_label(state));
+        }
+    }
     typed_snapshot(updated.record.snapshot)
 }
 
@@ -2561,6 +2701,7 @@ async fn finalize_cancellation<D: OperationDescriptor>(
     fence: &OwnerFence,
     gate: &Mutex<()>,
     operation_id: &str,
+    witness: Option<&TerminalWitness>,
 ) -> Result<OperationSnapshot<D::Progress, D::Output>, ServerError>
 where
     D::Progress: DeserializeOwned,
@@ -2600,6 +2741,9 @@ where
             record,
         )
         .await?;
+    if let Some(witness) = witness {
+        witness.set("cancelled");
+    }
     typed_snapshot(updated.record.snapshot)
 }
 
@@ -2757,6 +2901,7 @@ mod tests {
             next_signal_sequence: 1,
             signals: Vec::new(),
             transfer: None,
+            telemetry: None,
         }
     }
 
@@ -2785,6 +2930,7 @@ mod tests {
                     owner_epoch: record.record.owner_epoch,
                 },
                 mutation_gate: Arc::new(Mutex::new(())),
+                witness: Arc::new(TerminalWitness::default()),
             },
             nats,
             publisher: None,
@@ -3577,6 +3723,38 @@ mod tests {
         assert!(cancelled.record.cancellation_requested);
         assert_eq!(cancelled.record.snapshot.state, OperationState::Pending);
 
+        // E2 alone persists cancellation. E1's later terminal read still
+        // returns the business snapshot but cannot claim E2's witness.
+        let e2 = repository
+            .claim(&cancel_id, "executor-b", now_ms(), now_ms() + 30_000)
+            .await
+            .unwrap();
+        let e2_fence = OwnerFence::from(&e2.record).unwrap();
+        let e2_witness = TerminalWitness::default();
+        let e1_witness = TerminalWitness::default();
+        let terminal = finalize_cancellation::<TestOperation>(
+            &repository,
+            &e2_fence,
+            &provider.mutation_gate,
+            &cancel_id,
+            Some(&e2_witness),
+        )
+        .await
+        .unwrap();
+        assert_eq!(terminal.state, OperationState::Cancelled);
+        assert_eq!(e2_witness.get(), Some("cancelled"));
+        let stale_read = finalize_cancellation::<TestOperation>(
+            &repository,
+            &stale_fence,
+            &provider.mutation_gate,
+            &cancel_id,
+            Some(&e1_witness),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stale_read.state, OperationState::Cancelled);
+        assert_eq!(e1_witness.get(), None);
+
         let progress_race_id = ulid::Ulid::new().to_string();
         repository
             .create(operation(
@@ -3744,5 +3922,44 @@ mod tests {
         jetstream.delete_object_store(object_bucket).await.unwrap();
         nats.stop().unwrap();
         drop(recovered);
+    }
+}
+
+/// Records one observed operation ownership result.
+fn record_ownership_event(action: &'static str, ok: bool) {
+    crate::telemetry::instruments::add_counter(
+        crate::telemetry::instruments::CounterFamily::OperationOwnershipEvents,
+        1,
+        &[
+            crate::telemetry::KeyValue::new("trellis.action", action),
+            crate::telemetry::KeyValue::new("trellis.outcome", if ok { "ok" } else { "error" }),
+        ],
+    );
+}
+
+#[cfg(test)]
+mod trace_carrier_tests {
+    use crate::service::{operation_invocation_digest, OperationTraceCarrier};
+    use serde_json::json;
+
+    #[test]
+    fn diagnostic_trace_carrier_is_excluded_from_invocation_identity() {
+        let input = json!({"value": 1});
+        let digest = operation_invocation_digest("test@v1", "Test.Handle", "p", "q", &input)
+            .expect("digest");
+        let carrier = OperationTraceCarrier {
+            traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_owned(),
+            tracestate: Some("vendor=value".to_owned()),
+        };
+        // The carrier round-trips as diagnostic-only data; identity is a pure
+        // function of the invocation inputs above.
+        let encoded = serde_json::to_value(&carrier).expect("carrier encodes");
+        let decoded: OperationTraceCarrier =
+            serde_json::from_value(encoded).expect("carrier decodes");
+        assert_eq!(decoded, carrier);
+        let without_carrier =
+            operation_invocation_digest("test@v1", "Test.Handle", "p", "q", &input)
+                .expect("digest");
+        assert_eq!(digest, without_carrier);
     }
 }

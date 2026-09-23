@@ -5,7 +5,7 @@ Trellis IDL is the authoring language for wire schemas. JSON Schema is the curre
 ## Schemas
 
 Declare models in `contract.trellis` and reference them from RPC, event,
-operation, feed, state, or resource declarations. Generated SDKs carry both wire
+operation, live, state, or resource declarations. Generated SDKs carry both wire
 schemas and language types; application code should import them rather than
 maintain a second representation. Typed maps use `map<T>`.
 

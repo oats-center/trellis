@@ -753,7 +753,7 @@ api health@v1 {
   event StatusChanged {
     payload HealthStatusChangedEvent;
   }
-  feed Watch {
+  live Watch {
     input HealthWatchRequest;
     event HealthWatchFrame;
   }
@@ -765,7 +765,7 @@ api health@v1 {
       title "Read";
       description "Allows read.";
       consequence "The caller can use read.";
-      allows { rpc Inspect; rpc Metrics; rpc Query; rpc Summary; subscribe event StatusChanged; feed Watch; }
+      allows { rpc Inspect; rpc Metrics; rpc Query; rpc Summary; subscribe event StatusChanged; live Watch; }
     }
   }
 }

@@ -8,7 +8,7 @@ type __ActionNames = {
 	readonly "runtime-trellis.runtime@v1:operation:Upload": "Upload";
 	readonly "runtime-trellis.runtime@v1:operation:Work": "Work";
 	readonly "runtime-trellis.runtime@v1:event:Changed": "Changed";
-	readonly "runtime-trellis.runtime@v1:feed:Watch": "Watch";
+	readonly "runtime-trellis.runtime@v1:live:Watch": "Watch";
 };
 type __Resources = {};
 declare const __participant: {

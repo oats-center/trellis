@@ -1,8 +1,14 @@
 import { configureErrorTraceId } from "./result.ts";
-import { initTelemetryRuntime } from "./runtime.ts";
+import { ensureTelemetryRuntime, type TelemetryIdentity } from "./runtime.ts";
+import { getEnv } from "./env.ts";
 
-/** Initializes Trellis telemetry for a service runtime. */
-export function initTelemetry(serviceName: string): void {
+/** Initializes Trellis telemetry for a native service runtime. */
+export function initTelemetry(serviceName: string): Promise<void> {
   configureErrorTraceId();
-  initTelemetryRuntime(serviceName);
+  const identity: TelemetryIdentity = {
+    serviceName,
+    role: "service",
+    serviceVersion: getEnv("TRELLIS_SERVICE_VERSION"),
+  };
+  return ensureTelemetryRuntime(identity).then(() => undefined);
 }

@@ -8,6 +8,7 @@ import type {
   VerifiedAuthorizationEventPublisher,
 } from "../protocol_wasm.ts";
 import { canonicalizeJsonValue } from "../utils.ts";
+import { trackCoverage } from "../../telemetry/lifecycle.ts";
 import type { AuthorizationContextCache } from "./client_context.ts";
 import {
   type AuthorizationRegistryIoCounters,
@@ -72,7 +73,7 @@ class InvalidIssuerResponseError extends Error {}
 /** Provider attach options. */
 export type AuthorizationProviderCacheOptions = { now?: () => number };
 
-type ProviderContextEntry = {
+export type ProviderContextEntry = {
   contextDigest: string;
   context: Record<string, unknown>;
   issuer: AuthorizationIssuerKey;
@@ -93,6 +94,15 @@ type ProviderContextEntry = {
     verified: VerifiedAuthorizationContextTokenProjection;
   }>;
 };
+
+/** One retained covered lease for a live observation session. */
+export type LiveLeaseView = {
+  readonly entry: ProviderContextEntry;
+  readonly verified: VerifiedAuthorizationContextTokenProjection;
+};
+
+/** Typed coverage result for one retained live lease. */
+export type LiveLeaseCoverage = "covered" | "revoked" | "lost" | "epoch";
 
 type PendingContextEntry = {
   generation: number;
@@ -121,7 +131,9 @@ export class AuthorizationProviderCache {
   #onOwnResumed?: () => void;
   #ownRevokedDigest?: string;
   #ownUsable = true;
+  #stopCoverage?: () => void;
   readonly #connectedWaiters = new Set<() => void>();
+  readonly #liveChangeListeners = new Set<() => void>();
 
   private constructor(
     registry: AuthorizationRegistryReader,
@@ -165,10 +177,43 @@ export class AuthorizationProviderCache {
     this.#generation += 1;
     this.#stopped = false;
     this.#started = true;
+    this.#stopCoverage = trackCoverage(() => {
+      const healthy = this.#started && !this.#stopped && this.#connected;
+      const now = this.#now();
+      const current = (entry: ProviderContextEntry) =>
+        healthy && entry.generation === this.#generation && entry.covered &&
+        !entry.disposed && entry.revokedAt === undefined &&
+        this.#contexts.get(entry.contextDigest) === entry &&
+        typeof entry.context.notBefore === "number" &&
+        entry.context.notBefore <= now &&
+        typeof entry.context.expiresAt === "number" &&
+        entry.context.expiresAt > now && entry.issuer.state !== "revoked";
+      const installedDigest = this.#cache.storedContextDigest();
+      const own = installedDigest === undefined
+        ? undefined
+        : this.#contexts.get(installedDigest);
+      const ownCovered = !!own && this.#ownUsable && current(own) &&
+        (this.#ownEntry === own || this.#cache.hasCandidate());
+      let peerCovered = 0;
+      let peerUnavailable = 0;
+      for (const entry of this.#contexts.values()) {
+        if (entry === own || entry === this.#ownEntry) {
+          continue;
+        }
+        if (current(entry)) {
+          peerCovered += 1;
+        } else {
+          peerUnavailable += 1;
+        }
+      }
+      return { own: ownCovered, peerCovered, peerUnavailable };
+    });
   }
 
   /** Stop verification without closing the caller-owned NATS connection. */
   stop(): void {
+    this.#stopCoverage?.();
+    this.#stopCoverage = undefined;
     this.#generation += 1;
     this.#stopped = true;
     for (const entry of this.#contexts.values()) this.#invalidate(entry);
@@ -176,6 +221,98 @@ export class AuthorizationProviderCache {
     this.#inFlight.clear();
     if (this.#ownEntry) this.#release(this.#ownEntry);
     this.#ownEntry = undefined;
+    this.#notifyLiveChanges();
+  }
+
+  /**
+   * Subscribe to local coverage, revocation and epoch changes.
+   *
+   * Retained live guards use this to fence quiet sessions without waiting for
+   * the next frame. Notifications are advisory: the guard re-runs its own
+   * synchronous check.
+   */
+  subscribeLiveChanges(callback: () => void): () => void {
+    this.#liveChangeListeners.add(callback);
+    return () => {
+      this.#liveChangeListeners.delete(callback);
+    };
+  }
+
+  #notifyLiveChanges(): void {
+    for (const listener of [...this.#liveChangeListeners]) {
+      try {
+        listener();
+      } catch {
+        // A guard callback must never break cache bookkeeping.
+      }
+    }
+  }
+
+  /** Return the cache's corrected wall-clock seconds for signed validity. */
+  liveNowSeconds(): number {
+    return this.#now();
+  }
+
+  /**
+   * Resolve and retain one covered lease for a live guard.
+   *
+   * The lease keeps the exact revocation watch alive; the caller must release
+   * it when the guard is replaced or the session settles.
+   */
+  async retainLiveLease(
+    contextDigest: string,
+    generation: number,
+  ): Promise<LiveLeaseView> {
+    const entry = await this.#lease(contextDigest, false);
+    try {
+      this.#requireEntry(entry);
+      if (entry.generation !== generation || generation !== this.#generation) {
+        throw new AuthorizationProviderUnavailableError(
+          "authorization context epoch changed before retention",
+        );
+      }
+      if (entry.revokedAt !== undefined) {
+        throw new AuthorizationProviderUnavailableError(
+          "authorization context is revoked",
+        );
+      }
+      const state = await this.#verified(entry, false);
+      this.#requireEntry(entry);
+      if (entry.revokedAt !== undefined) {
+        throw new AuthorizationProviderUnavailableError(
+          "authorization context is revoked",
+        );
+      }
+      return { entry, verified: structuredClone(state.verified) };
+    } catch (error) {
+      this.#release(entry);
+      throw error;
+    }
+  }
+
+  /** Classify one retained live lease against current cache state. */
+  liveLeaseCoverage(lease: LiveLeaseView): LiveLeaseCoverage {
+    const entry = lease.entry;
+    if (entry.revokedAt !== undefined) return "revoked";
+    if (
+      entry.generation !== this.#generation || !this.#started ||
+      this.#stopped ||
+      !this.#connected
+    ) {
+      return "epoch";
+    }
+    if (
+      !entry.covered || entry.disposed ||
+      this.#contexts.get(entry.contextDigest) !== entry
+    ) {
+      return "lost";
+    }
+    return "covered";
+  }
+
+  /** Release one retained live lease. */
+  releaseLiveLease(lease: LiveLeaseView): void {
+    this.#release(lease.entry);
   }
 
   /** Retain exact revocation coverage for the currently installed own context. */
@@ -192,6 +329,7 @@ export class AuthorizationProviderCache {
         "authorization context coverage changed during resumption",
       );
     }
+    this.#notifyLiveChanges();
   }
 
   /** Retain candidate coverage on the exact admitted connection generation. */
@@ -255,7 +393,7 @@ export class AuthorizationProviderCache {
       this.#cache.promote(digest);
     }
     this.#ownUsable = true;
-    if (mode === "resume") this.#onOwnResumed?.();
+    this.#onOwnResumed?.();
     return true;
   }
 
@@ -303,6 +441,7 @@ export class AuthorizationProviderCache {
       this.#onOwnInvalidated?.();
     }
     this.#cache.requestRefresh();
+    this.#notifyLiveChanges();
   }
 
   /** React to an authoritative NATS authentication rejection during reconnect. */
@@ -681,6 +820,7 @@ export class AuthorizationProviderCache {
         );
       }
       this.#contexts.set(contextDigest, entry);
+      this.#notifyLiveChanges();
       return entry;
     } catch (error) {
       if (entry) {
@@ -729,6 +869,7 @@ export class AuthorizationProviderCache {
         "authorization revocation registry entry disappeared",
       );
     }
+    this.#notifyLiveChanges();
     entry.revokedAt = Math.max(
       entry.revokedAt ?? 0,
       parseRevocation(event.value),
@@ -904,6 +1045,7 @@ export class AuthorizationProviderCache {
   }
 
   #invalidate(entry: ProviderContextEntry): void {
+    this.#notifyLiveChanges();
     const wasOwn = this.#ownEntry === entry;
     if (wasOwn) {
       this.#ownEntry = undefined;

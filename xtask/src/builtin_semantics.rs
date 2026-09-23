@@ -94,7 +94,7 @@ fn render_api(
             ActionDefinition::Rpc { download, .. } => ("Rpc", false, *download, 0),
             ActionDefinition::Operation { upload, .. } => ("Operation", *upload, false, 0),
             ActionDefinition::Event { parameters, .. } => ("Event", false, false, parameters.len()),
-            ActionDefinition::Feed { .. } => ("Feed", false, false, 0),
+            ActionDefinition::Live { .. } => ("Live", false, false, 0),
         };
         writeln!(
             source,
@@ -526,6 +526,6 @@ fn action_kind(kind: ActionKind) -> &'static str {
         ActionKind::Rpc => "rpc",
         ActionKind::Operation => "operation",
         ActionKind::Event => "event",
-        ActionKind::Feed => "feed",
+        ActionKind::Live => "live",
     }
 }

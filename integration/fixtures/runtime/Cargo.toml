@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 futures-util = "0.3"
 runtime-trellis = { path = "crates/runtime-trellis" }
-trellis-rs = "0.100.0"
+trellis-rs = { version = "0.100.0", features = ["telemetry-otlp"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tracing-opentelemetry = "0.33.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

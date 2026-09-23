@@ -2,7 +2,7 @@
 
 Trellis participants communicate over NATS through native contract surfaces:
 RPC for unary request/reply, Operations for durable caller-visible workflows,
-Events for facts, Feeds for live streams, Consumers for durable event handling,
+Events for facts, Live observations for live observations, Consumers for durable event handling,
 and Jobs for private queued execution.
 
 <span id="rpcs-requestreply"></span>
@@ -24,11 +24,11 @@ loss.
 
 Events are typed facts. Ephemeral listeners are live-only; Consumers are durable.
 
-<span id="feeds-authorized-live-views"></span>
+<span id="live observations-authorized-live-views"></span>
 
-## Feeds
+## Live observations
 
-Feeds are typed live streams owned by the accepting provider executor.
+Live observations are typed live observations owned by the accepting provider executor.
 
 <span id="cross-api-dependencies"></span>
 
@@ -39,12 +39,12 @@ interactions in `use Api { ... }`. Declarations and capability approvals do not
 themselves grant authority; Trellis derives exact selected grants and route
 subjects from verified package evidence and current bindings.
 
-RPC/Operation/Feed routes bind the API to a provider deployment. Event subjects
+RPC/Operation/Live routes bind the API to a provider deployment. Event subjects
 remain API-qualified facts. Applications never derive subjects, queue groups,
 proofs, or raw transport permissions.
 
 Operations are persisted before acceptance and resume at least once after owner
-loss. Feeds are live and cancellation routes to the accepting executor. Consumer
+loss. Live observations are transient and cancellation routes to the accepting executor. Consumer
 concurrency is local per process; retries and scoped Events DLQ/replay are
 runtime-owned. Jobs remain service-private.
 

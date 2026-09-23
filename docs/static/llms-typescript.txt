@@ -73,7 +73,7 @@ calls.
 
 Inline handlers infer their types at registration. Extracted handlers can use
 `RpcHandler<typeof participant, "Orders.Create">` from
-`@oatscenter/trellis/service`. `OperationHandler`, `FeedHandler`, and
+`@oatscenter/trellis/service`. `OperationHandler`, `LiveHandler`, and
 `JobHandler` provide corresponding typed boundaries. Regenerate after an IDL
 change.
 
@@ -90,7 +90,7 @@ application's control flow. Native cursor-paginated RPCs add lazy `.pages()` and
 `.items()` iterators. Missing `nextCursor` is the sole end signal; general
 keyset pagination does not promise a snapshot.
 
-## Events And Feeds
+## Events And Live observations
 
 For a declared event `Orders.Changed`, generated service methods include
 `publishOrdersChanged(...)` and, when selected, `onOrdersChanged(...)`:
@@ -114,11 +114,15 @@ retry budget, does not rewind the original Consumer, and durably resolves before
 acknowledgement. A normal publish happens immediately; it is not a database
 commit fence.
 
-Feed providers receive an abort signal. Stop connection-scoped work when it
-aborts, and close or abort a caller subscription when no longer needed. Control
-uses the runtime-issued `feedId` and original caller identity; reconnect may
-change the session key but does not let another principal or participant cancel
-the feed.
+Live providers receive an abort signal. Stop connection-scoped work when it
+aborts, and close or abort a caller subscription when no longer needed. A caller
+subscription is an owned async iterator: call `return()`/`throw()` or abort its
+signal to release it, and disposal is idempotent even before the first `next()`.
+Live observations and Operation watchers are authorized live sessions negotiated with bounded
+opening requests; provider frames are signed and control responses bind the
+session ID, logical command sequence, and command hash. A session has protocol
+liveness and credit bounds, not a total age or message cap. Closing returns a
+receipt whose remote-cleanup state is complete, incomplete, or unconfirmed.
 
 ## Operations And Jobs
 
@@ -130,7 +134,11 @@ const terminal = await operation.wait().orThrow();
 if (terminal.state === "completed") console.log(terminal.output);
 ```
 
-The provider registers through its generated participant facade. Acceptance,
+The provider registers through its generated participant facade. A watcher is a
+separate live observation session: open it before reading the current snapshot,
+expect ordered transient updates and a terminal state after reconciliation, and
+treat a transport interruption as an observation error rather than an invented
+terminal state. Closing a watcher leaves the durable work running. Acceptance,
 progress, signals, cancellation, and terminal state use the durable repository.
 Get, watch, signal, and cancel remain bound to the creator principal and
 participant across reconnects. Completed, failed, and cancelled states cannot be

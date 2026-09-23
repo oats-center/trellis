@@ -4,7 +4,7 @@ import { eventSubjectWasm } from "../auth/protocol_wasm.ts";
 import {
   boundApiSubject,
   eventSubject,
-  feedControlSubject,
+  liveControlSubject,
   routeQueueGroup,
 } from "./api.ts";
 import {
@@ -32,17 +32,17 @@ Deno.test("deployment subjects and replica queues match protocol vectors", () =>
     "trellis.XzNEqEQ-aqJzGNmO3z42LIzwJkDJnEgfRQIylDrYUUQ",
   );
   assertEquals(
-    feedControlSubject(
+    liveControlSubject(
       boundApiSubject(
-        "feed",
+        "live",
         "acme-orders.orders@v1",
         "deployment-01",
         "Watch",
       ),
       "instance-01",
-      "feed-01",
+      "live-01",
     ),
-    "feed.v1.YWNtZS1vcmRlcnMub3JkZXJzQHYx.ZGVwbG95bWVudC0wMQ.Watch.control.aW5zdGFuY2UtMDE.ZmVlZC0wMQ",
+    "live.v1.route.YWNtZS1vcmRlcnMub3JkZXJzQHYx.ZGVwbG95bWVudC0wMQ.Watch.control.aW5zdGFuY2UtMDE.bGl2ZS0wMQ",
   );
 });
 

@@ -104,6 +104,9 @@ pub struct AdminLoginOutcome {
     /// Authenticated user returned by `Auth.Sessions.Me` after bind succeeds.
     #[doc = concat!("The `", stringify!(user), "` value.")]
     pub user: AuthenticatedUser,
+    /// Whether the bound session carries the platform administrator privilege.
+    #[doc = concat!("The `", stringify!(is_admin), "` value.")]
+    pub is_admin: bool,
 }
 
 /// Result of starting admin reauthentication for a changed contract.

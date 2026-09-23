@@ -161,7 +161,7 @@ impl PackageGraph {
                 payload: Some(schema(payload)?),
                 ..Default::default()
             },
-            ActionDefinition::Feed { input, event } => ActionCodecProjection {
+            ActionDefinition::Live { input, event } => ActionCodecProjection {
                 input: Some(schema(input)?),
                 payload: Some(schema(event)?),
                 ..Default::default()
@@ -460,7 +460,7 @@ pub struct ActionCodecProjection {
     pub input: Option<Value>,
     /// RPC or operation result schema.
     pub output: Option<Value>,
-    /// Event/feed item schema.
+    /// Event/live item schema.
     pub payload: Option<Value>,
     /// Operation progress schema.
     pub update: Option<Value>,
@@ -488,8 +488,8 @@ pub enum ActionKind {
     Operation,
     /// Published event.
     Event,
-    /// Streaming feed.
-    Feed,
+    /// Streaming live observation.
+    Live,
 }
 
 /// Typed API action.
@@ -530,9 +530,9 @@ pub enum ActionDefinition {
         /// Ordered typed payload paths used as routing parameters.
         parameters: Vec<Vec<String>>,
     },
-    /// Feed definition.
-    Feed {
-        /// Feed request schema.
+    /// Live definition.
+    Live {
+        /// Live request schema.
         input: TypeRef,
         /// Stream item schema.
         event: TypeRef,
@@ -579,7 +579,7 @@ pub enum InteractionDirection {
     Invoke,
     /// Publish an Event.
     Publish,
-    /// Subscribe to an Event or Feed.
+    /// Subscribe to an Event or Live.
     Subscribe,
 }
 

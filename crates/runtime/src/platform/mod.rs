@@ -9,6 +9,8 @@ pub mod auth_callout;
 mod auth_operation;
 mod auth_post_commit;
 pub mod bootstrap;
+mod builtin_live_provider;
+mod live_provider;
 mod state;
 
 use auth::{
@@ -33,6 +35,13 @@ use auth::rpc::{AuthRpcProcessor, AuthRpcRuntime};
 use auth_callout::{AuthCallout, CalloutKeys};
 use auth_operation::AuthOperationRuntime;
 use auth_post_commit::{AuthEventPublisher, AuthPostCommitRuntime};
+pub(crate) use builtin_live_provider::{
+    connect_builtin_live_provider, BuiltinLiveProviderConnectOptions,
+};
+pub(crate) use live_provider::{
+    await_live_owner, ensure_live_provider_resources, ensure_live_provider_seed,
+    load_live_provider_seed, LiveProviderRole, LiveProviderSlots,
+};
 
 /// Browser-flow records are retained for one day, so a configured pending-auth
 /// TTL beyond that would advertise flows after their record has expired.
@@ -230,6 +239,13 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     let (auth_event_session, auth_operation_session, event_identity_key_id, event_connection_id) =
         ensure_auth_event_session(&auth_service, &auth_participant, now).await?;
+    // Built-in live providers need normal authenticated identities before any
+    // live-capable router registers. The platform owner is the only writer, so
+    // every reserved role is provisioned here under its fixed deployment.
+    for role in LiveProviderRole::all() {
+        let provider = ensure_live_provider_seed(&auth_service, &context.config, role, now).await?;
+        ensure_live_provider_resources(&auth_service, role, &provider).await?;
+    }
     let event_context = authorization_contexts
         .issue(
             auth::context::AuthorizationContextIssueRequest {
@@ -278,6 +294,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         auth_operation_session,
         auth_service.clone(),
         verifier.clone(),
+        context.live_providers.receiver(LiveProviderRole::Platform),
     )
     .await?;
     let mut auth_rpc_routes = Router::new();
@@ -378,8 +395,15 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         return Err(error);
     }
     let task_stop = stop.clone();
+    let sampler_store = auth_store.clone();
+    let sampler_stop = stop.clone();
+    // Telemetry samplers own their tasks and never own business lifetime.
+    let samplers = crate::telemetry::snapshots::SamplerOwner::start(vec![Box::pin(async move {
+        let _ = crate::telemetry::snapshots::run_auth_sampler(sampler_store, sampler_stop).await;
+    })]);
     let join = tokio::spawn(async move {
-        tokio::select! {
+        let samplers = samplers;
+        let result = tokio::select! {
             result = portal_reconciliation_worker.run(task_stop.clone()) => {
                 result.map_err(|error| RuntimeError::Platform(error.to_string()))
             }
@@ -397,7 +421,10 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                     ))),
                 }
             },
-        }
+        };
+        // Telemetry samplers own their tasks and never own business lifetime.
+        samplers.stop().await;
+        result
     });
 
     Ok(SubsystemHandle {
@@ -1074,4 +1101,89 @@ ws_nats_servers = ["ws://advertised.example:8080"]
             assert_eq!(profile.state, DeploymentProfileState::Active);
         }
     }
+}
+
+/// Seed a usable first local administrator with a username and password, without a browser
+/// or account-flow round trip.
+///
+/// # Errors
+///
+/// Returns a platform error when the platform store cannot be opened or migrated, when the
+/// built-in CLI/console participant bindings cannot be installed, or when the credentials do
+/// not satisfy the configured password policy.
+pub async fn seed_admin_credentials(
+    config: &RuntimeConfig,
+    username: &str,
+    password: &str,
+) -> Result<String, RuntimeError> {
+    let storage = match config
+        .platform_storage_backend()
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?
+    {
+        crate::StorageBackend::Sqlite(storage) => storage,
+    };
+    let store = crate::storage::SqliteStore::new(SubsystemName::Platform, storage);
+    store
+        .migrate()
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let auth_store = SqliteAuthorizationStore::open(&store)
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?
+        .as_millis()
+        .try_into()
+        .map_err(|_| RuntimeError::Platform("current time exceeds i64 milliseconds".to_owned()))?;
+
+    let mut targets = Vec::with_capacity(2);
+    for binding in [
+        auth::cli_participant_binding(now)
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?,
+        auth::console_participant_binding(now)
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?,
+    ] {
+        auth_store
+            .put_participant_binding(binding.clone())
+            .await
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+        let revision = auth_store
+            .get_installed_participant_record(binding.participant_id.clone(), None)
+            .await
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?
+            .ok_or_else(|| {
+                RuntimeError::Platform(format!(
+                    "{} participant installation missing",
+                    binding.participant_id
+                ))
+            })?
+            .0;
+        targets.push(FirstAdminAuthorityTarget {
+            participant_id: binding.participant_id,
+            installed_revision: revision,
+        });
+    }
+
+    let password_min_length = config
+        .auth
+        .as_ref()
+        .and_then(|auth| auth.local_identity.as_ref())
+        .and_then(|local| local.password_min_length)
+        .map_or(12, usize::from);
+    let service = AuthService::new(
+        auth_store,
+        auth::AuthServiceConfig {
+            password_min_length,
+            ..Default::default()
+        },
+    )
+    .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let public_origin = config
+        .http
+        .as_ref()
+        .and_then(|http| http.public_origin.clone())
+        .unwrap_or_else(|| "http://localhost:3000".to_owned());
+    service
+        .seed_local_admin(&public_origin, &targets, username, password, now)
+        .await
+        .map_err(|error| RuntimeError::Platform(error.to_string()))
 }

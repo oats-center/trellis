@@ -18,6 +18,9 @@ pub struct RuntimeConfig {
     /// Authorization-context digest bound into Trellis-owned runtime event proofs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_context_digest_file: Option<PathBuf>,
+    /// Native identity seed files for built-in live providers, keyed by role.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_provider_seed_files: Option<LiveProviderSeedFilesConfig>,
     /// Host path-root overrides. Relative values resolve against this config file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paths: Option<RuntimePathsConfig>,
@@ -371,6 +374,12 @@ impl RuntimeConfig {
     fn resolve_relative_paths(&mut self, base_dir: &Path) {
         resolve_path(base_dir, &mut self.event_session_seed_file);
         resolve_path(base_dir, &mut self.event_context_digest_file);
+        if let Some(seeds) = &mut self.live_provider_seed_files {
+            resolve_path(base_dir, &mut seeds.platform);
+            resolve_path(base_dir, &mut seeds.health);
+            resolve_path(base_dir, &mut seeds.jobs);
+            resolve_path(base_dir, &mut seeds.events);
+        }
         if let Some(nats) = &mut self.nats {
             if let Some(runtime) = &mut nats.runtime {
                 resolve_path(base_dir, &mut runtime.auth_creds_path);
@@ -778,6 +787,29 @@ pub struct AuthConfig {
     /// Authorization trust and short-lived context runtime configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authorization: Option<AuthorizationConfig>,
+}
+
+/// Native identity seed files for built-in live providers.
+///
+/// These files hold long-lived provisioned native identity seeds, not
+/// per-observation records. The runtime derives each provider's normal
+/// provisioned identity and materialized authority from them; a connected
+/// process still receives a fresh runtime signing key and logical connection id
+/// through the ordinary bootstrap path.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct LiveProviderSeedFilesConfig {
+    /// Platform Operation provider identity seed file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform: Option<PathBuf>,
+    /// Health API live provider identity seed file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health: Option<PathBuf>,
+    /// Jobs API live provider identity seed file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jobs: Option<PathBuf>,
+    /// Events API live provider identity seed file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub events: Option<PathBuf>,
 }
 
 /// File-backed authorization trust and context-runtime policy.

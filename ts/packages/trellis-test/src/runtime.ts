@@ -686,7 +686,8 @@ export class TrellisTestRuntime implements AsyncDisposable {
       try {
         await Deno.remove(this.workdir, { recursive: true });
       } catch (error) {
-        failures.push(error);
+        // An already-absent workdir is a satisfied cleanup, not a failure.
+        if (!(error instanceof Deno.errors.NotFound)) failures.push(error);
       }
     }
     if (failures.length > 0) {

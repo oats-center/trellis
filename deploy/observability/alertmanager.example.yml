@@ -1,0 +1,22 @@
+# Do not deploy or send a live test without operator approval.
+# The file contains one generic webhook URL; provider-specific credentials stay
+# outside the repository. Validate using a case-owned receiver first.
+global:
+  resolve_timeout: 5m
+route:
+  receiver: operator-webhook
+  group_by: [trellis_cluster, alertname, trellis_component]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: ['severity="critical"']
+      receiver: operator-webhook
+      group_wait: 10s
+      repeat_interval: 1h
+receivers:
+  - name: operator-webhook
+    webhook_configs:
+      - url_file: /run/secrets/trellis-alert-webhook-url
+        send_resolved: true
+        max_alerts: 20

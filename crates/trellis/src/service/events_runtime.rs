@@ -11,6 +11,7 @@ use futures_util::StreamExt;
 use crate::client::TrellisClient;
 
 const EVENT_STREAM: &str = "trellis";
+const DLQ_STREAM: &str = "trellis_consumer_dlq";
 const EVENT_SUBJECT_WILDCARD: &str = "events.v1.>";
 
 /// Events-specific transport over the Trellis event stream.
@@ -111,6 +112,20 @@ impl EventsRuntime {
     pub async fn consumers(&self) -> Result<Vec<consumer::Info>, String> {
         let stream = jetstream::new(self.nats.clone())
             .get_stream(EVENT_STREAM)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut consumers = stream.consumers();
+        let mut rows = Vec::new();
+        while let Some(info) = consumers.next().await {
+            rows.push(info.map_err(|error| error.to_string())?);
+        }
+        Ok(rows)
+    }
+
+    /// Return the live consumers on the dead-letter stream.
+    pub async fn dlq_consumers(&self) -> Result<Vec<consumer::Info>, String> {
+        let stream = jetstream::new(self.nats.clone())
+            .get_stream(DLQ_STREAM)
             .await
             .map_err(|error| error.to_string())?;
         let mut consumers = stream.consumers();

@@ -875,7 +875,7 @@ fn resolve_api(
                 InteractionDirection::Publish,
                 InteractionDirection::Subscribe,
             ],
-            ActionKind::Feed => &[InteractionDirection::Subscribe],
+            ActionKind::Live => &[InteractionDirection::Subscribe],
         };
         for direction in directions {
             if !capabilities.values().any(|capability| {
@@ -921,7 +921,7 @@ fn derive_api_subjects(
         rpc: BTreeMap::new(),
         operations: BTreeMap::new(),
         events: BTreeMap::new(),
-        feeds: BTreeMap::new(),
+        lives: BTreeMap::new(),
     };
     for (id, action) in actions {
         let logical_name = format!("{api_name}.{}", id.name);
@@ -968,10 +968,10 @@ fn derive_api_subjects(
                     },
                 );
             }
-            ActionDefinition::Feed { .. } => {
-                result.feeds.insert(
+            ActionDefinition::Live { .. } => {
+                result.lives.insert(
                     id.name.clone(),
-                    protocol(trellis_protocol::derive_feed_subject(
+                    protocol(trellis_protocol::derive_live_subject(
                         &version,
                         &logical_name,
                     ))?,
@@ -993,7 +993,7 @@ fn resolve_action(
         "rpc" => &["input", "output", "errors", "download", "pagination"],
         "operation" => &["input", "output", "progress", "errors", "signals", "upload"],
         "event" => &["payload", "params"],
-        "feed" => &["input", "event"],
+        "live" => &["input", "event"],
         _ => &[],
     };
     if let Some(member) = raw
@@ -1084,7 +1084,7 @@ fn resolve_action(
                 parameters,
             }
         }
-        "feed" => ActionDefinition::Feed {
+        "live" => ActionDefinition::Live {
             input: type_member("input")?,
             event: type_member("event")?,
         },
@@ -1097,7 +1097,7 @@ fn action_kind(value: &str) -> miette::Result<ActionKind> {
         "rpc" => ActionKind::Rpc,
         "operation" => ActionKind::Operation,
         "event" => ActionKind::Event,
-        "feed" => ActionKind::Feed,
+        "live" => ActionKind::Live,
         _ => return Err(miette!("unknown action kind '{value}'")),
     })
 }
@@ -1189,7 +1189,7 @@ fn raw_action_kind(value: ActionKind) -> &'static str {
         ActionKind::Rpc => "rpc",
         ActionKind::Operation => "operation",
         ActionKind::Event => "event",
-        ActionKind::Feed => "feed",
+        ActionKind::Live => "live",
     }
 }
 
@@ -1212,7 +1212,7 @@ fn resolve_selection(
         ("call", ActionKind::Rpc) => InteractionDirection::Call,
         ("invoke", ActionKind::Operation) => InteractionDirection::Invoke,
         ("publish", ActionKind::Event) => InteractionDirection::Publish,
-        ("subscribe", ActionKind::Event | ActionKind::Feed) => InteractionDirection::Subscribe,
+        ("subscribe", ActionKind::Event | ActionKind::Live) => InteractionDirection::Subscribe,
         _ => {
             return Err(miette!(
                 "invalid direction '{}' for {}",
@@ -1836,7 +1836,7 @@ fn validate_cursor_usage(
                     }
                 }
                 ActionDefinition::Event { payload, .. } => check(payload, (false, false))?,
-                ActionDefinition::Feed { input, event } => {
+                ActionDefinition::Live { input, event } => {
                     check(input, (false, false))?;
                     check(event, (false, false))?;
                 }
@@ -2350,8 +2350,8 @@ pub fn selected_permission_atoms(
         (ActionKind::Event, InteractionDirection::Subscribe) => {
             vec![target(ApiSurfaceKind::Event, PermissionAction::Subscribe)?]
         }
-        (ActionKind::Feed, InteractionDirection::Subscribe) => {
-            vec![target(ApiSurfaceKind::Feed, PermissionAction::Subscribe)?]
+        (ActionKind::Live, InteractionDirection::Subscribe) => {
+            vec![target(ApiSurfaceKind::Live, PermissionAction::Subscribe)?]
         }
         _ => return Err(miette!("selected action direction is invalid")),
     })
@@ -2464,7 +2464,7 @@ fn exported_types(package: &SemanticPackage) -> BTreeSet<TypeId> {
                         .for_each(|value| add(value, package, &mut result));
                 }
                 ActionDefinition::Event { payload, .. } => add(payload, package, &mut result),
-                ActionDefinition::Feed { input, event } => {
+                ActionDefinition::Live { input, event } => {
                     add(input, package, &mut result);
                     add(event, package, &mut result);
                 }

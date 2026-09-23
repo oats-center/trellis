@@ -18,8 +18,8 @@ api runtime@v1 {
   operation Work { input Value; progress Update; output Value; signals { Continue Value; } }
   operation Upload { input Value; output Value; signals { Continue Value; } upload; }
   event Changed { payload Value; }
-  feed Watch { input Empty; event Value; }
-  capabilities { public { allows { rpc Echo; operation Work; operation Upload; publish event Changed; subscribe event Changed; feed Watch; } } }
+  live Watch { input Empty; event Value; }
+  capabilities { public { allows { rpc Echo; operation Work; operation Upload; publish event Changed; subscribe event Changed; live Watch; } } }
 }
 
 api events@v1 {
@@ -57,6 +57,7 @@ api device_child@v1 {
 
 service Provider {
   implements runtime;
+  use runtime { rpc Echo; }
   job work {
     title "Work";
     description "Runtime fixture work.";
@@ -76,11 +77,13 @@ service OperationProvider {
 }
 service OperationCaller { use runtime { operation Work; } }
 app Caller {
-  use runtime { rpc Echo; operation Work; operation Upload; publish event Changed; subscribe event Changed; feed Watch; }
+  use auth { rpc Sessions.Me; }
+  use runtime { rpc Echo; operation Work; operation Upload; publish event Changed; subscribe event Changed; live Watch; }
   state saved { title "Saved"; description "Caller-owned saved value."; schema Saved; version 1; }
   state savedResource { title "Saved resource"; description "Rust State acceptance value."; schema ResourceValue; version 1; }
 }
 app StateCaller {
+  use auth { rpc Sessions.Me; }
   state savedResource { title "Saved resource"; description "Rust State acceptance value."; schema ResourceValue; version 1; }
 }
 app Denied { use runtime; }
@@ -99,6 +102,19 @@ service AdminService {
 service EventService {
   implements events;
   consumer events { title "Events"; description "Durable event acceptance values."; events [events.Alpha, events.Beta]; concurrency 1; replay new; retry { attempts 3; backoff [150ms, 300ms]; } }
+}
+service EventServiceConsumerOnly {
+  implements events;
+  consumer events { title "Events"; description "Durable-only event acceptance values."; events [events.Alpha, events.Beta]; concurrency 1; replay new; }
+}
+service EventServiceBoth {
+  implements events;
+  use events { subscribe event Alpha; subscribe event Beta; }
+  consumer events { title "Events"; description "Durable plus explicit subscribe acceptance values."; events [events.Alpha, events.Beta]; concurrency 1; replay new; }
+}
+service EventSubscriberService {
+  implements events;
+  use events { subscribe event Alpha; subscribe event Beta; }
 }
 service ChildProvider { implements device_child; }
 app Alpha { use events { publish event Alpha; rpc Observed; rpc DropAlpha; rpc DeliveryStats; } }
@@ -124,4 +140,51 @@ device AgentDevice {
       optional capability optional;
     }
   }
+}
+
+model LiveProbeKey {
+  runId: string;
+  streamId: string;
+}
+
+model LiveProbeRelease {
+  runId: string;
+  streamId: string;
+  throughIndex: int64;
+  finish: bool;
+  fail: bool;
+  payloadBytes?: uint32;
+  paddingBytes?: uint32;
+}
+
+model LiveProbeFrame {
+  runId: string;
+  streamId: string;
+  sourceGeneration: int64;
+  index: int64;
+  payload: bytes;
+  padding: string;
+}
+
+model LiveProbeStatus {
+  starts: int64;
+  active: int64;
+  cleanups: int64;
+  emitted: int64;
+}
+
+api liveprobe@v1 {
+  title "Live observation acceptance";
+  description "Case-owned source control and observed source lifetime.";
+  rpc Inspect { input LiveProbeKey; output LiveProbeStatus; }
+  rpc Release { input LiveProbeRelease; output LiveProbeStatus; }
+  live Watch { input LiveProbeKey; event LiveProbeFrame; }
+  capabilities { public { allows { rpc Inspect; rpc Release; live Watch; } } }
+}
+
+service LiveProbeProvider { implements liveprobe; }
+
+app LiveProbeCaller {
+  use auth { rpc Sessions.Me; }
+  use liveprobe { rpc Inspect; rpc Release; live Watch; }
 }

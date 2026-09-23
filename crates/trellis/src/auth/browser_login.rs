@@ -262,10 +262,38 @@ impl AgentLoginChallenge {
         &self.login_url
     }
 
-    /// Wait for detached portal completion, then bind the session.
-    /// Retains the challenge key so completion can be retried after a transport or storage failure.
+    /// Wait for detached portal completion, bind the session, and persist it to the machine's
+    /// session store.
+    ///
+    /// Test harnesses should prefer [`Self::complete_without_persistence`] so a run never writes
+    /// outside its own work directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an auth error when the flow is denied, expires, cannot bind, or the resulting
+    /// session is not an administrator.
     #[doc = concat!("Asynchronous Trellis API operation `", stringify!(complete), "`.")]
     pub async fn complete(&self, trellis_url: &str) -> Result<AdminLoginOutcome, TrellisAuthError> {
+        let outcome = self.complete_without_persistence(trellis_url).await?;
+        if !outcome.is_admin {
+            return Err(TrellisAuthError::NotAdmin);
+        }
+        super::session_store::save_admin_session(&outcome.state)?;
+        Ok(outcome)
+    }
+
+    /// Wait for detached portal completion, then bind the session without persisting it.
+    /// Retains the challenge key so completion can be retried after a transport or storage failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an auth error when the flow is denied, expires, cannot bind, or the resulting
+    /// session is not an administrator.
+    #[doc = concat!("Asynchronous Trellis API operation `", stringify!(complete_without_persistence), "`.")]
+    pub async fn complete_without_persistence(
+        &self,
+        trellis_url: &str,
+    ) -> Result<AdminLoginOutcome, TrellisAuthError> {
         let AgentLoginChallenge {
             flow_id,
             login_url: _,
@@ -300,7 +328,6 @@ impl AgentLoginChallenge {
             allow_insecure_origin: *allow_insecure_origin,
         };
 
-        super::session_store::save_admin_session(&state)?;
         let client = connect_admin_client_async(&state).await?;
         let response = client
             .request_api_value("trellis.auth@v1", "Sessions.Me", json!({}))
@@ -323,15 +350,16 @@ impl AgentLoginChallenge {
                 "admin connection omitted authorization context".to_owned(),
             )
         })?;
-        if !parse_authorization_context(&context.context)?
+        let is_admin = parse_authorization_context(&context.context)?
             .unsigned
             .platform_privileges
-            .contains(&trellis_protocol::PlatformPrivilege::Admin)
-        {
-            return Err(TrellisAuthError::NotAdmin);
-        }
+            .contains(&trellis_protocol::PlatformPrivilege::Admin);
 
-        Ok(AdminLoginOutcome { state, user })
+        Ok(AdminLoginOutcome {
+            state,
+            user,
+            is_admin,
+        })
     }
 }
 

@@ -167,6 +167,142 @@ impl<R> AuthService<R>
 where
     R: AccountRepository + GrantRepository + Clone,
 {
+    /// Seed a usable first local administrator in process, with no browser or account-flow
+    /// round trip: create the first-admin flow, then complete it immediately with the
+    /// supplied local credentials. The storage effects are exactly those the console's
+    /// first-admin route performs, so the seeded account can sign in normally.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage or validation error when the flow cannot be created, its authority
+    /// targets cannot be resolved, or the credentials do not satisfy the password policy.
+    pub async fn seed_local_admin(
+        &self,
+        portal_base_url: &str,
+        authority_targets: &[FirstAdminAuthorityTarget],
+        username: &str,
+        password: &str,
+        now: i64,
+    ) -> Result<String, AuthorizationStateError> {
+        let bootstrap = self
+            .rotate_admin_account_flow(portal_base_url, authority_targets, now)
+            .await?
+            .ok_or(AuthorizationStateError::Storage(format!(
+                "first-admin flow could not be created"
+            )))?;
+        let bootstrap_url = bootstrap
+            .bootstrap_url
+            .ok_or(AuthorizationStateError::Storage(format!(
+                "first-admin bootstrap URL is missing"
+            )))?;
+        let token = Url::parse(&bootstrap_url)
+            .ok()
+            .and_then(|url| {
+                url.query_pairs()
+                    .find(|(key, _)| key == "adminAccountToken")
+                    .map(|(_, value)| value.into_owned())
+            })
+            .ok_or(AuthorizationStateError::Storage(format!(
+                "first-admin bootstrap URL carries no token"
+            )))?;
+        let token_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(
+            URL_SAFE_NO_PAD.decode(&token).map_err(|_| {
+                AuthorizationStateError::Storage(
+                    "first-admin token is not canonical base64url".to_owned(),
+                )
+            })?,
+        ));
+        let flow = self
+            .repository
+            .get_account_flow_by_hash(&token_hash)
+            .await?
+            .ok_or(AuthorizationStateError::Storage(format!(
+                "first-admin flow not found by token"
+            )))?;
+        let targets =
+            flow.payload["bindings"]
+                .as_array()
+                .ok_or(AuthorizationStateError::Storage(format!(
+                    "first-admin flow declares no authority targets"
+                )))?;
+        let mut bindings = Vec::with_capacity(targets.len());
+        for target in targets {
+            let participant_id =
+                target["participantId"]
+                    .as_str()
+                    .ok_or(AuthorizationStateError::Storage(format!(
+                        "first-admin authority target is malformed"
+                    )))?;
+            let installed_revision =
+                target["installedRevision"]
+                    .as_u64()
+                    .ok_or(AuthorizationStateError::Storage(format!(
+                        "first-admin authority target is not installed"
+                    )))?;
+            let (_, installed) = self
+                .repository
+                .get_installed_participant_record(
+                    participant_id.to_owned(),
+                    Some(installed_revision),
+                )
+                .await?
+                .ok_or(AuthorizationStateError::Storage(format!(
+                    "first-admin authority target is not installed"
+                )))?;
+            bindings.push(FirstAdminBinding {
+                participant_id: participant_id.to_owned(),
+                installed_revision,
+                grant_set: super::super::http::browser::complete_participant_grants(&installed)
+                    .map_err(|error| AuthorizationStateError::Storage(format!("{error:?}")))?,
+                platform_privileges: (participant_id
+                    != crate::platform::auth::builtins::PORTAL_PARTICIPANT_ID)
+                    .then_some(PlatformPrivilege::Admin)
+                    .into_iter()
+                    .collect(),
+            });
+        }
+        let request_digest =
+            super::super::http::digest_parts(&["local-admin", &token_hash, username]);
+        let outcome = self
+            .complete_first_admin(FirstAdminRegistration {
+                token,
+                expected_flow_version: flow.version,
+                username: username.to_owned(),
+                password: password.to_owned(),
+                display_name: None,
+                email: None,
+                image_url: None,
+                bindings,
+                authority_expires_at: None,
+                completed_at: now,
+                idempotency: IdempotencyResultRecord {
+                    scope_key: super::super::http::digest_parts(&[
+                        &token_hash,
+                        "first_admin.complete",
+                        "system:first-admin",
+                        &token_hash,
+                    ]),
+                    purpose: "first_admin.complete".to_owned(),
+                    signer_id: "system:first-admin".to_owned(),
+                    request_id: token_hash.clone(),
+                    request_digest,
+                    result: json!({}),
+                    created_at: now,
+                    expires_at: now + super::super::http::IDEMPOTENCY_TTL_MS,
+                },
+                actions: Vec::new(),
+            })
+            .await?;
+        Ok(match outcome {
+            IdempotentOutcome::Applied(account) => account.principal.principal_id,
+            IdempotentOutcome::Replayed(value) => value
+                .pointer("/principalId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+        })
+    }
+
     /// Complete a first-administrator flow and reconcile its exact authority.
     ///
     /// # Errors

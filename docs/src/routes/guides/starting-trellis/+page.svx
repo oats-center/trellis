@@ -50,9 +50,12 @@ Useful local flags:
 | --- | --- | --- |
 | `--name Trellis` | `Trellis` | You want a different Trellis display name; the NATS server name is derived from this unless overridden |
 | `--server-name trellis` | derived from `--name` | You need a specific NATS server name |
-| `--public-origin http://localhost:3000` | `http://localhost:3000` | Trellis is exposed on a different local origin |
-| `--nats-server-url nats://127.0.0.1:4222` | `nats://127.0.0.1:4222` | Server-side clients reach NATS somewhere else |
-| `--nats-websocket-url ws://localhost:8080` | `ws://localhost:8080` | Browser clients reach NATS somewhere else |
+| `--nats-port 4222` | `4222` | Managed NATS should listen for native clients on a different port; e.g. when `4222` is already taken |
+| `--nats-monitor-port 8222` | `8222` | Managed NATS monitoring and health should listen on a different port |
+| `--nats-ws-port 8080` | `8080` | Managed NATS websocket should listen on a different port |
+| `--public-origin http://localhost:3000` | `http://localhost:<trellis-port>` | Trellis is exposed on a different local origin |
+| `--nats-server-url nats://127.0.0.1:4222` | `nats://127.0.0.1:<nats-port>` | Server-side clients reach NATS somewhere else |
+| `--nats-websocket-url ws://localhost:8080` | `ws://localhost:<nats-ws-port>` | Browser clients reach NATS somewhere else |
 
 Generated local configs use a 30-second runtime-owner lease renewed every 5
 seconds. When running another managed-NATS instance on the same machine, pass
@@ -88,13 +91,19 @@ run `trellis-server --dev --nats-download --config "$HOME/trellis/config.toml"`.
 The server renders an effective NATS config from `nats/nats.conf` and
 `nats/jwt.conf`, keeps mutable state under the XDG state root, writes NATS output
 to the XDG state log directory, and stops NATS when `trellis-server` exits. NATS
-listens on the bundle's loopback ports:
+listens on the ports written to `nats/nats.conf`, which the `--nats-port`,
+`--nats-monitor-port`, and `--nats-ws-port` flags choose (defaults below):
 
 | Port | Purpose |
 | --- | --- |
 | `4222` | Native NATS clients |
 | `8080` | Browser websocket clients |
 | `8222` | NATS monitoring and health |
+
+`trellis init config` rejects port `0`, duplicate listener ports, and a NATS
+listener that collides with `--trellis-port`. Managed startup reads those three
+listeners from `nats/nats.conf` and fails when they are missing, duplicated, or
+supplied as unsupported expressions; it never substitutes defaults.
 
 The runtime safely converges the streams and KV buckets owned by its selected
 mode during startup, exposes the embedded portal, first-admin and login flows,

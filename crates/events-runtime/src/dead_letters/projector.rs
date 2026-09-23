@@ -140,6 +140,14 @@ pub async fn start_dead_letter_projector(
     Ok(DeadLetterProjectorHandle { task: Some(task) })
 }
 
+/// Exact durable consumer name for one Events dead-letter projection identity.
+///
+/// The runtime telemetry sampler uses this instead of prefix-matching every
+/// historical DLQ projector consumer.
+pub fn dead_letters_projector_consumer_name(projection_id: &str) -> String {
+    format!("events-dlq-projector-{}", sanitize(projection_id))
+}
+
 fn sanitize(value: &str) -> String {
     let value = value
         .chars()

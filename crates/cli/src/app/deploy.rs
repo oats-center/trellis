@@ -99,15 +99,24 @@ enum DeploymentKind {
     Device,
 }
 
-pub(super) struct CompiledParticipantInput {
-    pub(super) participant_id: String,
-    pub(super) participant_digest: String,
-    pub(super) participant_path: String,
-    pub(super) package_digest: String,
-    pub(super) package_evidence: auth_types::AuthPackageEvidence,
+/// A compiled participant plus the package evidence `Auth.Deployments.Apply` requires.
+///
+/// Public so Rust tooling (for example the test harness) can apply a participant from a source
+/// directory through the same compilation path the CLI uses.
+pub struct CompiledParticipantInput {
+    /// Participant identity, for example `tsd-survey-service.Survey`.
+    pub participant_id: String,
+    /// Semantic participant digest.
+    pub participant_digest: String,
+    /// Participant path inside the package.
+    pub participant_path: String,
+    /// Semantic digest of the root package.
+    pub package_digest: String,
+    /// Full exact package closure evidence.
+    pub package_evidence: auth_types::AuthPackageEvidence,
 }
 
-pub(super) fn compile_participant_input(
+pub fn compile_participant_input(
     source: &std::path::Path,
     selected_participant: Option<&str>,
     expected_kind: Option<trellis_idl::ParticipantKind>,
@@ -302,10 +311,12 @@ async fn apply_contract(
         &args.approve_capability,
         &args.approve_resource,
     )?;
+    // Resolve the identifier to a concrete deployment ID; a display name is accepted too.
+    let resolved_id = resolve_deployment_id(kind, deployment_id).await?;
     let (_state, connected) = connect_authenticated_cli_client().await?;
     let current = AuthClient::from_generated(connected.clone())
         .deployments_get(&auth_types::AuthDeploymentsGetRequest {
-            deployment_id: wire(deployment_id)?,
+            deployment_id: wire(resolved_id.clone())?,
         })
         .await
         .into_diagnostic()?;
@@ -339,7 +350,7 @@ async fn apply_contract(
     });
     let mut request = auth_types::AuthDeploymentsApplyRequest {
         approval: None,
-        deployment_id: wire(deployment_id)?,
+        deployment_id: wire(resolved_id.clone())?,
         expected_revision: wire(expected_revision.to_string())?,
         idempotency_key: wire(cli_idempotency_key())?,
         package_evidence: participant.package_evidence,
@@ -351,7 +362,7 @@ async fn apply_contract(
         Ok(response) => {
             return print_apply_response(
                 format,
-                deployment_id,
+                &resolved_id,
                 &participant.participant_id,
                 &participant.participant_digest,
                 response,
@@ -404,7 +415,7 @@ async fn apply_contract(
     };
     print_apply_response(
         format,
-        deployment_id,
+        &resolved_id,
         &participant.participant_id,
         &participant.participant_digest,
         response,
@@ -628,6 +639,7 @@ async fn provision_service(
     id: &str,
     args: &SvcProvisionArgs,
 ) -> miette::Result<()> {
+    let resolved_id = resolve_deployment_id(DeploymentKind::Service, id).await?;
     let (_state, connected) = connect_authenticated_cli_client().await?;
     let (instance_seed, instance_key, generated_seed) = if let Some(seed) = &args.instance_seed {
         let session_key = authlib::session_public_key(seed).into_diagnostic()?;
@@ -638,7 +650,7 @@ async fn provision_service(
     };
     let instance = AuthClient::from_generated(connected.clone())
         .service_instances_provision(&auth_types::AuthServiceInstancesProvisionRequest {
-            deployment_id: wire(id)?,
+            deployment_id: wire(resolved_id.clone())?,
             instance_id: wire(Some(format!("inst_{}", &instance_key[..16])))?,
             identity_public_key: wire(instance_key)?,
             participant_id: wire(None::<String>)?,
@@ -655,6 +667,7 @@ async fn provision_device(
     id: &str,
     args: &DevProvisionArgs,
 ) -> miette::Result<()> {
+    let resolved_id = resolve_deployment_id(DeploymentKind::Device, id).await?;
     let (_state, connected) = connect_authenticated_cli_client().await?;
     let seed: [u8; 32] = rand::random();
     let root_secret = URL_SAFE_NO_PAD.encode(seed);
@@ -662,7 +675,7 @@ async fn provision_device(
     let _metadata = build_device_metadata(args)?;
     let instance = AuthClient::from_generated(connected.clone())
         .devices_provision(&auth_types::AuthDevicesProvisionRequest {
-            deployment_id: wire(id)?,
+            deployment_id: wire(resolved_id.clone())?,
             instance_id: wire(None::<String>)?,
             identity_public_key: wire(Some(identity.public_identity_key))?,
             participant_id: wire(None::<String>)?,
@@ -1143,6 +1156,19 @@ fn cli_idempotency_key() -> String {
     ulid::Ulid::new().to_string()
 }
 
+/// Resolve a CLI deployment identifier to a concrete deployment ID. The identifier may be a
+/// deployment ID or an exact display name. The lookup runs on its own connection so callers keep
+/// one client per connection.
+async fn resolve_deployment_id(kind: DeploymentKind, id: &str) -> miette::Result<String> {
+    let (_state, connected) = connect_authenticated_cli_client().await?;
+    find_deployment(&connected, id, kind)
+        .await?
+        .get("deploymentId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| miette::miette!("deployment has no id"))
+        .map(str::to_owned)
+}
+
 async fn find_deployment(
     connected: &Client,
     deployment_id: &str,
@@ -1175,10 +1201,27 @@ fn find_deployment_entry(
     entries: impl IntoIterator<Item = Value>,
     deployment_id: &str,
 ) -> miette::Result<Value> {
-    entries
-        .into_iter()
+    // The identifier may be a deployment ID or an exact display name: `svc <name> create` takes
+    // a display name, so `apply`/`show`/`remove` accept the same value instead of failing with a
+    // remote not-found for a name that was never an ID.
+    let entries = entries.into_iter().collect::<Vec<_>>();
+    if let Some(entry) = entries
+        .iter()
         .find(|entry| entry.get("deploymentId").and_then(Value::as_str) == Some(deployment_id))
-        .ok_or_else(|| miette::miette!("deployment not found: {deployment_id}"))
+    {
+        return Ok(entry.clone());
+    }
+    let matches = entries
+        .into_iter()
+        .filter(|entry| entry.get("displayName").and_then(Value::as_str) == Some(deployment_id))
+        .collect::<Vec<_>>();
+    match matches.len() {
+        0 => Err(miette::miette!("deployment not found: {deployment_id}")),
+        1 => Ok(matches.into_iter().next().expect("exactly one match")),
+        count => Err(miette::miette!(
+            "deployment name '{deployment_id}' is ambiguous: {count} deployments match; use a deployment ID"
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -1195,6 +1238,24 @@ mod tests {
         let deployment = find_deployment_entry(entries, "svc-100").expect("deployment found");
 
         assert_eq!(deployment["deploymentId"], "svc-100");
+    }
+
+    #[test]
+    fn deployment_lookup_accepts_an_exact_display_name_and_rejects_ambiguity() {
+        let entries = vec![
+            json!({ "deploymentId": "dep_1", "displayName": "survey" }),
+            json!({ "deploymentId": "dep_2", "displayName": "camera" }),
+        ];
+        let found = find_deployment_entry(entries.clone(), "survey").expect("named lookup");
+        assert_eq!(found["deploymentId"], "dep_1");
+        assert!(find_deployment_entry(entries, "missing").is_err());
+
+        let ambiguous = vec![
+            json!({ "deploymentId": "dep_1", "displayName": "survey" }),
+            json!({ "deploymentId": "dep_2", "displayName": "survey" }),
+        ];
+        let error = find_deployment_entry(ambiguous, "survey").expect_err("ambiguous name");
+        assert!(error.to_string().contains("ambiguous"));
     }
 
     #[test]

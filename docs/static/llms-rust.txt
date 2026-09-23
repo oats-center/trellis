@@ -98,9 +98,22 @@ delays of 5s, 30s, 2m, and 10m; explicit retry requires exactly one fewer
 positive ordered backoffs than total attempts.
 
 Operation get, watch, signal, and cancel remain bound to the creator principal
-plus participant across reconnects rather than to one session key. Completed,
-failed, and cancelled records are immutable. Feed cancellation similarly binds
-the runtime-issued `feedId` and original caller identity.
+plus participant across reconnects rather than to one session key. A durable
+Operation's watcher is a separate live session: it reconciles the current
+authoritative snapshot once its transport is ready, then yields ordered typed
+transient updates and terminal state; not-yet-delivered nonterminal snapshots may
+be conflated, but transient updates are not silently dropped. Opening or closing
+a watcher never starts, cancels, or completes the durable work. Completed,
+failed, and cancelled records are immutable.
+
+Live observations and Operation watchers are authorized live sessions negotiated with
+bounded opening requests. The provider signs its offer and frames; control
+responses bind the session ID, logical command sequence, and command hash, and
+continued authority is rechecked from retained context rather than per-frame
+network lookup. A session has protocol liveness and credit bounds, not a total
+age or message cap. Closing returns a receipt whose remote-cleanup state is
+complete, incomplete, or unconfirmed, and reconnect is an explicit new open
+rather than a silent reopen.
 
 ## Resources And Atomicity
 

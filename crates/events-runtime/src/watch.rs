@@ -1,4 +1,4 @@
-//! `Events.Watch` feed implementation.
+//! `Events.Watch` live implementation.
 
 use std::collections::BTreeMap;
 
@@ -6,28 +6,28 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures_util::{stream, Stream, StreamExt};
 use serde_json::json;
 use trellis_rs::service::{Router, ServerError};
-use trellis_runtime_apis::apis::trellis_events_v1::{feeds, feeds::Watch};
+use trellis_runtime_apis::apis::trellis_events_v1::{lives, lives::Watch};
 
 use crate::projector::{project_message_inner, EventMessageStream, EventVerifier, EventsRuntime};
 use crate::storage::ProjectedEvent;
 use crate::wire::generated_output;
 
-/// Register the `Events.Watch` feed on the built-in Events router.
-pub fn register_events_watch_feed(
+/// Register the `Events.Watch` live on the built-in Events router.
+pub fn register_events_watch_live(
     router: &mut Router,
     events_runtime: EventsRuntime,
     verifier: EventVerifier,
 ) {
-    router.register_feed::<Watch, _, _>(move |_ctx, input| {
+    router.register_live::<Watch, _, _>(move |_ctx, input| {
         watch_events(input, events_runtime.clone(), verifier.clone())
     });
 }
 
 fn watch_events(
-    input: feeds::WatchInput,
+    input: lives::WatchInput,
     events_runtime: EventsRuntime,
     verifier: EventVerifier,
-) -> impl Stream<Item = Result<feeds::WatchEvent, ServerError>> + Send + 'static {
+) -> impl Stream<Item = Result<lives::WatchEvent, ServerError>> + Send + 'static {
     stream::unfold(
         WatchState::Init {
             events_runtime,
@@ -41,12 +41,12 @@ fn watch_events(
 enum WatchState {
     Init {
         events_runtime: EventsRuntime,
-        input: feeds::WatchInput,
+        input: lives::WatchInput,
         verifier: EventVerifier,
     },
     Open {
         messages: EventMessageStream,
-        input: feeds::WatchInput,
+        input: lives::WatchInput,
         verifier: EventVerifier,
     },
     Done,
@@ -54,7 +54,7 @@ enum WatchState {
 
 async fn next_watch_frame(
     state: WatchState,
-) -> Option<(Result<feeds::WatchEvent, ServerError>, WatchState)> {
+) -> Option<(Result<lives::WatchEvent, ServerError>, WatchState)> {
     let (mut messages, input, verifier) = match state {
         WatchState::Init {
             events_runtime,
@@ -118,9 +118,9 @@ async fn next_watch_frame(
 }
 
 fn watch_frame(
-    input: &feeds::WatchInput,
+    input: &lives::WatchInput,
     event: &ProjectedEvent,
-) -> Result<Option<feeds::WatchEvent>, ServerError> {
+) -> Result<Option<lives::WatchEvent>, ServerError> {
     if !matches_input(
         input,
         &event.subject,
@@ -172,7 +172,7 @@ fn watch_frame(
 }
 
 fn matches_input(
-    input: &feeds::WatchInput,
+    input: &lives::WatchInput,
     subject: &str,
     owner_contract_id: Option<&str>,
     owner_event_name: Option<&str>,
@@ -222,11 +222,11 @@ fn matches_input(
 #[cfg(test)]
 mod tests {
     use super::matches_input;
-    use trellis_runtime_apis::apis::trellis_events_v1::feeds;
+    use trellis_runtime_apis::apis::trellis_events_v1::lives;
 
     #[test]
     fn watch_filters_resolved_event_types() {
-        let input: feeds::WatchInput = serde_json::from_value(serde_json::json!({
+        let input: lives::WatchInput = serde_json::from_value(serde_json::json!({
             "includeEventTypes": [{
                 "ownerContractId": "acme-orders.runtime@v1",
                 "ownerEventName": "Changed"

@@ -4,7 +4,12 @@
   import { page } from "$app/state";
   import { onDestroy, untrack } from "svelte";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
-  import { LiveSubscription, RefreshScheduler } from "$lib/console/live_refresh.ts";
+  import {
+    beginOwnedWatch,
+    LiveSubscription,
+    RefreshScheduler,
+    type WatchAttempt,
+  } from "$lib/console/live_refresh.ts";
   import { classifyMutationError } from "$lib/console/mutation.ts";
   import { type apis } from "trellis-web-generated";
   import EmptyState from "$lib/components/EmptyState.svelte";
@@ -91,7 +96,7 @@
   let jobsSequence = 0;
   let metricsSequence = 0;
   let disposed = false;
-  let watchController: AbortController | null = null;
+  let watchAttempt: WatchAttempt<unknown> | null = null;
   let subscription: LiveSubscription | null = null;
   const refreshScheduler = new RefreshScheduler({
     canRefresh: () => !disposed && document.visibilityState === "visible",
@@ -440,8 +445,10 @@
   }
 
   function stopWatch() {
-    watchController?.abort();
-    watchController = null;
+    const attempt = watchAttempt;
+    watchAttempt = null;
+    attempt?.controller.abort();
+    attempt?.stream?.close?.();
     void subscription?.dispose();
     subscription = null;
     watchStatus = "Unavailable";
@@ -451,22 +458,23 @@
     stopWatch();
     const live = new LiveSubscription({
       subscribe: async () => {
-        const controller = new AbortController();
-        watchController = controller;
-        const stream = await trellis.jobsWatch({ includeInitial: false }, { signal: controller.signal }).orThrow();
-        void (async () => {
-          try {
-            for await (const _event of stream) {
-              if (controller.signal.aborted || disposed) return;
-              refreshScheduler.notify();
-            }
-            if (!controller.signal.aborted) live.closed();
-          } catch (cause) {
-            if (!controller.signal.aborted) live.closed(cause);
-          }
-        })();
+        const attempt = beginOwnedWatch({
+          open: (signal) =>
+            trellis.jobsWatch({ includeInitial: false }, { signal }).orThrow(),
+          onFrame: () => refreshScheduler.notify(),
+          stillOwned: () => !disposed && watchAttempt === attempt,
+          onUnexpectedEnd: (cause) => live.closed(cause),
+        });
+        watchAttempt = attempt;
+        await attempt.ready;
       },
-      unsubscribe: () => watchController?.abort(),
+      unsubscribe: async () => {
+        const attempt = watchAttempt;
+        watchAttempt = null;
+        attempt?.controller.abort();
+        attempt?.stream?.close?.();
+        await attempt?.pump;
+      },
       onStatus: (status) => {
         if (!disposed) watchStatus = status === "live" ? "Live" : status === "reconnecting" ? "Reconnecting" : status === "connecting" ? "Connecting" : "Offline";
       },

@@ -1,6 +1,6 @@
 Trellis libraries are the normal way programs connect to a Trellis deployment.
 They hide the transport details and expose typed surfaces for calls, events,
-feeds, operations, state, jobs, and service resources.
+live observations, operations, state, jobs, and service resources.
 
 ## Participants, not just clients and servers
 

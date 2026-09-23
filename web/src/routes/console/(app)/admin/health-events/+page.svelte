@@ -17,7 +17,12 @@
   import { nextCursorPage, previousCursorPage } from "$lib/cursor_history.ts";
   import { TABLE_PAGE_LIMIT } from "$lib/console/paging.ts";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
-  import { LiveSubscription, RefreshScheduler } from "$lib/console/live_refresh.ts";
+  import {
+    beginOwnedWatch,
+    LiveSubscription,
+    RefreshScheduler,
+    type WatchAttempt,
+  } from "$lib/console/live_refresh.ts";
 
   type Participant = apis.health.QueryOutput["items"][number];
 
@@ -38,7 +43,7 @@
   let detailSequence = 0;
   let loadSequence = 0;
   let disposed = false;
-  let watchController: AbortController | null = null;
+  let watchAttempt: WatchAttempt<unknown> | null = null;
   let subscription: LiveSubscription | null = null;
   const refreshScheduler = new RefreshScheduler({
     delayMs: 250,
@@ -224,8 +229,10 @@
   }
 
   function stopWatch() {
-    watchController?.abort();
-    watchController = null;
+    const attempt = watchAttempt;
+    watchAttempt = null;
+    attempt?.controller.abort();
+    attempt?.stream?.close?.();
     void subscription?.dispose();
     subscription = null;
   }
@@ -234,23 +241,22 @@
     stopWatch();
     const live = new LiveSubscription({
       subscribe: async () => {
-        const controller = new AbortController();
-        watchController = controller;
-        const result = await trellis.healthWatch({}, { signal: controller.signal }).take();
-        if (isErr(result)) throw result;
-        void (async () => {
-          try {
-            for await (const _event of result) {
-              if (controller.signal.aborted || disposed) return;
-              refreshScheduler.notify();
-            }
-            if (!controller.signal.aborted) live.closed();
-          } catch (cause) {
-            if (!controller.signal.aborted) live.closed(cause);
-          }
-        })();
+        const attempt = beginOwnedWatch({
+          open: (signal) => trellis.healthWatch({}, { signal }).orThrow(),
+          onFrame: () => refreshScheduler.notify(),
+          stillOwned: () => !disposed && watchAttempt === attempt,
+          onUnexpectedEnd: (cause) => live.closed(cause),
+        });
+        watchAttempt = attempt;
+        await attempt.ready;
       },
-      unsubscribe: () => watchController?.abort(),
+      unsubscribe: async () => {
+        const attempt = watchAttempt;
+        watchAttempt = null;
+        attempt?.controller.abort();
+        attempt?.stream?.close?.();
+        await attempt?.pump;
+      },
       onStatus: (status, detail) => {
         if (disposed) return;
         watchError = status === "reconnecting"

@@ -44,17 +44,29 @@ pub struct InitConfigArgs {
     /// Trellis HTTP port written to config.toml.
     pub trellis_port: u16,
 
-    #[arg(long, default_value = "nats://127.0.0.1:4222")]
-    /// Native NATS server URL for Trellis services.
-    pub nats_server_url: String,
+    #[arg(long, default_value_t = 4222)]
+    /// Native NATS listen port written to nats.conf.
+    pub nats_port: u16,
 
-    #[arg(long, default_value = "ws://localhost:8080")]
-    /// Browser-facing NATS websocket URL for Trellis clients.
-    pub nats_websocket_url: String,
+    #[arg(long, default_value_t = 8222)]
+    /// NATS HTTP monitoring port written to nats.conf.
+    pub nats_monitor_port: u16,
 
-    #[arg(long, default_value = "http://localhost:3000")]
-    /// Public Trellis HTTP origin for OAuth redirects.
-    pub public_origin: String,
+    #[arg(long, default_value_t = 8080)]
+    /// Browser websocket listen port written to nats.conf.
+    pub nats_ws_port: u16,
+
+    #[arg(long)]
+    /// Native NATS server URL for Trellis services; defaults to nats://127.0.0.1:<nats-port>.
+    pub nats_server_url: Option<String>,
+
+    #[arg(long)]
+    /// Browser-facing NATS websocket URL for Trellis clients; defaults to ws://localhost:<nats-ws-port>.
+    pub nats_websocket_url: Option<String>,
+
+    #[arg(long)]
+    /// Public Trellis HTTP origin for OAuth redirects; defaults to http://localhost:<trellis-port>.
+    pub public_origin: Option<String>,
 }
 
 #[cfg(feature = "runtime")]
@@ -70,7 +82,7 @@ pub struct InitCommand {
 /// Initialization operations.
 pub enum InitSubcommand {
     /// Generate Trellis runtime config and NATS bootstrap material.
-    Config(InitConfigArgs),
+    Config(Box<InitConfigArgs>),
     /// Seed an initial admin account and linked identity.
     Admin(InitAdminArgs),
 }

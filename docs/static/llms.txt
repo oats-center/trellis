@@ -60,7 +60,14 @@ outputs; colliding participant output paths are errors.
 
 Trellis Operations are durable, restartable, at-least-once caller-visible
 workflows; controls remain bound to the creator principal and participant across
-reconnects, and terminal states are immutable. Jobs are service-private; keyed
+reconnects, and terminal states are immutable. An Operation observer is a
+separate live session from the durable executor: a watcher reconciles the
+current authoritative snapshot once its transport is ready, then delivers typed
+transient updates and terminal state. Transient updates are ordered and never
+silently dropped, while not-yet-delivered nonterminal snapshots may be conflated.
+Opening or closing a watcher never starts, cancels, or completes the durable
+work, and a transport interruption surfaces as an observation error rather than
+an invented terminal business state. Jobs are service-private; keyed
 capacity waits do not consume attempts. Job deadlines are creation-relative;
 retry defaults to five deliveries delayed by 5s, 30s, 2m, and 10m. Jobs Summary
 is independent of Query pages. Capability approval is not an exact grant. Resource commitments are
@@ -83,8 +90,14 @@ descriptor binds the exact API, dotted event name, and parameter count. Durable 
 after the handler succeeds; final exhaustion is durably recorded in the
 per-Consumer DLQ before acknowledgement. Manual replay uses the same handler and
 a fresh delivery budget without rewinding the original Consumer, and successful
-replay is durably resolved before acknowledgement. Feed controls bind both the
-runtime `feedId` and the original caller identity.
+replay is durably resolved before acknowledgement. Live observations and Operation watchers
+are authorized live sessions negotiated with bounded opening requests; the
+provider signs its offer and frames, control responses bind the session ID,
+logical command sequence, and command hash, and continued authority is rechecked
+from retained context rather than by a network lookup per frame. Sessions have
+protocol liveness and credit bounds, not a total age or message cap; an explicit
+close returns a receipt whose remote-cleanup state is complete, incomplete, or
+unconfirmed, and reconnect is an explicit new open rather than a silent reopen.
 
 Consumer AGENTS templates are available under `templates/`. They describe the
 Trellis boundary; application policies belong in the consumer repository.

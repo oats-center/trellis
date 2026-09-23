@@ -1,4 +1,11 @@
-import { type Histogram, type Meter, metrics } from "@opentelemetry/api";
+import {
+  type Counter,
+  type Histogram,
+  type Meter,
+  type MeterProvider,
+  metrics,
+  type UpDownCounter,
+} from "@opentelemetry/api";
 
 const TRELLIS_METER_NAME = "@oatscenter/trellis";
 const MAX_ATTRIBUTE_LENGTH = 96;
@@ -8,7 +15,7 @@ const UUID_PATTERN =
 const ULID_PATTERN = /(^|[_.:-])[0-7][0-9A-HJKMNP-TV-Z]{25}($|[_.:-])/i;
 const LONG_HEX_SEGMENT_PATTERN = /(^|[_.:-])[0-9a-f]{12,}($|[_.:-])/i;
 const TRELLIS_SUBJECT_PREFIX_PATTERN =
-  /^(rpc|events|feeds|operations|jobs|state|kv|store|resources|transfer)\.v\d+\./;
+  /^(rpc|events|lives|operations|jobs|state|kv|store|resources|transfer)\.v\d+\./;
 
 const AUTH_REASONS = new Set([
   "invalid_request",
@@ -323,6 +330,7 @@ export function recordTrellisDuration(
     return;
   }
 
+  bindInstrumentProvider();
   const histogram = getDurationHistogram(name);
   const metricAttributes = buildTrellisDurationMetricAttributes(attributes);
 
@@ -488,4 +496,318 @@ function lowCardinalityValue(value: unknown): string | undefined {
   }
 
   return trimmed;
+}
+
+/** Duration families in the production observability catalog. */
+export const TRELLIS_CATALOG_DURATIONS = [
+  "trellis.connect.duration",
+  "trellis.auth.flow.duration",
+  "trellis.auth.approval_resolution.duration",
+  "trellis.auth.callout.duration",
+  "trellis.admin.workflow.duration",
+  "trellis.contract.analysis.duration",
+  "trellis.rpc.client.duration",
+  "trellis.rpc.server.duration",
+  "trellis.http.server.duration",
+  "trellis.auth.verification.duration",
+  "trellis.auth.post_commit.duration",
+  "trellis.job.submission.duration",
+  "trellis.job.attempt.duration",
+  "trellis.operation.execution.duration",
+  "trellis.event.publish.duration",
+  "trellis.event.process.duration",
+  "trellis.projection.duration",
+  "trellis.storage.duration",
+  "trellis.transfer.duration",
+  "trellis.cli.duration",
+  "trellis.browser.navigation.duration",
+  "trellis.live.handshake.duration",
+] as const;
+
+/** Duration metric names accepted by {@link recordCatalogDuration}. */
+export type TrellisCatalogDuration = typeof TRELLIS_CATALOG_DURATIONS[number];
+
+/** Counter families in the production observability catalog. */
+export const TRELLIS_CATALOG_COUNTERS = [
+  "trellis.errors",
+  "trellis.rpc.client.attempts",
+  "trellis.connection.transitions",
+  "trellis.auth.refresh.attempts",
+  "trellis.job.lease.events",
+  "trellis.operation.ownership.events",
+  "trellis.delivery.dispositions",
+  "trellis.dlq.transitions",
+  "trellis.live.ends",
+  "trellis.live.frames",
+  "trellis.live.rejections",
+  "trellis.transfer.wire.bytes",
+  "trellis.runtime.lease.events",
+  "trellis.snapshot.errors",
+  "trellis.telemetry.route_overflow",
+  "trellis.browser.errors",
+] as const;
+
+/** Counter metric names accepted by {@link recordCatalogCounter}. */
+export type TrellisCatalogCounter = typeof TRELLIS_CATALOG_COUNTERS[number];
+
+/** Up/down counter families in the production observability catalog. */
+export const TRELLIS_CATALOG_UPDOWNS = [
+  "trellis.rpc.server.inflight",
+  "trellis.operation.active",
+  "trellis.live.sessions",
+  "trellis.live.buffered.bytes",
+  "trellis.live.cleanup.pending",
+] as const;
+
+/** Up/down metric names accepted by {@link recordCatalogUpDown}. */
+export type TrellisCatalogUpDown = typeof TRELLIS_CATALOG_UPDOWNS[number];
+
+/** Attribute keys permitted on catalog instruments. */
+const CATALOG_ATTRIBUTE_KEYS = new Set([
+  "trellis.route",
+  "trellis.outcome",
+  "trellis.surface",
+  "trellis.operation",
+  "trellis.phase",
+  "trellis.participant.kind",
+  "trellis.delivery",
+  "trellis.direction",
+  "trellis.component",
+  "trellis.backend",
+  "trellis.purpose",
+  "trellis.state",
+  "trellis.kind",
+  "trellis.side",
+  "trellis.class",
+  "trellis.app",
+  "trellis.command",
+  "trellis.reason",
+  "trellis.action",
+  "trellis.family",
+  "trellis.cache.kind",
+  "trellis.cache.result",
+  "trellis.source",
+  "http.route",
+  "http.request.method",
+  "http.response.status_code",
+]);
+
+const CATALOG_HISTOGRAM_CACHE = new Map<string, Histogram>();
+const CATALOG_COUNTER_CACHE = new Map<string, Counter>();
+const CATALOG_UPDOWN_CACHE = new Map<string, UpDownCounter>();
+let instrumentProvider: MeterProvider | undefined;
+
+/**
+ * Drops cached instrument handles when the global meter provider changed.
+ *
+ * A process normally keeps one provider for its lifetime. A host that installs
+ * providers later, or a focused test that collects through its own reader,
+ * must still observe instruments created after the previous provider, so
+ * cached handles follow the current provider generation instead of staying
+ * bound to whichever provider existed first.
+ */
+function bindInstrumentProvider(): void {
+  const current = metrics.getMeterProvider();
+  if (instrumentProvider === current) return;
+  instrumentProvider = current;
+  DURATION_HISTOGRAM_CACHE.clear();
+  CATALOG_HISTOGRAM_CACHE.clear();
+  CATALOG_COUNTER_CACHE.clear();
+  CATALOG_UPDOWN_CACHE.clear();
+}
+
+/** Default catalog duration boundaries in seconds. */
+const CATALOG_DURATION_BOUNDARIES = [
+  0.001,
+  0.0025,
+  0.005,
+  0.01,
+  0.025,
+  0.05,
+  0.1,
+  0.25,
+  0.5,
+  1,
+  2.5,
+  5,
+  10,
+];
+
+/** Longer boundaries for attempt/execution/transfer/cli durations. */
+const CATALOG_LONG_DURATION_BOUNDARIES = [
+  0.01,
+  0.05,
+  0.1,
+  0.25,
+  0.5,
+  1,
+  2.5,
+  5,
+  10,
+  30,
+  60,
+  120,
+  300,
+  900,
+  3600,
+];
+
+/** Explicit catalog boundaries for one duration family. */
+function catalogBoundaries(name: TrellisCatalogDuration): number[] {
+  switch (name) {
+    case "trellis.job.attempt.duration":
+    case "trellis.operation.execution.duration":
+    case "trellis.event.process.duration":
+    case "trellis.transfer.duration":
+    case "trellis.cli.duration":
+    case "trellis.live.handshake.duration":
+      return CATALOG_LONG_DURATION_BOUNDARIES;
+    default:
+      return CATALOG_DURATION_BOUNDARIES;
+  }
+}
+
+/** Sanitizes catalog attributes to the bounded key and value set. */
+function catalogAttributes(
+  attributes: Record<string, string | number>,
+): Record<string, string> {
+  const sanitized: Record<string, string> = {};
+  for (const [key, value] of Object.entries(attributes)) {
+    if (!CATALOG_ATTRIBUTE_KEYS.has(key)) continue;
+    if (key === "http.response.status_code") {
+      if (typeof value === "number" && Number.isInteger(value)) {
+        sanitized[key] = String(value);
+      }
+      continue;
+    }
+    // Route tokens come from the bounded registration catalog: they permit
+    // `@version` syntax and up to 128 UTF-8 bytes, so they are not filtered by
+    // the general short-value heuristic.
+    if (typeof value === "string" && isRouteAttribute(key)) {
+      const trimmed = value.trim();
+      if (trimmed.length > 0 && trimmed.length <= ROUTE_TOKEN_MAX_LENGTH) {
+        sanitized[key] = trimmed;
+      }
+      continue;
+    }
+    const bounded = typeof value === "string"
+      ? lowCardinalityValue(value)
+      : undefined;
+    if (bounded) sanitized[key] = bounded;
+  }
+  return sanitized;
+}
+
+/** Whether one catalog attribute carries a registered route token. */
+function isRouteAttribute(key: string): boolean {
+  return key === "trellis.route" || key === "http.route";
+}
+
+/** Records one duration sample for a catalog family. */
+export function recordCatalogDuration(
+  name: TrellisCatalogDuration,
+  durationMs: number,
+  attributes: Record<string, string | number> = {},
+): void {
+  if (!Number.isFinite(durationMs) || durationMs < 0) return;
+  bindInstrumentProvider();
+  let histogram = CATALOG_HISTOGRAM_CACHE.get(name);
+  if (!histogram) {
+    histogram = getTrellisMeter().createHistogram(
+      name,
+      {
+        unit: "s",
+        advice: { explicitBucketBoundaries: catalogBoundaries(name) },
+      } as Parameters<Meter["createHistogram"]>[1],
+    );
+    CATALOG_HISTOGRAM_CACHE.set(name, histogram);
+  }
+  histogram.record(durationMs / 1000, catalogAttributes(attributes));
+}
+
+/** Adds one counter sample for a catalog family. */
+export function recordCatalogCounter(
+  name: TrellisCatalogCounter,
+  value: number,
+  attributes: Record<string, string | number> = {},
+): void {
+  if (!Number.isFinite(value) || value < 0) return;
+  bindInstrumentProvider();
+  let counter = CATALOG_COUNTER_CACHE.get(name);
+  if (!counter) {
+    counter = getTrellisMeter().createCounter(name);
+    CATALOG_COUNTER_CACHE.set(name, counter);
+  }
+  counter.add(value, catalogAttributes(attributes));
+}
+
+/** Adds one up/down delta for a catalog family. */
+export function recordCatalogUpDown(
+  name: TrellisCatalogUpDown,
+  delta: number,
+  attributes: Record<string, string | number> = {},
+): void {
+  if (!Number.isFinite(delta) || delta === 0) return;
+  bindInstrumentProvider();
+  let updown = CATALOG_UPDOWN_CACHE.get(name);
+  if (!updown) {
+    updown = getTrellisMeter().createUpDownCounter(name);
+    CATALOG_UPDOWN_CACHE.set(name, updown);
+  }
+  updown.add(delta, catalogAttributes(attributes));
+}
+
+/** Registration families for the bounded route token catalog. */
+export type TrellisRouteFamily =
+  | "rpc"
+  | "event"
+  | "consumer"
+  | "job"
+  | "operation"
+  | "http";
+
+/** Maximum distinct route tokens per registration family. */
+export const ROUTE_LIMIT_PER_FAMILY = 128;
+/** Maximum route token length in UTF-8 characters. */
+export const ROUTE_TOKEN_MAX_LENGTH = 128;
+
+const ROUTE_TOKENS = new Map<TrellisRouteFamily, Set<string>>();
+/** Bounded label for raw requests without a registered descriptor token. */
+export const UNKNOWN_ROUTE = "_unknown";
+
+/**
+ * Resolves one bounded registered route token for metric and span labels.
+ *
+ * Tokens come from verified descriptor identities, never from request
+ * subjects. Over-limit or overlong registrations map to `_other` and count
+ * once in `trellis.telemetry.route_overflow`.
+ */
+export function routeToken(family: TrellisRouteFamily, raw: string): string {
+  let tokens = ROUTE_TOKENS.get(family);
+  if (!tokens) {
+    tokens = new Set<string>();
+    ROUTE_TOKENS.set(family, tokens);
+  }
+  const trimmed = raw.trim();
+  if (tokens.has(trimmed)) return trimmed;
+  if (
+    trimmed.length === 0 ||
+    trimmed.length > ROUTE_TOKEN_MAX_LENGTH ||
+    tokens.size >= ROUTE_LIMIT_PER_FAMILY
+  ) {
+    recordCatalogCounter("trellis.telemetry.route_overflow", 1, {
+      "trellis.family": family,
+    });
+    return "_other";
+  }
+  tokens.add(trimmed);
+  return trimmed;
+}
+
+/** Records one actual RPC transport attempt with its bounded outcome. */
+export function recordRpcAttempt(route: string, outcome: string): void {
+  recordCatalogCounter("trellis.rpc.client.attempts", 1, {
+    "trellis.route": route,
+    "trellis.outcome": outcome,
+  });
 }

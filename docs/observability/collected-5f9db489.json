@@ -1,0 +1,293 @@
+{
+  "sourceSha": "5f9db489d22ba1f4d0f7ee8e43cedb24d5bad317",
+  "includedRs": "aae0b66dd43990924395c4483d4ac5c904c67645",
+  "capturedAtUtc": "2026-09-17T16:12:58Z",
+  "tools": {
+    "deno": "2.8.3",
+    "rustc": "1.96.0",
+    "collector": "otel/opentelemetry-collector-contrib:0.160.0@sha256:5b66b0dc6921f2a439cf50b942ccb9e2a4375f136239a9fdf709ef33e4bfc668",
+    "promtool": "prom/prometheus:v3.13.1",
+    "browser": "repository-cached Chromium"
+  },
+  "configuration": {
+    "nativeOtlp": "http://127.0.0.1:4318",
+    "prometheus": "http://127.0.0.1:9464/metrics",
+    "traceBackend": "case-owned file exporter via OTLP HTTP 127.0.0.1:4322",
+    "signals": "metrics and traces enabled; sampler=always_on; metric interval=1000ms; trace batch delay=100ms",
+    "browser": "same-origin /otel forwarded to the case-owned receiver; traceRatio=1",
+    "build": "cargo xtask install, web deno task build, cargo build -p trellis-server on 56fe90b6; 5f9db489 changes only the browser capture test"
+  },
+  "scenarios": {
+    "tsWork": "TRELLIS_OBS_CAPTURE_ENDPOINT=http://127.0.0.1:4318 TRELLIS_OBS_PROMETHEUS_URL=http://127.0.0.1:9464/metrics deno test -A -c ts/integration/deno.json ts/integration/observability_test.ts --filter 'collector enabled'",
+    "rustWork": "TRELLIS_OBS_CAPTURE_ENDPOINT=http://127.0.0.1:4318 TRELLIS_OBS_PROMETHEUS_URL=http://127.0.0.1:9464/metrics deno test -A -c ts/integration/deno.json ts/integration/observability_test.ts --filter 'durable attempt links'",
+    "failover": "deno test -A -c ts/integration/deno.json ts/integration/runtime_test.ts --filter 'surviving replica reclaims an expired operation lease'",
+    "kv": "TRELLIS_OBS_CAPTURE_ENDPOINT=http://127.0.0.1:4318 deno test -A -c ts/integration/deno.json ts/integration/kv_telemetry_test.ts --filter 'one bounded storage'",
+    "dlq": "deno test -A -c ts/integration/deno.json ts/integration/events_test.ts --filter 'rust durable delivery leases, DLQ replay, and crash recovery'",
+    "browser": "TRELLIS_OBS_BROWSER_CAPTURE_ENDPOINT=http://127.0.0.1:4318 deno test -A -c ts/browser/deno.json ts/browser/console_login.browser_test.ts --filter 'browser admin bootstrap'",
+    "commonEnvironment": "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 OTEL_TRACES_SAMPLER=always_on OTEL_METRIC_EXPORT_INTERVAL=1000 OTEL_BSP_SCHEDULE_DELAY=100 TRELLIS_TEST_SERVER_BIN=$PWD/rust/target/debug/trellis-server (also set for the browser server process)"
+  },
+  "samples": [
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/provider",
+      "metric": "trellis.operation.execution.duration_count",
+      "route": "Work",
+      "outcome": "completed",
+      "value": 1
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/provider",
+      "metric": "trellis.operation.execution.duration_count",
+      "route": "Work",
+      "outcome": "lease_lost",
+      "value": 1
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/provider",
+      "metric": "trellis.operation.active",
+      "route": "Work",
+      "value": 0
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/provider",
+      "metric": "trellis.operation.ownership.events",
+      "action": "claim",
+      "outcome": "ok",
+      "value": 2
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/provider",
+      "metric": "trellis.operation.ownership.events",
+      "action": "control",
+      "outcome": "ok",
+      "value": 6
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/provider",
+      "metric": "trellis.job.attempt.duration_count",
+      "route": "work",
+      "outcome": "retry",
+      "value": 1
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/provider",
+      "metric": "trellis.job.attempt.duration_count",
+      "route": "work",
+      "outcome": "completed",
+      "value": 2
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/provider",
+      "metric": "trellis.job.attempt.duration_count",
+      "route": "keyedWork",
+      "outcome": "completed",
+      "value": 1
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/provider",
+      "metric": "trellis.job.lease.events",
+      "action": "acquire",
+      "outcome": "ok",
+      "value": 1
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/provider",
+      "metric": "trellis.job.lease.events",
+      "action": "release",
+      "outcome": "ok",
+      "value": 1
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/provider",
+      "metric": "trellis.delivery.dispositions",
+      "action": "nak",
+      "family": "job",
+      "outcome": "ok",
+      "value": 1
+    },
+    {
+      "scenario": "tsWork",
+      "owner": "trellis/provider",
+      "metric": "trellis.delivery.dispositions",
+      "action": "ack",
+      "family": "job",
+      "outcome": "ok",
+      "value": 3
+    },
+    {
+      "scenario": "rustWork",
+      "owner": "trellis/runtime-rust-provider",
+      "metric": "trellis.operation.execution.duration_count",
+      "outcome": "completed",
+      "value": 1
+    },
+    {
+      "scenario": "rustWork",
+      "owner": "trellis/runtime-rust-provider",
+      "metric": "trellis.operation.active",
+      "value": 0
+    },
+    {
+      "scenario": "rustWork",
+      "owner": "trellis/runtime-rust-provider",
+      "metric": "trellis.job.attempt.duration_count",
+      "route": "keyedWork",
+      "outcome": "retry",
+      "value": 1
+    },
+    {
+      "scenario": "failover",
+      "owner": "trellis/operation-replicas",
+      "metric": "trellis.operation.execution.duration_count",
+      "route": "Work",
+      "outcome": "interrupted",
+      "value": 1
+    },
+    {
+      "scenario": "failover",
+      "owner": "trellis/operation-replicas",
+      "metric": "trellis.operation.execution.duration_count",
+      "route": "Work",
+      "outcome": "completed",
+      "value": 1
+    },
+    {
+      "scenario": "failover",
+      "owner": "trellis/operation-replicas",
+      "metric": "trellis.operation.active",
+      "route": "Work",
+      "value": 0
+    },
+    {
+      "scenario": "kv",
+      "owner": "trellis-kv-acceptance",
+      "metric": "trellis.storage.duration_count",
+      "backend": "kv",
+      "operation": "read",
+      "phase": "total",
+      "outcome": "ok",
+      "value": 3
+    },
+    {
+      "scenario": "kv",
+      "owner": "trellis-kv-acceptance",
+      "metric": "trellis.storage.duration_count",
+      "backend": "kv",
+      "operation": "read",
+      "phase": "total",
+      "outcome": "not_found",
+      "value": 1
+    },
+    {
+      "scenario": "kv",
+      "owner": "trellis-kv-acceptance",
+      "metric": "trellis.storage.duration_count",
+      "backend": "kv",
+      "operation": "cas",
+      "phase": "total",
+      "outcome": "ok",
+      "value": 2
+    },
+    {
+      "scenario": "kv",
+      "owner": "trellis-kv-acceptance",
+      "metric": "trellis.storage.duration_count",
+      "backend": "kv",
+      "operation": "cas",
+      "phase": "total",
+      "outcome": "conflict",
+      "value": 1
+    },
+    {
+      "scenario": "dlq",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis.dlq.transitions",
+      "action": "exhausted",
+      "outcome": "ok",
+      "value": 2
+    },
+    {
+      "scenario": "dlq",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis.dlq.transitions",
+      "action": "replay_succeeded",
+      "outcome": "ok",
+      "value": 1
+    },
+    {
+      "scenario": "dlq",
+      "owner": "trellis/trellis-server",
+      "metric": "trellis.projection.pending",
+      "component": "events_dlq",
+      "value": 0
+    },
+    {
+      "scenario": "browser",
+      "owner": "trellis-browser-console",
+      "metric": "trellis.browser.navigation.duration_count",
+      "phase": "ready",
+      "outcome": "ok",
+      "value": 1
+    }
+  ],
+  "spans": {
+    "browserToRust": {
+      "traceId": "0b3562b5f3ff8cbf5be10c776339835d",
+      "clientSpanId": "85b60d1c93241fd9",
+      "serverSpanId": "ab48cff3f5c3b670",
+      "serverParentSpanId": "85b60d1c93241fd9",
+      "route": "trellis.events@v1:events.Query"
+    },
+    "rustToTypeScript": {
+      "traceId": "7caf49586eebc280377c5f7a48b1e3e1",
+      "clientSpanId": "d12277d1ff74f264",
+      "serverSpanId": "d6b4a01c03fad73a",
+      "serverParentSpanId": "d12277d1ff74f264"
+    },
+    "typeScriptOperation": {
+      "executionTraceId": "441f454874b99fb05282efcca3cabb8c",
+      "executionSpanId": "9f0f818786b28a3e",
+      "linkTraceId": "39015fdf1864881b4cdfe50bf2805f76",
+      "linkSpanId": "ca2244c114bb5b40",
+      "creatorSpan": "provider:trellis.rpc.client"
+    },
+    "rustOperation": {
+      "executionTraceId": "8add5b898d27be647db69b601f19e4cc",
+      "executionSpanId": "7df4cd2d42aa4d55",
+      "linkTraceId": "c8521de3d776fdd2dd797761f7982da2",
+      "linkSpanId": "1fe348e3d662f0a6",
+      "creatorSpan": "runtime-trellis.OperationCaller:trellis.rpc.client"
+    },
+    "typeScriptJob": {
+      "producerTraceId": "3934add3d01593707fc0d7ee5e2f80a4",
+      "producerSpanId": "eff5f9e4129888fe",
+      "producerSpan": "provider:trellis.rpc.server",
+      "retryTraceId": "16fdf32dd7946a8e2dd83ca531531cd2",
+      "retrySpanId": "a440b32b26068b8b",
+      "completedTraceId": "edd5c7ebe0bd089c000be9e2febfb440",
+      "completedSpanId": "8732968d7efca489"
+    }
+  },
+  "validation": {
+    "captureChecker": {
+      "browserToRust": true,
+      "rustToTypeScript": true,
+      "durableOperation": true,
+      "typeScriptOperation": true,
+      "durableJob": true,
+      "noSecretAttributes": true
+    },
+    "numericPoints": "Every selected sample matched a Prometheus scrape taken immediately after its named scenario; the private scrapes were checked independently rather than treating one late scrape as a cumulative history. TS Operation completed/lease_lost is from the repeated tsWork run.",
+    "privacy": "Selected static labels, counts and random OTel IDs only; no payload, principal, connection, subject, credential or raw span attributes retained. The raw capture lived in a private case-owned directory."
+  }
+}

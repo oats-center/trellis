@@ -1,9 +1,10 @@
 use std::path::PathBuf;
 
 use crate::{
-    DEFAULT_AUTH_ACCOUNT, DEFAULT_NATS_SERVER_URL, DEFAULT_NATS_WEBSOCKET_URL,
-    DEFAULT_OPERATOR_NAME, DEFAULT_PUBLIC_ORIGIN, DEFAULT_SYSTEM_ACCOUNT, DEFAULT_TRELLIS_ACCOUNT,
-    DEFAULT_TRELLIS_NAME, DEFAULT_TRELLIS_PORT,
+    DEFAULT_AUTH_ACCOUNT, DEFAULT_NATS_MONITOR_PORT, DEFAULT_NATS_PORT, DEFAULT_NATS_SERVER_URL,
+    DEFAULT_NATS_WEBSOCKET_PORT, DEFAULT_NATS_WEBSOCKET_URL, DEFAULT_OPERATOR_NAME,
+    DEFAULT_PUBLIC_ORIGIN, DEFAULT_SYSTEM_ACCOUNT, DEFAULT_TRELLIS_ACCOUNT, DEFAULT_TRELLIS_NAME,
+    DEFAULT_TRELLIS_PORT,
 };
 
 /// Shared NATS bootstrap names.
@@ -34,10 +35,38 @@ impl Default for NatsBootstrapNames {
 }
 
 /// Shared NATS bootstrap configuration.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NatsBootstrapConfig {
     /// NATS bootstrap names.
     pub names: NatsBootstrapNames,
+    /// Native NATS listen port written to `nats.conf`.
+    pub nats_port: u16,
+    /// NATS HTTP monitoring port written to `nats.conf`.
+    pub monitor_port: u16,
+    /// Browser websocket listen port written to `nats.conf`.
+    pub websocket_port: u16,
+}
+
+impl Default for NatsBootstrapConfig {
+    fn default() -> Self {
+        Self {
+            names: NatsBootstrapNames::default(),
+            nats_port: DEFAULT_NATS_PORT,
+            monitor_port: DEFAULT_NATS_MONITOR_PORT,
+            websocket_port: DEFAULT_NATS_WEBSOCKET_PORT,
+        }
+    }
+}
+
+/// NATS listener ports resolved from a generated managed bundle's `nats.conf`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NatsListeners {
+    /// Native NATS client listener port.
+    pub native: u16,
+    /// HTTP monitoring listener port.
+    pub monitor: u16,
+    /// Browser websocket listener port.
+    pub websocket: u16,
 }
 
 /// Options for generating a NATS bootstrap directory.
@@ -76,6 +105,11 @@ pub struct TrellisRuntimeBootstrapConfig {
     pub nats_websocket_url: String,
     /// Public HTTP origin for OAuth redirects.
     pub public_origin: String,
+    /// Additional origins accepted by the runtime, for callers served elsewhere.
+    ///
+    /// Every entry is added to both the accepted request origins and the insecure-origin
+    /// allow-list, so a browser app on its own development origin can complete a portal login.
+    pub extra_origins: Vec<String>,
 }
 
 impl Default for TrellisRuntimeBootstrapConfig {
@@ -86,6 +120,7 @@ impl Default for TrellisRuntimeBootstrapConfig {
             nats_server_url: DEFAULT_NATS_SERVER_URL.to_string(),
             nats_websocket_url: DEFAULT_NATS_WEBSOCKET_URL.to_string(),
             public_origin: DEFAULT_PUBLIC_ORIGIN.to_string(),
+            extra_origins: Vec::new(),
         }
     }
 }

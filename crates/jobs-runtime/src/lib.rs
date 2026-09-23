@@ -12,6 +12,7 @@ mod query;
 mod resolver;
 mod router;
 pub mod storage;
+pub mod telemetry;
 mod watch;
 pub mod worker_presence;
 
@@ -26,12 +27,12 @@ pub use janitor::{
     plan_expired_events, run_janitor_once, start_janitor_loop, JanitorError, JanitorHandle,
     JanitorRunStats, PlannedExpiredEvent,
 };
-pub use projector::{start_jobs_projector, JobsProjectorHandle};
+pub use projector::{projector_consumer_name, start_jobs_projector, JobsProjectorHandle};
 pub use query::{jobs_admin_resources, JobsAdminResources, JobsQuery, JobsQueryError};
 pub use resolver::{
     JobKeySnapshot, JobResourceBinding, JobResourceResolver, SqliteJobResourceResolver,
 };
 pub use router::build_router_with_query;
 pub use storage::{ListJobsFilter, SqliteJobsStore, SqliteJobsStoreError};
-pub use watch::register_jobs_watch_feed;
+pub use watch::register_jobs_watch_live;
 pub use worker_presence::{start_worker_presence_projector, WorkerPresenceProjectorHandle};

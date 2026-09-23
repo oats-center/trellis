@@ -12,6 +12,12 @@ pub const DEFAULT_TRELLIS_ACCOUNT: &str = "TRELLIS";
 pub const DEFAULT_TRELLIS_PORT: u16 = 3000;
 /// Default native NATS server URL.
 pub const DEFAULT_NATS_SERVER_URL: &str = "nats://127.0.0.1:4222";
+/// Default native NATS listen port written to `nats.conf`.
+pub const DEFAULT_NATS_PORT: u16 = 4222;
+/// Default NATS HTTP monitoring port written to `nats.conf`.
+pub const DEFAULT_NATS_MONITOR_PORT: u16 = 8222;
+/// Default browser websocket listen port written to `nats.conf`.
+pub const DEFAULT_NATS_WEBSOCKET_PORT: u16 = 8080;
 /// Default browser-facing NATS websocket URL.
 pub const DEFAULT_NATS_WEBSOCKET_URL: &str = "ws://localhost:8080";
 /// Default Trellis public HTTP origin.

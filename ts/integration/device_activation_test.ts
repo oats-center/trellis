@@ -85,6 +85,22 @@ Deno.test("device companion requires separate selected consent across restart", 
       flowId,
       confirmationCode: activation.confirmationCode,
     }).start().orThrow();
+    // BI07: a live observation of the real Platform Operation must deliver an
+    // authoritative snapshot and closing it must not cancel the operation.
+    {
+      const observation = await pending.live({}).orThrow();
+      const events: unknown[] = [];
+      for await (const event of observation) {
+        events.push(event);
+        break;
+      }
+      assert(
+        events.length === 1,
+        "Platform Operation observation yielded no initial frame",
+      );
+      const snapshot = await pending.get().orThrow();
+      assertEquals(snapshot.state, "running");
+    }
     const pendingSnapshot = await runtime.waitFor(async () => {
       const snapshot = await pending.get().orThrow();
       return snapshot.progress?.companionConsent ? snapshot : undefined;

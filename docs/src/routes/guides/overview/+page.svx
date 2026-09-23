@@ -33,7 +33,7 @@ endpoints. It is familiar, easy to inspect, and widely supported.
 Trellis is for systems that need more than request and response:
 
 - Services can expose normal calls, but also publish events, provide filtered
-  live feeds, and run caller-visible operations.
+  live live observations, and run caller-visible operations.
 - Apps and CLIs can use typed generated clients instead of hand-written URL and
   JSON glue.
 - Long-running work can report progress and finish later without inventing a
@@ -67,7 +67,7 @@ Trellis gives connected programs a common runtime and language libraries for:
 
 - typed request/response calls
 - durable events
-- filtered live feeds
+- filtered live live observations
 - long-running operations with progress and terminal results
 - expected error modeling
 - service and device authentication flows

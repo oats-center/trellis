@@ -5,6 +5,7 @@ import {
   ok,
   type Result,
 } from "@oatscenter/result";
+import type { LiveSubscription } from "./live/subscription.ts";
 import type { Codec } from "./generated.ts";
 import type { TrellisConnection } from "./connection.ts";
 import type { TypedKV } from "./kv.ts";
@@ -18,7 +19,7 @@ import { createActionUnavailableError } from "./session.ts";
 import type {
   EventListenerContext,
   EventOpts,
-  FeedSubscribeOpts,
+  LiveSubscribeOpts,
   PreparedTrellisEvent,
   RequestOpts,
   RuntimeStateStoresForContract,
@@ -35,7 +36,7 @@ type CodecValue<T> = T extends { decode(value: unknown): infer TValue } ? TValue
   : never;
 type GeneratedCodec = Readonly<{ decode(value: unknown): unknown }>;
 type SelectedActionShape = {
-  kind: "rpc" | "operation" | "event" | "feed";
+  kind: "rpc" | "operation" | "event" | "live";
   descriptorName: string;
   direction: unknown;
   input?: unknown;
@@ -115,12 +116,15 @@ type ActionMethod<TAction extends SelectedActionShape> = TAction["kind"] extends
         >)
         & { resume: OperationInvoker<never>["resume"] }
     : never
-  : TAction["kind"] extends "feed"
+  : TAction["kind"] extends "live"
     ? TAction["input"] extends GeneratedCodec
       ? TAction["event"] extends GeneratedCodec ? (
           input: CodecValue<TAction["input"]>,
-          opts?: FeedSubscribeOpts,
-        ) => AsyncResult<AsyncIterable<CodecValue<TAction["event"]>>, BaseError>
+          opts?: LiveSubscribeOpts,
+        ) => AsyncResult<
+          LiveSubscription<CodecValue<TAction["event"]>>,
+          BaseError
+        >
       : never
     : never
   : TAction["kind"] extends "event"
@@ -278,15 +282,15 @@ export function createCallerRuntime<TContract extends GeneratedParticipant>(
           caller[action.connectedName] = invoke;
         }
         break;
-      case "feed":
+      case "live":
         caller[action.connectedName] = (
           input: unknown,
-          opts?: FeedSubscribeOpts,
+          opts?: LiveSubscribeOpts,
         ) => {
           const error = unavailable();
           return error
             ? AsyncResult.from(Promise.resolve(err(error)))
-            : runtime.feedHandle(action.name).input(input).subscribe(opts);
+            : runtime.liveHandle(action.name).input(input).subscribe(opts);
         };
         break;
       case "event":

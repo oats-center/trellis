@@ -202,7 +202,11 @@ fn parse_projector_message(message: &JobsRuntimeMessage) -> Option<ProjectorEven
     })
 }
 
-fn projector_consumer_name(projection_id: &str) -> String {
+/// Exact durable consumer name for one Jobs projection identity.
+///
+/// The runtime telemetry sampler uses this instead of enumerating every
+/// historical `jobs-projector-*` consumer.
+pub fn projector_consumer_name(projection_id: &str) -> String {
     format!("{PROJECTOR_CONSUMER_NAME}-{projection_id}")
 }
 

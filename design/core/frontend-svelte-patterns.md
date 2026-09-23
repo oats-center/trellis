@@ -93,7 +93,7 @@ A watch is established once per semantic scope and tied to component disposal,
 not restarted on every data refresh. Change events schedule a non-resetting
 coalesced refresh with at most one read in flight and one trailing refresh, so
 continuous events cannot starve the view. A live indicator reflects the actual
-feed lifecycle; the general connection badge does not.
+live lifecycle; the general connection badge does not.
 
 ## Browser App Runtime Pattern
 

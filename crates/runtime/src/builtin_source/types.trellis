@@ -3550,7 +3550,7 @@ enum AuthApiSurfaceTargetSurface {
   rpc;
   operation;
   event;
-  feed;
+  live;
   state;
 }
 
@@ -4083,7 +4083,7 @@ enum AuthCapabilitiesListResponseentriesItemallowsItemtarget1Surface {
   rpc;
   operation;
   event;
-  feed;
+  live;
   state;
 }
 
@@ -4153,7 +4153,7 @@ enum TrellisSurfaceStatusRequestKind {
   rpc;
   operation;
   event;
-  feed;
+  live;
 }
 
 enum TrellisSurfaceStatusResponsestatus1Runtime {

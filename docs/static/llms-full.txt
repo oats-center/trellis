@@ -31,7 +31,7 @@ orders = "contract.trellis"
 ```
 
 Author APIs and participants in the `.trellis` files explicitly listed under
-`[sources]`. An API defines models and public RPC, event, feed, and operation
+`[sources]`. An API defines models and public RPC, event, live, and operation
 surfaces. A participant identifies a service, app, agent, or device, the API it
 implements, its selected dependencies, and its runtime resources. Participant
 identity, API identity, API release version, and surface transport version are
@@ -155,7 +155,7 @@ auth design documentation for protocol details.
 - Event: a published fact. Durable consumption uses participant-declared
   Consumer resources and can redeliver; handlers need an appropriate duplicate
   handling strategy for their side effects.
-- Feed: connection-scoped live data. Closing or aborting the subscription
+- Live: connection-scoped live data. Closing or aborting the subscription
   cancels provider work; it is not a durable event history.
 - Operation: caller-visible asynchronous work with progress, terminal output,
   and optional cancellation, updates, or transfer.
@@ -178,13 +178,17 @@ uses the same handler with a fresh delivery budget, does not rewind the original
 Consumer, and confirms `resolved` before acknowledging success. Delivery and
 application side effects remain at least once.
 
-Operations and jobs may expose typed live updates. Updates are at-most-once, not
-persisted or replayed, and late subscribers may miss them. Durable progress and
-terminal output are separate from updates. Cancel subscriptions when no longer
-needed; cancellation of underlying work is cooperative. Operation get, watch,
-signal, and cancel remain authorized to the creator principal plus participant,
-not a particular session or connection, so reconnect can resume control.
-Completed, failed, and cancelled records are immutable.
+Operations and jobs may expose typed live updates through an owned observation
+session that is separate from the durable executor. A watcher reconciles the
+current authoritative snapshot once its transport is ready, then delivers typed
+transient updates and terminal state; transient updates are ordered and never
+silently dropped, while not-yet-delivered nonterminal snapshots may be conflated.
+Updates are at-most-once, not persisted or replayed, and late subscribers may
+miss them. Durable progress and terminal output are separate from updates.
+Opening or closing a watcher does not start, cancel, or complete the durable
+work. Operation get, watch, signal, and cancel remain authorized to the creator
+principal plus participant, not a particular session or connection, so reconnect
+can resume control. Completed, failed, and cancelled records are immutable.
 
 Keyed Jobs waiting for an active capacity slot maintain the current delivery and
 do not consume a retry attempt before handler entry. `Jobs.Summary` computes all
@@ -192,8 +196,14 @@ matching totals, groups, and statistics independently of any `Jobs.Query` page.
 Job deadlines are creation-relative. Omitted retry means five deliveries with
 delays of 5s, 30s, 2m, and 10m; explicit retry declares total attempts and
 exactly attempts-minus-one positive ordered backoffs.
-Feed cancellation targets the runtime-issued `feedId` and is accepted only from
-the original caller identity; another feed or principal cannot cancel it.
+Live observations and Operation watchers are authorized live sessions negotiated with
+bounded opening requests. The provider signs its offer and frames; control
+responses bind the session ID, logical command sequence, and command hash, and
+continued authority is rechecked from retained context rather than by a network
+lookup per frame. A session has protocol liveness and credit bounds, not a total
+age or message cap; closing returns a receipt whose remote-cleanup state is
+complete, incomplete, or unconfirmed, and reconnect is an explicit new open
+rather than a silent reopen.
 
 Declare expected RPC/operation errors in IDL to obtain typed generated error
 handling. Runtime validation and transport failures remain distinct from those
@@ -244,7 +254,7 @@ Declare these dependencies only when the application uses them:
   profiles.
 - Jobs administration uses `Jobs.Query`, `Jobs.Metrics`, `Jobs.Inspect`, and
   `Jobs.Summary`, and `Jobs.Watch`. Summary is page-independent; Watch is an
-  invalidation feed, so reread the affected query and summary.
+  invalidation live, so reread the affected query and summary.
 - Events offers event history, Consumer observability, and per-Consumer DLQ
   through its Query, Inspect, Metrics, Consumers, and Watch surfaces.
 

@@ -54,8 +54,8 @@ api fieldops@v1 {
   event Reports.Published { payload ReportsPublishedEvent; }
   event Evidence.Uploaded { payload EvidenceRecord; }
   event Sites.Refreshed { payload SitesRefreshedEvent; }
-  feed Audit.Feed { input ActivityLiveFeedRequest; event ActivityLiveFeedEvent; }
-  capabilities { public { allows { rpc Assignments.List; rpc Sites.List; rpc Sites.Get; rpc Evidence.List; rpc Evidence.Download; rpc Evidence.Delete; rpc Reports.List; operation Sites.Refresh; operation Reports.Generate; operation Evidence.Upload; publish event Audit.Recorded; publish event Reports.Published; publish event Evidence.Uploaded; publish event Sites.Refreshed; subscribe event Audit.Recorded; subscribe event Reports.Published; subscribe event Evidence.Uploaded; subscribe event Sites.Refreshed; feed Audit.Feed; } } }
+  live Audit.Feed { input ActivityLiveFeedRequest; event ActivityLiveFeedEvent; }
+  capabilities { public { allows { rpc Assignments.List; rpc Sites.List; rpc Sites.Get; rpc Evidence.List; rpc Evidence.Download; rpc Evidence.Delete; rpc Reports.List; operation Sites.Refresh; operation Reports.Generate; operation Evidence.Upload; publish event Audit.Recorded; publish event Reports.Published; publish event Evidence.Uploaded; publish event Sites.Refreshed; subscribe event Audit.Recorded; subscribe event Reports.Published; subscribe event Evidence.Uploaded; subscribe event Sites.Refreshed; live Audit.Feed; } } }
 }
 
 service Service {

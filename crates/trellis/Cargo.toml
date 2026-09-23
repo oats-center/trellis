@@ -10,6 +10,9 @@ readme = "../../README.md"
 [features]
 live-integration = []
 runtime-internals = []
+telemetry-otlp = [
+  "dep:opentelemetry-otlp",
+]
 
 [[test]]
 name = "integration"
@@ -24,6 +27,10 @@ futures-util.workspace = true
 hkdf = "0.13.0"
 hmac = "0.13.0"
 nkeys = "0.4"
+opentelemetry.workspace = true
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+opentelemetry-otlp = { workspace = true, optional = true }
+tracing-opentelemetry.workspace = true
 postgres = "0.19.12"
 rand = "0.10.0"
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls"] }
@@ -43,6 +50,7 @@ url = "2.5.8"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+tokio = { workspace = true, features = ["test-util"] }
 trellis-test = { path = "../trellis-test" }
 trellis-local-nats = { path = "../local-nats" }
 trellis-bootstrap = { path = "../bootstrap" }

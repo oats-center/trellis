@@ -4420,7 +4420,7 @@ pub mod events {
         const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = Self::SUBSCRIBE_CAPABILITIES;
     }
 }
-pub mod feeds {}
+pub mod lives {}
 /// Registers metadata for every RPC in this API.
 pub fn register_rpc_metadata(router: &mut trellis_rs::service::Router) {
     let _ = router;

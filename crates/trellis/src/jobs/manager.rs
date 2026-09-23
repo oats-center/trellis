@@ -314,6 +314,35 @@ where
     where
         TPayload: Serialize + Clone,
     {
+        let route = crate::telemetry::instruments::route_token(
+            crate::telemetry::instruments::RouteFamily::Job,
+            queue_type,
+        );
+        let observation = crate::telemetry::lifecycle::Observation::start(
+            crate::telemetry::instruments::DurationFamily::JobSubmission,
+            vec![crate::telemetry::KeyValue::new("trellis.route", route)],
+            "cancelled",
+        );
+        let result = self.submit_inner(queue_type, payload).await;
+        let outcome = match &result {
+            Ok(JobSubmitOutcome::Accepted { .. }) => "accepted",
+            Ok(JobSubmitOutcome::Rejected(_)) => "rejected",
+            Ok(JobSubmitOutcome::Coalesced { .. }) => "coalesced",
+            Ok(JobSubmitOutcome::Replaced { .. }) => "replaced",
+            Err(_) => "error",
+        };
+        observation.finish(outcome);
+        result
+    }
+
+    async fn submit_inner<TPayload>(
+        &self,
+        queue_type: &str,
+        payload: TPayload,
+    ) -> Result<JobSubmitOutcome<Job>, JobManagerError<P::Error>>
+    where
+        TPayload: Serialize + Clone,
+    {
         let queue = self.queue_binding(queue_type)?.clone();
         let (job, payload_value) = self.prepare_job(&queue, queue_type, payload)?;
         let Some(policy) = self.key_policy_for_job(&queue, &job)? else {

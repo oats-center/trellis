@@ -1,5 +1,6 @@
 import { headers as natsHeaders, type MsgHdrs } from "@nats-io/nats-core";
 import { ulid } from "ulid";
+import { context, ROOT_CONTEXT, SpanKind, trace } from "@opentelemetry/api";
 
 import {
   getActiveJobSnapshot,
@@ -9,9 +10,15 @@ import {
 } from "../../../jobs.ts";
 import {
   createMapCarrier,
+  extractTraceContext,
   injectTraceContext,
 } from "../../../telemetry/carrier.ts";
 import { recordTrellisError } from "../../../telemetry/mod.ts";
+import {
+  recordCatalogDuration,
+  routeToken,
+} from "../../../telemetry/metrics.ts";
+import { getTrellisTracer } from "../../../telemetry/trace.ts";
 import {
   ActiveJob,
   ActiveJobRuntimeError,
@@ -317,136 +324,154 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
     strictCreate: boolean,
     stableMessageIds?: boolean,
   ): Promise<JobManagerSubmitOutcome<TPayload, TResult>> {
-    const {
-      queue: type,
-      jobId: id,
-      createdAt: now,
-      context,
-      service,
-      payload,
-      trigger = { kind: "serviceCode" },
-      lineage,
-    } = submission;
-    const binding = this.#getQueueBinding(type);
-    const deadline = computeDeadline(now, binding.defaultDeadlineMs);
-    const job: Job<TPayload, TResult> = {
-      id,
-      service,
-      type,
-      state: "pending",
-      context,
-      payload,
-      createdAt: now,
-      updatedAt: now,
-      tries: 0,
-      maxTries: binding.maxDeliver,
-      ...(deadline ? { deadline } : {}),
-      trigger,
-      ...(lineage ? { lineage } : {}),
-    };
-    const event: JobEvent<TPayload, TResult> = {
-      jobId: id,
-      service,
-      jobType: type,
-      eventType: "created",
-      state: "pending",
-      context,
-      tries: 0,
-      maxTries: binding.maxDeliver,
-      payload,
-      ...(deadline ? { deadline } : {}),
-      trigger,
-      ...(lineage ? { lineage } : {}),
-      timestamp: now,
-    };
-
-    const keyedPolicy = getKeyPolicy(binding);
-    if (keyedPolicy) {
-      const stableSubmissionId = stableMessageIds
-        ? submission.submissionId
-        : undefined;
-      const admission = await this.#admitKeyedCreate({
+    const startedAt = performance.now();
+    let outcome = "error";
+    try {
+      const {
+        queue: type,
+        jobId: id,
+        createdAt: now,
+        context,
+        service,
+        payload,
+        trigger = { kind: "serviceCode" },
+        lineage,
+      } = submission;
+      const binding = this.#getQueueBinding(type);
+      const deadline = computeDeadline(now, binding.defaultDeadlineMs);
+      const job: Job<TPayload, TResult> = {
+        id,
+        service,
         type,
-        job,
-        event,
-        policy: keyedPolicy,
-        strictCreate,
-        ...(stableSubmissionId ? { submissionId: stableSubmissionId } : {}),
-      });
-      if (admission.kind !== "accepted" && admission.kind !== "replaced") {
-        return admission;
-      }
-      if (strictCreate && admission.kind === "replaced") {
-        await this.#restoreReplacedKeyedReservation(
+        state: "pending",
+        context,
+        payload,
+        createdAt: now,
+        updatedAt: now,
+        tries: 0,
+        maxTries: binding.maxDeliver,
+        ...(deadline ? { deadline } : {}),
+        trigger,
+        ...(lineage ? { lineage } : {}),
+      };
+      const event: JobEvent<TPayload, TResult> = {
+        jobId: id,
+        service,
+        jobType: type,
+        eventType: "created",
+        state: "pending",
+        context,
+        tries: 0,
+        maxTries: binding.maxDeliver,
+        payload,
+        ...(deadline ? { deadline } : {}),
+        trigger,
+        ...(lineage ? { lineage } : {}),
+        timestamp: now,
+      };
+
+      const keyedPolicy = getKeyPolicy(binding);
+      if (keyedPolicy) {
+        const stableSubmissionId = stableMessageIds
+          ? submission.submissionId
+          : undefined;
+        const admission = await this.#admitKeyedCreate({
+          type,
           job,
-          admission.replaced,
-          keyedPolicy,
-          stableSubmissionId,
-        );
-        return {
-          kind: "rejected",
-          key: admission.key,
-          reason: "queue-depth",
-          active: admission.state.active.length,
-          queued: admission.state.queued.length,
-          limit: keyedPolicy.queue.maxQueuedPerKey,
-        };
-      }
-      if (admission.kind === "replaced") {
-        try {
-          const skippedMsgId = stableSubmissionId
-            ? `trellis-job-skipped:${stableSubmissionId}:${admission.replaced.id}`
-            : undefined;
-          await this.#publishSkipped(
-            type,
-            admission.replaced,
-            now,
-            skippedMsgId,
-          );
-        } catch (error) {
+          event,
+          policy: keyedPolicy,
+          strictCreate,
+          ...(stableSubmissionId ? { submissionId: stableSubmissionId } : {}),
+        });
+        if (admission.kind !== "accepted" && admission.kind !== "replaced") {
+          outcome = admission.kind;
+          return admission;
+        }
+        if (strictCreate && admission.kind === "replaced") {
           await this.#restoreReplacedKeyedReservation(
             job,
             admission.replaced,
             keyedPolicy,
             stableSubmissionId,
           );
+          outcome = "rejected";
+          return {
+            kind: "rejected",
+            key: admission.key,
+            reason: "queue-depth",
+            active: admission.state.active.length,
+            queued: admission.state.queued.length,
+            limit: keyedPolicy.queue.maxQueuedPerKey,
+          };
+        }
+        if (admission.kind === "replaced") {
+          try {
+            const skippedMsgId = stableSubmissionId
+              ? `trellis-job-skipped:${stableSubmissionId}:${admission.replaced.id}`
+              : undefined;
+            await this.#publishSkipped(
+              type,
+              admission.replaced,
+              now,
+              skippedMsgId,
+            );
+          } catch (error) {
+            await this.#restoreReplacedKeyedReservation(
+              job,
+              admission.replaced,
+              keyedPolicy,
+              stableSubmissionId,
+            );
+            throw error;
+          }
+        }
+        try {
+          const createdMsgId = stableSubmissionId
+            ? `trellis-job-created:${stableSubmissionId}`
+            : undefined;
+          await this.#publishJobEvent(type, id, event, createdMsgId);
+        } catch (error) {
+          await this.#removeQueuedKeyedReservation(
+            job,
+            keyedPolicy,
+            stableSubmissionId,
+          );
           throw error;
         }
+        if (admission.kind === "replaced") {
+          outcome = "replaced";
+          return {
+            kind: "replaced",
+            key: admission.key,
+            replaced: {
+              service: admission.replaced.service,
+              jobType: admission.replaced.jobType,
+              id: admission.replaced.id,
+            },
+            job,
+          };
+        }
+        outcome = "accepted";
+        return { kind: "accepted", job, key: admission.key };
       }
-      try {
-        const createdMsgId = stableSubmissionId
-          ? `trellis-job-created:${stableSubmissionId}`
-          : undefined;
-        await this.#publishJobEvent(type, id, event, createdMsgId);
-      } catch (error) {
-        await this.#removeQueuedKeyedReservation(
-          job,
-          keyedPolicy,
-          stableSubmissionId,
-        );
-        throw error;
-      }
-      if (admission.kind === "replaced") {
-        return {
-          kind: "replaced",
-          key: admission.key,
-          replaced: {
-            service: admission.replaced.service,
-            jobType: admission.replaced.jobType,
-            id: admission.replaced.id,
-          },
-          job,
-        };
-      }
-      return { kind: "accepted", job, key: admission.key };
+
+      const createdMsgId = stableMessageIds
+        ? `trellis-job-created:${submission.submissionId}`
+        : undefined;
+      await this.#publishJobEvent(type, id, event, createdMsgId);
+
+      outcome = "accepted";
+      return { kind: "accepted", job };
+    } finally {
+      recordCatalogDuration(
+        "trellis.job.submission.duration",
+        performance.now() - startedAt,
+        {
+          "trellis.route": routeToken("job", submission.queue),
+          "trellis.outcome": outcome,
+        },
+      );
     }
-
-    const createdMsgId = stableMessageIds
-      ? `trellis-job-created:${submission.submissionId}`
-      : undefined;
-    await this.#publishJobEvent(type, id, event, createdMsgId);
-
-    return { kind: "accepted", job };
   }
 
   async #admitKeyedCreate(args: {
@@ -560,6 +585,78 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
     handler: (job: ActiveJob<TPayload, TResult>) => Promise<TResult>,
     metadata: ActiveJobRuntimeMetadata = {},
     validation: JobProcessValidation<TPayload, TResult> = {},
+  ): Promise<JobProcessOutcome<TResult>> {
+    const startedAt = performance.now();
+    const route = routeToken("job", job.type);
+    const carrier = createMapCarrier();
+    carrier.set("traceparent", job.context.traceparent);
+    if (job.context.tracestate) {
+      carrier.set("tracestate", job.context.tracestate);
+    }
+    const producer = trace.getSpanContext(extractTraceContext(carrier));
+    const span = getTrellisTracer().startSpan(
+      "trellis.job.attempt.start",
+      {
+        kind: SpanKind.CONSUMER,
+        attributes: { "trellis.route": route },
+        links: producer ? [{ context: producer }] : [],
+      },
+      ROOT_CONTEXT,
+    );
+    const attemptContext = trace.setSpanContext(
+      ROOT_CONTEXT,
+      span.spanContext(),
+    );
+    let outcome = "error";
+    try {
+      const pending = context.with(
+        attemptContext,
+        () =>
+          this.#processWithHeartbeat(
+            job,
+            cancellation,
+            heartbeat,
+            handler,
+            metadata,
+            validation,
+          ),
+      );
+      span.end();
+      const result = await pending;
+      outcome = result.outcome === "stale_completion_ignored"
+        ? "lease_lost"
+        : result.outcome === "interrupted" && cancellation.isLeaseLost()
+        ? "lease_lost"
+        : result.outcome;
+      return result;
+    } finally {
+      span.end();
+      context.with(attemptContext, () => {
+        getTrellisTracer().startSpan(
+          "trellis.job.attempt.finish",
+          {
+            kind: SpanKind.CONSUMER,
+            attributes: { "trellis.route": route, "trellis.outcome": outcome },
+            links: producer ? [{ context: producer }] : [],
+          },
+          attemptContext,
+        ).end();
+      });
+      recordCatalogDuration(
+        "trellis.job.attempt.duration",
+        performance.now() - startedAt,
+        { "trellis.route": route, "trellis.outcome": outcome },
+      );
+    }
+  }
+
+  async #processWithHeartbeat(
+    job: Job<TPayload, TResult>,
+    cancellation: JobCancellationToken,
+    heartbeat: () => Promise<void>,
+    handler: (job: ActiveJob<TPayload, TResult>) => Promise<TResult>,
+    metadata: ActiveJobRuntimeMetadata,
+    validation: JobProcessValidation<TPayload, TResult>,
   ): Promise<JobProcessOutcome<TResult>> {
     const tries = job.tries + 1;
     const queue = this.#getQueueBinding(job.type);

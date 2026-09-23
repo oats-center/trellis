@@ -2,6 +2,7 @@ import { assert, assertRejects } from "@std/assert";
 
 import { TrellisService } from "@oatscenter/trellis/service";
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import { participants as removedParticipants } from "../../integration/fixtures/runtime-removed/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
 Deno.test("service connection requires an approved participant identity", async (t) => {
@@ -38,7 +39,28 @@ Deno.test("service connection requires an approved participant identity", async 
         name: "provider",
         seed: identity.seed,
       }).orThrow();
-      assert(service.connection !== undefined);
+      try {
+        assert(service.connection !== undefined);
+      } finally {
+        await service.stop();
+      }
     });
+  });
+});
+
+Deno.test("a pending deployment approval keeps its original revision", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const pending = await runtime.contracts.requestApply({
+      contract: participants.Provider.participant,
+    });
+    assert(pending.status === "approval_required");
+    if (pending.status !== "approval_required") return;
+
+    await runtime.contracts.apply({
+      contract: removedParticipants.Provider.participant,
+    });
+    await assertRejects(() =>
+      runtime.contracts.approveApply(pending.pendingId)
+    );
   });
 });

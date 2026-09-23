@@ -80,6 +80,14 @@ impl SessionAuth {
         )
     }
 
+    /// Return the private signing key used for live-session server proofs.
+    ///
+    /// The key stays inside the crate so provider publications authenticate
+    /// with the same runtime identity as ordinary context-bound requests.
+    pub(crate) fn live_signing_key(&self) -> &ed25519_dalek::SigningKey {
+        &self.signing_key
+    }
+
     /// Create the context-bound v1 `proof` header for a signed RPC request.
     ///
     /// The exact NATS reply inbox must be created before signing and used for

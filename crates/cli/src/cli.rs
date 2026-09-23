@@ -97,6 +97,40 @@ pub enum TopLevelCommand {
     Completion { shell: Shell },
 }
 
+impl TopLevelCommand {
+    /// Catalog command label for the CLI duration metric, if instrumented.
+    ///
+    /// Completion and version stay offline and never start exporters.
+    pub fn telemetry_label(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::Add(_) => "add",
+            Self::Rm(_) => "rm",
+            Self::Check(_) => "check",
+            Self::Update(_) => "update",
+            Self::Install(_) => "install",
+            Self::Generate(_) => "generate",
+            Self::Publish(_) => "publish",
+            Self::Login(_) => "login",
+            Self::Logout => "logout",
+            Self::Whoami => "whoami",
+            Self::Identity(_) => "identity",
+            Self::Participants(_) => "participants",
+            Self::Issuers(_) => "issuers",
+            Self::Users(_) => "users",
+            Self::Portals(_) => "portals",
+            Self::Svc(_) => "svc",
+            Self::Dev(_) => "dev",
+            Self::Resources(_) => "resources",
+            Self::Events(_) => "events",
+            #[cfg(feature = "runtime")]
+            Self::Init(_) => "init",
+            Self::Keys(_) => "keys",
+            Self::Upgrade(_) => "upgrade",
+            Self::Version | Self::Completion { .. } => return None,
+        })
+    }
+}
+
 #[derive(Debug, clap::Args)]
 /// Shared project-root selection for local package commands.
 pub struct ProjectRootArgs {

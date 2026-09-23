@@ -31,9 +31,21 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
     options.force = args.force;
     options.runtime.name = args.name.clone();
     options.runtime.trellis_port = args.trellis_port;
-    options.runtime.nats_server_url = args.nats_server_url.clone();
-    options.runtime.nats_websocket_url = args.nats_websocket_url.clone();
-    options.runtime.public_origin = args.public_origin.clone();
+    options.runtime.nats_server_url = args
+        .nats_server_url
+        .clone()
+        .unwrap_or_else(|| format!("nats://127.0.0.1:{}", args.nats_port));
+    options.runtime.nats_websocket_url = args
+        .nats_websocket_url
+        .clone()
+        .unwrap_or_else(|| format!("ws://localhost:{}", args.nats_ws_port));
+    options.runtime.public_origin = args
+        .public_origin
+        .clone()
+        .unwrap_or_else(|| format!("http://localhost:{}", args.trellis_port));
+    options.nats.nats_port = args.nats_port;
+    options.nats.monitor_port = args.nats_monitor_port;
+    options.nats.websocket_port = args.nats_ws_port;
     options.nats.names.operator_name = args.operator_name.clone();
     options.nats.names.system_account = args.system_account.clone();
     options.nats.names.auth_account = args.auth_account.clone();
@@ -247,8 +259,14 @@ fn identity_id_for_provider_subject(provider: &str, subject: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{identity_id_for_provider_subject, seed_admin_user_in_connection};
+    use super::{
+        identity_id_for_provider_subject, init_config_command, seed_admin_user_in_connection,
+    };
+    use crate::cli::{Cli, InitConfigArgs, InitSubcommand, OutputFormat, TopLevelCommand};
+    use clap::Parser as _;
     use rusqlite::{params, Connection};
+    use std::fs;
+    use std::path::Path;
 
     #[test]
     fn seed_admin_user_uses_account_first_storage_shape() {
@@ -296,6 +314,141 @@ mod tests {
         assert_eq!(identity_row.2, "github");
         assert_eq!(identity_row.3, "ada");
         assert_eq!(identity_row.4, 0);
+    }
+
+    #[test]
+    fn init_config_derives_default_and_individual_custom_endpoints() {
+        let temp = tempfile::tempdir().expect("temp dir");
+
+        let (config, nats_config) = generate_bundle(&temp.path().join("default"), &[]);
+        assert!(config.contains("public_origin = \"http://localhost:3000\""));
+        assert!(config.contains("servers = \"nats://127.0.0.1:4222\""));
+        assert!(config.contains("ws_nats_servers = [\"ws://localhost:8080\"]"));
+        assert!(nats_config.contains("listen: 0.0.0.0:4222"));
+        assert!(nats_config.contains("http: 0.0.0.0:8222"));
+        assert!(nats_config.contains("listen: 0.0.0.0:8080"));
+
+        let (config, _) = generate_bundle(
+            &temp.path().join("trellis-port"),
+            &["--trellis-port", "3444"],
+        );
+        assert!(config.contains("public_origin = \"http://localhost:3444\""));
+        assert!(config.contains("redirect_base = \"http://localhost:3444/auth/callback\""));
+        assert!(config.contains("servers = \"nats://127.0.0.1:4222\""));
+
+        let (config, _) = generate_bundle(&temp.path().join("nats-port"), &["--nats-port", "4333"]);
+        assert!(config.contains("servers = \"nats://127.0.0.1:4333\""));
+        assert!(config.contains("ws_nats_servers = [\"ws://localhost:8080\"]"));
+
+        let (_, nats_config) = generate_bundle(
+            &temp.path().join("monitor-port"),
+            &["--nats-monitor-port", "8333"],
+        );
+        assert!(nats_config.contains("http: 0.0.0.0:8333"));
+        assert!(nats_config.contains("listen: 0.0.0.0:4222"));
+
+        let (config, nats_config) =
+            generate_bundle(&temp.path().join("ws-port"), &["--nats-ws-port", "8183"]);
+        assert!(config.contains("ws_nats_servers = [\"ws://localhost:8183\"]"));
+        assert!(nats_config.contains("listen: 0.0.0.0:8183"));
+
+        let (config, nats_config) = generate_bundle(
+            &temp.path().join("all-custom"),
+            &[
+                "--trellis-port",
+                "3444",
+                "--nats-port",
+                "4333",
+                "--nats-monitor-port",
+                "8333",
+                "--nats-ws-port",
+                "8183",
+            ],
+        );
+        assert!(config.contains("public_origin = \"http://localhost:3444\""));
+        assert!(config.contains("servers = \"nats://127.0.0.1:4333\""));
+        assert!(config.contains("ws_nats_servers = [\"ws://localhost:8183\"]"));
+        assert!(nats_config.contains("listen: 0.0.0.0:4333"));
+        assert!(nats_config.contains("http: 0.0.0.0:8333"));
+        assert!(nats_config.contains("listen: 0.0.0.0:8183"));
+    }
+
+    #[test]
+    fn init_config_explicit_advertised_urls_override_derived_values() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let (config, _) = generate_bundle(
+            &temp.path().join("explicit"),
+            &[
+                "--trellis-port",
+                "3444",
+                "--nats-port",
+                "4333",
+                "--nats-ws-port",
+                "8183",
+                "--nats-server-url",
+                "nats://nats.example.test:4999",
+                "--nats-websocket-url",
+                "wss://nats.example.test/ws",
+                "--public-origin",
+                "https://trellis.example.test",
+            ],
+        );
+        assert!(config.contains("servers = \"nats://nats.example.test:4999\""));
+        assert!(config.contains("ws_nats_servers = [\"wss://nats.example.test/ws\"]"));
+        assert!(config.contains("public_origin = \"https://trellis.example.test\""));
+        assert!(!config.contains("nats://127.0.0.1:4333"));
+        assert!(!config.contains("http://localhost:3444"));
+    }
+
+    #[test]
+    fn init_config_rejects_zero_duplicate_and_trellis_collisions_without_writing() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        for (name, flags) in [
+            ("zero", vec!["--nats-port", "0"]),
+            (
+                "duplicate",
+                vec!["--nats-port", "4333", "--nats-monitor-port", "4333"],
+            ),
+            ("collision", vec!["--nats-port", "3000"]),
+        ] {
+            let out = temp.path().join(name);
+            let args = init_config_args(&out, &flags);
+            init_config_command(OutputFormat::Json, &args)
+                .expect_err("invalid listener ports must be rejected");
+            assert!(
+                !out.exists(),
+                "{name}: rejected configuration must not write output"
+            );
+        }
+    }
+
+    fn init_config_args(out: &Path, flags: &[&str]) -> InitConfigArgs {
+        let out = out.to_str().expect("UTF-8 output path").to_string();
+        let mut arguments = vec![
+            "trellis".to_string(),
+            "init".to_string(),
+            "config".to_string(),
+            "--out".to_string(),
+            out,
+        ];
+        arguments.extend(flags.iter().map(|flag| (*flag).to_string()));
+        let cli = Cli::parse_from(&arguments);
+        match cli.command {
+            TopLevelCommand::Init(command) => match command.command {
+                InitSubcommand::Config(args) => *args,
+                other => panic!("unexpected init command: {other:?}"),
+            },
+            other => panic!("unexpected top-level command: {other:?}"),
+        }
+    }
+
+    fn generate_bundle(out: &Path, flags: &[&str]) -> (String, String) {
+        let args = init_config_args(out, flags);
+        init_config_command(OutputFormat::Json, &args).expect("generate bundle");
+        (
+            fs::read_to_string(out.join("config.toml")).expect("read config.toml"),
+            fs::read_to_string(out.join("nats/nats.conf")).expect("read nats.conf"),
+        )
     }
 
     #[test]

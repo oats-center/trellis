@@ -243,7 +243,7 @@ fn validate_names(
                         names
                     }
                     ActionDefinition::Event { .. } => vec![format!("{alias}Event")],
-                    ActionDefinition::Feed { .. } => {
+                    ActionDefinition::Live { .. } => {
                         vec![format!("{alias}Input"), format!("{alias}Event")]
                     }
                 };
@@ -810,7 +810,7 @@ fn render_api(
                     type_ref(payload, package, modules)
                 ));
             }
-            ActionDefinition::Feed { input, event } => {
+            ActionDefinition::Live { input, event } => {
                 lines.push(format!(
                     "export type {base}Input = {};",
                     type_ref(input, package, modules)
@@ -892,8 +892,8 @@ fn render_action(
             type_codec(payload, package, modules),
             serde_json::to_string(parameters).expect("event parameters")
         ),
-        ActionDefinition::Feed { input, event } => format!(
-            "{{ kind: \"feed\", descriptorName: {descriptor}, input: {}, event: {} }}",
+        ActionDefinition::Live { input, event } => format!(
+            "{{ kind: \"live\", descriptorName: {descriptor}, input: {}, event: {} }}",
             type_codec(input, package, modules),
             type_codec(event, package, modules)
         ),
@@ -912,7 +912,7 @@ fn render_action_type(
             ActionKind::Rpc => "rpc",
             ActionKind::Operation => "operation",
             ActionKind::Event => "event",
-            ActionKind::Feed => "feed",
+            ActionKind::Live => "live",
         }),
         js_string(&descriptor_name(id))
     );
@@ -938,7 +938,7 @@ fn render_action_type(
             type_codec(payload, package, modules),
             render_string_matrix_type(parameters)
         ),
-        ActionDefinition::Feed { input, event } => format!(
+        ActionDefinition::Live { input, event } => format!(
             "{{ {common}; readonly input: typeof {}; readonly event: typeof {} }}",
             type_codec(input, package, modules),
             type_codec(event, package, modules)
@@ -1655,7 +1655,7 @@ fn collect_expression(
 fn action_references(action: &ActionDefinition) -> Vec<&TypeRef> {
     match action {
         ActionDefinition::Rpc { input, output, .. }
-        | ActionDefinition::Feed {
+        | ActionDefinition::Live {
             input,
             event: output,
         } => vec![input, output],
@@ -1705,7 +1705,7 @@ fn descriptor_name(id: &ActionId) -> String {
             ActionKind::Rpc => "rpc",
             ActionKind::Operation => "operation",
             ActionKind::Event => "event",
-            ActionKind::Feed => "feed",
+            ActionKind::Live => "live",
         },
         id.name
     )

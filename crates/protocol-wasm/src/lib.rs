@@ -354,9 +354,278 @@ impl VerifiedAuthorizationContextHandle {
     }
 }
 
+/// Generate one canonical live-session nonce from the operating system RNG.
+#[wasm_bindgen]
+pub fn live_generate_nonce() -> Result<String, JsError> {
+    trellis_protocol::generate_nonce().map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Parse one strict JSON live control and return its canonical projection.
+#[wasm_bindgen]
+pub fn live_parse_control(raw: &[u8]) -> Result<String, JsError> {
+    let control = trellis_protocol::parse_live_control(raw)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    let projection = match &control {
+        trellis_protocol::LiveControl::Activate(body) => serde_json::to_value(body),
+        trellis_protocol::LiveControl::Pulse(body) => serde_json::to_value(body),
+        trellis_protocol::LiveControl::Ack(body) => serde_json::to_value(body),
+        trellis_protocol::LiveControl::Close(body) => serde_json::to_value(body),
+        trellis_protocol::LiveControl::EndAck(body) => serde_json::to_value(body),
+    }
+    .map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&projection).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Parse one strict JSON provider data-channel frame and return its projection.
+///
+/// `max_data_body_bytes` is the negotiated application-data body limit; DATA is
+/// bounded by it while CHALLENGE/END use the tighter protocol-control limit.
+#[wasm_bindgen]
+pub fn live_parse_frame(raw: &[u8], max_data_body_bytes: f64) -> Result<String, JsError> {
+    if !max_data_body_bytes.is_finite() || max_data_body_bytes < 0.0 {
+        return Err(JsError::new(
+            "max data body limit must be a finite nonnegative number",
+        ));
+    }
+    let frame = trellis_protocol::parse_live_frame(raw, max_data_body_bytes as u64)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    let projection = match &frame {
+        trellis_protocol::LiveFrame::Data(body) => serde_json::to_value(body),
+        trellis_protocol::LiveFrame::Challenge(body) => serde_json::to_value(body),
+        trellis_protocol::LiveFrame::End(body) => serde_json::to_value(body),
+    }
+    .map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&projection).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Parse one strict signed provider offer and return its canonical projection.
+#[wasm_bindgen]
+pub fn live_parse_offer(raw: &[u8]) -> Result<String, JsError> {
+    trellis_protocol::validate_control_body(raw)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    let value: serde_json::Value =
+        serde_json::from_slice(raw).map_err(|error| JsError::new(&error.to_string()))?;
+    if value.get("type").and_then(|kind| kind.as_str()) != Some("offer") {
+        return Err(JsError::new("live offer carries an unknown discriminant"));
+    }
+    let offer: trellis_protocol::LiveOffer =
+        serde_json::from_value(value).map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&offer).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Parse one strict signed control response and return its tagged projection.
+#[wasm_bindgen]
+pub fn live_parse_control_response(raw: &[u8]) -> Result<String, JsError> {
+    trellis_protocol::validate_control_body(raw)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    let value: serde_json::Value =
+        serde_json::from_slice(raw).map_err(|error| JsError::new(&error.to_string()))?;
+    let projection = match value.get("type").and_then(|kind| kind.as_str()) {
+        Some("control-ack") => {
+            let ack: trellis_protocol::LiveControlAck =
+                serde_json::from_value(value).map_err(|error| JsError::new(&error.to_string()))?;
+            serde_json::json!({ "kind": "ack", "body": ack })
+        }
+        Some("control-error") => {
+            let error: trellis_protocol::LiveControlError =
+                serde_json::from_value(value).map_err(|error| JsError::new(&error.to_string()))?;
+            serde_json::json!({ "kind": "error", "body": error })
+        }
+        _ => {
+            return Err(JsError::new(
+                "live control response carries an unknown discriminant",
+            ));
+        }
+    };
+    serde_json::to_string(&projection).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Return the shared live timing, window and admission constants as JSON.
+#[wasm_bindgen]
+pub fn live_constants() -> Result<String, JsError> {
+    use trellis_protocol::{
+        ACK_FRAME_THRESHOLD, ACK_MAX_DELAY_MS, CHALLENGE_RETRY_MS, CLEANUP_GRACE_MS,
+        CLOSE_EXCHANGE_MS, CLOSE_RETRY_MS, CONSUMER_STALL_MS, CONTROL_TIMEOUT_MS,
+        HEARTBEAT_INTERVAL_MS, MAX_CONSUMER_SESSIONS, MAX_CONTROL_BODY_BYTES, MAX_OPEN_BODY_BYTES,
+        MAX_PROVIDER_SESSIONS, MAX_PROVIDER_SESSIONS_PER_CALLER, MAX_TOMBSTONES,
+        OPEN_RESERVATION_MS, PEER_INACTIVITY_MS, PROTOCOL_HEADER_RESERVE_BYTES, TOMBSTONE_MS,
+        WINDOW_BYTES, WINDOW_FRAMES,
+    };
+    let value = serde_json::json!({
+        "openReservationMs": OPEN_RESERVATION_MS,
+        "controlTimeoutMs": CONTROL_TIMEOUT_MS,
+        "heartbeatIntervalMs": HEARTBEAT_INTERVAL_MS,
+        "challengeRetryMs": CHALLENGE_RETRY_MS,
+        "peerInactivityMs": PEER_INACTIVITY_MS,
+        "consumerStallMs": CONSUMER_STALL_MS,
+        "ackMaxDelayMs": ACK_MAX_DELAY_MS,
+        "ackFrameThreshold": ACK_FRAME_THRESHOLD,
+        "windowFrames": WINDOW_FRAMES,
+        "windowBytes": WINDOW_BYTES,
+        "maxOpenBodyBytes": MAX_OPEN_BODY_BYTES,
+        "maxControlBodyBytes": MAX_CONTROL_BODY_BYTES,
+        "headerReserveBytes": PROTOCOL_HEADER_RESERVE_BYTES,
+        "cleanupGraceMs": CLEANUP_GRACE_MS,
+        "closeExchangeMs": CLOSE_EXCHANGE_MS,
+        "closeRetryMs": CLOSE_RETRY_MS,
+        "tombstoneMs": TOMBSTONE_MS,
+        "maxProviderSessions": MAX_PROVIDER_SESSIONS,
+        "maxProviderSessionsPerCaller": MAX_PROVIDER_SESSIONS_PER_CALLER,
+        "maxConsumerSessions": MAX_CONSUMER_SESSIONS,
+        "maxTombstones": MAX_TOMBSTONES,
+    });
+    serde_json::to_string(&value).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Compute the negotiated DATA body limit from both peers' max payloads.
+#[wasm_bindgen]
+pub fn live_negotiate_max_data_body_bytes(consumer: f64, provider: f64) -> Result<f64, JsError> {
+    if !consumer.is_finite() || !provider.is_finite() || consumer < 0.0 || provider < 0.0 {
+        return Err(JsError::new(
+            "max payloads must be finite nonnegative numbers",
+        ));
+    }
+    trellis_protocol::negotiate_max_data_body_bytes(consumer as u64, provider as u64)
+        .map(|value| value as f64)
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Derive the exact live delivery subject for one observation.
+#[wasm_bindgen]
+pub fn live_data_subject(
+    provider_connection_id: &str,
+    consumer_connection_id: &str,
+    session_id: &str,
+) -> Result<String, JsError> {
+    trellis_protocol::derive_live_data_subject(
+        provider_connection_id,
+        consumer_connection_id,
+        session_id,
+    )
+    .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Derive the exact owner-directed control subject for one session.
+#[wasm_bindgen]
+pub fn live_observe_subject(
+    base_subject: &str,
+    provider_connection_id: &str,
+    session_id: &str,
+) -> Result<String, JsError> {
+    trellis_protocol::derive_live_observe_subject(base_subject, provider_connection_id, session_id)
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Derive the nonqueued owner-control subscription for one provider connection.
+#[wasm_bindgen]
+pub fn live_observe_wildcard_subject(
+    base_subject: &str,
+    provider_connection_id: &str,
+) -> Result<String, JsError> {
+    trellis_protocol::derive_live_observe_wildcard_subject(base_subject, provider_connection_id)
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Validate one subject as a canonical live-session route.
+#[wasm_bindgen]
+pub fn live_validate_subject(subject: &str) -> Result<(), JsError> {
+    trellis_protocol::validate_live_subject(subject)
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Parse one canonical unsigned 64-bit wire counter.
+#[wasm_bindgen]
+pub fn live_parse_u64s(value: &str) -> Result<f64, JsError> {
+    trellis_protocol::parse_u64s(value, &["counter"])
+        .map(|value| value as f64)
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Compute the canonical logical-open hash from its JSON identity projection.
+#[wasm_bindgen]
+pub fn live_logical_open_hash(identity_json: &str) -> Result<String, JsError> {
+    let wire: WireLogicalOpenIdentity =
+        serde_json::from_str(identity_json).map_err(|error| JsError::new(&error.to_string()))?;
+    let identity = trellis_protocol::LogicalOpenIdentity {
+        kind: wire.kind,
+        base_subject: wire.base_subject,
+        open_id: wire.open_id,
+        consumer_connection_id: wire.consumer_connection_id,
+        consumer_session_key: wire.consumer_session_key,
+        consumer_principal_id: wire.consumer_principal_id,
+        consumer_participant_id: wire.consumer_participant_id,
+        receive_max_payload_bytes: wire.receive_max_payload_bytes,
+        live_input: wire.input,
+        operation_id: wire.operation_id,
+        include_updates: wire.include_updates,
+    };
+    trellis_protocol::logical_open_hash(&identity).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Compute the canonical logical-control hash from its raw JSON body.
+#[wasm_bindgen]
+pub fn live_logical_control_hash(raw: &[u8]) -> Result<String, JsError> {
+    let control = trellis_protocol::parse_live_control(raw)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    trellis_protocol::logical_control_hash(&control)
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Build the canonical provider server-message proof digest for exact bytes.
+#[wasm_bindgen]
+pub fn live_server_proof_digest(
+    context_digest: &str,
+    subject: &str,
+    raw_body: &[u8],
+) -> Result<String, JsError> {
+    trellis_protocol::live_server_proof_digest(context_digest, subject, raw_body)
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Verify one provider server-message proof against the pinned provider key.
+#[wasm_bindgen]
+pub fn live_verify_server_proof(
+    proof: &str,
+    context_digest: &str,
+    subject: &str,
+    raw_body: &[u8],
+    provider_key: &str,
+) -> Result<(), JsError> {
+    let proof = trellis_protocol::LiveServerProof::parse(proof)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    trellis_protocol::verify_live_server_proof_encoded(
+        &proof,
+        context_digest,
+        subject,
+        raw_body,
+        provider_key,
+    )
+    .map_err(|error| JsError::new(&error.to_string()))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct WireLogicalOpenIdentity {
+    kind: trellis_protocol::LiveSessionKind,
+    base_subject: String,
+    open_id: String,
+    consumer_connection_id: String,
+    consumer_session_key: String,
+    consumer_principal_id: String,
+    consumer_participant_id: String,
+    receive_max_payload_bytes: u64,
+    #[serde(default)]
+    input: Option<Value>,
+    #[serde(default)]
+    operation_id: Option<String>,
+    #[serde(default)]
+    include_updates: Option<bool>,
+}
+
 fn protocol_error_result(error: &ProtocolError) -> String {
     let (code, path) = match error {
         ProtocolError::Authorization { code, path, .. } => (format!("{code:?}"), path.to_string()),
+        ProtocolError::Live { code, path, .. } => (format!("{code:?}"), path.to_string()),
         _ => ("InvalidInput".to_owned(), String::new()),
     };
     json_result(json!({

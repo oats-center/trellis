@@ -399,8 +399,8 @@ fn compare_action(
             }
         }
         (
-            ActionDefinition::Feed { input: a, event: b },
-            ActionDefinition::Feed { input: x, event: y },
+            ActionDefinition::Live { input: a, event: b },
+            ActionDefinition::Live { input: x, event: y },
         ) => {
             compare_schema(a, old_graph, x, new_graph, &format!("{path}.input"), issues);
             compare_schema(y, new_graph, b, old_graph, &format!("{path}.event"), issues);
@@ -856,6 +856,6 @@ fn kind(value: ActionKind) -> &'static str {
         ActionKind::Rpc => "rpc",
         ActionKind::Operation => "operation",
         ActionKind::Event => "event",
-        ActionKind::Feed => "feed",
+        ActionKind::Live => "live",
     }
 }

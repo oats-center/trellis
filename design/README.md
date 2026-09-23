@@ -77,19 +77,20 @@ These headings are intentionally named for fast human and AI lookup.
 
 ## Cross-Cutting Pattern Docs
 
-| Document                           | Read When                                                          | Why                                                                                           |
-| ---------------------------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------- |
-| `core/platform-libraries.md`       | You are changing library/package boundaries                        | Package ownership and runtime responsibilities                                                |
-| `core/files-transfer-patterns.md`  | You are changing the public files API or operation-native transfer | Contract-owned file metadata APIs, transfer-capable operations, and runtime helper boundaries |
-| `core/state-patterns.md`           | You are changing the public shared state API                       | Named store declarations, runtime state semantics, admin inspection, and TTL behavior         |
-| `core/kv-resource-patterns.md`     | You are changing KV buckets, keys, TTLs, or projections            | KV naming, TTL, and projection rules                                                          |
-| `core/store-resource-patterns.md`  | You are changing service-owned blob store resources                | Store resource shape, runtime semantics, and auth boundaries                                  |
-| `core/type-system-patterns.md`     | You are changing schemas, Result, or error modeling                | Shared type-system and validation rules                                                       |
-| `core/service-development.md`      | You are implementing service code or service runtime ergonomics    | Service layout, lifecycle, jobs vs operations                                                 |
-| `core/testing-patterns.md`         | You are adding, moving, or deleting tests for Trellis behavior     | Smallest real test boundaries, live integration discovery, and infrastructure                 |
-| `core/observability-patterns.md`   | You are changing telemetry, correlation, health, or docs guidance  | Observability and request-correlation rules                                                   |
-| `core/frontend-svelte-patterns.md` | You are changing Svelte frontend conventions                       | Trellis frontend state patterns                                                               |
-| `core/capability-patterns.md`      | You are changing capability naming or deployment-role guidance     | Capability taxonomy and assignment guidance                                                   |
+| Document                            | Read When                                                                 | Why                                                                                           |
+| ----------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `core/platform-libraries.md`        | You are changing library/package boundaries                               | Package ownership and runtime responsibilities                                                |
+| `core/files-transfer-patterns.md`   | You are changing the public files API or operation-native transfer        | Contract-owned file metadata APIs, transfer-capable operations, and runtime helper boundaries |
+| `core/state-patterns.md`            | You are changing the public shared state API                              | Named store declarations, runtime state semantics, admin inspection, and TTL behavior         |
+| `core/kv-resource-patterns.md`      | You are changing KV buckets, keys, TTLs, or projections                   | KV naming, TTL, and projection rules                                                          |
+| `core/store-resource-patterns.md`   | You are changing service-owned blob store resources                       | Store resource shape, runtime semantics, and auth boundaries                                  |
+| `core/type-system-patterns.md`      | You are changing schemas, Result, or error modeling                       | Shared type-system and validation rules                                                       |
+| `core/service-development.md`       | You are implementing service code or service runtime ergonomics           | Service layout, lifecycle, jobs vs operations                                                 |
+| `core/live-observation-sessions.md` | You are changing Live or Operation live transport, activation, or closure | Signed live observation sessions: ownership, credit, liveness, and observation-vs-execution   |
+| `core/testing-patterns.md`          | You are adding, moving, or deleting tests for Trellis behavior            | Smallest real test boundaries, live integration discovery, and infrastructure                 |
+| `core/observability-patterns.md`    | You are changing telemetry, correlation, health, or docs guidance         | Observability and request-correlation rules                                                   |
+| `core/frontend-svelte-patterns.md`  | You are changing Svelte frontend conventions                              | Trellis frontend state patterns                                                               |
+| `core/capability-patterns.md`       | You are changing capability naming or deployment-role guidance            | Capability taxonomy and assignment guidance                                                   |
 
 ## Protocol, API, And Runtime Surface Docs
 

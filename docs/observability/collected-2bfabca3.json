@@ -1,0 +1,277 @@
+{
+  "sourceSha": "2bfabca31eb09a6dbc5d096a6b7e670f5e063e8e",
+  "includedRs": "061f11fe8ef67cbda9dab608a49f13e53be214bb",
+  "collector": "otel/opentelemetry-collector-contrib:0.160.0",
+  "capturedAtUtc": "2026-09-17",
+  "configuration": {
+    "nativeOtlp": "http://127.0.0.1:4318",
+    "prometheus": "http://127.0.0.1:9464/metrics",
+    "traceBackend": "file exporter on a case-owned Collector, via OTLP HTTP 127.0.0.1:4322",
+    "signals": "metrics and traces enabled; OTEL_TRACES_SAMPLER=always_on; OTEL_METRIC_EXPORT_INTERVAL=1000; OTEL_BSP_SCHEDULE_DELAY=100",
+    "browser": "Chromium; same-origin /otel requests forwarded to the case-owned OTLP receiver; traceRatio=1"
+  },
+  "samples": [
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.auth.callout.duration_count",
+      "maxSeriesValue": 5
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.auth.flow.duration_count",
+      "maxSeriesValue": 10
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.auth.verification.duration_count",
+      "maxSeriesValue": 7
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.auth.coverage.count",
+      "maxSeriesValue": 1
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.auth.post_commit.duration_count",
+      "maxSeriesValue": 43
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.auth.post_commit.pending",
+      "maxSeriesValue": 0
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.auth.post_commit.oldest.age",
+      "maxSeriesValue": 0
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.contract.analysis.duration_count",
+      "maxSeriesValue": 18
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.contract.cache.requests",
+      "maxSeriesValue": 16
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.connect.duration_count",
+      "maxSeriesValue": 2
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.connection.count",
+      "maxSeriesValue": 1
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.connection.transitions",
+      "maxSeriesValue": 2
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.job.submission.duration_count",
+      "maxSeriesValue": 1
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.event.publish.duration_count",
+      "maxSeriesValue": 1
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.event.process.duration_count",
+      "maxSeriesValue": 1
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.rpc.server.duration_count",
+      "maxSeriesValue": 2
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.rpc.client.duration_count",
+      "maxSeriesValue": 2
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.rpc.client.attempts",
+      "maxSeriesValue": 2
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.rpc.server.inflight",
+      "maxSeriesValue": 0
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.http.server.duration_count",
+      "maxSeriesValue": 4
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.storage.duration_count",
+      "maxSeriesValue": 293
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.resource.bindings",
+      "maxSeriesValue": 4
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.consumer.pending",
+      "maxSeriesValue": 0
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.consumer.ack_pending",
+      "maxSeriesValue": 0
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.consumer.missing",
+      "maxSeriesValue": 0
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.consumer.progress.age",
+      "maxSeriesValue": 0
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.projection.duration_count",
+      "maxSeriesValue": 17
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.projection.pending",
+      "maxSeriesValue": 0
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.projection.progress.age",
+      "maxSeriesValue": 0
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.runtime.component.ready",
+      "maxSeriesValue": 1
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.runtime.component.observed.time",
+      "maxSeriesValue": 1789620512.7310095
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.runtime.lease.events",
+      "maxSeriesValue": 1
+    },
+    {
+      "scenario": "generated Jobs and Events, Rust caller to TypeScript provider",
+      "metric": "trellis.snapshot.observed.time",
+      "maxSeriesValue": 1789620512.7400389
+    },
+    {
+      "scenario": "Rust keyed Jobs and Operation",
+      "metric": "trellis.job.attempt.duration_count",
+      "maxSeriesValue": 3
+    },
+    {
+      "scenario": "Rust keyed Jobs and Operation",
+      "metric": "trellis.job.lease.events",
+      "maxSeriesValue": 26
+    },
+    {
+      "scenario": "Rust keyed Jobs and Operation",
+      "metric": "trellis.operation.execution.duration_count",
+      "maxSeriesValue": 1
+    },
+    {
+      "scenario": "Rust keyed Jobs and Operation",
+      "metric": "trellis.operation.active",
+      "maxSeriesValue": 0
+    },
+    {
+      "scenario": "Rust keyed Jobs and Operation",
+      "metric": "trellis.operation.ownership.events",
+      "maxSeriesValue": 1
+    },
+    {
+      "scenario": "DLQ replay and delivery",
+      "metric": "trellis.dlq.transitions",
+      "maxSeriesValue": 2
+    },
+    {
+      "scenario": "DLQ replay and delivery",
+      "metric": "trellis.dlq.entries",
+      "maxSeriesValue": 0
+    },
+    {
+      "scenario": "Chromium Console bootstrap, reload, and Health",
+      "metric": "trellis.browser.navigation.duration_count",
+      "maxSeriesValue": 1
+    }
+  ],
+  "spans": {
+    "browserToRust": {
+      "caller": {
+        "service": "trellis-browser-console",
+        "route": "health.Summary",
+        "traceId": "7dbd68687755eefeacb27a449b550dbf",
+        "spanId": "cef3bfdaa71c06dc"
+      },
+      "callee": {
+        "service": "trellis-server",
+        "route": "trellis.health@v1:health.Summary",
+        "traceId": "7dbd68687755eefeacb27a449b550dbf",
+        "spanId": "fe00a1978700c012",
+        "parentSpanId": "cef3bfdaa71c06dc"
+      }
+    },
+    "rustToTypeScript": {
+      "caller": {
+        "service": "runtime-rust-caller",
+        "route": "runtime-trellis.runtime@v1:runtime.Echo",
+        "traceId": "bc24e0f81600535c4deb9d1f853eb180",
+        "spanId": "27a121b363c3d5be"
+      },
+      "callee": {
+        "service": "provider",
+        "route": "Echo",
+        "traceId": "bc24e0f81600535c4deb9d1f853eb180",
+        "spanId": "427e7aade1f73fec",
+        "parentSpanId": "27a121b363c3d5be"
+      }
+    },
+    "durableOperation": {
+      "creator": {
+        "service": "runtime-trellis.OperationCaller",
+        "traceId": "835cde84a487cca18d1f64b8e7d69801",
+        "spanId": "cbfbf6e48d81a39d"
+      },
+      "execution": {
+        "service": "runtime-rust-provider",
+        "name": "trellis.operation.execute.start",
+        "traceId": "18e39556d91a43c0a4c65fdbc39e2930",
+        "spanId": "e7b265246293cd84",
+        "linkTraceId": "835cde84a487cca18d1f64b8e7d69801",
+        "linkSpanId": "cbfbf6e48d81a39d"
+      }
+    },
+    "durableJob": {
+      "execution": {
+        "service": "runtime-rust-provider",
+        "name": "trellis.job.attempt",
+        "traceId": "80f4a0d86da50d2dab6dca2760a4f398",
+        "spanId": "59dcbe4f3ace94fa",
+        "linkTraceId": "97f69509041f4d4149459f2393cad69b",
+        "linkSpanId": "a3c5c81a784b574b"
+      }
+    }
+  }
+}

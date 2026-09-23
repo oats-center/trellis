@@ -3,6 +3,8 @@ import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { connect } from "@nats-io/transport-node";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { fromFileUrl, join } from "@std/path";
+import { AuthError, Result } from "@oatscenter/trellis";
+import { TrellisService } from "@oatscenter/trellis/service";
 import {
   apis as webApis,
   participants as webParticipants,
@@ -803,3 +805,205 @@ for (const sdk of ["rust", "typescript"] as const) {
     });
   });
 }
+
+Deno.test("explicit ephemeral delivery works alongside a declared durable consumer", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: `ephemeral-both-${crypto.randomUUID()}`,
+      contract: participants.EventServiceBoth.participant,
+    });
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.EventServiceBoth.participant,
+      seed: identity.seed,
+    }).orThrow();
+    try {
+      const received: string[] = [];
+      await service.onAlpha(
+        ({ event }) => {
+          received.push(event.value);
+        },
+        {},
+        { mode: "ephemeral" },
+      ).orThrow();
+      await service.onBeta(() => {}, {}, { mode: "ephemeral" }).orThrow();
+      await service.handleObserved(() => Result.ok({ values: [...received] }));
+
+      const alpha = await runtime.connectClient({
+        name: `ephemeral-both-alpha-${crypto.randomUUID()}`,
+        contract: participants.Alpha.participant,
+      });
+      await alpha.publishAlpha({ site: "both", value: "ephemeral" })
+        .orThrow();
+      const observed = await runtime.waitFor(async () => {
+        const value = await alpha.observed({}).orThrow();
+        return value.values.includes("ephemeral") ? value : false;
+      });
+      assertEquals(observed.values, ["ephemeral"]);
+      // The declared durable consumer is provisioned by bootstrap and stays
+      // independent of the explicit ephemeral listener.
+      const consumers = await runtime.events.consumersQuery({});
+      assertEquals(
+        consumers.items.some((item) =>
+          item.filterSubjects.includes(
+            "events.v1.cnVudGltZS10cmVsbGlzLmV2ZW50c0B2MQ.Alpha",
+          )
+        ),
+        true,
+        "the declared durable consumer remains provisioned",
+      );
+    } finally {
+      await service.stop();
+    }
+  });
+});
+
+Deno.test("a declared durable consumer without Event Subscribe rejects explicit ephemeral", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: `consumer-only-${crypto.randomUUID()}`,
+      contract: participants.EventServiceConsumerOnly.participant,
+    });
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.EventServiceConsumerOnly.participant,
+      seed: identity.seed,
+    }).orThrow();
+    try {
+      let failure: unknown;
+      try {
+        await service.onAlpha(() => {}, {}, { mode: "ephemeral" }).orThrow();
+      } catch (error) {
+        failure = error;
+      }
+      assertEquals(
+        failure instanceof AuthError,
+        true,
+        "explicit ephemeral without Event Subscribe must fail with a typed AuthError",
+      );
+      if (failure instanceof AuthError) {
+        assertStringIncludes(
+          String(failure.message),
+          "Event Subscribe",
+          "the failure names the missing authority",
+        );
+      }
+      // The default durable listener still works for the declared consumer.
+      await service.onAlpha(() => {}, {}, { mode: "durable", group: "events" })
+        .orThrow();
+    } finally {
+      await service.stop();
+    }
+  });
+});
+
+Deno.test("Rust consumer-only service rejects explicit ephemeral at the runtime boundary", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: `consumer-only-rust-${crypto.randomUUID()}`,
+      contract: participants.EventServiceConsumerOnly.participant,
+    });
+    const process = new Deno.Command("cargo", {
+      args: [
+        "run",
+        "--config",
+        `patch.crates-io.trellis-rs.path=${
+          JSON.stringify(
+            fromFileUrl(new URL("../../rust/crates/trellis", import.meta.url)),
+          )
+        }`,
+        "--bin",
+        "events",
+        "--manifest-path",
+        fromFileUrl(
+          new URL(
+            "../../integration/fixtures/runtime/Cargo.toml",
+            import.meta.url,
+          ),
+        ),
+      ],
+      env: {
+        TRELLIS_URL: runtime.trellisUrl,
+        TRELLIS_IDENTITY_SEED: identity.seed,
+        CONSUMER_ONLY: "true",
+        EPHEMERAL: "true",
+        CARGO_TARGET_DIR: fromFileUrl(
+          new URL("../../rust/target", import.meta.url),
+        ),
+      },
+      stdout: "piped",
+      stderr: "inherit",
+    }).spawn();
+    try {
+      const reader = process.stdout.pipeThrough(new TextDecoderStream())
+        .getReader();
+      let output = "";
+      while (!output.includes("EPHEMERAL_REJECTED")) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        output += chunk.value;
+      }
+      assertStringIncludes(
+        output,
+        "EPHEMERAL_REJECTED",
+        "Rust explicit ephemeral must fail fast",
+      );
+      assertStringIncludes(
+        output,
+        "Event Subscribe",
+        "Rust failure names the missing authority",
+      );
+      assertEquals(output.includes("EPHEMERAL_ACCEPTED"), false);
+    } finally {
+      try {
+        process.kill("SIGTERM");
+      } catch { /* already exited */ }
+      await process.status;
+    }
+  });
+});
+
+Deno.test("a subscriber-only service receives explicit ephemeral delivery with no durable consumer", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: `subscriber-only-${crypto.randomUUID()}`,
+      contract: participants.EventSubscriberService.participant,
+    });
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.EventSubscriberService.participant,
+      seed: identity.seed,
+    }).orThrow();
+    try {
+      const received: string[] = [];
+      await service.onAlpha(
+        ({ event }) => {
+          received.push(event.value);
+        },
+        {},
+        { mode: "ephemeral" },
+      ).orThrow();
+      const alpha = await runtime.connectClient({
+        name: `subscriber-only-publisher-${crypto.randomUUID()}`,
+        contract: participants.Alpha.participant,
+      });
+      const value = `ephemeral-${crypto.randomUUID()}`;
+      await alpha.publishAlpha({ site: "test", value }).orThrow();
+      await runtime.waitFor(() => received.includes(value), {
+        timeoutMs: 15_000,
+      });
+      const consumers = await runtime.events.consumersQuery({});
+      assertEquals(
+        consumers.items.some((item) =>
+          item.filterSubjects.includes(
+            "events.v1.cnVudGltZS10cmVsbGlzLmV2ZW50c0B2MQ.Alpha",
+          )
+        ),
+        false,
+        "explicit ephemeral must not create a durable consumer",
+      );
+    } finally {
+      await service.stop();
+    }
+  });
+});

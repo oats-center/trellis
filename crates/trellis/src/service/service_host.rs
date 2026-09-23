@@ -39,6 +39,18 @@ where
         Some(&self.binding.digest)
     }
 
+    fn route_token(&self, subject: &str) -> Option<&'static str> {
+        self.handler.route_token(subject)
+    }
+
+    fn is_unary_rpc_route(&self, subject: &str) -> bool {
+        self.handler.is_unary_rpc_route(subject)
+    }
+
+    fn is_live_route(&self, subject: &str) -> bool {
+        self.handler.is_live_route(subject)
+    }
+
     fn handle<'a>(
         &'a self,
         subject: &'a str,

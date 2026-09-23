@@ -51,7 +51,7 @@ Public and cross-service boundaries should be modeled as contract-owned surfaces
 - RPCs for bounded request/reply work
 - operations for caller-visible async workflows
 - events for state-change announcements
-- feeds for authorized live views
+- live observations for authorized live views
 - jobs for service-private background execution
 - state stores for Trellis-managed app memory
 - resources for provisioned service-owned storage

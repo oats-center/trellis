@@ -41,14 +41,14 @@ api primary@v1 {
     upload;
   }
   event Changed { payload Node; }
-  feed Watch { input Empty; event Node; }
+  live Watch { input Empty; event Node; }
   capabilities {
     public { allows { publish event Changed; } }
     capability access {
       title "Access";
       description "Fixture access.";
       consequence "The caller can use the fixture.";
-      allows { rpc Fetch; operation Process; subscribe event Changed; feed Watch; }
+      allows { rpc Fetch; operation Process; subscribe event Changed; live Watch; }
     }
   }
 }
@@ -57,14 +57,14 @@ api secondary@v2 {
   title "Secondary";
   description "Secondary fixture API.";
   event Ping { payload Empty; }
-  feed Monitor { input Empty; event Empty; }
+  live Monitor { input Empty; event Empty; }
   capabilities {
     public { allows { publish event Ping; } }
     capability observe {
       title "Observe";
       description "Fixture observation.";
       consequence "The caller can observe the fixture.";
-      allows { subscribe event Ping; feed Monitor; }
+      allows { subscribe event Ping; live Monitor; }
     }
   }
 }
@@ -87,10 +87,10 @@ app Caller {
     rpc Fetch;
     operation Process;
     subscribe event Changed;
-    feed Watch;
+    live Watch;
     optional capability access;
   }
-  use secondary { subscribe event Ping; feed Monitor; }
+  use secondary { subscribe event Ping; live Monitor; }
 }
 "#;
 
@@ -224,9 +224,9 @@ fn codecs_errors_and_generated_surfaces_compile() {
     assert!(Process::HAS_PROGRESS);
     assert!(Process::UPLOAD);
     assert_eq!(Process::SIGNALS, ["retry"]);
-    fn feed<D: trellis_rs::generated::FeedDescriptor>() {}
+    fn live<D: trellis_rs::generated::LiveDescriptor>() {}
     fn event<D: trellis_rs::generated::EventDescriptor>() {}
-    feed::<fixture_primary_v1::feeds::Watch>();
+    live::<fixture_primary_v1::lives::Watch>();
     event::<fixture_primary_v1::events::Changed>();
     event::<fixture_secondary_v2::events::Ping>();
 
@@ -410,10 +410,10 @@ Deno.test("generated TypeScript package exercises WO-03 B2-B4", () => {
   assert(process.progress?.decode(wire).status === "future", "operation progress");
   assert(process.signals.retry.decode(wire).count === 18_446_744_073_709_551_615n, "operation signal");
   assert(process.upload, "operation upload");
-  assert(Primary.actions["feed:Watch"].event.decode(wire).status === "future", "feed");
+  assert(Primary.actions["live:Watch"].event.decode(wire).status === "future", "feed");
   assert(Primary.actions["event:Changed"].payload.decode(wire).status === "future", "event");
   assert(Secondary.actions["event:Ping"], "second API");
-  assert(Secondary.actions["feed:Monitor"], "second API provider action");
+  assert(Secondary.actions["live:Monitor"], "second API provider action");
 
   assert(Worker.implements.length === 2, "multi-API participant");
   assert(Worker.path === "Worker" && Caller.path === "Caller", "lexical participant paths");

@@ -13,6 +13,7 @@ use futures_util::StreamExt;
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
 use time::{Duration as TimeDuration, OffsetDateTime};
+use tracing::Instrument as _;
 use ulid::Ulid;
 
 use crate::jobs::active_job::ActiveJob;
@@ -405,7 +406,29 @@ where
     Fut: Future<Output = Result<Value, JobProcessError<E>>>,
     E: ToString,
 {
-    manager
+    let route = crate::telemetry::instruments::route_token(
+        crate::telemetry::instruments::RouteFamily::Job,
+        &job.job_type,
+    );
+    let observation = crate::telemetry::lifecycle::Observation::start(
+        crate::telemetry::instruments::DurationFamily::JobAttempt,
+        vec![crate::telemetry::KeyValue::new("trellis.route", route)],
+        "interrupted",
+    );
+    // Each attempt roots locally and links back to the job's creation carrier
+    // instead of pretending the original submission is still open. The span is
+    // carried with the future; no thread-local guard is held across an await.
+    let attempt_span = tracing::info_span!(
+        "trellis.job.attempt",
+        "trellis.route" = route,
+        "trellis.outcome" = tracing::field::Empty,
+    );
+    crate::telemetry::propagation::link_span_to_carrier(
+        &attempt_span,
+        &job.context.traceparent,
+        job.context.tracestate.as_deref(),
+    );
+    let result = manager
         .process_with_heartbeat_and_terminal_hooks(
             job,
             cancellation,
@@ -414,8 +437,22 @@ where
             terminal_cleanup,
             handler,
         )
+        .instrument(attempt_span.clone())
         .await
-        .map_err(|error| RuntimeWorkerError::Process(error.to_string()))
+        .map_err(|error| RuntimeWorkerError::Process(error.to_string()));
+    let outcome = match &result {
+        Ok(JobProcessOutcome::Completed { .. }) => "completed",
+        Ok(JobProcessOutcome::Retry { .. }) => "retry",
+        Ok(JobProcessOutcome::Failed { .. }) => "failed",
+        Ok(JobProcessOutcome::Cancelled { .. }) => "cancelled",
+        Ok(JobProcessOutcome::Interrupted { .. }) => "interrupted",
+        // A stale completion is an observed lease loss, not a completion.
+        Ok(JobProcessOutcome::StaleCompletionIgnored { .. }) => "lease_lost",
+        Err(_) => "error",
+    };
+    attempt_span.record("trellis.outcome", outcome);
+    observation.finish(outcome);
+    result
 }
 
 fn parse_work_payload_job(payload: &[u8]) -> Option<Job> {
@@ -802,6 +839,13 @@ async fn acquire_key_slot_for_work(
         .acquire(policy.clone(), input)
         .await
         .map_err(|error| RuntimeWorkerError::KeyCoordinator(error.to_string()))?;
+    record_lease_event(
+        "acquire",
+        match &outcome {
+            AcquireSlotOutcome::Acquired { .. } => "ok",
+            AcquireSlotOutcome::Blocked { .. } => "conflict",
+        },
+    );
     match outcome {
         AcquireSlotOutcome::Acquired {
             state,
@@ -826,7 +870,16 @@ async fn renew_key_lease(
     let heartbeat_at = OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .map_err(|error| RuntimeWorkerError::KeyCoordinator(error.to_string()))?;
-    renew_key_lease_at(coordinator, active_key, &heartbeat_at).await
+    let outcome = renew_key_lease_at(coordinator, active_key, &heartbeat_at).await?;
+    record_lease_event(
+        "renew",
+        match &outcome {
+            LeaseMutationOutcome::Renewed { .. } => "ok",
+            LeaseMutationOutcome::Lost { .. } => "lost",
+            LeaseMutationOutcome::Released { .. } => "ok",
+        },
+    );
+    Ok(outcome)
 }
 
 async fn renew_key_lease_at(
@@ -899,7 +952,7 @@ async fn release_key_lease(
     active_key: &ActiveKeyLease,
     released_at: &str,
 ) -> Result<LeaseMutationOutcome, RuntimeWorkerError> {
-    coordinator
+    let outcome = coordinator
         .update_key(&active_key.policy, {
             let active_key = active_key.clone();
             let released_at = released_at.to_string();
@@ -916,7 +969,28 @@ async fn release_key_lease(
             }
         })
         .await
-        .map_err(|error| RuntimeWorkerError::KeyCoordinator(error.to_string()))
+        .map_err(|error| RuntimeWorkerError::KeyCoordinator(error.to_string()))?;
+    record_lease_event(
+        "release",
+        match &outcome {
+            LeaseMutationOutcome::Released { .. } => "ok",
+            LeaseMutationOutcome::Lost { .. } => "lost",
+            LeaseMutationOutcome::Renewed { .. } => "ok",
+        },
+    );
+    Ok(outcome)
+}
+
+/// Records one completed keyed job lease action with its bounded outcome.
+fn record_lease_event(action: &'static str, outcome: &'static str) {
+    crate::telemetry::instruments::add_counter(
+        crate::telemetry::instruments::CounterFamily::JobLeaseEvents,
+        1,
+        &[
+            crate::telemetry::KeyValue::new("trellis.action", action),
+            crate::telemetry::KeyValue::new("trellis.outcome", outcome),
+        ],
+    );
 }
 
 fn key_policy_for_job(

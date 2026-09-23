@@ -92,9 +92,9 @@ declare const __api: {
 			readonly payload: typeof Types0.HealthStatusChangedEventCodec;
 			readonly parameters: readonly [];
 		};
-		readonly "feed:Watch": {
-			readonly kind: "feed";
-			readonly descriptorName: "feed:Watch";
+		readonly "live:Watch": {
+			readonly kind: "live";
+			readonly descriptorName: "live:Watch";
 			readonly input: typeof Types0.HealthWatchRequestCodec;
 			readonly event: typeof Types0.HealthWatchFrameCodec;
 		};
@@ -102,5 +102,5 @@ declare const __api: {
 	readonly packageEvidence: unknown;
 };
 export declare const API: typeof __api;
-export declare const API_DIGEST: "850itezlC9qjm-ndTCwrmkEQBCkVmnLqSguqNkYVgaA";
+export declare const API_DIGEST: "6OM4Ykuq1pnElpYu8cbd4tHaom7W6U-PaZ29qX66L-w";
 export {};

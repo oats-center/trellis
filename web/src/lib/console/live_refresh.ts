@@ -158,6 +158,59 @@ export type LiveStatus =
   | "reconnecting"
   | "closed";
 
+/** One SDK watch attempt owned by a page LiveSubscription generation. */
+export type WatchAttempt<T> = {
+  controller: AbortController;
+  stream?: AsyncIterable<T> & { close?: () => void };
+  pump?: Promise<void>;
+  ready?: Promise<void>;
+};
+
+/** Open one Feed and pump it until this attempt is aborted or superseded. */
+export function beginOwnedWatch<T>(args: {
+  open: (
+    signal: AbortSignal,
+  ) => Promise<AsyncIterable<T> & { close?: () => void }>;
+  onFrame: (frame: T) => void;
+  stillOwned: () => boolean;
+  onUnexpectedEnd: (error?: unknown) => void;
+}): WatchAttempt<T> {
+  const attempt: WatchAttempt<T> = { controller: new AbortController() };
+  const opened = Promise.withResolvers<void>();
+  attempt.ready = opened.promise;
+  attempt.pump = (async () => {
+    try {
+      const stream = await args.open(attempt.controller.signal);
+      if (!args.stillOwned() || attempt.controller.signal.aborted) {
+        stream.close?.();
+        opened.resolve();
+        return;
+      }
+      attempt.stream = stream;
+      opened.resolve();
+      for await (const frame of stream) {
+        if (!args.stillOwned() || attempt.controller.signal.aborted) return;
+        args.onFrame(frame);
+      }
+      if (!attempt.controller.signal.aborted && args.stillOwned()) {
+        args.onUnexpectedEnd();
+      }
+    } catch (error) {
+      opened.reject(error);
+      if (!attempt.controller.signal.aborted && args.stillOwned()) {
+        args.onUnexpectedEnd(error);
+      }
+    } finally {
+      try {
+        attempt.stream?.close?.();
+      } catch {
+        // A late handle close must not throw into retry.
+      }
+    }
+  })();
+  return attempt;
+}
+
 export type LiveSubscriptionOptions = {
   /** Opens the real watch; resolves once the subscription is usable. */
   subscribe: () => Promise<void>;

@@ -2,6 +2,7 @@ import { Value } from "typebox/value";
 import { ulid } from "ulid";
 
 import { decodeTrellisHttpError, TrellisHttpError } from "../http_error.ts";
+import { recordCatalogCounter } from "../../telemetry/metrics.ts";
 import type { TrellisAuth } from "../session_auth.ts";
 import type { AuthorizationContextCache } from "./client_context.ts";
 import type {
@@ -99,17 +100,43 @@ export async function refreshAuthorizationContextWithMetadata(args: {
     sessionPublicKey: args.auth.sessionKey,
     unsignedRequest,
   });
-  const response = await fetch(
-    new URL("/auth/context/refresh", args.trellisUrl),
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...unsignedRequest, proof }),
-    },
-  );
-  if (!response.ok) {
-    const error = await decodeTrellisHttpError(response);
-    throw new AuthorizationContextRefreshError(error.status, error.code);
+  let outcome = "error";
+  let response: Response;
+  try {
+    response = await fetch(
+      new URL("/auth/context/refresh", args.trellisUrl),
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...unsignedRequest, proof }),
+      },
+    );
+    if (!response.ok) {
+      const error = await decodeTrellisHttpError(response);
+      const classified = new AuthorizationContextRefreshError(
+        error.status,
+        error.code,
+      );
+      outcome = classified.terminal
+        ? "terminal"
+        : error.code === "resource_pending"
+        ? "pending"
+        : response.status === 503
+        ? "unavailable"
+        : "error";
+      throw classified;
+    }
+    outcome = "ok";
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      outcome = "cancelled";
+    }
+    throw error;
+  } finally {
+    recordCatalogCounter("trellis.auth.refresh.attempts", 1, {
+      "trellis.participant.kind": "user",
+      "trellis.outcome": outcome,
+    });
   }
   const next = Value.Parse(
     ResponseSchema,

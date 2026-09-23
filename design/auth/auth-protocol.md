@@ -177,6 +177,36 @@ The issued NATS user JWT is short-lived and bounded by the route token, context,
 login/credential, grant, resource, and issuer limits. NATS ACLs enforce
 transport permissions but do not define semantic authority.
 
+## Live Observation Sessions
+
+Live observations and Operation watchers are authorized live sessions rather than repeated
+request/reply. An opening request is a bounded, verified request; the provider
+answers with a signed offer and, per session, signs every data frame, challenge,
+end frame, and control response. This provider-message proof is a distinct proof
+domain from application request proofs: it binds the exact subject actually
+published to (the negotiated data subject for provider frames, the validated
+reply inbox for control responses) and the exact raw body.
+
+Control requests are verified through the same request path as other live
+traffic: the authenticated caller tuple, exact route action permission, session
+ownership, and a strict descendant reply of the caller's inbox prefix are
+checked before any state, credit, or terminal mutation. At most one outstanding
+control attempt is retained per session; acknowledgements bind its request ID,
+session ID, logical command sequence, command hash, and accepted cursors, and a
+replay of a processed command returns its cached semantic outcome with fresh
+proof rather than re-applying it.
+
+Ongoing data and control authority is retained, not re-fetched per frame: a
+session holds a real guard over the existing covered authorization lease and
+rechecks pinned identity, context validity, revocation, and installation
+generation locally. A guard's purpose differs by endpoint: the provider's own
+publishing role, a local or admitted remote observer's exact Subscribe/Observe
+atom, or a consumer's pinned peer identity; a guard for one route never
+overwrites another route's requirement. Data publish and control subscribe
+authority is connection-scoped transport permission, not proof of sender
+identity, and a legitimately reachable subject does not make an unsigned or
+foreign-signed frame trusted.
+
 ## Errors
 
 HTTP failures use stable machine-readable codes with statuses appropriate to

@@ -878,6 +878,33 @@ impl EventsStore {
         Ok(())
     }
 
+    /// Reads the unresolved dead-letter snapshot without claiming or mutating.
+    pub fn telemetry_snapshot(
+        &self,
+    ) -> Result<crate::telemetry::DlqTelemetrySnapshot, EventsStoreError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| EventsStoreError::Poisoned)?;
+        let mut snapshot = crate::telemetry::DlqTelemetrySnapshot::default();
+        let mut statement = connection
+            .prepare("SELECT state, COUNT(*) FROM consumer_dead_letters GROUP BY state")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (state, count) = row?;
+            let count = count.max(0) as u64;
+            match state.as_str() {
+                "dead" | "open" => snapshot.open = count,
+                "replayPending" | "replay_pending" => snapshot.replay_pending = count,
+                "replaying" => snapshot.replaying = count,
+                _ => {}
+            }
+        }
+        Ok(snapshot)
+    }
+
     pub(crate) fn dead_letter_projection_checkpoint(&self) -> Result<u64, EventsStoreError> {
         let connection = self
             .connection

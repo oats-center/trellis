@@ -74,7 +74,7 @@ unchanged in IDL references and generated API paths. Generated language symbols
 may use PascalCase names such as `Orders`.
 
 API bodies contain title, description, optional human version, named RPC,
-Operation, Event, and Feed declarations, API-scoped named errors, and one
+Operation, Event, and Live declarations, API-scoped named errors, and one
 capabilities block. Action names are exact unquoted identifiers or dot paths.
 Inputs, outputs, progress, events, and error payloads reference top-level types.
 There is no `rpc internal`, `EventClass`, per-action version, general transfer
@@ -114,10 +114,10 @@ use integer `ms`, `s`, `m`, `h`, or `d`; capacities use `B`, `KiB`, `MiB`, or
 `GiB`.
 
 On JSON wires, 64-bit integers are canonical decimal strings, bytes are padded
-standard base64, timestamps decode RFC3339 (except leap seconds) and emit canonical UTC
-RFC3339, ULIDs are uppercase, and models are open to unknown fields.
-Optional absence and nullable `null` are
-different. Enums retain an unknown-symbol arm.
+standard base64, timestamps decode RFC3339 (except leap seconds) and emit
+canonical UTC RFC3339, ULIDs are uppercase, and models are open to unknown
+fields. Optional absence and nullable `null` are different. Enums retain an
+unknown-symbol arm.
 
 ## Canonicalization and evidence
 

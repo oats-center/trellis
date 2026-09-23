@@ -283,7 +283,7 @@ impl<'a> Parser<'a> {
                         return Err(self.error_previous(format!("duplicate error '{name}'")));
                     }
                 }
-                kind @ ("rpc" | "operation" | "event" | "feed") => {
+                kind @ ("rpc" | "operation" | "event" | "live") => {
                     api.actions.push(self.action(kind.to_owned())?)
                 }
                 "capabilities" => {
@@ -591,7 +591,7 @@ impl<'a> Parser<'a> {
         let (direction, kind) = match first.as_str() {
             "rpc" => ("call".to_owned(), "rpc".to_owned()),
             "operation" => ("invoke".to_owned(), "operation".to_owned()),
-            "feed" => ("subscribe".to_owned(), "feed".to_owned()),
+            "live" => ("subscribe".to_owned(), "live".to_owned()),
             "publish" | "subscribe" => {
                 let kind = self.ident()?;
                 if kind != "event" {
@@ -601,7 +601,7 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 return Err(self.error_previous(
-                    "expected rpc, operation, feed, publish event, or subscribe event",
+                    "expected rpc, operation, live, publish event, or subscribe event",
                 ))
             }
         };
