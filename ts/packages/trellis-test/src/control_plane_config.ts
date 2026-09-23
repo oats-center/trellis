@@ -116,26 +116,122 @@ export function generateSessionSeed(): string {
   return base64url(seed);
 }
 
+const heldProcessLocks = new Set<string>();
+
 /** Owned localhost port reservation for a child process. */
 export type ReservedPort = {
   /** Reserved TCP port. */
   readonly port: number;
   /** Releases the socket immediately before spawning the child. */
   releaseForSpawn(): void;
-  /** Releases the socket. */
+  /** Releases the socket and cooperative process lock. */
   release(): void;
 };
 
 /** Reserves a localhost TCP port until a child process is ready to bind it. */
 export function reserveLocalPort(port = 0): ReservedPort {
-  const listener = Deno.listen({ hostname: "127.0.0.1", port });
-  let held = true;
-  const release = () => {
-    if (!held) return;
-    held = false;
-    listener.close();
-  };
-  return { port: listener.addr.port, releaseForSpawn: release, release };
+  const firstPrivatePort = 49_152;
+  const privatePortCount = 16_384;
+  const lockRoot = Deno.env.get("TRELLIS_TEST_PORT_LOCK_DIR") ?? "/tmp";
+  Deno.mkdirSync(lockRoot, { recursive: true });
+  const start = Deno.pid % privatePortCount;
+  for (
+    let attempt = 0;
+    attempt < (port === 0 ? privatePortCount : 1);
+    attempt++
+  ) {
+    const reservedPort = port ||
+      firstPrivatePort + (start + attempt) % privatePortCount;
+    const lockPath = `${lockRoot}/trellis-test-port-${reservedPort}.lock`;
+    const lockFile = tryAcquireProcessLock(lockPath);
+    if (lockFile === undefined) {
+      if (port !== 0) {
+        throw new Error(
+          `localhost TCP port ${port} is reserved by another test`,
+        );
+      }
+      continue;
+    }
+    try {
+      const listener = Deno.listen({
+        hostname: "127.0.0.1",
+        port: reservedPort,
+      });
+      let socketHeld = true;
+      let lockHeld = true;
+      return {
+        port: reservedPort,
+        releaseForSpawn() {
+          if (!socketHeld) return;
+          socketHeld = false;
+          listener.close();
+        },
+        release() {
+          if (socketHeld) {
+            socketHeld = false;
+            listener.close();
+          }
+          if (lockHeld) {
+            lockHeld = false;
+            releaseProcessLock(lockPath, lockFile);
+          }
+        },
+      };
+    } catch (error) {
+      releaseProcessLock(lockPath, lockFile);
+      if (
+        port === 0 &&
+        (error instanceof Deno.errors.AddrInUse ||
+          error instanceof Deno.errors.PermissionDenied)
+      ) {
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error("no private localhost TCP port is available");
+}
+
+function tryAcquireProcessLock(lockPath: string): Deno.FsFile | undefined {
+  if (heldProcessLocks.has(lockPath)) return undefined;
+  let file: Deno.FsFile;
+  try {
+    file = Deno.openSync(lockPath, {
+      create: true,
+      read: true,
+      write: true,
+    });
+  } catch (error) {
+    if (error instanceof Deno.errors.IsADirectory) return undefined;
+    throw error;
+  }
+  if (!file.tryLockSync()) {
+    file.close();
+    return undefined;
+  }
+  heldProcessLocks.add(lockPath);
+  try {
+    file.truncateSync(0);
+    file.seekSync(0, Deno.SeekMode.Start);
+    file.writeSync(new TextEncoder().encode(`${Deno.pid}\n`));
+  } catch (error) {
+    releaseProcessLock(lockPath, file);
+    throw error;
+  }
+  return file;
+}
+
+function releaseProcessLock(lockPath: string, file: Deno.FsFile): void {
+  heldProcessLocks.delete(lockPath);
+  try {
+    Deno.removeSync(lockPath);
+  } catch {
+  }
+  try {
+    file.unlockSync();
+  } finally {
+    file.close();
+  }
 }
 
 /** Builds the real Trellis control-plane config for an isolated test runtime. */
