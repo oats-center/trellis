@@ -512,7 +512,7 @@ fn collect_cargo_versions(
                 ));
             }
         }
-        if let Some((name, version)) = cargo_inline_dependency_version(trimmed) {
+        if let Some((name, version)) = cargo_dependency_version(trimmed) {
             if is_internal_rust_crate(&name) {
                 versions.push(VersionEntry::new(
                     format!("{} dependency {name}", display_repo_path(repo_root, path)),
@@ -569,7 +569,7 @@ pub(super) fn rewrite_cargo_manifest_versions(
             }
         }
 
-        if let Some((name, version)) = cargo_inline_dependency_version(trimmed) {
+        if let Some((name, version)) = cargo_dependency_version(trimmed) {
             if is_internal_rust_crate(&name) {
                 if version != from {
                     if version == to {
@@ -582,11 +582,17 @@ pub(super) fn rewrite_cargo_manifest_versions(
                         version
                     ));
                 }
-                lines.push(line.replacen(
-                    &format!("version = \"{from}\""),
-                    &format!("version = \"{to}\""),
-                    1,
-                ));
+                let from_literal = format!("\"{from}\"");
+                let to_literal = format!("\"{to}\"");
+                lines.push(if trimmed.contains('{') {
+                    line.replacen(
+                        &format!("version = {from_literal}"),
+                        &format!("version = {to_literal}"),
+                        1,
+                    )
+                } else {
+                    line.replacen(&from_literal, &to_literal, 1)
+                });
                 continue;
             }
         }
@@ -639,7 +645,7 @@ pub(super) fn rewrite_cargo_manifest_versions_for_release(
             }
         }
 
-        if let Some((name, version)) = cargo_inline_dependency_version(trimmed) {
+        if let Some((name, version)) = cargo_dependency_version(trimmed) {
             if is_internal_rust_crate(&name) {
                 require_version_base(
                     &version,
@@ -647,11 +653,17 @@ pub(super) fn rewrite_cargo_manifest_versions_for_release(
                     path,
                     &format!("dependency {name}"),
                 )?;
-                lines.push(line.replacen(
-                    &format!("version = \"{version}\""),
-                    &format!("version = \"{release_version}\""),
-                    1,
-                ));
+                let from_literal = format!("\"{version}\"");
+                let to_literal = format!("\"{release_version}\"");
+                lines.push(if trimmed.contains('{') {
+                    line.replacen(
+                        &format!("version = {from_literal}"),
+                        &format!("version = {to_literal}"),
+                        1,
+                    )
+                } else {
+                    line.replacen(&from_literal, &to_literal, 1)
+                });
                 continue;
             }
         }
@@ -710,17 +722,16 @@ fn cargo_version_assignment(trimmed: &str) -> Option<String> {
     quoted_value_after_equals(trimmed)
 }
 
-fn cargo_inline_dependency_version(trimmed: &str) -> Option<(String, String)> {
+fn cargo_dependency_version(trimmed: &str) -> Option<(String, String)> {
     let (name, rest) = trimmed.split_once('=')?;
-    if !rest.contains("version") {
-        return None;
-    }
-    let version_index = rest.find("version")?;
-    let version_rest = &rest[version_index..];
-    Some((
-        name.trim().to_string(),
-        quoted_value_after_equals(version_rest)?,
-    ))
+    let rest = rest.trim();
+    let version = if let Some(bare) = rest.strip_prefix('"') {
+        bare.strip_suffix('"')?.to_string()
+    } else {
+        let version_index = rest.find("version")?;
+        quoted_value_after_equals(&rest[version_index..])?
+    };
+    Some((name.trim().to_string(), version))
 }
 
 fn quoted_value_after_equals(value: &str) -> Option<String> {

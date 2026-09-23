@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn rewrite_cargo_manifest_updates_workspace_and_internal_dependencies() {
-        let original = "[workspace.package]\nversion = \"0.8.2\"\n\n[dependencies]\ntrellis-rs = { path = \"../trellis\", version = \"0.8.2\" }\nserde = { version = \"1.0\" }\n";
+        let original = "[workspace.package]\nversion = \"0.8.2\"\n\n[dependencies]\ntrellis-rs = { path = \"../trellis\", version = \"0.8.2\" }\ntrellis-protocol = \"0.8.2\"\nserde = { version = \"1.0\" }\n";
         let updated = rewrite_cargo_manifest_versions(
             original,
             "0.8.2",
@@ -333,6 +333,7 @@ mod tests {
         )
         .expect("rewrite cargo versions");
         assert!(updated.contains("version = \"0.9.0\""));
+        assert!(updated.contains("trellis-protocol = \"0.9.0\""));
         assert!(updated.contains("serde = { version = \"1.0\" }"));
     }
 
@@ -352,7 +353,7 @@ mod tests {
 
     #[test]
     fn rewrite_cargo_manifest_for_release_preserves_local_generated_dependency_versions() {
-        let original = "[workspace.package]\nversion = \"0.8.2\"\n\n[dependencies]\ntrellis-rs = { version = \"0.8.2\" }\nconsole-trellis = { path = \"trellis\", version = \"0.0.0\" }\n";
+        let original = "[workspace.package]\nversion = \"0.8.2\"\n\n[dependencies]\ntrellis-rs = { version = \"0.8.2\" }\ntrellis-protocol = \"0.8.2\"\nconsole-trellis = { path = \"trellis\", version = \"0.0.0\" }\n";
         let updated = rewrite_cargo_manifest_versions_for_release(
             original,
             "0.8.2-rc.1",
@@ -361,6 +362,7 @@ mod tests {
         )
         .expect("rewrite cargo release versions");
         assert!(updated.contains("0.8.2-rc.1"));
+        assert!(updated.contains("trellis-protocol = \"0.8.2-rc.1\""));
         assert!(updated.contains("console-trellis = { path = \"trellis\", version = \"0.0.0\" }"));
     }
 
