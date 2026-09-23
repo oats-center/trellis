@@ -34,8 +34,8 @@ function b64url(value: string): string {
     .replace(/=+$/u, "");
 }
 
-function feedBaseSubject(): string {
-  return `feed.v1.${b64url(HEALTH_API)}.${b64url(HEALTH_DEPLOYMENT)}.Watch`;
+function liveBaseSubject(): string {
+  return `live.v1.route.${b64url(HEALTH_API)}.${b64url(HEALTH_DEPLOYMENT)}.Watch`;
 }
 
 /**
@@ -156,7 +156,7 @@ Deno.test("P07 a signed open with a foreign reply is dropped without reflection"
       authenticator: session.authenticator,
     });
     const observer = await platformConnection(runtime);
-    const base = feedBaseSubject();
+    const base = liveBaseSubject();
     const foreign = foreignReplySubject();
     try {
       const foreignIterator = observer.subscribe(foreign)
