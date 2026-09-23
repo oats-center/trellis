@@ -116,7 +116,7 @@ function createOperationRef(
     wait() {
       return AsyncResult.ok(terminal);
     },
-    watch() {
+    live() {
       return AsyncResult.ok((async function* () {
         yield {
           type: "accepted" as const,
@@ -177,7 +177,7 @@ function createPendingReviewOperationRef(args: {
     wait() {
       return AsyncResult.ok(terminal);
     },
-    watch() {
+    live() {
       return AsyncResult.ok((async function* (): AsyncIterable<
         OperationEvent<
           DeviceUserAuthoritiesResolveProgress,

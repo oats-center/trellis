@@ -67,7 +67,7 @@ export type DeviceActivationControllerConfig = {
 };
 
 export type DeviceActivationOperationRef = {
-  watch(): AsyncResult<
+  live(): AsyncResult<
     AsyncIterable<
       OperationEvent<
         DeviceUserAuthoritiesResolveProgress,
@@ -430,7 +430,7 @@ export class DeviceActivationControllerCore {
           }
         }
       }
-      const watch = await operation.watch().match({
+      const watch = await operation.live().match({
         ok: (value) => value,
         err: () => null,
       });
