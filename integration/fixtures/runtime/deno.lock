@@ -18,7 +18,7 @@
     "npm:@opentelemetry/semantic-conventions@^1.40.0": "1.43.0",
     "npm:pino@^10.3.1": "10.3.1",
     "npm:tweetnacl@^1.0.3": "1.0.3",
-    "npm:typebox@^1.1.33": "1.3.30",
+    "npm:typebox@^1.1.33": "1.3.34",
     "npm:ulid@^3.0.2": "3.0.2"
   },
   "npm": {
@@ -308,8 +308,8 @@
     "tweetnacl@1.0.3": {
       "integrity": "sha512-6rt+RN7aOi1nGMyC4Xa5DdYiukl2UWCbcJft7YhxReBGQD7OAM8Pbxw6YMo4r2diNEA8FEmu32YOn9rhaiE5yw=="
     },
-    "typebox@1.3.30": {
-      "integrity": "sha512-vRmBLzlaq9O9dvfGmI5CssLGvDC/R594kH6N/Q1uUU5VPO3PTgQMlWe/UVNdNVTr2EET+FX8BWZkFdYgxTglbQ=="
+    "typebox@1.3.34": {
+      "integrity": "sha512-wbnzrXXDW8xEFHDZZs2jo1MkhaYlKAY4FRhpBc1+2LF1fZVBGCXGdLEhA/Z/NBbgzJMFfeM8m7elKPa/+KxaUQ=="
     },
     "ulid@3.0.2": {
       "integrity": "sha512-yu26mwteFYzBAot7KVMqFGCVpsF6g8wXfJzQUHvu1no3+rRRSFcSV2nKeYvNPLD2J4b08jYBDhHUjeH0ygIl9w==",
@@ -318,16 +318,16 @@
   },
   "workspace": {
     "links": {
-      "jsr:@oatscenter/result@0.12.0": {
+      "jsr:@oatscenter/result@0.100.0": {
         "dependencies": [
           "npm:typebox@^1.1.33",
           "npm:ulid@^3.0.2"
         ]
       },
-      "jsr:@oatscenter/trellis-svelte@0.12.0": {},
-      "jsr:@oatscenter/trellis-test@0.12.0": {
+      "jsr:@oatscenter/trellis-svelte@0.100.0": {},
+      "jsr:@oatscenter/trellis-test@0.100.0": {
         "dependencies": [
-          "jsr:@oatscenter/trellis@0.12",
+          "jsr:@oatscenter/trellis@0.100",
           "jsr:@std/assert@^1.0.19",
           "jsr:@std/path@^1.1.4",
           "npm:@libsql/client@~0.15.15",
@@ -339,7 +339,7 @@
           "npm:ulid@^3.0.2"
         ]
       },
-      "jsr:@oatscenter/trellis@0.12.0": {}
+      "jsr:@oatscenter/trellis@0.100.0": {}
     }
   }
 }

@@ -359,6 +359,7 @@ jobs:
         working-directory: demos/rust/service
         run: |
           trellis generate
+          cargo check --locked --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\""
           consumer="$(mktemp -d)"
           trap 'rm -rf "$consumer"' EXIT
           cp -R Cargo.toml src trellis "$consumer/"
@@ -371,6 +372,7 @@ jobs:
         working-directory: demos/rust/device
         run: |
           trellis generate
+          cargo check --locked --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\""
           consumer="$(mktemp -d)"
           trap 'rm -rf "$consumer"' EXIT
           cp -R Cargo.toml src trellis "$consumer/"
@@ -381,9 +383,9 @@ jobs:
 
   live:
     name: Live integration
-    needs: [install, wasm, portal]
+    needs: [install, wasm, portal, rust, demos]
     runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -426,7 +428,7 @@ jobs:
         env:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
-        run: deno test -A -c ts/integration/deno.json ts/integration
+        run: deno task -c ts/deno.json test:integration
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -443,7 +445,7 @@ jobs:
 
   ui-hosting:
     name: Built-in UI hosting
-    needs: [install, wasm, portal]
+    needs: [install, wasm, portal, live]
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 30
     steps:
@@ -493,7 +495,7 @@ jobs:
 
   console:
     name: Console (${{ matrix.suite }})
-    needs: [install, wasm, portal]
+    needs: [install, wasm, portal, live]
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 30
     strategy:

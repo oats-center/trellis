@@ -19,7 +19,7 @@
     "check": "deno task install && deno task protocol:wasm && deno check packages/trellis/index.ts packages/trellis-svelte/src/index.ts packages/trellis-svelte/src/context.svelte.ts packages/trellis-test/index.ts",
     "check:integration": "deno task install && deno task protocol:wasm && deno task --config integration/deno.json check",
     "fmt:integration": "deno fmt -c deno.json integration",
-    "test:integration": "deno test -A -c integration/deno.json integration",
+    "test:integration": "deno test --parallel -A -c integration/deno.json integration",
     "test:auth": "deno task install && deno task protocol:wasm && deno test -A packages/trellis/auth/conformance_test.ts packages/trellis/auth/session_auth_test.ts",
     "test:result": "deno test -A packages/result",
     "test:trellis": "deno test -A packages/trellis",

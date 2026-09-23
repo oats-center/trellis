@@ -496,7 +496,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
     await this.#admin.ensurePortalConsentPolicy(participantId, selectionIds);
   }
 
-  /** Connects an app/client participant through the public generated client surface. */
+  /** Connects an app/client via generated APIs, waiting for required startup resources. */
   async connectClient<
     TContract extends TrellisTestClientParticipant,
   >(
@@ -509,7 +509,9 @@ export class TrellisTestRuntime implements AsyncDisposable {
     const key = await this.registerClient(args);
     const auth = this.clientAuth(key);
     let client: TrellisTestConnectedClient<TContract> | undefined;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    const deadline = performance.now() + 2 * this.#timeouts.startupMs;
+    let staleAttempts = 0;
+    while (!client) {
       try {
         client = await TrellisClient.connect({
           ...args,
@@ -526,18 +528,28 @@ export class TrellisTestRuntime implements AsyncDisposable {
           cause.cause !== undefined
         ) cause = cause.cause;
         if (
-          attempt === 2 || typeof cause !== "object" || cause === null ||
-          !("status" in cause) || cause.status !== 409 ||
-          !("code" in cause) ||
-          ![
-            "authority_changed",
-            "consent_decision_stale",
-            "consent_view_changed",
-          ]
-            .includes(String(cause.code))
+          typeof cause === "object" && cause !== null &&
+          "status" in cause && "code" in cause
         ) {
-          throw error;
+          if (
+            cause.status === 503 && cause.code === "resource_pending" &&
+            performance.now() < deadline
+          ) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            continue;
+          }
+          if (
+            cause.status === 409 &&
+            [
+              "authority_changed",
+              "consent_decision_stale",
+              "consent_view_changed",
+            ]
+              .includes(String(cause.code)) &&
+            staleAttempts++ < 2
+          ) continue;
         }
+        throw error;
       }
     }
     if (!client) throw new Error("Client authentication did not complete");
