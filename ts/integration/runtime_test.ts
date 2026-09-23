@@ -127,6 +127,31 @@ Deno.test("runtime owns its production stream configs across restart", async () 
 });
 
 Deno.test("generated TypeScript caller reaches Rust provider", async () => {
+  const cargoArgs = [
+    "--config",
+    `patch.crates-io.trellis-rs.path=${
+      JSON.stringify(
+        fromFileUrl(new URL("../../crates/trellis", import.meta.url)),
+      )
+    }`,
+    "--bin",
+    "trellis-runtime-acceptance",
+    "--manifest-path",
+    fromFileUrl(
+      new URL("../../integration/fixtures/runtime/Cargo.toml", import.meta.url),
+    ),
+  ];
+  const cargoTargetDir = fromFileUrl(new URL("../../target", import.meta.url));
+  const build = await new Deno.Command("cargo", {
+    args: ["build", ...cargoArgs],
+    env: { CARGO_TARGET_DIR: cargoTargetDir },
+    stdout: "inherit",
+    stderr: "inherit",
+  }).spawn().status;
+  if (!build.success) {
+    throw new Error(`Rust provider build failed: ${build.code}`);
+  }
+
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: "rust",
@@ -137,30 +162,12 @@ Deno.test("generated TypeScript caller reaches Rust provider", async () => {
         args: [
           "cargo",
           "run",
-          "--config",
-          `patch.crates-io.trellis-rs.path=${
-            JSON.stringify(
-              fromFileUrl(
-                new URL("../../crates/trellis", import.meta.url),
-              ),
-            )
-          }`,
-          "--bin",
-          "trellis-runtime-acceptance",
-          "--manifest-path",
-          fromFileUrl(
-            new URL(
-              "../../integration/fixtures/runtime/Cargo.toml",
-              import.meta.url,
-            ),
-          ),
+          ...cargoArgs,
         ],
         env: {
           TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_IDENTITY_SEED: identity.seed,
-          CARGO_TARGET_DIR: fromFileUrl(
-            new URL("../../target", import.meta.url),
-          ),
+          CARGO_TARGET_DIR: cargoTargetDir,
         },
         stdout: "inherit",
         stderr: "inherit",
