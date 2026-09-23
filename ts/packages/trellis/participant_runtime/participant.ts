@@ -1,4 +1,4 @@
-import type { BaseError } from "@oats-center/result";
+import type { BaseError } from "@oatscenter/result";
 import type { Codec } from "../generated.ts";
 import type {
   EventDesc,

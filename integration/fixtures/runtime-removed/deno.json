@@ -1,5 +1,5 @@
 {
   "imports": {
-    "@oats-center/trellis": "../../../ts/packages/trellis/index.ts"
+    "@oatscenter/trellis": "../../../ts/packages/trellis/index.ts"
   }
 }

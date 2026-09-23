@@ -1,4 +1,4 @@
-import { Result, type Result as ResultType } from "@oats-center/result";
+import { Result, type Result as ResultType } from "@oatscenter/result";
 import {
   headers as natsHeaders,
   type Msg,

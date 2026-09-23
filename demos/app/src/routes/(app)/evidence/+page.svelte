@@ -1,6 +1,6 @@
 <script lang="ts">
   import { ulid } from "ulid";
-  import { TransferGrantSchema } from "@oats-center/trellis";
+  import { TransferGrantSchema } from "@oatscenter/trellis";
   import { Value } from "typebox/value";
   import { onDestroy, onMount } from "svelte";
   import { resolve } from "$app/paths";

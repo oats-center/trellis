@@ -1,5 +1,5 @@
-import { Result } from "@oats-center/trellis";
-import { TrellisService } from "@oats-center/trellis/service";
+import { Result } from "@oatscenter/trellis";
+import { TrellisService } from "@oatscenter/trellis/service";
 import { participants } from "./packages/runtime-trellis/index.js";
 
 const [trellisUrl, seed] = Deno.args;

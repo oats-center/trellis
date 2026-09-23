@@ -6,7 +6,7 @@ import { ulid } from "ulid";
 import { apis } from "../packages/trellis-test/trellis/index.js";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
-import { TrellisService } from "@oats-center/trellis/service";
+import { TrellisService } from "@oatscenter/trellis/service";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
 // The runtime serializes `ResourceProviderIdentity` with camelCase variant names

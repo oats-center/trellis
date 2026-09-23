@@ -336,27 +336,27 @@ export const apiReferenceOverviewDoc: DocEntry = {
 
 export const apiReferenceDocs: DocEntry[] = [
   {
-    title: "@oats-center/trellis",
+    title: "@oatscenter/trellis",
     description:
       "TypeScript Trellis client runtime, contract helpers, generated SDKs, and service APIs.",
     href: "/api/typescript/trellis/index.ts/index.html",
     section: "API Reference",
   },
   {
-    title: "@oats-center/trellis-svelte",
+    title: "@oatscenter/trellis-svelte",
     description: "Svelte integration APIs for Trellis browser applications.",
     href: "/api/typescript/trellis-svelte/src/index.ts/index.html",
     section: "API Reference",
   },
   {
-    title: "@oats-center/trellis-test",
+    title: "@oatscenter/trellis-test",
     description:
       "Deno-first integration test helpers for Trellis service repositories.",
     href: "/api/typescript/trellis-test/index.ts/index.html",
     section: "API Reference",
   },
   {
-    title: "@oats-center/result",
+    title: "@oatscenter/result",
     description:
       "Class-based Result and AsyncResult APIs for explicit TypeScript error handling.",
     href: "/api/typescript/result/mod.ts/index.html",
@@ -624,7 +624,7 @@ export const guideDocs: DocEntry[] = [
   {
     title: "Testing Trellis services",
     description:
-      "Run out-of-tree TypeScript service integration tests with @oats-center/trellis-test, case-scoped fixtures, and the generic runner.",
+      "Run out-of-tree TypeScript service integration tests with @oatscenter/trellis-test, case-scoped fixtures, and the generic runner.",
     href: "/guides/testing-trellis-services",
     section: "Libraries",
   },

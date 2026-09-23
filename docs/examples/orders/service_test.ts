@@ -1,6 +1,6 @@
 import { assertEquals, assertMatch } from "@std/assert";
-import { TrellisTestRuntime } from "@oats-center/trellis-test";
-import { TrellisService } from "@oats-center/trellis/service";
+import { TrellisTestRuntime } from "@oatscenter/trellis-test";
+import { TrellisService } from "@oatscenter/trellis/service";
 import { participants } from "orders-trellis";
 
 import { createOrder } from "./service.ts";

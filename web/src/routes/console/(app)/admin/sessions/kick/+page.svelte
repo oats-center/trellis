@@ -1,6 +1,6 @@
 <script lang="ts">
   import { ulid } from "ulid";
-  import { isErr } from "@oats-center/result";
+  import { isErr } from "@oatscenter/result";
   import { resolve } from "$lib/console_paths";
   import { page } from "$app/state";
   import { onDestroy, untrack } from "svelte";

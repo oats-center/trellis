@@ -1,4 +1,4 @@
-import { TrellisService } from "@oats-center/trellis/service";
+import { TrellisService } from "@oatscenter/trellis/service";
 import { participants } from "orders-trellis";
 import { createOrder } from "./service.ts";
 

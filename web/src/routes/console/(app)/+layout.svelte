@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { TrellisProvider } from "@oats-center/trellis-svelte";
+  import { TrellisProvider } from "@oatscenter/trellis-svelte";
   import type { Component, Snippet } from "svelte";
   import { onMount } from "svelte";
   import { setSelectedTrellisUrl, trellisApp } from "$lib/trellis-context.svelte";

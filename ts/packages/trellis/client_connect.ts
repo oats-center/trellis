@@ -8,7 +8,7 @@ import {
   BaseError,
   Result,
   UnexpectedError,
-} from "@oats-center/result";
+} from "@oatscenter/result";
 import { type StaticDecode, Type } from "typebox";
 import { Value } from "typebox/value";
 import { ulid } from "ulid";

@@ -1,7 +1,7 @@
 import { equal } from "node:assert/strict";
 
 import { resolveRequestedTarget } from "./target.ts";
-import { err, ok } from "@oats-center/result";
+import { err, ok } from "@oatscenter/result";
 import { apis } from "trellis-web-generated";
 
 function authFailure(code: string) {

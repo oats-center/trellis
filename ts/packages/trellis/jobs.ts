@@ -1,5 +1,5 @@
 import type { AsyncLocalStorage } from "node:async_hooks";
-import { AsyncResult, BaseError, Result } from "@oats-center/result";
+import { AsyncResult, BaseError, Result } from "@oatscenter/result";
 import { type StaticDecode, Type } from "typebox";
 
 import { UnexpectedError } from "./errors/index.ts";

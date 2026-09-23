@@ -7,7 +7,7 @@ import {
   portalProviderLoginUrl,
   submitPortalApproval,
   TrellisHttpError,
-} from "@oats-center/trellis/auth/browser";
+} from "@oatscenter/trellis/auth/browser";
 
 type AuthConfig = { authUrl: string };
 

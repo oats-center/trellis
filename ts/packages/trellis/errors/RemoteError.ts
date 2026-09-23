@@ -2,7 +2,7 @@ import {
   Result,
   type UnexpectedError,
   type UnexpectedErrorData,
-} from "@oats-center/result";
+} from "@oatscenter/result";
 import Type, { type Static } from "typebox";
 import { ParseError, Value } from "typebox/value";
 import type { AuthErrorData } from "./AuthError.ts";

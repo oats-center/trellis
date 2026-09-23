@@ -1,4 +1,4 @@
-# @oats-center/trellis-svelte
+# @oatscenter/trellis-svelte
 
 Svelte integration for Trellis browser applications.
 
@@ -12,5 +12,5 @@ Use `TrellisProvider` as the primary integration surface:
 - read the live client synchronously with `app.getTrellis()` from child
   components
 
-Uses the contract/runtime model from `@oats-center/trellis/contracts` and
-`@oats-center/trellis`.
+Uses the contract/runtime model from `@oatscenter/trellis/contracts` and
+`@oatscenter/trellis`.

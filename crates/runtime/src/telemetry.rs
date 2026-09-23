@@ -11,7 +11,7 @@ use std::time::Duration;
 use opentelemetry::metrics::{Counter, Histogram};
 use opentelemetry::{global, KeyValue};
 
-const METER_NAME: &str = "@oats-center/trellis";
+const METER_NAME: &str = "@oatscenter/trellis";
 
 /// Explicit histogram boundaries in seconds, shared by every duration metric.
 const DURATION_BOUNDARIES: [f64; 13] = [

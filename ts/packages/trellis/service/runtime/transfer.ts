@@ -3,7 +3,7 @@ import {
   isErr,
   Result,
   type Result as ResultType,
-} from "@oats-center/result";
+} from "@oatscenter/result";
 import {
   headers as natsHeaders,
   type Msg,

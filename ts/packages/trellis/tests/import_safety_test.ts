@@ -22,8 +22,8 @@ Deno.test("root package import does not require project-local API packages", asy
     const trellisImports = Object.fromEntries(
       Object.entries(packageConfig.exports ?? {}).map(([key, value]) => [
         key === "."
-          ? "@oats-center/trellis"
-          : `@oats-center/trellis${key.slice(1)}`,
+          ? "@oatscenter/trellis"
+          : `@oatscenter/trellis${key.slice(1)}`,
         new URL(value, packageConfigUrl).href,
       ]),
     );
@@ -34,7 +34,7 @@ Deno.test("root package import does not require project-local API packages", asy
         imports: {
           ...imports,
           ...trellisImports,
-          "@oats-center/result": new URL("../../result/mod.ts", import.meta.url)
+          "@oatscenter/result": new URL("../../result/mod.ts", import.meta.url)
             .href,
         },
         nodeModulesDir: "auto",
@@ -82,9 +82,9 @@ Deno.test("telemetry subpath import does not require telemetry SDK packages", as
       JSON.stringify({
         imports: {
           "@opentelemetry/api": apiImport,
-          "@oats-center/result": new URL("../../result/mod.ts", import.meta.url)
+          "@oatscenter/result": new URL("../../result/mod.ts", import.meta.url)
             .href,
-          "@oats-center/trellis/telemetry": new URL(
+          "@oatscenter/trellis/telemetry": new URL(
             "../telemetry.ts",
             import.meta.url,
           ).href,
@@ -95,7 +95,7 @@ Deno.test("telemetry subpath import does not require telemetry SDK packages", as
       }),
     );
 
-    const script = 'await import("@oats-center/trellis/telemetry");';
+    const script = 'await import("@oatscenter/trellis/telemetry");';
 
     const output = await new Deno.Command(Deno.execPath(), {
       args: ["eval", "--quiet", "--config", configPath, script],

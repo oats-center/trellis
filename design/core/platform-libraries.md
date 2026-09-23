@@ -29,21 +29,21 @@ connection walkthroughs, and exact public signatures belong in:
 
 ## Core Libraries
 
-| Library                             | Purpose                                                                                                                  | Use when                            |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------- |
-| `@oats-center/trellis`              | Canonical core Trellis runtime package: client/device helpers, Result helpers, transfers, and generated-contract support | Frontend apps, services, CLI tools  |
-| `@oats-center/trellis/service`      | Service-side runtime facade, extracted handler types, and service-only helpers                                           | Backend services                    |
-| `@oats-center/trellis/service`      | Shared Node-compatible native service runtime                                                                            | Node and Deno services              |
-| `@oats-center/trellis/auth`         | Full auth helper and auth protocol surface, including browser bind helpers                                               | Apps, services, docs, tests         |
-| `@oats-center/trellis/auth/browser` | Browser-only auth and portal-flow helper facade                                                                          | Browser apps, custom portals        |
-| `@oats-center/trellis/participant`  | Participant metadata and canonical runtime types                                                                         | Generated code and tooling          |
-| Configured local generated package  | One ordinary ESM package with `apis` and `participants` namespaces                                                       | Apps and services that consume APIs |
-| `@oats-center/trellis/telemetry`    | Specialized Trellis telemetry facade for tracing, propagation, and metrics                                               | Runtime libraries and services      |
-| `@oats-center/trellis-svelte`       | Svelte-specific Trellis browser integration with a Trellis-only public surface                                           | Svelte applications                 |
+| Library                            | Purpose                                                                                                                  | Use when                            |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------- |
+| `@oatscenter/trellis`              | Canonical core Trellis runtime package: client/device helpers, Result helpers, transfers, and generated-contract support | Frontend apps, services, CLI tools  |
+| `@oatscenter/trellis/service`      | Service-side runtime facade, extracted handler types, and service-only helpers                                           | Backend services                    |
+| `@oatscenter/trellis/service`      | Shared Node-compatible native service runtime                                                                            | Node and Deno services              |
+| `@oatscenter/trellis/auth`         | Full auth helper and auth protocol surface, including browser bind helpers                                               | Apps, services, docs, tests         |
+| `@oatscenter/trellis/auth/browser` | Browser-only auth and portal-flow helper facade                                                                          | Browser apps, custom portals        |
+| `@oatscenter/trellis/participant`  | Participant metadata and canonical runtime types                                                                         | Generated code and tooling          |
+| Configured local generated package | One ordinary ESM package with `apis` and `participants` namespaces                                                       | Apps and services that consume APIs |
+| `@oatscenter/trellis/telemetry`    | Specialized Trellis telemetry facade for tracing, propagation, and metrics                                               | Runtime libraries and services      |
+| `@oatscenter/trellis-svelte`       | Svelte-specific Trellis browser integration with a Trellis-only public surface                                           | Svelte applications                 |
 
 ## Library Rules
 
-- `@oats-center/trellis` is the canonical app and service package for Trellis
+- `@oatscenter/trellis` is the canonical app and service package for Trellis
   TypeScript development
 - service APIs are defined with the service that owns them and are consumed
   through contract packages
@@ -52,40 +52,40 @@ connection walkthroughs, and exact public signatures belong in:
   with the source package version and the CLI-matched published runtime
   dependency
 - health contract types come from the generated Health API module
-- framework adapters such as `@oats-center/trellis-svelte` remain separate
+- framework adapters such as `@oatscenter/trellis-svelte` remain separate
   packages
 - platform packages should expose stable ergonomic surfaces and hide
   transport/bootstrap details
 - browser-safe public runtime APIs and generated descriptor support belong on
-  `@oats-center/trellis`
+  `@oatscenter/trellis`
 - the root package should expose Trellis-owned lifecycle handles such as
   `TrellisConnection`, not raw transport handles such as `NatsConnection`
 - browser-only login and portal-flow helpers belong on
-  `@oats-center/trellis/auth` and the narrower
-  `@oats-center/trellis/auth/browser` facade
+  `@oatscenter/trellis/auth` and the narrower `@oatscenter/trellis/auth/browser`
+  facade
 - service-only resource handles and bootstrap helpers belong on
-  `@oats-center/trellis/service*`
-- `@oats-center/trellis/service` is a service-author surface and must not
+  `@oatscenter/trellis/service*`
+- `@oatscenter/trellis/service` is a service-author surface and must not
   re-export low-level runtime/server internals
 - generic SQL outbox helpers, including `service.createSqlOutbox(...)` and
   Trellis-owned helper-table migration artifacts, belong on
-  `@oats-center/trellis/service*`; applications adapt their database and
+  `@oatscenter/trellis/service*`; applications adapt their database and
   transaction handles to the generic `SqlExecutor` interface
-- public TypeScript jobs helpers belong on `@oats-center/trellis` and
-  `@oats-center/trellis/service*`, not on a standalone jobs package
+- public TypeScript jobs helpers belong on `@oatscenter/trellis` and
+  `@oatscenter/trellis/service*`, not on a standalone jobs package
 
-## `@oats-center/trellis`
+## `@oatscenter/trellis`
 
 Canonical TypeScript entrypoint for contract-driven RPC, operation, event, and
 transfer-grant-driven file communication. The root package is browser-safe, does
 not eagerly load generated SDKs, exports the normal kind-specific contract
 builders plus health helpers, and keeps host-specific service helpers on
-`@oats-center/trellis/service*` subpaths.
+`@oatscenter/trellis/service*` subpaths.
 
 Rules:
 
 - browser auth uses a session key stored in IndexedDB plus a bind flow;
-  SvelteKit apps may layer on `@oats-center/trellis-svelte`
+  SvelteKit apps may layer on `@oatscenter/trellis-svelte`
 - app, agent, device, service, and CLI code should communicate through
   contract-derived RPC, operation, event, feed, state, and transfer facades
   rather than raw NATS subjects
@@ -103,7 +103,7 @@ Language-specific app and service walkthroughs belong in
 
 ### Server-Owned Runtime Helpers
 
-`@oats-center/trellis/service` owns the service-only runtime surface.
+`@oatscenter/trellis/service` owns the service-only runtime surface.
 
 Rules:
 
@@ -122,7 +122,7 @@ Rules:
   object is a plain dependency that handlers close over at registration without
   importing low-level repository or dispatcher internals
 - extracted service RPC handler aliases that need service-only helpers belong on
-  `@oats-center/trellis/service*`, not the browser-safe root package, so handler
+  `@oatscenter/trellis/service*`, not the browser-safe root package, so handler
   types expose the canonical object argument shape and narrow injected `trellis`
   facade for `kv`, `store`, and transfer-aware operation contexts
 
@@ -140,7 +140,7 @@ global cache; generated imports never refer to project installation state. See
 [trellis-idl.md](../contracts/trellis-idl.md) for configuration and offline
 behavior.
 
-## `@oats-center/trellis-svelte`
+## `@oatscenter/trellis-svelte`
 
 Provides the app-level browser adapter for Svelte applications.
 
@@ -155,8 +155,8 @@ Rules:
 - `trellis-svelte` should keep the typed Trellis client and reactive connection
   adapter scoped to app-owned context rather than exposing a synthetic runtime
   bag
-- `@oats-center/trellis-svelte` MUST NOT expose raw NATS clients, NATS
-  connection state, or other transport-owned handles as public API
+- `@oatscenter/trellis-svelte` MUST NOT expose raw NATS clients, NATS connection
+  state, or other transport-owned handles as public API
 - normal pages and components should not recreate auth state; they should
   consume the live app-scoped Trellis context
 - app-facing auth helpers should not require raw URL plumbing or placeholder
@@ -177,17 +177,17 @@ Rules:
 - exact Svelte helper names, provider props, and page/component examples belong
   in frontend/library guides and `/api`
 
-## `@oats-center/trellis/auth`
+## `@oatscenter/trellis/auth`
 
 Provides the full auth helper, schema, protocol, and browser bind surface. The
 browser-only portal/login helper facade also lives at
-`@oats-center/trellis/auth/browser`. See:
+`@oatscenter/trellis/auth/browser`. See:
 
 - [../auth/trellis-auth.md](./../auth/trellis-auth.md)
 - [../auth/auth-api.md](./../auth/auth-api.md)
 - `/api` in the guides site for exact TypeScript auth helpers and Rustdoc links
 
-## `@oats-center/trellis/telemetry`
+## `@oatscenter/trellis/telemetry`
 
 Provides the specialized Trellis telemetry facade used by runtime libraries and
 services without widening the root package. It owns trace propagation helpers,
@@ -197,7 +197,7 @@ recording. See [observability-patterns.md](./observability-patterns.md).
 Rules:
 
 - runtime code should import telemetry helpers from
-  `@oats-center/trellis/telemetry` or internal telemetry modules, not from a
+  `@oatscenter/trellis/telemetry` or internal telemetry modules, not from a
   public `./tracing` subpath
 - browser-safe entrypoints must not statically import OpenTelemetry SDK or
   exporter packages
@@ -218,7 +218,7 @@ standalone TypeScript package.
   - [../jobs/trellis-jobs.md](./../jobs/trellis-jobs.md)
   - `/api` in the guides site for exact TypeScript signatures and Rustdoc links
 
-## `@oats-center/trellis/participant`
+## `@oatscenter/trellis/participant`
 
 Provides participant metadata and canonical runtime types used by generated code
 and tooling. It is not a contract-authoring API. Native IDL is the source of

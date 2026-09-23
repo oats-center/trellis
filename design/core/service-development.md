@@ -7,7 +7,7 @@ description: Current service bootstrap, participant, resource, execution, and li
 
 Services author native source packages and connect through generated participant
 facades. TypeScript services import `TrellisService` from
-`@oats-center/trellis/service`; Rust services use their generated crate. Supply
+`@oatscenter/trellis/service`; Rust services use their generated crate. Supply
 the provisioned identity and Trellis URL. Deployment assignment, package
 evidence, exact grants, routes, and resource bindings are resolved server-side.
 

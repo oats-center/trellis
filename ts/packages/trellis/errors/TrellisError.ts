@@ -2,7 +2,7 @@
  * Base class for all Trellis-specific errors.
  * Extends BaseError and relies on the traceId getter being configured via initTelemetry.
  */
-import { BaseError, type BaseErrorSchema } from "@oats-center/result";
+import { BaseError, type BaseErrorSchema } from "@oatscenter/result";
 
 /**
  * Abstract base class for Trellis errors.

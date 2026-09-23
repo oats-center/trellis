@@ -13,7 +13,7 @@
   import Panel from "$lib/components/Panel.svelte";
   import { errorMessage, formatDate } from "$lib/format";
   import { getTrellis } from "$lib/trellis";
-  import { isErr } from "@oats-center/result";
+  import { isErr } from "@oatscenter/result";
 
   type GrantBinding = apis.auth.GrantsListOutput["items"][number];
 

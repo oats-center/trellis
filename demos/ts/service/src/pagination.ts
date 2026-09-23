@@ -2,7 +2,7 @@ import {
   decodePaginationCursor,
   encodePaginationCursor,
   paginationQueryDigest,
-} from "@oats-center/trellis";
+} from "@oatscenter/trellis";
 
 /** Pages authorized demo rows with the shared opaque cursor codec. */
 export async function paginate<T>(options: {

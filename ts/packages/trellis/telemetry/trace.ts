@@ -2,7 +2,7 @@ import type { Context, Span } from "@opentelemetry/api";
 import { SpanKind } from "@opentelemetry/api";
 import { getTracer } from "./core.ts";
 
-const TRELLIS_INSTRUMENTATION_SCOPE = "@oats-center/trellis";
+const TRELLIS_INSTRUMENTATION_SCOPE = "@oatscenter/trellis";
 
 export function getTrellisTracer() {
   return getTracer(TRELLIS_INSTRUMENTATION_SCOPE);

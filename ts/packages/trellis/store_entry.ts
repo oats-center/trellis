@@ -1,4 +1,4 @@
-import { AsyncResult, Result } from "@oats-center/result";
+import { AsyncResult, Result } from "@oatscenter/result";
 import { StoreError } from "./errors/index.ts";
 import type { StoreInfo } from "./store.ts";
 

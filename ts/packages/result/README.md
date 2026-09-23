@@ -1,4 +1,4 @@
-# @oats-center/result
+# @oatscenter/result
 
 Class-based `Result<T, E>` and `AsyncResult<T, E>` types for TypeScript,
 inspired by Rust.
@@ -11,7 +11,7 @@ Provides explicit error handling with method chaining and the `take()` pattern
 for early returns, without relying on exceptions.
 
 ```typescript
-import { AsyncResult, Result } from "@oats-center/result";
+import { AsyncResult, Result } from "@oatscenter/result";
 
 const user = await fetchUser(id).take();
 if (Result.isErr(user)) return user;

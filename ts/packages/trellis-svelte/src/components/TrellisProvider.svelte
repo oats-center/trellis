@@ -4,7 +4,7 @@
     ClientAuthHandledError,
     TrellisClient,
     type ClientAuthOptions,
-  } from "@oats-center/trellis";
+  } from "@oatscenter/trellis";
   import { onMount } from "svelte";
   import type {
     TrellisClientFor,

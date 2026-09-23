@@ -1,4 +1,4 @@
-# @oats-center/trellis
+# @oatscenter/trellis
 
 JavaScript Trellis client runtime. Provides generated-participant client helpers
 and runtime error types.
@@ -15,7 +15,7 @@ the raw docs index:
 - https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/llms-full.txt
 
 ```typescript
-import { TrellisClient } from "@oats-center/trellis";
+import { TrellisClient } from "@oatscenter/trellis";
 import { participants } from "example-trellis";
 
 const client = await TrellisClient.connect({
@@ -48,12 +48,12 @@ physical JetStream consumer and grants only the bound consumer subjects to the
 service token. Use `{ mode: "ephemeral", replay: "new" }` for live-only
 listeners.
 
-Service connection helpers live in `@oats-center/trellis/service*` to keep the
+Service connection helpers live in `@oatscenter/trellis/service*` to keep the
 root package browser-safe. Browser login and portal-flow helpers live on
-`@oats-center/trellis/auth` and `@oats-center/trellis/auth/browser`.
+`@oatscenter/trellis/auth` and `@oatscenter/trellis/auth/browser`.
 
 Service authors should not use the core package to recreate service bootstrap or
 fetch resource bindings. Connect with `TrellisService.connect(...)` from
-`@oats-center/trellis/service` and use the returned resource handles instead of
+`@oatscenter/trellis/service` and use the returned resource handles instead of
 calling `Trellis.Bindings.Get`, constructing `TrellisService` or `StoreHandle`,
 or passing binding/resource data into `Trellis` constructors.

@@ -1,4 +1,4 @@
-# @oats-center/trellis-test
+# @oatscenter/trellis-test
 
 Deno helpers that own a real Trellis/NATS runtime for service-repository tests.
 Use ordinary `deno test -A`; there is no runner, matrix, or case registration.
@@ -11,8 +11,8 @@ participant exports. Never construct test contracts, subjects, or authorization
 evidence by hand.
 
 ```ts
-import { TrellisTestRuntime } from "@oats-center/trellis-test";
-import { TrellisService } from "@oats-center/trellis/service";
+import { TrellisTestRuntime } from "@oatscenter/trellis-test";
+import { TrellisService } from "@oatscenter/trellis/service";
 import { participants } from "test-trellis";
 
 await using runtime = await TrellisTestRuntime.start({

@@ -4,9 +4,9 @@ import { assertEquals } from "@std/assert";
 import { ulid } from "ulid";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
-import { Result } from "@oats-center/trellis";
-import { TrellisService } from "@oats-center/trellis/service";
-import type { TrellisTestRuntime } from "@oats-center/trellis-test";
+import { Result } from "@oatscenter/trellis";
+import { TrellisService } from "@oatscenter/trellis/service";
+import type { TrellisTestRuntime } from "@oatscenter/trellis-test";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {
   browserRuntimeOptions,

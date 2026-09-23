@@ -56,7 +56,7 @@ and this project adheres to
 
 - Made the Rust workspace the repository root and moved current source,
   generated packages, container builds, and release publication to
-  `OATS-Center/trellis` and `@oats-center/*` identities.
+  `OATS-Center/trellis` and `@oatscenter/*` identities.
 - Replaced repository prepare/watch and producer-published generated SDK
   workflows with project-local `trellis.toml`, committed `trellis.lock`,
   lock-stable `trellis install`, consumer-local generated TypeScript and Rust
@@ -488,7 +488,7 @@ and this project adheres to
   `DeploymentAuthorityNeed` union was replaced by `DeploymentAuthorityNeeds` and
   family-specific need types.
 - Renamed the runnable Trellis control-plane service JSR package from
-  `@oats-center/trellis-service-trellis` to `@oats-center/trellis-control-plane`
+  `@oatscenter/trellis-service-trellis` to `@oatscenter/trellis-control-plane`
   and now publishes it directly from `js/services/trellis` instead of a
   generated staged package tree.
 - Changed `TrellisTestRuntime.start(...)` so callers must provide an explicit
@@ -522,13 +522,13 @@ and this project adheres to
 - Added public TypeScript event metadata types, including `TrellisEventHeader`
   and `TrellisEventMessage`, for metadata-aware event handling after event
   bodies stopped carrying runtime headers.
-- Added the TypeScript `@oats-center/trellis/service/drizzle` helper for Drizzle
+- Added the TypeScript `@oatscenter/trellis/service/drizzle` helper for Drizzle
   SQL-backed outbox/inbox tables.
-- Added the Deno-first `@oats-center/trellis-test` JSR package for service
+- Added the Deno-first `@oatscenter/trellis-test` JSR package for service
   boundary integration tests that need an isolated NATS/JetStream environment
   and a spawned Trellis control-plane process.
-- Added the internal `@oats-center/trellis/host/control-plane` export used by
-  the Trellis control-plane service package to access runtime host primitives
+- Added the internal `@oatscenter/trellis/host/control-plane` export used by the
+  Trellis control-plane service package to access runtime host primitives
   without repo-relative package imports.
 - Added `service.withSqlOutbox(...)` for SQL outbox-backed service wrappers.
 - Added handler-injected `outbox` for RPC, feed, operation, event-listener, and
@@ -552,11 +552,11 @@ and this project adheres to
   storage migrations, and subsystem scaffolds.
 - Added generated Jobs admin service registration plus live projection RPC
   handlers for listing, reading, and cancelling jobs.
-- Added live decoded event capture to `@oats-center/trellis-test` through
+- Added live decoded event capture to `@oatscenter/trellis-test` through
   `TrellisTestRuntime.captureEvents(...)` and `TrellisTestEventCapture`, so
   integration tests can subscribe to selected contract events with normal
   Trellis authority and generated event facades.
-- Added `@oats-center/trellis-test` assertion helpers for RPC results, eventual
+- Added `@oatscenter/trellis-test` assertion helpers for RPC results, eventual
   RPC success, captured event presence and context, no-event windows, and
   terminal job and operation completion.
 - Added expanded JS and Rust integration coverage for granular matrix cases,
@@ -580,7 +580,7 @@ and this project adheres to
   `defineError(...)` instances are accepted when their serialized data matches
   the declared generated error data.
 - Changed release verification and publishing so the Trellis control-plane
-  service, `@oats-center/trellis-test`, and direct JSR packages run through the
+  service, `@oatscenter/trellis-test`, and direct JSR packages run through the
   normal release package set.
 - Changed release retry and publish workflows so manual existing-tag retries can
   publish after successful release gates, publish jobs still run when unrelated
@@ -628,12 +628,11 @@ and this project adheres to
   while preserving structured `BootstrapError` diagnostics.
 - Fixed `Auth.Sessions.Logout` cleanup ordering so durable session and
   connection records are removed before runtime access is kicked.
-- Fixed `@oats-center/trellis-test` assertion helpers so generated event
-  captures from `TrellisTestRuntime.captureEvents(...)` and generated service
-  job refs can be passed directly to `assertEventCaptured`,
-  `assertEventsCaptured`, and `assertJobCompleted` without downstream casts,
-  wrappers, or local adapters.
-- Fixed `@oats-center/trellis-test` live integration helpers so service approval
+- Fixed `@oatscenter/trellis-test` assertion helpers so generated event captures
+  from `TrellisTestRuntime.captureEvents(...)` and generated service job refs
+  can be passed directly to `assertEventCaptured`, `assertEventsCaptured`, and
+  `assertJobCompleted` without downstream casts, wrappers, or local adapters.
+- Fixed `@oatscenter/trellis-test` live integration helpers so service approval
   and generated-client connection flows can run against the release candidate.
 
 ### Removed
@@ -653,8 +652,8 @@ and this project adheres to
 
 ### Fixed
 
-- Rebuilt and republished `@oats-center/trellis` so the npm
-  `@oats-center/trellis/auth/browser` subpath includes `completeSessionLogout`,
+- Rebuilt and republished `@oatscenter/trellis` so the npm
+  `@oatscenter/trellis/auth/browser` subpath includes `completeSessionLogout`,
   and added npm smoke coverage for that export.
 - Fixed the Trellis service image build by freezing the login portal static
   build to `js/deno.lock` and using Deno 2.8.3 for the portal build stage.
@@ -672,7 +671,7 @@ and this project adheres to
 ### Changed
 
 - Clarified TypeScript package guidance so ordinary `define*Contract(...)`
-  imports use the browser-safe `@oats-center/trellis` root, with advanced
+  imports use the browser-safe `@oatscenter/trellis` root, with advanced
   contract tooling and runtime-specific helpers kept on explicit subpaths.
 - Updated Trellis service, console, and demo TypeScript imports to use the
   browser-safe root for normal contract helpers and shared JSON/schema helpers.
@@ -750,8 +749,8 @@ and this project adheres to
 
 ### Fixed
 
-- Fixed the `@oats-center/trellis` npm root export so browser bundlers select
-  the browser-safe entrypoint without app-level Vite aliases, preventing DNT and
+- Fixed the `@oatscenter/trellis` npm root export so browser bundlers select the
+  browser-safe entrypoint without app-level Vite aliases, preventing DNT and
   Node/Deno builtin shims from leaking into browser client bundles.
 - Fixed Trellis contract catalog startup and lookup behavior so invalid cached
   manifests are pruned from the SQLite `contracts` cache, stale derived
@@ -798,7 +797,7 @@ and this project adheres to
   proposal analysis, design docs, and service-author AI guidance updated for the
   grouped form.
 - Added package artifact smoke coverage for the Trellis browser graph and the
-  `@oats-center/trellis-svelte` package output, including declaration files,
+  `@oatscenter/trellis-svelte` package output, including declaration files,
   public export declarations, and JSR publish targets.
 - Added Auth0 organization support to OIDC provider configuration and login
   routing.
@@ -812,7 +811,7 @@ and this project adheres to
   keeping low-level NATS access behind internal APIs and using curated
   connection/status APIs for public consumers.
 - Changed release publishing to dry-run and publish the prepared
-  `@oats-center/trellis-svelte` JSR package artifact alongside the existing
+  `@oatscenter/trellis-svelte` JSR package artifact alongside the existing
   staged JSR packages.
 - Updated the release guide to preserve release marker branches after
   publication.
@@ -825,7 +824,7 @@ and this project adheres to
 - Fixed browser npm artifacts so the browser graph excludes DNT polyfills and
   Node-only shims, including environment detection paths that need to remain
   safe in bundled browser builds.
-- Fixed `@oats-center/trellis-svelte` package builds to emit declaration files,
+- Fixed `@oatscenter/trellis-svelte` package builds to emit declaration files,
   compiled JavaScript component output for JSR, self-type directives, rewritten
   Svelte component imports, and the runtime dependency metadata needed by
   consumers.
@@ -1033,7 +1032,7 @@ and this project adheres to
 
 ### Fixed
 
-- Fixed the JSR `@oats-center/trellis/generate` wrapper so `deno task prepare`
+- Fixed the JSR `@oatscenter/trellis/generate` wrapper so `deno task prepare`
   can read package metadata when the wrapper is loaded from a remote module URL,
   avoiding Deno's file-URL-only read path before the release binary starts.
 
@@ -1049,15 +1048,15 @@ and this project adheres to
 ### Fixed
 
 - Fixed npm package smoke failures by rewriting bundled generated SDK imports to
-  public `@oats-center/trellis` package subpaths and correcting npm `generate`
+  public `@oatscenter/trellis` package subpaths and correcting npm `generate`
   manifest discovery for Deno `npm:` execution.
 
 ## [0.10.3-rc.3] - 2026-05-29
 
 ### Fixed
 
-- Fixed JSR publishing for `@oats-center/trellis` by replacing published
-  same-package `@oats-center/trellis/*` imports with relative imports, including
+- Fixed JSR publishing for `@oatscenter/trellis` by replacing published
+  same-package `@oatscenter/trellis/*` imports with relative imports, including
   the embedded generated SDKs that JSR analyzes without the workspace import
   map.
 
@@ -1083,9 +1082,9 @@ and this project adheres to
 
 ### Fixed
 
-- Enabled GitHub Actions JSR publishing for the staged `@oats-center/result` and
-  `@oats-center/trellis` packages.
-- Fixed the `@oats-center/trellis` JSR package layout so first-party generated
+- Enabled GitHub Actions JSR publishing for the staged `@oatscenter/result` and
+  `@oatscenter/trellis` packages.
+- Fixed the `@oatscenter/trellis` JSR package layout so first-party generated
   SDK exports publish from package-local generated files instead of private
   workspace aliases.
 
@@ -1351,9 +1350,9 @@ and this project adheres to
   portal, and runtime flows.
 - Fixed generator TypeScript compiler discovery from repository-root workflows
   that use the JavaScript workspace `node_modules` directory.
-- Fixed npm package export normalization so the `@oats-center/trellis/generate`
+- Fixed npm package export normalization so the `@oatscenter/trellis/generate`
   subpath remains available in freshly built publish artifacts.
-- Fixed the published npm `@oats-center/trellis/generate` subpath so it reads
+- Fixed the published npm `@oatscenter/trellis/generate` subpath so it reads
   package metadata from the packed package instead of requiring a source
   `deno.json` next to the generated JavaScript entrypoint.
 - Fixed prerelease npm smoke validation to invoke the packed Trellis CLI by its
@@ -1386,7 +1385,7 @@ and this project adheres to
 
 ### Fixed
 
-- Fixed the `@oats-center/trellis-svelte` npm package to publish built runtime
+- Fixed the `@oatscenter/trellis-svelte` npm package to publish built runtime
   JavaScript under `dist/` so Vite can optimize Svelte 5 rune modules without
   parsing raw `.svelte.ts` source from `node_modules`.
 
@@ -1587,7 +1586,7 @@ and this project adheres to
 - Changed local SvelteKit app aliasing so each app owns explicit `kit.alias`
   mappings, with Vite relying on SvelteKit-provided aliases and the old shared
   frontend workspace alias helper removed.
-- Changed `@oats-center/trellis-svelte` so `createTrellisApp(...)` owns both the
+- Changed `@oatscenter/trellis-svelte` so `createTrellisApp(...)` owns both the
   contract and Trellis URL and `TrellisProvider` takes a single `trellisApp`
   prop instead of separate app and `trellisUrl` props.
 - Changed TypeScript contract authoring so manifest `exports` are declared in
@@ -1605,7 +1604,7 @@ and this project adheres to
   origin, device identity, and contract digest, and the JS device demos, design
   docs, and device guide now follow the `checkDeviceActivation(...)` then
   `connect(...)` flow.
-- Redesigned `@oats-center/trellis-svelte` around app-owned separate contexts:
+- Redesigned `@oatscenter/trellis-svelte` around app-owned separate contexts:
   `createTrellisProviderContexts<TContract>()` now bundles Trellis, auth, and
   connection-state contexts for `TrellisProvider`, the old runtime-bag design is
   gone, and the design docs, SvelteKit guide, and browser demo app now show the
@@ -1625,7 +1624,7 @@ and this project adheres to
   updated design and guide docs to describe that layout, and migrated the JS
   demos from one-file `contracts/` folders to root `contract.ts` modules.
 - Renamed the TypeScript service runtime package from
-  `@oats-center/trellis/host*` to `@oats-center/trellis/service*`, aligned the
+  `@oatscenter/trellis/host*` to `@oatscenter/trellis/service*`, aligned the
   extracted service handler types to `RpcHandler`, `JobHandler`, and
   `OperationHandler`, and updated design docs and demo examples to show the
   canonical single-object handler callback shape with the narrow injected
@@ -1645,7 +1644,7 @@ and this project adheres to
   authenticated device activation to a single
   `Auth.DeviceUserAuthorities.Resolve` operation.
 - Made the TypeScript service runtime surface v1-clean by removing the legacy
-  `TrellisServer` public name, making `@oats-center/trellis/service*` explicit
+  `TrellisServer` public name, making `@oatscenter/trellis/service*` explicit
   service-author entrypoints, hiding raw runtime and NATS transport internals
   from root and generated client facades, and using `TrellisConnection` for
   lifecycle control.

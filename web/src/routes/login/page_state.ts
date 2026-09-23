@@ -1,7 +1,7 @@
 import {
   classifyBrowserAuthError,
   decodeTrellisHttpError,
-} from "@oats-center/trellis/auth/browser";
+} from "@oatscenter/trellis/auth/browser";
 
 export const MISSING_PORTAL_FLOW_ID_ERROR = "Missing flow id.";
 

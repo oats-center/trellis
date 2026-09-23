@@ -1,13 +1,13 @@
-import type { AsyncResult, BaseError } from "@oats-center/result";
+import type { AsyncResult, BaseError } from "@oatscenter/result";
 import type {
   OperationEvent,
   OperationSnapshot,
   TerminalOperation,
-} from "@oats-center/trellis";
+} from "@oatscenter/trellis";
 import type {
   DeviceUserAuthoritiesResolveOutput,
   DeviceUserAuthoritiesResolveProgress,
-} from "@oats-center/trellis/auth";
+} from "@oatscenter/trellis/auth";
 import { ulid } from "ulid";
 
 import {

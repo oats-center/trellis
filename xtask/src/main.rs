@@ -179,7 +179,7 @@ fn generate_builtin_package(root: &Path) -> Result<()> {
         "refusing to overwrite retained builtin TypeScript generation backup {}",
         backup.display()
     );
-    trellis_codegen_ts::generate_ts_package(&graph, &staging, "@oats-center/trellis-internal-sdk")
+    trellis_codegen_ts::generate_ts_package(&graph, &staging, "@oatscenter/trellis-internal-sdk")
         .into_diagnostic()?;
     if target.exists() {
         std::fs::rename(&target, &backup).into_diagnostic()?;

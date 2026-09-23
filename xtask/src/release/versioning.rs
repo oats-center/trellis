@@ -417,10 +417,10 @@ fn internal_jsr_dependency_spec(spec: &str) -> Option<InternalJsrDependency> {
 
 fn internal_js_package_names() -> &'static [&'static str] {
     &[
-        "@oats-center/result",
-        "@oats-center/trellis",
-        "@oats-center/trellis-svelte",
-        "@oats-center/trellis-test",
+        "@oatscenter/result",
+        "@oatscenter/trellis",
+        "@oatscenter/trellis-svelte",
+        "@oatscenter/trellis-test",
     ]
 }
 
@@ -432,7 +432,7 @@ struct InternalJsrDependency {
 }
 
 fn json_like_string_property(trimmed: &str) -> Option<(String, String)> {
-    let property_start = trimmed.find("\"@oats-center/")?;
+    let property_start = trimmed.find("\"@oatscenter/")?;
     let rest = trimmed[property_start..].strip_prefix('"')?;
     let (name, after_name) = rest.split_once('"')?;
     let after_colon = after_name.trim_start().strip_prefix(':')?.trim_start();
@@ -738,7 +738,7 @@ fn is_internal_rust_crate(name: &str) -> bool {
 fn is_internal_npm_package(name: &str) -> bool {
     matches!(
         name,
-        "@oats-center/result" | "@oats-center/trellis" | "@oats-center/trellis-svelte"
+        "@oatscenter/result" | "@oatscenter/trellis" | "@oatscenter/trellis-svelte"
     )
 }
 

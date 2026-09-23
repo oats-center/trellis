@@ -1,9 +1,9 @@
 import {
   checkDeviceActivation,
   TrellisDevice,
-} from "@oats-center/trellis/device";
-import { Result } from "@oats-center/trellis";
-import { TrellisService } from "@oats-center/trellis/service";
+} from "@oatscenter/trellis/device";
+import { Result } from "@oatscenter/trellis";
+import { TrellisService } from "@oatscenter/trellis/service";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";

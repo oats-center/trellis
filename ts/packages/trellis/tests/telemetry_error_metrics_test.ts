@@ -6,7 +6,7 @@ import {
   PeriodicExportingMetricReader,
 } from "npm:@opentelemetry/sdk-metrics@^2.7.0";
 import { assertEquals, assertExists } from "@std/assert";
-import { AsyncResult, err } from "@oats-center/result";
+import { AsyncResult, err } from "@oatscenter/result";
 import type { NatsConnection } from "@nats-io/nats-core";
 import { Type } from "typebox";
 import { ulid } from "ulid";

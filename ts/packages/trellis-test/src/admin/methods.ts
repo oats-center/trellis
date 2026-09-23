@@ -1,6 +1,6 @@
-import type { CallerRuntime } from "@oats-center/trellis";
-import { RemoteError } from "@oats-center/trellis/errors";
-import type { Codec } from "@oats-center/trellis/generated";
+import type { CallerRuntime } from "@oatscenter/trellis";
+import { RemoteError } from "@oatscenter/trellis/errors";
+import type { Codec } from "@oatscenter/trellis/generated";
 import { apis, participants } from "../../trellis/index.js";
 
 export const adminParticipant = {

@@ -5,7 +5,7 @@ import type { StoreError } from "../../../errors/StoreError.ts";
 import type { TransferError } from "../../../errors/TransferError.ts";
 import type { TypedStore } from "../../../store.ts";
 import type { FileInfo } from "../../../transfer.ts";
-import type { AsyncResult } from "@oats-center/result";
+import type { AsyncResult } from "@oatscenter/result";
 import type { StoredTransfer } from "../transfer.ts";
 import type { AsyncChunkQueue } from "./queue.ts";
 import { sha256 } from "@noble/hashes/sha256";

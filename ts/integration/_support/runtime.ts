@@ -1,5 +1,5 @@
-import { TrellisTestRuntime } from "@oats-center/trellis-test";
-import type { TrellisTestRuntimeStartOptions } from "@oats-center/trellis-test";
+import { TrellisTestRuntime } from "@oatscenter/trellis-test";
+import type { TrellisTestRuntimeStartOptions } from "@oatscenter/trellis-test";
 import { fromFileUrl } from "@std/path";
 
 const repoJsRoot = fromFileUrl(new URL("../../", import.meta.url));

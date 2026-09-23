@@ -1,4 +1,4 @@
-import { AsyncResult, err, isErr, ok, type Result } from "@oats-center/result";
+import { AsyncResult, err, isErr, ok, type Result } from "@oatscenter/result";
 import { ulid } from "ulid";
 
 import { type JsonValue, parseUnknownSchema } from "./codec.ts";

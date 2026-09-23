@@ -1,6 +1,6 @@
 import { ASSIGNED_INSPECTIONS } from "../../../../shared/field_data.ts";
-import { ok } from "@oats-center/trellis";
-import type { RpcHandler } from "@oats-center/trellis/service";
+import { ok } from "@oatscenter/trellis";
+import type { RpcHandler } from "@oatscenter/trellis/service";
 import { type participants } from "../../../trellis/index.js";
 import { paginate } from "../../pagination.ts";
 

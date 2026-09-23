@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { isErr } from "@oats-center/result";
+  import { isErr } from "@oatscenter/result";
   import { type apis } from "trellis-web-generated";
   import { page } from "$app/state";
   import { RequestScope } from "$lib/console/request_scope.ts";

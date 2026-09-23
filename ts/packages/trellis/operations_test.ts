@@ -1,5 +1,5 @@
 import { assertEquals } from "@std/assert";
-import { AsyncResult, isErr, ok } from "@oats-center/result";
+import { AsyncResult, isErr, ok } from "@oatscenter/result";
 
 import { codecs } from "./generated.ts";
 import { OperationInvoker, type OperationTransport } from "./operations.ts";

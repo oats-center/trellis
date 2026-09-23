@@ -1,9 +1,9 @@
 import { jetstreamManager } from "@nats-io/jetstream";
 import { credsAuthenticator, headers as natsHeaders } from "@nats-io/nats-core";
 import { connect } from "@nats-io/transport-node";
-import { Result } from "@oats-center/trellis";
-import { TransportError } from "@oats-center/trellis/errors";
-import { RetryJobError, TrellisService } from "@oats-center/trellis/service";
+import { Result } from "@oatscenter/trellis";
+import { TransportError } from "@oatscenter/trellis/errors";
+import { RetryJobError, TrellisService } from "@oatscenter/trellis/service";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { fromFileUrl, join } from "@std/path";
 import { participants as webParticipants } from "trellis-web-generated";

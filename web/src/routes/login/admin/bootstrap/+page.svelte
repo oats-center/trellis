@@ -1,7 +1,7 @@
 <script lang="ts">
   import { browser } from "$app/environment";
   import { onMount } from "svelte";
-  import { getOrCreatePortalBinding } from "@oats-center/trellis/auth/browser";
+  import { getOrCreatePortalBinding } from "@oatscenter/trellis/auth/browser";
   import PortalBrand from "$lib/components/PortalBrand.svelte";
   import { trellisUrl } from "$lib/portal_config";
   import {

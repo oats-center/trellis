@@ -1,5 +1,5 @@
-import type { BaseError } from "@oats-center/result";
-import type { AsyncResult } from "@oats-center/result";
+import type { BaseError } from "@oatscenter/result";
+import type { AsyncResult } from "@oatscenter/result";
 import type { StaticDecode } from "typebox";
 import { Type } from "typebox";
 import { Value } from "typebox/value";

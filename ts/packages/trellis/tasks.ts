@@ -1,4 +1,4 @@
-import { AsyncResult, type BaseError, Result } from "@oats-center/result";
+import { AsyncResult, type BaseError, Result } from "@oatscenter/result";
 import { logger, type LoggerLike } from "./globals.ts";
 
 export class TrellisTasks {

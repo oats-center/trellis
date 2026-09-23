@@ -7,7 +7,7 @@ import {
   startAuthorizationContextRefresh,
   type TrellisAuth,
   type VerifiedAuthorizationContext,
-} from "@oats-center/trellis/auth";
+} from "@oatscenter/trellis/auth";
 
 export type AuthorizationContextStatus =
   | "empty"

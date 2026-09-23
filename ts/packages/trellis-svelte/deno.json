@@ -1,6 +1,6 @@
 {
   "extends": "../../deno.json",
-  "name": "@oats-center/trellis-svelte",
+  "name": "@oatscenter/trellis-svelte",
   "version": "0.100.0",
   "exports": "./src/index.ts",
   "tasks": {

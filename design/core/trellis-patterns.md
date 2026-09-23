@@ -54,7 +54,7 @@ Rules:
 - cloud repos own domain services, domain contracts, apps, and domain models
   unless a model is required by a Trellis-owned contract or shared Trellis
   runtime library
-- `@oats-center/trellis` is a runtime library, not a central registry for every
+- `@oatscenter/trellis` is a runtime library, not a central registry for every
   service API
 - service APIs are defined with the service that owns them and consumed through
   native source-package dependencies and consumer-local generated SDKs

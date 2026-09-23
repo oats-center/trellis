@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 
-import { AuthError } from "@oats-center/trellis";
+import { AuthError } from "@oatscenter/trellis";
 
 import {
   isDeviceActivationReviewerRequiredFailure,

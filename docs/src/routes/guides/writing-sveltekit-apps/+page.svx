@@ -6,7 +6,7 @@ the browser app participant in `contract.trellis` and generate it before
 checking or building the app. For example, in `src/lib/trellis.ts`:
 
 ```ts
-import { createTrellisApp } from "@oats-center/trellis-svelte";
+import { createTrellisApp } from "@oatscenter/trellis-svelte";
 import { participants } from "orders-trellis";
 
 export const trellisApp = createTrellisApp({
@@ -37,7 +37,7 @@ Mount `TrellisProvider` with the app owner in `src/routes/+layout.svelte`:
 ```svelte
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import { TrellisProvider } from "@oats-center/trellis-svelte";
+  import { TrellisProvider } from "@oatscenter/trellis-svelte";
   import { trellisApp } from "$lib/trellis";
 
   let { children }: { children: Snippet } = $props();

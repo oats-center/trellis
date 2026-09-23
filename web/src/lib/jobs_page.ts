@@ -1,4 +1,4 @@
-import { AsyncResult, BaseError, isErr } from "@oats-center/result";
+import { AsyncResult, BaseError, isErr } from "@oatscenter/result";
 import { type apis } from "trellis-web-generated";
 
 export type JobInspection = apis.jobs.InspectOutput;

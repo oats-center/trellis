@@ -1,5 +1,5 @@
 import { trace } from "@opentelemetry/api";
-import { BaseError } from "@oats-center/result";
+import { BaseError } from "@oatscenter/result";
 
 let traceIdGetterConfigured = false;
 

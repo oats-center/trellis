@@ -1662,16 +1662,16 @@
       "npm:zod@^4.3.6"
     ],
     "links": {
-      "jsr:@oats-center/result@0.100.0": {
+      "jsr:@oatscenter/result@0.100.0": {
         "dependencies": [
           "npm:typebox@^1.1.33",
           "npm:ulid@^3.0.2"
         ]
       },
-      "jsr:@oats-center/trellis-svelte@0.100.0": {},
-      "jsr:@oats-center/trellis-test@0.100.0": {
+      "jsr:@oatscenter/trellis-svelte@0.100.0": {},
+      "jsr:@oatscenter/trellis-test@0.100.0": {
         "dependencies": [
-          "jsr:@oats-center/trellis@0.100",
+          "jsr:@oatscenter/trellis@0.100",
           "jsr:@std/assert@^1.0.19",
           "jsr:@std/path@^1.1.4",
           "npm:@libsql/client@~0.15.15",
@@ -1683,7 +1683,7 @@
           "npm:ulid@^3.0.2"
         ]
       },
-      "jsr:@oats-center/trellis@0.100.0": {}
+      "jsr:@oatscenter/trellis@0.100.0": {}
     }
   }
 }

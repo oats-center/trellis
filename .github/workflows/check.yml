@@ -250,6 +250,11 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
       - name: Test Rust tooling
         run: cargo test --manifest-path xtask/Cargo.toml
 

@@ -3,8 +3,8 @@ import {
   type ClientAuthRequiredContext,
   type ClientOpts,
   TrellisClient,
-} from "@oats-center/trellis";
-import { recordTrellisDuration } from "@oats-center/trellis/telemetry";
+} from "@oatscenter/trellis";
+import { recordTrellisDuration } from "@oatscenter/trellis/telemetry";
 import { dirname, join } from "@std/path";
 
 import { TrellisTestAdminAutomation } from "./admin_client.ts";

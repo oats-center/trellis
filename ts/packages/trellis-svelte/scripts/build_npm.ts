@@ -46,8 +46,8 @@ const jsrRuntimeDependencyVersion =
 const dependencies = resolveInternalNpmDependenciesForBuild(
   {
     "@nats-io/nats-core": "^3.3.1",
-    "@oats-center/result": "^0.100.0",
-    "@oats-center/trellis": "^0.100.0",
+    "@oatscenter/result": "^0.100.0",
+    "@oatscenter/trellis": "^0.100.0",
     typebox: "^1.0.15",
     ulid: "^3.0.2",
   },
@@ -403,14 +403,14 @@ await writeJson(
       exclude: ["!dist/**", "!README.md", "!deno.json"],
     },
     imports: {
-      "@oats-center/result":
-        `jsr:@oats-center/result@^${jsrRuntimeDependencyVersion}`,
-      "@oats-center/trellis":
-        `jsr:@oats-center/trellis@^${jsrRuntimeDependencyVersion}`,
-      "@oats-center/trellis/auth":
-        `jsr:@oats-center/trellis@^${jsrRuntimeDependencyVersion}/auth`,
-      "@oats-center/trellis/auth/browser":
-        `jsr:@oats-center/trellis@^${jsrRuntimeDependencyVersion}/auth/browser`,
+      "@oatscenter/result":
+        `jsr:@oatscenter/result@^${jsrRuntimeDependencyVersion}`,
+      "@oatscenter/trellis":
+        `jsr:@oatscenter/trellis@^${jsrRuntimeDependencyVersion}`,
+      "@oatscenter/trellis/auth":
+        `jsr:@oatscenter/trellis@^${jsrRuntimeDependencyVersion}/auth`,
+      "@oatscenter/trellis/auth/browser":
+        `jsr:@oatscenter/trellis@^${jsrRuntimeDependencyVersion}/auth/browser`,
       "svelte": "npm:svelte@^5.0.0",
       "svelte/internal/client": "npm:svelte@^5.0.0/internal/client",
       "svelte/internal/disclose-version":

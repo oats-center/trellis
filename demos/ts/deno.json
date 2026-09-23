@@ -8,8 +8,8 @@
     "device": "deno task -c device/deno.json start"
   },
   "imports": {
-    "@oats-center/result": "npm:@oats-center/result@^0.100.0",
-    "@oats-center/trellis": "npm:@oats-center/trellis@^0.100.0",
+    "@oatscenter/result": "npm:@oatscenter/result@^0.100.0",
+    "@oatscenter/trellis": "npm:@oatscenter/trellis@^0.100.0",
     "@libs/qrcode": "jsr:@libs/qrcode@^3.0.1",
     "chalk": "npm:chalk@^5.6.2",
     "typebox": "npm:typebox@^1.0.15",

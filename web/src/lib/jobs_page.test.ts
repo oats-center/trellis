@@ -1,4 +1,4 @@
-import { AsyncResult, BaseError, UnexpectedError } from "@oats-center/result";
+import { AsyncResult, BaseError, UnexpectedError } from "@oatscenter/result";
 import { deepEqual, rejects } from "node:assert/strict";
 import { type apis } from "trellis-web-generated";
 

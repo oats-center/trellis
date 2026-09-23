@@ -4,7 +4,7 @@ import {
   err,
   ok,
   type Result,
-} from "@oats-center/result";
+} from "@oatscenter/result";
 import type { Codec } from "./generated.ts";
 import type { TrellisConnection } from "./connection.ts";
 import type { TypedKV } from "./kv.ts";

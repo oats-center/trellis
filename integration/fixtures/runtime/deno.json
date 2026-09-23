@@ -1,8 +1,8 @@
 {
   "imports": {
-    "@oats-center/trellis": "../../../ts/packages/trellis/index.ts",
-    "@oats-center/trellis/service": "../../../ts/packages/trellis/service/mod.ts",
-    "@oats-center/trellis/generated": "../../../ts/packages/trellis/generated.ts"
+    "@oatscenter/trellis": "../../../ts/packages/trellis/index.ts",
+    "@oatscenter/trellis/service": "../../../ts/packages/trellis/service/mod.ts",
+    "@oatscenter/trellis/generated": "../../../ts/packages/trellis/generated.ts"
   },
   "compilerOptions": { "lib": ["deno.ns", "dom", "dom.iterable", "esnext"] }
 }

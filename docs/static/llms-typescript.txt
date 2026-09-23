@@ -5,7 +5,7 @@ Trellis requirements concern its own APIs and lifecycle. Configuration parsing,
 validation of non-Trellis inputs, databases, DI, code layout, and local testing
 tools are application choices. Neither Zod nor an ORM is required.
 
-The npm packages `@oats-center/trellis` and `@oats-center/result` contain ESM
+The npm packages `@oatscenter/trellis` and `@oatscenter/result` contain ESM
 JavaScript and TypeScript declarations. Use `import`. CommonJS output and
 `require()` support have intentionally been removed, with no compatibility
 fallback. The shared ESM `/service` entrypoint supports Node-compatible native
@@ -30,7 +30,7 @@ source-package cache. Generation is offline once locked dependencies are
 available in the validated global cache. There is no TypeScript
 contract-authoring execution step.
 
-Services import `TrellisService` from `@oats-center/trellis/service`. Connect
+Services import `TrellisService` from `@oatscenter/trellis/service`. Connect
 with the generated participant, provisioned identity seed, and Trellis URL;
 `name` is optional. Set `telemetry: false` to disable automatic telemetry.
 Optional `runtime` controls service logging (including `false` to disable it),
@@ -46,7 +46,7 @@ For a participant declaring RPC `Orders.Create`, with matching generated input
 and output models:
 
 ```ts
-import { Result } from "@oats-center/trellis";
+import { Result } from "@oatscenter/trellis";
 
 await service.handleOrdersCreate(({ input }) =>
   Result.ok({ orderId: crypto.randomUUID(), customerId: input.customerId })
@@ -73,7 +73,7 @@ calls.
 
 Inline handlers infer their types at registration. Extracted handlers can use
 `RpcHandler<typeof participant, "Orders.Create">` from
-`@oats-center/trellis/service`. `OperationHandler`, `FeedHandler`, and
+`@oatscenter/trellis/service`. `OperationHandler`, `FeedHandler`, and
 `JobHandler` provide corresponding typed boundaries. Regenerate after an IDL
 change.
 

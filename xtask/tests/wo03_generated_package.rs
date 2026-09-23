@@ -319,8 +319,8 @@ fn codecs_errors_and_generated_surfaces_compile() {
         serde_json::to_string_pretty(&serde_json::json!({
             "extends": repo.join("ts/deno.json"),
             "imports": {
-                "@oats-center/result": format!("file://{}", result_package.display()),
-                "@oats-center/trellis/generated": format!("file://{}", generated_support.display()),
+                "@oatscenter/result": format!("file://{}", result_package.display()),
+                "@oatscenter/trellis/generated": format!("file://{}", generated_support.display()),
                 "@fixture/caller": format!("file://{}", caller_runtime.display()),
                 "@fixture/connection": format!("file://{}", connection_runtime.display()),
                 "@fixture/errors": format!("file://{}", errors_runtime.display()),
@@ -340,7 +340,7 @@ import { participant as Caller } from "./typescript/participants/Caller/mod.js";
 import { participant as Worker } from "./typescript/participants/Worker/mod.js";
 import type * as CallerModule from "./typescript/participants/Caller/mod.js";
 import type * as WorkerModule from "./typescript/participants/Worker/mod.js";
-import { AsyncResult, ok, Result } from "@oats-center/result";
+import { AsyncResult, ok, Result } from "@oatscenter/result";
 import { createCallerRuntime } from "@fixture/caller";
 import { installConnectionAvailability, TrellisConnection } from "@fixture/connection";
 import { TransportError } from "@fixture/errors";

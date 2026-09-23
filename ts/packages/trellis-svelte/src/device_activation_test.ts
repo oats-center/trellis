@@ -1,10 +1,10 @@
-import { AsyncResult } from "@oats-center/result";
-import type { BaseError } from "@oats-center/result";
-import type { OperationEvent, OperationSnapshot } from "@oats-center/trellis";
+import { AsyncResult } from "@oatscenter/result";
+import type { BaseError } from "@oatscenter/result";
+import type { OperationEvent, OperationSnapshot } from "@oatscenter/trellis";
 import type {
   DeviceUserAuthoritiesResolveOutput,
   DeviceUserAuthoritiesResolveProgress,
-} from "@oats-center/trellis/auth";
+} from "@oatscenter/trellis/auth";
 import { assertEquals } from "@std/assert";
 
 import {

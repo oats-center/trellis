@@ -3,7 +3,7 @@ import {
   type BaseError,
   isErr,
   type UnexpectedError,
-} from "@oats-center/result";
+} from "@oatscenter/result";
 import { type StaticDecode, Type } from "typebox";
 
 import type { TypedKV } from "../kv.ts";

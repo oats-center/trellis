@@ -10,8 +10,8 @@ are in
 Create `service.ts`:
 
 ```ts
-import { Result } from "@oats-center/trellis";
-import type { RpcHandler } from "@oats-center/trellis/service";
+import { Result } from "@oatscenter/trellis";
+import type { RpcHandler } from "@oatscenter/trellis/service";
 import { participants } from "orders-trellis";
 
 /** Returns an example order receipt; this walkthrough does not persist orders. */
@@ -30,7 +30,7 @@ database here. Trellis does not choose either.
 Replace `main.ts` with:
 
 ```ts
-import { TrellisService } from "@oats-center/trellis/service";
+import { TrellisService } from "@oatscenter/trellis/service";
 import { participants } from "orders-trellis";
 import { createOrder } from "./service.ts";
 

@@ -4,7 +4,7 @@ import {
   assertNotEquals,
   assertRejects,
 } from "@std/assert";
-import { AsyncResult } from "@oats-center/result";
+import { AsyncResult } from "@oatscenter/result";
 import type {
   OperationEvent,
   OperationSignalAck,

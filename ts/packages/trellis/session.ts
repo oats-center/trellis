@@ -51,7 +51,7 @@ import {
   type MaybeAsync,
   ok,
   Result,
-} from "@oats-center/result";
+} from "@oatscenter/result";
 import {
   context,
   createNatsHeaderCarrier,

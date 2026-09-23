@@ -1,5 +1,5 @@
-import { Result, UnexpectedError } from "@oats-center/trellis";
-import type { ActiveJob } from "@oats-center/trellis/service";
+import { Result, UnexpectedError } from "@oatscenter/trellis";
+import type { ActiveJob } from "@oatscenter/trellis/service";
 import type {
   SiteRefreshJobPayload,
   SiteRefreshJobResult,

@@ -7,7 +7,7 @@
     "update": "trellis update",
     "generate": "trellis generate",
     "check": "deno check src/main.ts",
-    "build": "deno bundle --external @oats-center/trellis --external @oats-center/trellis/service --external @oats-center/trellis/generated --external chalk --external ulid -o build/main.mjs src/main.ts",
+    "build": "deno bundle --external @oatscenter/trellis --external @oatscenter/trellis/service --external @oatscenter/trellis/generated --external chalk --external ulid -o build/main.mjs src/main.ts",
     "start": "deno run --allow-env --allow-net --allow-sys --allow-write=/tmp src/main.ts"
   }
 }

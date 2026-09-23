@@ -5,7 +5,7 @@ import {
   err,
   ok,
   type Result,
-} from "@oats-center/result";
+} from "@oatscenter/result";
 import type { RequestOpts } from "./session.ts";
 
 type CursorPage<TItem> = Readonly<{

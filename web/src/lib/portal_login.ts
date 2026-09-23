@@ -1,4 +1,4 @@
-import { createPortalFlow } from "@oats-center/trellis-svelte";
+import { createPortalFlow } from "@oatscenter/trellis-svelte";
 import { trellisUrl } from "$lib/portal_config";
 
 /**

@@ -1,4 +1,4 @@
-import { decodeTrellisHttpError } from "@oats-center/trellis/auth/browser";
+import { decodeTrellisHttpError } from "@oatscenter/trellis/auth/browser";
 
 import {
   accountFlowProviderLoginUrl,

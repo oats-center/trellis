@@ -60,7 +60,7 @@ import {
   isErr,
   type MaybeAsync,
   Result,
-} from "@oats-center/result";
+} from "@oatscenter/result";
 import { Value } from "typebox/value";
 import {
   type ServiceHealth,

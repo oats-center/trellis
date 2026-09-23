@@ -2,7 +2,7 @@ import {
   UnexpectedError,
   type UnexpectedErrorData,
   UnexpectedErrorDataSchema,
-} from "@oats-center/result";
+} from "@oatscenter/result";
 import { AuthError } from "./AuthError.ts";
 import type { AuthErrorData } from "./AuthError.ts";
 import { AuthErrorDataSchema } from "./AuthError.ts";
@@ -51,7 +51,7 @@ type RuntimeRpcErrorDesc = {
   fromSerializable(data: unknown): Error;
 };
 
-export { UnexpectedError } from "@oats-center/result";
+export { UnexpectedError } from "@oatscenter/result";
 export { TrellisError } from "./TrellisError.ts";
 export { AuthError } from "./AuthError.ts";
 export { ValidationError } from "./ValidationError.ts";

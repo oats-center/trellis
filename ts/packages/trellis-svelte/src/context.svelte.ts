@@ -3,7 +3,7 @@ import type {
   ConnectedTrellisClient,
   TrellisConnection,
   TrellisConnectionStatus,
-} from "@oats-center/trellis";
+} from "@oatscenter/trellis";
 import { createContext } from "svelte";
 import { createSubscriber } from "svelte/reactivity";
 

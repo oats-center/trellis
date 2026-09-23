@@ -108,7 +108,7 @@ pub fn collect_ts_package_sources(
             "type": "module",
             "sideEffects": false,
             "exports": {".": {"types": "./index.d.ts", "import": "./index.js"}},
-            "dependencies": {"@oats-center/trellis": format!("^{}", env!("CARGO_PKG_VERSION"))}
+            "dependencies": {"@oatscenter/trellis": format!("^{}", env!("CARGO_PKG_VERSION"))}
         }))?,
     }];
 
@@ -417,7 +417,7 @@ fn validate_export_name(kind: &str, name: &str) -> Result<(), CodegenTsError> {
 
 fn render_types(package: &SemanticPackage, modules: &BTreeMap<String, String>) -> String {
     let own_module = &modules[package.identity().as_str()];
-    let mut lines = vec!["import { codecs } from \"@oats-center/trellis/generated\";".to_owned()];
+    let mut lines = vec!["import { codecs } from \"@oatscenter/trellis/generated\";".to_owned()];
     for dependency in package
         .types()
         .values()
@@ -693,13 +693,13 @@ fn render_api(
         .map(|(package, _)| package)
         .ok_or_else(|| CodegenTsError::MissingReference(api.identity().to_string()))?;
     let mut lines = vec![if api.errors().is_empty() {
-        "import { apiDescriptor } from \"@oats-center/trellis/generated\";".to_owned()
+        "import { apiDescriptor } from \"@oatscenter/trellis/generated\";".to_owned()
     } else {
-        "import { apiDescriptor, TrellisError } from \"@oats-center/trellis/generated\";".to_owned()
+        "import { apiDescriptor, TrellisError } from \"@oatscenter/trellis/generated\";".to_owned()
     }];
     if !api.errors().is_empty() {
         lines.push(
-            "import type { SerializableErrorData } from \"@oats-center/trellis/generated\";"
+            "import type { SerializableErrorData } from \"@oatscenter/trellis/generated\";"
                 .to_owned(),
         );
     }
@@ -1022,10 +1022,9 @@ fn render_participant(
     let depth = participant_depth(package, participant);
     let api_prefix = "../".repeat(depth + 2);
     let types_prefix = "../".repeat(depth + 2);
-    let mut lines = vec![
-        "import { participantDescriptor } from \"@oats-center/trellis/generated\";".to_owned(),
-    ];
-    lines.push("import type { ParticipantJobsFromResources, ParticipantKvFromResources, RuntimeApiFromGenerated } from \"@oats-center/trellis/generated\";".to_owned());
+    let mut lines =
+        vec!["import { participantDescriptor } from \"@oatscenter/trellis/generated\";".to_owned()];
+    lines.push("import type { ParticipantJobsFromResources, ParticipantKvFromResources, RuntimeApiFromGenerated } from \"@oatscenter/trellis/generated\";".to_owned());
     lines.push("import * as types from \"./types.ts\";".to_owned());
     lines.push("export { types };".to_owned());
     let referenced = participant
@@ -2071,17 +2070,17 @@ mod tests {
             vec![Path::new("package.json")]
         );
         let allowed_support_imports = BTreeSet::from([
-            "import { apiDescriptor } from \"@oats-center/trellis/generated\";",
-            "import { apiDescriptor, TrellisError } from \"@oats-center/trellis/generated\";",
-            "import { codecs } from \"@oats-center/trellis/generated\";",
-            "import { participantDescriptor } from \"@oats-center/trellis/generated\";",
-            "import type { SerializableErrorData } from \"@oats-center/trellis/generated\";",
-            "import type { ParticipantJobsFromResources, ParticipantKvFromResources, RuntimeApiFromGenerated } from \"@oats-center/trellis/generated\";",
+            "import { apiDescriptor } from \"@oatscenter/trellis/generated\";",
+            "import { apiDescriptor, TrellisError } from \"@oatscenter/trellis/generated\";",
+            "import { codecs } from \"@oatscenter/trellis/generated\";",
+            "import { participantDescriptor } from \"@oatscenter/trellis/generated\";",
+            "import type { SerializableErrorData } from \"@oatscenter/trellis/generated\";",
+            "import type { ParticipantJobsFromResources, ParticipantKvFromResources, RuntimeApiFromGenerated } from \"@oatscenter/trellis/generated\";",
         ]);
         for import in sources
             .iter()
             .flat_map(|source| source.contents.lines())
-            .filter(|line| line.contains("@oats-center/trellis/generated"))
+            .filter(|line| line.contains("@oatscenter/trellis/generated"))
         {
             assert!(allowed_support_imports.contains(import), "{import}");
         }

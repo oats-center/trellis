@@ -4,7 +4,7 @@ import type {
   ClientAuthContinuation,
   ClientAuthOptions,
   ClientAuthRequiredContext,
-} from "@oats-center/trellis";
+} from "@oatscenter/trellis";
 
 import type {
   TrellisControlPlaneOAuthProvider,

@@ -1,5 +1,5 @@
-import { Result } from "@oats-center/trellis";
-import type { RpcHandler } from "@oats-center/trellis/service";
+import { Result } from "@oatscenter/trellis";
+import type { RpcHandler } from "@oatscenter/trellis/service";
 import { participants } from "orders-trellis";
 
 /** Returns an example order receipt; this walkthrough does not persist orders. */

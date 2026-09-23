@@ -1,8 +1,8 @@
 import type {
   DeviceUserAuthoritiesResolveOutput,
   DeviceUserAuthoritiesResolveProgress,
-} from "@oats-center/trellis/auth";
-import type { TerminalOperation } from "@oats-center/trellis";
+} from "@oatscenter/trellis/auth";
+import type { TerminalOperation } from "@oatscenter/trellis";
 
 export type DeviceActivationView =
   | { mode: "sign_in_required"; flowId: string }

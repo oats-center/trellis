@@ -387,17 +387,17 @@
       "npm:ulid@^3.0.1"
     ],
     "links": {
-      "jsr:@oats-center/result@0.12.0": {
+      "jsr:@oatscenter/result@0.12.0": {
         "dependencies": [
           "npm:typebox@^1.1.33",
           "npm:ulid@^3.0.2"
         ]
       },
-      "jsr:@oats-center/trellis-svelte@0.12.0": {},
-      "jsr:@oats-center/trellis-test@0.12.0": {
+      "jsr:@oatscenter/trellis-svelte@0.12.0": {},
+      "jsr:@oatscenter/trellis-test@0.12.0": {
         "dependencies": [
           "jsr:@nats-io/transport-deno@^3.3.1",
-          "jsr:@oats-center/trellis@0.12",
+          "jsr:@oatscenter/trellis@0.12",
           "jsr:@std/assert@^1.0.19",
           "jsr:@std/path@^1.1.4",
           "npm:@libsql/client@~0.15.15",
@@ -406,7 +406,7 @@
           "npm:@nats-io/nats-core@^3.3.1"
         ]
       },
-      "jsr:@oats-center/trellis@0.12.0": {
+      "jsr:@oatscenter/trellis@0.12.0": {
         "dependencies": [
           "npm:drizzle-orm@0.44.7"
         ]

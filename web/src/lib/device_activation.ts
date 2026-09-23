@@ -1,9 +1,9 @@
-import { TrellisClient } from "@oats-center/trellis";
+import { TrellisClient } from "@oatscenter/trellis";
 import {
   createDeviceActivationController,
   type DeviceActivationAuth,
   type DeviceActivationOperationRef,
-} from "@oats-center/trellis-svelte";
+} from "@oatscenter/trellis-svelte";
 import { participant as portalParticipant } from "../../../ts/packages/trellis/internal_sdk/generated/participants/portal/mod.js";
 import { trellisUrl } from "./portal_config.ts";
 

@@ -12,7 +12,7 @@ import {
   type BaseError,
   Result,
   UnexpectedError,
-} from "@oats-center/result";
+} from "@oatscenter/result";
 import { ulid } from "ulid";
 import { decodeTrellisHttpError, TrellisHttpError } from "./auth/http_error.ts";
 import {

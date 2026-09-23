@@ -20,7 +20,7 @@ function createNoopLogger(): LoggerLike {
   return logger;
 }
 
-// Keep the root package browser-safe: importing `@oats-center/trellis` must not
+// Keep the root package browser-safe: importing `@oatscenter/trellis` must not
 // pull in `pino` or Node-only side effects. Server-only entrypoints can inject
 // a real logger, while the shared runtime defaults to a no-op logger here.
 export const logger: LoggerLike = createNoopLogger();

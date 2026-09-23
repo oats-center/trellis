@@ -11,7 +11,7 @@ authority, transport, and generated caller/provider boundaries.
 
 ## Prerequisites
 
-Install `@oats-center/trellis-test` and `@std/assert` in the example's Deno
+Install `@oatscenter/trellis-test` and `@std/assert` in the example's Deno
 project. Have a matching `trellis-server` executable available. The
 helper downloads pinned NATS binaries on first use, which requires network
 access. Use the committed generated package, or run `trellis generate` after
@@ -24,8 +24,8 @@ Create `service_test.ts`:
 
 ```ts
 import { assertEquals, assertMatch } from "@std/assert";
-import { TrellisTestRuntime } from "@oats-center/trellis-test";
-import { TrellisService } from "@oats-center/trellis/service";
+import { TrellisTestRuntime } from "@oatscenter/trellis-test";
+import { TrellisService } from "@oatscenter/trellis/service";
 import { participants } from "orders-trellis";
 import { createOrder } from "./service.ts";
 

@@ -14,8 +14,8 @@
     "rootDir": ".",
     "outDir": "npm",
     "paths": {
-      "@oats-center/result": ["../result/npm/mod.d.ts"],
-      "@oats-center/trellis/generated": ["./generated.ts"]
+      "@oatscenter/result": ["../result/npm/mod.d.ts"],
+      "@oatscenter/trellis/generated": ["./generated.ts"]
     }
   },
   "files": [

@@ -118,12 +118,12 @@ The `Deploy Site to GitHub Pages` workflow is separate from release publishing. 
 
 The JSR publish set is:
 
-- `@oats-center/result`
-- `@oats-center/trellis`
-- `@oats-center/trellis-test`
-- `@oats-center/trellis-svelte` from `ts/packages/trellis-svelte/jsr`
+- `@oatscenter/result`
+- `@oatscenter/trellis`
+- `@oatscenter/trellis-test`
+- `@oatscenter/trellis-svelte` from `ts/packages/trellis-svelte/jsr`
 
-The workflow runs JSR dry-runs for the publishable core packages before the release gate. The source `@oats-center/trellis-svelte` package is built and smoke-tested before release, then staged and published after the matching core JSR version is available; a prepublication JSR dry-run cannot resolve that unreleased dependency.
+The workflow runs JSR dry-runs for the publishable core packages before the release gate. The source `@oatscenter/trellis-svelte` package is built and smoke-tested before release, then staged and published after the matching core JSR version is available; a prepublication JSR dry-run cannot resolve that unreleased dependency.
 
 ### Database schema baselines
 

@@ -4,7 +4,7 @@ The single SvelteKit application for Trellis-owned web surfaces. It currently
 hosts the login Portal under `/login` and the Console under `/console`.
 
 Built with SvelteKit, Tailwind CSS v4 + DaisyUI, and
-`@oats-center/trellis-svelte` for auth and NATS wiring.
+`@oatscenter/trellis-svelte` for auth and NATS wiring.
 
 ## Local dev
 

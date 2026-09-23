@@ -1,4 +1,4 @@
-import { recordTrellisDuration as recordOpenTelemetryDuration } from "@oats-center/trellis/telemetry";
+import { recordTrellisDuration as recordOpenTelemetryDuration } from "@oatscenter/trellis/telemetry";
 
 export function recordTrellisDuration(
   name: Parameters<typeof recordOpenTelemetryDuration>[0],

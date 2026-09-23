@@ -1,11 +1,11 @@
 # TypeScript libraries
 
-Application code imports runtime classes from `@oats-center/trellis` and the `apis`
+Application code imports runtime classes from `@oatscenter/trellis` and the `apis`
 and `participants` namespaces from its ordinary generated package. With
 `[package]` and `[generate.typescript].output` in `trellis.toml`:
 
 ```ts
-import { TrellisClient } from "@oats-center/trellis";
+import { TrellisClient } from "@oatscenter/trellis";
 import { participants } from "orders-trellis";
 
 const client = await TrellisClient.connect({
@@ -28,7 +28,7 @@ name to `./trellis/index.js` in their own imports. Generation creates no Deno
 configuration and never edits the consumer's manifest. Commit output when clones
 should build without regeneration or the Trellis source-package cache.
 
-Use `@oats-center/trellis/service` for service bootstrap in Node or Deno.
+Use `@oatscenter/trellis/service` for service bootstrap in Node or Deno.
 Pass `participant` and the immutable provisioned identity `seed` to
 `TrellisService.connect(...)`; `name` is optional. Automatic telemetry can be
 disabled with `telemetry: false`, while `runtime` configures service logging,
