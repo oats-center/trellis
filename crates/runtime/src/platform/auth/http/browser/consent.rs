@@ -497,21 +497,21 @@ where
         .principal_id
         .clone()
         .ok_or_else(|| HttpError::conflict("flow_has_no_principal"))?;
-    let current = state
-        .service
-        .repository()
-        .get_grant_binding(
-            GrantOwnerKind::User,
-            principal_id.clone(),
-            flow.participant_id.clone(),
-        )
-        .await?;
     let signer_id = super::super::super::domain::validate_ed25519_public_key(
         "sessionPublicKey",
         &flow.session_public_key,
     )?;
     let durable = 'policy: {
         for attempt in 0..3 {
+            let current = state
+                .service
+                .repository()
+                .get_grant_binding(
+                    GrantOwnerKind::User,
+                    principal_id.clone(),
+                    flow.participant_id.clone(),
+                )
+                .await?;
             let Some((portal, settings)) = state
                 .service
                 .repository()
@@ -611,7 +611,7 @@ where
                         approval_decision_digest: request_digest.clone(),
                         companion_approved: false,
                         platform_privileges: resolved.platform_privileges,
-                        expected_revision: flow.target_grant_revision,
+                        expected_revision: current.as_ref().map_or(0, |binding| binding.revision),
                         expected_current_installed_revision: Some(flow.installed_revision),
                         state: GrantBindingState::Active,
                         expires_at: None,
@@ -640,6 +640,9 @@ where
                     return Err(HttpError::conflict("portal_policy_changed"));
                 }
                 Err(AuthorizationStateError::StorageConflict) if attempt < 2 => {
+                    continue;
+                }
+                Err(AuthorizationStateError::RevisionConflict { .. }) if attempt < 2 => {
                     continue;
                 }
                 Err(error) => return Err(error.into()),
