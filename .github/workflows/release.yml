@@ -521,15 +521,17 @@ jobs:
           #    bundle volume, writable state volume. All mutable NATS files go
           #    to /var/lib/trellis/nats via the system profile and the runtime's
           #    SQLite stores to /var/lib/trellis/data (config rewritten above).
+          #    Private runtime and log directories are created inside portable
+          #    sticky tmpfs parents by the non-root service user.
           docker run --detach --name trellis-smoke-run --read-only --tmpfs /tmp \
-            --tmpfs /run/trellis:uid=10001,gid=10001,mode=0700 \
-            --tmpfs /var/log/trellis:uid=10001,gid=10001,mode=0700 \
+            --tmpfs /run:mode=1777 \
+            --tmpfs /var/log:mode=1777 \
             --user 10001:10001 \
             --publish 127.0.0.1::3000 \
             --volume "${BUNDLE_VOLUME}":/etc/trellis:ro,Z \
             --volume "${STATE_VOLUME}":/var/lib/trellis:rw,Z \
-            --entrypoint trellis-server "${IMAGE}" \
-            --system all --local-nats=/usr/local/bin/nats-server
+            --entrypoint sh "${IMAGE}" -c \
+              'mkdir -m 0700 /run/trellis /var/log/trellis; exec trellis-server --system all --local-nats=/usr/local/bin/nats-server'
 
           # 4. Wait for runtime readiness on the published port.
           runtime_port="$(docker port trellis-smoke-run 3000/tcp | cut -d: -f2)"
@@ -573,8 +575,8 @@ jobs:
           #    removed on shutdown; the bundle volume stayed untouched; the
           #    runtime's SQLite databases landed in the system data root.
           docker run --rm --entrypoint sh \
-            -v "${BUNDLE_VOLUME}":/etc/trellis:ro \
-            -v "${STATE_VOLUME}":/var/lib/trellis "${IMAGE}" -c '
+            -v "${BUNDLE_VOLUME}":/etc/trellis:ro,Z \
+            -v "${STATE_VOLUME}":/var/lib/trellis:rw,Z "${IMAGE}" -c '
               set -eu
               test -f /var/lib/trellis/nats/nats.conf
               test -f /var/lib/trellis/nats/jwt.conf
