@@ -18,7 +18,7 @@ import { withTrellisRuntime } from "./_support/runtime.ts";
 function serverBinary(): string {
   return Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
     fromFileUrl(
-      new URL("../../rust/target/debug/trellis-server", import.meta.url),
+      new URL("../../target/debug/trellis-server", import.meta.url),
     );
 }
 

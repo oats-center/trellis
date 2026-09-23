@@ -12,7 +12,7 @@ function rustFixtureCommand(bin: string): string[] {
     "--config",
     `patch.crates-io.trellis-rs.path=${
       JSON.stringify(
-        fromFileUrl(new URL("../../rust/crates/trellis", import.meta.url)),
+        fromFileUrl(new URL("../../crates/trellis", import.meta.url)),
       )
     }`,
     "--bin",
@@ -45,7 +45,7 @@ async function completeRustLogin(
       TRELLIS_URL: runtime.trellisUrl,
       XDG_CONFIG_HOME: join(runtime.workdir, configDir),
       CARGO_TARGET_DIR: fromFileUrl(
-        new URL("../../rust/target", import.meta.url),
+        new URL("../../target", import.meta.url),
       ),
     },
     stdout: "piped",
@@ -85,7 +85,7 @@ Deno.test("NX01 rust caller receives Watch frames from rust provider", async () 
         TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_IDENTITY_SEED: identity.seed,
         CARGO_TARGET_DIR: fromFileUrl(
-          new URL("../../rust/target", import.meta.url),
+          new URL("../../target", import.meta.url),
         ),
       },
       stdout: "inherit",
@@ -140,7 +140,7 @@ Deno.test("NX03 empty finite Watch completes with no frames", async () => {
         TRELLIS_IDENTITY_SEED: identity.seed,
         TRELLIS_FEED_EMPTY: "1",
         CARGO_TARGET_DIR: fromFileUrl(
-          new URL("../../rust/target", import.meta.url),
+          new URL("../../target", import.meta.url),
         ),
       },
       stdout: "inherit",
@@ -193,7 +193,7 @@ Deno.test("L2 TypeScript caller receives rust Watch over live open", async () =>
         TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_IDENTITY_SEED: identity.seed,
         CARGO_TARGET_DIR: fromFileUrl(
-          new URL("../../rust/target", import.meta.url),
+          new URL("../../target", import.meta.url),
         ),
       },
       stdout: "inherit",
@@ -285,7 +285,7 @@ Deno.test("NX02 rust console client receives Health Watch", async () => {
       [
         "run",
         "--manifest-path",
-        fromFileUrl(new URL("../../rust/Cargo.toml", import.meta.url)),
+        fromFileUrl(new URL("../../Cargo.toml", import.meta.url)),
         "-p",
         "trellis-runtime",
         "--example",

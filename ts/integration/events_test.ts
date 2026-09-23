@@ -909,7 +909,7 @@ Deno.test("Rust consumer-only service rejects explicit ephemeral at the runtime 
         "--config",
         `patch.crates-io.trellis-rs.path=${
           JSON.stringify(
-            fromFileUrl(new URL("../../rust/crates/trellis", import.meta.url)),
+            fromFileUrl(new URL("../../crates/trellis", import.meta.url)),
           )
         }`,
         "--bin",
@@ -928,7 +928,7 @@ Deno.test("Rust consumer-only service rejects explicit ephemeral at the runtime 
         CONSUMER_ONLY: "true",
         EPHEMERAL: "true",
         CARGO_TARGET_DIR: fromFileUrl(
-          new URL("../../rust/target", import.meta.url),
+          new URL("../../target", import.meta.url),
         ),
       },
       stdout: "piped",

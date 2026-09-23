@@ -41,7 +41,7 @@ function rustFixtureCommand(bin: string): string[] {
     "--config",
     `patch.crates-io.trellis-rs.path=${
       JSON.stringify(
-        fromFileUrl(new URL("../../rust/crates/trellis", import.meta.url)),
+        fromFileUrl(new URL("../../crates/trellis", import.meta.url)),
       )
     }`,
     "--bin",
@@ -321,7 +321,7 @@ Deno.test("V3 TypeScript caller drives Rust liveprobe provider", async () => {
         TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_IDENTITY_SEED: identity.seed,
         CARGO_TARGET_DIR: fromFileUrl(
-          new URL("../../rust/target", import.meta.url),
+          new URL("../../target", import.meta.url),
         ),
       },
       stdout: "inherit",
@@ -380,7 +380,7 @@ async function runRustLiveProbeCaller(
       TRELLIS_URL: runtime.trellisUrl,
       XDG_CONFIG_HOME: join(runtime.workdir, configDir),
       CARGO_TARGET_DIR: fromFileUrl(
-        new URL("../../rust/target", import.meta.url),
+        new URL("../../target", import.meta.url),
       ),
     },
     stdout: "piped",
@@ -455,7 +455,7 @@ function startRustProvider(runtime: ProviderRuntime): {
           TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_IDENTITY_SEED: identity.seed,
           CARGO_TARGET_DIR: fromFileUrl(
-            new URL("../../rust/target", import.meta.url),
+            new URL("../../target", import.meta.url),
           ),
         },
         stdout: "inherit",

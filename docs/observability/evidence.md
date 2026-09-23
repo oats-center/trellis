@@ -192,20 +192,20 @@ and one receiver.
 Focused tests exercise the real owner and assert its observation without a live
 Collector:
 
-- `rust/crates/trellis/src/service/request_loop.rs` —
+- `crates/trellis/src/service/request_loop.rs` —
   `dispatch_outcomes_classify_business_results_not_envelopes`,
   `dispatch_error_envelope_never_records_ok`,
   `feed_streams_never_acquire_a_unary_sample` (real dispatcher plus a collecting
   metric reader).
-- `rust/crates/trellis/src/telemetry/instruments.rs` — source
+- `crates/trellis/src/telemetry/instruments.rs` — source
   registration/removal and later-source export through a collecting reader.
-- `rust/crates/trellis/src/telemetry/export.rs` —
+- `crates/trellis/src/telemetry/export.rs` —
   `repeated_flushes_coalesce_into_one_operation`.
-- `rust/crates/trellis/src/telemetry/propagation.rs` — explicit-root extraction,
+- `crates/trellis/src/telemetry/propagation.rs` — explicit-root extraction,
   duplicate/oversized rejection, propagator validation.
-- `rust/crates/runtime/src/telemetry/snapshots.rs` — disabled metrics start no
+- `crates/runtime/src/telemetry/snapshots.rs` — disabled metrics start no
   sampler task and stop aborts a running sampler promptly.
-- `rust/crates/trellis/src/service/operations.rs` — the diagnostic trace carrier
+- `crates/trellis/src/service/operations.rs` — the diagnostic trace carrier
   is excluded from the invocation identity digest.
 - `ts/packages/trellis/connection_test.ts` — process-local connection and
   coverage sources survive the first collection, export live counts, and clear

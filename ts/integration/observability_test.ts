@@ -18,7 +18,7 @@ import { withTrellisRuntime } from "./_support/runtime.ts";
 function serverBinary(): string {
   return Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
     fromFileUrl(
-      new URL("../../rust/target/debug/trellis-server", import.meta.url),
+      new URL("../../target/debug/trellis-server", import.meta.url),
     );
 }
 
@@ -273,7 +273,7 @@ for (
                   `patch.crates-io.trellis-rs.path=${
                     JSON.stringify(
                       fromFileUrl(
-                        new URL("../../rust/crates/trellis", import.meta.url),
+                        new URL("../../crates/trellis", import.meta.url),
                       ),
                     )
                   }`,
@@ -294,7 +294,7 @@ for (
                     "rust-observability-caller",
                   ),
                   CARGO_TARGET_DIR: fromFileUrl(
-                    new URL("../../rust/target", import.meta.url),
+                    new URL("../../target", import.meta.url),
                   ),
                 },
                 stdout: "piped",

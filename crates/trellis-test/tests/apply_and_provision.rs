@@ -7,7 +7,7 @@ use trellis_test::{TrellisTestRuntime, TrellisTestRuntimeOptions};
 
 /// The repository's own integration fixture project (package `runtime-trellis`).
 fn fixture_project() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../integration/fixtures/runtime")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../integration/fixtures/runtime")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

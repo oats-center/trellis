@@ -1973,7 +1973,7 @@ mod tests {
         use std::fs;
 
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../conformance/live-protocol/vectors.json");
+            .join("../../conformance/live-protocol/vectors.json");
         let fixtures: Vec<serde_json::Value> =
             serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
         let key = SigningKey::from_bytes(&[42u8; 32]);
