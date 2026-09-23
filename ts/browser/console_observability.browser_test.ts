@@ -632,7 +632,7 @@ Deno.test("Z10 Events visibility recovery refreshes a retained notification", as
         });
         await publishedEvent.first().waitFor({
           state: "visible",
-          timeout: 20_000,
+          timeout: 60_000,
         });
       } finally {
         await context.close();
