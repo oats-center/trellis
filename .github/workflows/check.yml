@@ -962,11 +962,13 @@ jobs:
       # The runtime image base is debian:bookworm-slim, so compile in the same
       # release (rust:bookworm) on each native architecture.
       - name: Build release binaries
+        shell: bash
         run: |
           set -euo pipefail
           cargo build --release -p trellis-cli -p trellis-server --target ${{ matrix.target }}
 
       - name: Package CLI archives
+        shell: bash
         run: |
           set -euo pipefail
           version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
@@ -1043,6 +1045,7 @@ jobs:
             . -> target
 
       - name: Build release binaries
+        shell: bash
         run: |
           set -euo pipefail
           cargo build --release -p trellis-cli -p trellis-server --target ${{ matrix.target }}
