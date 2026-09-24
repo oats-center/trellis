@@ -806,11 +806,27 @@ impl AuthorizationProviderCache {
     ) -> Result<AuthorizationContextLease, TrellisClientError> {
         let epoch = self.epoch();
         self.context_resolves.fetch_add(1, Ordering::Relaxed);
-        let value = self.registry.get_context(digest).await?.ok_or_else(|| {
-            TrellisClientError::AuthorizationUnavailable(
-                "context is missing from the registry".into(),
-            )
-        })?;
+        // The registry is eventually consistent, so an immutable context that
+        // was just published may not be readable from this connection yet. Wait
+        // a bounded window for it to become visible before reporting it missing,
+        // so a freshly provisioned identity (for example a built-in live
+        // provider during startup) is not denied while publication converges.
+        // ponytail: fixed 5s convergence window; widen or make configurable if a
+        // real propagation lag exceeds it.
+        let value = {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Some(value) = self.registry.get_context(digest).await? {
+                    break value;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(TrellisClientError::AuthorizationUnavailable(
+                        "context is missing from the registry".into(),
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        };
         let mut policy = self.policy()?;
         if value.len() > policy.maximum_context_bytes {
             return Err(TrellisClientError::AuthorizationUnavailable(
@@ -1218,7 +1234,7 @@ mod wire_tests {
         VerifiedAuthorizationContext,
     ) {
         let vectors: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../../conformance/authorization-context/vectors.json"
+            "../../../../../integration/fixtures/protocol/authorization-context/vectors.json"
         ))
         .unwrap();
         let complete = &vectors["completeChain"];
