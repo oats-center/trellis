@@ -8,6 +8,32 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- Added the publishable `trellis-test` Rust crate: an out-of-process harness
+  that starts the released `trellis`/`trellis-server` executables in a private
+  sandbox, selects its loopback ports automatically, and exposes real
+  bootstrap/login/consent/provisioning helpers for external service and
+  app/agent integration tests. It depends only on the published `trellis-rs`
+  facade plus a projected copy of the generated administration API.
+- Added an optional `[http] bind_address` runtime configuration so the HTTP
+  listener can bind a specific address; omitting it preserves the existing
+  unspecified IPv4 default.
+- Added `AgentLoginChallenge::complete_session`, a storage-free login completion
+  that binds a session without writing the default session store and does not
+  require administrator privilege. Existing `complete` retains its persistence
+  and administrator checks.
+
+### Fixed
+
+- Quoted host-local NATS configuration paths so JetStream store and JWT resolver
+  directories containing spaces, quotes, or backslashes render safely.
+
+### Documentation
+
+- Documented the external Rust live-testing workflow and the intentional set of
+  publishable Trellis crates (`trellis-rs`, `trellis-protocol`, `trellis-test`).
+
 ## [0.100.0-rc.1] - 2026-09-23
 
 ### Added

@@ -249,7 +249,63 @@ jobs:
         run: |
           cargo package --manifest-path Cargo.toml --allow-dirty \
             -p trellis-protocol \
-            -p trellis-rs
+            -p trellis-rs \
+            -p trellis-test
+
+      - name: Upload public Rust packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-testkit-packages
+          path: target/package/*.crate
+          retention-days: 3
+
+  rust-testkit-consumer:
+    name: Verify Rust testkit consumer
+    needs: package-rust
+    runs-on: [self-hosted, Linux, X64]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download prepared release workspace
+        uses: actions/download-artifact@v4
+        with:
+          name: prepared-release
+          path: .
+
+      - name: Download public Rust packages
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-testkit-packages
+          path: target/package
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binaries
+        run: cargo build --manifest-path Cargo.toml -p trellis-server -p trellis-cli
+
+      - name: Stage the verification bundle
+        run: |
+          set -euo pipefail
+          bundle="$RUNNER_TEMP/testkit-bundle"
+          rm -rf "$bundle"
+          mkdir -p "$bundle/packages" "$bundle/binaries" "$bundle/nats" "$bundle/consumer"
+          cp target/package/trellis-protocol-*.crate \
+             target/package/trellis-rs-*.crate \
+             target/package/trellis-test-*.crate "$bundle/packages/"
+          cp target/debug/trellis target/debug/trellis-server "$bundle/binaries/"
+          cp -R integration/fixtures/testkit/. "$bundle/consumer/"
+          rm -rf "$bundle/consumer/target"
+          nats="$(command -v nats-server || true)"
+          if [[ -z "$nats" ]]; then
+            nats="$(find "$HOME/.cache/trellis" -maxdepth 1 -name 'nats-server-*' -type f | head -1)"
+          fi
+          cp "$nats" "$bundle/nats/"
+
+      - name: Verify the packaged testkit
+        run: bash scripts/verify-rust-test-package.sh --bundle "$RUNNER_TEMP/testkit-bundle" --mode smoke
 
   package-js:
     name: Verify JavaScript packages
@@ -602,12 +658,14 @@ jobs:
     needs:
       - prepare-release
       - package-rust
+      - rust-testkit-consumer
       - package-js
       - build-cli
       - verify-images
     if: >-
       always()
       && needs.package-rust.result == 'success'
+      && needs.rust-testkit-consumer.result == 'success'
       && needs.package-js.result == 'success'
       && (
         needs.prepare-release.outputs.release-tag == ''

@@ -424,6 +424,18 @@ jobs:
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
         run: cargo test --manifest-path Cargo.toml -p trellis-rs --features live-integration --test integration -- --nocapture
 
+      - name: Run Rust testkit fixture live
+        env:
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
+          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
+        run: |
+          cargo test \
+            --manifest-path integration/fixtures/testkit/Cargo.toml \
+            --config "patch.crates-io.trellis-protocol.path=\"$GITHUB_WORKSPACE/crates/protocol\"" \
+            --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\"" \
+            --config "patch.crates-io.trellis-test.path=\"$GITHUB_WORKSPACE/crates/trellis-test\"" \
+            --test live
+
       - name: Run TypeScript live integration
         env:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
@@ -557,3 +569,76 @@ jobs:
             ts/browser/test-results/**
           if-no-files-found: ignore
           retention-days: 3
+
+  rust-testkit-package:
+    name: Rust testkit bundle
+    needs: [install, wasm, portal]
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download generated artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: check-generated
+
+      - name: Download embedded browser apps
+        uses: actions/download-artifact@v4
+        with:
+          name: check-portal
+          path: crates/runtime/generated
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build live runtime binaries
+        run: cargo build --manifest-path Cargo.toml -p trellis-server -p trellis-cli
+
+      - name: Package the public crates
+        run: cargo package --manifest-path Cargo.toml -p trellis-protocol -p trellis-rs -p trellis-test
+
+      - name: Stage the verification bundle
+        run: |
+          set -euo pipefail
+          bundle="$RUNNER_TEMP/testkit-bundle"
+          rm -rf "$bundle"
+          mkdir -p "$bundle/packages" "$bundle/binaries" "$bundle/nats" "$bundle/consumer"
+          cp target/package/trellis-protocol-*.crate \
+             target/package/trellis-rs-*.crate \
+             target/package/trellis-test-*.crate "$bundle/packages/"
+          cp target/debug/trellis target/debug/trellis-server "$bundle/binaries/"
+          cp -R integration/fixtures/testkit/. "$bundle/consumer/"
+          rm -rf "$bundle/consumer/target"
+          cp scripts/verify-rust-test-package.sh "$bundle/"
+          nats="$(command -v nats-server || true)"
+          if [[ -z "$nats" ]]; then
+            nats="$(find "$HOME/.cache/trellis" -maxdepth 1 -name 'nats-server-*' -type f | head -1)"
+          fi
+          cp "$nats" "$bundle/nats/"
+
+      - name: Upload the verification bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-testkit-bundle
+          path: ${{ runner.temp }}/testkit-bundle
+          retention-days: 3
+
+  rust-testkit-consumer:
+    name: Rust testkit artifact-only consumer
+    needs: [rust-testkit-package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Download the verification bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-testkit-bundle
+          path: bundle
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify the packaged testkit without a checkout
+        run: bash bundle/verify-rust-test-package.sh --bundle "$PWD/bundle" --mode smoke

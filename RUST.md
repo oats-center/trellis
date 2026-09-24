@@ -2,13 +2,17 @@
 
 Rust crates for the Trellis platform.
 
-The public Cargo runtime package is `trellis`; projects author APIs and
-participants in Trellis IDL and generate Rust code with the `trellis` CLI.
-Low-level crates in this workspace support the platform implementation,
+The public Cargo runtime package is the `trellis-rs` facade; projects author
+APIs and participants in Trellis IDL and generate Rust code with the `trellis`
+CLI. Low-level crates in this workspace support the platform implementation,
 generators, CLIs, and tests; they are not the stable package surface that normal
 Rust services and apps should author against. Internal workspace crates are
 marked `publish = false`; runtime implementation for public authoring lives
-behind modules of the public `trellis` facade.
+behind modules of the `trellis-rs` facade.
+
+Exactly three crates are intended for publication: `trellis-rs` (the facade),
+`trellis-protocol` (canonical protocol objects), and `trellis-test` (the
+external live-test harness). Every other workspace crate is internal.
 
 **Crates in this repository:**
 
@@ -16,7 +20,9 @@ behind modules of the public `trellis` facade.
 | ------------------------- | ---------------------------------------------------------------- |
 | `trellis-auth`            | Unpublished compatibility/test package for auth helpers          |
 | `trellis-auth-adapters`   | Unpublished compatibility/test package for auth adapters         |
-| `trellis`                 | Curated public Rust facade for clients and services              |
+| `trellis-rs`              | Curated public Rust facade for clients and services              |
+| `trellis-protocol`        | Public canonical protocol objects                                |
+| `trellis-test`            | Public out-of-process live-test harness                          |
 | `trellis-cli`             | Operator CLI crate for the `trellis` binary                      |
 | `trellis-client`          | Unpublished compatibility package for `trellis_rs::client`       |
 | `trellis-codegen-rust`    | Internal Rust SDK code generation                                |

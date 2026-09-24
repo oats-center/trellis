@@ -149,10 +149,14 @@ fn release_manifest_paths(repo_root: &Path) -> Result<Vec<PathBuf>> {
     collect_manifest_paths(&repo_root.join("ts"), &mut paths)?;
     paths.push(repo_root.join("Cargo.toml"));
     collect_manifest_paths(&repo_root.join("crates"), &mut paths)?;
+    // The external testkit fixture carries release-managed versions in its own
+    // manifest and its generated application package.
+    collect_manifest_paths(&repo_root.join("integration/fixtures/testkit"), &mut paths)?;
     for relative_path in [
         "crates/runtime/trellis.toml",
         "ts/packages/trellis-test/trellis.toml",
         "web/trellis.toml",
+        "integration/fixtures/testkit/trellis.toml",
     ] {
         let path = repo_root.join(relative_path);
         if path.exists() {
