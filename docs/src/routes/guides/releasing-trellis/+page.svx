@@ -125,6 +125,23 @@ The JSR publish set is:
 
 The workflow runs JSR dry-runs for the publishable core packages before the release gate. The source `@oatscenter/trellis-svelte` package is built and smoke-tested before release, then staged and published after the matching core JSR version is available; a prepublication JSR dry-run cannot resolve that unreleased dependency.
 
+The published Rust crate set is:
+
+- `trellis-protocol`
+- `trellis-rs`
+- `trellis-test`
+
+`release prepare` also rewrites the external testkit fixture manifests under
+`integration/fixtures/testkit` so its generated application package carries the
+prepared version. The `rust-testkit-consumer` release job builds a verification
+bundle (the three `.crate` archives, matching CLI/server binaries, a verified
+NATS executable, and the fixture) and runs
+`scripts/verify-rust-test-package.sh` with no repository checkout, patching only
+the three extracted public artifacts. Before the first `trellis-test` upload a
+maintainer must confirm the crate name is available and owned by the publisher;
+after publication, repeat the fixture smoke against the real crates.io versions
+with no patch entries.
+
 ### Database schema baselines
 
 Before the first release, each independently migrated schema has exactly one
