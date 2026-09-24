@@ -208,6 +208,7 @@ jobs:
             conformance
             demos/ts
             demos/app
+            integration
             ts
             web
             crates
@@ -261,13 +262,16 @@ jobs:
 
   rust-testkit-consumer:
     name: Verify Rust testkit consumer
-    needs: package-rust
+    if: >-
+      always()
+      && needs.package-rust.result == 'success'
+      && (needs.build-cli.result == 'success' || needs.build-cli.result == 'skipped')
+    needs: [prepare-release, package-rust, build-cli]
     runs-on: [self-hosted, Linux, X64]
+    env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
       - name: Download prepared release workspace
         uses: actions/download-artifact@v4
         with:
@@ -280,11 +284,15 @@ jobs:
           name: rust-testkit-packages
           path: target/package
 
+      - name: Download the tagged Linux CLI archive
+        if: needs.prepare-release.outputs.release-tag != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: trellis-cli-x86_64-unknown-linux-gnu
+          path: dist
+
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Build release binaries
-        run: cargo build --manifest-path Cargo.toml -p trellis-server -p trellis-cli
 
       - name: Stage the verification bundle
         run: |
@@ -295,17 +303,38 @@ jobs:
           cp target/package/trellis-protocol-*.crate \
              target/package/trellis-rs-*.crate \
              target/package/trellis-test-*.crate "$bundle/packages/"
-          cp target/debug/trellis target/debug/trellis-server "$bundle/binaries/"
+          if [[ -n "${RELEASE_TAG}" ]]; then
+            archive="$(find dist -name 'trellis-*-x86_64-unknown-linux-gnu.tar.gz' | head -1)"
+            [[ -n "$archive" ]] || { echo "missing the tagged Linux CLI archive" >&2; exit 1; }
+            sha256sum -c dist/checksum-*-x86_64-unknown-linux-gnu-trellis.sha256
+            tar -xzf "$archive" -C "$bundle/binaries" trellis trellis-server
+          else
+            cargo build --manifest-path Cargo.toml -p trellis-server -p trellis-cli
+            cp target/debug/trellis target/debug/trellis-server "$bundle/binaries/"
+          fi
           cp -R integration/fixtures/testkit/. "$bundle/consumer/"
           rm -rf "$bundle/consumer/target"
-          nats="$(command -v nats-server || true)"
-          if [[ -z "$nats" ]]; then
-            nats="$(find "$HOME/.cache/trellis" -maxdepth 1 -name 'nats-server-*' -type f | head -1)"
-          fi
-          cp "$nats" "$bundle/nats/"
+          bash scripts/acquire-test-nats.sh --dest "$bundle/nats"
+          cp scripts/verify-rust-test-package.sh "$bundle/"
+
+      - name: Package the verification bundle
+        run: |
+          set -euo pipefail
+          version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
+          bash scripts/stage-rust-test-bundle.sh \
+            --bundle "$RUNNER_TEMP/testkit-bundle" \
+            --output "$RUNNER_TEMP/testkit-bundle.tar.gz" \
+            --source-sha "$GITHUB_SHA" \
+            --target "x86_64-unknown-linux-gnu" \
+            --version "$version"
 
       - name: Verify the packaged testkit
-        run: bash scripts/verify-rust-test-package.sh --bundle "$RUNNER_TEMP/testkit-bundle" --mode smoke
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/testkit-consumer"
+          tar -xzf "$RUNNER_TEMP/testkit-bundle.tar.gz" -C "$RUNNER_TEMP/testkit-consumer" --no-same-owner
+          bash "$RUNNER_TEMP/testkit-consumer/verify-rust-test-package.sh" \
+            --bundle "$RUNNER_TEMP/testkit-consumer" --mode smoke
 
   package-js:
     name: Verify JavaScript packages
@@ -897,6 +926,8 @@ jobs:
           publish_workspace_crate trellis-protocol
           # run_publish waits for protocol to enter the index before this contracts dry-run.
           publish_workspace_crate trellis-rs
+          # The public testkit follows the facade into the index.
+          publish_workspace_crate trellis-test
 
           echo "Published ${#published[@]} crate(s)"
           for item in "${published[@]}"; do

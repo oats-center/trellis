@@ -418,6 +418,9 @@ jobs:
       - name: Build live runtime binaries
         run: cargo build --manifest-path Cargo.toml -p trellis-server -p trellis-cli
 
+      - name: Acquire the pinned NATS executable
+        run: bash scripts/acquire-test-nats.sh --dest "$RUNNER_TEMP/nats"
+
       - name: Run Rust live integration
         env:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
@@ -428,6 +431,7 @@ jobs:
         env:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
+          TRELLIS_TEST_NATS_BIN: ${{ runner.temp }}/nats/nats-server
         run: |
           cargo test \
             --manifest-path integration/fixtures/testkit/Cargo.toml \
@@ -611,18 +615,25 @@ jobs:
           cp target/debug/trellis target/debug/trellis-server "$bundle/binaries/"
           cp -R integration/fixtures/testkit/. "$bundle/consumer/"
           rm -rf "$bundle/consumer/target"
+          bash scripts/acquire-test-nats.sh --dest "$bundle/nats"
           cp scripts/verify-rust-test-package.sh "$bundle/"
-          nats="$(command -v nats-server || true)"
-          if [[ -z "$nats" ]]; then
-            nats="$(find "$HOME/.cache/trellis" -maxdepth 1 -name 'nats-server-*' -type f | head -1)"
-          fi
-          cp "$nats" "$bundle/nats/"
+
+      - name: Package the verification bundle
+        run: |
+          set -euo pipefail
+          version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
+          bash scripts/stage-rust-test-bundle.sh \
+            --bundle "$RUNNER_TEMP/testkit-bundle" \
+            --output "$RUNNER_TEMP/testkit-bundle.tar.gz" \
+            --source-sha "$GITHUB_SHA" \
+            --target "$(rustc -vV | sed -n 's/^host: //p')" \
+            --version "$version"
 
       - name: Upload the verification bundle
         uses: actions/upload-artifact@v4
         with:
           name: rust-testkit-bundle
-          path: ${{ runner.temp }}/testkit-bundle
+          path: ${{ runner.temp }}/testkit-bundle.tar.gz
           retention-days: 3
 
   rust-testkit-consumer:
@@ -635,10 +646,15 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: rust-testkit-bundle
-          path: bundle
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Extract the verification bundle
+        run: |
+          set -euo pipefail
+          mkdir -p bundle
+          tar -xzf rust-testkit-bundle.tar.gz -C bundle --no-same-owner
+
       - name: Verify the packaged testkit without a checkout
-        run: bash bundle/verify-rust-test-package.sh --bundle "$PWD/bundle" --mode smoke
+        run: bash bundle/verify-rust-test-package.sh --bundle "$PWD/bundle" --mode full

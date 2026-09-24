@@ -106,19 +106,31 @@ use my_contract::participants::provider::Participant as Provider;
 
 # async fn example() -> Result<(), trellis_test::TrellisTestError> {
 let mut runtime = TrellisTestRuntime::builder().start().await?;
-let identity = runtime.register_service::<Provider>("provider").await?;
-let service = Provider::connect(identity.connect_options()).await.unwrap();
-let task = tokio::spawn(async move { service.run().await });
-// Call your generated APIs here.
-task.abort();
+// Always stop the harness, even when an assertion or call returns early.
+let result = exercise(&mut runtime).await;
 runtime.shutdown().await?;
+result
+# }
+
+# async fn exercise(
+#     runtime: &mut TrellisTestRuntime,
+# ) -> Result<(), trellis_test::TrellisTestError> {
+let identity = runtime.register_service::<Provider>("provider").await?;
+let mut service = Provider::connect(identity.connect_options()).await?;
+let task = tokio::spawn(async move { service.run().await });
+// Connect a generated caller and call your APIs here.
+task.abort();
+let _ = task.await;
 # Ok(())
 # }
 ```
 
 Provide the matching `trellis`, `trellis-server`, and `nats-server` executables;
 `trellis-test` chooses its loopback ports automatically. Released usage needs no
-private dependency patches and no Trellis source checkout.
+private dependency patches and no Trellis source checkout. If a browser app or
+operator console is served from a different origin, allow it with
+`TrellisTestRuntime::builder().extra_origin("http://localhost:5174")` so it can
+complete a portal login against the runtime.
 
 For deterministic application transaction behavior, test the actual adapter and
 database instead of starting a network solely to check SQL. In particular,

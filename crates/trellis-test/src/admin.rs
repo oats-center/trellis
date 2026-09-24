@@ -9,7 +9,8 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::{json, Value};
 use trellis_rs::auth::{
-    complete_local_login, connect_admin_client_async, start_agent_login, StartAgentLoginOpts,
+    approve_local_login, begin_local_login, complete_local_login, connect_admin_client_async,
+    start_agent_login, LocalLoginStep, StartAgentLoginOpts,
 };
 use trellis_rs::client::CallError;
 use trellis_rs::generated::ParticipantDescriptor;
@@ -63,12 +64,15 @@ pub(crate) struct ClientSession {
 }
 
 /// Completes a fresh participant-bound login for an app/agent caller.
+///
+/// Uses the staged local-login path so a caller that needs a broader consent
+/// ceiling gets the built-in portal policy configured before approval.
 pub(crate) async fn login_client(
     trellis_url: &str,
     participant_id: &str,
     username: &str,
     password: &str,
-    timeout_ms: u64,
+    admin: &AdminSession,
 ) -> Result<ClientSession, TrellisTestError> {
     let challenge = start_agent_login(&StartAgentLoginOpts {
         trellis_url,
@@ -76,38 +80,70 @@ pub(crate) async fn login_client(
         allow_insecure_origin: false,
     })
     .await
-    .map_err(|error| {
-        TrellisTestError::new(
-            TrellisTestErrorKind::Authentication,
-            TrellisTestStage::ClientLogin,
-            format!("starting the caller login: {error}"),
-        )
-    })?;
+    .map_err(|error| login_error("starting the caller login", &error))?;
     let login_url = challenge.login_url().to_owned();
-    complete_local_login(trellis_url, &login_url, username, password)
+    match begin_local_login(trellis_url, &login_url, username, password)
         .await
-        .map_err(|error| {
-            TrellisTestError::new(
-                TrellisTestErrorKind::Authentication,
-                TrellisTestStage::ClientLogin,
-                format!("completing the caller login: {error}"),
-            )
-        })?;
+        .map_err(|error| login_error("completing the caller login", &error))?
+    {
+        LocalLoginStep::Completed { .. } => {}
+        LocalLoginStep::ConsentRequired {
+            flow_id,
+            binding,
+            summary,
+        } => {
+            let consent_participant = summary.participant_id.as_deref().ok_or_else(|| {
+                TrellisTestError::new(
+                    TrellisTestErrorKind::Authentication,
+                    TrellisTestStage::ClientLogin,
+                    "the caller consent view named no participant",
+                )
+            })?;
+            if consent_participant != participant_id {
+                return Err(TrellisTestError::new(
+                    TrellisTestErrorKind::Authentication,
+                    TrellisTestStage::ClientLogin,
+                    format!(
+                        "the caller consent view named participant '{consent_participant}' instead of '{participant_id}'"
+                    ),
+                ));
+            }
+            admin
+                .ensure_portal_consent_policy(participant_id, &summary.capabilities)
+                .await?;
+            approve_local_login(trellis_url, &flow_id, &binding)
+                .await
+                .map_err(|error| login_error("approving the caller consent", &error))?;
+        }
+    }
     let state = challenge
         .complete_session(trellis_url)
         .await
-        .map_err(|error| {
-            TrellisTestError::new(
-                TrellisTestErrorKind::Authentication,
-                TrellisTestStage::ClientLogin,
-                format!("binding the caller session: {error}"),
-            )
-        })?;
-    let _ = timeout_ms;
+        .map_err(|error| login_error("binding the caller session", &error))?;
+    if state.participant_id != participant_id || state.trellis_url != trellis_url {
+        return Err(TrellisTestError::new(
+            TrellisTestErrorKind::Authentication,
+            TrellisTestStage::ClientLogin,
+            "the bound caller session did not match the requested participant and origin",
+        ));
+    }
     Ok(ClientSession {
         login_session_id: state.login_session_id,
         session_seed: state.session_seed,
     })
+}
+
+fn login_error(action: &str, error: &impl std::fmt::Display) -> TrellisTestError {
+    TrellisTestError::new(
+        TrellisTestErrorKind::Authentication,
+        TrellisTestStage::ClientLogin,
+        format!("{action}: {error}"),
+    )
+}
+
+/// Redacts a known secret from a message before it can reach a public error.
+fn redact(text: &str, secret: &str) -> String {
+    crate::error::redact_secrets(text, &[secret])
 }
 
 /// An authenticated administrator session for one test runtime.
@@ -170,17 +206,43 @@ impl AdminSession {
     /// Confirms the administrator boundary with a generated `Sessions.Me` call.
     pub(crate) async fn verify(&self) -> Result<(), TrellisTestError> {
         let request = crate::types::AuthSessionsMeRequest {};
-        self.auth
-            .sessions_me(&request)
-            .await
-            .map(|_| ())
-            .map_err(|error| {
-                TrellisTestError::new(
+        let response = self.auth.sessions_me(&request).await.map_err(|error| {
+            TrellisTestError::new(
+                TrellisTestErrorKind::Authentication,
+                TrellisTestStage::AdministratorLogin,
+                format!("verifying the administrator session: {error}"),
+            )
+        })?;
+        let participant = value_text(&response.connection.participant_id);
+        if participant != crate::participants::trellis_cli::PARTICIPANT_ID {
+            return Err(TrellisTestError::new(
+                TrellisTestErrorKind::Authentication,
+                TrellisTestStage::AdministratorLogin,
+                format!(
+                    "the administrator connection named participant '{participant}' instead of the built-in CLI participant"
+                ),
+            ));
+        }
+        match &response.session {
+            crate::__types::Nullable::Value(session) => {
+                let bound = value_text(&session.participant_id);
+                if bound != participant {
+                    return Err(TrellisTestError::new(
+                        TrellisTestErrorKind::Authentication,
+                        TrellisTestStage::AdministratorLogin,
+                        "the administrator login session was bound to a different participant",
+                    ));
+                }
+            }
+            crate::__types::Nullable::Null => {
+                return Err(TrellisTestError::new(
                     TrellisTestErrorKind::Authentication,
                     TrellisTestStage::AdministratorLogin,
-                    format!("verifying the administrator session: {error}"),
-                )
-            })
+                    "the administrator connection carried no bound login session",
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Installs `P` at revision 0, returning the server-confirmed revision.
@@ -188,12 +250,13 @@ impl AdminSession {
         &self,
     ) -> Result<u64, TrellisTestError> {
         let evidence = P::package_evidence();
+        let digest = evidence.root_digest().to_owned();
         let response = self
             .auth
             .participants_install(&AuthParticipantsInstallRequest {
                 expected_revision: wire("0")?,
                 idempotency_key: wire(idempotency_key())?,
-                package_digest: evidence.root_digest().to_owned(),
+                package_digest: digest.clone(),
                 package_evidence: wire(evidence)?,
                 participant_path: P::PATH.to_owned(),
                 platform_trust: Some(false),
@@ -206,7 +269,18 @@ impl AdminSession {
                     format!("installing participant {}: {error}", P::ID),
                 )
             })?;
-        let revision = value_text(&response.participant.revision)
+        let installed = &response.participant;
+        if value_text(&installed.participant_id) != P::ID || installed.package_digest != digest {
+            return Err(TrellisTestError::new(
+                TrellisTestErrorKind::AdminRpc,
+                TrellisTestStage::ParticipantInstallation,
+                format!(
+                    "the install response did not confirm participant {} at the requested digest",
+                    P::ID
+                ),
+            ));
+        }
+        let revision = value_text(&installed.revision)
             .parse::<u64>()
             .map_err(|_| {
                 TrellisTestError::new(
@@ -271,7 +345,10 @@ impl AdminSession {
                         format!("applying participant {}: {error}", P::ID),
                     )
                 })?;
-                request.approval = Some(approve_required(&consent));
+                request.approval = Some(approve_required(&consent)?);
+                // A changed consent request is a new operation and must not
+                // replay the first attempt's idempotency key.
+                request.idempotency_key = wire(idempotency_key())?;
                 self.auth
                     .deployments_apply(&request)
                     .await
@@ -287,19 +364,20 @@ impl AdminSession {
         }
     }
 
-    /// Provisions a service instance and returns its id and identity seed.
+    /// Provisions a server-assigned service instance for the exact participant.
     pub(crate) async fn provision_service_instance(
         &self,
         deployment_id: &str,
+        participant_id: &str,
     ) -> Result<(String, String), TrellisTestError> {
         let (seed, key) = trellis_rs::auth::generate_session_keypair();
         let instance = self
             .auth
             .service_instances_provision(&AuthServiceInstancesProvisionRequest {
                 deployment_id: wire(deployment_id)?,
-                instance_id: wire(Some(format!("inst_{}", &key[..16])))?,
+                instance_id: wire(None::<String>)?,
                 identity_public_key: wire(key)?,
-                participant_id: wire(None::<String>)?,
+                participant_id: wire(Some(participant_id.to_owned()))?,
                 idempotency_key: wire(idempotency_key())?,
             })
             .await
@@ -311,14 +389,27 @@ impl AdminSession {
                 )
             })?
             .instance;
-        Ok((value_text(&instance.instance_id), seed))
+        if let crate::__types::Nullable::Value(assigned) = &instance.participant_id {
+            if assigned != participant_id {
+                return Err(TrellisTestError::new(
+                    TrellisTestErrorKind::AdminRpc,
+                    TrellisTestStage::ServiceProvisioning,
+                    "the provisioned instance was not assigned to the requested participant",
+                ));
+            }
+        }
+        let instance_id = value_text(&instance.instance_id);
+        if instance_id.is_empty() {
+            return Err(TrellisTestError::new(
+                TrellisTestErrorKind::AdminRpc,
+                TrellisTestStage::ServiceProvisioning,
+                "the provisioned instance carried no server-assigned id",
+            ));
+        }
+        Ok((instance_id, seed))
     }
 
     /// Sets the built-in portal's consent ceiling for `participant_id`.
-    #[allow(
-        dead_code,
-        reason = "used when a caller needs an explicit portal ceiling"
-    )]
     pub(crate) async fn ensure_portal_consent_policy(
         &self,
         participant_id: &str,
@@ -382,7 +473,10 @@ pub(crate) async fn bootstrap_first_admin(
             TrellisTestError::new(
                 TrellisTestErrorKind::Bootstrap,
                 TrellisTestStage::AdministratorBootstrap,
-                format!("posting the first-administrator credentials: {error}"),
+                format!(
+                    "posting the first-administrator credentials: {}",
+                    redact(&error.to_string(), token)
+                ),
             )
         })?;
     let status = response.status();
@@ -390,7 +484,10 @@ pub(crate) async fn bootstrap_first_admin(
         TrellisTestError::new(
             TrellisTestErrorKind::Bootstrap,
             TrellisTestStage::AdministratorBootstrap,
-            format!("reading the first-administrator response: {error}"),
+            format!(
+                "reading the first-administrator response: {}",
+                redact(&error.to_string(), token)
+            ),
         )
     })?;
     if !status.is_success() || body.get("status").and_then(Value::as_str) != Some("created") {
@@ -415,8 +512,39 @@ fn consent_request(error: &CallError<DeploymentsApplyError>) -> Option<ConsentRe
 }
 
 /// Approves every eligible capability and resource, matching `trellis svc apply --yes`.
-fn approve_required(consent: &ConsentRequest) -> Approval {
-    Approval {
+///
+/// A required item the server marked ineligible fails registration rather than
+/// silently submitting a partial approval.
+fn approve_required(consent: &ConsentRequest) -> Result<Approval, TrellisTestError> {
+    if let Some(item) = consent
+        .capabilities
+        .iter()
+        .find(|capability| capability.required && !capability.eligible)
+    {
+        return Err(TrellisTestError::new(
+            TrellisTestErrorKind::AdminRpc,
+            TrellisTestStage::DeploymentCreateApply,
+            format!(
+                "required capability '{}' is not eligible for consent",
+                item.id
+            ),
+        ));
+    }
+    if let Some(item) = consent
+        .resources
+        .iter()
+        .find(|resource| resource.required && !resource.eligible)
+    {
+        return Err(TrellisTestError::new(
+            TrellisTestErrorKind::AdminRpc,
+            TrellisTestStage::DeploymentCreateApply,
+            format!(
+                "required resource '{}' is not eligible for consent",
+                item.name
+            ),
+        ));
+    }
+    Ok(Approval {
         approved_capabilities: consent
             .capabilities
             .iter()
@@ -442,5 +570,5 @@ fn approve_required(consent: &ConsentRequest) -> Approval {
         expected_grant_revision: consent.expected_grant_revision,
         installed_revision: consent.installed_revision,
         mode: ApprovalMode::Capabilities,
-    }
+    })
 }

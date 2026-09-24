@@ -4,7 +4,12 @@
 //! is independent of the caller's Tokio executor: async methods only await
 //! channel acknowledgements, so operating-system children are never waited on
 //! from a Tokio worker. The small unsafe OS boundary (`setpgid`, `prctl`,
-//! `kill`) is centralized here.
+//! `waitpid`, `kill`) is centralized here.
+//!
+//! Exit observation uses `waitpid(..., WNOWAIT)`: the supervisor learns that a
+//! child exited without reaping it, so the leader's identity and process-group
+//! id remain owned and valid until final group cleanup. Only the final reap
+//! discards that identity.
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
@@ -14,6 +19,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+use tokio::sync::oneshot;
 
 use crate::error::{TrellisTestError, TrellisTestErrorKind, TrellisTestStage};
 use crate::sandbox::Sandbox;
@@ -26,6 +33,8 @@ const LINE_LIMIT: usize = 64 * 1024;
 const LEADER_TERM_GRACE: Duration = Duration::from_secs(10);
 /// Extra grace after `SIGTERM` to the remaining process group.
 const GROUP_TERM_GRACE: Duration = Duration::from_secs(2);
+/// Supervisor poll interval for exit observation and command handling.
+const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 #[derive(Default)]
 struct OutputTailInner {
@@ -67,38 +76,79 @@ impl OutputTail {
     }
 }
 
-/// A spawned child owned by the supervisor.
+/// A child spawned in its own process group and owned by the supervisor.
 struct OwnedChild {
     child: Child,
     pid: u32,
     pgid: i32,
+    role: &'static str,
+    /// Observed exit status, set without reaping until [`reap_leader`].
     exited: Option<i32>,
     readers: Vec<JoinHandle<()>>,
+    reader_done: Receiver<Result<(), String>>,
+    reader_count: usize,
 }
 
 enum SupervisorCommand {
     Adopt(OwnedChild),
-    Status(u32, Sender<Option<i32>>),
-    Stop(Sender<Vec<TrellisTestError>>),
+    Status {
+        pid: u32,
+        ack: oneshot::Sender<Option<i32>>,
+    },
+    WaitCaptured {
+        pid: u32,
+        deadline: Instant,
+        ack: oneshot::Sender<Result<bool, TrellisTestError>>,
+    },
+    Stop {
+        deadline: Instant,
+        ack: oneshot::Sender<Vec<TrellisTestError>>,
+    },
+    Shutdown {
+        deadline: Instant,
+        ack: oneshot::Sender<Vec<TrellisTestError>>,
+    },
 }
 
-/// Owns child processes and performs all waits and signals.
+/// Callback invoked with each complete line of a child's output as it arrives.
+///
+/// Used to capture bootstrap output durably before the rolling tail can discard it.
+pub(crate) type LineObserver = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Handle to a spawned child returned to the caller.
+pub(crate) struct SpawnedChild {
+    /// Operating-system process id.
+    pub(crate) pid: u32,
+    /// Bounded stdout tail.
+    pub(crate) stdout: OutputTail,
+    /// Bounded stderr tail.
+    pub(crate) stderr: OutputTail,
+}
+
+/// Owns child processes and performs all waits and signals on its own thread.
 pub(crate) struct ProcessSupervisor {
     tx: Sender<SupervisorCommand>,
     thread: Option<JoinHandle<()>>,
+    drop_deadline: Duration,
 }
 
 impl ProcessSupervisor {
-    /// Starts the supervisor thread.
-    pub(crate) fn new() -> Self {
+    /// Starts the supervisor thread with the deadline used for best-effort drop cleanup.
+    pub(crate) fn new(shutdown_deadline: Duration) -> Self {
         let (tx, rx) = mpsc::channel();
+        let deadline = if shutdown_deadline.is_zero() {
+            Duration::from_secs(30)
+        } else {
+            shutdown_deadline
+        };
         let thread = std::thread::Builder::new()
             .name("trellis-test-supervisor".to_owned())
-            .spawn(move || supervise(rx))
+            .spawn(move || supervise(rx, deadline))
             .expect("spawn supervisor thread");
         Self {
             tx,
             thread: Some(thread),
+            drop_deadline: deadline,
         }
     }
 
@@ -109,7 +159,8 @@ impl ProcessSupervisor {
         sandbox: &Sandbox,
         path: &OsString,
         role: &'static str,
-    ) -> Result<(u32, OutputTail, OutputTail), TrellisTestError> {
+        observer: Option<LineObserver>,
+    ) -> Result<SpawnedChild, TrellisTestError> {
         sandbox.apply_child_env(command, path);
         command.stdin(Stdio::null());
         command.stdout(Stdio::piped());
@@ -122,24 +173,40 @@ impl ProcessSupervisor {
                 format!("spawning the {role} process: {error}"),
             )
         })?;
-        let pgid = child.id() as i32;
         let pid = child.id();
+        let pgid = pid as i32;
         let stdout = OutputTail::default();
         let stderr = OutputTail::default();
+        let (done_tx, reader_done) = mpsc::channel();
         let mut readers = Vec::new();
         if let Some(pipe) = child.stdout.take() {
-            readers.push(read_stream(pipe, stdout.clone()));
+            readers.push(read_stream(
+                pipe,
+                stdout.clone(),
+                done_tx.clone(),
+                observer.clone(),
+            ));
         }
         if let Some(pipe) = child.stderr.take() {
-            readers.push(read_stream(pipe, stderr.clone()));
+            readers.push(read_stream(
+                pipe,
+                stderr.clone(),
+                done_tx.clone(),
+                observer.clone(),
+            ));
         }
+        let reader_count = readers.len();
+        drop(done_tx);
         self.tx
             .send(SupervisorCommand::Adopt(OwnedChild {
                 child,
                 pid,
                 pgid,
+                role,
                 exited: None,
                 readers,
+                reader_done,
+                reader_count,
             }))
             .map_err(|_| {
                 TrellisTestError::new(
@@ -148,26 +215,79 @@ impl ProcessSupervisor {
                     "the process supervisor is not running",
                 )
             })?;
-        Ok((pid, stdout, stderr))
+        Ok(SpawnedChild {
+            pid,
+            stdout,
+            stderr,
+        })
     }
 
     /// Returns the exit code of a spawned child, or `None` while it runs.
-    pub(crate) fn exit_code(&self, pid: u32) -> Option<i32> {
-        let (tx, rx) = mpsc::channel();
-        if self.tx.send(SupervisorCommand::Status(pid, tx)).is_err() {
+    ///
+    /// Observation does not reap the child, so the leader identity remains owned.
+    pub(crate) async fn exit_code(&self, pid: u32) -> Option<i32> {
+        let (ack, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(SupervisorCommand::Status { pid, ack })
+            .is_err()
+        {
             return None;
         }
-        rx.recv_timeout(Duration::from_secs(2)).ok().flatten()
+        rx.await.ok().flatten()
+    }
+
+    /// Waits for a transient child to exit within `deadline`, terminating its
+    /// group and reporting forced cleanup if it overruns.
+    pub(crate) async fn wait_captured(
+        &self,
+        pid: u32,
+        deadline: Instant,
+    ) -> Result<bool, TrellisTestError> {
+        let (ack, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(SupervisorCommand::WaitCaptured { pid, deadline, ack })
+            .is_err()
+        {
+            return Err(TrellisTestError::new(
+                TrellisTestErrorKind::Cleanup,
+                TrellisTestStage::VersionCheck,
+                "the process supervisor is not running",
+            ));
+        }
+        match tokio::time::timeout_at(deadline.into(), rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(TrellisTestError::new(
+                TrellisTestErrorKind::ProcessExited,
+                TrellisTestStage::VersionCheck,
+                "the process supervisor exited before reporting a helper result",
+            )),
+            Err(_) => Err(TrellisTestError::new(
+                TrellisTestErrorKind::Timeout,
+                TrellisTestStage::VersionCheck,
+                "a helper command exceeded its deadline",
+            )),
+        }
     }
 
     /// Terminates every owned child within `deadline` and reports failures.
-    pub(crate) fn stop(&self, deadline: Duration) -> Vec<TrellisTestError> {
-        let (ack_tx, ack_rx) = mpsc::channel();
-        if self.tx.send(SupervisorCommand::Stop(ack_tx)).is_err() {
+    pub(crate) async fn stop(&self, deadline: Instant) -> Vec<TrellisTestError> {
+        let (ack, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(SupervisorCommand::Stop { deadline, ack })
+            .is_err()
+        {
             return Vec::new();
         }
-        match ack_rx.recv_timeout(deadline) {
-            Ok(failures) => failures,
+        match tokio::time::timeout_at(deadline.into(), rx).await {
+            Ok(Ok(failures)) => failures,
+            Ok(Err(_)) => vec![TrellisTestError::new(
+                TrellisTestErrorKind::Cleanup,
+                TrellisTestStage::Shutdown,
+                "the process supervisor exited before reporting cleanup",
+            )],
             Err(_) => vec![TrellisTestError::new(
                 TrellisTestErrorKind::Cleanup,
                 TrellisTestStage::Shutdown,
@@ -175,116 +295,462 @@ impl ProcessSupervisor {
             )],
         }
     }
-}
 
-impl Drop for ProcessSupervisor {
-    fn drop(&mut self) {
-        let (ack_tx, ack_rx) = mpsc::channel();
-        let _ = self.tx.send(SupervisorCommand::Stop(ack_tx));
-        let _ = ack_rx.recv_timeout(Duration::from_secs(30));
+    /// Sends a best-effort stop request without waiting for completion.
+    pub(crate) fn request_stop(&self) {
+        let (ack, _rx) = oneshot::channel();
+        let deadline = Instant::now() + self.drop_deadline;
+        let _ = self.tx.send(SupervisorCommand::Stop { deadline, ack });
+    }
+
+    /// Signals the supervisor to finish cleanup and blocks until its thread ends.
+    ///
+    /// Called only from a dedicated cleanup thread, never from an async task or
+    /// from `Drop` on the caller's thread.
+    pub(crate) fn join(mut self) {
+        let (ack, _rx) = oneshot::channel();
+        let deadline = Instant::now() + self.drop_deadline;
+        let _ = self.tx.send(SupervisorCommand::Shutdown { deadline, ack });
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
     }
 }
 
-fn read_stream(mut pipe: impl Read + Send + 'static, tail: OutputTail) -> JoinHandle<()> {
+impl Drop for ProcessSupervisor {
+    fn drop(&mut self) {
+        // Best effort: hand cleanup to the supervisor thread without blocking.
+        self.request_stop();
+    }
+}
+
+fn read_stream(
+    mut pipe: impl Read + Send + 'static,
+    tail: OutputTail,
+    done: mpsc::Sender<Result<(), String>>,
+    observer: Option<LineObserver>,
+) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let mut buffer = [0u8; 4096];
-        loop {
+        let mut line: Vec<u8> = Vec::new();
+        let outcome = loop {
             match pipe.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
-                Ok(count) => tail.push(&buffer[..count]),
+                Ok(0) => {
+                    if let Some(observer) = &observer {
+                        if !line.is_empty() {
+                            observer(&String::from_utf8_lossy(&line));
+                        }
+                    }
+                    break Ok(());
+                }
+                Ok(count) => {
+                    tail.push(&buffer[..count]);
+                    if let Some(observer) = &observer {
+                        for &byte in &buffer[..count] {
+                            if byte == b'\n' || line.len() >= LINE_LIMIT {
+                                observer(&String::from_utf8_lossy(&line));
+                                line.clear();
+                            } else {
+                                line.push(byte);
+                            }
+                        }
+                    }
+                }
+                Err(error) => break Err(error.to_string()),
             }
-        }
+        };
+        let _ = done.send(outcome);
     })
 }
 
-fn supervise(rx: Receiver<SupervisorCommand>) {
+fn supervise(rx: Receiver<SupervisorCommand>, drop_deadline: Duration) {
     let mut children: Vec<OwnedChild> = Vec::new();
     loop {
-        match rx.recv_timeout(Duration::from_millis(25)) {
+        match rx.recv_timeout(POLL_INTERVAL) {
             Ok(SupervisorCommand::Adopt(child)) => children.push(child),
-            Ok(SupervisorCommand::Status(pid, ack)) => {
-                poll_exits(&mut children);
-                let _ = ack.send(
-                    children
-                        .iter()
-                        .find(|child| child.pid == pid)
-                        .and_then(|child| child.exited),
-                );
+            Ok(SupervisorCommand::Status { pid, ack }) => {
+                peek_exits(&mut children);
+                let code = children
+                    .iter()
+                    .find(|child| child.pid == pid)
+                    .and_then(|child| child.exited);
+                let _ = ack.send(code);
             }
-            Ok(SupervisorCommand::Stop(ack)) => {
-                let _ = ack.send(terminate_all(&mut children));
+            Ok(SupervisorCommand::WaitCaptured { pid, deadline, ack }) => {
+                let result = wait_captured_child(&mut children, pid, deadline);
+                let _ = ack.send(result);
+            }
+            Ok(SupervisorCommand::Stop { deadline, ack }) => {
+                // Terminate current children but keep supervising: a startup
+                // attempt may be retired before a retry reuses this supervisor.
+                let failures = terminate_all(&mut children, deadline);
+                let _ = ack.send(failures);
+            }
+            Ok(SupervisorCommand::Shutdown { deadline, ack }) => {
+                let failures = terminate_all(&mut children, deadline);
+                let _ = ack.send(failures);
                 return;
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => poll_exits(&mut children),
+            Err(mpsc::RecvTimeoutError::Timeout) => peek_exits(&mut children),
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
-    let _ = terminate_all(&mut children);
+    let deadline = Instant::now() + drop_deadline;
+    let _ = terminate_all(&mut children, deadline);
 }
 
-fn poll_exits(children: &mut [OwnedChild]) {
+fn wait_captured_child(
+    children: &mut Vec<OwnedChild>,
+    pid: u32,
+    deadline: Instant,
+) -> Result<bool, TrellisTestError> {
+    let Some(index) = children.iter().position(|child| child.pid == pid) else {
+        return Err(TrellisTestError::new(
+            TrellisTestErrorKind::ProcessExited,
+            TrellisTestStage::VersionCheck,
+            "the helper process is no longer supervised",
+        ));
+    };
+    loop {
+        peek_exits(children);
+        if let Some(code) = children[index].exited {
+            let mut owned = children.swap_remove(index);
+            let mut failures = Vec::new();
+            reap_leader(&mut owned, &mut failures);
+            join_readers_bounded(&mut owned, deadline, &mut failures);
+            return Ok(code == 0);
+        }
+        if Instant::now() >= deadline {
+            let mut owned = children.swap_remove(index);
+            let failures = force_kill(&mut owned, deadline);
+            let message = if failures.is_empty() {
+                "a helper command exceeded its deadline".to_owned()
+            } else {
+                format!(
+                    "a helper command exceeded its deadline; cleanup: {}",
+                    render_failures(&failures)
+                )
+            };
+            return Err(TrellisTestError::new(
+                TrellisTestErrorKind::Timeout,
+                TrellisTestStage::VersionCheck,
+                message,
+            ));
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn peek_exits(children: &mut [OwnedChild]) {
     for child in children.iter_mut() {
         if child.exited.is_some() {
             continue;
         }
-        if let Ok(Some(status)) = child.child.try_wait() {
-            child.exited = Some(status.code().unwrap_or(-1));
+        if let Some(code) = peek_exit(child) {
+            child.exited = Some(code);
         }
     }
 }
 
-fn terminate_all(children: &mut Vec<OwnedChild>) -> Vec<TrellisTestError> {
-    for mut owned in children.drain(..) {
-        terminate_child(&mut owned);
+/// Observes a child exit without reaping it.
+#[cfg(unix)]
+fn peek_exit(child: &mut OwnedChild) -> Option<i32> {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: `waitid` with `WNOWAIT` reports an exited child while leaving it
+    // waitable, so its identity and process-group id stay owned until final
+    // cleanup. Only this supervisor waits on its own children.
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            child.pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result != 0 {
+        return None;
     }
-    Vec::new()
+    sigchld_exit_code(&info)
 }
 
-fn terminate_child(owned: &mut OwnedChild) {
+/// Decodes the exit code from a `sigchld` `siginfo_t`.
+#[cfg(target_os = "linux")]
+fn sigchld_exit_code(info: &libc::siginfo_t) -> Option<i32> {
+    // Linux's public `siginfo_t` exposes no accessor for the `sigchld` member,
+    // so read its documented 64-bit prefix layout directly: three header ints,
+    // one padding int, then `pid`, `uid`, and `status`.
+    #[repr(C)]
+    struct Sigchld {
+        _signo: libc::c_int,
+        _errno: libc::c_int,
+        code: libc::c_int,
+        _pad: libc::c_int,
+        pid: libc::pid_t,
+        _uid: libc::uid_t,
+        status: libc::c_int,
+    }
+    // SAFETY: for a child exit the `sigchld` member is active, and `sigchld`
+    // begins at the documented union offset.
+    let raw = unsafe { &*(info as *const libc::siginfo_t).cast::<Sigchld>() };
+    if raw.pid == 0 {
+        return None;
+    }
+    Some(decode_sigchld(raw.code, raw.status))
+}
+
+/// Decodes the exit code from a `sigchld` `siginfo_t` on macOS.
+#[cfg(target_os = "macos")]
+fn sigchld_exit_code(info: &libc::siginfo_t) -> Option<i32> {
+    if info.si_pid == 0 {
+        return None;
+    }
+    Some(decode_sigchld(info.si_code, info.si_status))
+}
+
+/// `si_code == CLD_EXITED` carries an exit status; otherwise the signal.
+#[cfg(unix)]
+fn decode_sigchld(code: libc::c_int, status: libc::c_int) -> i32 {
+    const CLD_EXITED: libc::c_int = 1;
+    if code == CLD_EXITED {
+        status
+    } else {
+        -status
+    }
+}
+
+#[cfg(not(unix))]
+fn peek_exit(child: &mut OwnedChild) -> Option<i32> {
+    match child.child.try_wait() {
+        Ok(Some(status)) => Some(status.code().unwrap_or(-1)),
+        _ => None,
+    }
+}
+
+fn terminate_all(children: &mut Vec<OwnedChild>, deadline: Instant) -> Vec<TrellisTestError> {
+    let mut failures = Vec::new();
+    for mut owned in children.drain(..) {
+        terminate_child(&mut owned, deadline, &mut failures);
+    }
+    failures
+}
+
+/// Graceful shutdown: leader first, then the remaining owned group, then force.
+fn terminate_child(
+    owned: &mut OwnedChild,
+    deadline: Instant,
+    failures: &mut Vec<TrellisTestError>,
+) {
     #[cfg(unix)]
     {
-        // Ask the server leader to stop; it shuts down its managed NATS child.
-        let _ = signal_group(owned.pgid, libc::SIGTERM);
-        if !wait_leader_exit(owned, LEADER_TERM_GRACE) {
-            // The leader ignored SIGTERM: ask the remaining group, then force.
-            let _ = signal_group(owned.pgid, libc::SIGTERM);
-            std::thread::sleep(GROUP_TERM_GRACE.min(Duration::from_millis(200)));
-            let _ = signal_group(owned.pgid, libc::SIGKILL);
+        if owned.exited.is_none() {
+            owned.exited = peek_exit(owned);
+        }
+        if owned.exited.is_none() {
+            // Ask the server leader to stop so it can shut down its managed NATS child.
+            if let Err(error) = signal_pid(owned.pid, libc::SIGTERM) {
+                if !is_esrch(&error) {
+                    failures.push(signal_failure(owned.role, "SIGTERM to the leader", &error));
+                }
+            }
+            let leader_deadline = deadline.min(Instant::now() + LEADER_TERM_GRACE);
+            let _ = wait_until_exit(owned, leader_deadline);
+        }
+        // Signal the remaining owned group independently of leader exit.
+        if let Err(error) = signal_group(owned.pgid, libc::SIGTERM) {
+            if !is_esrch(&error) {
+                failures.push(signal_failure(owned.role, "SIGTERM to the group", &error));
+            }
+        }
+        let group_deadline = deadline.min(Instant::now() + GROUP_TERM_GRACE);
+        let _ = wait_until_exit(owned, group_deadline);
+        let leader_may_be_alive = owned.exited.is_none();
+        // A zombie leader keeps the group id signallable, so live group members
+        // cannot be probed after the leader exits. Escalate unconditionally while
+        // the leader identity is still owned; this is harmless once empty.
+        if let Err(error) = signal_group(owned.pgid, libc::SIGKILL) {
+            if !is_esrch(&error) {
+                failures.push(signal_failure(owned.role, "SIGKILL to the group", &error));
+            }
+        }
+        if leader_may_be_alive {
+            failures.push(TrellisTestError::new(
+                TrellisTestErrorKind::Cleanup,
+                TrellisTestStage::Shutdown,
+                format!(
+                    "the {} process ignored SIGTERM and was force-stopped",
+                    owned.role
+                ),
+            ));
         }
     }
-    let _ = owned.child.wait();
-    for reader in owned.readers.drain(..) {
-        let _ = reader.join();
+    reap_leader(owned, failures);
+    join_readers_bounded(owned, deadline, failures);
+}
+
+/// Forces cleanup of an overrunning transient child.
+fn force_kill(owned: &mut OwnedChild, deadline: Instant) -> Vec<TrellisTestError> {
+    let mut failures = Vec::new();
+    #[cfg(unix)]
+    {
+        if let Err(error) = signal_group(owned.pgid, libc::SIGKILL) {
+            if !is_esrch(&error) {
+                failures.push(signal_failure(owned.role, "SIGKILL to the group", &error));
+            }
+        }
+    }
+    reap_leader(owned, &mut failures);
+    join_readers_bounded(owned, deadline, &mut failures);
+    failures
+}
+
+fn reap_leader(owned: &mut OwnedChild, failures: &mut Vec<TrellisTestError>) {
+    match owned.child.wait() {
+        Ok(status) => {
+            owned.exited = Some(status.code().unwrap_or(-1));
+        }
+        Err(error) => failures.push(TrellisTestError::new(
+            TrellisTestErrorKind::Cleanup,
+            TrellisTestStage::Shutdown,
+            format!("reaping the {} process: {error}", owned.role),
+        )),
     }
 }
 
-fn wait_leader_exit(owned: &mut OwnedChild, grace: Duration) -> bool {
-    let deadline = Instant::now() + grace;
+/// Waits for the leader to exit by `deadline` without reaping it.
+fn wait_until_exit(owned: &mut OwnedChild, deadline: Instant) -> bool {
     loop {
-        match owned.child.try_wait() {
-            Ok(Some(_)) | Err(_) => return true,
-            Ok(None) => {}
+        if owned.exited.is_none() {
+            owned.exited = peek_exit(owned);
+        }
+        if owned.exited.is_some() {
+            return true;
         }
         if Instant::now() >= deadline {
             return false;
         }
-        std::thread::sleep(Duration::from_millis(25));
+        std::thread::sleep(POLL_INTERVAL);
     }
+}
+
+/// Waits for log readers to finish within `deadline`; readers that cannot finish
+/// are detached and reported rather than joined without bound.
+fn join_readers_bounded(
+    owned: &mut OwnedChild,
+    deadline: Instant,
+    failures: &mut Vec<TrellisTestError>,
+) {
+    let mut complete = true;
+    for _ in 0..owned.reader_count {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match owned.reader_done.recv_timeout(remaining) {
+            Ok(Ok(())) => {}
+            Ok(Err(message)) => failures.push(TrellisTestError::new(
+                TrellisTestErrorKind::Io,
+                TrellisTestStage::Shutdown,
+                format!("capturing {} output: {message}", owned.role),
+            )),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                failures.push(TrellisTestError::new(
+                    TrellisTestErrorKind::Timeout,
+                    TrellisTestStage::Shutdown,
+                    format!(
+                        "the {} log readers did not finish within the deadline",
+                        owned.role
+                    ),
+                ));
+                complete = false;
+                break;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                failures.push(TrellisTestError::new(
+                    TrellisTestErrorKind::Io,
+                    TrellisTestStage::Shutdown,
+                    format!(
+                        "the {} log readers stopped without reporting completion",
+                        owned.role
+                    ),
+                ));
+                complete = false;
+                break;
+            }
+        }
+    }
+    if complete {
+        for reader in owned.readers.drain(..) {
+            let _ = reader.join();
+        }
+    } else {
+        owned.readers.clear();
+    }
+}
+
+fn render_failures(failures: &[TrellisTestError]) -> String {
+    failures
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+#[cfg(unix)]
+fn signal_failure(role: &str, action: &str, error: &std::io::Error) -> TrellisTestError {
+    TrellisTestError::new(
+        TrellisTestErrorKind::Cleanup,
+        TrellisTestStage::Shutdown,
+        format!("{action} for the {role} process: {error}"),
+    )
+}
+
+#[cfg(not(unix))]
+fn signal_failure(role: &str, action: &str, error: &std::io::Error) -> TrellisTestError {
+    TrellisTestError::new(
+        TrellisTestErrorKind::Cleanup,
+        TrellisTestStage::Shutdown,
+        format!("{action} for the {role} process: {error}"),
+    )
+}
+
+#[cfg(unix)]
+fn is_esrch(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(libc::ESRCH)
+}
+
+#[cfg(not(unix))]
+fn is_esrch(_error: &std::io::Error) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn signal_pid(pid: u32, signal: i32) -> std::io::Result<()> {
+    // SAFETY: a positive pid targets a single process owned by this supervisor.
+    let result = unsafe { libc::kill(pid as libc::pid_t, signal) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+fn signal_pid(_pid: u32, _signal: i32) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[cfg(unix)]
 fn signal_group(pgid: i32, signal: i32) -> std::io::Result<()> {
-    // SAFETY: a negative pid targets the process group; `ESRCH` is not an error
-    // for cleanup.
+    // SAFETY: a negative pid targets the owned process group; `ESRCH` means it
+    // is already gone and is not an error for cleanup.
     let result = unsafe { libc::kill(-pgid, signal) };
     if result == 0 {
         Ok(())
     } else {
         Err(std::io::Error::last_os_error())
     }
+}
+
+#[cfg(not(unix))]
+fn signal_group(_pgid: i32, _signal: i32) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -315,64 +781,21 @@ fn configure_process_group(command: &mut Command) {
 #[cfg(not(unix))]
 fn configure_process_group(_command: &mut Command) {}
 
-/// Runs a short-lived command, capturing bounded output, with a deadline.
+/// Runs a short-lived command through the supervisor, capturing bounded output
+/// under an absolute deadline.
 ///
-/// Returns `(exit_success, stdout, stderr)`.
-pub(crate) fn run_captured(
+/// Returns `(exit_success, stdout, stderr)`. The child is owned by the
+/// supervisor for its whole lifetime; a timeout force-stops its process group.
+pub(crate) async fn run_captured(
+    supervisor: &ProcessSupervisor,
     command: &mut Command,
     sandbox: &Sandbox,
     path: &OsString,
-    deadline: Duration,
+    deadline: Instant,
 ) -> Result<(bool, String, String), TrellisTestError> {
-    sandbox.apply_child_env(command, path);
-    command.stdin(Stdio::null());
-    command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
-    configure_process_group(command);
-    let mut child = command.spawn().map_err(|error| {
-        TrellisTestError::new(
-            TrellisTestErrorKind::ProcessExited,
-            TrellisTestStage::VersionCheck,
-            format!("spawning a helper command: {error}"),
-        )
-    })?;
-    let stdout = OutputTail::default();
-    let stderr = OutputTail::default();
-    let mut readers = Vec::new();
-    if let Some(pipe) = child.stdout.take() {
-        readers.push(read_stream(pipe, stdout.clone()));
-    }
-    if let Some(pipe) = child.stderr.take() {
-        readers.push(read_stream(pipe, stderr.clone()));
-    }
-    let deadline_at = Instant::now() + deadline;
-    let success = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.success(),
-            Ok(None) => {}
-            Err(error) => {
-                return Err(TrellisTestError::new(
-                    TrellisTestErrorKind::Io,
-                    TrellisTestStage::VersionCheck,
-                    format!("waiting for a helper command: {error}"),
-                ));
-            }
-        }
-        if Instant::now() >= deadline_at {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(TrellisTestError::new(
-                TrellisTestErrorKind::Timeout,
-                TrellisTestStage::VersionCheck,
-                "a helper command exceeded its deadline",
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
-    for reader in readers.drain(..) {
-        let _ = reader.join();
-    }
-    Ok((success, stdout.text(), stderr.text()))
+    let spawned = supervisor.spawn(command, sandbox, path, "helper", None)?;
+    let success = supervisor.wait_captured(spawned.pid, deadline).await?;
+    Ok((success, spawned.stdout.text(), spawned.stderr.text()))
 }
 
 #[cfg(test)]
@@ -401,5 +824,48 @@ mod tests {
         // A single missing newline must not grow the retained buffer past the limit.
         tail.push(&vec![b'x'; LINE_LIMIT + 4096]);
         assert_eq!(tail.text().len(), TAIL_LIMIT);
+    }
+
+    #[test]
+    fn line_observer_sees_lines_split_across_reads() {
+        struct OneByte(std::vec::IntoIter<u8>);
+        impl std::io::Read for OneByte {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                match self.0.next() {
+                    Some(byte) if !buffer.is_empty() => {
+                        buffer[0] = byte;
+                        Ok(1)
+                    }
+                    _ => Ok(0),
+                }
+            }
+        }
+
+        let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&observed);
+        let observer: LineObserver = Arc::new(move |line: &str| {
+            if let Ok(mut lines) = sink.lock() {
+                lines.push(line.to_owned());
+            }
+        });
+        let (done_tx, done_rx) = mpsc::channel();
+        let data =
+            b"TRELLIS_ADMIN_BOOTSTRAP_URL=http://127.0.0.1:1/x?adminAccountToken=abc\nnext\n"
+                .to_vec();
+        let handle = read_stream(
+            OneByte(data.into_iter()),
+            OutputTail::default(),
+            done_tx,
+            Some(observer),
+        );
+        let _ = done_rx.recv_timeout(Duration::from_secs(5));
+        handle.join().expect("reader thread");
+
+        let lines = observed.lock().expect("observed lines");
+        assert_eq!(
+            lines[0], "TRELLIS_ADMIN_BOOTSTRAP_URL=http://127.0.0.1:1/x?adminAccountToken=abc",
+            "a bootstrap line split across reads must be reassembled before parsing"
+        );
+        assert_eq!(lines[1], "next");
     }
 }

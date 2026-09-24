@@ -67,6 +67,14 @@ pub struct InitConfigArgs {
     #[arg(long)]
     /// Public Trellis HTTP origin for OAuth redirects; defaults to http://localhost:<trellis-port>.
     pub public_origin: Option<String>,
+
+    #[arg(long = "extra-origin", value_name = "ORIGIN")]
+    /// Additional allowed HTTP origin, for callers served elsewhere; repeatable.
+    ///
+    /// Each origin is added to both the accepted request origins and the
+    /// insecure-origin allow-list, so a browser app on its own development
+    /// origin can complete a portal login.
+    pub extra_origin: Vec<String>,
 }
 
 #[cfg(feature = "runtime")]

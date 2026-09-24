@@ -73,6 +73,12 @@ impl TestServiceIdentity {
         &self.seed
     }
 
+    /// Base URL of the runtime this identity was provisioned in.
+    #[must_use]
+    pub fn trellis_url(&self) -> &str {
+        &self.trellis_url
+    }
+
     /// Options for the service's generated `connect` call.
     #[must_use]
     pub fn connect_options(&self) -> ServiceConnectOptions<'_> {
@@ -122,6 +128,12 @@ impl TestClientIdentity {
     #[must_use]
     pub fn login_session_id(&self) -> &str {
         &self.login_session_id
+    }
+
+    /// Base URL of the runtime this identity was bound in.
+    #[must_use]
+    pub fn trellis_url(&self) -> &str {
+        &self.trellis_url
     }
 
     /// Options for the caller's generated client `connect` call.

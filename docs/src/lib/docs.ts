@@ -364,23 +364,22 @@ export const apiReferenceDocs: DocEntry[] = [
   },
   {
     title: "trellis-rs",
-    description:
-      "Curated Rust runtime facade and Trellis-owned SDK modules on docs.rs.",
-    href: "https://docs.rs/trellis-rs/latest/trellis_rs/",
+    description: "Curated Rust runtime facade and Trellis-owned SDK modules.",
+    href: "/api/rust/trellis_rs/index.html",
     section: "Rustdoc",
   },
   {
     title: "trellis-protocol",
     description:
-      "Language-neutral Trellis artifacts, exact permissions, and signed authorization protocol primitives on docs.rs.",
-    href: "https://docs.rs/trellis-protocol/latest/trellis_protocol/",
+      "Language-neutral Trellis artifacts, exact permissions, and signed authorization protocol primitives.",
+    href: "/api/rust/trellis_protocol/index.html",
     section: "Rustdoc",
   },
   {
     title: "trellis-test",
     description:
-      "External out-of-process live-test harness for Rust service and app integration tests on docs.rs.",
-    href: "https://docs.rs/trellis-test/latest/trellis_test/",
+      "External out-of-process live-test harness for Rust service and app integration tests.",
+    href: "/api/rust/trellis_test/index.html",
     section: "Rustdoc",
   },
 ];

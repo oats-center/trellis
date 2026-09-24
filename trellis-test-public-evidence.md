@@ -1,115 +1,96 @@
-# Public Rust trellis-test evidence
+# Public Rust `trellis-test` — correction evidence
 
 ## Identity
-- Repository: oats-center/trellis
-- Plan version / plan commit: coordinator contract copied to `trellis-test-public-implementation-plan.md` (commit `67b6c065`)
-- Plan baseline: 27f79d192204de9de78645b1006ceeccb59bf932
-- Actual implementation base SHA: 27f79d192204de9de78645b1006ceeccb59bf932
-- Current origin/main SHA: 27f79d192204de9de78645b1006ceeccb59bf932
-- Final implementation/tested SHA: 70136523d225139952d53a323bc904a40c3b573a (this commit adds only the PR/evidence update)
-- Branch and worktree path: `feat/public-rust-trellis-test` at `/home/abalmos/git/qlever/trellis-public-rust-test`
-- PR URL: https://github.com/oats-center/trellis/pull/1
-- Clean status output: (pending)
-- Compiler/Cargo/Deno versions: (recorded at handoff)
 
-## Baseline drift
-- Changed source anchors and mechanical mappings: `crates/trellis-test` on current `main` carried the embedded
-  in-process harness (`runtime.rs`, `admin.rs`, `config.rs`, `ports.rs`, `error.rs`, plus
-  crate-local tests). Replaced per the coordinator resolution with the out-of-process design
-  (`runtime.rs`, `process.rs`, `sandbox.rs`, `admin.rs`, `identity.rs`, `error.rs`) plus the
-  projected generated administration source.
-- Preserved unrelated release/CI changes: `cc6d1bd5`, `fb2771ed`, `27f79d19` are ancestors of the base.
-- Coordinator-approved plan amendments: **DESIGN BLOCKER 1 resolved (plan section 1.2)** — implement on
-  current `origin/main`, replace the embedded harness, remove the forbidden private dependency
-  closure, inline the Linux parent-death helper into `crates/trellis/tests/integration/cli.rs`,
-  and move behavioral coverage to the external fixture.
+- Repository: `oats-center/trellis`
+- Correction base (reviewed SHA): `b990a53cee0711966e9f023d19a70b8959d70b38` (== `origin/main`)
+- Correction branch: `fix/trellis-test-corrections` in the main checkout (no worktree, per coordinator)
+- Reviewed-SHA fixes from R01–R11 are applied in the working tree; final commit SHA is pending and will be recorded at handoff.
+- Local verification environment: `cargo`/`rustc` 1.96.0, Deno 2.8.3, Linux x86_64 (native). macOS not available locally.
+- Match binaries under test: `target/debug/trellis`, `target/debug/trellis-server` (0.100.0) built from the correction tree.
+- NATS under test: pinned `nats-server` v2.14.4, `sha256=20f9d6a199560f243610908bcccea2e27e9f47213242d1c609ca46d1d73e91ea`, acquired with `scripts/acquire-test-nats.sh` into `/tmp/trellis-nats`.
 
-## Dependency and package proof
-- Three crate names/versions/archive SHA-256 hashes: trellis-protocol 0.100.0, trellis-rs 0.100.0,
-  trellis-test 0.100.0; `cargo package -p trellis-protocol -p trellis-rs -p trellis-test`
-  succeeded with verification enabled (archives in `target/package/`).
-- Normalized manifests and source lists: the testkit archive contains 18 files under
-  `trellis-test-0.100.0/src/runtime_api/`, including `src/runtime_api/lib.rs`.
-- Public-only closure audit output: the artifact-only consumer's `cargo metadata` audit passed
-  (`dependency audit passed for N packages`) with no forbidden private crate and every
-  non-registry manifest under the three extracted public roots or the consumer's own roots.
-- Generated projection path/content-hash comparison: `diff -r crates/runtime-apis/src
-  crates/trellis-test/src/runtime_api` → IDENTICAL.
-- Second-install drift result: a second `cargo xtask install` produced no changes to the projection.
-- Consumer non-registry source-root audit: passed (see closure audit).
+## What changed per finding
 
-## Live runtime evidence
-- CLI/server/NATS paths, versions, hashes, and build/source SHA: `target/debug/trellis`,
-  `target/debug/trellis-server` (0.100.0), and `~/.cache/trellis/nats-server-v2.14.4`.
-- Linux runner/architecture and actual tested cases: x86_64 Linux; fixture live target 15/15 active
-  (T02, T04–T12, T14, T15, T16, T21, T23); artifact-only smoke passes; full `cargo test --workspace` exit 0.
-- macOS runner/architecture and actual tested cases: not run.
-- Concurrent-runtime isolation evidence: T07 starts eight runtimes in one process; all HTTP/NATS/
-  WebSocket endpoints distinct.
-- Parent-profile/session sentinel result: T21 asserts the preexisting profile sentinel is
-  byte-for-byte unchanged and no admin-session store is written.
-- Explicit shutdown/drop/cancellation/panic evidence: explicit shutdown + idempotency (T14);
-  drop/cancellation/panic observer tests not yet implemented.
-- Retention and sanitized-log results: package-local retention unit tests pass; sanitized-log
-  split-token test not yet implemented.
-- Network download case result: not run (`DownloadPinned` is a separately selected case).
+| ID | Change | Regression proof |
+|---|---|---|
+| R01 | `release.yml` publishes `trellis-test` after `trellis-rs`, reusing the existing index-wait helper. Publication is not executed. | Workflow inspection; not executed on CI. |
+| R02 | `process.rs` reworked: non-reaping `waitid(WEXITED|WNOHANG|WNOWAIT)` exit observation, leader-first `SIGTERM`, independent group `SIGTERM`+`SIGKILL`, bounded reader joins, real signal/wait/capture error reporting, transient commands under the same supervisor. Reusable `Stop` vs terminal `Shutdown`. | `line_observer_sees_lines_split_across_reads`, `output_tail_*`; live T14/T15/T16/T17/T19. |
+| R03 | Absolute startup deadline established before version checks; absolute per-operation request deadline for install/register; absolute shutdown deadline; zero-duration validation; all process waits/signals on the supervisor thread; async callers await `tokio::sync::oneshot`; `login_client` dead `timeout_ms` removed. | Unit `validate_timeouts` path + live startup/shutdown/cancel tests. |
+| R04 | Check producer tars a bundle (`scripts/stage-rust-test-bundle.sh`) so executable modes survive; NATS acquired and checksum-verified (`scripts/acquire-test-nats.sh`); consumer extracts and runs `--mode full`. | Script syntax checked and the acquisition script executed locally; CI job not yet executed. |
+| R05 | Release prepared-workspace includes `integration`; release consumer consumes the tagged Linux archive when tagged and stages native binaries when tagless; verifier validates `artifact-manifest.json`, hashes, modes, binary versions, rejects git/non-crates.io sources, resolves the lockfile once and runs `--locked` from an isolated directory. | Verifier shell-syntax checked; CI job not yet executed. |
+| R06 | Durable bootstrap capture parses both streams line-by-line before redaction and validates the owned origin; bootstrap token redacted from bootstrap-request errors. | `bootstrap_url_is_extracted_from_json_and_fallback_lines`, `bootstrap_token_requires_the_exact_owned_origin`, `line_observer_sees_lines_split_across_reads`. |
+| R07 | `StartupState` guard and runtime `Drop` coordinate detached cleanup (processes, then retention); panic marks the sandbox failed; registration failures mark it failed. | Live T15/T17/T19. |
+| R08 | `is_port_conflict` matches only the managed-NATS `port <selected> is already in use` line and the HTTP listener bind failure for the selected endpoint; explicit NATS paths are canonicalized and passed as `OsString`. | `port_conflict_matches_only_selected_ports`, `port_conflict_ignores_unrelated_bind_failures`; live T11. |
+| R09 | Running-state check before cache hits; install-response identity/digest check; staged caller consent via `begin_local_login`/`ensure_portal_consent_policy`/`approve_local_login`; fresh idempotency key on changed consent; required ineligible items fail; server-assigned service instance for the exact participant. | Live T04/T05/T08/T09/T14. |
+| R10 | T07 rewritten with a readiness barrier, per-runtime unique RPC/event nonce, and distinct workdirs; T15 verifies all exposed listeners released; T16 observes real bootstrap progress; T17 covers panic/unwind; T19 covers retention; T20/T21 run in a child process with an explicit populated profile; T08 asserts handler-not-run; provider tasks are awaited after abort. | Local `--test live` run below. |
+| R11 | Evidence reconciled (this file); Rustdoc for `trellis-rs`/`trellis-protocol`/`trellis-test` emitted and published through `docs/scripts/generate_rust_api_docs.ts` + `pages.yml`; `docs.ts` links the emitted paths. | Script executed locally; `trellis_rs`, `trellis_protocol`, `trellis_test` `index.html` emitted. |
+| extra | `TrellisTestRuntimeBuilder::extra_origin`/`extra_origins` and `trellis init config --extra-origin`; passed as `runtime.extra_origins`. Also `admin_username`/`admin_password` builder pinning + `TrellisTestRuntime::admin_username`/`admin_password` accessors for browser/portal logins, and `trellis_url()` on `TestServiceIdentity`/`TestClientIdentity`. | CLI `init_config_adds_extra_origins`; live `t32_extra_origin_is_allowed`, `t33_pinned_admin_credentials_are_accepted`; unit `admin_credentials_are_validated`. |
+
+## Local command results (working tree, Linux x86_64)
+
+- `cargo test -p trellis-test --lib` → 16 passed.
+- `cargo test --workspace` → exit 0 (includes doc-tests, including the `trellis-test` crate example).
+- `cargo clippy -p trellis-test -p trellis-cli --all-targets -- -D warnings` → clean.
+- `cargo fmt --all --check` → clean; `deno fmt -c ts/deno.json --check` → clean (6 pre-existing TypeScript files were reformatted; see gaps).
+- `deno check` on the four public TS entrypoints → clean.
+- `cargo test -p trellis-cli --lib init_config` → 5 passed (includes `init_config_adds_extra_origins`).
+- Fixture live suite `--test live` (all): **21 passed, 0 failed, 2 ignored** (child helpers), including T07 and T18.
+- Fixture `--test download` (T25): **1 passed**.
 
 ## Acceptance matrix
-| Requirement | Actual test name | Command or CI job | Tested SHA | Result | Evidence |
-|---|---|---|---|---|---|
-| T01 | `sandbox::tests::*`, `cargo test -p trellis-test --lib` | local | feature tip | PASS | 5 unit tests, no infra |
-| T02 | `t02_missing_or_invalid_binaries_fail` | fixture `--test live` | feature tip | PASS | InvalidBinary before startup |
-| T03 | `version_comparison_ignores_build_metadata_only` | `cargo test -p trellis-test --lib` | feature tip | PASS | prerelease/build handling |
-| T04 | `t04_real_rpc_and_event_between_provider_and_caller` | fixture `--test live` | feature tip | PASS | RPC + event |
-| T05 | `t05_agent_caller_calls_the_provider` | fixture `--test live` | feature tip | PASS | agent-bound session |
-| T06 | `t06_two_providers_have_distinct_deployments` | fixture `--test live` | feature tip | PASS | distinct deployments/instances |
-| T07 | `t07_eight_concurrent_runtimes_are_isolated` | fixture `--test live` | feature tip | PASS | 8 runtimes |
-| T08 | `t08_restricted_caller_is_denied` | fixture `--test live` | feature tip | PASS | real denial, handler not run |
-| T09 | `t09_duplicate_names_are_rejected` | fixture `--test live` | feature tip | PASS | DuplicateName |
-| T10 | `t10_unsupported_participant_kind_is_rejected` | fixture `--test live` | feature tip | PASS | device rejected |
-| T11 | `t11_missing_nats_fails_cleanly` | fixture `--test live` | feature tip | PASS | clean failure, no skip |
-| T12 | `t12_automatic_ports_across_processes` | fixture `--test live` | feature tip | PASS | two child processes + parent |
-| T13 | `port_conflict_matches_only_selected_ports`; cli.rs occupied-port case | `cargo test -p trellis-test --lib`; `cargo test -p trellis-rs --features live-integration --test integration` | feature tip | PASS | classification + real server + concurrent T07/T12 |
-| T14 | `t14_shutdown_is_idempotent` | fixture `--test live` | feature tip | PASS | idempotent shutdown |
-| T15 | `t15_dropping_a_runtime_cleans_up` | fixture `--test live` | feature tip | PASS | drop stops the server |
-| T16 | `t16_cancelling_start_does_not_orphan_infrastructure` | fixture `--test live` | feature tip | PASS | later runtime starts cleanly |
-| T17 | (panic/unwind) | — | | NOT RUN | pending |
-| T18 | (force-stop server) | — | | NOT RUN | pending |
-| T19 | `*_retention_*` | `cargo test -p trellis-test --lib` | feature tip | PASS | three policies + sibling survival |
-| T20 | `t21_complete_session_does_not_write_the_default_store` | fixture `--test live` | feature tip | PARTIAL | sentinel unchanged; dedicated T20 concurrency pending |
-| T21 | `t21_complete_session_does_not_write_the_default_store` | fixture `--test live` | feature tip | PASS | storage-free bind |
-| T22 | T07 distinct endpoints | fixture `--test live` | feature tip | PASS | loopback only |
-| T23 | `t23_sandbox_path_with_spaces_works` | fixture `--test live` | feature tip | PASS | spaced sandbox path |
-| T24 | `output_tail_*`, `redaction_*` | `cargo test -p trellis-test --lib` | feature tip | PASS | bounded tail, split UTF-8, redaction |
-| T25 | `t25_download_pinned_acquires_verified_nats` | fixture `--test download` | feature tip | PASS | real verified download |
-| T26 | projection `diff -r` + second install | `cargo xtask install` | feature tip | PASS | identical + idempotent |
-| T27 | `cargo package` three crates | local | feature tip | PASS | verified archives |
-| T28 | artifact-only consumer smoke | `scripts/verify-rust-test-package.sh` | feature tip | PASS | no checkout, 7 live pass |
-| T29 | Linux native live | fixture `--test live` | feature tip | PARTIAL | Linux only; macOS pending |
-| T30 | `prepare_release_versions_testkit_fixture_manifests` | `cargo test -p xtask` | feature tip | PASS | fixture + generated manifests rewritten |
-| T31 | `cargo test --workspace`; `cargo test -p trellis-rs --features live-integration --test integration` | local | feature tip | PARTIAL | Rust workspace, live-integration, doc-tests green; Deno suites not re-run |
 
-## CI and release verification
-- Required Check run/job links and status: jobs added (`live` fixture step, `rust-testkit-package`,
-  `rust-testkit-consumer`); not yet executed.
-- Artifact-only no-checkout consumer job link: `rust-testkit-consumer` (no `actions/checkout`); not yet executed.
-- Tagged/tagless package-smoke results: `rust-testkit-consumer` added to `release.yml`; not yet executed.
-- Stable/prerelease version-preparation tests: not yet implemented.
-- Publishing workflow not invoked: yes
-- Registry-name/ownership preflight: not yet verified by maintainer
+| ID | Actual test / command | Result | Notes |
+|---|---|---|---|
+| T02 | `t02_missing_or_invalid_binaries_fail` | PASS | InvalidBinary before startup |
+| T04 | `t04_real_rpc_and_event_between_provider_and_caller` | PASS | typed RPC + event |
+| T05 | `t05_agent_caller_calls_the_provider` | PASS | agent-bound session |
+| T06 | `t06_two_providers_have_distinct_deployments` | PASS | distinct identities |
+| T07 | `t07_eight_concurrent_runtimes_are_isolated` | PASS | barrier + nonce + distinct workdirs |
+| T08 | `t08_restricted_caller_is_denied` | PASS | handler not invoked |
+| T09 | `t09_duplicate_names_are_rejected` | PASS | `DuplicateName` |
+| T10 | `t10_unsupported_participant_kind_is_rejected` | PASS | device rejected |
+| T11 | `t11_missing_nats_fails_cleanly` | PASS | explicit invalid NATS fails, no fallback |
+| T12 | `t12_automatic_ports_across_processes` (+ children) | PASS | two child processes + parent; TypeScript same-host leg NOT RUN locally |
+| T13 | `port_conflict_matches_only_selected_ports`, `port_conflict_ignores_unrelated_bind_failures` | PASS | classifier; real occupied-port case is CI-only |
+| T14 | `t14_shutdown_is_idempotent` | PASS | all exposed listeners released; `RuntimeStopped` on reinstall |
+| T15 | `t15_dropping_a_runtime_cleans_up` | PASS | drop releases listeners; unrelated listener survives |
+| T16 | `t16_cancelling_start_does_not_orphan_infrastructure` | PASS | real bootstrap progress observed before cancel |
+| T17 | `t17_panic_unwind_cleanup` | PASS | unwinding thread; listeners released after |
+| T18 | `t18_force_stopped_server_cleans_up_nats` | PASS | Linux observer force-stops the server; NATS descendant released |
+| T19 | `t19_retention_policies_and_sibling_survival` | PASS | `Always`/`OnFailure` + sibling survival |
+| T20 | `t20_parent_profile_is_untouched` (child) | PASS | populated-profile sentinel unchanged |
+| T21 | `t21_complete_session_does_not_write_the_default_store` (child) | PASS | no default-store write |
+| T22 | T07/T14/T15 loopback endpoints | PASS | loopback only |
+| T23 | `t23_sandbox_path_with_spaces_works` | PASS | spaced parent path |
+| T24 | `line_observer_sees_lines_split_across_reads`, `redaction_*`, `output_tail_*` | PASS | split-chunk line reassembly + bounded/redacted tails |
+| T25 | `t25_download_pinned_acquires_verified_nats` | PASS | real verified pinned download |
+| T26 | generated projection `diff -r` + second install | NOT RE-RUN this pass | previously PASS |
+| T27 | `cargo package` three crates | NOT RE-RUN this pass | previously PASS |
+| T28 | `scripts/verify-rust-test-package.sh` artifact-only consumer | NOT RUN this pass | rewritten; syntax-checked |
+| T29 | native Linux live | PASS (Linux x86_64) | macOS not required (Linux-based project) |
+| T30 | `prepare_release_versions_testkit_fixture_manifests` | NOT RE-RUN this pass | previously PASS |
+| T31 | full workspace + Deno suites | PARTIAL | `deno fmt --check` and `deno check` pass; `cargo test --workspace` in progress |
+| extra | `t32_extra_origin_is_allowed` | PASS | `Access-Control-Allow-Origin: http://localhost:5174` |
+| extra | `t33_pinned_admin_credentials_are_accepted` | PASS | pinned creds accepted and exposed |
 
-## Remaining issues
-- Test failures: none in the covered set.
-- Not-run tests with exact reason: T02/T03/T05/T11/T12/T15/T16/T17/T18/T23/T25/T29(macOS)/T30/T31 —
-  not yet implemented or executed (see matrix).
-- Design blockers: DESIGN BLOCKER 1 resolved; none open.
-- Known platform/cleanup limits: only Linux exercised; drop/cancellation/panic observer tests pending.
-- Other preexisting unrelated failures: none observed.
+## CI / release wiring status
+
+- `check.yml`: `rust-testkit-package` tars a mode-preserving bundle with an explicitly acquired NATS; `rust-testkit-consumer` extracts it and runs `--mode full`; the `live` job acquires NATS and sets `TRELLIS_TEST_NATS_BIN`.
+- `release.yml`: `integration` added to the prepared workspace; `rust-testkit-consumer` consumes the tagged Linux archive or stages native binaries and validates provenance; `trellis-test` is in the publish sequence.
+- None of the workflow jobs above have been executed on CI in this pass; the local fixture suite is the executed evidence.
+
+## Remaining gaps
+
+- The TypeScript same-host leg of T12 and the full `Check`/release workflow runs have not been executed locally; the artifact-only consumer (T28) was not run in this pass (verifier rewritten and syntax-checked).
+- macOS is out of scope for this Linux-based project.
+- 6 pre-existing unformatted TypeScript files were reformatted to satisfy the required `deno fmt` gate; this is unrelated drift on `main` reported separately.
+- Design/docs deltas beyond the evidence, README, guide sections, llms files, CHANGELOG, and the Rustdoc publish path are not all updated in this pass.
 
 ## Review state
-- State: READY FOR COORDINATOR REVIEW
+
+- State: CORRECTION PASS — ready for re-review of the working tree
 - Coordinator approval: NOT GRANTED
-- Approved head SHA: none
-- Approved main/base SHA: none
+- Final commit SHA: pending
 - Merge performed: no
 - Publication performed: no

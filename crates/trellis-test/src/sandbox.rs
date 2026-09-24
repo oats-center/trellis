@@ -125,16 +125,24 @@ impl PortLease {
 
 /// Classifies whether `diagnostics` describes a bind race on one of `ports`.
 ///
-/// Only the current server/local-NATS address-in-use diagnostics count; any
-/// other failure must not be retried.
+/// Only the managed-NATS `port <selected> is already in use` line and the
+/// runtime HTTP listener's own bind failure for the selected HTTP endpoint
+/// count; any other failure must not be retried.
 pub(crate) fn is_port_conflict(diagnostics: &str, ports: &PortSet) -> bool {
     let lowered = diagnostics.to_ascii_lowercase();
-    lowered.contains("address already in use")
-        || lowered.contains("addrinuse")
-        || ports
-            .all()
-            .iter()
-            .any(|port| lowered.contains(&format!("port {port} is already in use")))
+    // Managed NATS names the exact selected port it could not bind.
+    if ports
+        .all()
+        .iter()
+        .any(|port| lowered.contains(&format!("port {port} is already in use")))
+    {
+        return true;
+    }
+    // The runtime HTTP listener reports its selected endpoint with an OS bind error.
+    lowered.contains(&format!(
+        "failed to bind runtime http listener at 127.0.0.1:{}",
+        ports.http
+    )) && lowered.contains("address already in use")
 }
 
 /// A private per-attempt sandbox directory.
@@ -294,12 +302,44 @@ mod tests {
     fn port_conflict_matches_only_selected_ports() {
         let ports = selected_ports();
         assert!(is_port_conflict(
-            "failed to bind the runtime HTTP listener: Address already in use (os error 98)",
+            "failed to bind runtime HTTP listener at 127.0.0.1:53001: Address already in use (os error 98)",
             &ports
         ));
         assert!(is_port_conflict("port 53002 is already in use", &ports));
+    }
+
+    #[test]
+    fn port_conflict_ignores_unrelated_bind_failures() {
+        let ports = selected_ports();
+        // An unrelated socket's OS error must not be retried.
+        assert!(!is_port_conflict(
+            "connecting to another service: Address already in use (os error 98)",
+            &ports
+        ));
+        // A different port on our own listener is not one of the selected ports.
         assert!(!is_port_conflict("port 59999 is already in use", &ports));
-        assert!(!is_port_conflict("invalid configuration: missing field", &ports));
+        assert!(!is_port_conflict(
+            "failed to bind runtime HTTP listener at 127.0.0.1:59999: Address already in use (os error 98)",
+            &ports
+        ));
+        // The HTTP signature without the OS bind error is not a conflict.
+        assert!(!is_port_conflict(
+            "failed to bind runtime HTTP listener at 127.0.0.1:53001: permission denied",
+            &ports
+        ));
+        // Application text, authentication errors, and malformed config never retry.
+        assert!(!is_port_conflict(
+            "address already in use is a common phrase",
+            &ports
+        ));
+        assert!(!is_port_conflict(
+            "authentication failed: invalid session proof",
+            &ports
+        ));
+        assert!(!is_port_conflict(
+            "invalid configuration: missing field `http.port`",
+            &ports
+        ));
     }
 
     #[test]
@@ -321,7 +361,10 @@ mod tests {
         assert!(root.is_dir());
         assert!(sandbox.cleanup().is_none());
         assert!(!root.exists());
-        assert!(sibling.is_dir(), "a preexisting sibling must survive cleanup");
+        assert!(
+            sibling.is_dir(),
+            "a preexisting sibling must survive cleanup"
+        );
     }
 
     #[test]

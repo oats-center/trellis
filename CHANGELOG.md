@@ -23,6 +23,14 @@ and this project adheres to
   that binds a session without writing the default session store and does not
   require administrator privilege. Existing `complete` retains its persistence
   and administrator checks.
+- Added `TrellisTestRuntimeBuilder::extra_origin`/`extra_origins` and the
+  `trellis init config --extra-origin` flag so a browser app served from another
+  origin (for example an operator console on `http://localhost:5174`) can
+  complete a portal login against a harness runtime.
+- Added `TrellisTestRuntime::admin_username`/`admin_password` accessors and
+  `TrellisTestRuntimeBuilder::admin_username`/`admin_password` pinning so
+  browser- and portal-driven tests can log in, plus `trellis_url()` accessors on
+  `TestServiceIdentity` and `TestClientIdentity`.
 
 ### Fixed
 

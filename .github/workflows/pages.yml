@@ -92,6 +92,7 @@ jobs:
               cd "${repo_root}/docs"
               deno install --allow-scripts=npm:esbuild,npm:sharp
               deno run -A ./scripts/generate_ts_api_docs.ts
+              deno run -A ./scripts/generate_rust_api_docs.ts
               SITE_BASE_PATH="${base_path}" deno run -A vite build
               mkdir -p "${out_dir}"
               cp -R build/. "${out_dir}/"
