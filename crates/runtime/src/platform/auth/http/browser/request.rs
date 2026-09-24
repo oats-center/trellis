@@ -86,7 +86,10 @@ where
         now,
         state.proof_policy,
     )
-    .map_err(|_| HttpError::unauthorized("invalid_proof"))?;
+    .map_err(|error| {
+        tracing::warn!(%error, "auth request session proof rejected");
+        HttpError::unauthorized("invalid_proof")
+    })?;
     let (installed_revision, binding) = state
         .service
         .repository()

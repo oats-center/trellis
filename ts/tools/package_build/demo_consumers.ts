@@ -333,6 +333,11 @@ try {
             assertEquals((await serviceStatus).code, 0);
           }
         }
+      } catch (error) {
+        console.error(
+          "runtime control plane output:\n" + runtime.controlPlaneOutput(),
+        );
+        throw error;
       } finally {
         await runtime.stop();
       }
