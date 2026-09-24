@@ -245,13 +245,12 @@ PY
 # 6. Run the consumer's live target under the frozen lockfile.
 #
 # Run the tests one at a time: a small hosted runner (e.g. ubuntu-latest, four
-# CPUs) cannot host every test's runtimes on top of t07's eight concurrent
-# runtimes without starving them, and the startup/request deadlines then fire.
-# t07 still starts its eight runtimes concurrently; only the test functions are
-# serialized.
+# CPUs) cannot host several tests' runtimes at once without starving the
+# servers, and their startup and admission deadlines then fire. t07 still starts
+# its eight runtimes concurrently; only the test functions are serialized.
 if [[ "$mode" == "smoke" ]]; then
   cargo test --manifest-path "$work/consumer/Cargo.toml" --locked --config "$config" \
-    --test live -- --skip t07_eight_concurrent_runtimes_are_isolated
+    --test live -- --test-threads=1 --skip t07_eight_concurrent_runtimes_are_isolated
 else
   cargo test --manifest-path "$work/consumer/Cargo.toml" --locked --config "$config" \
     --test live -- --test-threads=1
