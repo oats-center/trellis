@@ -1405,6 +1405,9 @@ fn classify_startup(
     let stdout_tail = crate::error::redact_secrets(&stdout.text(), secrets);
     let stderr_tail = crate::error::redact_secrets(&stderr.text(), secrets);
     let diagnostics = format!("{stdout_tail}\n{stderr_tail}");
+    // Surface the failed runtime's output so a startup failure is diagnosable from
+    // the test log; the output is already redacted.
+    eprintln!("trellis-test: server startup output:\n{diagnostics}");
     if crate::sandbox::is_port_conflict(&diagnostics, &ports) {
         let conflict = TrellisTestError::new(
             TrellisTestErrorKind::PortConflict,
