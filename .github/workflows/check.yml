@@ -578,6 +578,7 @@ jobs:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
           TRELLIS_TEST_NATS_BIN: /tmp/trellis-test-nats/nats-server
+          RUST_BACKTRACE: "1"
         run: ${{ github.workspace }}/target/debug/trellis-testkit-live
 
   live-typescript:

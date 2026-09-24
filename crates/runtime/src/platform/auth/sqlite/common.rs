@@ -197,6 +197,8 @@ impl SqliteAuthorizationStore {
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> Result<T, AuthorizationStateError> + Send + 'static,
     {
+        // ponytail: diagnostic; captures the awaiting caller so the slow write is named.
+        let caller = std::backtrace::Backtrace::force_capture();
         let queued_at = Instant::now();
         let writer = Arc::clone(&self.writer);
         tokio::task::spawn_blocking(move || {
@@ -220,6 +222,7 @@ impl SqliteAuthorizationStore {
                 || operation_elapsed >= Duration::from_secs(1)
             {
                 tracing::warn!(
+                    caller = %caller,
                     spawn_delay_ms = spawn_delay.as_millis(),
                     wait_ms = wait_elapsed.as_millis(),
                     operation_ms = operation_elapsed.as_millis(),
