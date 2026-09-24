@@ -268,6 +268,70 @@ impl Sandbox {
     }
 }
 
+/// Removes stale harness-owned sandbox directories beneath `parent`.
+///
+/// Only directories named `trellis-test-<id>` whose ownership marker records the
+/// same `<id>` are removed, so unrelated files and other tools' directories are
+/// never touched. A directory whose most recent modification is within
+/// `older_than` is left alone, so a sweep cannot delete a concurrently running
+/// test's sandbox; callers should still run it when no harness tests are active.
+///
+/// This is the reclaim path for sandboxes a killed or aborted process could not
+/// remove; [`TrellisTestRuntime::shutdown`] is the per-runtime guarantee.
+///
+/// # Errors
+///
+/// Returns [`TrellisTestError`] when `parent` cannot be read or `older_than` is
+/// too large to subtract from the current time.
+pub fn remove_retained_workdirs(
+    parent: &Path,
+    older_than: std::time::Duration,
+) -> Result<usize, TrellisTestError> {
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(older_than)
+        .ok_or_else(|| {
+            TrellisTestError::new(
+                TrellisTestErrorKind::InvalidConfiguration,
+                TrellisTestStage::Validation,
+                "the retention age is too large to subtract from the current time",
+            )
+        })?;
+    let entries = std::fs::read_dir(parent).map_err(|error| {
+        TrellisTestError::new(
+            TrellisTestErrorKind::Io,
+            TrellisTestStage::Shutdown,
+            format!("reading {}: {error}", parent.display()),
+        )
+    })?;
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(ownership_id) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("trellis-test-"))
+        else {
+            continue;
+        };
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let marker = std::fs::read_to_string(path.join(OWNER_MARKER)).unwrap_or_default();
+        if marker.trim() != format!("{OWNER_MARKER_VERSION} {ownership_id}") {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .map(|modified| modified < cutoff)
+            .unwrap_or(false);
+        if stale && std::fs::remove_dir_all(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 /// Creates a directory (and parents), readable only by the owning user on Unix.
 pub(crate) fn create_private_dir(path: &Path) -> Result<(), TrellisTestError> {
     let mut builder = std::fs::DirBuilder::new();
@@ -368,6 +432,59 @@ mod tests {
         // A generic internal error is not retried.
         assert!(!is_transient_callout_denial("internal_error"));
         assert!(!is_transient_callout_denial("all systems nominal"));
+    }
+
+    #[test]
+    fn remove_retained_workdirs_only_removes_stale_owned_dirs() {
+        use std::time::Duration;
+        let parent = tempfile::tempdir().expect("temp dir");
+        let owned = parent
+            .path()
+            .join("trellis-test-01ARZ3NDEKTSV4RRFFQ69G5FAV");
+        std::fs::create_dir_all(&owned).expect("create owned");
+        std::fs::write(
+            owned.join(OWNER_MARKER),
+            format!("{OWNER_MARKER_VERSION} 01ARZ3NDEKTSV4RRFFQ69G5FAV\n"),
+        )
+        .expect("write marker");
+        // A directory without a matching ownership marker is never touched.
+        let unrelated = parent.path().join("trellis-test-not-owned");
+        std::fs::create_dir_all(&unrelated).expect("create unrelated");
+        // A marker that does not match its directory name is never touched.
+        let mismatched = parent
+            .path()
+            .join("trellis-test-01ARZ3NDEKTSV4RRFFQ69G5FAW");
+        std::fs::create_dir_all(&mismatched).expect("create mismatched");
+        std::fs::write(
+            mismatched.join(OWNER_MARKER),
+            format!("{OWNER_MARKER_VERSION} 01ARZ3NDEKTSV4RRFFQ69G5FAV\n"),
+        )
+        .expect("write marker");
+
+        std::thread::sleep(Duration::from_millis(10));
+        assert_eq!(
+            remove_retained_workdirs(parent.path(), Duration::ZERO).expect("sweep"),
+            1
+        );
+        assert!(!owned.exists());
+        assert!(unrelated.exists());
+        assert!(mismatched.exists());
+
+        // A freshly created owned directory is left alone by an age-gated sweep.
+        let fresh = parent
+            .path()
+            .join("trellis-test-01ARZ3NDEKTSV4RRFFQ69G5FAX");
+        std::fs::create_dir_all(&fresh).expect("create fresh");
+        std::fs::write(
+            fresh.join(OWNER_MARKER),
+            format!("{OWNER_MARKER_VERSION} 01ARZ3NDEKTSV4RRFFQ69G5FAX\n"),
+        )
+        .expect("write marker");
+        assert_eq!(
+            remove_retained_workdirs(parent.path(), Duration::from_secs(3600)).expect("sweep"),
+            0
+        );
+        assert!(fresh.exists());
     }
 
     #[test]

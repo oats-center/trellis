@@ -125,6 +125,13 @@ mutates the calling process's environment. Retention is `OnFailure` by default
 (keep the sandbox after a failure); `Always` and `Never` are available through
 `TrellisTestRuntime::builder().retention(...)`.
 
+Call `TrellisTestRuntime::shutdown` to remove a sandbox according to the
+retention policy. `Drop` and process termination are best-effort: a sandbox can
+survive if the process exits or is killed before cleanup finishes, and
+`OnFailure` intentionally keeps failed-run sandboxes as evidence. Reclaim
+leftovers with `trellis_test::remove_retained_workdirs(parent, older_than)`,
+which only removes sandboxes carrying this harness's ownership marker.
+
 ## Supported platforms
 
 Linux and macOS on the existing x86_64/aarch64 release targets. Unsupported
