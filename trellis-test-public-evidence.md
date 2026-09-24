@@ -69,7 +69,7 @@
 | T10 | `t10_unsupported_participant_kind_is_rejected` | fixture `--test live` | feature tip | PASS | device rejected |
 | T11 | `t11_missing_nats_fails_cleanly` | fixture `--test live` | feature tip | PASS | clean failure, no skip |
 | T12 | `t12_automatic_ports_across_processes` | fixture `--test live` | feature tip | PASS | two child processes + parent |
-| T13 | `port_conflict_matches_only_selected_ports`, `port_lease_*` | `cargo test -p trellis-test --lib` | feature tip | PARTIAL | classification + lease; real occupied-port case pending |
+| T13 | `port_conflict_matches_only_selected_ports`; cli.rs occupied-port case | `cargo test -p trellis-test --lib`; `cargo test -p trellis-rs --features live-integration --test integration` | feature tip | PASS | classification + real server + concurrent T07/T12 |
 | T14 | `t14_shutdown_is_idempotent` | fixture `--test live` | feature tip | PASS | idempotent shutdown |
 | T15 | `t15_dropping_a_runtime_cleans_up` | fixture `--test live` | feature tip | PASS | drop stops the server |
 | T16 | `t16_cancelling_start_does_not_orphan_infrastructure` | fixture `--test live` | feature tip | PASS | later runtime starts cleanly |
@@ -87,7 +87,7 @@
 | T28 | artifact-only consumer smoke | `scripts/verify-rust-test-package.sh` | feature tip | PASS | no checkout, 7 live pass |
 | T29 | Linux native live | fixture `--test live` | feature tip | PARTIAL | Linux only; macOS pending |
 | T30 | `prepare_release_versions_testkit_fixture_manifests` | `cargo test -p xtask` | feature tip | PASS | fixture + generated manifests rewritten |
-| T31 | `cargo test --workspace` | local | feature tip | PARTIAL | Rust workspace + doc-tests green; Deno suites not re-run |
+| T31 | `cargo test --workspace`; `cargo test -p trellis-rs --features live-integration --test integration` | local | feature tip | PARTIAL | Rust workspace, live-integration, doc-tests green; Deno suites not re-run |
 
 ## CI and release verification
 - Required Check run/job links and status: jobs added (`live` fixture step, `rust-testkit-package`,
