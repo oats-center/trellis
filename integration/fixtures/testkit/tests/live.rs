@@ -281,3 +281,95 @@ async fn t21_complete_session_does_not_write_the_default_store() {
 
     runtime.shutdown().await.expect("shutdown runtime");
 }
+
+/// T02: missing or explicitly invalid Trellis binaries fail before startup.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn t02_missing_or_invalid_binaries_fail() {
+    let result = TrellisTestRuntime::builder()
+        .cli_binary("/nonexistent/trellis")
+        .server_binary("/nonexistent/trellis-server")
+        .start()
+        .await;
+    let error = match result {
+        Ok(_) => panic!("missing binaries must fail"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), TrellisTestErrorKind::InvalidBinary);
+}
+
+/// T05: an AgentCaller completes its own participant-bound session and calls the
+/// provider.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn t05_agent_caller_calls_the_provider() {
+    use trellis_test_fixture::participants::trellis_test_fixture_agent_caller::Client as AgentClient;
+
+    let mut runtime = TrellisTestRuntime::builder()
+        .start()
+        .await
+        .expect("start runtime");
+    let provider = start_provider(&mut runtime, "provider").await;
+    let agent_identity = runtime
+        .register_client::<trellis_test_fixture::participants::trellis_test_fixture_agent_caller::Participant>(
+            "agent",
+        )
+        .await
+        .expect("register agent caller");
+
+    let agent = AgentClient::connect(agent_identity.connect_options())
+        .await
+        .expect("connect agent caller");
+    let output = agent
+        .trellis_test_fixture_echo_v1()
+        .echo(&value("from-agent"))
+        .await
+        .expect("call Echo");
+    assert_eq!(output.value, "from-agent");
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+
+    provider.task.abort();
+    runtime.shutdown().await.expect("shutdown runtime");
+}
+
+/// T23: a sandbox parent path containing spaces works end to end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn t23_sandbox_path_with_spaces_works() {
+    let parent = std::env::temp_dir().join(format!("trellis test {}", std::process::id()));
+    std::fs::create_dir_all(&parent).expect("create spaced parent");
+    let mut runtime = TrellisTestRuntime::builder()
+        .workdir_parent(&parent)
+        .start()
+        .await
+        .expect("start runtime under a spaced path");
+    assert!(runtime.workdir().to_string_lossy().contains(' '));
+    runtime.shutdown().await.expect("shutdown runtime");
+}
+
+/// T15: dropping a started runtime stops its real infrastructure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn t15_dropping_a_runtime_cleans_up() {
+    let url = {
+        let runtime = TrellisTestRuntime::builder()
+            .start()
+            .await
+            .expect("start runtime");
+        runtime.trellis_url().to_owned()
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(1))
+        .no_proxy()
+        .build()
+        .expect("build client");
+    let mut stopped = false;
+    for _ in 0..40 {
+        match client.get(format!("{url}/readyz")).send().await {
+            Ok(response) if response.status().is_success() => {}
+            _ => {
+                stopped = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(stopped, "the dropped runtime's server should stop");
+}

@@ -41,8 +41,8 @@
 ## Live runtime evidence
 - CLI/server/NATS paths, versions, hashes, and build/source SHA: `target/debug/trellis`,
   `target/debug/trellis-server` (0.100.0), and `~/.cache/trellis/nats-server-v2.14.4`.
-- Linux runner/architecture and actual tested cases: x86_64 Linux; fixture live target 8/8
-  (T04, T06, T07, T08, T09, T10, T14, T21); artifact-only smoke 7/7 (T07 filtered).
+- Linux runner/architecture and actual tested cases: x86_64 Linux; fixture live target 12/12
+  (T02, T04, T05, T06, T07, T08, T09, T10, T14, T15, T21, T23); artifact-only smoke 7/7 (T07 filtered).
 - macOS runner/architecture and actual tested cases: not run.
 - Concurrent-runtime isolation evidence: T07 starts eight runtimes in one process; all HTTP/NATS/
   WebSocket endpoints distinct.
@@ -58,10 +58,10 @@
 | Requirement | Actual test name | Command or CI job | Tested SHA | Result | Evidence |
 |---|---|---|---|---|---|
 | T01 | `sandbox::tests::*`, `cargo test -p trellis-test --lib` | local | feature tip | PASS | 5 unit tests, no infra |
-| T02 | (binary precedence) | — | | PARTIAL | implemented; explicit test pending |
+| T02 | `t02_missing_or_invalid_binaries_fail` | fixture `--test live` | feature tip | PASS | InvalidBinary before startup |
 | T03 | (version parsing) | — | | PARTIAL | implemented; explicit test pending |
 | T04 | `t04_real_rpc_and_event_between_provider_and_caller` | fixture `--test live` | feature tip | PASS | RPC + event |
-| T05 | (AgentCaller) | — | | NOT RUN | fixture participant exists; test pending |
+| T05 | `t05_agent_caller_calls_the_provider` | fixture `--test live` | feature tip | PASS | agent-bound session |
 | T06 | `t06_two_providers_have_distinct_deployments` | fixture `--test live` | feature tip | PASS | distinct deployments/instances |
 | T07 | `t07_eight_concurrent_runtimes_are_isolated` | fixture `--test live` | feature tip | PASS | 8 runtimes |
 | T08 | `t08_restricted_caller_is_denied` | fixture `--test live` | feature tip | PASS | real denial, handler not run |
@@ -71,7 +71,7 @@
 | T12 | (cross-process) | — | | NOT RUN | artifact smoke covers in-process only |
 | T13 | `port_conflict_matches_only_selected_ports`, `port_lease_*` | `cargo test -p trellis-test --lib` | feature tip | PARTIAL | classification + lease; real occupied-port case pending |
 | T14 | `t14_shutdown_is_idempotent` | fixture `--test live` | feature tip | PASS | idempotent shutdown |
-| T15 | (drop cleanup observer) | — | | NOT RUN | pending |
+| T15 | `t15_dropping_a_runtime_cleans_up` | fixture `--test live` | feature tip | PASS | drop stops the server |
 | T16 | (start cancellation) | — | | NOT RUN | pending |
 | T17 | (panic/unwind) | — | | NOT RUN | pending |
 | T18 | (force-stop server) | — | | NOT RUN | pending |
@@ -79,7 +79,7 @@
 | T20 | `t21_complete_session_does_not_write_the_default_store` | fixture `--test live` | feature tip | PARTIAL | sentinel unchanged; dedicated T20 concurrency pending |
 | T21 | `t21_complete_session_does_not_write_the_default_store` | fixture `--test live` | feature tip | PASS | storage-free bind |
 | T22 | T07 distinct endpoints | fixture `--test live` | feature tip | PASS | loopback only |
-| T23 | (spaces / non-UTF-8 paths) | — | | NOT RUN | pending |
+| T23 | `t23_sandbox_path_with_spaces_works` | fixture `--test live` | feature tip | PASS | spaced sandbox path |
 | T24 | (bounded redacted tails) | — | | PARTIAL | bounded tails + redaction implemented; split-token test pending |
 | T25 | (DownloadPinned) | — | | NOT RUN | pending |
 | T26 | projection `diff -r` + second install | `cargo xtask install` | feature tip | PASS | identical + idempotent |
