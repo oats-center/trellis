@@ -280,10 +280,17 @@ fn codecs_errors_and_generated_surfaces_compile() {
 "#,
     )
     .unwrap();
+    // The generated package pins the workspace version; patch the library to
+    // the checkout so the test also passes for unpublished prerelease candidates.
     run(
         Command::new("cargo")
             .arg("test")
             .arg("--quiet")
+            .arg("--config")
+            .arg(format!(
+                "patch.crates-io.trellis-rs.path={}",
+                repo.join("crates/trellis").display()
+            ))
             .current_dir(&rust),
         "generated Rust test",
     );

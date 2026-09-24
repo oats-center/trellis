@@ -152,6 +152,11 @@ fn release_manifest_paths(repo_root: &Path) -> Result<Vec<PathBuf>> {
     // The external testkit fixture carries release-managed versions in its own
     // manifest and its generated application package.
     collect_manifest_paths(&repo_root.join("integration/fixtures/testkit"), &mut paths)?;
+    // External consumers built by the verification graph pin the released
+    // library version; keep their internal dependency pins in sync so a
+    // prerelease candidate resolves against the locally patched checkout.
+    collect_manifest_paths(&repo_root.join("integration/fixtures/runtime"), &mut paths)?;
+    collect_manifest_paths(&repo_root.join("demos/rust"), &mut paths)?;
     for relative_path in [
         "crates/runtime/trellis.toml",
         "ts/packages/trellis-test/trellis.toml",
