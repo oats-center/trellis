@@ -99,7 +99,7 @@ impl AuthPostCommitRuntime {
         }
     }
 
-    async fn dispatch_ready(&self) -> Result<usize, AuthorizationStateError> {
+    pub(crate) async fn dispatch_ready(&self) -> Result<usize, AuthorizationStateError> {
         let now = now_millis()?;
         let actions = self
             .repository
