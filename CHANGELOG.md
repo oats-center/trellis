@@ -31,6 +31,12 @@ and this project adheres to
   `TrellisTestRuntimeBuilder::admin_username`/`admin_password` pinning so
   browser- and portal-driven tests can log in, plus `trellis_url()` accessors on
   `TestServiceIdentity` and `TestClientIdentity`.
+- `trellis generate` now emits an explicitly configured `[generate.rust]` or
+  `[generate.typescript]` target even when the project root has no matching
+  toolchain file, so a TypeScript app participant can emit a Rust projection for
+  a Rust test harness (and vice versa). With no target configured, a single
+  detected language still defaults to `trellis`, and multiple targets still
+  require explicit outputs.
 
 ### Fixed
 

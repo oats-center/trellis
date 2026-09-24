@@ -50,12 +50,18 @@ pub(crate) fn output_paths(
         .iter()
         .any(|file| root.join(file).is_file());
     let config = &manifest.generate;
-    let languages = usize::from(has_rust) + usize::from(has_ts);
-    miette::ensure!(
-        (has_rust || config.rust.is_none()) && (has_ts || config.typescript.is_none()),
-        "generation table names a language absent from the project root"
-    );
-    if languages == 0 {
+    // A language generates when it is configured or its toolchain marker is
+    // present. Configuration alone is enough: a TypeScript app participant can
+    // emit a Rust projection for a Rust test harness, and vice versa.
+    let targets = [
+        ("rust", has_rust, config.rust.as_ref()),
+        ("typescript", has_ts, config.typescript.as_ref()),
+    ];
+    let target_count = targets
+        .iter()
+        .filter(|(_, detected, selected)| *detected || selected.is_some())
+        .count();
+    if target_count == 0 {
         return Ok(Vec::new());
     }
     let name = manifest.package.name.as_str();
@@ -67,17 +73,22 @@ pub(crate) fn output_paths(
         "invalid generated package name '{name}'; use at most 214 characters: a lowercase ASCII letter followed by lowercase letters, digits, or single hyphens"
     );
     let mut outputs = Vec::new();
-    for (language, detected, selected) in [
-        ("rust", has_rust, config.rust.as_ref()),
-        ("typescript", has_ts, config.typescript.as_ref()),
-    ] {
-        if !detected {
+    for (language, detected, selected) in targets {
+        if !detected && selected.is_none() {
             continue;
         }
-        miette::ensure!(languages != 2 || selected.is_some(), "multiple languages detected; configure [generate.rust].output and [generate.typescript].output");
-        let destination = selected
-            .map(|selected| selected.output.as_str())
-            .unwrap_or("trellis");
+        let destination = match selected {
+            Some(selected) => selected.output.as_str(),
+            None => {
+                // Only the sole detected language may fall back to the default
+                // output; multiple targets must name their outputs explicitly.
+                miette::ensure!(
+                    target_count == 1,
+                    "multiple languages detected; configure [generate.rust].output and [generate.typescript].output"
+                );
+                "trellis"
+            }
+        };
         miette::ensure!(
             !destination.is_empty(),
             "generated output must not be empty"
@@ -453,5 +464,54 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("must be a descendant"));
+    }
+
+    #[test]
+    fn configured_language_generates_without_its_toolchain_marker() {
+        let root = tempfile::tempdir().unwrap();
+        // A TypeScript app project with no Cargo.toml can still emit Rust.
+        fs::write(root.path().join("package.json"), "{}").unwrap();
+        fs::write(
+            root.path().join("trellis.toml"),
+            "[package]\nname='fixture'\nversion='1.0.0'\n[sources]\nmain='contract.trellis'\n[generate.typescript]\noutput='ts-out'\n[generate.rust]\noutput='rust-out'\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("contract.trellis"), "").unwrap();
+        let manifest = read_manifest(&root.path().join("trellis.toml")).unwrap();
+        let outputs = output_paths(root.path(), &manifest).unwrap();
+        let languages: BTreeSet<_> = outputs.iter().map(|(language, _)| *language).collect();
+        assert_eq!(languages, BTreeSet::from(["rust", "typescript"]));
+    }
+
+    #[test]
+    fn configured_language_generates_without_any_marker() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("trellis.toml"),
+            "[package]\nname='fixture'\nversion='1.0.0'\n[sources]\nmain='contract.trellis'\n[generate.rust]\noutput='rust-out'\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("contract.trellis"), "").unwrap();
+        let manifest = read_manifest(&root.path().join("trellis.toml")).unwrap();
+        let outputs = output_paths(root.path(), &manifest).unwrap();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].0, "rust");
+    }
+
+    #[test]
+    fn multiple_targets_require_explicit_outputs() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("package.json"), "{}").unwrap();
+        fs::write(
+            root.path().join("trellis.toml"),
+            "[package]\nname='fixture'\nversion='1.0.0'\n[sources]\nmain='contract.trellis'\n[generate.rust]\noutput='rust-out'\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("contract.trellis"), "").unwrap();
+        let manifest = read_manifest(&root.path().join("trellis.toml")).unwrap();
+        assert!(output_paths(root.path(), &manifest)
+            .unwrap_err()
+            .to_string()
+            .contains("multiple languages detected"));
     }
 }

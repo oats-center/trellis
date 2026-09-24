@@ -29,6 +29,14 @@ output = "trellis"
 output = "packages/trellis"
 ```
 
+Generation targets are selected explicitly: a configured `[generate.rust]` or
+`[generate.typescript]` emits that package even when the project root has no
+matching toolchain file, so an app authored in one language can emit a
+projection in the other (for example a TypeScript app participant that needs a
+Rust crate for a Rust test harness). With no target configured, a single
+detected language defaults to `trellis`; multiple targets require explicit
+`output` paths.
+
 Package names are lower-case ASCII identifiers with hyphens. Sources are
 explicit regular files beneath the package root after canonical path resolution.
 Source and direct-dependency aliases share one namespace. Local dependencies use
