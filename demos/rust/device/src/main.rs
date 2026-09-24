@@ -104,7 +104,7 @@ async fn connect_device_if_configured(args: &Args) -> anyhow::Result<Option<Conn
 async fn spawn_event_watchers(client: &ConnectedClient) -> anyhow::Result<()> {
     let mut activity = client
         .demo_service_fieldops_v1()
-        .subscribe_audit_recorded(EventSubscribeOptions::default())
+        .subscribe_audit_recorded(EventSubscribeOptions::ephemeral())
         .await?;
     tokio::spawn(async move {
         while let Some(event) = activity.next().await {
@@ -117,7 +117,7 @@ async fn spawn_event_watchers(client: &ConnectedClient) -> anyhow::Result<()> {
 
     let mut evidence = client
         .demo_service_fieldops_v1()
-        .subscribe_evidence_uploaded(EventSubscribeOptions::default())
+        .subscribe_evidence_uploaded(EventSubscribeOptions::ephemeral())
         .await?;
     tokio::spawn(async move {
         while let Some(event) = evidence.next().await {
@@ -130,7 +130,7 @@ async fn spawn_event_watchers(client: &ConnectedClient) -> anyhow::Result<()> {
 
     let mut reports = client
         .demo_service_fieldops_v1()
-        .subscribe_reports_published(EventSubscribeOptions::default())
+        .subscribe_reports_published(EventSubscribeOptions::ephemeral())
         .await?;
     tokio::spawn(async move {
         while let Some(event) = reports.next().await {
@@ -143,7 +143,7 @@ async fn spawn_event_watchers(client: &ConnectedClient) -> anyhow::Result<()> {
 
     let mut sites = client
         .demo_service_fieldops_v1()
-        .subscribe_sites_refreshed(EventSubscribeOptions::default())
+        .subscribe_sites_refreshed(EventSubscribeOptions::ephemeral())
         .await?;
     tokio::spawn(async move {
         while let Some(event) = sites.next().await {
