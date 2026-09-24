@@ -242,3 +242,42 @@ async fn t07_eight_concurrent_runtimes_are_isolated() {
     assert_eq!(nats.len(), 8);
     assert_eq!(websocket.len(), 8);
 }
+
+/// T21: `complete_session` binds a non-administrator session and never writes
+/// the default session store.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn t21_complete_session_does_not_write_the_default_store() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    let config_home = std::env::temp_dir().join(format!("trellis-test-xdg-{unique}"));
+    std::fs::create_dir_all(&config_home).expect("create config home");
+    let sentinel = config_home.join("sentinel.txt");
+    std::fs::write(&sentinel, b"untouched").expect("write sentinel");
+    // SAFETY: the fixture has no other test that reads or writes the store.
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    let mut runtime = TrellisTestRuntime::builder()
+        .start()
+        .await
+        .expect("start runtime");
+    let identity = runtime
+        .register_client::<CallerParticipant>("caller")
+        .await
+        .expect("register caller");
+    assert!(!identity.login_session_id().is_empty());
+
+    let store = config_home.join("trellis").join("admin-session.json");
+    assert!(
+        !store.exists(),
+        "complete_session must not write the default admin session store"
+    );
+    assert_eq!(
+        std::fs::read(&sentinel).expect("read sentinel"),
+        b"untouched",
+        "the preexisting profile sentinel must be byte-for-byte unchanged"
+    );
+
+    runtime.shutdown().await.expect("shutdown runtime");
+}
