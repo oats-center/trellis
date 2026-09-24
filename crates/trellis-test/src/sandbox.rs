@@ -145,6 +145,18 @@ pub(crate) fn is_port_conflict(diagnostics: &str, ports: &PortSet) -> bool {
     )) && lowered.contains("address already in use")
 }
 
+/// Classifies whether `diagnostics` shows a transient Auth Callout denial during
+/// startup.
+///
+/// A built-in live provider can be denied once while the callout's view of the
+/// just-published authorization context catches up. That denial is retryable
+/// within the bounded startup-attempt loop; only the specific denial codes are
+/// matched so unrelated failures still fail fast.
+pub(crate) fn is_transient_callout_denial(diagnostics: &str) -> bool {
+    let lowered = diagnostics.to_ascii_lowercase();
+    lowered.contains("invalid_auth_token") || lowered.contains("authority_unavailable")
+}
+
 /// A private per-attempt sandbox directory.
 pub(crate) struct Sandbox {
     root: PathBuf,
@@ -340,6 +352,22 @@ mod tests {
             "invalid configuration: missing field `http.port`",
             &ports
         ));
+    }
+
+    #[test]
+    fn transient_callout_denial_matches_only_known_codes() {
+        assert!(is_transient_callout_denial(
+            "auth callout denied: invalid_auth_token"
+        ));
+        assert!(is_transient_callout_denial(
+            "denial_code=authority_unavailable"
+        ));
+        // Terminal authorization outcomes must fail fast.
+        assert!(!is_transient_callout_denial("denial_code=not_authorized"));
+        assert!(!is_transient_callout_denial("denial_code=session_revoked"));
+        // A generic internal error is not retried.
+        assert!(!is_transient_callout_denial("internal_error"));
+        assert!(!is_transient_callout_denial("all systems nominal"));
     }
 
     #[test]

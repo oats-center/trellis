@@ -1476,10 +1476,14 @@ fn classify_startup(
         .with_output(stdout_tail, stderr_tail);
         return (conflict, true);
     }
+    // A transient Auth Callout denial while a built-in live provider bootstraps
+    // is retryable within the bounded startup-attempt loop; the error kind stays
+    // ServerStart so a persistent denial is reported unchanged.
+    let retryable = crate::sandbox::is_transient_callout_denial(&diagnostics);
     let with_output = TrellisTestError::new(error.kind(), error.stage(), error.message())
         .with_workdir(sandbox.root())
         .with_output(stdout_tail, stderr_tail);
-    (with_output, false)
+    (with_output, retryable)
 }
 
 #[cfg(test)]

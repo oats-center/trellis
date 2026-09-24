@@ -42,6 +42,11 @@ and this project adheres to
 
 - Quoted host-local NATS configuration paths so JetStream store and JWT resolver
   directories containing spaces, quotes, or backslashes render safely.
+- `trellis-test` retries runtime startup within its bounded attempt budget when
+  the server exits with a transient Auth Callout denial (`invalid_auth_token` or
+  `authority_unavailable`) while a built-in live provider bootstraps, instead of
+  failing the run. A persistent denial still surfaces the original `ServerStart`
+  error with the captured server output.
 
 ### Documentation
 
