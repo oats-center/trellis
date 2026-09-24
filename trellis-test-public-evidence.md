@@ -86,7 +86,7 @@
 | T27 | `cargo package` three crates | local | feature tip | PASS | verified archives |
 | T28 | artifact-only consumer smoke | `scripts/verify-rust-test-package.sh` | feature tip | PASS | no checkout, 7 live pass |
 | T29 | Linux native live | fixture `--test live` | feature tip | PARTIAL | Linux only; macOS pending |
-| T30 | versioning paths registered | `cargo build -p xtask` | feature tip | PARTIAL | paths added; stable/prerelease tests pending |
+| T30 | `prepare_release_versions_testkit_fixture_manifests` | `cargo test -p xtask` | feature tip | PASS | fixture + generated manifests rewritten |
 | T31 | existing suites | — | | NOT RUN | repo-wide re-run pending |
 
 ## CI and release verification

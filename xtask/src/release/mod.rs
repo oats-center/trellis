@@ -362,6 +362,55 @@ mod tests {
     }
 
     #[test]
+    fn prepare_release_versions_testkit_fixture_manifests() {
+        let root = temp_repo_root();
+        fs::create_dir_all(&root).expect("mkdir repo");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace.package]\nversion = \"0.100.0\"\n",
+        )
+        .expect("write workspace manifest");
+        for relative in [
+            "integration/fixtures/testkit/Cargo.toml",
+            "integration/fixtures/testkit/crates/trellis-test-fixture/Cargo.toml",
+        ] {
+            let path = root.join(relative);
+            fs::create_dir_all(path.parent().expect("parent")).expect("mkdir fixture");
+            fs::write(
+                &path,
+                "[package]\nname = \"trellis-test-fixture\"\nversion = \"0.100.0\"\n",
+            )
+            .expect("write fixture manifest");
+        }
+        fs::write(
+            root.join("integration/fixtures/testkit/trellis.toml"),
+            "[package]\nname = \"trellis-test-fixture\"\nversion = \"0.100.0\"\n",
+        )
+        .expect("write IDL manifest");
+        prepare_release(
+            &root,
+            &ReleaseVersion {
+                version: "0.100.0-rc.1".to_string(),
+                base_version: "0.100.0".to_string(),
+            },
+        )
+        .expect("prepare release");
+        for relative in [
+            "integration/fixtures/testkit/Cargo.toml",
+            "integration/fixtures/testkit/crates/trellis-test-fixture/Cargo.toml",
+            "integration/fixtures/testkit/trellis.toml",
+        ] {
+            assert!(
+                fs::read_to_string(root.join(relative))
+                    .expect("read fixture manifest")
+                    .contains("0.100.0-rc.1"),
+                "{relative} should be rewritten"
+            );
+        }
+        fs::remove_dir_all(root).expect("remove temp repo");
+    }
+
+    #[test]
     fn rewrite_cargo_manifest_updates_workspace_and_internal_dependencies() {
         let original = "[workspace.package]\nversion = \"0.8.2\"\n\n[dependencies]\ntrellis-rs = { path = \"../trellis\", version = \"0.8.2\" }\ntrellis-protocol = \"0.8.2\"\nserde = { version = \"1.0\" }\n";
         let updated = rewrite_cargo_manifest_versions(
