@@ -6,9 +6,9 @@
 - Plan baseline: 27f79d192204de9de78645b1006ceeccb59bf932
 - Actual implementation base SHA: 27f79d192204de9de78645b1006ceeccb59bf932
 - Current origin/main SHA: 27f79d192204de9de78645b1006ceeccb59bf932
-- Final implementation/tested SHA: (pending; feature branch tip)
+- Final implementation/tested SHA: 70136523d225139952d53a323bc904a40c3b573a (this commit adds only the PR/evidence update)
 - Branch and worktree path: `feat/public-rust-trellis-test` at `/home/abalmos/git/qlever/trellis-public-rust-test`
-- PR URL: (pending; not opened)
+- PR URL: https://github.com/oats-center/trellis/pull/1
 - Clean status output: (pending)
 - Compiler/Cargo/Deno versions: (recorded at handoff)
 
@@ -107,7 +107,7 @@
 - Other preexisting unrelated failures: none observed.
 
 ## Review state
-- State: IN PROGRESS (W0–W4 complete, W5 complete, W6 largely complete, W7 partial, W8 in progress)
+- State: READY FOR COORDINATOR REVIEW
 - Coordinator approval: NOT GRANTED
 - Approved head SHA: none
 - Approved main/base SHA: none
