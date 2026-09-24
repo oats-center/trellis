@@ -74,6 +74,19 @@ connection walkthroughs, and exact public signatures belong in:
 - public TypeScript jobs helpers belong on `@oatscenter/trellis` and
   `@oatscenter/trellis/service*`, not on a standalone jobs package
 
+## Public Rust Packages
+
+Exactly three Rust crates are intended for publication: `trellis-rs` (the
+curated facade for clients and services), `trellis-protocol` (canonical protocol
+objects), and `trellis-test` (the external live-test harness). Every other
+workspace crate is internal and marked `publish = false`.
+
+`trellis-test` orchestrates the released `trellis` and `trellis-server`
+executables out of process. Its only Trellis Cargo dependency is the published
+`trellis-rs` facade; it consumes a projected copy of the generated
+administration source rather than linking `trellis-runtime-apis`. It never links
+the runtime implementation.
+
 ## `@oatscenter/trellis`
 
 Canonical TypeScript entrypoint for contract-driven RPC, operation, event, and

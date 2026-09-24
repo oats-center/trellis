@@ -65,6 +65,14 @@ Check runs both discovered suites against real Trellis infrastructure. Focused
 local runs select tests through the native Rust and Deno test runners rather
 than a second registry or scheduler.
 
+The external `trellis-test` Rust harness follows the same process-based
+ownership for service repositories. It starts the released `trellis` and
+`trellis-server` executables out of process, chooses its loopback ports
+automatically, and drives real bootstrap, login, consent, and provisioning
+boundaries. The harness owns the infrastructure processes; the test owns the
+generated clients and service tasks it connects. Internal runtime crates stay
+unpublished: a service repository consumes only `trellis-rs` and `trellis-test`.
+
 ### Live Observation Timing Proof
 
 Live observation sessions have bounded deadlines (reservation, control,
