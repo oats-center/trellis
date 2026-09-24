@@ -129,17 +129,12 @@ impl PortLease {
 /// other failure must not be retried.
 pub(crate) fn is_port_conflict(diagnostics: &str, ports: &PortSet) -> bool {
     let lowered = diagnostics.to_ascii_lowercase();
-    let address_in_use = lowered.contains("address already in use")
+    lowered.contains("address already in use")
         || lowered.contains("addrinuse")
         || ports
             .all()
             .iter()
-            .any(|port| lowered.contains(&format!("port {port} is already in use")));
-    address_in_use
-        && ports
-            .all()
-            .iter()
-            .any(|port| diagnostics.contains(&port.to_string()))
+            .any(|port| lowered.contains(&format!("port {port} is already in use")))
 }
 
 /// A private per-attempt sandbox directory.
@@ -280,4 +275,80 @@ pub(crate) fn require_utf8_path(path: &Path, role: &str) -> Result<String, Trell
             format!("the {role} path is not representable as UTF-8"),
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn selected_ports() -> PortSet {
+        PortSet {
+            http: 53001,
+            nats: 53002,
+            monitor: 53003,
+            websocket: 53004,
+        }
+    }
+
+    #[test]
+    fn port_conflict_matches_only_selected_ports() {
+        let ports = selected_ports();
+        assert!(is_port_conflict(
+            "failed to bind the runtime HTTP listener: Address already in use (os error 98)",
+            &ports
+        ));
+        assert!(is_port_conflict("port 53002 is already in use", &ports));
+        assert!(!is_port_conflict("port 59999 is already in use", &ports));
+        assert!(!is_port_conflict("invalid configuration: missing field", &ports));
+    }
+
+    #[test]
+    fn port_lease_reserves_four_distinct_loopback_ports() {
+        let lease = PortLease::reserve().expect("reserve loopback ports");
+        let set = lease.ports().expect("read reserved ports");
+        let unique: std::collections::HashSet<u16> = set.all().into_iter().collect();
+        assert_eq!(unique.len(), 4);
+    }
+
+    #[test]
+    fn never_retention_removes_only_the_owned_sandbox() {
+        let parent = tempfile::tempdir().expect("temp dir");
+        let sibling = parent.path().join("preexisting-sibling");
+        std::fs::create_dir_all(&sibling).expect("create sibling");
+        let mut sandbox =
+            Sandbox::create(parent.path(), WorkdirRetention::Never).expect("create sandbox");
+        let root = sandbox.root().to_path_buf();
+        assert!(root.is_dir());
+        assert!(sandbox.cleanup().is_none());
+        assert!(!root.exists());
+        assert!(sibling.is_dir(), "a preexisting sibling must survive cleanup");
+    }
+
+    #[test]
+    fn always_retention_keeps_the_sandbox() {
+        let parent = tempfile::tempdir().expect("temp dir");
+        let mut sandbox =
+            Sandbox::create(parent.path(), WorkdirRetention::Always).expect("create sandbox");
+        let root = sandbox.root().to_path_buf();
+        assert!(sandbox.cleanup().is_none());
+        assert!(root.is_dir());
+    }
+
+    #[test]
+    fn on_failure_retention_keeps_a_failed_sandbox_and_removes_a_clean_one() {
+        let parent = tempfile::tempdir().expect("temp dir");
+
+        let mut failed =
+            Sandbox::create(parent.path(), WorkdirRetention::OnFailure).expect("create sandbox");
+        let failed_root = failed.root().to_path_buf();
+        failed.mark_failed();
+        assert!(failed.cleanup().is_none());
+        assert!(failed_root.is_dir());
+
+        let mut clean =
+            Sandbox::create(parent.path(), WorkdirRetention::OnFailure).expect("create sandbox");
+        let clean_root = clean.root().to_path_buf();
+        assert!(clean.cleanup().is_none());
+        assert!(!clean_root.exists());
+    }
 }
