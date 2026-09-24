@@ -419,7 +419,9 @@ jobs:
         run: cargo build --manifest-path Cargo.toml -p trellis-server -p trellis-cli
 
       - name: Acquire the pinned NATS executable
-        run: bash scripts/acquire-test-nats.sh --dest "$RUNNER_TEMP/nats"
+        # Stage under the user cache, not $RUNNER_TEMP: the server rejects a
+        # --local-nats binary whose parent directory is group/world writable.
+        run: bash scripts/acquire-test-nats.sh --dest "$HOME/.cache/trellis-test-nats"
 
       - name: Run Rust live integration
         env:
@@ -431,8 +433,8 @@ jobs:
         env:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
-          TRELLIS_TEST_NATS_BIN: ${{ runner.temp }}/nats/nats-server
         run: |
+          export TRELLIS_TEST_NATS_BIN="$HOME/.cache/trellis-test-nats/nats-server"
           cargo test \
             --manifest-path integration/fixtures/testkit/Cargo.toml \
             --config "patch.crates-io.trellis-protocol.path=\"$GITHUB_WORKSPACE/crates/protocol\"" \
