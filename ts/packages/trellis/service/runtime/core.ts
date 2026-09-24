@@ -2955,7 +2955,9 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                 !Number.isSafeInteger(Reflect.get(value, "ownerEpoch"))
               ) throw new Error("invalid reconciliation request");
               const reconcile = this.#operationReconciliation.get(ctx.subject);
-              if (!reconcile) throw new Error("operation handler is not registered");
+              if (!reconcile) {
+                throw new Error("operation handler is not registered");
+              }
               await reconcile(
                 Reflect.get(value, "operationId"),
                 Reflect.get(value, "ownerEpoch"),

@@ -1308,6 +1308,15 @@ mod nats_reply_permission_tests {
         }
         let cache = std::env::temp_dir().join("trellis-v2-nats-cache");
         std::fs::create_dir_all(&cache).expect("private nats cache dir");
+        // `create_dir_all` honors the process umask, but the resolver requires a
+        // private (0o700) cache root and rejects a group/world-accessible
+        // directory left behind by an earlier run.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o700))
+                .expect("private nats cache permissions");
+        }
         NatsServerBinary::resolve(&NatsBinarySource::DownloadPinned, Some(&cache))
             .expect("download pinned nats-server")
     }
