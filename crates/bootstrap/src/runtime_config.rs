@@ -2,9 +2,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use trellis_runtime::{
-    AuthConfig, AuthorizationConfig, ClientConfig, HttpConfig, LeasesConfig, LocalIdentityConfig,
-    NatsAuthCalloutConfig, NatsConfig, NatsRuntimeConfig, OAuthConfig, PlatformTtlConfig,
-    RuntimeConfig, StorageConfig, SubsystemConfig,
+    AuthConfig, AuthorizationConfig, ClientConfig, HttpConfig, LeasesConfig,
+    LiveProviderSeedFilesConfig, LocalIdentityConfig, NatsAuthCalloutConfig, NatsConfig,
+    NatsRuntimeConfig, OAuthConfig, PlatformTtlConfig, RuntimeConfig, StorageConfig,
+    SubsystemConfig,
 };
 
 use crate::types::TrellisBootstrapOptions;
@@ -31,7 +32,12 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
         instance_name: Some(options.runtime.name.clone()),
         event_session_seed_file: Some(PathBuf::from("./session.seed")),
         event_context_digest_file: None,
-        live_provider_seed_files: None,
+        live_provider_seed_files: Some(LiveProviderSeedFilesConfig {
+            platform: Some(PathBuf::from("./live-providers/platform.seed")),
+            health: Some(PathBuf::from("./live-providers/health.seed")),
+            jobs: Some(PathBuf::from("./live-providers/jobs.seed")),
+            events: Some(PathBuf::from("./live-providers/events.seed")),
+        }),
         paths: None,
         http: Some(HttpConfig {
             port: Some(options.runtime.trellis_port),

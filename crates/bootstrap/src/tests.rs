@@ -305,7 +305,6 @@ fn trellis_config_uses_expected_paths_urls_and_name() {
     assert!(config.contains("ttl_ms = 30000"));
     assert!(config.contains("renew_ms = 5000"));
     assert!(config.contains("redirect_base = \"https://trellis.example.test/auth/callback\""));
-    assert!(!config.contains("providers"));
     assert!(!config.contains("sessionKeySeedFile"));
     assert!(!config.contains("ADYAUTH"));
     assert!(!config.contains("ADYTRELLIS"));
@@ -321,6 +320,15 @@ fn trellis_config_uses_expected_paths_urls_and_name() {
         .expect("validate all mode");
     assert_eq!(parsed.instance_name.as_deref(), Some("Acme Trellis"));
     assert_eq!(parsed.http_port(), 4242);
+    assert!(
+        parsed
+            .oauth
+            .as_ref()
+            .expect("oauth config")
+            .providers
+            .is_empty(),
+        "no OAuth providers are configured by default"
+    );
     assert_eq!(
         parsed
             .auth
