@@ -914,9 +914,12 @@ type ManagedJobsFacade<
   [MANAGED_JOB_WORKERS]: ManagedJobWorkers;
 };
 
-type ServiceHandleOperationLeaf = (
-  handler: (context: unknown) => unknown,
-) => Promise<void>;
+type ServiceHandleOperationLeaf =
+  & ((handler: (context: unknown) => unknown) => Promise<void>)
+  & Pick<
+    RootOperationRegistration<unknown, unknown, unknown, undefined, BaseError>,
+    "control"
+  >;
 
 type ServiceHandleFacade = {
   readonly rpc: Record<
@@ -1072,28 +1075,47 @@ type OperationHandleFn<
   O extends keyof TOwnedApi["operations"] & string,
   TKv extends ParticipantKvMetadata,
   TJobs extends ParticipantJobsMetadata,
-> = (
-  handler: (
-    context:
-      & OperationHandlerContext<
-        InferSchemaType<TOwnedApi["operations"][O]["input"]>,
-        OperationProgressOf<TOwnedApi, O>,
-        OperationOutputOf<TOwnedApi, O>,
-        OperationTransferContextOf<TOwnedApi, O>,
-        OperationHandlerErrorOf<TOwnedApi, O>,
-        OperationUpdateOf<TOwnedApi, O>
-      >
-      & { client: Trellis<TTrellisApi, TKv, TJobs> },
-  ) => unknown | Promise<unknown>,
-) => Promise<void>;
+> =
+  & OperationControlRegistration<TOwnedApi, O>
+  & ((
+    handler: (
+      context:
+        & OperationHandlerContext<
+          InferSchemaType<TOwnedApi["operations"][O]["input"]>,
+          OperationProgressOf<TOwnedApi, O>,
+          OperationOutputOf<TOwnedApi, O>,
+          OperationTransferContextOf<TOwnedApi, O>,
+          OperationHandlerErrorOf<TOwnedApi, O>,
+          OperationUpdateOf<TOwnedApi, O>
+        >
+        & { client: Trellis<TTrellisApi, TKv, TJobs> },
+    ) => unknown | Promise<unknown>,
+  ) => Promise<void>);
 
+/** Owner-fenced control surface for an operation registered by this service. */
+export type OperationControlRegistration<
+  TOwnedApi extends RuntimeApi,
+  O extends keyof TOwnedApi["operations"] & string,
+> = Pick<
+  RootOperationRegistration<
+    InferSchemaType<TOwnedApi["operations"][O]["input"]>,
+    OperationProgressOf<TOwnedApi, O>,
+    OperationOutputOf<TOwnedApi, O>,
+    OperationTransferContextOf<TOwnedApi, O>,
+    OperationHandlerErrorOf<TOwnedApi, O>,
+    OperationUpdateOf<TOwnedApi, O>
+  >,
+  "control"
+>;
+
+/** Handler registration and owner-fenced control for a service operation. */
 export type OperationRegistration<
   TOwnedApi extends RuntimeApi,
   TTrellisApi extends RuntimeApi,
   O extends keyof TOwnedApi["operations"] & string,
   TKv extends ParticipantKvMetadata = ParticipantKvMetadata,
   TJobs extends ParticipantJobsMetadata = ParticipantJobsMetadata,
-> = {
+> = OperationControlRegistration<TOwnedApi, O> & {
   handle(
     handler: (
       args:
@@ -3184,13 +3206,16 @@ export class TrellisServiceSession<
       const registration = this.#operation(
         operationName as keyof TOwnedApi["operations"] & string,
       );
-      const leaf = ((handler: (context: unknown) => unknown) =>
-        registration.handle((context) =>
-          handler({
-            ...context,
-            client: this.#handlerTrellis,
-          })
-        )) as ServiceHandleOperationLeaf;
+      const leaf: ServiceHandleOperationLeaf = Object.assign(
+        (handler: (context: unknown) => unknown) =>
+          registration.handle((context) =>
+            handler({
+              ...context,
+              client: this.#handlerTrellis,
+            })
+          ),
+        { control: registration.control },
+      );
       addSurfaceLeaf(operation, operationName, leaf);
     }
 
@@ -3567,6 +3592,10 @@ export class TrellisServiceSession<
     >;
 
     return {
+      control: (operationId) =>
+        registration.control(operationId) as ReturnType<
+          OperationControlRegistration<TOwnedApi, O>["control"]
+        >,
       handle: (
         handler: (
           args:

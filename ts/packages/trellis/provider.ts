@@ -18,6 +18,7 @@ import type {
 import type {
   GeneratedServiceParticipant,
   LiveHandler,
+  OperationControlRegistration,
   OperationHandler,
   RpcHandler,
 } from "./service/runtime/service.ts";
@@ -76,7 +77,9 @@ type ProviderRegistrations<TContract extends GeneratedParticipant> =
       K in
         & keyof OwnedApi<TContract>["operations"]
         & string as `handle${PascalActionName<K>}`
-    ]: (handler: OperationHandler<ServiceContract<TContract>, K>) => unknown;
+    ]:
+      & ((handler: OperationHandler<ServiceContract<TContract>, K>) => unknown)
+      & OperationControlRegistration<OwnedApi<TContract>, K>;
   }
   & {
     readonly [

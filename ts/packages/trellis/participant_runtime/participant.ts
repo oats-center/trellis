@@ -96,11 +96,16 @@ type GeneratedDescriptorRuntime<T> = T extends
     output?: infer O;
     progress?: infer P;
   } ?
-      & OperationDesc<
-        GeneratedSchema<I>,
-        GeneratedSchema<P>,
-        GeneratedSchema<O>
+      & Omit<
+        OperationDesc<
+          GeneratedSchema<I>,
+          GeneratedSchema<P>,
+          GeneratedSchema<O>
+        >,
+        "update" | "runtimeErrors"
       >
+      & (T extends { update: infer U } ? { update: GeneratedSchema<U> } : {})
+      & (T extends { errors: infer E } ? { runtimeErrors: E } : {})
       & (T extends { upload: true } ? {
           transfer: { direction: "send" };
         }

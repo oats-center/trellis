@@ -230,7 +230,7 @@ try {
                 inspectionId: assignment.inspectionId,
                 reportComment: "packaged-consumer acceptance",
               }).start().orThrow();
-              await using observation = await operation.watch({}).orThrow();
+              await using observation = await operation.live({}).orThrow();
               const receipt = await observation.close().orThrow();
               assertEquals(
                 typeof receipt.cleanup,
