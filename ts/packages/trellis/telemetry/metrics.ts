@@ -514,6 +514,7 @@ export const TRELLIS_CATALOG_DURATIONS = [
   "trellis.job.submission.duration",
   "trellis.job.attempt.duration",
   "trellis.operation.execution.duration",
+  "trellis.operation.cancellation.cleanup.duration",
   "trellis.event.publish.duration",
   "trellis.event.process.duration",
   "trellis.projection.duration",
@@ -657,6 +658,7 @@ function catalogBoundaries(name: TrellisCatalogDuration): number[] {
   switch (name) {
     case "trellis.job.attempt.duration":
     case "trellis.operation.execution.duration":
+    case "trellis.operation.cancellation.cleanup.duration":
     case "trellis.event.process.duration":
     case "trellis.transfer.duration":
     case "trellis.cli.duration":

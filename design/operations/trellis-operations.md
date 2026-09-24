@@ -28,6 +28,14 @@ with persisted progress and unacknowledged signals. Side effects can repeat and
 are not transactionally rolled back; handlers use operation ID/resume context to
 make them idempotent.
 
+Service registrations expose an owner-fenced local `control(operationId)` for
+durable mutations. `reconcile(operationId)` instead routes to the current owner,
+checks the exact route and owner epoch, and re-enters the registered handler
+with stored input, verified caller, and persisted progress. A live lease is
+never stolen; expired leases use ordinary claim/recovery. Reconciliation
+serializes with that owner's execution and returns the latest durable snapshot.
+A provider instance cannot use `control` to borrow another instance's fence.
+
 Watch installs its owned durable-watch and optional executor-update
 subscriptions, then rereads the authoritative durable record so
 watch-before-read readiness is established before the first emitted snapshot. A
@@ -41,7 +49,16 @@ admission freezes, already admitted updates are emitted, then the terminal
 snapshot and normal END follow. Signals are persisted before acceptance and may
 repeat until handler acknowledgement. Cancellation is persisted; stale owners
 cannot complete after losing their fence. Typed updates are live-only and never
-replace durable progress.
+replace durable progress. A cancellation request remains nonterminal while the
+current handler cleans up; the owner continues renewing its lease and blocks
+further progress or completion. The handler observes cancellation (a Rust
+observer or TypeScript `AbortSignal`) and must cancel and join its
+side-effecting children before returning. Only then may the fenced owner persist
+`Cancelled` and return a terminal result to the caller. Stalled cleanup stays
+nonterminal without a forced timeout; interrupted cancellation is finalized on
+recovery without re-entering business logic. Owner loss notifies the old
+handler, but epoch fencing cannot prevent overlap of arbitrary external side
+effects after lease expiry. Cleanup duration is recorded as operation telemetry.
 
 The observer is independent of durable execution: its lifetime is bound to the
 live session, its authority follows the current observer guard rather than the

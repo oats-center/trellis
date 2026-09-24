@@ -19,6 +19,7 @@ import {
   Result,
 } from "@oatscenter/result";
 import { ulid } from "ulid";
+import { base64urlEncode, utf8 } from "../../auth/utils.ts";
 
 import { encodeSchema, type JsonValue, parseSchema } from "../../codec.ts";
 import {
@@ -417,6 +418,19 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
   #log: LoggerLike;
   #operations = new Map<string, RuntimeOperationRecord>();
   #activeOperationFences = new Map<string, RuntimeOperationFence>();
+  #runningOperationHandlers = new Set<string>();
+  #operationExecutions = new Map<string, Promise<void>>();
+  #operationReconciliation = new Map<
+    string,
+    (
+      operationId: string,
+      ownerEpoch?: number,
+    ) => Promise<RuntimeOperationSnapshot>
+  >();
+  #operationTransferSessions = new Map<
+    string,
+    RuntimeOperationTransferSession
+  >();
   #executionObservations = new Map<
     RuntimeOperationRecord,
     {
@@ -494,9 +508,14 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           event: { type: "failed" },
         }),
       cancel: (operationId) =>
-        this.#applyOwnedOperationUpdate(operationId, "cancelled", {
-          event: { type: "cancelled" },
-        }),
+        AsyncResult.from((async () => {
+          const runtime = await this.#resolveOperation(operationId);
+          const fence = this.#activeOperationFences.get(operationId);
+          if (!runtime || !fence) {
+            return err(this.#operationNotFoundError(operationId));
+          }
+          return await this.#requestOwnedOperationCancellation(runtime, fence);
+        })()),
       signals: (operationId) => this.#signals(operationId),
       nextSignal: (operationId, name) => this.#nextSignal(operationId, name),
     };
@@ -706,7 +725,10 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
   }
 
   #ownsOperation(
-    durable: DurableOperationRecord,
+    durable: Pick<
+      DurableOperationRecord,
+      "ownerInstanceId" | "ownerConnectionId" | "ownerEpoch" | "leaseExpiresAt"
+    >,
     fence: RuntimeOperationFence,
   ): boolean {
     return durable.ownerInstanceId === fence.ownerInstanceId &&
@@ -726,6 +748,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       active.ownerEpoch === fence.ownerEpoch
     ) {
       this.#activeOperationFences.delete(operationId);
+      this.#operationTransferSessions.delete(operationId);
     }
   }
 
@@ -853,6 +876,105 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     } finally {
       release?.();
     }
+  }
+
+  async #requestOperationCancellation(
+    runtime: RuntimeOperationRecord,
+  ): Promise<RuntimeOperationSnapshot> {
+    let current = runtime;
+    for (let retry = 0;; retry++) {
+      if (current.terminal) {
+        if (!current.cancelRequestedAt) {
+          throw this.#operationAlreadyTerminalError(current);
+        }
+        break;
+      }
+      if (current.cancelRequestedAt) break;
+      current.cancelRequestedAt = new Date().toISOString();
+      current.sequence += 1;
+      current.snapshot = buildRuntimeOperationSnapshot(
+        current,
+        current.snapshot.state,
+        { updatedAt: current.cancelRequestedAt },
+      );
+      try {
+        await this.saveOperationRecord(current);
+        recordCatalogCounter("trellis.operation.ownership.events", 1, {
+          "trellis.action": "control",
+          "trellis.outcome": "ok",
+        });
+        break;
+      } catch (cause) {
+        if (retry >= 3 || !isOperationRevisionConflict(cause)) throw cause;
+        const reloaded = await this.#resolveOperation(current.id);
+        if (!reloaded) throw cause;
+        current = reloaded;
+      }
+    }
+    current.cancellation.abort("operation cancelled");
+    const fence = this.#activeOperationFences.get(current.id);
+    if (fence) await this.#finalizeOperationCancellation(current, fence);
+    const durable = await this.loadOperationRecord(current.id);
+    if (!durable) throw this.#operationNotFoundError(current.id);
+    return durable.snapshot;
+  }
+
+  #requestOwnedOperationCancellation(
+    runtime: RuntimeOperationRecord,
+    fence: RuntimeOperationFence,
+  ): AsyncResult<RuntimeOperationSnapshot, BaseError> {
+    return AsyncResult.from((async () => {
+      const durable = await this.loadOperationRecord(runtime.id);
+      if (
+        !durable || this.#activeOperationFences.get(runtime.id) !== fence ||
+        !this.#ownsOperation(durable, fence)
+      ) return err(this.#operationNotFoundError(runtime.id));
+      try {
+        return ok(await this.#requestOperationCancellation(runtime));
+      } catch (cause) {
+        if (cause instanceof OperationAlreadyTerminalError) return err(cause);
+        return err(new UnexpectedError({ cause }));
+      }
+    })());
+  }
+
+  async #finalizeOperationCancellation(
+    runtime: RuntimeOperationRecord,
+    fence: RuntimeOperationFence,
+  ): Promise<void> {
+    await this.#queueOperationFrame(runtime, async () => {
+      if (this.#runningOperationHandlers.has(runtime.id)) return;
+      for (let retry = 0;; retry++) {
+        const durable = await this.loadOperationRecord(runtime.id);
+        if (
+          !durable || !this.#ownsOperation(durable, fence) ||
+          !durable.cancelRequestedAt ||
+          isTerminalRuntimeOperationSnapshot(durable.snapshot)
+        ) return;
+        runtime.revision = durable.revision;
+        runtime.cancelRequestedAt = durable.cancelRequestedAt;
+        runtime.sequence = durable.sequence + 1;
+        runtime.leaseExpiresAt = new Date(Date.now() + 30_000).toISOString();
+        runtime.snapshot = buildRuntimeOperationSnapshot(runtime, "cancelled", {
+          completedAt: new Date().toISOString(),
+        });
+        runtime.terminal = true;
+        try {
+          await this.saveOperationRecord(runtime);
+          recordCatalogDuration(
+            "trellis.operation.cancellation.cleanup.duration",
+            Math.max(0, Date.now() - Date.parse(durable.cancelRequestedAt)),
+            { "trellis.route": routeToken("operation", runtime.operation) },
+          );
+          this.#releaseOperationFence(runtime.id, fence);
+          this.#rejectSignalWaiters(runtime);
+          this.#executionObservations.get(runtime)?.finish("cancelled");
+          return;
+        } catch (cause) {
+          if (retry >= 3 || !isOperationRevisionConflict(cause)) throw cause;
+        }
+      }
+    });
   }
 
   #emitOperationUpdate(
@@ -1104,10 +1226,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           patch: { error: error.toSerializable() },
           event: { type: "failed" },
         }),
-      cancel: () =>
-        this.#applyControlledOperationUpdate(runtime, fence, ctx, "cancelled", {
-          event: { type: "cancelled" },
-        }),
+      cancel: () => this.#requestOwnedOperationCancellation(runtime, fence),
       attach: (job: { wait(): AsyncResult<unknown, BaseError> }) =>
         AsyncResult.from((async () => {
           const waited = await job.wait();
@@ -1656,55 +1775,32 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
 
         if (control.action === "cancel") {
           if (runtime.terminal) {
+            if (runtime.cancelRequestedAt) {
+              msg.respond(JSON.stringify({
+                kind: "snapshot",
+                snapshot: runtime.snapshot,
+              }));
+              continue;
+            }
             respondControlError(
               msg,
               this.#operationAlreadyTerminalError(runtime),
             );
             continue;
           }
-          try {
-            let current = runtime;
-            for (let retry = 0;; retry++) {
-              current.cancelRequestedAt = new Date().toISOString();
-              current.sequence += 1;
-              current.snapshot = buildRuntimeOperationSnapshot(
-                current,
-                "cancelled",
-                { completedAt: current.cancelRequestedAt },
+          void (async () => {
+            try {
+              const snapshot = await this.#requestOperationCancellation(
+                runtime,
               );
-              current.terminal = true;
-              try {
-                await this.saveOperationRecord(current);
-                recordCatalogCounter("trellis.operation.ownership.events", 1, {
-                  "trellis.action": "control",
-                  "trellis.outcome": "ok",
-                });
-                break;
-              } catch (cause) {
-                this.#operations.delete(current.id);
-                if (retry >= 3 || !isOperationRevisionConflict(cause)) {
-                  throw cause;
-                }
-                const reloaded = await this.#resolveOperation(current.id);
-                if (!reloaded || reloaded.terminal) throw cause;
-                current = reloaded;
-              }
+              msg.respond(JSON.stringify({
+                kind: "snapshot",
+                snapshot,
+              }));
+            } catch (cause) {
+              respondControlError(msg, new UnexpectedError({ cause }));
             }
-            const observation = this.#executionObservations.get(current);
-            if (
-              observation &&
-              observation.fence.ownerInstanceId === current.ownerInstanceId &&
-              observation.fence.ownerConnectionId ===
-                current.ownerConnectionId &&
-              observation.fence.ownerEpoch === current.ownerEpoch
-            ) observation.finish("cancelled");
-            current.cancellation.abort("operation cancelled");
-            msg.respond(
-              JSON.stringify({ kind: "snapshot", snapshot: current.snapshot }),
-            );
-          } catch (cause) {
-            respondControlError(msg, new UnexpectedError({ cause }));
-          }
+          })();
           continue;
         }
 
@@ -2095,6 +2191,23 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         this.#ensureOperationControlLoop(String(operation), ctx);
         return this.#controlOperation(String(operation), ctx, operationId);
       },
+      reconcile: (operationId) =>
+        AsyncResult.from((async () => {
+          const reconcile = this.#operationReconciliation.get(ctx.subject);
+          if (!reconcile) {
+            return err(
+              new UnexpectedError({
+                cause: new Error("operation handler is not registered"),
+              }),
+            );
+          }
+          try {
+            return ok(await reconcile(operationId));
+          } catch (cause) {
+            if (cause instanceof OperationNotFoundError) return err(cause);
+            return err(new UnexpectedError({ cause }));
+          }
+        })()),
       handle: async (
         handler: (
           context: OperationHandlerContext<
@@ -2318,7 +2431,9 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               });
             },
           };
-          const onAbort = () => observation.finish("lease_lost");
+          const onAbort = () => {
+            if (!runtime.cancelRequestedAt) observation.finish("lease_lost");
+          };
           if (!existingObservation) {
             this.#executionObservations.set(runtime, observation);
             recordCatalogUpDown("trellis.operation.active", 1, {
@@ -2332,6 +2447,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           const op = makeOperation(runtime, fence, operationContext);
           let deferred = false;
           let unfinishedOutcome: "interrupted" | "error" = "interrupted";
+          this.#runningOperationHandlers.add(runtime.id);
           try {
             const execution = otelContext.with(
               observation.attemptContext,
@@ -2420,7 +2536,17 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             }
           } finally {
             startSpan?.end();
-            if (!deferred) {
+            this.#runningOperationHandlers.delete(runtime.id);
+            if (runtime.cancelRequestedAt) {
+              try {
+                await this.#finalizeOperationCancellation(runtime, fence);
+              } catch (cause) {
+                recordOperationServiceError(cause, {
+                  operation: String(operation),
+                  phase: "cancellation_persist",
+                });
+              }
+            } else if (!deferred) {
               observation.finish(
                 runtime.cancellation.signal.aborted
                   ? "lease_lost"
@@ -2428,6 +2554,32 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               );
             }
           }
+        };
+
+        const scheduleHandler = (
+          ...args: Parameters<typeof executeHandler>
+        ): Promise<void> => {
+          const id = args[0].id;
+          const previous = this.#operationExecutions.get(id) ??
+            Promise.resolve();
+          const next = previous.catch(() => {}).then(() =>
+            executeHandler(...args)
+          );
+          this.#operationExecutions.set(id, next);
+          void next.then(() => {
+            if (this.#operationExecutions.get(id) === next) {
+              this.#operationExecutions.delete(id);
+            }
+          }, (cause) => {
+            if (this.#operationExecutions.get(id) === next) {
+              this.#operationExecutions.delete(id);
+            }
+            recordOperationServiceError(cause, {
+              operation: String(operation),
+              phase: "handler_execution",
+            });
+          });
+          return next;
         };
 
         const startLeaseHeartbeat = (
@@ -2445,7 +2597,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                 for (let retry = 0;; retry++) {
                   const durable = await this.loadOperationRecord(runtime.id);
                   if (
-                    !durable || durable.cancelRequestedAt ||
+                    !durable ||
                     durable.snapshot.state === "cancelled" ||
                     !this.#ownsOperation(durable, fence)
                   ) {
@@ -2510,6 +2662,16 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                   "operation cancelled or ownership lost",
                 );
                 clearInterval(cancellationWatch);
+              } else if (durable.cancelRequestedAt) {
+                runtime.cancelRequestedAt = durable.cancelRequestedAt;
+                runtime.cancellation.abort("operation cancelled");
+                void this.#finalizeOperationCancellation(runtime, fence).catch(
+                  (cause) =>
+                    recordOperationServiceError(cause, {
+                      operation: String(operation),
+                      phase: "cancellation_persist",
+                    }),
+                );
               }
             }).catch(() => {
               runtime.cancellation.abort("operation state unavailable");
@@ -2542,18 +2704,20 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             if (Value.Check(FileInfoSchema, committed)) {
               startLeaseHeartbeat(runtime, fence);
               watchCancellation(runtime, fence);
-              void executeHandler(
+              const transferSession = {
+                grant: runtime.transferGrant,
+                transfer: {
+                  updates: async function* () {},
+                  completed: () =>
+                    AsyncResult.from(Promise.resolve(ok(committed))),
+                },
+              };
+              this.#operationTransferSessions.set(runtime.id, transferSession);
+              void scheduleHandler(
                 runtime,
                 fence,
                 runtime.caller,
-                {
-                  grant: runtime.transferGrant,
-                  transfer: {
-                    updates: async function* () {},
-                    completed: () =>
-                      AsyncResult.from(Promise.resolve(ok(committed))),
-                  },
-                },
+                transferSession,
                 {},
                 true,
               );
@@ -2632,7 +2796,8 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               }
             })();
             watchCancellation(runtime, fence);
-            void executeHandler(
+            this.#operationTransferSessions.set(runtime.id, reopened);
+            void scheduleHandler(
               runtime,
               fence,
               runtime.caller,
@@ -2645,7 +2810,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           const fence = this.#operationFence(runtime);
           startLeaseHeartbeat(runtime, fence);
           watchCancellation(runtime, fence);
-          void executeHandler(
+          void scheduleHandler(
             runtime,
             fence,
             runtime.caller,
@@ -2654,6 +2819,156 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             true,
           );
         };
+        this.#operationReconciliation.set(
+          ctx.subject,
+          async (operationId, expectedEpoch) => {
+            for (let attempt = 0; attempt < 3; attempt++) {
+              let runtime = await this.#resolveOperation(operationId);
+              if (
+                !runtime ||
+                !this.#matchesOperationRoute(
+                  runtime,
+                  String(operation),
+                  ctx,
+                )
+              ) throw this.#operationNotFoundError(operationId);
+              if (runtime.terminal) return runtime.snapshot;
+              if (runtime.cancelRequestedAt) {
+                throw new Error("operation cancellation is in progress");
+              }
+              if (
+                expectedEpoch !== undefined &&
+                runtime.ownerEpoch !== expectedEpoch
+              ) {
+                throw new Error(
+                  "operation owner changed before reconciliation",
+                );
+              }
+              let recovered = false;
+              if (Date.parse(runtime.leaseExpiresAt) <= Date.now()) {
+                const durable = await this.loadOperationRecord(operationId);
+                if (!durable) throw this.#operationNotFoundError(operationId);
+                await recover(durable);
+                recovered = true;
+                runtime = await this.#resolveOperation(operationId);
+                if (!runtime) throw this.#operationNotFoundError(operationId);
+              }
+              const fence = this.#activeOperationFences.get(operationId);
+              if (
+                runtime.ownerInstanceId === this.#operationOwnerId &&
+                fence && this.#ownsOperation(runtime, fence)
+              ) {
+                if (recovered) {
+                  await this.#operationExecutions.get(operationId);
+                } else {
+                  const transfer = this.#operationTransferSessions.get(
+                    operationId,
+                  );
+                  if (runtime.transferGrant && !transfer) {
+                    throw new Error(
+                      "operation transfer is not ready for reconciliation",
+                    );
+                  }
+                  await scheduleHandler(
+                    runtime,
+                    fence,
+                    runtime.caller,
+                    transfer,
+                    {},
+                    true,
+                  );
+                }
+                const latest = await this.loadOperationRecord(operationId);
+                if (
+                  !latest || !this.#matchesOperationRoute(
+                    latest,
+                    String(operation),
+                    ctx,
+                  )
+                ) throw this.#operationNotFoundError(operationId);
+                return latest.snapshot;
+              }
+              if (expectedEpoch !== undefined) {
+                throw new Error("reconciliation reached a non-owner executor");
+              }
+              const subject = `${ctx.subject}.reconcile.${
+                base64urlEncode(utf8(runtime.ownerConnectionId))
+              }`;
+              try {
+                const reply = await this.#nats.request(
+                  subject,
+                  JSON.stringify({
+                    operationId,
+                    ownerEpoch: runtime.ownerEpoch,
+                  }),
+                  { timeout: 30_000 },
+                );
+                const frame: unknown = JSON.parse(
+                  new TextDecoder().decode(reply.data),
+                );
+                if (
+                  frame && typeof frame === "object" &&
+                  typeof Reflect.get(frame, "error") === "string"
+                ) throw new Error(Reflect.get(frame, "error"));
+                if (
+                  !frame || typeof frame !== "object" ||
+                  Reflect.get(frame, "kind") !== "reconciled"
+                ) throw new Error("invalid operation reconciliation response");
+                const latest = await this.loadOperationRecord(operationId);
+                if (
+                  !latest || !this.#matchesOperationRoute(
+                    latest,
+                    String(operation),
+                    ctx,
+                  )
+                ) throw this.#operationNotFoundError(operationId);
+                if (
+                  latest.ownerEpoch !== runtime.ownerEpoch ||
+                  latest.ownerConnectionId !== runtime.ownerConnectionId
+                ) continue;
+                return latest.snapshot;
+              } catch (cause) {
+                const latest = await this.loadOperationRecord(operationId);
+                if (
+                  latest?.ownerEpoch === runtime.ownerEpoch &&
+                  latest.ownerConnectionId === runtime.ownerConnectionId
+                ) throw cause;
+              }
+            }
+            throw new Error("operation owner changed during reconciliation");
+          },
+        );
+        const reconcileSub = this.#nats.subscribe(
+          `${ctx.subject}.reconcile.${
+            base64urlEncode(utf8(this.#operationConnectionId))
+          }`,
+        );
+        void (async () => {
+          for await (const message of reconcileSub) {
+            try {
+              const value: unknown = JSON.parse(
+                new TextDecoder().decode(message.data),
+              );
+              if (
+                !value || typeof value !== "object" ||
+                typeof Reflect.get(value, "operationId") !== "string" ||
+                !Number.isSafeInteger(Reflect.get(value, "ownerEpoch"))
+              ) throw new Error("invalid reconciliation request");
+              const reconcile = this.#operationReconciliation.get(ctx.subject);
+              if (!reconcile) throw new Error("operation handler is not registered");
+              await reconcile(
+                Reflect.get(value, "operationId"),
+                Reflect.get(value, "ownerEpoch"),
+              );
+              message.respond(JSON.stringify({ kind: "reconciled" }));
+            } catch (cause) {
+              message.respond(JSON.stringify({
+                error: cause instanceof Error ? cause.message : String(cause),
+              }));
+            }
+          }
+        })();
+        await this.#nats.flush();
         const recoverExpired = async () => {
           for (const durable of await this.listNonterminalOperationRecords()) {
             if (Date.parse(durable.leaseExpiresAt) <= Date.now()) {
@@ -3023,7 +3338,10 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             };
             msg.respond(JSON.stringify(accepted));
 
-            void executeHandler(
+            if (transferSession) {
+              this.#operationTransferSessions.set(runtime.id, transferSession);
+            }
+            void scheduleHandler(
               runtime,
               transferFence!,
               value.caller,

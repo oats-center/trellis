@@ -925,7 +925,15 @@ class RuntimeOperationRef<
     OperationSnapshot<TProgress, TOutput>,
     OperationControlError | UnexpectedError
   > {
-    return this.#controlSnapshot("cancel");
+    return AsyncResult.from((async () => {
+      for (;;) {
+        const snapshot = await this.#controlSnapshot("cancel").take();
+        if (isErr(snapshot)) return snapshot;
+        if (isTerminalState(snapshot.state)) return ok(snapshot);
+        // ponytail: poll through the same cancel grant; observing may require a separate grant.
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    })());
   }
 
   signal(

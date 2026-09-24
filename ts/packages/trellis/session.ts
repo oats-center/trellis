@@ -1019,6 +1019,7 @@ export type OperationRuntimeHandle<
   fail(
     error: TError,
   ): AsyncResult<RuntimeOperationSnapshot, BaseError>;
+  /** Durably requests cancellation; terminal state follows handler cleanup. */
   cancel(): AsyncResult<RuntimeOperationSnapshot, BaseError>;
   attach(
     job: { wait(): AsyncResult<unknown, BaseError> },
@@ -1116,9 +1117,9 @@ export type OperationHandlerContext<
   input: TInput;
   op: OperationRuntimeHandle<TProgress, TOutput, TError, TUpdate>;
   caller: SessionCaller;
-  /** Aborted when cancellation is committed or this executor loses ownership. */
+  /** Aborted when cancellation is requested or this executor loses ownership. */
   signal: AbortSignal;
-  /** Whether this handler invocation reclaimed an expired executor lease. */
+  /** Whether this handler resumes an earlier invocation or reconciles durable state. */
   resuming: boolean;
   /** Last durably persisted progress available to a resumed handler. */
   progress?: TProgress;
@@ -1141,6 +1142,10 @@ export type OperationRegistration<
     OperationRuntimeHandle<TProgress, TOutput, TError, TUpdate>,
     BaseError
   >;
+  /** Rerun the registered handler on its current owner with durable resume state. */
+  reconcile(
+    operationId: string,
+  ): AsyncResult<RuntimeOperationSnapshot, BaseError>;
   handle(
     handler: (
       context: OperationHandlerContext<

@@ -189,6 +189,14 @@ Opening or closing a watcher does not start, cancel, or complete the durable
 work. Operation get, watch, signal, and cancel remain authorized to the creator
 principal plus participant, not a particular session or connection, so reconnect
 can resume control. Completed, failed, and cancelled records are immutable.
+Generated TypeScript service operation registrations expose the typed local
+owner-fenced `.control(id)` and owner-routed `.reconcile(id)`. Reconciliation
+serializes handler re-entry on the current owner with persisted input, verified
+caller, and progress; it never steals a live lease. Cancellation remains
+nonterminal during handler cleanup and owner lease renewal. `Cancelled` is
+persisted only after the handler joins its owned side-effecting children; a
+stalled cleanup has no forced terminal timeout. After owner loss, epoch fencing
+does not prevent arbitrary external side effects from overlapping.
 
 Keyed Jobs waiting for an active capacity slot maintain the current delivery and
 do not consume a retry attempt before handler entry. `Jobs.Summary` computes all

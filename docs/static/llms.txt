@@ -68,7 +68,14 @@ silently dropped, while not-yet-delivered nonterminal snapshots may be conflated
 Opening or closing a watcher never starts, cancels, or completes the durable
 work, and a transport interruption surfaces as an observation error rather than
 an invented terminal business state. Jobs are service-private; keyed
-capacity waits do not consume attempts. Job deadlines are creation-relative;
+capacity waits do not consume attempts.
+Service operation registrations expose local owner-fenced `control(id)` and
+owner-routed `reconcile(id)`, which re-enters the handler with persisted input,
+caller, and progress. A cancellation request stays nonterminal while the owner
+renews its lease and joins handler cleanup; only then is `Cancelled` persisted.
+Stalled cleanup has no forced terminal timeout, and external side effects may
+overlap across owner loss.
+Job deadlines are creation-relative;
 retry defaults to five deliveries delayed by 5s, 30s, 2m, and 10m. Jobs Summary
 is independent of Query pages. Capability approval is not an exact grant. Resource commitments are
 approvals; desired capacities are hints, while observed bindings are the usable

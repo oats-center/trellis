@@ -260,6 +260,8 @@ fn compile_provider_action(
             subscribe.insert(format!("{subject}.control"));
             subscribe.insert(format!("{subject}.updates.*"));
             publish.insert(format!("{subject}.updates.*"));
+            subscribe.insert(format!("{subject}.reconcile.{own_token}"));
+            publish.insert(format!("{subject}.reconcile.*"));
             // The observer replica answers owner-directed live controls and
             // publishes its signed frames over the live delivery family.
             subscribe.insert(format!("{subject}.observe.{own_token}.*"));
@@ -685,6 +687,7 @@ mod tests {
                 subject.clone(),
                 format!("{subject}.control"),
                 format!("{subject}.updates.*"),
+                format!("{subject}.reconcile.{own_token}"),
                 format!("{subject}.observe.{own_token}.*"),
                 "transfer.v1.upload.session-prefix.*".to_owned(),
             ])
@@ -695,6 +698,7 @@ mod tests {
             publish,
             BTreeSet::from([
                 format!("{subject}.updates.*"),
+                format!("{subject}.reconcile.*"),
                 format!("live.v1.data.{own_token}.*.*"),
             ])
         );

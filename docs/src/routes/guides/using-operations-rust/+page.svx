@@ -16,3 +16,15 @@ Execution is restartable and at least once. Executor leases fence writes, and a
 replica may resume after owner loss. Arbitrary business side effects are not
 exactly once. Interrupted uploads restart from byte zero; committed staged bytes
 survive executor replacement.
+
+Rust operation handlers can clone `control.cancellation()` and observe its
+`Requested`, `OwnershipLost`, or `ServiceStopping` reason with `reason()`,
+`is_cancelled()`, or `cancelled().await`. On request, cancel and join owned
+side-effecting work—including `spawn_blocking` closures—before the handler
+returns. Dropping an async join handle does not stop an already-running
+blocking closure. The owner keeps renewing its lease and leaves the durable
+snapshot nonterminal while cleanup runs; a caller's `cancel()` returns terminal
+`Cancelled` only after cleanup and the fenced terminal write. An interrupted
+requested cancellation is finalized on recovery without running the business
+handler again. Epoch fencing cannot stop arbitrary external work after owner
+loss; use idempotency or external fencing where overlap matters.

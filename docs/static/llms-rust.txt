@@ -105,6 +105,15 @@ transient updates and terminal state; not-yet-delivered nonterminal snapshots ma
 be conflated, but transient updates are not silently dropped. Opening or closing
 a watcher never starts, cancels, or completes the durable work. Completed,
 failed, and cancelled records are immutable.
+Rust operation handlers can clone `control.cancellation()` and observe
+`Requested`, `OwnershipLost`, or `ServiceStopping` with `is_cancelled()`,
+`reason()`, or `cancelled().await`. They must stop and join owned child work,
+including already-running `spawn_blocking` closures, before returning from
+requested cancellation. A healthy owner renews its lease and leaves cancellation
+nonterminal while cleanup runs; the caller's `cancel()` resolves terminal
+`Cancelled` only after cleanup and the fenced write. Interrupted cancellation
+recovers without re-entering business work. External effects may still overlap
+across owner loss; use idempotency or external fencing.
 
 Live observations and Operation watchers are authorized live sessions negotiated with
 bounded opening requests. The provider signs its offer and frames; control

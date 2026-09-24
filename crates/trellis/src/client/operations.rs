@@ -646,18 +646,26 @@ where
             "action": "cancel",
             "operationId": self.id(),
         });
-        let response = self
-            .transport
-            .request_json_value(
-                control_subject(&self.transport.operation_subject(
-                    D::API_ID,
-                    D::KEY,
-                    D::SUBJECT,
-                )?),
-                body,
-            )
-            .await?;
-        decode_snapshot_response::<D>(response)
+        let subject = control_subject(&self.transport.operation_subject(
+            D::API_ID,
+            D::KEY,
+            D::SUBJECT,
+        )?);
+        loop {
+            let response = self
+                .transport
+                .request_json_value(subject.clone(), body.clone())
+                .await?;
+            let snapshot = decode_snapshot_response::<D>(response)?;
+            if matches!(
+                snapshot.state,
+                OperationState::Completed | OperationState::Failed | OperationState::Cancelled
+            ) {
+                return Ok(snapshot);
+            }
+            // ponytail: retry with cancel authority; observe is a separate grant.
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
     }
 
     /// Send a control signal to the running operation.

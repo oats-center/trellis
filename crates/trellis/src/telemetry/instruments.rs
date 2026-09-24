@@ -126,6 +126,8 @@ pub enum DurationFamily {
     JobAttempt,
     /// One acquired operation execution lifetime.
     OperationExecution,
+    /// Time from observing cancellation until the owned handler has finished cleanup.
+    OperationCancellationCleanup,
     /// One durable event publication.
     EventPublish,
     /// One consumer delivery attempt.
@@ -163,6 +165,7 @@ impl DurationFamily {
             Self::JobSubmission => "trellis.job.submission.duration",
             Self::JobAttempt => "trellis.job.attempt.duration",
             Self::OperationExecution => "trellis.operation.execution.duration",
+            Self::OperationCancellationCleanup => "trellis.operation.cancellation.cleanup.duration",
             Self::EventPublish => "trellis.event.publish.duration",
             Self::EventProcess => "trellis.event.process.duration",
             Self::Projection => "trellis.projection.duration",
@@ -182,6 +185,7 @@ impl DurationFamily {
         match self {
             Self::JobAttempt
             | Self::OperationExecution
+            | Self::OperationCancellationCleanup
             | Self::EventProcess
             | Self::Transfer
             | Self::Cli

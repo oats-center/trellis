@@ -652,6 +652,7 @@ Deno.test("generated runtime workflows", async (t) => {
     let nextFeedId = 0;
     const cancellationObserved = Promise.withResolvers<void>();
     const lateCompletionRejected = Promise.withResolvers<boolean>();
+    const cancellationCleanup = Promise.withResolvers<void>();
     let serviceExit: Promise<unknown> | undefined;
     try {
       await service.handleEcho(({ input }) => Result.ok(input));
@@ -673,6 +674,7 @@ Deno.test("generated runtime workflows", async (t) => {
           lateCompletionRejected.resolve(
             (await op.complete({ value: "too late" })).isErr(),
           );
+          await cancellationCleanup.promise;
           return op.defer();
         }
         return await op.complete({ value: `completed ${input.value}` })
@@ -742,9 +744,12 @@ Deno.test("generated runtime workflows", async (t) => {
           await runtime.waitFor(async () =>
             (await operation.get().orThrow()).state === "running"
           );
-          assertEquals((await operation.cancel().orThrow()).state, "cancelled");
+          const cancellation = operation.cancel().orThrow();
           await cancellationObserved.promise;
           assert(await lateCompletionRejected.promise);
+          assertEquals((await operation.get().orThrow()).state, "running");
+          cancellationCleanup.resolve();
+          assertEquals((await cancellation).state, "cancelled");
           assertEquals((await operation.get().orThrow()).state, "cancelled");
         },
       );

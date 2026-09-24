@@ -179,6 +179,7 @@ type ProviderService = {
         & {
           accept?: (args: unknown) => unknown;
           control?: (operationId: string) => unknown;
+          reconcile?: (operationId: string) => unknown;
         }
       >
     >
@@ -290,6 +291,9 @@ export function createProviderRuntime<
     provider[`handle${pascalSurfaceName(name)}`] = Object.assign(expose, {
       ...(register.accept ? { accept: register.accept.bind(register) } : {}),
       ...(register.control ? { control: register.control.bind(register) } : {}),
+      ...(register.reconcile
+        ? { reconcile: register.reconcile.bind(register) }
+        : {}),
     });
   }
   for (

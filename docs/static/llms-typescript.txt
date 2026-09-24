@@ -144,6 +144,14 @@ Get, watch, signal, and cancel remain bound to the creator principal and
 participant across reconnects. Completed, failed, and cancelled states cannot be
 changed. Transfer-capable invocations return a transfer-aware result; consult
 its generated type rather than assuming the ordinary operation result shape.
+The generated `service.handleReportsGenerate.control(id)` returns a typed
+owner-fenced local handle; non-owners cannot borrow the fence. Use
+`service.handleReportsGenerate.reconcile(id)` from another service replica to
+ask the current owner to re-enter the handler with stored input, caller, and
+durable progress. The handler's `signal` aborts on cancellation or ownership
+loss; await cleanup of side-effecting children before returning. Caller
+`operation.cancel()` returns terminal `Cancelled` only after this cleanup and
+the fenced terminal write. Stalled cleanup remains nonterminal and lease-renewed.
 
 Private queues are available as `service.jobs.<queue>`. Register handlers with
 `handle(...)`, create work with `create(...)`, and observe the returned job

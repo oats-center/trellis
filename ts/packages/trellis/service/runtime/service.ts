@@ -918,7 +918,7 @@ type ServiceHandleOperationLeaf =
   & ((handler: (context: unknown) => unknown) => Promise<void>)
   & Pick<
     RootOperationRegistration<unknown, unknown, unknown, undefined, BaseError>,
-    "control"
+    "control" | "reconcile"
   >;
 
 type ServiceHandleFacade = {
@@ -1092,7 +1092,7 @@ type OperationHandleFn<
     ) => unknown | Promise<unknown>,
   ) => Promise<void>);
 
-/** Owner-fenced control surface for an operation registered by this service. */
+/** Owner-fenced control and owner-routed reconciliation for a service operation. */
 export type OperationControlRegistration<
   TOwnedApi extends RuntimeApi,
   O extends keyof TOwnedApi["operations"] & string,
@@ -1105,7 +1105,7 @@ export type OperationControlRegistration<
     OperationHandlerErrorOf<TOwnedApi, O>,
     OperationUpdateOf<TOwnedApi, O>
   >,
-  "control"
+  "control" | "reconcile"
 >;
 
 /** Handler registration and owner-fenced control for a service operation. */
@@ -3214,7 +3214,7 @@ export class TrellisServiceSession<
               client: this.#handlerTrellis,
             })
           ),
-        { control: registration.control },
+        { control: registration.control, reconcile: registration.reconcile },
       );
       addSurfaceLeaf(operation, operationName, leaf);
     }
@@ -3596,6 +3596,7 @@ export class TrellisServiceSession<
         registration.control(operationId) as ReturnType<
           OperationControlRegistration<TOwnedApi, O>["control"]
         >,
+      reconcile: (operationId) => registration.reconcile(operationId),
       handle: (
         handler: (
           args:

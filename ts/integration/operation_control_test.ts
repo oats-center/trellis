@@ -88,3 +88,66 @@ Deno.test("generated operation control requires the local owner fence", async ()
     }
   });
 });
+
+Deno.test("generated reconciliation routes to the fenced owner", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const firstIdentity = await runtime.registerService({
+      name: "operation-reconciliation-replicas",
+      contract: participants.Provider.participant,
+    });
+    const secondIdentity = await runtime.services.createInstance({
+      name: "operation-reconciliation-replica-b",
+      contract: participants.Provider.participant,
+    });
+    const services = await Promise.all(
+      [firstIdentity, secondIdentity].map((identity) =>
+        TrellisService.connect({
+          trellisUrl: runtime.trellisUrl,
+          participant: participants.Provider.participant,
+          name: "operation-reconciliation-replicas",
+          seed: identity.seed,
+        }).orThrow()
+      ),
+    );
+    const initial = Promise.withResolvers<number>();
+    let executions = 0;
+    for (const [index, service] of services.entries()) {
+      await service.handleWork(async ({ input, op }) => {
+        if (++executions === 1) {
+          await op.started().orThrow();
+          initial.resolve(index);
+          return op.defer();
+        }
+        assertEquals(input.value, "reconcile");
+        return await op.complete({ value: input.value }).orThrow();
+      });
+    }
+    const client = await runtime.connectClient({
+      name: "operation-reconciliation-caller",
+      contract: participants.Caller.participant,
+    });
+    try {
+      const operation = await client.work({ value: "reconcile" }).start()
+        .orThrow();
+      const owner = await initial.promise;
+      const other = 1 - owner;
+      const nonlocal = await services[other].handleWork.control(operation.id);
+      assert(nonlocal.isErr());
+      assert(nonlocal.error instanceof OperationNotFoundError);
+      const absent = await services[other].handleWork.reconcile(
+        "missing-operation",
+      );
+      assert(absent.isErr());
+      assert(absent.error instanceof OperationNotFoundError);
+      const result = await services[other].handleWork.reconcile(operation.id)
+        .orThrow();
+      assertEquals(result.state, "completed");
+      assertEquals(executions, 2);
+      assertEquals((await operation.wait().orThrow()).state, "completed");
+    } finally {
+      await client.connection.close();
+      await Promise.all(services.map((service) => service.stop()));
+      await Promise.all(services.map((service) => service.wait()));
+    }
+  });
+});

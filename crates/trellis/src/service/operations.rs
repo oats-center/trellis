@@ -400,7 +400,7 @@ where
         )
     }
 
-    /// Cancel an operation id and return the resulting snapshot.
+    /// Request cancellation and acknowledge its durable snapshot; callers wait for cleanup.
     fn cancel(
         &self,
         _context: RequestContext,
@@ -626,6 +626,7 @@ where
             };
             // One telemetry-only terminal witness for this acquired execution.
             let witness = Arc::new(TerminalWitness::default());
+            let (cancel_sender, cancel_receiver) = tokio::sync::watch::channel(None);
             let control = OperationControl {
                 operation_ref: OperationRefData {
                     id: claimed.record.invocation_id.clone(),
@@ -642,6 +643,9 @@ where
                 publisher,
                 update_subject,
                 next_update_sequence,
+                cancellation: OperationCancellation {
+                    receiver: cancel_receiver,
+                },
                 _descriptor: PhantomData,
             };
             // One acquired execution observation; it ends with the attempt's
@@ -673,6 +677,7 @@ where
             let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(10));
             heartbeat.tick().await;
             let mut execution = Box::pin(handler(context, input, control));
+            let mut cancellation_started = None;
             let outcome = loop {
                 tokio::select! {
                     result = &mut execution => {
@@ -687,7 +692,7 @@ where
                         // fenced mutation, never the handler's return value: a
                         // handler that returns Ok(()) without a committed
                         // terminal snapshot is not a completed operation.
-                        let durable = if cancellation_requested {
+                        let mut durable = if cancellation_requested {
                             match finalize_cancellation::<D>(
                                 &repository,
                                 &fence,
@@ -736,38 +741,65 @@ where
                             // makes it a completed/failed/cancelled outcome.
                             witness.get().unwrap_or("interrupted")
                         };
+                        // Cancellation may commit between the read above and a
+                        // competing handler failure write. The handler has now
+                        // returned, so finish that request under the same fence.
+                        if witness.get().is_none()
+                            && repository
+                                .get(&claimed.record.invocation_id)
+                                .await
+                                .ok()
+                                .flatten()
+                                .is_some_and(|current| current.record.cancellation_requested)
+                        {
+                            durable = match finalize_cancellation::<D>(
+                                &repository,
+                                &fence,
+                                &mutation_gate,
+                                &claimed.record.invocation_id,
+                                Some(&witness),
+                            )
+                            .await
+                            {
+                                Ok(_) => witness.get().unwrap_or("interrupted"),
+                                Err(error) => {
+                                    tracing::warn!(%error, "operation cancellation persistence failed");
+                                    "error"
+                                }
+                            };
+                        }
+                        if durable == "cancelled" {
+                            crate::telemetry::instruments::record_family_duration(
+                                crate::telemetry::instruments::DurationFamily::OperationCancellationCleanup,
+                                cancellation_started.unwrap_or_else(std::time::Instant::now).elapsed(),
+                                &[crate::telemetry::KeyValue::new("trellis.route", route)],
+                            );
+                        }
                         break durable;
                     }
                     changed = cancellation.next() => {
                         match changed {
-                            Some(Ok(current)) if current.record.cancellation_requested => {
-                                drop(execution);
-                                match finalize_cancellation::<D>(
-                                    &repository,
-                                    &fence,
-                                    &mutation_gate,
-                                    &claimed.record.invocation_id,
-                                    Some(&witness),
-                                )
-                                .await
-                                {
-                                    // A rejected or failed write is not a
-                                    // cancellation; the persisted terminal
-                                    // state is its actual outcome.
-                                    Ok(_) => break witness.get().unwrap_or("interrupted"),
-                                    Err(error) => {
-                                        tracing::warn!(%error, "operation cancellation persistence failed");
-                                        break "error";
-                                    }
-                                }
+                            Some(Ok(current)) if !fence.matches(&current.record) => {
+                                cancel_sender.send_replace(Some(OperationCancellationReason::OwnershipLost));
+                                let _ = execution.await;
+                                break "lease_lost";
                             }
-                            Some(Ok(current)) if fence.matches(&current.record) => {}
-                            Some(Ok(_)) => break "lease_lost",
+                            Some(Ok(current)) if current.record.cancellation_requested => {
+                                cancellation_started.get_or_insert_with(std::time::Instant::now);
+                                cancel_sender.send_replace(Some(OperationCancellationReason::Requested));
+                            }
+                            Some(Ok(_)) => {}
                             Some(Err(error)) => {
+                                cancel_sender.send_replace(Some(OperationCancellationReason::ServiceStopping));
                                 tracing::warn!(%error, "operation cancellation watch failed");
+                                let _ = execution.await;
                                 break "error";
                             }
-                            None => break "interrupted",
+                            None => {
+                                cancel_sender.send_replace(Some(OperationCancellationReason::ServiceStopping));
+                                let _ = execution.await;
+                                break "interrupted";
+                            }
                         }
                     }
                     _ = heartbeat.tick() => {
@@ -776,6 +808,8 @@ where
                         let renewed = repository.renew(&claimed.record.invocation_id, &fence.executor_id, fence.owner_epoch, now, now + 30_000).await;
                         record_ownership_event("renew", renewed.is_ok());
                         if renewed.is_err() {
+                            cancel_sender.send_replace(Some(OperationCancellationReason::OwnershipLost));
+                            let _ = execution.await;
                             break "lease_lost";
                         }
                     }
@@ -1844,28 +1878,26 @@ where
                 PermissionAction::Cancel,
             )?;
             if current.record.snapshot.state.is_terminal() {
+                if current.record.cancellation_requested {
+                    return typed_snapshot(current.record.snapshot);
+                }
                 return Err(operation_terminal_error(&current.record));
             }
-            let mut watch = repository.watch(&operation_id).await?;
             let mut record = current.record;
             if !record.cancellation_requested {
                 record.revision += 1;
                 record.cancellation_requested = true;
                 record.snapshot.updated_at = Some(now_timestamp());
-                repository
-                    .compare_record_exchange(current.revision, record)
-                    .await?;
+                record.snapshot.revision = record.revision;
+                return typed_snapshot(
+                    repository
+                        .compare_record_exchange(current.revision, record)
+                        .await?
+                        .record
+                        .snapshot,
+                );
             }
-            drop(_guard);
-            while let Some(current) = watch.next().await {
-                let snapshot = current?.record.snapshot;
-                if snapshot.state.is_terminal() {
-                    return typed_snapshot(snapshot);
-                }
-            }
-            Err(ServerError::Nats(
-                "operation cancellation watch closed before terminal state".to_owned(),
-            ))
+            typed_snapshot(record.snapshot)
         })
     }
 
@@ -1986,6 +2018,48 @@ struct OperationUpdateEnvelope {
     update: Value,
 }
 
+/// Why a running operation should stop accepting work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationCancellationReason {
+    /// The caller requested cancellation; finish owned child work before returning.
+    Requested,
+    /// Another executor owns the lease; the old handler cannot mutate Trellis state.
+    OwnershipLost,
+    /// The service can no longer observe the operation's durable state.
+    ServiceStopping,
+}
+
+/// Read-only cooperative cancellation observer for an operation handler and its child work.
+#[derive(Debug, Clone)]
+pub struct OperationCancellation {
+    receiver: tokio::sync::watch::Receiver<Option<OperationCancellationReason>>,
+}
+
+impl OperationCancellation {
+    /// Whether cancellation or ownership loss has been observed.
+    pub fn is_cancelled(&self) -> bool {
+        self.reason().is_some()
+    }
+
+    /// Return the reason, if cancellation has been observed.
+    pub fn reason(&self) -> Option<OperationCancellationReason> {
+        *self.receiver.borrow()
+    }
+
+    /// Wait without losing a notification between checking and subscribing.
+    pub async fn cancelled(&self) -> OperationCancellationReason {
+        let mut receiver = self.receiver.clone();
+        loop {
+            if let Some(reason) = *receiver.borrow_and_update() {
+                return reason;
+            }
+            if receiver.changed().await.is_err() {
+                return OperationCancellationReason::ServiceStopping;
+            }
+        }
+    }
+}
+
 /// Typed service-owned operation lifecycle control handle.
 pub struct OperationControl<D>
 where
@@ -1997,6 +2071,7 @@ where
     publisher: Option<Arc<crate::client::TrellisClient>>,
     update_subject: String,
     next_update_sequence: Arc<AtomicU64>,
+    cancellation: OperationCancellation,
     _descriptor: PhantomData<fn() -> D>,
 }
 
@@ -2196,6 +2271,11 @@ where
     D::Progress: Serialize + DeserializeOwned + Send + 'static,
     D::Output: Serialize + DeserializeOwned + Send + 'static,
 {
+    /// Return a read-only observer that child work can clone and join before the handler returns.
+    pub fn cancellation(&self) -> OperationCancellation {
+        self.cancellation.clone()
+    }
+
     /// Return the runtime-owned committed upload associated with this invocation.
     pub async fn upload(&self) -> Result<Option<FileTransferInfo>, ServerError> {
         let record = self
@@ -2905,6 +2985,33 @@ mod tests {
         }
     }
 
+    fn context(request_id: &str, action: PermissionAction, signal: Option<&str>) -> RequestContext {
+        RequestContext {
+            request_id: Some(request_id.to_owned()),
+            required_permission: Some(super::super::RoutePermission {
+                api: TestOperation::API_ID.to_owned(),
+                surface: ApiSurfaceKind::Operation,
+                name: TestOperation::KEY.to_owned(),
+                action,
+                signal: signal.map(str::to_owned),
+            }),
+            caller: Some(VerifiedCaller {
+                session_key: "session".to_owned(),
+                inbox_prefix: "_INBOX".to_owned(),
+                context_digest: "digest".to_owned(),
+                connection_id: "connection".to_owned(),
+                login_session_id: None,
+                principal_id: "principal".to_owned(),
+                principal_kind: trellis_protocol::AuthorizationPrincipalKind::User,
+                participant_id: "participant".to_owned(),
+                platform_privileges: Vec::new(),
+                deployment_id: None,
+                instance_id: None,
+            }),
+            ..RequestContext::default()
+        }
+    }
+
     async fn control(
         repository: KvOperationRepository,
         nats: async_nats::Client,
@@ -2936,6 +3043,9 @@ mod tests {
             publisher: None,
             update_subject: operation_update_subject::<TestOperation>("deployment", id),
             next_update_sequence: Arc::new(AtomicU64::new(1)),
+            cancellation: OperationCancellation {
+                receiver: tokio::sync::watch::channel(None).1,
+            },
             _descriptor: PhantomData,
         }
     }
@@ -3178,32 +3288,6 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(survived.record.owner_epoch, 2);
-        let context =
-            |request_id: &str, action: PermissionAction, signal: Option<&str>| RequestContext {
-                request_id: Some(request_id.to_owned()),
-                required_permission: Some(super::super::RoutePermission {
-                    api: TestOperation::API_ID.to_owned(),
-                    surface: ApiSurfaceKind::Operation,
-                    name: TestOperation::KEY.to_owned(),
-                    action,
-                    signal: signal.map(str::to_owned),
-                }),
-                caller: Some(VerifiedCaller {
-                    session_key: "session".to_owned(),
-                    inbox_prefix: "_INBOX".to_owned(),
-                    context_digest: "digest".to_owned(),
-                    connection_id: "connection".to_owned(),
-                    login_session_id: None,
-                    principal_id: "principal".to_owned(),
-                    principal_kind: trellis_protocol::AuthorizationPrincipalKind::User,
-                    participant_id: "participant".to_owned(),
-                    platform_privileges: Vec::new(),
-                    deployment_id: None,
-                    instance_id: None,
-                }),
-                ..RequestContext::default()
-            };
-
         let other_api_id = ulid::Ulid::new().to_string();
         repository
             .create(operation(
@@ -3353,9 +3437,7 @@ mod tests {
             context("expired-owner-cancel", PermissionAction::Cancel, None),
             expired_cancel_id.clone(),
         );
-        let cancel_result =
-            tokio::time::timeout(std::time::Duration::from_millis(100), cancel_result).await;
-        assert!(cancel_result.is_err());
+        assert!(!cancel_result.await.unwrap().state.is_terminal());
         let expired_cancel = repository.get(&expired_cancel_id).await.unwrap().unwrap();
         assert_eq!(
             expired_cancel.record.owner_executor_id.as_deref(),
@@ -3380,13 +3462,17 @@ mod tests {
                 staging: staging.clone(),
                 validator: Allow,
             },
-            move |_context, _input, _control| {
+            move |_context, _input, control: OperationControl<TestOperation>| {
                 let started = Arc::clone(&started);
                 let stopped = Arc::clone(&stopped);
                 async move {
                     let _drop = HandlerDrop(stopped);
                     started.notify_one();
-                    std::future::pending::<Result<(), ServerError>>().await
+                    assert_eq!(
+                        control.cancellation().cancelled().await,
+                        OperationCancellationReason::Requested
+                    );
+                    Ok(())
                 }
             },
         );
@@ -3429,7 +3515,18 @@ mod tests {
             ),
             observe_cancellation,
         );
-        assert_eq!(cancelled.unwrap().state, OperationState::Cancelled);
+        assert!(!cancelled.unwrap().state.is_terminal());
+        assert_eq!(
+            repository
+                .get(&handler_cancel_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .record
+                .snapshot
+                .state,
+            OperationState::Cancelled
+        );
         assert!(handler_stopped.load(Ordering::SeqCst));
 
         let (control_tx, mut control_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -3447,12 +3544,17 @@ mod tests {
                 staging: staging.clone(),
                 validator: Allow,
             },
-            move |_context, _input, control| {
+            move |_context, _input, control: OperationControl<TestOperation>| {
+                let cancellation = control.cancellation();
                 control_tx.send(control).unwrap();
                 let stopped = Arc::clone(&stopped);
                 async move {
                     let _drop = HandlerDrop(stopped);
-                    std::future::pending::<Result<(), ServerError>>().await
+                    assert_eq!(
+                        cancellation.cancelled().await,
+                        OperationCancellationReason::OwnershipLost
+                    );
+                    Ok(())
                 }
             },
         );
@@ -3714,11 +3816,7 @@ mod tests {
             context("cancel-request", PermissionAction::Cancel, None),
             cancel_id.clone(),
         );
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), pending_cancel)
-                .await
-                .is_err()
-        );
+        assert_eq!(pending_cancel.await.unwrap().state, OperationState::Pending);
         let cancelled = repository.get(&cancel_id).await.unwrap().unwrap();
         assert!(cancelled.record.cancellation_requested);
         assert_eq!(cancelled.record.snapshot.state, OperationState::Pending);
@@ -3787,10 +3885,7 @@ mod tests {
         cancel_result.unwrap();
         assert!(progress_result.is_err());
         let progress_race = repository.get(&progress_race_id).await.unwrap().unwrap();
-        assert_eq!(
-            progress_race.record.snapshot.state,
-            OperationState::Cancelled
-        );
+        assert!(!progress_race.record.snapshot.state.is_terminal());
         assert!(progress_race.record.cancellation_requested);
 
         let completion_race_id = ulid::Ulid::new().to_string();
@@ -3922,6 +4017,258 @@ mod tests {
         jetstream.delete_object_store(object_bucket).await.unwrap();
         nats.stop().unwrap();
         drop(recovered);
+    }
+
+    #[tokio::test]
+    async fn cancellation_waits_for_joined_blocking_child_and_renews_lease() {
+        let source = tempfile::tempdir().unwrap();
+        trellis_bootstrap::generate_nats_bootstrap(&trellis_bootstrap::NatsBootstrapOptions::new(
+            source.path(),
+        ))
+        .unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut nats = trellis_local_nats::LocalNats::builder()
+            .binary(trellis_local_nats::NatsBinarySource::DownloadPinned)
+            .cache_dir(state.path().join("cache"))
+            .source(source.path())
+            .temporary_state()
+            .ephemeral_ports()
+            .output(trellis_local_nats::NatsOutput::Log {
+                path: state.path().join("nats.log"),
+                mirror: false,
+            })
+            .start()
+            .unwrap();
+        let client = async_nats::ConnectOptions::new()
+            .credentials_file(source.path().join("creds/trellis-auth.creds"))
+            .await
+            .unwrap()
+            .connect(nats.nats_url())
+            .await
+            .unwrap();
+        let jetstream = async_nats::jetstream::new(client.clone());
+        let repository = KvOperationRepository::new(
+            jetstream
+                .create_key_value(async_nats::jetstream::kv::Config {
+                    bucket: format!("trellis_cancel_{}", ulid::Ulid::new()),
+                    history: 10,
+                    ..Default::default()
+                })
+                .await
+                .unwrap(),
+        );
+        let staging = BoundStoreResourceClient::new(
+            jetstream
+                .create_object_store(async_nats::jetstream::object_store::Config {
+                    bucket: format!("trellis_cancel_staging_{}", ulid::Ulid::new()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap(),
+        );
+        let (child_started_tx, child_started_rx) = tokio::sync::oneshot::channel();
+        let child_started_tx = Arc::new(std::sync::Mutex::new(Some(child_started_tx)));
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = Arc::new(std::sync::Mutex::new(Some(release_rx)));
+        let child_finished = Arc::new(AtomicBool::new(false));
+        let handler_finished = Arc::new(AtomicBool::new(false));
+        let child_done = Arc::clone(&child_finished);
+        let handler_done = Arc::clone(&handler_finished);
+        let provider = RuntimeOperationProvider::<TestOperation, _, _>::new(
+            OperationHandlerRuntime {
+                service: "service".to_owned(),
+                deployment_id: "deployment".to_owned(),
+                executor_id: "cleanup-owner".to_owned(),
+                connection_id: "cleanup-owner".to_owned(),
+                repository: repository.clone(),
+                nats: client,
+                service_session_key: "session".to_owned(),
+                staging,
+                validator: Allow,
+            },
+            move |_context, _input, control: OperationControl<TestOperation>| {
+                let child_started_tx = Arc::clone(&child_started_tx);
+                let release_rx = Arc::clone(&release_rx);
+                let child_finished = Arc::clone(&child_done);
+                let handler_finished = Arc::clone(&handler_done);
+                async move {
+                    let token = control.cancellation();
+                    tokio::task::spawn_blocking(move || {
+                        child_started_tx
+                            .lock()
+                            .unwrap()
+                            .take()
+                            .unwrap()
+                            .send(())
+                            .unwrap();
+                        while !token.is_cancelled() {
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        }
+                        assert_eq!(token.reason(), Some(OperationCancellationReason::Requested));
+                        release_rx.lock().unwrap().take().unwrap().recv().unwrap();
+                        child_finished.store(true, Ordering::SeqCst);
+                    })
+                    .await
+                    .unwrap();
+                    handler_finished.store(true, Ordering::SeqCst);
+                    Ok(())
+                }
+            },
+        );
+        let id = ulid::Ulid::new().to_string();
+        provider
+            .start_invocation(
+                context("start-cleanup", PermissionAction::Invoke, None),
+                id.clone(),
+                json!({"value": 1}),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), child_started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        let requested = provider
+            .cancel(
+                context("cancel-cleanup", PermissionAction::Cancel, None),
+                id.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(!requested.state.is_terminal());
+        let terminal = provider.wait(
+            context("wait-cleanup", PermissionAction::Observe, None),
+            id.clone(),
+        );
+        tokio::pin!(terminal);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(500), &mut terminal)
+                .await
+                .is_err()
+        );
+        let pending = repository.get(&id).await.unwrap().unwrap().record;
+        assert!(pending.cancellation_requested);
+        assert!(!pending.snapshot.state.is_terminal());
+        assert!(!child_finished.load(Ordering::SeqCst));
+        assert!(!handler_finished.load(Ordering::SeqCst));
+        tokio::time::sleep(std::time::Duration::from_secs(11)).await;
+        let renewed = repository.get(&id).await.unwrap().unwrap().record;
+        assert_eq!(renewed.owner_epoch, pending.owner_epoch);
+        assert!(renewed.lease_expires_at_ms > pending.lease_expires_at_ms);
+        assert!(!renewed.snapshot.state.is_terminal());
+        release_tx.send(()).unwrap();
+        assert_eq!(terminal.await.unwrap().state, OperationState::Cancelled);
+        assert!(child_finished.load(Ordering::SeqCst));
+        assert!(handler_finished.load(Ordering::SeqCst));
+        nats.stop().unwrap();
+    }
+
+    #[tokio::test]
+    async fn interrupted_cancellation_recovers_without_running_business_handler() {
+        let source = tempfile::tempdir().unwrap();
+        trellis_bootstrap::generate_nats_bootstrap(&trellis_bootstrap::NatsBootstrapOptions::new(
+            source.path(),
+        ))
+        .unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut nats = trellis_local_nats::LocalNats::builder()
+            .binary(trellis_local_nats::NatsBinarySource::DownloadPinned)
+            .cache_dir(state.path().join("cache"))
+            .source(source.path())
+            .temporary_state()
+            .ephemeral_ports()
+            .output(trellis_local_nats::NatsOutput::Log {
+                path: state.path().join("nats.log"),
+                mirror: false,
+            })
+            .start()
+            .unwrap();
+        let client = async_nats::ConnectOptions::new()
+            .credentials_file(source.path().join("creds/trellis-auth.creds"))
+            .await
+            .unwrap()
+            .connect(nats.nats_url())
+            .await
+            .unwrap();
+        let jetstream = async_nats::jetstream::new(client.clone());
+        let repository = KvOperationRepository::new(
+            jetstream
+                .create_key_value(async_nats::jetstream::kv::Config {
+                    bucket: format!("trellis_cancel_recover_{}", ulid::Ulid::new()),
+                    history: 10,
+                    ..Default::default()
+                })
+                .await
+                .unwrap(),
+        );
+        let staging = BoundStoreResourceClient::new(
+            jetstream
+                .create_object_store(async_nats::jetstream::object_store::Config {
+                    bucket: format!("trellis_cancel_recover_staging_{}", ulid::Ulid::new()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap(),
+        );
+        let id = ulid::Ulid::new().to_string();
+        repository
+            .create(operation(
+                id.clone(),
+                TestOperation::API_ID,
+                TestOperation::KEY,
+            ))
+            .await
+            .unwrap();
+        let past = now_ms() - 2_000;
+        repository
+            .claim(&id, "former-owner", past, past + 1_000)
+            .await
+            .unwrap();
+        let provider = RuntimeOperationProvider::<TestOperation, _, _>::new(
+            OperationHandlerRuntime {
+                service: "service".to_owned(),
+                deployment_id: "deployment".to_owned(),
+                executor_id: "recovery-owner".to_owned(),
+                connection_id: "recovery-owner".to_owned(),
+                repository: repository.clone(),
+                nats: client,
+                service_session_key: "session".to_owned(),
+                staging,
+                validator: Allow,
+            },
+            |_context, _input, _control| async {
+                Err(ServerError::Nats(
+                    "business handler must not run".to_owned(),
+                ))
+            },
+        );
+        let requested = provider
+            .cancel(
+                context("cancel-interrupted", PermissionAction::Cancel, None),
+                id.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(requested.state == OperationState::Pending);
+        provider.recover().await.unwrap();
+        let terminal = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            provider.wait(
+                context("observe-recovered", PermissionAction::Observe, None),
+                id.clone(),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(terminal.state, OperationState::Cancelled);
+        let recovered = repository.get(&id).await.unwrap().unwrap().record;
+        assert_eq!(
+            recovered.owner_executor_id.as_deref(),
+            Some("recovery-owner")
+        );
+        assert_eq!(recovered.owner_epoch, 2);
+        nats.stop().unwrap();
     }
 }
 

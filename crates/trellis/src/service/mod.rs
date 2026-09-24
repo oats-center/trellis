@@ -67,11 +67,11 @@ pub use operation_repository::{
     MAX_OPERATION_SIGNAL_BYTES,
 };
 pub use operations::{
-    control_subject, AcceptedOperation, OperationControl, OperationControlRequest,
-    OperationDescriptor, OperationError, OperationFailure, OperationFailureLike,
-    OperationLiveEvent, OperationLiveWatch, OperationRefData, OperationSignal,
-    OperationSignalAccepted, OperationSnapshot, OperationSnapshotFrame, OperationState,
-    OperationTransferProgress,
+    control_subject, AcceptedOperation, OperationCancellation, OperationCancellationReason,
+    OperationControl, OperationControlRequest, OperationDescriptor, OperationError,
+    OperationFailure, OperationFailureLike, OperationLiveEvent, OperationLiveWatch,
+    OperationRefData, OperationSignal, OperationSignalAccepted, OperationSnapshot,
+    OperationSnapshotFrame, OperationState, OperationTransferProgress,
 };
 #[doc(hidden)]
 pub use publisher::EventPublisher;

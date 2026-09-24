@@ -19,3 +19,20 @@ Execution is restartable and at least once. A replacement executor resumes from
 persisted state after lease expiry, so application side effects must be
 idempotent. Transfer staging is runtime-managed. An interrupted upload restarts
 from byte zero; committed staged bytes survive executor replacement.
+
+On a generated service registration, `.control(operationId)` gives the **local
+owner** a typed, fenced operation handle with the declared progress, output,
+error, and update types. It fails on a replica without that owner's fence. To
+re-run idempotent handler logic from any service replica, use
+`service.handleReportsGenerate.reconcile(operationId)`: Trellis routes to the
+owner, restores persisted input and caller identity, and invokes the handler
+with `resuming: true` and durable progress. The result is the latest snapshot
+after that attempt. A live lease is not stolen.
+
+`operation.cancel()` resolves with a terminal `Cancelled` only after the owning
+handler returns from cleanup. The handler's `signal` aborts on cancellation or
+ownership loss; stop and await any side-effecting child work before returning.
+While cleanup is stalled, cancellation remains requested, the snapshot stays
+nonterminal, and the owner renews its lease. After owner loss, arbitrary
+external side effects may overlap with a successor: make them idempotent or
+fence them outside Trellis.
