@@ -447,6 +447,7 @@ jobs:
         env:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
+          TRELLIS_TEST_NATS_BIN: /tmp/trellis-test-nats/nats-server
         run: deno task -c ts/deno.json test:integration
 
       - name: Set up Node

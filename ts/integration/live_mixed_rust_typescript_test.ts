@@ -54,6 +54,10 @@ Deno.test(
     const baseEnv = {
       ...Deno.env.toObject(),
       CARGO_TARGET_DIR: join(repoRoot, "target"),
+      TRELLIS_TEST_CLI_BIN: Deno.env.get("TRELLIS_TEST_CLI_BIN") ??
+        join(repoRoot, "target/debug/trellis"),
+      TRELLIS_TEST_SERVER_BIN: Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
+        join(repoRoot, "target/debug/trellis-server"),
     };
     // Build the Rust child test binary once so both children only run it.
     const build = await new Deno.Command("cargo", {
@@ -79,12 +83,15 @@ Deno.test(
         releases.push(release);
         children.push(
           new Deno.Command("setsid", {
-            args: cargoArgs([
-              "--",
-              "--ignored",
-              "--exact",
-              "runtime_endpoints_child",
-            ]),
+            args: [
+              "cargo",
+              ...cargoArgs([
+                "--",
+                "--ignored",
+                "--exact",
+                "runtime_endpoints_child",
+              ]),
+            ],
             env: {
               ...baseEnv,
               TRELLIS_TEST_CHILD_ENDPOINTS_FILE: endpoints,
@@ -94,7 +101,7 @@ Deno.test(
             stderr: "inherit",
           }).spawn(),
         );
-        await waitForFile(endpoints, 600_000);
+        await waitForFile(endpoints, 240_000);
       }
 
       // The TypeScript runtime and both Rust children are live simultaneously.
