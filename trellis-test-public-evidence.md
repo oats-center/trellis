@@ -41,8 +41,9 @@
 ## Live runtime evidence
 - CLI/server/NATS paths, versions, hashes, and build/source SHA: `target/debug/trellis`,
   `target/debug/trellis-server` (0.100.0), and `~/.cache/trellis/nats-server-v2.14.4`.
-- Linux runner/architecture and actual tested cases: x86_64 Linux; fixture live target 12/12
-  (T02, T04, T05, T06, T07, T08, T09, T10, T14, T15, T21, T23); artifact-only smoke 7/7 (T07 filtered).
+- Linux runner/architecture and actual tested cases: x86_64 Linux; fixture live target 14/14
+  (T02, T04, T05, T06, T07, T08, T09, T10, T11, T14, T15, T16, T21, T23); artifact-only smoke 7/7 (T07 filtered);
+  full `cargo test --workspace` exit 0.
 - macOS runner/architecture and actual tested cases: not run.
 - Concurrent-runtime isolation evidence: T07 starts eight runtimes in one process; all HTTP/NATS/
   WebSocket endpoints distinct.
@@ -72,7 +73,7 @@
 | T13 | `port_conflict_matches_only_selected_ports`, `port_lease_*` | `cargo test -p trellis-test --lib` | feature tip | PARTIAL | classification + lease; real occupied-port case pending |
 | T14 | `t14_shutdown_is_idempotent` | fixture `--test live` | feature tip | PASS | idempotent shutdown |
 | T15 | `t15_dropping_a_runtime_cleans_up` | fixture `--test live` | feature tip | PASS | drop stops the server |
-| T16 | (start cancellation) | — | | NOT RUN | pending |
+| T16 | `t16_cancelling_start_does_not_orphan_infrastructure` | fixture `--test live` | feature tip | PASS | later runtime starts cleanly |
 | T17 | (panic/unwind) | — | | NOT RUN | pending |
 | T18 | (force-stop server) | — | | NOT RUN | pending |
 | T19 | `*_retention_*` | `cargo test -p trellis-test --lib` | feature tip | PASS | three policies + sibling survival |
@@ -87,7 +88,7 @@
 | T28 | artifact-only consumer smoke | `scripts/verify-rust-test-package.sh` | feature tip | PASS | no checkout, 7 live pass |
 | T29 | Linux native live | fixture `--test live` | feature tip | PARTIAL | Linux only; macOS pending |
 | T30 | `prepare_release_versions_testkit_fixture_manifests` | `cargo test -p xtask` | feature tip | PASS | fixture + generated manifests rewritten |
-| T31 | existing suites | — | | NOT RUN | repo-wide re-run pending |
+| T31 | `cargo test --workspace` | local | feature tip | PARTIAL | Rust workspace + doc-tests green; Deno suites not re-run |
 
 ## CI and release verification
 - Required Check run/job links and status: jobs added (`live` fixture step, `rust-testkit-package`,
