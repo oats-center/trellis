@@ -155,9 +155,12 @@ layouts; applications own migration of any retained older database.
 
 Run generation and the consuming project's own Cargo checks. A real-runtime test
 can launch a Rust service from a Deno test using `@oatscenter/trellis-test` and
-its `TrellisTestRuntime`. This is a TypeScript helper, not a Rust crate API. A
-Rust test can instead manage real runtime processes directly; Trellis does not
-require one application test framework.
+its `TrellisTestRuntime`. A Rust test uses the published `trellis-test` crate,
+which starts the released `trellis` and `trellis-server` executables out of
+process, chooses its loopback ports automatically, and returns the existing SDK
+connection options so your generated service and app facades connect normally.
+Private Trellis workspace crates are never consumer dependencies; a service
+repository depends on `trellis-rs` and `trellis-test` only.
 
 Use `/api` to discover current Rustdoc and generated participant source for
 project-specific APIs. Private Trellis workspace crates are not consumer
