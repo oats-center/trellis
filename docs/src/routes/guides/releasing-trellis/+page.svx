@@ -334,6 +334,10 @@ deno task -c ts/deno.json build:npm
 (cd ts/packages/result && deno publish --dry-run --allow-slow-types --allow-dirty)
 (cd ts/packages/trellis && deno publish --dry-run --allow-slow-types --allow-dirty)
 (cd ts/packages/trellis-test && deno publish --dry-run --allow-slow-types --allow-dirty)
+# The runtime image is assembly-only: stage the produced executables first.
+goarch="$(case "$(rustc -vV | sed -n 's/^host: //p')" in x86_64-unknown-linux-gnu) echo amd64;; aarch64-unknown-linux-gnu) echo arm64;; *) echo unknown;; esac)"
+mkdir -p "dist/native/${goarch}"
+cp target/release/trellis target/release/trellis-server "dist/native/${goarch}/"
 docker build -f crates/runtime/Containerfile .
 docker build -f web/Containerfile .
 ```
@@ -385,7 +389,7 @@ The unified `Release` workflow publishes in gated stages:
 - `resolve-release` derives the final release tag from the `release/v*` branch and rejects already-used tags
 - `prepare-release` rewrites publishable versions, verifies release metadata, generates SDK artifacts, writes release notes, and uploads the prepared workspace
 - `package-rust` verifies all publishable workspace crates, while `package-js` builds npm output from the prepared sources, checks the built package surfaces, runs npm and JSR publication dry-runs, and uploads the npm package artifact
-- `build-cli` and `verify-images` validate release artifacts; pull request runs skip those tag-dependent matrix jobs while retaining package verification. `verify-images` builds both architectures into OCI archives and, for the `trellis` image, runs a managed-mode smoke on a native linux/amd64 build: it checks the baked nats-server version against `crates/local-nats/nats-binaries.json`, starts the image as its non-root user with a read-only config and writable state volume (`trellis-server --system all --local-nats=/usr/local/bin/nats-server`), waits for runtime readiness, stops it gracefully, and asserts no startup or write errors
+- `build-cli-linux` builds the runtime executables once per native Linux architecture in a `rust:bookworm` container (matching the runtime image base) and uploads CLI archives; `build-cli-darwin` builds the macOS archives. `verify-images` assembles the OCI archives from those prebuilt executables without compiling Trellis, and smokes the `trellis` image natively: `verify-images` runs the linux/amd64 smoke and `smoke-image-arm64` runs the linux/arm64 smoke. The smoke checks the baked nats-server version against `crates/local-nats/nats-binaries.json`, starts the image as its non-root user with a read-only config and writable state volume (`trellis-server --system all --local-nats=/usr/local/bin/nats-server`), waits for runtime readiness, stops it gracefully, and asserts no startup or write errors
 - `create-release-tag` creates the release tag after the release gate passes
 - `github-release` publishes CLI archives and checksums first
 - `publish-crates`, `publish-npm`, and `publish-images` publish downstream artifacts after the GitHub release exists

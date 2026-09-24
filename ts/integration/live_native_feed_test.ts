@@ -3,26 +3,7 @@ import { assert, assertEquals } from "@std/assert";
 import { fromFileUrl, join } from "@std/path";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
-import { withTrellisRuntime } from "./_support/runtime.ts";
-
-function rustFixtureCommand(bin: string): string[] {
-  return [
-    "cargo",
-    "run",
-    "--config",
-    `patch.crates-io.trellis-rs.path=${
-      JSON.stringify(
-        fromFileUrl(new URL("../../crates/trellis", import.meta.url)),
-      )
-    }`,
-    "--bin",
-    bin,
-    "--manifest-path",
-    fromFileUrl(
-      new URL("../../integration/fixtures/runtime/Cargo.toml", import.meta.url),
-    ),
-  ];
-}
+import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
 
 async function completeRustLogin(
   runtime: {
@@ -34,13 +15,13 @@ async function completeRustLogin(
       mode: "session_key";
     }) => Promise<unknown>;
   },
-  args: string[],
+  argv: string[],
   configDir: string,
   loginMarker: string,
   doneMarker: string,
 ): Promise<void> {
-  const child = new Deno.Command("cargo", {
-    args,
+  const child = new Deno.Command(argv[0], {
+    args: argv.slice(1),
     env: {
       TRELLIS_URL: runtime.trellisUrl,
       XDG_CONFIG_HOME: join(runtime.workdir, configDir),
@@ -80,7 +61,7 @@ Deno.test("NX01 rust caller receives Watch frames from rust provider", async () 
       contract: participants.OperationProvider.participant,
     });
     const process = new Deno.Command("setsid", {
-      args: rustFixtureCommand("trellis-runtime-acceptance"),
+      args: rustFixtureArgv("trellis-runtime-acceptance"),
       env: {
         TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_IDENTITY_SEED: identity.seed,
@@ -115,7 +96,7 @@ Deno.test("NX01 rust caller receives Watch frames from rust provider", async () 
 
       await completeRustLogin(
         runtime,
-        rustFixtureCommand("caller").slice(1),
+        rustFixtureArgv("caller"),
         "rust-caller-config",
         "rust login ",
         "rust caller complete",
@@ -134,7 +115,7 @@ Deno.test("NX03 empty finite Watch completes with no frames", async () => {
       contract: participants.OperationProvider.participant,
     });
     const process = new Deno.Command("setsid", {
-      args: rustFixtureCommand("trellis-runtime-acceptance"),
+      args: rustFixtureArgv("trellis-runtime-acceptance"),
       env: {
         TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_IDENTITY_SEED: identity.seed,
@@ -169,7 +150,7 @@ Deno.test("NX03 empty finite Watch completes with no frames", async () => {
       }, { timeoutMs: 120_000 });
       await completeRustLogin(
         runtime,
-        rustFixtureCommand("empty_watch").slice(1),
+        rustFixtureArgv("empty_watch"),
         "empty-watch-config",
         "empty login ",
         "empty watch complete",
@@ -188,7 +169,7 @@ Deno.test("L2 TypeScript caller receives rust Watch over live open", async () =>
       contract: participants.OperationProvider.participant,
     });
     const process = new Deno.Command("setsid", {
-      args: rustFixtureCommand("trellis-runtime-acceptance"),
+      args: rustFixtureArgv("trellis-runtime-acceptance"),
       env: {
         TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_IDENTITY_SEED: identity.seed,

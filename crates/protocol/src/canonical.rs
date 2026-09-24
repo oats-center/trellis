@@ -59,7 +59,7 @@ mod tests {
     #[test]
     fn matches_shared_canonical_json_vectors() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../conformance/canonical-json/vectors.json");
+            .join("../../integration/fixtures/protocol/canonical-json/vectors.json");
         let fixtures: Vec<Vector> =
             serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
 

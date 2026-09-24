@@ -63,7 +63,7 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 
 fn chain_fixture() -> AuthorizationChainFixture {
     let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../conformance/authorization-context/vectors.json");
+        .join("../../integration/fixtures/protocol/authorization-context/vectors.json");
     let value: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(fixture_path).unwrap()).unwrap();
     let complete: AuthorizationChainFixture =
@@ -73,7 +73,7 @@ fn chain_fixture() -> AuthorizationChainFixture {
 
 fn vector_defaults() -> AuthorizationVectorDefaults {
     let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../conformance/authorization-context/vectors.json");
+        .join("../../integration/fixtures/protocol/authorization-context/vectors.json");
     let value: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(fixture_path).unwrap()).unwrap();
     serde_json::from_value(value["defaults"].clone()).unwrap()

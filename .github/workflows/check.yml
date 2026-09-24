@@ -55,7 +55,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target
-          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}
+          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-
+            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-
 
       - name: Install generated artifacts
         run: rm -rf "$RUNNER_TEMP/trellis-cache" && TRELLIS_CACHE="$RUNNER_TEMP/trellis-cache" cargo xtask install
@@ -147,24 +150,124 @@ jobs:
           name: check-protocol-wasm
           path: ts/packages/trellis/auth/protocol_wasm
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
       - name: Set up Deno
         uses: denoland/setup-deno@v2
         with:
           deno-version: ${{ env.DENO_VERSION }}
 
+      # Consume the already-generated API artifacts and protocol WASM; do not
+      # re-run the developer wrapper that recompiles xtask and the WASM.
       - name: Build embedded browser apps
-        run: deno task -c ts/deno.json browser:embedded
+        run: deno task -c web/deno.json build:embedded
 
       - name: Upload embedded browser apps
         uses: actions/upload-artifact@v4
         with:
           name: check-portal
           path: crates/runtime/generated
+          retention-days: 1
+
+  build:
+    name: Build runtime binaries
+    needs: [install, wasm, portal]
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download generated artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: check-generated
+
+      - name: Download embedded browser apps
+        uses: actions/download-artifact@v4
+        with:
+          name: check-portal
+          path: crates/runtime/generated
+
+      - name: Download protocol WASM
+        uses: actions/download-artifact@v4
+        with:
+          name: check-protocol-wasm
+          path: ts/packages/trellis/auth/protocol_wasm
+
+      - name: Expose installed Cargo binaries
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Rust
+        id: rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-runtime-binaries-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-runtime-binaries-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-
+            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-runtime-binaries-
+
+      # One producer for the executables every live, browser, demo, and package
+      # job runs. Build version-clean (official) so the CLI and server report the
+      # same version the manifest records.
+      - name: Build runtime binaries
+        env:
+          TRELLIS_OFFICIAL_BUILD: "1"
+        run: cargo build --manifest-path Cargo.toml -p trellis-server -p trellis-cli
+
+      # Cross-language helper/provider executables for the TypeScript integration
+      # tests, plus the testkit live test binary. Built once here so the tests do
+      # not compile Rust while they run.
+      - name: Build integration fixture helpers
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          set -euo pipefail
+          cargo build --bins \
+            --manifest-path integration/fixtures/runtime/Cargo.toml \
+            --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\""
+
+      - name: Build the testkit live test binary
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          set -euo pipefail
+          cargo test --no-run \
+            --manifest-path integration/fixtures/testkit/Cargo.toml \
+            --config "patch.crates-io.trellis-protocol.path=\"$GITHUB_WORKSPACE/crates/protocol\"" \
+            --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\"" \
+            --config "patch.crates-io.trellis-test.path=\"$GITHUB_WORKSPACE/crates/trellis-test\"" \
+            --test live \
+            --message-format=json > "$RUNNER_TEMP/testkit-live.json"
+          executable="$(jq -r 'select(.executable != null) | .executable' "$RUNNER_TEMP/testkit-live.json" | tail -n1)"
+          if [ -z "${executable}" ] || [ "${executable}" = "null" ]; then
+            echo "failed to locate the testkit live test binary" >&2
+            exit 1
+          fi
+          cp "${executable}" target/debug/trellis-testkit-live
+
+      - name: Stage runtime binaries
+        run: |
+          set -euo pipefail
+          mkdir -p dist/runtime-binaries/fixtures
+          cp target/debug/trellis target/debug/trellis-server target/debug/trellis-testkit-live dist/runtime-binaries/
+          for bin in trellis-runtime-acceptance caller resources events live_probe live_probe_caller empty_watch; do
+            cp "target/debug/${bin}" dist/runtime-binaries/fixtures/
+          done
+          tar -C dist/runtime-binaries -czf dist/runtime-binaries.tar.gz .
+
+      - name: Upload runtime binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-runtime-binaries
+          path: dist/runtime-binaries.tar.gz
           retention-days: 1
 
   rust:
@@ -208,7 +311,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target
-          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}
+          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-
+            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-
 
       - name: Download protocol WASM
         uses: actions/download-artifact@v4
@@ -225,40 +331,6 @@ jobs:
 
       - name: Test Rust workspace
         run: cargo test --manifest-path Cargo.toml --workspace
-
-  rust-tooling:
-    name: Rust tooling
-    needs: [install, wasm]
-    runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 10
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: check-generated
-
-      - name: Download protocol WASM
-        uses: actions/download-artifact@v4
-        with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
-
-      - name: Expose installed Cargo binaries
-        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: ${{ env.DENO_VERSION }}
-
-      - name: Test Rust tooling
-        run: cargo test --manifest-path xtask/Cargo.toml
 
   typescript:
     name: TypeScript
@@ -304,7 +376,7 @@ jobs:
 
   demos:
     name: Demo consumers
-    needs: [install, wasm, portal]
+    needs: [install, wasm, portal, build]
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 20
     steps:
@@ -339,8 +411,17 @@ jobs:
           name: check-portal
           path: crates/runtime/generated
 
-      - name: Build repository CLI and server
-        run: cargo build --manifest-path Cargo.toml -p trellis-cli -p trellis-server
+      - name: Download runtime binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: check-runtime-binaries
+          path: ${{ runner.temp }}/runtime-binaries
+
+      - name: Stage runtime binaries
+        run: |
+          set -euo pipefail
+          mkdir -p target/debug
+          tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
 
       - name: Expose repository CLI
         run: echo "$GITHUB_WORKSPACE/target/debug" >> "$GITHUB_PATH"
@@ -354,6 +435,9 @@ jobs:
         run: |
           deno task -c ts/deno.json packages:build:npm:installed
           deno run -A -c ts/deno.json ts/tools/package_build/demo_consumers.ts
+
+      - name: Verify TypeScript publication
+        run: bash scripts/release-ts-dry-run.sh
 
       - name: Check Rust service demo
         working-directory: demos/rust/service
@@ -381,9 +465,9 @@ jobs:
           cd "$consumer"
           cargo check --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\""
 
-  live:
-    name: Live integration
-    needs: [install, wasm, portal, rust, demos]
+  live-rust:
+    name: Rust live integration
+    needs: [install, wasm, portal, build]
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 45
     steps:
@@ -410,19 +494,17 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
+      - name: Download runtime binaries
+        uses: actions/download-artifact@v4
         with:
-          deno-version: ${{ env.DENO_VERSION }}
+          name: check-runtime-binaries
+          path: ${{ runner.temp }}/runtime-binaries
 
-      - name: Build live runtime binaries
-        run: cargo build --manifest-path Cargo.toml -p trellis-server -p trellis-cli
-
-      - name: Acquire the pinned NATS executable
-        # Stage under /tmp: the server rejects a --local-nats binary whose parent
-        # directory is group/world writable without the sticky bit, and the
-        # self-hosted runner's $RUNNER_TEMP and $HOME are world writable.
-        run: bash scripts/acquire-test-nats.sh --dest /tmp/trellis-test-nats
+      - name: Stage runtime binaries
+        run: |
+          set -euo pipefail
+          mkdir -p target/debug
+          tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
 
       - name: Run Rust live integration
         env:
@@ -430,25 +512,148 @@ jobs:
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
         run: cargo test --manifest-path Cargo.toml -p trellis-rs --features live-integration --test integration -- --nocapture
 
-      - name: Run Rust testkit fixture live
+  live-testkit:
+    name: Rust testkit integration
+    needs: [install, wasm, portal, build]
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download generated artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: check-generated
+
+      - name: Download embedded browser apps
+        uses: actions/download-artifact@v4
+        with:
+          name: check-portal
+          path: crates/runtime/generated
+
+      - name: Download protocol WASM
+        uses: actions/download-artifact@v4
+        with:
+          name: check-protocol-wasm
+          path: ts/packages/trellis/auth/protocol_wasm
+
+      - name: Download runtime binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: check-runtime-binaries
+          path: ${{ runner.temp }}/runtime-binaries
+
+      - name: Stage runtime binaries
+        run: |
+          set -euo pipefail
+          mkdir -p target/debug
+          tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
+
+      - name: Acquire the pinned NATS executable
+        # Stage under /tmp: the server rejects a --local-nats binary whose parent
+        # directory is group/world writable without the sticky bit, and the
+        # self-hosted runner's $RUNNER_TEMP and $HOME are world writable.
+        run: bash scripts/acquire-test-nats.sh --dest /tmp/trellis-test-nats
+
+      - name: Run the prebuilt testkit live binary
         env:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
+          TRELLIS_TEST_NATS_BIN: /tmp/trellis-test-nats/nats-server
+        run: ${{ github.workspace }}/target/debug/trellis-testkit-live
+
+  live-typescript:
+    name: TypeScript live integration
+    needs: [install, wasm, portal, build]
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download generated artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: check-generated
+
+      - name: Download embedded browser apps
+        uses: actions/download-artifact@v4
+        with:
+          name: check-portal
+          path: crates/runtime/generated
+
+      - name: Download protocol WASM
+        uses: actions/download-artifact@v4
+        with:
+          name: check-protocol-wasm
+          path: ts/packages/trellis/auth/protocol_wasm
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      - name: Download runtime binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: check-runtime-binaries
+          path: ${{ runner.temp }}/runtime-binaries
+
+      - name: Stage runtime binaries
         run: |
-          export TRELLIS_TEST_NATS_BIN="/tmp/trellis-test-nats/nats-server"
-          cargo test \
-            --manifest-path integration/fixtures/testkit/Cargo.toml \
-            --config "patch.crates-io.trellis-protocol.path=\"$GITHUB_WORKSPACE/crates/protocol\"" \
-            --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\"" \
-            --config "patch.crates-io.trellis-test.path=\"$GITHUB_WORKSPACE/crates/trellis-test\"" \
-            --test live
+          set -euo pipefail
+          mkdir -p target/debug
+          tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
+
+      - name: Acquire the pinned NATS executable
+        run: bash scripts/acquire-test-nats.sh --dest /tmp/trellis-test-nats
 
       - name: Run TypeScript live integration
         env:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
           TRELLIS_TEST_NATS_BIN: /tmp/trellis-test-nats/nats-server
+          TRELLIS_TEST_FIXTURE_BIN_DIR: ${{ github.workspace }}/target/debug/fixtures
+          TRELLIS_TESTKIT_LIVE_BIN: ${{ github.workspace }}/target/debug/trellis-testkit-live
         run: deno task -c ts/deno.json test:integration
+
+  examples:
+    name: Documented examples
+    needs: [install, wasm, portal, build]
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download generated artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: check-generated
+
+      - name: Download protocol WASM
+        uses: actions/download-artifact@v4
+        with:
+          name: check-protocol-wasm
+          path: ts/packages/trellis/auth/protocol_wasm
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      - name: Download runtime binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: check-runtime-binaries
+          path: ${{ runner.temp }}/runtime-binaries
+
+      - name: Stage runtime binaries
+        run: |
+          set -euo pipefail
+          mkdir -p target/debug
+          tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -465,7 +670,7 @@ jobs:
 
   ui-hosting:
     name: Built-in UI hosting
-    needs: [install, wasm, portal, live]
+    needs: [install, wasm, portal, build]
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 30
     steps:
@@ -489,16 +694,22 @@ jobs:
           name: check-protocol-wasm
           path: ts/packages/trellis/auth/protocol_wasm
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
       - name: Set up Deno
         uses: denoland/setup-deno@v2
         with:
           deno-version: ${{ env.DENO_VERSION }}
 
-      - name: Build Trellis server and CLI
-        run: cargo build --manifest-path Cargo.toml -p trellis-server -p trellis-cli
+      - name: Download runtime binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: check-runtime-binaries
+          path: ${{ runner.temp }}/runtime-binaries
+
+      - name: Stage runtime binaries
+        run: |
+          set -euo pipefail
+          mkdir -p target/debug
+          tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
 
       - name: Test built-in UI hosting
         working-directory: ts
@@ -515,7 +726,7 @@ jobs:
 
   console:
     name: Console (${{ matrix.suite }})
-    needs: [install, wasm, portal, live]
+    needs: [install, wasm, portal, build]
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 30
     strategy:
@@ -548,16 +759,22 @@ jobs:
           name: check-protocol-wasm
           path: ts/packages/trellis/auth/protocol_wasm
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
       - name: Set up Deno
         uses: denoland/setup-deno@v2
         with:
           deno-version: ${{ env.DENO_VERSION }}
 
-      - name: Build Trellis server and CLI
-        run: cargo build --manifest-path Cargo.toml -p trellis-server -p trellis-cli
+      - name: Download runtime binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: check-runtime-binaries
+          path: ${{ runner.temp }}/runtime-binaries
+
+      - name: Stage runtime binaries
+        run: |
+          set -euo pipefail
+          mkdir -p target/debug
+          tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
 
       - name: Run console browser suite
         env:
@@ -580,7 +797,7 @@ jobs:
 
   rust-testkit-package:
     name: Rust testkit bundle
-    needs: [install, wasm, portal]
+    needs: [install, wasm, portal, build]
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 45
     steps:
@@ -601,12 +818,17 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build live runtime binaries
-        # Build the packaged runtime as an official (version-clean) build so the
-        # CLI and server report the same package version the manifest records.
-        env:
-          TRELLIS_OFFICIAL_BUILD: "1"
-        run: cargo build --manifest-path Cargo.toml -p trellis-server -p trellis-cli
+      - name: Download runtime binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: check-runtime-binaries
+          path: ${{ runner.temp }}/runtime-binaries
+
+      - name: Stage runtime binaries
+        run: |
+          set -euo pipefail
+          mkdir -p target/debug
+          tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
 
       - name: Package the public crates
         run: cargo package --manifest-path Cargo.toml -p trellis-protocol -p trellis-rs -p trellis-test

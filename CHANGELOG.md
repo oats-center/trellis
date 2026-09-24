@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.2] - 2026-09-24
+
 ### Added
 
 - Added the publishable `trellis-test` Rust crate: an out-of-process harness

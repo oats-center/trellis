@@ -1,8 +1,9 @@
 import { TrellisTestRuntime } from "@oatscenter/trellis-test";
 import type { TrellisTestRuntimeStartOptions } from "@oatscenter/trellis-test";
-import { fromFileUrl } from "@std/path";
+import { fromFileUrl, join } from "@std/path";
 
 const repoJsRoot = fromFileUrl(new URL("../../", import.meta.url));
+const repoRoot = fromFileUrl(new URL("../../../", import.meta.url));
 
 const DEFAULT_TIMEOUTS = {
   startupMs: 60_000,
@@ -48,6 +49,39 @@ function repoTrellisCommand() {
     ],
     cwd: repoJsRoot,
   };
+}
+
+/**
+ * Resolves a Rust helper/provider executable under `integration/fixtures/runtime`.
+ *
+ * CI sets `TRELLIS_TEST_FIXTURE_BIN_DIR` to the directory of executables produced
+ * by the build job; those are launched directly. CI with the variable unset is a
+ * failed setup rather than permission to compile inside a test. Local development
+ * falls back to `cargo run`.
+ */
+export function rustFixtureArgv(bin: string, extra: string[] = []): string[] {
+  const dir = Deno.env.get("TRELLIS_TEST_FIXTURE_BIN_DIR");
+  if (dir !== undefined) {
+    return [join(dir, bin), ...extra];
+  }
+  if (Deno.env.get("CI")) {
+    throw new Error(
+      `TRELLIS_TEST_FIXTURE_BIN_DIR must point at the prebuilt fixtures in CI (missing ${bin})`,
+    );
+  }
+  return [
+    "cargo",
+    "run",
+    "--config",
+    `patch.crates-io.trellis-rs.path=${
+      JSON.stringify(join(repoRoot, "crates/trellis"))
+    }`,
+    "--bin",
+    bin,
+    "--manifest-path",
+    join(repoRoot, "integration/fixtures/runtime/Cargo.toml"),
+    ...extra,
+  ];
 }
 
 /** Starts the repo-local Trellis runtime for TypeScript integration tests. */

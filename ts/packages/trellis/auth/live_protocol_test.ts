@@ -18,7 +18,7 @@ import {
   importEd25519PrivateKeyFromSeedBase64url,
   publicKeyBase64urlFromPrivateKey,
 } from "./keys.ts";
-import vectors from "../../../../conformance/live-protocol/vectors.json" with {
+import vectors from "../../../../integration/fixtures/protocol/live-protocol/vectors.json" with {
   type: "json",
 };
 

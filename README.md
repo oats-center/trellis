@@ -18,7 +18,7 @@ the TypeScript-based Trellis lineage.
 Cargo.toml      Rust workspace: public libraries, CLI, server, and tooling
 crates/         Rust platform crates and public facades
 xtask/          Rust repository build, generation, and release tooling
-conformance/    Shared TypeScript/Rust test vectors (canonical JSON, auth proofs)
+integration/     Shared TypeScript/Rust test vectors and cross-language fixtures
 demos/          Shared demo app plus TypeScript and Rust service/device examples
 docs/           Trellis documentation site (SvelteKit static site, published to GitHub Pages)
 ts/             TypeScript client libraries, adapters, and browser integration tests

@@ -31,7 +31,7 @@ Use the cheapest real boundary. SQLite outbox commit/rollback belongs in the
 ordinary Deno package suite, not a live server test. Generated consumers should
 compile and run; do not inspect generated source strings, AST shape, helper
 selection, internal call counts, or test inventories. Keep realistic negative
-security and data-loss tests. Exact vectors belong in `conformance/` only where
+security and data-loss tests. Exact vectors belong in `integration/fixtures/protocol/` only where
 independent implementations must agree on public bytes.
 
 The separate CI demo job runs the checked-in demos' normal commands documented

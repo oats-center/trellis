@@ -4,7 +4,7 @@ import { assert, assertEquals } from "@std/assert";
 import { fromFileUrl, join } from "@std/path";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
-import { withTrellisRuntime } from "./_support/runtime.ts";
+import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
 
 const BUSY_TOTAL = 1026n;
 const TWO_HEARTBEATS_MS = 21_000;
@@ -32,25 +32,6 @@ type ProviderRuntime = {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function rustFixtureCommand(bin: string): string[] {
-  return [
-    "cargo",
-    "run",
-    "--config",
-    `patch.crates-io.trellis-rs.path=${
-      JSON.stringify(
-        fromFileUrl(new URL("../../crates/trellis", import.meta.url)),
-      )
-    }`,
-    "--bin",
-    bin,
-    "--manifest-path",
-    fromFileUrl(
-      new URL("../../integration/fixtures/runtime/Cargo.toml", import.meta.url),
-    ),
-  ];
 }
 
 /** Start the in-process TypeScript `liveprobe` provider used by V3 pairings. */
@@ -316,7 +297,7 @@ Deno.test("V3 TypeScript caller drives Rust liveprobe provider", async () => {
       contract: participants.LiveProbeProvider.participant,
     });
     const process = new Deno.Command("setsid", {
-      args: rustFixtureCommand("live_probe"),
+      args: rustFixtureArgv("live_probe"),
       env: {
         TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_IDENTITY_SEED: identity.seed,
@@ -375,7 +356,7 @@ async function runRustLiveProbeCaller(
   configDir: string,
 ): Promise<Record<string, number>> {
   const child = new Deno.Command("setsid", {
-    args: rustFixtureCommand("live_probe_caller"),
+    args: rustFixtureArgv("live_probe_caller"),
     env: {
       TRELLIS_URL: runtime.trellisUrl,
       XDG_CONFIG_HOME: join(runtime.workdir, configDir),
@@ -450,7 +431,7 @@ function startRustProvider(runtime: ProviderRuntime): {
     })
     .then((identity) => {
       const child = new Deno.Command("setsid", {
-        args: rustFixtureCommand("live_probe"),
+        args: rustFixtureArgv("live_probe"),
         env: {
           TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_IDENTITY_SEED: identity.seed,

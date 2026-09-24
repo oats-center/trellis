@@ -15,7 +15,7 @@ import {
 } from "npm:@opentelemetry/sdk-metrics@^2.7.0";
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 
-import vectors from "../../../../conformance/authorization-context/vectors.json" with {
+import vectors from "../../../../integration/fixtures/protocol/authorization-context/vectors.json" with {
   type: "json",
 };
 import type { PermissionAtom as DescriptorPermissionAtom } from "../participant_runtime/api.ts";

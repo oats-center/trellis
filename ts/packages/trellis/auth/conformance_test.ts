@@ -10,7 +10,7 @@ import {
   verifyEventProof,
   verifyProof,
 } from "./mod.ts";
-import vectors from "../../../../conformance/authorization-context/vectors.json" with {
+import vectors from "../../../../integration/fixtures/protocol/authorization-context/vectors.json" with {
   type: "json",
 };
 

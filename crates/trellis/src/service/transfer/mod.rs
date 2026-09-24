@@ -1213,7 +1213,7 @@ mod tests {
     #[test]
     fn authenticated_framing_matches_shared_transfer_v1_vectors() {
         let vectors: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../../conformance/transfer-v1-vectors.json"
+            "../../../../../integration/fixtures/protocol/transfer-v1/vectors.json"
         ))
         .unwrap();
         for vector in vectors["vectors"].as_array().unwrap() {

@@ -1,43 +1,25 @@
-FROM docker.io/denoland/deno:2.9.4 AS browser-apps
-
-WORKDIR /src
-
-COPY ts /src/ts
-COPY web /src/web
-COPY art /src/art
-
-RUN mkdir -p /src/crates/runtime/generated \
-    && deno install --config ts/deno.json --lock ts/deno.lock --frozen \
-    && deno run --allow-all --config web/deno.json web/scripts/build_embedded.ts
-
-FROM docker.io/library/rust:bookworm AS build
-
-WORKDIR /src
-
-COPY Cargo.toml Cargo.lock /src/
-COPY .cargo /src/.cargo
-COPY crates /src/crates
-COPY xtask /src/xtask
-COPY conformance /src/conformance
-COPY ts /src/ts
-COPY --from=browser-apps /src/crates/runtime/generated /src/crates/runtime/generated
-
-RUN cargo build --locked --manifest-path Cargo.toml --release \
-    --package trellis-server --bin trellis-server \
-    --package trellis-cli --bin trellis
+# The runtime image is assembly-only: the `trellis-server` and `trellis` executables
+# are built once by the native product producer (`.github/workflows/release.yml`,
+# the `build-cli-linux` job) and copied in here. `trellis-server` embeds the
+# generated browser assets at compile time (crates/runtime/build.rs), so no source
+# tree, Rust toolchain, xtask, or conformance copy belongs in this image.
+#
+# The build receives the producer's `trellis-<version>-<target>.tar.gz` archive
+# staged under `dist/native/<goarch>/` in the build context, where the directory
+# name matches buildx's `TARGETARCH` (amd64/arm64).
 
 # Bake the pinned nats-server binary (local-nats/nats-binaries.json) so the runtime
 # image never downloads it at container runtime. TARGETARCH is set by buildx
 # (amd64/arm64); it maps directly onto the pin's linux-<arch> keys. The release URL is
 # derived from the pinned version: the pin file stores version + per-platform sha256
 # only, and the build fails when the pin is missing or malformed (sha must be 64
-# lowercase hex digits).
-FROM docker.io/library/debian:bookworm-slim AS nats
+# lowercase hex digits). This stage runs on the build platform, so the download is
+# never emulated.
+FROM --platform=$BUILDPLATFORM docker.io/library/debian:bookworm-slim AS nats
 
 ARG TARGETARCH
 
 # The pin file is copied before the RUN so a pin change invalidates this stage's cache.
-COPY conformance /src/conformance
 COPY crates/local-nats/nats-binaries.json /src/crates/local-nats/nats-binaries.json
 
 RUN apt-get update \
@@ -68,6 +50,7 @@ RUN apt-get update \
 
 FROM docker.io/library/debian:bookworm-slim AS runtime
 
+ARG TARGETARCH
 ARG TRELLIS_VERSION=dev
 ARG TRELLIS_REVISION=
 
@@ -83,8 +66,8 @@ RUN apt-get update \
     && install --directory --owner trellis --group trellis \
       /var/lib/trellis /var/cache/trellis /var/log/trellis /run/trellis /etc/trellis
 
-COPY --from=build /src/target/release/trellis-server /usr/local/bin/trellis-server
-COPY --from=build /src/target/release/trellis /usr/local/bin/trellis
+COPY dist/native/${TARGETARCH}/trellis-server /usr/local/bin/trellis-server
+COPY dist/native/${TARGETARCH}/trellis /usr/local/bin/trellis
 COPY --from=nats /out/nats-server /usr/local/bin/nats-server
 
 USER trellis

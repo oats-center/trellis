@@ -59,18 +59,27 @@ Deno.test(
       TRELLIS_TEST_SERVER_BIN: Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
         join(repoRoot, "target/debug/trellis-server"),
     };
-    // Build the Rust child test binary once so both children only run it.
-    const build = await new Deno.Command("cargo", {
-      args: cargoArgs(["--no-run"]),
-      env: baseEnv,
-      stdout: "inherit",
-      stderr: "inherit",
-    }).output();
-    assertEquals(
-      build.success,
-      true,
-      "failed to build the Rust child test binary",
-    );
+    // The build job exports the prebuilt test binary; only local development
+    // compiles it here.
+    const prebuiltLive = Deno.env.get("TRELLIS_TESTKIT_LIVE_BIN");
+    if (prebuiltLive === undefined) {
+      if (Deno.env.get("CI")) {
+        throw new Error(
+          "TRELLIS_TESTKIT_LIVE_BIN must point at the prebuilt testkit live binary in CI",
+        );
+      }
+      const build = await new Deno.Command("cargo", {
+        args: cargoArgs(["--no-run"]),
+        env: baseEnv,
+        stdout: "inherit",
+        stderr: "inherit",
+      }).output();
+      assertEquals(
+        build.success,
+        true,
+        "failed to build the Rust child test binary",
+      );
+    }
 
     const runtime = await startTrellisRuntime();
     const children: Deno.ChildProcess[] = [];
@@ -81,17 +90,20 @@ Deno.test(
         const endpoints = join(dir, `endpoints-${index}.txt`);
         const release = join(dir, `release-${index}`);
         releases.push(release);
+        const childArgv = prebuiltLive === undefined
+          ? [
+            "cargo",
+            ...cargoArgs([
+              "--",
+              "--ignored",
+              "--exact",
+              "runtime_endpoints_child",
+            ]),
+          ]
+          : [prebuiltLive, "--ignored", "--exact", "runtime_endpoints_child"];
         children.push(
           new Deno.Command("setsid", {
-            args: [
-              "cargo",
-              ...cargoArgs([
-                "--",
-                "--ignored",
-                "--exact",
-                "runtime_endpoints_child",
-              ]),
-            ],
+            args: childArgv,
             env: {
               ...baseEnv,
               TRELLIS_TEST_CHILD_ENDPOINTS_FILE: endpoints,

@@ -12,7 +12,7 @@ import {
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 
-import { withTrellisRuntime } from "./_support/runtime.ts";
+import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
 
 Deno.test("Auth connection lifecycle events survive the fenced outbox", async () => {
   await withTrellisRuntime(async (runtime) => {
@@ -335,34 +335,13 @@ Deno.test("Rust durable events match registrations and retain unhandled messages
         name: "events",
         contract: participants.EventService.participant,
       });
-      const process = new Deno.Command("cargo", {
-        args: [
-          "run",
-          "--config",
-          `patch.crates-io.trellis-rs.path=${
-            JSON.stringify(
-              fromFileUrl(
-                new URL("../../crates/trellis", import.meta.url),
-              ),
-            )
-          }`,
-          "--bin",
-          "events",
-          "--manifest-path",
-          fromFileUrl(
-            new URL(
-              "../../integration/fixtures/runtime/Cargo.toml",
-              import.meta.url,
-            ),
-          ),
-        ],
+      const eventsArgv = rustFixtureArgv("events");
+      const process = new Deno.Command(eventsArgv[0], {
+        args: eventsArgv.slice(1),
         env: {
           TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_IDENTITY_SEED: identity.seed,
           REVERSE: String(reverse),
-          CARGO_TARGET_DIR: fromFileUrl(
-            new URL("../../target", import.meta.url),
-          ),
         },
         stdout: "inherit",
         stderr: "inherit",
@@ -574,35 +553,14 @@ for (const sdk of ["rust", "typescript"] as const) {
       });
       const start = (crash: boolean) => {
         if (sdk === "rust") {
-          return new Deno.Command("cargo", {
-            args: [
-              "run",
-              "--config",
-              `patch.crates-io.trellis-rs.path=${
-                JSON.stringify(
-                  fromFileUrl(
-                    new URL("../../crates/trellis", import.meta.url),
-                  ),
-                )
-              }`,
-              "--bin",
-              "events",
-              "--manifest-path",
-              fromFileUrl(
-                new URL(
-                  "../../integration/fixtures/runtime/Cargo.toml",
-                  import.meta.url,
-                ),
-              ),
-            ],
+          const eventsArgv = rustFixtureArgv("events");
+          return new Deno.Command(eventsArgv[0], {
+            args: eventsArgv.slice(1),
             env: {
               TRELLIS_URL: runtime.trellisUrl,
               TRELLIS_IDENTITY_SEED: identity.seed,
               REVERSE: "false",
               CRASH: String(crash),
-              CARGO_TARGET_DIR: fromFileUrl(
-                new URL("../../target", import.meta.url),
-              ),
             },
             stdout: "inherit",
             stderr: "inherit",
@@ -903,33 +861,14 @@ Deno.test("Rust consumer-only service rejects explicit ephemeral at the runtime 
       name: `consumer-only-rust-${crypto.randomUUID()}`,
       contract: participants.EventServiceConsumerOnly.participant,
     });
-    const process = new Deno.Command("cargo", {
-      args: [
-        "run",
-        "--config",
-        `patch.crates-io.trellis-rs.path=${
-          JSON.stringify(
-            fromFileUrl(new URL("../../crates/trellis", import.meta.url)),
-          )
-        }`,
-        "--bin",
-        "events",
-        "--manifest-path",
-        fromFileUrl(
-          new URL(
-            "../../integration/fixtures/runtime/Cargo.toml",
-            import.meta.url,
-          ),
-        ),
-      ],
+    const eventsArgv = rustFixtureArgv("events");
+    const process = new Deno.Command(eventsArgv[0], {
+      args: eventsArgv.slice(1),
       env: {
         TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_IDENTITY_SEED: identity.seed,
         CONSUMER_ONLY: "true",
         EPHEMERAL: "true",
-        CARGO_TARGET_DIR: fromFileUrl(
-          new URL("../../target", import.meta.url),
-        ),
       },
       stdout: "piped",
       stderr: "inherit",

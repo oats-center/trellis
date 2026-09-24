@@ -5,13 +5,13 @@ import { Result } from "@oatscenter/trellis";
 import { TransportError } from "@oatscenter/trellis/errors";
 import { RetryJobError, TrellisService } from "@oatscenter/trellis/service";
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { fromFileUrl, join } from "@std/path";
+import { join } from "@std/path";
 import { participants as webParticipants } from "trellis-web-generated";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { participants as removedParticipants } from "../../integration/fixtures/runtime-removed/packages/runtime-trellis/index.js";
 import { adminParticipant } from "../packages/trellis-test/src/admin/methods.ts";
-import { withTrellisRuntime } from "./_support/runtime.ts";
+import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
 
 const persistedProgress = {
   value: "persisted",
@@ -127,30 +127,7 @@ Deno.test("runtime owns its production stream configs across restart", async () 
 });
 
 Deno.test("generated TypeScript caller reaches Rust provider", async () => {
-  const cargoArgs = [
-    "--config",
-    `patch.crates-io.trellis-rs.path=${
-      JSON.stringify(
-        fromFileUrl(new URL("../../crates/trellis", import.meta.url)),
-      )
-    }`,
-    "--bin",
-    "trellis-runtime-acceptance",
-    "--manifest-path",
-    fromFileUrl(
-      new URL("../../integration/fixtures/runtime/Cargo.toml", import.meta.url),
-    ),
-  ];
-  const cargoTargetDir = fromFileUrl(new URL("../../target", import.meta.url));
-  const build = await new Deno.Command("cargo", {
-    args: ["build", ...cargoArgs],
-    env: { CARGO_TARGET_DIR: cargoTargetDir },
-    stdout: "inherit",
-    stderr: "inherit",
-  }).spawn().status;
-  if (!build.success) {
-    throw new Error(`Rust provider build failed: ${build.code}`);
-  }
+  const providerArgv = rustFixtureArgv("trellis-runtime-acceptance");
 
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
@@ -159,15 +136,10 @@ Deno.test("generated TypeScript caller reaches Rust provider", async () => {
     });
     const startProvider = () =>
       new Deno.Command("setsid", {
-        args: [
-          "cargo",
-          "run",
-          ...cargoArgs,
-        ],
+        args: providerArgv,
         env: {
           TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_IDENTITY_SEED: identity.seed,
-          CARGO_TARGET_DIR: cargoTargetDir,
         },
         stdout: "inherit",
         stderr: "inherit",
@@ -378,33 +350,12 @@ Deno.test("generated TypeScript caller reaches Rust provider", async () => {
 
       // Generated Rust caller leg: the same running Rust provider serves the
       // generated Rust Feed and Operation calls.
-      const callerChild = new Deno.Command("cargo", {
-        args: [
-          "run",
-          "--config",
-          `patch.crates-io.trellis-rs.path=${
-            JSON.stringify(
-              fromFileUrl(
-                new URL("../../crates/trellis", import.meta.url),
-              ),
-            )
-          }`,
-          "--bin",
-          "caller",
-          "--manifest-path",
-          fromFileUrl(
-            new URL(
-              "../../integration/fixtures/runtime/Cargo.toml",
-              import.meta.url,
-            ),
-          ),
-        ],
+      const callerArgv = rustFixtureArgv("caller");
+      const callerChild = new Deno.Command(callerArgv[0], {
+        args: callerArgv.slice(1),
         env: {
           TRELLIS_URL: runtime.trellisUrl,
           XDG_CONFIG_HOME: join(runtime.workdir, "rust-caller-config"),
-          CARGO_TARGET_DIR: fromFileUrl(
-            new URL("../../target", import.meta.url),
-          ),
         },
         stdout: "piped",
         stderr: "inherit",
@@ -498,31 +449,12 @@ Deno.test("generated Rust resources use live NATS", async () => {
       name: "rust-resources",
       contract: participants.Provider.participant,
     });
-    const child = new Deno.Command("cargo", {
-      args: [
-        "run",
-        "--config",
-        `patch.crates-io.trellis-rs.path=${
-          JSON.stringify(
-            fromFileUrl(new URL("../../crates/trellis", import.meta.url)),
-          )
-        }`,
-        "--bin",
-        "resources",
-        "--manifest-path",
-        fromFileUrl(
-          new URL(
-            "../../integration/fixtures/runtime/Cargo.toml",
-            import.meta.url,
-          ),
-        ),
-      ],
+    const resourcesArgv = rustFixtureArgv("resources");
+    const child = new Deno.Command(resourcesArgv[0], {
+      args: resourcesArgv.slice(1),
       env: {
         TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_IDENTITY_SEED: identity.seed,
-        CARGO_TARGET_DIR: fromFileUrl(
-          new URL("../../target", import.meta.url),
-        ),
       },
       stdin: "piped",
       stdout: "piped",
@@ -569,32 +501,13 @@ Deno.test("generated Rust resources use live NATS", async () => {
     await runtime.contracts.install({
       contract: participants.StateCaller.participant,
     });
-    const stateChild = new Deno.Command("cargo", {
-      args: [
-        "run",
-        "--config",
-        `patch.crates-io.trellis-rs.path=${
-          JSON.stringify(
-            fromFileUrl(new URL("../../crates/trellis", import.meta.url)),
-          )
-        }`,
-        "--bin",
-        "resources",
-        "--manifest-path",
-        fromFileUrl(
-          new URL(
-            "../../integration/fixtures/runtime/Cargo.toml",
-            import.meta.url,
-          ),
-        ),
-      ],
+    const stateArgv = rustFixtureArgv("resources");
+    const stateChild = new Deno.Command(stateArgv[0], {
+      args: stateArgv.slice(1),
       env: {
         TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_STATE_ACCEPTANCE: "1",
         XDG_CONFIG_HOME: join(runtime.workdir, "rust-state-config"),
-        CARGO_TARGET_DIR: fromFileUrl(
-          new URL("../../target", import.meta.url),
-        ),
       },
       stdout: "piped",
       stderr: "inherit",

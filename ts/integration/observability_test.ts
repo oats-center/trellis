@@ -12,7 +12,7 @@ import {
 } from "npm:@opentelemetry/sdk-metrics@^2.7.0";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
-import { withTrellisRuntime } from "./_support/runtime.ts";
+import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
 
 /** Built server binary used so each scenario can set its own environment. */
 function serverBinary(): string {
@@ -266,35 +266,14 @@ for (
                 downstreamEchoes.includes(
                   "Rust received operation-downstream",
                 ), { timeoutMs: 60_000 });
-              const child = new Deno.Command("cargo", {
-                args: [
-                  "run",
-                  "--config",
-                  `patch.crates-io.trellis-rs.path=${
-                    JSON.stringify(
-                      fromFileUrl(
-                        new URL("../../crates/trellis", import.meta.url),
-                      ),
-                    )
-                  }`,
-                  "--bin",
-                  "caller",
-                  "--manifest-path",
-                  fromFileUrl(
-                    new URL(
-                      "../../integration/fixtures/runtime/Cargo.toml",
-                      import.meta.url,
-                    ),
-                  ),
-                ],
+              const callerArgv = rustFixtureArgv("caller");
+              const child = new Deno.Command(callerArgv[0], {
+                args: callerArgv.slice(1),
                 env: {
                   TRELLIS_URL: runtime.trellisUrl,
                   XDG_CONFIG_HOME: join(
                     runtime.workdir,
                     "rust-observability-caller",
-                  ),
-                  CARGO_TARGET_DIR: fromFileUrl(
-                    new URL("../../target", import.meta.url),
                   ),
                 },
                 stdout: "piped",

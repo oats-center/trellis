@@ -15,20 +15,6 @@ on:
   push:
     branches:
       - "release/v*"
-  pull_request:
-    paths:
-      - ".dockerignore"
-      - ".github/workflows/release.yml"
-      - "CHANGELOG.md"
-      - "art/**"
-      - "conformance/**"
-      - "integration/**"
-      - "ts/**"
-      - "crates/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "scripts/**"
-      - "xtask/**"
 
 permissions:
   contents: read
@@ -190,7 +176,7 @@ jobs:
           fi
 
       - name: Build embedded browser apps
-        run: deno task -c ts/deno.json browser:embedded
+        run: deno task -c web/deno.json build:embedded
 
       - name: Write release notes
         if: env.RELEASE_TAG != ''
@@ -205,7 +191,6 @@ jobs:
             .dockerignore
             CHANGELOG.md
             art
-            conformance
             demos/ts
             demos/app
             integration
@@ -265,8 +250,8 @@ jobs:
     if: >-
       always()
       && needs.package-rust.result == 'success'
-      && (needs.build-cli.result == 'success' || needs.build-cli.result == 'skipped')
-    needs: [prepare-release, package-rust, build-cli]
+      && (needs.build-cli-linux.result == 'success' || needs.build-cli-linux.result == 'skipped')
+    needs: [prepare-release, package-rust, build-cli-linux]
     runs-on: [self-hosted, Linux, X64]
     env:
       RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
@@ -422,7 +407,75 @@ jobs:
             ts/packages/trellis/npm
             ts/packages/trellis-svelte/npm
 
-  build-cli:
+  build-cli-linux:
+    name: Build native Linux runtime (${{ matrix.arch }})
+    if: needs.prepare-release.outputs.release-tag != ''
+    needs: prepare-release
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: rust:bookworm
+    env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
+      TRELLIS_OFFICIAL_BUILD: "1"
+      TRELLIS_BUILD_SHA: ${{ github.sha }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - arch: arm64
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Download prepared release workspace
+        uses: actions/download-artifact@v4
+        with:
+          name: prepared-release
+          path: .
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      # The runtime image base is debian:bookworm-slim, so compile in the same
+      # release (rust:bookworm) on each native architecture. Do not build these
+      # executables against a newer host libc and then COPY them into the image.
+      - name: Build release binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          time cargo build -p trellis-cli -p trellis-server --release --target ${{ matrix.target }}
+
+      - name: Package CLI archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG:-${GITHUB_REF_NAME:-dev}}"
+          target="${{ matrix.target }}"
+          archive_version="${version//\//-}"
+          staging="dist/${target}"
+          mkdir -p "$staging"
+
+          cp "target/${target}/release/trellis" "$staging/trellis"
+          cp "target/${target}/release/trellis-server" "$staging/trellis-server"
+          archive="trellis-${archive_version}-${target}.tar.gz"
+          tar -C "$staging" -czf "dist/$archive" trellis trellis-server
+          sha256sum "dist/$archive" > "dist/checksum-${archive_version}-${target}-trellis.sha256"
+
+      - name: Upload packaged CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trellis-cli-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  build-cli-darwin:
     name: Build ${{ matrix.target }} CLI
     if: needs.prepare-release.outputs.release-tag != ''
     needs: prepare-release
@@ -434,10 +487,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
           - runner: macos-14
             target: x86_64-apple-darwin
           - runner: macos-14
@@ -511,7 +560,7 @@ jobs:
   verify-images:
     name: Build verified ${{ matrix.image }} image
     if: needs.prepare-release.outputs.release-tag != ''
-    needs: [prepare-release, package-js]
+    needs: [prepare-release, package-js, build-cli-linux]
     runs-on: [self-hosted, Linux, X64]
     env:
       RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
@@ -538,6 +587,35 @@ jobs:
         with:
           name: prepared-release
           path: .
+
+      # The image copies the producer's executables; it never compiles Trellis.
+      # Stage each target's archive under dist/native/<goarch>/ so the
+      # Containerfile can select it with buildx's TARGETARCH.
+      - name: Download native Linux runtime archives
+        if: matrix.image == 'trellis'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: trellis-cli-*-unknown-linux-gnu
+          merge-multiple: true
+          path: ${{ runner.temp }}/native-runtime
+
+      - name: Stage native binaries for image assembly
+        if: matrix.image == 'trellis'
+        shell: bash
+        run: |
+          set -euo pipefail
+          declare -A arches=( [amd64]=x86_64-unknown-linux-gnu [arm64]=aarch64-unknown-linux-gnu )
+          for arch in "${!arches[@]}"; do
+            target="${arches[${arch}]}"
+            archive="$(find "$RUNNER_TEMP/native-runtime" -maxdepth 1 -name "trellis-*-${target}.tar.gz" | head -n1)"
+            if [ -z "${archive}" ]; then
+              echo "missing native Linux runtime archive for ${target}" >&2
+              exit 1
+            fi
+            mkdir -p "dist/native/${arch}"
+            tar --no-same-owner -xzf "${archive}" -C "dist/native/${arch}" trellis trellis-server
+          done
+          ls -l dist/native/amd64 dist/native/arm64
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -582,125 +660,7 @@ jobs:
       - name: Smoke-test managed NATS in the trellis image
         if: matrix.image == 'trellis'
         shell: bash
-        env:
-          IMAGE: trellis-smoke:test
-          BUNDLE_VOLUME: trellis-bundle
-          STATE_VOLUME: trellis-state
-        run: |
-          set -euo pipefail
-          cleanup() {
-            docker rm -f trellis-smoke-run >/dev/null 2>&1 || true
-            docker volume rm "${BUNDLE_VOLUME}" >/dev/null 2>&1 || true
-            docker volume rm "${STATE_VOLUME}" >/dev/null 2>&1 || true
-            docker image rm "${IMAGE}" >/dev/null 2>&1 || true
-          }
-          trap cleanup EXIT
-
-          # 1. Baked nats-server matches the pinned version; both binaries run.
-          nats_version="$(docker run --rm --entrypoint nats-server "${IMAGE}" --version)"
-          expected_nats_version="$(jq -r '.["nats-server"].version' crates/local-nats/nats-binaries.json)"
-          case "${nats_version}" in *"v${expected_nats_version}"*) ;; *)
-            echo "nats-server version mismatch: got '${nats_version}', expected v${expected_nats_version}" >&2
-            exit 1
-            ;;
-          esac
-          trellis_version="$(docker run --rm --entrypoint trellis "${IMAGE}" --version)"
-          test -n "${trellis_version}"
-          server_version="$(docker run --rm --entrypoint trellis-server "${IMAGE}" --version)"
-          test -n "${server_version}"
-
-          # 2. Generate a bundle into the state volume, owned by the image's
-          #    non-root user, then copy it into its own named volume. System path
-          #    defaults keep mutable SQLite state out of the read-only bundle.
-          docker volume create "${BUNDLE_VOLUME}" >/dev/null
-          docker volume create "${STATE_VOLUME}" >/dev/null
-          docker run --rm --user root --entrypoint chown -v "${STATE_VOLUME}":/var/lib/trellis \
-            "${IMAGE}" -R 10001:10001 /var/lib/trellis
-          docker run --rm --user 10001:10001 --entrypoint trellis \
-            -v "${STATE_VOLUME}":/var/lib/trellis "${IMAGE}" \
-            init config --out /var/lib/trellis/bundle
-          docker run --rm --user root --entrypoint cp \
-            -v "${STATE_VOLUME}":/from:ro -v "${BUNDLE_VOLUME}":/to "${IMAGE}" \
-            -a /from/bundle/. /to/
-          # The bundle's creds/secrets are 0o600 and generated as 10001, but the
-          # copy helper runs as root and the bundle volume root is root-owned:
-          # the run container uid must own the bundle contents to read them.
-          docker run --rm --user root --entrypoint chown \
-            -v "${BUNDLE_VOLUME}":/to "${IMAGE}" \
-            -R 10001:10001 /to
-
-          # 3. Managed-mode run: non-root user, read-only rootfs, read-only
-          #    bundle volume, writable state volume. All mutable NATS files go
-          #    to /var/lib/trellis/nats via the system profile and the runtime's
-          #    SQLite stores to /var/lib/trellis/data (config rewritten above).
-          #    Private runtime and log directories are created inside portable
-          #    sticky tmpfs parents by the non-root service user.
-          docker run --detach --name trellis-smoke-run --read-only --tmpfs /tmp \
-            --tmpfs /run:mode=1777 \
-            --tmpfs /var/log:mode=1777 \
-            --user 10001:10001 \
-            --publish 127.0.0.1::3000 \
-            --volume "${BUNDLE_VOLUME}":/etc/trellis:ro,Z \
-            --volume "${STATE_VOLUME}":/var/lib/trellis:rw,Z \
-            --entrypoint sh "${IMAGE}" -c \
-              'mkdir -m 0700 /run/trellis /var/log/trellis; exec trellis-server --system all --local-nats=/usr/local/bin/nats-server'
-
-          # 4. Wait for runtime readiness on the published port.
-          runtime_port="$(docker port trellis-smoke-run 3000/tcp | cut -d: -f2)"
-          ready=""
-          for attempt in $(seq 1 90); do
-            if curl --fail --silent "http://127.0.0.1:${runtime_port}/readyz" >/dev/null 2>&1; then
-              ready=1
-              break
-            fi
-            if ! docker inspect trellis-smoke-run >/dev/null 2>&1; then
-              echo "trellis-smoke-run exited during startup" >&2
-              docker logs trellis-smoke-run >&2 || true
-              exit 1
-            fi
-            sleep 2
-          done
-          if [ -z "${ready}" ]; then
-            echo "timed out waiting for runtime readiness" >&2
-            docker logs trellis-smoke-run >&2 || true
-            exit 1
-          fi
-
-          # 5. Graceful stop: SIGTERM, wait up to 30s, then check the exit code.
-          docker stop --time 30 trellis-smoke-run >/dev/null
-          exit_code="$(docker wait trellis-smoke-run)"
-          if [ "${exit_code}" != "0" ]; then
-            echo "trellis-smoke-run exited with ${exit_code} instead of 0" >&2
-            docker logs trellis-smoke-run >&2 || true
-            exit 1
-          fi
-
-          # 6. No startup or write errors in the logs.
-          logs="$(docker logs trellis-smoke-run 2>&1)"
-          if grep -Ei 'read-only|readonly|permission denied|failed to (write|create|open)' <<<"${logs}"; then
-            echo "unexpected write/startup error in the smoke logs" >&2
-            printf '%s\n' "${logs}" >&2
-            exit 1
-          fi
-
-          # 7. Mutable NATS state landed in the state volume; the pid file was
-          #    removed on shutdown; the bundle volume stayed untouched; the
-          #    runtime's SQLite databases landed in the system data root.
-          docker run --rm --entrypoint sh \
-            -v "${BUNDLE_VOLUME}":/etc/trellis:ro,Z \
-            -v "${STATE_VOLUME}":/var/lib/trellis:rw,Z "${IMAGE}" -c '
-              set -eu
-              test -f /var/lib/trellis/nats/nats.conf
-              test -f /var/lib/trellis/nats/jwt.conf
-              test -d /var/lib/trellis/nats/data/jwt
-              test -d /var/lib/trellis/nats/data/jetstream
-              test ! -e /var/lib/trellis/nats/nats-server.pid
-              test ! -e /etc/trellis/nats/nats.local.conf
-              test ! -e /etc/trellis/nats/jwt.local.conf
-              test -f /var/lib/trellis/platform.sqlite
-              test ! -e /etc/trellis/platform.sqlite
-            '
-          echo "managed NATS image smoke passed"
+        run: bash scripts/smoke-trellis-image.sh --image trellis-smoke:test
 
       - name: Upload verified image archive
         uses: actions/upload-artifact@v4
@@ -709,6 +669,59 @@ jobs:
           path: /tmp/${{ matrix.image }}.tar
           compression-level: 0
 
+  smoke-image-arm64:
+    name: Smoke the native arm64 runtime image
+    if: needs.prepare-release.outputs.release-tag != ''
+    needs: [prepare-release, build-cli-linux]
+    runs-on: ubuntu-24.04-arm
+    env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download prepared release workspace
+        uses: actions/download-artifact@v4
+        with:
+          name: prepared-release
+          path: .
+
+      - name: Download native arm64 runtime archive
+        uses: actions/download-artifact@v4
+        with:
+          name: trellis-cli-aarch64-unknown-linux-gnu
+          path: ${{ runner.temp }}/native-runtime
+
+      - name: Stage native binaries for image assembly
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$(find "$RUNNER_TEMP/native-runtime" -maxdepth 1 -name 'trellis-*-aarch64-unknown-linux-gnu.tar.gz' | head -n1)"
+          if [ -z "${archive}" ]; then
+            echo "missing native Linux runtime archive for aarch64-unknown-linux-gnu" >&2
+            exit 1
+          fi
+          mkdir -p dist/native/arm64
+          tar --no-same-owner -xzf "${archive}" -C dist/native/arm64 trellis trellis-server
+
+      # The multi-arch archive is assembled on x64 under emulation, so this is
+      # the native ARM runtime evidence: assemble and smoke the arm64 image on a
+      # native arm64 runner.
+      - name: Build native arm64 trellis image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --platform linux/arm64 \
+            --tag trellis-smoke-arm64:test \
+            --build-arg TRELLIS_VERSION="${RELEASE_TAG}" \
+            --build-arg TRELLIS_REVISION="${{ github.sha }}" \
+            --file crates/runtime/Containerfile .
+
+      - name: Smoke-test managed NATS in the native arm64 image
+        shell: bash
+        run: bash scripts/smoke-trellis-image.sh --image trellis-smoke-arm64:test
+
   release-gate:
     name: Release gate
     needs:
@@ -716,8 +729,10 @@ jobs:
       - package-rust
       - rust-testkit-consumer
       - package-js
-      - build-cli
+      - build-cli-linux
+      - build-cli-darwin
       - verify-images
+      - smoke-image-arm64
     if: >-
       always()
       && needs.package-rust.result == 'success'
@@ -725,7 +740,7 @@ jobs:
       && needs.package-js.result == 'success'
       && (
         needs.prepare-release.outputs.release-tag == ''
-        || (needs.build-cli.result == 'success' && needs.verify-images.result == 'success')
+        || (needs.build-cli-linux.result == 'success' && needs.build-cli-darwin.result == 'success' && needs.verify-images.result == 'success' && needs.smoke-image-arm64.result == 'success')
       )
     runs-on: [self-hosted, Linux, X64]
 

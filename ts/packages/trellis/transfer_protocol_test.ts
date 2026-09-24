@@ -1,5 +1,5 @@
 import { assertEquals } from "@std/assert";
-import vectors from "../../../conformance/transfer-v1-vectors.json" with {
+import vectors from "../../../integration/fixtures/protocol/transfer-v1/vectors.json" with {
   type: "json",
 };
 import { base64urlDecode, base64urlEncode } from "./auth/utils.ts";
