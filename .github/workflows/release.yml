@@ -270,6 +270,10 @@ jobs:
     runs-on: [self-hosted, Linux, X64]
     env:
       RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
+      # A tagless verification build stages native binaries; build them as an
+      # official (version-clean) build so the CLI and server agree with the
+      # package version the manifest records.
+      TRELLIS_OFFICIAL_BUILD: "1"
 
     steps:
       - name: Download prepared release workspace
@@ -320,10 +324,7 @@ jobs:
       - name: Package the verification bundle
         run: |
           set -euo pipefail
-          # Record the version the bundle's own executable reports: a non-official
-          # build appends local build metadata that the package version omits.
-          version="$("$RUNNER_TEMP/testkit-bundle/binaries/trellis" --format json version \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
+          version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
           bash scripts/stage-rust-test-bundle.sh \
             --bundle "$RUNNER_TEMP/testkit-bundle" \
             --output "$RUNNER_TEMP/rust-testkit-bundle.tar.gz" \

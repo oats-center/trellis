@@ -598,6 +598,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build live runtime binaries
+        # Build the packaged runtime as an official (version-clean) build so the
+        # CLI and server report the same package version the manifest records.
+        env:
+          TRELLIS_OFFICIAL_BUILD: "1"
         run: cargo build --manifest-path Cargo.toml -p trellis-server -p trellis-cli
 
       - name: Package the public crates
@@ -621,10 +625,7 @@ jobs:
       - name: Package the verification bundle
         run: |
           set -euo pipefail
-          # Record the version the bundle's own executable reports: a non-official
-          # build appends local build metadata that the package version omits.
-          version="$("$RUNNER_TEMP/testkit-bundle/binaries/trellis" --format json version \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
+          version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
           bash scripts/stage-rust-test-bundle.sh \
             --bundle "$RUNNER_TEMP/testkit-bundle" \
             --output "$RUNNER_TEMP/rust-testkit-bundle.tar.gz" \
