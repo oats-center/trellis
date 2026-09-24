@@ -69,9 +69,6 @@ pub struct TrellisTestRuntimeBuilder {
     retention: WorkdirRetention,
     timeouts: TestTimeouts,
     timeouts_explicit: bool,
-    extra_origins: Vec<String>,
-    admin_username: Option<String>,
-    admin_password: Option<String>,
 }
 
 impl Default for TrellisTestRuntimeBuilder {
@@ -84,9 +81,6 @@ impl Default for TrellisTestRuntimeBuilder {
             retention: WorkdirRetention::OnFailure,
             timeouts: TestTimeouts::default(),
             timeouts_explicit: false,
-            extra_origins: Vec::new(),
-            admin_username: None,
-            admin_password: None,
         }
     }
 }
@@ -135,46 +129,6 @@ impl TrellisTestRuntimeBuilder {
         self
     }
 
-    /// Replaces the additional allowed HTTP origins.
-    ///
-    /// Every origin is added to the runtime's accepted request origins and
-    /// insecure-origin allow-list, so a browser app served from its own
-    /// development origin (for example `http://localhost:5174`) can complete a
-    /// portal login against this runtime.
-    #[must_use]
-    pub fn extra_origins(mut self, origins: Vec<String>) -> Self {
-        self.extra_origins = origins;
-        self
-    }
-
-    /// Adds one additional allowed HTTP origin.
-    #[must_use]
-    pub fn extra_origin(mut self, origin: impl Into<String>) -> Self {
-        self.extra_origins.push(origin.into());
-        self
-    }
-
-    /// Pins the sandbox administrator's local username.
-    ///
-    /// The default is [`ADMIN_USERNAME`]. The value in effect is available from
-    /// [`TrellisTestRuntime::admin_username`].
-    #[must_use]
-    pub fn admin_username(mut self, username: impl Into<String>) -> Self {
-        self.admin_username = Some(username.into());
-        self
-    }
-
-    /// Pins the sandbox administrator's local password.
-    ///
-    /// The default is a fresh random value. Whichever value is in effect is
-    /// available from [`TrellisTestRuntime::admin_password`] so a real browser or
-    /// portal-driven test can type the administrator credentials.
-    #[must_use]
-    pub fn admin_password(mut self, password: impl Into<String>) -> Self {
-        self.admin_password = Some(password.into());
-        self
-    }
-
     /// Starts an isolated runtime.
     ///
     /// # Errors
@@ -194,9 +148,6 @@ impl TrellisTestRuntimeBuilder {
             self.timeouts
         };
         validate_timeouts(&timeouts)?;
-        for origin in &self.extra_origins {
-            validate_origin(origin)?;
-        }
 
         let cli = resolve_binary(self.cli_binary, "TRELLIS_TEST_CLI_BIN", "Trellis CLI")?;
         let server = resolve_binary(
@@ -213,46 +164,34 @@ impl TrellisTestRuntimeBuilder {
 
         // One absolute startup deadline governs version checks and every attempt.
         let deadline = Instant::now() + timeouts.startup;
-        let mut state = StartupState::new(ProcessSupervisor::new(timeouts.shutdown));
+        let mut state =
+            StartupState::new(ProcessSupervisor::new(timeouts.shutdown), timeouts.shutdown);
 
-        // Validate immutable inputs once, before any startup attempt.
-        let validation = Sandbox::create(&parent, WorkdirRetention::Never)?;
+        // Validate immutable inputs once, before any startup attempt. The
+        // validation sandbox lives under the same cancellation owner as the
+        // attempt sandboxes, so an aborted start still removes it.
+        state.set_sandbox(Sandbox::create(&parent, WorkdirRetention::Never)?);
         let validated = validate_versions(
             state.supervisor(),
             &cli,
             &server,
-            &validation,
+            state.sandbox(),
             &path,
             deadline,
         )
         .await;
-        let mut validation = validation;
-        let _ = validation.cleanup();
+        let validation_cleanup = state.sandbox_mut().cleanup();
         validated?;
+        if let Some(error) = validation_cleanup {
+            return Err(error);
+        }
 
-        let username = self
-            .admin_username
-            .clone()
-            .unwrap_or_else(|| ADMIN_USERNAME.to_owned());
-        let password = self
-            .admin_password
-            .clone()
-            .unwrap_or_else(generate_password);
-        validate_admin_credentials(&username, &password)?;
+        let password = generate_password();
         for attempt in 1..=MAX_STARTUP_ATTEMPTS {
             let sandbox = Sandbox::create(&parent, self.retention)?;
             state.set_sandbox(sandbox);
             match start_once(
-                &mut state,
-                &cli,
-                &server,
-                &nats,
-                &path,
-                timeouts,
-                &username,
-                &password,
-                deadline,
-                &self.extra_origins,
+                &mut state, &cli, &server, &nats, &path, timeouts, &password, deadline,
             )
             .await
             {
@@ -282,14 +221,16 @@ impl TrellisTestRuntimeBuilder {
 struct StartupState {
     supervisor: Option<ProcessSupervisor>,
     sandbox: Option<Sandbox>,
+    shutdown_timeout: Duration,
     armed: bool,
 }
 
 impl StartupState {
-    fn new(supervisor: ProcessSupervisor) -> Self {
+    fn new(supervisor: ProcessSupervisor, shutdown_timeout: Duration) -> Self {
         Self {
             supervisor: Some(supervisor),
             sandbox: None,
+            shutdown_timeout,
             armed: true,
         }
     }
@@ -325,8 +266,16 @@ impl StartupState {
         deadline: Instant,
     ) -> TrellisTestError {
         self.sandbox_mut().mark_failed();
-        let mut cleanup: Vec<TrellisTestError> = self.supervisor().stop(deadline).await;
-        if let Some(cleanup_error) = self.sandbox_mut().cleanup() {
+        let (mut cleanup, timed_out) = self.supervisor().stop(deadline).await;
+        if timed_out {
+            // The supervisor is still finishing process cleanup. Hand it and the
+            // sandbox to detached cleanup and install a fresh supervisor so a
+            // retry is not blocked by the timed-out one.
+            let supervisor = self.supervisor.take().expect("startup supervisor");
+            let sandbox = self.sandbox.take().expect("startup sandbox");
+            spawn_detached_cleanup(supervisor, sandbox);
+            self.supervisor = Some(ProcessSupervisor::new(self.shutdown_timeout));
+        } else if let Some(cleanup_error) = self.sandbox_mut().cleanup() {
             cleanup.push(cleanup_error);
         }
         if let Some(first) = cleanup.into_iter().next() {
@@ -366,32 +315,22 @@ async fn start_once(
     nats: &NatsExecutable,
     path: &OsString,
     timeouts: TestTimeouts,
-    username: &str,
     password: &str,
     deadline: Instant,
-    extra_origins: &[String],
 ) -> Result<TrellisTestRuntime, (TrellisTestError, bool)> {
     let lease = PortLease::reserve().map_err(|e| (e, false))?;
     let ports = lease.ports().map_err(|e| (e, false))?;
     let public_origin = format!("http://127.0.0.1:{}", ports.http);
     let nats_url = format!("nats://127.0.0.1:{}", ports.nats);
     let websocket_url = format!("ws://127.0.0.1:{}", ports.websocket);
+    let monitor_url = format!("http://127.0.0.1:{}", ports.monitor);
 
-    let config_path = generate_bundle(
-        state,
-        cli,
-        path,
-        ports,
-        &public_origin,
-        timeouts,
-        deadline,
-        extra_origins,
-    )
-    .await
-    .map_err(|e| {
-        state.sandbox_mut().mark_failed();
-        (e, false)
-    })?;
+    let config_path = generate_bundle(state, cli, path, ports, &public_origin, timeouts, deadline)
+        .await
+        .map_err(|e| {
+            state.sandbox_mut().mark_failed();
+            (e, false)
+        })?;
     edit_config_toml(&config_path, ports.http).map_err(|e| {
         state.sandbox_mut().mark_failed();
         (e, false)
@@ -419,6 +358,10 @@ async fn start_once(
             (e, false)
         })?;
     let pid = spawned.pid;
+    // Redact the administrator password from the diagnostic tail as it is
+    // captured, before the bounded tail can truncate it.
+    spawned.stdout.add_secret(password.as_bytes());
+    spawned.stderr.add_secret(password.as_bytes());
 
     let token = match wait_for_bootstrap(&captured_token, state.supervisor(), pid, deadline).await {
         Ok(token) => token,
@@ -434,6 +377,10 @@ async fn start_once(
             return Err((error, retryable));
         }
     };
+    // The bootstrap token is discovered from the captured output; register it so
+    // already-captured bytes and every later occurrence are redacted too.
+    spawned.stdout.add_secret(token.as_bytes());
+    spawned.stderr.add_secret(token.as_bytes());
     if let Err(error) = wait_for_readyz(&public_origin, state.supervisor(), pid, deadline).await {
         let (error, retryable) = classify_startup(
             &error,
@@ -450,7 +397,7 @@ async fn start_once(
     if let Err(error) = bootstrap_first_admin(
         &public_origin,
         &token,
-        username,
+        ADMIN_USERNAME,
         password,
         remaining_ms(request_deadline),
     )
@@ -459,11 +406,28 @@ async fn start_once(
         state.sandbox_mut().mark_failed();
         return Err((error, false));
     }
-    let admin = match AdminSession::connect(&public_origin, username, password).await {
-        Ok(admin) => admin,
-        Err(error) => {
+    // The remaining startup deadline bounds the authenticated session too, so
+    // `start` has one real upper bound until it returns a usable runtime.
+    let admin = match tokio::time::timeout_at(
+        deadline.into(),
+        AdminSession::connect(&public_origin, ADMIN_USERNAME, password),
+    )
+    .await
+    {
+        Ok(Ok(admin)) => admin,
+        Ok(Err(error)) => {
             state.sandbox_mut().mark_failed();
             return Err((error, false));
+        }
+        Err(_) => {
+            state.sandbox_mut().mark_failed();
+            return Err((
+                request_timeout(
+                    "connecting the administrator session",
+                    TrellisTestStage::AdministratorLogin,
+                ),
+                false,
+            ));
         }
     };
     let workdir = state.sandbox().root().to_path_buf();
@@ -473,10 +437,10 @@ async fn start_once(
         trellis_url: public_origin,
         nats_url,
         websocket_url,
+        monitor_url,
         admin: Some(admin),
         supervisor: Some(supervisor),
         sandbox: Some(sandbox),
-        username: username.to_owned(),
         password: password.to_owned(),
         names: Vec::new(),
         participants: Vec::new(),
@@ -484,11 +448,26 @@ async fn start_once(
         timeouts,
         stopped: false,
     };
-    // Confirm a real authenticated boundary before returning.
-    if let Err(error) = runtime.verify_admin().await {
-        runtime.mark_failed();
-        let _ = runtime.shutdown().await;
-        return Err((error, false));
+    // Confirm a real authenticated boundary before returning, within the same
+    // startup deadline.
+    match tokio::time::timeout_at(deadline.into(), runtime.verify_admin()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            runtime.mark_failed();
+            let _ = runtime.shutdown().await;
+            return Err((error, false));
+        }
+        Err(_) => {
+            runtime.mark_failed();
+            let _ = runtime.shutdown().await;
+            return Err((
+                request_timeout(
+                    "verifying the administrator session",
+                    TrellisTestStage::AdministratorLogin,
+                ),
+                false,
+            ));
+        }
     }
     Ok(runtime)
 }
@@ -499,10 +478,10 @@ pub struct TrellisTestRuntime {
     trellis_url: String,
     nats_url: String,
     websocket_url: String,
+    monitor_url: String,
     admin: Option<AdminSession>,
     supervisor: Option<ProcessSupervisor>,
     sandbox: Option<Sandbox>,
-    username: String,
     password: String,
     names: Vec<String>,
     participants: Vec<(String, String)>,
@@ -536,27 +515,16 @@ impl TrellisTestRuntime {
         &self.websocket_url
     }
 
+    /// HTTP monitoring URL of the runtime's managed NATS server.
+    #[must_use]
+    pub fn monitor_url(&self) -> &str {
+        &self.monitor_url
+    }
+
     /// Sandbox work directory.
     #[must_use]
     pub fn workdir(&self) -> &Path {
         &self.workdir
-    }
-
-    /// Local administrator username for the isolated sandbox.
-    #[must_use]
-    pub fn admin_username(&self) -> &str {
-        &self.username
-    }
-
-    /// Local administrator password for the isolated sandbox.
-    ///
-    /// This is the sandbox-only credential, exposed so a real browser or
-    /// portal-driven test can type the administrator username and password into
-    /// the login form. Treat it as a secret: never log it or include it in
-    /// uploaded evidence.
-    #[must_use]
-    pub fn admin_password(&self) -> &str {
-        &self.password
     }
 
     fn admin(&self) -> Result<&AdminSession, TrellisTestError> {
@@ -788,7 +756,7 @@ impl TrellisTestRuntime {
         let session = crate::admin::login_client(
             &self.trellis_url,
             P::ID,
-            &self.username,
+            ADMIN_USERNAME,
             &self.password,
             admin,
         )
@@ -817,8 +785,29 @@ impl TrellisTestRuntime {
         let deadline = Instant::now() + self.timeouts.shutdown;
         let mut failure: Option<TrellisTestError> = None;
         if let Some(supervisor) = self.supervisor.take() {
-            for cleanup in supervisor.stop(deadline).await {
+            let (failures, timed_out) = supervisor.stop(deadline).await;
+            for cleanup in failures {
                 failure = Some(merge_failure(failure, cleanup));
+            }
+            if timed_out {
+                // Processes may still be finishing. Hand the supervisor and the
+                // sandbox to detached cleanup so retention is applied only after
+                // the owned processes are actually gone, and return the timeout
+                // promptly.
+                match self.sandbox.take() {
+                    Some(mut sandbox) => {
+                        sandbox.mark_failed();
+                        spawn_detached_cleanup(supervisor, sandbox);
+                    }
+                    None => supervisor.request_stop(),
+                }
+                return Err(failure.unwrap_or_else(|| {
+                    TrellisTestError::new(
+                        TrellisTestErrorKind::Timeout,
+                        TrellisTestStage::Shutdown,
+                        "the process supervisor did not finish cleanup within the shutdown deadline",
+                    )
+                }));
             }
         }
         if let Some(mut sandbox) = self.sandbox.take() {
@@ -889,52 +878,6 @@ fn validate_timeouts(timeouts: &TestTimeouts) -> Result<(), TrellisTestError> {
                 format!("the {name} timeout must be greater than zero"),
             ));
         }
-    }
-    Ok(())
-}
-
-/// Rejects an empty username or a password the runtime's local-identity policy
-/// would reject, before any server side effect.
-fn validate_admin_credentials(username: &str, password: &str) -> Result<(), TrellisTestError> {
-    let invalid = |reason: &str| {
-        TrellisTestError::new(
-            TrellisTestErrorKind::InvalidConfiguration,
-            TrellisTestStage::Validation,
-            format!("invalid administrator credentials: {reason}"),
-        )
-    };
-    if username.is_empty() || username.chars().any(char::is_control) {
-        return Err(invalid(
-            "the username must be non-empty without control characters",
-        ));
-    }
-    if password.chars().count() < 8 {
-        return Err(invalid("the password must be at least 8 characters"));
-    }
-    Ok(())
-}
-
-/// Rejects an extra origin that is not a bare HTTP(S) origin.
-fn validate_origin(origin: &str) -> Result<(), TrellisTestError> {
-    let invalid = |reason: &str| {
-        TrellisTestError::new(
-            TrellisTestErrorKind::InvalidConfiguration,
-            TrellisTestStage::Validation,
-            format!("invalid extra origin '{origin}': {reason}"),
-        )
-    };
-    let parsed = url::Url::parse(origin).map_err(|error| invalid(&error.to_string()))?;
-    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
-        return Err(invalid("must be an http(s) origin with a host"));
-    }
-    if !parsed.username().is_empty()
-        || parsed.password().is_some()
-        || parsed.query().is_some()
-        || parsed.fragment().is_some()
-    {
-        return Err(invalid(
-            "must not carry credentials, a query, or a fragment",
-        ));
     }
     Ok(())
 }
@@ -1072,7 +1015,6 @@ async fn generate_bundle(
     public_origin: &str,
     timeouts: TestTimeouts,
     deadline: Instant,
-    extra_origins: &[String],
 ) -> Result<PathBuf, TrellisTestError> {
     // Reject non-UTF-8 sandbox paths before generating any configuration.
     crate::sandbox::require_utf8_path(state.sandbox().root(), "sandbox")?;
@@ -1099,9 +1041,6 @@ async fn generate_bundle(
         .arg(format!("ws://127.0.0.1:{}", ports.websocket))
         .arg("--public-origin")
         .arg(public_origin);
-    for origin in extra_origins {
-        command.arg("--extra-origin").arg(origin);
-    }
     let command_deadline = deadline.min(Instant::now() + timeouts.request);
     let (ok, stdout, stderr) = run_captured(
         state.supervisor(),
@@ -1476,14 +1415,10 @@ fn classify_startup(
         .with_output(stdout_tail, stderr_tail);
         return (conflict, true);
     }
-    // A transient Auth Callout denial while a built-in live provider bootstraps
-    // is retryable within the bounded startup-attempt loop; the error kind stays
-    // ServerStart so a persistent denial is reported unchanged.
-    let retryable = crate::sandbox::is_transient_callout_denial(&diagnostics);
     let with_output = TrellisTestError::new(error.kind(), error.stage(), error.message())
         .with_workdir(sandbox.root())
         .with_output(stdout_tail, stderr_tail);
-    (with_output, retryable)
+    (with_output, false)
 }
 
 #[cfg(test)]
@@ -1525,15 +1460,6 @@ mod tests {
             Some("http://127.0.0.1:1/x?adminAccountToken=t")
         );
         assert_eq!(extract_bootstrap_url("no url here"), None);
-    }
-
-    #[test]
-    fn admin_credentials_are_validated() {
-        use super::validate_admin_credentials;
-        assert!(validate_admin_credentials("trellis-test-admin", "long-enough").is_ok());
-        assert!(validate_admin_credentials("", "long-enough").is_err());
-        assert!(validate_admin_credentials("bad\nname", "long-enough").is_err());
-        assert!(validate_admin_credentials("trellis-test-admin", "short").is_err());
     }
 
     #[test]

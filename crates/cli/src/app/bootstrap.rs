@@ -43,7 +43,6 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
         .public_origin
         .clone()
         .unwrap_or_else(|| format!("http://localhost:{}", args.trellis_port));
-    options.runtime.extra_origins = args.extra_origin.clone();
     options.nats.nats_port = args.nats_port;
     options.nats.monitor_port = args.nats_monitor_port;
     options.nats.websocket_port = args.nats_ws_port;
@@ -399,19 +398,6 @@ mod tests {
         assert!(config.contains("public_origin = \"https://trellis.example.test\""));
         assert!(!config.contains("nats://127.0.0.1:4333"));
         assert!(!config.contains("http://localhost:3444"));
-    }
-
-    #[test]
-    fn init_config_adds_extra_origins() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let (config, _) = generate_bundle(
-            &temp.path().join("extra-origin"),
-            &["--extra-origin", "http://localhost:5174"],
-        );
-        assert!(
-            config.matches("http://localhost:5174").count() >= 2,
-            "the extra origin must appear in both accepted and insecure origin lists"
-        );
     }
 
     #[test]

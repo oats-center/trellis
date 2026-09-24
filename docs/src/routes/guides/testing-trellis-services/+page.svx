@@ -127,10 +127,7 @@ let _ = task.await;
 
 Provide the matching `trellis`, `trellis-server`, and `nats-server` executables;
 `trellis-test` chooses its loopback ports automatically. Released usage needs no
-private dependency patches and no Trellis source checkout. If a browser app or
-operator console is served from a different origin, allow it with
-`TrellisTestRuntime::builder().extra_origin("http://localhost:5174")` so it can
-complete a portal login against the runtime.
+private dependency patches and no Trellis source checkout.
 
 For deterministic application transaction behavior, test the actual adapter and
 database instead of starting a network solely to check SQL. In particular,

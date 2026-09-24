@@ -152,7 +152,5 @@ development dependency that starts the released `trellis` and `trellis-server`
 executables out of process in a private sandbox, selects its loopback ports
 automatically, and returns `connect_options()` values for your generated service
 and caller participants. It needs no Trellis source checkout and no private crate
-patches. Allow a browser app served from another origin with
-`TrellisTestRuntimeBuilder::extra_origin`. See
-[Test Trellis services](/guides/testing-trellis-services) and the
+patches. See [Test Trellis services](/guides/testing-trellis-services) and the
 [`trellis-test` Rustdoc](/api/rust/trellis_test/index.html).

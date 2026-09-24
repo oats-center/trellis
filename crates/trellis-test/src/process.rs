@@ -38,11 +38,26 @@ const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 #[derive(Default)]
 struct OutputTailInner {
+    /// Private raw bytes retained for parsing.
     bytes: VecDeque<u8>,
+    /// Private partial line retained for parsing.
     line: Vec<u8>,
+    /// Public bytes, redacted as they were captured.
+    sanitized: VecDeque<u8>,
+    /// Redacted bytes held back so a secret split across chunks is still caught.
+    carry: Vec<u8>,
+    /// Known secret byte strings.
+    secrets: Vec<Vec<u8>>,
+    /// Longest registered secret length.
+    max_secret: usize,
 }
 
 /// Shared handle to a bounded output tail.
+///
+/// Raw bytes stay private for parsing, and [`OutputTail::text`] renders a copy
+/// that is redacted as it is captured. Because redaction happens before the
+/// tail is truncated, a secret split by the tail boundary cannot leave a
+/// recognizable suffix behind.
 #[derive(Clone, Default)]
 pub(crate) struct OutputTail {
     inner: Arc<Mutex<OutputTailInner>>,
@@ -64,16 +79,89 @@ impl OutputTail {
                 inner.line.push(byte);
             }
         }
+        let mut combined = std::mem::take(&mut inner.carry);
+        combined.extend_from_slice(chunk);
+        let redacted = redact_bytes(&combined, &inner.secrets);
+        inner.split_sanitized(redacted);
     }
 
-    /// Lossy UTF-8 rendering of the retained tail (split sequences become `\u{FFFD}`).
+    /// Registers a secret to redact from the public diagnostic tail.
+    ///
+    /// Retained bytes are re-redacted, so a secret discovered after capture (for
+    /// example a bootstrap token) does not linger in already-captured output.
+    pub(crate) fn add_secret(&self, secret: &[u8]) {
+        if secret.is_empty() {
+            return;
+        }
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        if inner.secrets.iter().any(|existing| existing == secret) {
+            return;
+        }
+        inner.secrets.push(secret.to_vec());
+        inner.max_secret = inner.max_secret.max(secret.len());
+        let mut combined: Vec<u8> = inner.sanitized.iter().copied().collect();
+        combined.extend_from_slice(&inner.carry);
+        inner.sanitized.clear();
+        let redacted = redact_bytes(&combined, &inner.secrets);
+        inner.split_sanitized(redacted);
+    }
+
+    /// Lossy UTF-8 rendering of the redacted tail (split sequences become `\u{FFFD}`).
     pub(crate) fn text(&self) -> String {
         let Ok(inner) = self.inner.lock() else {
             return String::new();
         };
-        let bytes: Vec<u8> = inner.bytes.iter().copied().collect();
+        let mut bytes: Vec<u8> = inner.sanitized.iter().copied().collect();
+        bytes.extend_from_slice(&inner.carry);
         String::from_utf8_lossy(&bytes).into_owned()
     }
+}
+
+impl OutputTailInner {
+    fn split_sanitized(&mut self, redacted: Vec<u8>) {
+        let carry_len = self.max_secret.saturating_sub(1);
+        if redacted.len() > carry_len {
+            let split = redacted.len() - carry_len;
+            for &byte in &redacted[..split] {
+                if self.sanitized.len() == TAIL_LIMIT {
+                    self.sanitized.pop_front();
+                }
+                self.sanitized.push_back(byte);
+            }
+            self.carry = redacted[split..].to_vec();
+        } else {
+            self.carry = redacted;
+        }
+    }
+}
+
+/// Replaces every non-overlapping occurrence of each secret.
+fn redact_bytes(haystack: &[u8], secrets: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = haystack.to_vec();
+    for secret in secrets {
+        out = replace_bytes(&out, secret, b"[REDACTED]");
+    }
+    out
+}
+
+fn replace_bytes(haystack: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
+    if needle.is_empty() {
+        return haystack.to_vec();
+    }
+    let mut out = Vec::with_capacity(haystack.len());
+    let mut index = 0;
+    while index < haystack.len() {
+        if haystack[index..].starts_with(needle) {
+            out.extend_from_slice(replacement);
+            index += needle.len();
+        } else {
+            out.push(haystack[index]);
+            index += 1;
+        }
+    }
+    out
 }
 
 /// A child spawned in its own process group and owned by the supervisor.
@@ -272,27 +360,35 @@ impl ProcessSupervisor {
     }
 
     /// Terminates every owned child within `deadline` and reports failures.
-    pub(crate) async fn stop(&self, deadline: Instant) -> Vec<TrellisTestError> {
+    /// Stops current children and reports whether the supervisor finished
+    /// cleanup before the deadline.
+    pub(crate) async fn stop(&self, deadline: Instant) -> (Vec<TrellisTestError>, bool) {
         let (ack, rx) = oneshot::channel();
         if self
             .tx
             .send(SupervisorCommand::Stop { deadline, ack })
             .is_err()
         {
-            return Vec::new();
+            return (Vec::new(), false);
         }
         match tokio::time::timeout_at(deadline.into(), rx).await {
-            Ok(Ok(failures)) => failures,
-            Ok(Err(_)) => vec![TrellisTestError::new(
-                TrellisTestErrorKind::Cleanup,
-                TrellisTestStage::Shutdown,
-                "the process supervisor exited before reporting cleanup",
-            )],
-            Err(_) => vec![TrellisTestError::new(
-                TrellisTestErrorKind::Cleanup,
-                TrellisTestStage::Shutdown,
-                "the process supervisor did not finish cleanup within the deadline",
-            )],
+            Ok(Ok(failures)) => (failures, false),
+            Ok(Err(_)) => (
+                vec![TrellisTestError::new(
+                    TrellisTestErrorKind::Cleanup,
+                    TrellisTestStage::Shutdown,
+                    "the process supervisor exited before reporting cleanup",
+                )],
+                false,
+            ),
+            Err(_) => (
+                vec![TrellisTestError::new(
+                    TrellisTestErrorKind::Cleanup,
+                    TrellisTestStage::Shutdown,
+                    "the process supervisor did not finish cleanup within the deadline",
+                )],
+                true,
+            ),
         }
     }
 
@@ -867,5 +963,19 @@ mod tests {
             "a bootstrap line split across reads must be reassembled before parsing"
         );
         assert_eq!(lines[1], "next");
+    }
+
+    #[test]
+    fn diagnostic_tail_redacts_a_secret_split_by_the_tail_boundary() {
+        let tail = OutputTail::default();
+        let secret: &[u8] = b"0123456789abcdefghijklmnopqrstuv";
+        tail.add_secret(secret);
+        // Place the secret so the 16 KiB retention boundary would slice it and
+        // leave only its suffix in the tail.
+        tail.push(secret);
+        tail.push(&vec![b'x'; TAIL_LIMIT - 16]);
+        let text = tail.text();
+        assert!(!text.contains("mnopqrstuv"), "secret suffix leaked: {text}");
+        assert!(text.contains("[REDACTED]"));
     }
 }

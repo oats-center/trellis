@@ -268,6 +268,7 @@ async fn t14_shutdown_is_idempotent() {
         runtime.trellis_url().to_owned(),
         runtime.nats_url().to_owned(),
         runtime.websocket_url().to_owned(),
+        runtime.monitor_url().to_owned(),
     ];
     runtime.shutdown().await.expect("first shutdown");
     runtime.shutdown().await.expect("second shutdown");
@@ -348,6 +349,7 @@ async fn t07_eight_concurrent_runtimes_are_isolated() {
                 runtime.trellis_url().to_owned(),
                 runtime.nats_url().to_owned(),
                 runtime.websocket_url().to_owned(),
+                runtime.monitor_url().to_owned(),
                 runtime.workdir().to_path_buf(),
             );
             runtime.shutdown().await.expect("shutdown runtime");
@@ -358,20 +360,23 @@ async fn t07_eight_concurrent_runtimes_are_isolated() {
     let mut http = std::collections::HashSet::new();
     let mut nats = std::collections::HashSet::new();
     let mut websocket = std::collections::HashSet::new();
+    let mut monitor = std::collections::HashSet::new();
     let mut workdirs = std::collections::HashSet::new();
     for handle in handles {
-        let (h, n, w, dir) = tokio::time::timeout(Duration::from_secs(300), handle)
+        let (h, n, w, m, dir) = tokio::time::timeout(Duration::from_secs(300), handle)
             .await
             .expect("runtime task timed out")
             .expect("join runtime task");
         http.insert(h);
         nats.insert(n);
         websocket.insert(w);
+        monitor.insert(m);
         workdirs.insert(dir);
     }
     assert_eq!(http.len(), 8, "HTTP endpoints must be distinct");
     assert_eq!(nats.len(), 8, "NATS endpoints must be distinct");
     assert_eq!(websocket.len(), 8, "WebSocket endpoints must be distinct");
+    assert_eq!(monitor.len(), 8, "NATS monitor endpoints must be distinct");
     assert_eq!(workdirs.len(), 8, "sandboxes must be distinct");
 }
 
@@ -489,69 +494,6 @@ async fn t23_sandbox_path_with_spaces_works() {
     runtime.shutdown().await.expect("shutdown runtime");
 }
 
-/// Extra allowed origins let a separately served operator app complete a
-/// cross-origin portal login against the harness runtime.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn t32_extra_origin_is_allowed() {
-    let mut runtime = TrellisTestRuntime::builder()
-        .extra_origin("http://localhost:5174")
-        .start()
-        .await
-        .expect("start runtime with an extra origin");
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .build()
-        .expect("build preflight client");
-    let response = client
-        .request(
-            reqwest::Method::OPTIONS,
-            format!("{}/auth/login/local", runtime.trellis_url()),
-        )
-        .header("origin", "http://localhost:5174")
-        .header("access-control-request-method", "POST")
-        .header("access-control-request-headers", "content-type")
-        .send()
-        .await
-        .expect("send preflight");
-    assert!(
-        response.status().is_success() || response.status().as_u16() == 204,
-        "the extra origin's preflight must be accepted, got {}",
-        response.status()
-    );
-    assert_eq!(
-        response
-            .headers()
-            .get("access-control-allow-origin")
-            .and_then(|value| value.to_str().ok()),
-        Some("http://localhost:5174"),
-        "the extra origin must be echoed in Access-Control-Allow-Origin"
-    );
-    runtime.shutdown().await.expect("shutdown runtime");
-}
-
-/// Pinned administrator credentials are accepted by the real server and exposed
-/// so a browser-driven test can type them into the portal form.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn t33_pinned_admin_credentials_are_accepted() {
-    let mut runtime = TrellisTestRuntime::builder()
-        .admin_username("trellis-test-admin")
-        .admin_password("browser-driven-secret")
-        .start()
-        .await
-        .expect("start runtime with pinned admin credentials");
-    assert_eq!(runtime.admin_username(), "trellis-test-admin");
-    assert_eq!(runtime.admin_password(), "browser-driven-secret");
-
-    // `register_client` performs a real local login with these credentials,
-    // proving the server accepted the pinned values.
-    let identity = runtime
-        .register_client::<CallerParticipant>("caller")
-        .await
-        .expect("register a caller with the pinned administrator");
-    assert_eq!(identity.trellis_url(), runtime.trellis_url());
-    runtime.shutdown().await.expect("shutdown runtime");
-}
-
 /// T15: dropping a started runtime without explicit shutdown stops the real
 /// server and its managed NATS descendant, releasing every exposed listener,
 /// while an unrelated live listener survives.
@@ -574,6 +516,7 @@ async fn t15_dropping_a_runtime_cleans_up() {
             runtime.trellis_url().to_owned(),
             runtime.nats_url().to_owned(),
             runtime.websocket_url().to_owned(),
+            runtime.monitor_url().to_owned(),
         ]
     };
 
@@ -625,8 +568,9 @@ async fn t11_missing_nats_fails_cleanly() {
     );
 }
 
-/// T16: cancelling an in-progress `start` after real bootstrap progress does not
-/// orphan infrastructure that blocks a later runtime.
+/// T16: cancelling an in-progress `start` after the server process has actually
+/// spawned does not orphan its process group or hold any of its four listeners.
+#[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn t16_cancelling_start_does_not_orphan_infrastructure() {
     let parent = std::env::temp_dir().join(format!("trellis-cancel-{}", std::process::id()));
@@ -640,31 +584,33 @@ async fn t16_cancelling_start_does_not_orphan_infrastructure() {
             .map(|_| ())
     });
 
-    // Observe real progress: wait for a sandbox to contain generated configuration,
-    // which the CLI bootstrap writes immediately before the server is spawned.
-    let mut observed = false;
-    for _ in 0..600 {
-        let progressed = std::fs::read_dir(&parent)
-            .map(|entries| {
-                entries.flatten().any(|entry| {
-                    std::fs::read_dir(entry.path().join("config"))
-                        .map(|files| files.flatten().next().is_some())
-                        .unwrap_or(false)
-                })
-            })
-            .unwrap_or(false);
-        if progressed {
-            observed = true;
-            break;
+    // Observe a real post-spawn condition: the server process exists and its
+    // command line names the four selected listeners.
+    let mut observed: Option<(u32, [u16; 4])> = None;
+    for _ in 0..2400 {
+        if let Some(pid) = find_server_pid_under(&parent) {
+            if let Some(ports) = server_ports(pid) {
+                observed = Some((pid, ports));
+                break;
+            }
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert!(
-        observed,
-        "expected real bootstrap progress before cancelling"
-    );
+    let (pid, ports) = observed.expect("expected the server to spawn before cancelling");
     handle.abort();
     let _ = handle.await;
+
+    // The owned process and every one of its listeners must disappear.
+    assert!(
+        wait_until_process_gone(pid, Duration::from_secs(30)).await,
+        "server process {pid} survived cancellation"
+    );
+    for port in ports {
+        assert!(
+            wait_until_no_listener(port, Duration::from_secs(30)).await,
+            "listener {port} survived cancellation"
+        );
+    }
 
     // A later runtime must start cleanly on fresh ports under the same parent.
     let mut runtime = TrellisTestRuntime::builder()
@@ -740,6 +686,7 @@ fn t17_panic_unwind_cleanup() {
                 runtime.trellis_url().to_owned(),
                 runtime.nats_url().to_owned(),
                 runtime.websocket_url().to_owned(),
+                runtime.monitor_url().to_owned(),
             ])
             .expect("send endpoints before unwinding");
             panic!("intentional unwind with a live runtime");
@@ -835,6 +782,97 @@ fn find_server_pid(sandbox: &std::path::Path) -> Option<u32> {
     None
 }
 
+/// Locates any server process whose command line names a sandbox under `parent`.
+#[cfg(target_os = "linux")]
+fn find_server_pid_under(parent: &std::path::Path) -> Option<u32> {
+    let needle = parent.to_string_lossy().into_owned();
+    for entry in std::fs::read_dir("/proc").ok()? {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let cmdline = String::from_utf8_lossy(&cmdline);
+        if cmdline.contains("trellis-server") && cmdline.contains(&needle) {
+            return Some(pid);
+        }
+    }
+    None
+}
+
+/// Reads the server's four selected listener ports from its command line and config.
+#[cfg(target_os = "linux")]
+fn server_ports(pid: u32) -> Option<[u16; 4]> {
+    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let cmdline = String::from_utf8_lossy(&raw).into_owned();
+    let args: Vec<&str> = cmdline.split('\0').collect();
+    let nats_ports = args
+        .iter()
+        .find_map(|arg| arg.strip_prefix("--local-nats-ports="))?;
+    let mut nats = nats_ports.split(',');
+    let nats_port = nats.next()?.parse().ok()?;
+    let monitor_port = nats.next()?.parse().ok()?;
+    let websocket_port = nats.next()?.parse().ok()?;
+    let config = args
+        .iter()
+        .position(|arg| *arg == "--config")
+        .and_then(|index| args.get(index + 1))?;
+    let http_port = http_port_from_config(std::path::Path::new(config))?;
+    Some([http_port, nats_port, monitor_port, websocket_port])
+}
+
+#[cfg(target_os = "linux")]
+fn http_port_from_config(config: &std::path::Path) -> Option<u16> {
+    let text = std::fs::read_to_string(config).ok()?;
+    let mut in_http = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_http = line == "[http]";
+            continue;
+        }
+        if in_http {
+            if let Some(value) = line.strip_prefix("port") {
+                let value = value.trim().trim_start_matches('=').trim();
+                if let Ok(port) = value.parse::<u16>() {
+                    return Some(port);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// True once the process is gone or has become an empty-cmdline zombie.
+#[cfg(target_os = "linux")]
+fn process_gone(pid: u32) -> bool {
+    std::fs::read(format!("/proc/{pid}/cmdline"))
+        .map(|cmdline| cmdline.is_empty())
+        .unwrap_or(true)
+}
+
+#[cfg(target_os = "linux")]
+async fn wait_until_process_gone(pid: u32, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if process_gone(pid) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// T19: all three retention policies and a surviving preexisting sibling.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn t19_retention_policies_and_sibling_survival() {
@@ -886,4 +924,35 @@ async fn t19_retention_policies_and_sibling_survival() {
         "a preexisting sibling must survive every cleanup"
     );
     let _ = std::fs::remove_dir_all(&parent);
+}
+
+/// Started only by the TypeScript mixed-runtime test as a child process.
+///
+/// Starts a Rust runtime, publishes its endpoint URLs, waits for a release
+/// file, then shuts down so the TypeScript side can prove overlap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "invoked as a child process by the TypeScript mixed-runtime test"]
+async fn runtime_endpoints_child() {
+    let endpoints_file =
+        std::env::var("TRELLIS_TEST_CHILD_ENDPOINTS_FILE").expect("endpoints file");
+    let release_file = std::env::var("TRELLIS_TEST_CHILD_RELEASE_FILE").expect("release file");
+    let mut runtime = TrellisTestRuntime::builder()
+        .start()
+        .await
+        .expect("start child runtime");
+    std::fs::write(
+        &endpoints_file,
+        format!(
+            "{}\n{}\n{}\n{}\n",
+            runtime.trellis_url(),
+            runtime.nats_url(),
+            runtime.websocket_url(),
+            runtime.monitor_url(),
+        ),
+    )
+    .expect("write endpoints");
+    while !std::path::Path::new(&release_file).exists() {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    runtime.shutdown().await.expect("shutdown child runtime");
 }

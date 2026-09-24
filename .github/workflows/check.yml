@@ -624,7 +624,7 @@ jobs:
           version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
           bash scripts/stage-rust-test-bundle.sh \
             --bundle "$RUNNER_TEMP/testkit-bundle" \
-            --output "$RUNNER_TEMP/testkit-bundle.tar.gz" \
+            --output "$RUNNER_TEMP/rust-testkit-bundle.tar.gz" \
             --source-sha "$GITHUB_SHA" \
             --target "$(rustc -vV | sed -n 's/^host: //p')" \
             --version "$version"
@@ -633,7 +633,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rust-testkit-bundle
-          path: ${{ runner.temp }}/testkit-bundle.tar.gz
+          path: ${{ runner.temp }}/rust-testkit-bundle.tar.gz
           retention-days: 3
 
   rust-testkit-consumer:

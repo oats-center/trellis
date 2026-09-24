@@ -260,8 +260,8 @@ jobs:
           path: target/package/*.crate
           retention-days: 3
 
-  rust-testkit-consumer:
-    name: Verify Rust testkit consumer
+  rust-testkit-package:
+    name: Produce Rust testkit bundle
     if: >-
       always()
       && needs.package-rust.result == 'success'
@@ -323,18 +323,41 @@ jobs:
           version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
           bash scripts/stage-rust-test-bundle.sh \
             --bundle "$RUNNER_TEMP/testkit-bundle" \
-            --output "$RUNNER_TEMP/testkit-bundle.tar.gz" \
+            --output "$RUNNER_TEMP/rust-testkit-bundle.tar.gz" \
             --source-sha "$GITHUB_SHA" \
             --target "x86_64-unknown-linux-gnu" \
             --version "$version"
 
-      - name: Verify the packaged testkit
+      - name: Upload the verification bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-testkit-bundle
+          path: ${{ runner.temp }}/rust-testkit-bundle.tar.gz
+          retention-days: 3
+
+  rust-testkit-consumer:
+    name: Verify Rust testkit consumer
+    needs: [rust-testkit-package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Download the verification bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-testkit-bundle
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Extract the verification bundle
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/testkit-consumer"
-          tar -xzf "$RUNNER_TEMP/testkit-bundle.tar.gz" -C "$RUNNER_TEMP/testkit-consumer" --no-same-owner
-          bash "$RUNNER_TEMP/testkit-consumer/verify-rust-test-package.sh" \
-            --bundle "$RUNNER_TEMP/testkit-consumer" --mode smoke
+          mkdir -p bundle
+          tar -xzf rust-testkit-bundle.tar.gz -C bundle --no-same-owner
+
+      - name: Verify the packaged testkit without a checkout
+        run: bash bundle/verify-rust-test-package.sh --bundle "$PWD/bundle" --mode smoke
 
   package-js:
     name: Verify JavaScript packages

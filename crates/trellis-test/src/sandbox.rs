@@ -30,16 +30,16 @@ pub enum WorkdirRetention {
 
 /// Returns an error when the host platform cannot run the harness.
 pub(crate) fn ensure_supported_platform() -> Result<(), TrellisTestError> {
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
         Ok(())
     }
-    #[cfg(not(unix))]
+    #[cfg(not(target_os = "linux"))]
     {
         Err(TrellisTestError::new(
             TrellisTestErrorKind::UnsupportedPlatform,
             TrellisTestStage::Validation,
-            "trellis-test supports Linux and macOS only",
+            "trellis-test supports Linux only",
         ))
     }
 }
@@ -143,18 +143,6 @@ pub(crate) fn is_port_conflict(diagnostics: &str, ports: &PortSet) -> bool {
         "failed to bind runtime http listener at 127.0.0.1:{}",
         ports.http
     )) && lowered.contains("address already in use")
-}
-
-/// Classifies whether `diagnostics` shows a transient Auth Callout denial during
-/// startup.
-///
-/// A built-in live provider can be denied once while the callout's view of the
-/// just-published authorization context catches up. That denial is retryable
-/// within the bounded startup-attempt loop; only the specific denial codes are
-/// matched so unrelated failures still fail fast.
-pub(crate) fn is_transient_callout_denial(diagnostics: &str) -> bool {
-    let lowered = diagnostics.to_ascii_lowercase();
-    lowered.contains("invalid_auth_token") || lowered.contains("authority_unavailable")
 }
 
 /// A private per-attempt sandbox directory.
@@ -416,22 +404,6 @@ mod tests {
             "invalid configuration: missing field `http.port`",
             &ports
         ));
-    }
-
-    #[test]
-    fn transient_callout_denial_matches_only_known_codes() {
-        assert!(is_transient_callout_denial(
-            "auth callout denied: invalid_auth_token"
-        ));
-        assert!(is_transient_callout_denial(
-            "denial_code=authority_unavailable"
-        ));
-        // Terminal authorization outcomes must fail fast.
-        assert!(!is_transient_callout_denial("denial_code=not_authorized"));
-        assert!(!is_transient_callout_denial("denial_code=session_revoked"));
-        // A generic internal error is not retried.
-        assert!(!is_transient_callout_denial("internal_error"));
-        assert!(!is_transient_callout_denial("all systems nominal"));
     }
 
     #[test]
