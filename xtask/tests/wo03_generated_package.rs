@@ -288,7 +288,7 @@ fn codecs_errors_and_generated_surfaces_compile() {
             .arg("--quiet")
             .arg("--config")
             .arg(format!(
-                "patch.crates-io.trellis-rs.path={}",
+                "patch.crates-io.trellis-rs.path=\"{}\"",
                 repo.join("crates/trellis").display()
             ))
             .current_dir(&rust),
