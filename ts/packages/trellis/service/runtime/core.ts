@@ -881,41 +881,54 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
   async #requestOperationCancellation(
     runtime: RuntimeOperationRecord,
   ): Promise<RuntimeOperationSnapshot> {
-    let current = runtime;
-    for (let retry = 0;; retry++) {
-      if (current.terminal) {
-        if (!current.cancelRequestedAt) {
-          throw this.#operationAlreadyTerminalError(current);
+    // Join the same per-operation frame queue as progress/complete/fail so a
+    // cancellation request and a handler completion cannot interleave on the
+    // shared mutable record and persist a logically inconsistent combination.
+    await this.#queueOperationFrame(runtime, async () => {
+      for (let retry = 0;; retry++) {
+        const durable = await this.loadOperationRecord(runtime.id);
+        if (!durable) throw this.#operationNotFoundError(runtime.id);
+        runtime.revision = durable.revision;
+        runtime.snapshot = durable.snapshot;
+        runtime.terminal = isTerminalRuntimeOperationSnapshot(durable.snapshot);
+        if (runtime.terminal) {
+          if (!durable.cancelRequestedAt) {
+            throw this.#operationAlreadyTerminalError(runtime);
+          }
+          runtime.cancelRequestedAt = durable.cancelRequestedAt;
+          break;
         }
-        break;
+        if (durable.cancelRequestedAt) {
+          runtime.cancelRequestedAt = durable.cancelRequestedAt;
+          break;
+        }
+        runtime.sequence = durable.sequence + 1;
+        runtime.signalSequence = durable.signalSequence;
+        runtime.signals = durable.signals;
+        runtime.leaseExpiresAt = durable.leaseExpiresAt;
+        runtime.cancelRequestedAt = new Date().toISOString();
+        runtime.snapshot = buildRuntimeOperationSnapshot(
+          runtime,
+          runtime.snapshot.state,
+          { updatedAt: runtime.cancelRequestedAt },
+        );
+        try {
+          await this.saveOperationRecord(runtime);
+          recordCatalogCounter("trellis.operation.ownership.events", 1, {
+            "trellis.action": "control",
+            "trellis.outcome": "ok",
+          });
+          break;
+        } catch (cause) {
+          if (retry >= 3 || !isOperationRevisionConflict(cause)) throw cause;
+        }
       }
-      if (current.cancelRequestedAt) break;
-      current.cancelRequestedAt = new Date().toISOString();
-      current.sequence += 1;
-      current.snapshot = buildRuntimeOperationSnapshot(
-        current,
-        current.snapshot.state,
-        { updatedAt: current.cancelRequestedAt },
-      );
-      try {
-        await this.saveOperationRecord(current);
-        recordCatalogCounter("trellis.operation.ownership.events", 1, {
-          "trellis.action": "control",
-          "trellis.outcome": "ok",
-        });
-        break;
-      } catch (cause) {
-        if (retry >= 3 || !isOperationRevisionConflict(cause)) throw cause;
-        const reloaded = await this.#resolveOperation(current.id);
-        if (!reloaded) throw cause;
-        current = reloaded;
-      }
-    }
-    current.cancellation.abort("operation cancelled");
-    const fence = this.#activeOperationFences.get(current.id);
-    if (fence) await this.#finalizeOperationCancellation(current, fence);
-    const durable = await this.loadOperationRecord(current.id);
-    if (!durable) throw this.#operationNotFoundError(current.id);
+    });
+    runtime.cancellation.abort("operation cancelled");
+    const fence = this.#activeOperationFences.get(runtime.id);
+    if (fence) await this.#finalizeOperationCancellation(runtime, fence);
+    const durable = await this.loadOperationRecord(runtime.id);
+    if (!durable) throw this.#operationNotFoundError(runtime.id);
     return durable.snapshot;
   }
 
@@ -2294,16 +2307,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                 );
               })()),
             cancel: () =>
-              this.#applyControlledOperationUpdate(
-                runtime,
-                fence,
-                ctx,
-                "cancelled",
-                {
-                  patch: { completedAt: now() },
-                  event: { type: "cancelled" },
-                },
-              ),
+              this.#requestOwnedOperationCancellation(runtime, fence),
             attach: (job: { wait: () => AsyncResult<unknown, BaseError> }) =>
               AsyncResult.from((async () => {
                 const waited = await job.wait();
@@ -2350,7 +2354,6 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             admitted.snapshot.state === "completed" ||
             admitted.snapshot.state === "failed" ||
             admitted.snapshot.state === "cancelled" ||
-            admitted.cancelRequestedAt ||
             !this.#matchesOperationRoute(
               admitted,
               String(operation),
@@ -2360,6 +2363,17 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           ) {
             runtime.cancellation.abort("operation ownership lost");
             this.#releaseOperationFence(runtime.id, fence);
+            return;
+          }
+          if (admitted.cancelRequestedAt) {
+            // The operation was recovered with cancellation already requested
+            // and no handler is running: finalize it without re-entering
+            // business logic, matching the Rust resume path.
+            runtime.revision = admitted.revision;
+            runtime.cancelRequestedAt = admitted.cancelRequestedAt;
+            runtime.snapshot = admitted.snapshot;
+            runtime.cancellation.abort("operation cancelled");
+            await this.#finalizeOperationCancellation(runtime, fence);
             return;
           }
           runtime.revision = admitted.revision;
@@ -2587,7 +2601,11 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           fence: RuntimeOperationFence,
         ) => {
           const leaseHeartbeat = setInterval(() => {
-            if (runtime.terminal || runtime.cancellation.signal.aborted) {
+            // Cancellation aborts the handler signal so cleanup can observe it,
+            // but cleanup must keep renewing the lease until it finalizes. Only
+            // a terminal operation (or lost ownership, handled below) stops
+            // renewal, matching the owner-continues-renewing contract.
+            if (runtime.terminal) {
               clearInterval(leaseHeartbeat);
               return;
             }
