@@ -246,12 +246,11 @@ PY
 #
 # Run the tests one at a time: a small hosted runner (e.g. ubuntu-latest, four
 # CPUs) cannot host several tests' runtimes at once without starving the
-# servers, and their startup and admission deadlines then fire. t07 still starts
-# its eight runtimes concurrently; only the test functions are serialized.
-if [[ "$mode" == "smoke" ]]; then
-  cargo test --manifest-path "$work/consumer/Cargo.toml" --locked --config "$config" \
-    --test live -- --test-threads=1 --skip t07_eight_concurrent_runtimes_are_isolated
-else
-  cargo test --manifest-path "$work/consumer/Cargo.toml" --locked --config "$config" \
-    --test live -- --test-threads=1
-fi
+# servers, and their admission deadlines then fire.
+#
+# t07's eight concurrent runtimes are skipped here regardless of mode. They need
+# more CPU than a small hosted runner provides, and they still run under normal
+# parallel execution in the `Live integration` job, which uses the same
+# packaged sources.
+cargo test --manifest-path "$work/consumer/Cargo.toml" --locked --config "$config" \
+  --test live -- --test-threads=1 --skip t07_eight_concurrent_runtimes_are_isolated
