@@ -113,8 +113,6 @@ pub(crate) async fn login_client(
 /// An authenticated administrator session for one test runtime.
 pub(crate) struct AdminSession {
     auth: AuthClient,
-    pub(crate) trellis_url: String,
-    pub(crate) timeout_ms: u64,
 }
 
 impl AdminSession {
@@ -123,7 +121,6 @@ impl AdminSession {
         trellis_url: &str,
         username: &str,
         password: &str,
-        timeout_ms: u64,
     ) -> Result<Self, TrellisTestError> {
         let challenge = start_agent_login(&StartAgentLoginOpts {
             trellis_url,
@@ -167,8 +164,6 @@ impl AdminSession {
         })?;
         Ok(Self {
             auth: AuthClient::from_generated(generated),
-            trellis_url: trellis_url.to_owned(),
-            timeout_ms,
         })
     }
 
@@ -320,6 +315,10 @@ impl AdminSession {
     }
 
     /// Sets the built-in portal's consent ceiling for `participant_id`.
+    #[allow(
+        dead_code,
+        reason = "used when a caller needs an explicit portal ceiling"
+    )]
     pub(crate) async fn ensure_portal_consent_policy(
         &self,
         participant_id: &str,

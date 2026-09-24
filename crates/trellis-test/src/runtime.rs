@@ -232,13 +232,13 @@ impl TrellisTestRuntimeBuilder {
             Ok(token) => token,
             Err(error) => {
                 let (error, retryable) =
-                    classify_startup(&error, &stdout, &stderr, ports, &mut sandbox);
+                    classify_startup(&error, &stdout, &stderr, ports, &mut sandbox, &[password]);
                 return Err((error, retryable));
             }
         };
         if let Err(error) = wait_for_readyz(&public_origin, &supervisor, pid, deadline).await {
             let (error, retryable) =
-                classify_startup(&error, &stdout, &stderr, ports, &mut sandbox);
+                classify_startup(&error, &stdout, &stderr, ports, &mut sandbox, &[password]);
             return Err((error, retryable));
         }
         if let Err(error) = bootstrap_first_admin(
@@ -253,14 +253,7 @@ impl TrellisTestRuntimeBuilder {
             sandbox.mark_failed();
             return Err((error, false));
         }
-        let admin = match AdminSession::connect(
-            &public_origin,
-            ADMIN_USERNAME,
-            password,
-            request_ms(&timeouts),
-        )
-        .await
-        {
+        let admin = match AdminSession::connect(&public_origin, ADMIN_USERNAME, password).await {
             Ok(admin) => admin,
             Err(error) => {
                 sandbox.mark_failed();
@@ -628,6 +621,8 @@ fn generate_bundle(
     public_origin: &str,
     timeouts: TestTimeouts,
 ) -> Result<PathBuf, TrellisTestError> {
+    // Reject non-UTF-8 sandbox paths before generating any configuration.
+    crate::sandbox::require_utf8_path(sandbox.root(), "sandbox")?;
     let out = sandbox.config_dir();
     let mut command = Command::new(cli);
     command
@@ -975,19 +970,24 @@ fn classify_startup(
     stderr: &OutputTail,
     ports: crate::sandbox::PortSet,
     sandbox: &mut Sandbox,
+    secrets: &[&str],
 ) -> (TrellisTestError, bool) {
     sandbox.mark_failed();
-    let diagnostics = format!("{}\n{}", stdout.text(), stderr.text());
+    let stdout_tail = crate::error::redact_secrets(&stdout.text(), secrets);
+    let stderr_tail = crate::error::redact_secrets(&stderr.text(), secrets);
+    let diagnostics = format!("{stdout_tail}\n{stderr_tail}");
     if crate::sandbox::is_port_conflict(&diagnostics, &ports) {
         let conflict = TrellisTestError::new(
             TrellisTestErrorKind::PortConflict,
             TrellisTestStage::PortAllocation,
             "a selected loopback port was already bound",
         )
-        .with_output(stdout.text(), stderr.text());
+        .with_workdir(sandbox.root())
+        .with_output(stdout_tail, stderr_tail);
         return (conflict, true);
     }
     let with_output = TrellisTestError::new(error.kind(), error.stage(), error.message())
-        .with_output(stdout.text(), stderr.text());
+        .with_workdir(sandbox.root())
+        .with_output(stdout_tail, stderr_tail);
     (with_output, false)
 }

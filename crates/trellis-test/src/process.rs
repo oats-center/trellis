@@ -346,13 +346,9 @@ pub(crate) fn run_captured(
         readers.push(read_stream(pipe, stderr.clone()));
     }
     let deadline_at = Instant::now() + deadline;
-    let mut success = false;
-    loop {
+    let success = loop {
         match child.try_wait() {
-            Ok(Some(status)) => {
-                success = status.success();
-                break;
-            }
+            Ok(Some(status)) => break status.success(),
             Ok(None) => {}
             Err(error) => {
                 return Err(TrellisTestError::new(
@@ -372,7 +368,7 @@ pub(crate) fn run_captured(
             ));
         }
         std::thread::sleep(Duration::from_millis(10));
-    }
+    };
     for reader in readers.drain(..) {
         let _ = reader.join();
     }

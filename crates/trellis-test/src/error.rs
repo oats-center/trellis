@@ -183,6 +183,7 @@ impl TrellisTestError {
 
     /// Attaches a stable server error code.
     #[must_use]
+    #[allow(dead_code)]
     pub(crate) fn with_server_code(mut self, code: impl Into<String>) -> Self {
         self.server_code = Some(code.into());
         self
@@ -315,11 +316,13 @@ impl std::error::Error for TrellisTestError {
 
 impl From<std::io::Error> for TrellisTestError {
     fn from(source: std::io::Error) -> Self {
+        let message = source.to_string();
         Self::new(
             TrellisTestErrorKind::Io,
             TrellisTestStage::Validation,
-            source.to_string(),
+            message,
         )
+        .with_source(source)
     }
 }
 

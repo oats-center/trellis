@@ -24,6 +24,10 @@
 //! # }
 //! ```
 
+// The public API returns the structured `TrellisTestError` by value, so the
+// large-error lint does not apply to this crate's stable signature.
+#![allow(clippy::result_large_err)]
+
 #[path = "runtime_api/lib.rs"]
 #[allow(warnings, clippy::all, clippy::pedantic)]
 mod runtime_api;
