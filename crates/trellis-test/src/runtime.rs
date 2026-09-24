@@ -236,6 +236,11 @@ impl TrellisTestRuntimeBuilder {
                 return Err((error, retryable));
             }
         };
+        if let Err(error) = wait_for_readyz(&public_origin, &supervisor, pid, deadline).await {
+            let (error, retryable) =
+                classify_startup(&error, &stdout, &stderr, ports, &mut sandbox);
+            return Err((error, retryable));
+        }
         if let Err(error) = bootstrap_first_admin(
             &public_origin,
             &token,
@@ -444,8 +449,8 @@ impl TrellisTestRuntime {
             ));
         }
         self.reserve_name(name)?;
+        self.install_participant::<P>().await?;
         let admin = self.admin()?;
-        admin.install_participant::<P>().await?;
         let deployment_id = admin.create_deployment(name).await?;
         admin.apply_participant::<P>(&deployment_id).await?;
         let (instance_id, seed) = admin.provision_service_instance(&deployment_id).await?;
@@ -478,7 +483,7 @@ impl TrellisTestRuntime {
             ));
         }
         self.reserve_name(name)?;
-        self.admin()?.install_participant::<P>().await?;
+        self.install_participant::<P>().await?;
         let session = crate::admin::login_client(
             &self.trellis_url,
             P::ID,
@@ -910,6 +915,49 @@ fn fallback_bootstrap_url(line: &str) -> Option<String> {
                 .to_owned()
         })
         .filter(|url| !url.is_empty())
+}
+
+async fn wait_for_readyz(
+    trellis_url: &str,
+    supervisor: &ProcessSupervisor,
+    pid: u32,
+    deadline: Instant,
+) -> Result<(), TrellisTestError> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(1))
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| {
+            TrellisTestError::new(
+                TrellisTestErrorKind::Bootstrap,
+                TrellisTestStage::ServerStart,
+                format!("building the readiness HTTP client: {error}"),
+            )
+        })?;
+    let url = format!("{}/readyz", trellis_url.trim_end_matches('/'));
+    loop {
+        if supervisor.exit_code(pid).is_some() {
+            return Err(TrellisTestError::new(
+                TrellisTestErrorKind::ProcessExited,
+                TrellisTestStage::ServerStart,
+                "the Trellis server exited before it became ready",
+            ));
+        }
+        if let Ok(response) = client.get(&url).send().await {
+            if response.status().is_success() {
+                return Ok(());
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(TrellisTestError::new(
+                TrellisTestErrorKind::Timeout,
+                TrellisTestStage::ServerStart,
+                "timed out waiting for the readiness endpoint",
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 fn admin_token_from_url(url: &str) -> Option<String> {
