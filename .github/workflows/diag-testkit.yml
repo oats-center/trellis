@@ -88,10 +88,35 @@ jobs:
       - name: Acquire the pinned NATS executable
         run: bash scripts/acquire-test-nats.sh --dest /tmp/trellis-test-nats
 
-      - name: Run the prebuilt testkit live binary
+      - name: Run the prebuilt testkit live binary with a host probe
         env:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
           TRELLIS_TEST_NATS_BIN: /tmp/trellis-test-nats/nats-server
           RUST_BACKTRACE: "1"
-        run: ${{ github.workspace }}/target/debug/trellis-testkit-live
+        run: |
+          set +e
+          probe_log="$RUNNER_TEMP/host-probe.log"
+          : > "$probe_log"
+          (
+            while true; do
+              echo "=== $(date -u +%H:%M:%S) ==="
+              echo "loadavg: $(cat /proc/loadavg)"
+              grep -E 'MemTotal|MemAvailable|SwapTotal|SwapFree' /proc/meminfo
+              for pressure in cpu io memory; do
+                [ -r "/proc/pressure/${pressure}" ] && echo "psi ${pressure}: $(cat "/proc/pressure/${pressure}")"
+              done
+              df -h /tmp "$GITHUB_WORKSPACE" 2>/dev/null | tail -3
+              vmstat 1 2 2>/dev/null | tail -1
+              ps -eo pcpu,pmem,stat,comm --sort=-pcpu 2>/dev/null | head -12
+              sleep 2
+            done
+          ) >> "$probe_log" 2>&1 &
+          probe_pid=$!
+          "$GITHUB_WORKSPACE/target/debug/trellis-testkit-live"
+          status=$?
+          kill "$probe_pid" 2>/dev/null || true
+          wait "$probe_pid" 2>/dev/null || true
+          echo "===== HOST PROBE (${probe_log}) ====="
+          cat "$probe_log"
+          exit "$status"
