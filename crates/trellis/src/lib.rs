@@ -89,7 +89,8 @@ mod tests {
             .expect("trellis crate should live under crates");
         for entry in fs::read_dir(crates_dir).expect("workspace crates should be readable") {
             let entry = entry.expect("crate directory should be readable");
-            if entry.file_name() == "trellis" || entry.file_name() == "protocol" {
+            let name = entry.file_name();
+            if name == "trellis" || name == "protocol" || name == "trellis-test" {
                 continue;
             }
             let manifest = entry.path().join("Cargo.toml");
