@@ -320,7 +320,10 @@ jobs:
       - name: Package the verification bundle
         run: |
           set -euo pipefail
-          version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
+          # Record the version the bundle's own executable reports: a non-official
+          # build appends local build metadata that the package version omits.
+          version="$("$RUNNER_TEMP/testkit-bundle/binaries/trellis" --format json version \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
           bash scripts/stage-rust-test-bundle.sh \
             --bundle "$RUNNER_TEMP/testkit-bundle" \
             --output "$RUNNER_TEMP/rust-testkit-bundle.tar.gz" \
