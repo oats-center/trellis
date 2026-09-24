@@ -208,3 +208,37 @@ async fn t14_shutdown_is_idempotent() {
     runtime.shutdown().await.expect("second shutdown");
     assert!(runtime.install_participant::<ProviderParticipant>().await.is_err());
 }
+
+/// T07: eight independent runtimes start concurrently in one test process with
+/// no caller-specified ports and keep distinct loopback endpoints.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn t07_eight_concurrent_runtimes_are_isolated() {
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        handles.push(tokio::spawn(async {
+            let mut runtime = TrellisTestRuntime::builder()
+                .start()
+                .await
+                .expect("start runtime");
+            let endpoints = (
+                runtime.trellis_url().to_owned(),
+                runtime.nats_url().to_owned(),
+                runtime.websocket_url().to_owned(),
+            );
+            runtime.shutdown().await.expect("shutdown runtime");
+            endpoints
+        }));
+    }
+    let mut http = std::collections::HashSet::new();
+    let mut nats = std::collections::HashSet::new();
+    let mut websocket = std::collections::HashSet::new();
+    for handle in handles {
+        let (h, n, w) = handle.await.expect("join runtime task");
+        http.insert(h);
+        nats.insert(n);
+        websocket.insert(w);
+    }
+    assert_eq!(http.len(), 8);
+    assert_eq!(nats.len(), 8);
+    assert_eq!(websocket.len(), 8);
+}
