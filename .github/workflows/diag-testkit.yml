@@ -1,0 +1,97 @@
+name: Diag testkit
+
+on:
+  workflow_dispatch:
+    inputs:
+      source-run-id:
+        description: "Check run id providing codegen artifacts"
+        required: false
+        default: "36065521784"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  DENO_VERSION: 2.9.4
+
+jobs:
+  testkit:
+    name: Reproduce testkit integration
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download generated artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: check-generated
+          run-id: ${{ inputs.source-run-id }}
+          github-token: ${{ github.token }}
+
+      - name: Download embedded browser apps
+        uses: actions/download-artifact@v4
+        with:
+          name: check-portal
+          path: crates/runtime/generated
+          run-id: ${{ inputs.source-run-id }}
+          github-token: ${{ github.token }}
+
+      - name: Download protocol WASM
+        uses: actions/download-artifact@v4
+        with:
+          name: check-protocol-wasm
+          path: ts/packages/trellis/auth/protocol_wasm
+          run-id: ${{ inputs.source-run-id }}
+          github-token: ${{ github.token }}
+
+      - name: Expose installed Cargo binaries
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-diag-testkit-${{ github.sha }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ runner.arch }}-runtime-binaries-
+            cargo-
+
+      - name: Build instrumented server and testkit live binary
+        env:
+          TRELLIS_OFFICIAL_BUILD: "1"
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          set -euo pipefail
+          cargo build --release -p trellis-server -p trellis-cli
+          cargo test --no-run \
+            --manifest-path integration/fixtures/testkit/Cargo.toml \
+            --config "patch.crates-io.trellis-protocol.path=\"$GITHUB_WORKSPACE/crates/protocol\"" \
+            --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\"" \
+            --config "patch.crates-io.trellis-test.path=\"$GITHUB_WORKSPACE/crates/trellis-test\"" \
+            --test live \
+            --message-format=json > "$RUNNER_TEMP/testkit-live.json"
+          executable="$(jq -r 'select(.executable != null) | .executable' "$RUNNER_TEMP/testkit-live.json" | tail -n1)"
+          cp "${executable}" target/debug/trellis-testkit-live
+          cp target/release/trellis target/release/trellis-server target/debug/
+
+      - name: Acquire the pinned NATS executable
+        run: bash scripts/acquire-test-nats.sh --dest /tmp/trellis-test-nats
+
+      - name: Run the prebuilt testkit live binary
+        env:
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
+          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
+          TRELLIS_TEST_NATS_BIN: /tmp/trellis-test-nats/nats-server
+          RUST_BACKTRACE: "1"
+        run: ${{ github.workspace }}/target/debug/trellis-testkit-live
