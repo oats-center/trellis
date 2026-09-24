@@ -112,7 +112,7 @@ The GitHub `Release` workflow runs the same Rust release tooling used locally:
 - `release check-metadata` checks release metadata before expensive verification
 - `release write-notes` extracts the matching `CHANGELOG.md` section for GitHub release notes
 
-The normal release path is a `release/vX.Y.Z` or `release/vX.Y.Z-rc.1` branch marker. The workflow prepares the release workspace once, uploads it as an artifact, and reuses it for package checks, CLI binary builds, image verification, and publication. Formatting, lint/type checks, library tests, generated freshness, and live integration remain the responsibility of the normal `Check` workflow and are not rerun by Release. After the release gate passes, GitHub Actions creates an unsigned lightweight release tag on the marked commit and publishes from the already verified artifacts. If the gate fails, no release tag is created and the same version can be retried. Pull request runs verify release metadata and packages, but skip tag-dependent CLI and image jobs.
+The normal release path is a `release/vX.Y.Z` or `release/vX.Y.Z-rc.1` branch marker. Release preparation (the version rewrite and the `CHANGELOG.md` section) is committed to the candidate before it is verified: `release prepare --tag` is run and committed, so `Check` verifies exactly what ships. `Check` is the single build-and-verification pipeline. It runs on `main`, on pull requests, and on `release/*` pushes; builds the release-profile runtime once and reuses it for live, browser, console, and demo tests; builds every supported CLI target and assembles and smokes both image architectures; packages the Rust and npm packages; runs the artifact-only package consumer in full mode; and reports through one acceptance gate. Formatting, lint/type checks, library tests, generated freshness, and live integration are part of that same graph. `Release` is publication only: it selects the successful `Check` run for the exact candidate commit (never "the latest green Check"), downloads that run's verified artifacts, and publishes crates, npm, JSR, canonical APIs, and images without rebuilding the product. After publication gates pass, GitHub Actions creates an unsigned lightweight release tag on the candidate commit. If verification fails, no release tag is created and the same version can be retried.
 
 The `Deploy Site to GitHub Pages` workflow is separate from release publishing. It installs each worktree's locked APIs from source before building the released and current guide and Console sites.
 
@@ -238,7 +238,7 @@ cargo xtask install --update
 cargo run --manifest-path xtask/Cargo.toml -- release check-versions
 ```
 
-`release bump` updates release-managed `deno.json`, `deno.npm.json`, `Cargo.toml`, and Trellis-owned `trellis.toml` manifests while preserving file layout. `cargo xtask install --update` refreshes their dependent IDL locks and generated SDKs. App and demo manifests that intentionally use `0.0.0` are skipped. For prereleases, the Release workflow prepares the RC versions and runs `install --update` in its prepared workspace; the checked-in base stays unchanged.
+`release bump` updates release-managed `deno.json`, `deno.npm.json`, `Cargo.toml`, and Trellis-owned `trellis.toml` manifests while preserving file layout. `cargo xtask install --update` refreshes their dependent IDL locks and generated SDKs. App and demo manifests that intentionally use `0.0.0` are skipped. For prereleases, run `release prepare --tag` and commit the RC versions and the matching `CHANGELOG.md` section to the candidate, so `Check` builds and verifies the exact release versions.
 
 Do not run `release bump` just to add a prerelease suffix like `-rc.1`. Prerelease suffixes are handled from the tag by `release prepare` in the publish workflow.
 
@@ -266,10 +266,13 @@ less "$tmpdir/release-notes.md"
 
 ## 5. Confirm correctness and package locally
 
-Release preparation starts from a successful normal `Check` run for the final
-`main` base. `Check` is the authoritative formatting, lint/type, generated
-freshness, package-test, and full live-integration gate. The Release workflow
-does not rerun those correctness suites.
+`Check` is the single authoritative verification pipeline: it builds the
+release-profile runtime, every CLI target, and both image architectures;
+packages the Rust and npm packages; runs the artifact-only package consumer; and
+runs the formatting, lint/type, generated-freshness, and full live-integration
+suites behind one acceptance gate. It runs for the candidate commit. `Release`
+does not rebuild anything; it publishes the artifacts of the successful `Check`
+run for that exact commit.
 
 Keep the release commit limited to the release preparation listed below. If it
 changes product behavior, return that change to `main`, obtain a new successful
@@ -387,9 +390,9 @@ After the release gate passes, GitHub Actions creates an unsigned lightweight ta
 The unified `Release` workflow publishes in gated stages:
 
 - `resolve-release` derives the final release tag from the `release/v*` branch and rejects already-used tags
-- `prepare-release` rewrites publishable versions, verifies release metadata, generates SDK artifacts, writes release notes, and uploads the prepared workspace
+- `prepare-release` resolves the successful `Check` run for the candidate commit, verifies release metadata, and writes release notes; the publish jobs download that run's verified artifacts
 - `package-rust` verifies all publishable workspace crates, while `package-js` builds npm output from the prepared sources, checks the built package surfaces, runs npm and JSR publication dry-runs, and uploads the npm package artifact
-- `build-cli-linux` builds the runtime executables once per native Linux architecture in a `rust:bookworm` container (matching the runtime image base) and uploads CLI archives; `build-cli-darwin` builds the macOS archives. `verify-images` assembles the OCI archives from those prebuilt executables without compiling Trellis, and smokes the `trellis` image natively: `verify-images` runs the linux/amd64 smoke and `smoke-image-arm64` runs the linux/arm64 smoke. The smoke checks the baked nats-server version against `crates/local-nats/nats-binaries.json`, starts the image as its non-root user with a read-only config and writable state volume (`trellis-server --system all --local-nats=/usr/local/bin/nats-server`), waits for runtime readiness, stops it gracefully, and asserts no startup or write errors
+- `build-targets-linux` builds the runtime executables once per native Linux architecture in a `rust:bookworm` container (matching the runtime image base) and uploads CLI archives; `build-targets-darwin` builds the macOS archives; both run inside `Check`. `verify-images` assembles the OCI archives from those prebuilt executables without compiling Trellis, and smokes the `trellis` image natively: `verify-images` runs the linux/amd64 smoke and `smoke-image-arm64` runs the linux/arm64 smoke. The smoke checks the baked nats-server version against `crates/local-nats/nats-binaries.json`, starts the image as its non-root user with a read-only config and writable state volume (`trellis-server --system all --local-nats=/usr/local/bin/nats-server`), waits for runtime readiness, stops it gracefully, and asserts no startup or write errors
 - `create-release-tag` creates the release tag after the release gate passes
 - `github-release` publishes CLI archives and checksums first
 - `publish-crates`, `publish-npm`, and `publish-images` publish downstream artifacts after the GitHub release exists

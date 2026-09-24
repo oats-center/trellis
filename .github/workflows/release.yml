@@ -103,12 +103,17 @@ jobs:
     name: Prepare release workspace
     needs: resolve-release
     runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
     outputs:
-      release-tag: ${{ steps.release.outputs.tag }}
-      release-version: ${{ steps.release.outputs.version }}
-      release-base-version: ${{ steps.release.outputs.base-version }}
-      should-publish: ${{ steps.release.outputs.should-publish }}
-      should-create-tag: ${{ steps.release.outputs.should-create-tag }}
+      release-tag: ${{ needs.resolve-release.outputs.release-tag }}
+      release-version: ${{ needs.resolve-release.outputs.release-version }}
+      release-base-version: ${{ needs.resolve-release.outputs.release-base-version }}
+      should-publish: ${{ needs.resolve-release.outputs.should-publish }}
+      should-create-tag: ${{ needs.resolve-release.outputs.should-create-tag }}
+      check-run-id: ${{ steps.check.outputs.run-id }}
     env:
       RELEASE_TAG: ${{ needs.resolve-release.outputs.release-tag }}
       SHOULD_PUBLISH: ${{ needs.resolve-release.outputs.should-publish }}
@@ -118,93 +123,58 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: ${{ env.DENO_VERSION }}
-
-      - name: Cache Deno dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/deno
-            ts/node_modules
-          key: deno-${{ runner.os }}-${{ env.DENO_VERSION }}-${{ hashFiles('ts/deno.lock') }}
-          restore-keys: |
-            deno-${{ runner.os }}-${{ env.DENO_VERSION }}-
-
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
 
-      - name: Prepare release version
-        run: time cargo run --manifest-path xtask/Cargo.toml -- release prepare --tag "${RELEASE_TAG}"
-
-      - name: Install release API dependencies
-        run: rm -rf "$RUNNER_TEMP/trellis-cache" && TRELLIS_CACHE="$RUNNER_TEMP/trellis-cache" time cargo xtask install --update
-
-      - name: Build protocol WASM
-        run: time cargo run --manifest-path xtask/Cargo.toml -- protocol-wasm
-
-      - name: Cache Rust build artifacts
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-
-      - name: Capture release outputs
-        id: release
+      # Publication consumes the artifacts of the successful Check run for this
+      # exact candidate. It never builds the product and never falls back to
+      # "the latest green Check".
+      - name: Resolve the accepted Check run
+        id: check
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
         run: |
           set -euo pipefail
-
-          echo "tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "version=${{ needs.resolve-release.outputs.release-version }}" >> "$GITHUB_OUTPUT"
-          echo "base-version=${{ needs.resolve-release.outputs.release-base-version }}" >> "$GITHUB_OUTPUT"
-          echo "should-publish=${SHOULD_PUBLISH}" >> "$GITHUB_OUTPUT"
-          echo "should-create-tag=${SHOULD_CREATE_TAG}" >> "$GITHUB_OUTPUT"
+          query="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/check.yml/runs?head_sha=${GITHUB_SHA}&per_page=100"
+          runs_file="${RUNNER_TEMP}/check-runs.json"
+          deadline=$((SECONDS + 5400))
+          run_id=""
+          while [ "${SECONDS}" -lt "${deadline}" ]; do
+            curl --fail --silent --show-error \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "${query}" -o "${runs_file}"
+            run_id="$(jq -r '[.workflow_runs[] | select(.conclusion == "success")] | sort_by(.run_attempt) | last | .id // empty' "${runs_file}")"
+            if [ -n "${run_id}" ]; then
+              break
+            fi
+            latest_status="$(jq -r '[.workflow_runs[]] | sort_by(.run_attempt) | last | .status // empty' "${runs_file}")"
+            if [ "${latest_status}" = "completed" ]; then
+              echo "::error::The Check run for ${GITHUB_SHA} completed without success; refusing to publish."
+              exit 1
+            fi
+            sleep 30
+          done
+          if [ -z "${run_id}" ]; then
+            echo "::error::Timed out waiting for a successful Check run for ${GITHUB_SHA}."
+            exit 1
+          fi
+          echo "run-id=${run_id}" >> "$GITHUB_OUTPUT"
 
       - name: Validate release metadata
         shell: bash
         run: |
           set -euo pipefail
           if [ -n "${RELEASE_TAG}" ]; then
-            time cargo run --manifest-path xtask/Cargo.toml -- release check-metadata --version "${RELEASE_TAG#v}"
+            cargo run --manifest-path xtask/Cargo.toml -- release check-metadata --version "${RELEASE_TAG#v}"
           else
-            time cargo run --manifest-path xtask/Cargo.toml -- release check-metadata
+            cargo run --manifest-path xtask/Cargo.toml -- release check-metadata
           fi
-
-      - name: Build embedded browser apps
-        run: deno task -c web/deno.json build:embedded
 
       - name: Write release notes
         if: env.RELEASE_TAG != ''
-        run: time cargo run --manifest-path xtask/Cargo.toml -- release write-notes --tag "${RELEASE_TAG}" --output "${{ github.workspace }}/dist/release-notes.md"
-
-      - name: Upload prepared release workspace
-        uses: actions/upload-artifact@v4
-        with:
-          name: prepared-release
-          include-hidden-files: true
-          path: |
-            .dockerignore
-            CHANGELOG.md
-            art
-            demos/ts
-            demos/app
-            integration
-            ts
-            web
-            crates
-            Cargo.toml
-            Cargo.lock
-            .cargo
-            scripts
-            xtask
-            !**/.svelte-kit/**
-            !**/node_modules/**
-            !**/target/**
+        run: cargo run --manifest-path xtask/Cargo.toml -- release write-notes --tag "${RELEASE_TAG}" --output "${{ github.workspace }}/dist/release-notes.md"
 
       - name: Upload release notes
         if: env.RELEASE_TAG != ''
@@ -213,540 +183,16 @@ jobs:
           name: release-notes
           path: dist/release-notes.md
 
-  package-rust:
-    name: Verify Rust package
-    needs: prepare-release
-    runs-on: [self-hosted, Linux, X64]
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Download prepared release workspace
-        uses: actions/download-artifact@v4
-        with:
-          name: prepared-release
-          path: .
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Verify publishable Rust packages
-        run: |
-          cargo package --manifest-path Cargo.toml --allow-dirty \
-            -p trellis-protocol \
-            -p trellis-rs \
-            -p trellis-test
-
-      - name: Upload public Rust packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: rust-testkit-packages
-          path: target/package/*.crate
-          retention-days: 3
-
-  rust-testkit-package:
-    name: Produce Rust testkit bundle
-    if: >-
-      always()
-      && needs.package-rust.result == 'success'
-      && (needs.build-cli-linux.result == 'success' || needs.build-cli-linux.result == 'skipped')
-    needs: [prepare-release, package-rust, build-cli-linux]
-    runs-on: [self-hosted, Linux, X64]
-    env:
-      RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
-      # A tagless verification build stages native binaries; build them as an
-      # official (version-clean) build so the CLI and server agree with the
-      # package version the manifest records.
-      TRELLIS_OFFICIAL_BUILD: "1"
-
-    steps:
-      - name: Download prepared release workspace
-        uses: actions/download-artifact@v4
-        with:
-          name: prepared-release
-          path: .
-
-      - name: Download public Rust packages
-        uses: actions/download-artifact@v4
-        with:
-          name: rust-testkit-packages
-          path: target/package
-
-      - name: Download the tagged Linux CLI archive
-        if: needs.prepare-release.outputs.release-tag != ''
-        uses: actions/download-artifact@v4
-        with:
-          name: trellis-cli-x86_64-unknown-linux-gnu
-          path: dist
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Stage the verification bundle
-        run: |
-          set -euo pipefail
-          bundle="$RUNNER_TEMP/testkit-bundle"
-          rm -rf "$bundle"
-          mkdir -p "$bundle/packages" "$bundle/binaries" "$bundle/nats" "$bundle/consumer"
-          cp target/package/trellis-protocol-*.crate \
-             target/package/trellis-rs-*.crate \
-             target/package/trellis-test-*.crate "$bundle/packages/"
-          if [[ -n "${RELEASE_TAG}" ]]; then
-            archive="$(find dist -name 'trellis-*-x86_64-unknown-linux-gnu.tar.gz' | head -1)"
-            [[ -n "$archive" ]] || { echo "missing the tagged Linux CLI archive" >&2; exit 1; }
-            sha256sum -c dist/checksum-*-x86_64-unknown-linux-gnu-trellis.sha256
-            tar -xzf "$archive" -C "$bundle/binaries" trellis trellis-server
-          else
-            cargo build --manifest-path Cargo.toml -p trellis-server -p trellis-cli
-            cp target/debug/trellis target/debug/trellis-server "$bundle/binaries/"
-          fi
-          cp -R integration/fixtures/testkit/. "$bundle/consumer/"
-          rm -rf "$bundle/consumer/target"
-          bash scripts/acquire-test-nats.sh --dest "$bundle/nats"
-          cp scripts/verify-rust-test-package.sh "$bundle/"
-
-      - name: Package the verification bundle
-        run: |
-          set -euo pipefail
-          version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
-          bash scripts/stage-rust-test-bundle.sh \
-            --bundle "$RUNNER_TEMP/testkit-bundle" \
-            --output "$RUNNER_TEMP/rust-testkit-bundle.tar.gz" \
-            --source-sha "$GITHUB_SHA" \
-            --target "x86_64-unknown-linux-gnu" \
-            --version "$version"
-
-      - name: Upload the verification bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: rust-testkit-bundle
-          path: ${{ runner.temp }}/rust-testkit-bundle.tar.gz
-          retention-days: 3
-
-  rust-testkit-consumer:
-    name: Verify Rust testkit consumer
-    needs: [rust-testkit-package]
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-
-    steps:
-      - name: Download the verification bundle
-        uses: actions/download-artifact@v4
-        with:
-          name: rust-testkit-bundle
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Extract the verification bundle
-        run: |
-          set -euo pipefail
-          mkdir -p bundle
-          tar -xzf rust-testkit-bundle.tar.gz -C bundle --no-same-owner
-
-      - name: Verify the packaged testkit without a checkout
-        run: bash bundle/verify-rust-test-package.sh --bundle "$PWD/bundle" --mode smoke
-
-  package-js:
-    name: Verify JavaScript packages
-    needs: prepare-release
-    runs-on: [self-hosted, Linux, X64]
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Download prepared release workspace
-        uses: actions/download-artifact@v4
-        with:
-          name: prepared-release
-          path: .
-
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: ${{ env.DENO_VERSION }}
-
-      - name: Cache Deno dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/deno
-            ts/node_modules
-          key: deno-${{ runner.os }}-${{ env.DENO_VERSION }}-${{ hashFiles('ts/deno.lock') }}
-          restore-keys: |
-            deno-${{ runner.os }}-${{ env.DENO_VERSION }}-
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Build npm packages from installed sources
-        run: deno task -c ts/deno.json packages:build:npm:installed
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build runtime for live package consumer verification
-        run: cargo build --manifest-path Cargo.toml -p trellis-server
-
-      - name: Verify built package surfaces
-        run: deno task -c ts/deno.json test:packaging:built
-
-      - name: Verify TypeScript publication
-        run: bash scripts/release-ts-dry-run.sh
-
-      - name: Upload npm package artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: npm-packages
-          path: |
-            ts/packages/result/npm
-            ts/packages/trellis/npm
-            ts/packages/trellis-svelte/npm
-
-  build-cli-linux:
-    name: Build native Linux runtime (${{ matrix.arch }})
-    if: needs.prepare-release.outputs.release-tag != ''
-    needs: prepare-release
-    runs-on: ${{ matrix.runner }}
-    container:
-      image: rust:bookworm
-    env:
-      RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
-      TRELLIS_OFFICIAL_BUILD: "1"
-      TRELLIS_BUILD_SHA: ${{ github.sha }}
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-          - arch: arm64
-            target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
-
-    steps:
-      - name: Download prepared release workspace
-        uses: actions/download-artifact@v4
-        with:
-          name: prepared-release
-          path: .
-
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: ${{ env.DENO_VERSION }}
-
-      # The runtime image base is debian:bookworm-slim, so compile in the same
-      # release (rust:bookworm) on each native architecture. Do not build these
-      # executables against a newer host libc and then COPY them into the image.
-      - name: Build release binaries
-        shell: bash
-        run: |
-          set -euo pipefail
-          time cargo build -p trellis-cli -p trellis-server --release --target ${{ matrix.target }}
-
-      - name: Package CLI archives
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${RELEASE_TAG:-${GITHUB_REF_NAME:-dev}}"
-          target="${{ matrix.target }}"
-          archive_version="${version//\//-}"
-          staging="dist/${target}"
-          mkdir -p "$staging"
-
-          cp "target/${target}/release/trellis" "$staging/trellis"
-          cp "target/${target}/release/trellis-server" "$staging/trellis-server"
-          archive="trellis-${archive_version}-${target}.tar.gz"
-          tar -C "$staging" -czf "dist/$archive" trellis trellis-server
-          sha256sum "dist/$archive" > "dist/checksum-${archive_version}-${target}-trellis.sha256"
-
-      - name: Upload packaged CLI artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: trellis-cli-${{ matrix.target }}
-          path: |
-            dist/*.tar.gz
-            dist/*.sha256
-
-  build-cli-darwin:
-    name: Build ${{ matrix.target }} CLI
-    if: needs.prepare-release.outputs.release-tag != ''
-    needs: prepare-release
-    runs-on: ${{ matrix.runner }}
-    env:
-      RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-14
-            target: x86_64-apple-darwin
-          - runner: macos-14
-            target: aarch64-apple-darwin
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Download prepared release workspace
-        uses: actions/download-artifact@v4
-        with:
-          name: prepared-release
-          path: .
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: ${{ env.DENO_VERSION }}
-
-      - name: Add target toolchain
-        run: rustup target add ${{ matrix.target }}
-
-      - name: Cache Rust build artifacts
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-
-      - name: Build release binaries
-        shell: bash
-        env:
-          TRELLIS_OFFICIAL_BUILD: "1"
-          TRELLIS_BUILD_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          if [ -n "${RELEASE_TAG}" ]; then
-            time cargo build -p trellis-cli -p trellis-server --release --target ${{ matrix.target }}
-          else
-            time cargo build -p trellis-cli -p trellis-server --release --locked --target ${{ matrix.target }}
-          fi
-        working-directory: .
-
-      - name: Package CLI archives
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${RELEASE_TAG:-${GITHUB_REF_NAME:-dev}}"
-          target="${{ matrix.target }}"
-          archive_version="${version//\//-}"
-          staging="dist/${target}"
-          mkdir -p "$staging"
-
-          cp "target/${target}/release/trellis" "$staging/trellis"
-          cp "target/${target}/release/trellis-server" "$staging/trellis-server"
-          archive="trellis-${archive_version}-${target}.tar.gz"
-          tar -C "$staging" -czf "dist/$archive" trellis trellis-server
-          shasum -a 256 "dist/$archive" > "dist/checksum-${archive_version}-${target}-trellis.sha256"
-
-      - name: Upload packaged CLI artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: trellis-cli-${{ matrix.target }}
-          path: |
-            dist/*.tar.gz
-            dist/*.sha256
-
-  verify-images:
-    name: Build verified ${{ matrix.image }} image
-    if: needs.prepare-release.outputs.release-tag != ''
-    needs: [prepare-release, package-js, build-cli-linux]
-    runs-on: [self-hosted, Linux, X64]
-    env:
-      RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - image: trellis
-            file: crates/runtime/Containerfile
-            title: trellis
-            description: Trellis Rust runtime
-          - image: console
-            file: web/Containerfile
-            title: console
-            description: Trellis administrative web console
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Download prepared release workspace
-        uses: actions/download-artifact@v4
-        with:
-          name: prepared-release
-          path: .
-
-      # The image copies the producer's executables; it never compiles Trellis.
-      # Stage each target's archive under dist/native/<goarch>/ so the
-      # Containerfile can select it with buildx's TARGETARCH.
-      - name: Download native Linux runtime archives
-        if: matrix.image == 'trellis'
-        uses: actions/download-artifact@v4
-        with:
-          pattern: trellis-cli-*-unknown-linux-gnu
-          merge-multiple: true
-          path: ${{ runner.temp }}/native-runtime
-
-      - name: Stage native binaries for image assembly
-        if: matrix.image == 'trellis'
-        shell: bash
-        run: |
-          set -euo pipefail
-          declare -A arches=( [amd64]=x86_64-unknown-linux-gnu [arm64]=aarch64-unknown-linux-gnu )
-          for arch in "${!arches[@]}"; do
-            target="${arches[${arch}]}"
-            archive="$(find "$RUNNER_TEMP/native-runtime" -maxdepth 1 -name "trellis-*-${target}.tar.gz" | head -n1)"
-            if [ -z "${archive}" ]; then
-              echo "missing native Linux runtime archive for ${target}" >&2
-              exit 1
-            fi
-            mkdir -p "dist/native/${arch}"
-            tar --no-same-owner -xzf "${archive}" -C "dist/native/${arch}" trellis trellis-server
-          done
-          ls -l dist/native/amd64 dist/native/arm64
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build verified image archive
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ${{ matrix.file }}
-          platforms: linux/amd64,linux/arm64
-          outputs: type=oci,dest=/tmp/${{ matrix.image }}.tar
-          build-args: |
-            TRELLIS_VERSION=${{ env.RELEASE_TAG }}
-            TRELLIS_REVISION=${{ github.sha }}
-          labels: |
-            org.opencontainers.image.title=${{ matrix.title }}
-            org.opencontainers.image.description=${{ matrix.description }}
-
-      # The managed-mode smoke needs a named, single-platform image in the local
-      # Docker daemon. The multi-arch OCI archive above cannot be loaded by name
-      # (buildx's oci exporter leaves the images untagged and the archive is not a
-      # docker-loadable single image), so the trellis image is rebuilt natively for
-      # linux/amd64 with `load: true`, reusing the same build cache. Both
-      # architectures are still proven by the OCI archive build above; the smoke only
-      # runs the native amd64 image.
-      - name: Build native trellis image for the managed-mode smoke
-        if: matrix.image == 'trellis'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: crates/runtime/Containerfile
-          platforms: linux/amd64
-          load: true
-          tags: trellis-smoke:test
-          build-args: |
-            TRELLIS_VERSION=${{ env.RELEASE_TAG }}
-            TRELLIS_REVISION=${{ github.sha }}
-
-      - name: Smoke-test managed NATS in the trellis image
-        if: matrix.image == 'trellis'
-        shell: bash
-        run: bash scripts/smoke-trellis-image.sh --image trellis-smoke:test
-
-      - name: Upload verified image archive
-        uses: actions/upload-artifact@v4
-        with:
-          name: verified-image-${{ matrix.image }}
-          path: /tmp/${{ matrix.image }}.tar
-          compression-level: 0
-
-  smoke-image-arm64:
-    name: Smoke the native arm64 runtime image
-    if: needs.prepare-release.outputs.release-tag != ''
-    needs: [prepare-release, build-cli-linux]
-    runs-on: ubuntu-24.04-arm
-    env:
-      RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Download prepared release workspace
-        uses: actions/download-artifact@v4
-        with:
-          name: prepared-release
-          path: .
-
-      - name: Download native arm64 runtime archive
-        uses: actions/download-artifact@v4
-        with:
-          name: trellis-cli-aarch64-unknown-linux-gnu
-          path: ${{ runner.temp }}/native-runtime
-
-      - name: Stage native binaries for image assembly
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="$(find "$RUNNER_TEMP/native-runtime" -maxdepth 1 -name 'trellis-*-aarch64-unknown-linux-gnu.tar.gz' | head -n1)"
-          if [ -z "${archive}" ]; then
-            echo "missing native Linux runtime archive for aarch64-unknown-linux-gnu" >&2
-            exit 1
-          fi
-          mkdir -p dist/native/arm64
-          tar --no-same-owner -xzf "${archive}" -C dist/native/arm64 trellis trellis-server
-
-      # The multi-arch archive is assembled on x64 under emulation, so this is
-      # the native ARM runtime evidence: assemble and smoke the arm64 image on a
-      # native arm64 runner.
-      - name: Build native arm64 trellis image
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker build --platform linux/arm64 \
-            --tag trellis-smoke-arm64:test \
-            --build-arg TRELLIS_VERSION="${RELEASE_TAG}" \
-            --build-arg TRELLIS_REVISION="${{ github.sha }}" \
-            --file crates/runtime/Containerfile .
-
-      - name: Smoke-test managed NATS in the native arm64 image
-        shell: bash
-        run: bash scripts/smoke-trellis-image.sh --image trellis-smoke-arm64:test
-
   release-gate:
     name: Release gate
     needs:
       - prepare-release
-      - package-rust
-      - rust-testkit-consumer
-      - package-js
-      - build-cli-linux
-      - build-cli-darwin
-      - verify-images
-      - smoke-image-arm64
-    if: >-
-      always()
-      && needs.package-rust.result == 'success'
-      && needs.rust-testkit-consumer.result == 'success'
-      && needs.package-js.result == 'success'
-      && (
-        needs.prepare-release.outputs.release-tag == ''
-        || (needs.build-cli-linux.result == 'success' && needs.build-cli-darwin.result == 'success' && needs.verify-images.result == 'success' && needs.smoke-image-arm64.result == 'success')
-      )
+    if: needs.prepare-release.result == 'success'
     runs-on: [self-hosted, Linux, X64]
 
     steps:
-      - name: Confirm release verification passed
-        run: printf 'Release verification passed.\n'
+      - name: Confirm the candidate was accepted by Check
+        run: printf 'Publication input is the accepted Check run for this candidate.\n'
 
   create-release-tag:
     name: Create release tag
@@ -813,6 +259,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64]
     permissions:
       contents: write
+      actions: read
 
     steps:
       - name: Download packaged CLI artifacts
@@ -821,6 +268,8 @@ jobs:
           path: dist
           pattern: trellis-cli-*
           merge-multiple: true
+          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
+          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
 
       - name: Download release notes
         uses: actions/download-artifact@v4
@@ -854,12 +303,6 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-
-      - name: Download prepared release workspace
-        uses: actions/download-artifact@v4
-        with:
-          name: prepared-release
-          path: .
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -991,20 +434,25 @@ jobs:
     permissions:
       contents: read
       packages: write
+      actions: read
     steps:
-      - name: Download prepared release workspace
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download the packaged CLI
         uses: actions/download-artifact@v4
         with:
-          name: prepared-release
-          path: .
+          name: trellis-cli-x86_64-unknown-linux-gnu
+          path: ${{ runner.temp }}/cli
+          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
+          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
 
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: ${{ env.DENO_VERSION }}
+      - name: Stage the CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/bin"
+          tar -xzf "$RUNNER_TEMP/cli/"trellis-*.tar.gz -C "$GITHUB_WORKSPACE/bin" trellis
 
       - name: Authenticate with GHCR
         uses: docker/login-action@v3
@@ -1017,10 +465,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf "$RUNNER_TEMP/trellis-cache"
-          export TRELLIS_CACHE="$RUNNER_TEMP/trellis-cache"
-          cargo build --manifest-path Cargo.toml --locked --package trellis-cli
-          trellis="$GITHUB_WORKSPACE/target/debug/trellis"
+          trellis="$GITHUB_WORKSPACE/bin/trellis"
           # The canonical APIs live in one native package (`crates/runtime`,
           # package `trellis`); the other crates and TypeScript packages are
           # generated consumers and carry no publishable `trellis.toml`.
@@ -1028,15 +473,15 @@ jobs:
 
   publish-npm:
     name: Publish npm packages
-    if: always() && needs.prepare-release.outputs.should-publish == 'true' && needs.github-release.result == 'success' && needs.package-js.result == 'success'
+    if: always() && needs.prepare-release.outputs.should-publish == 'true' && needs.github-release.result == 'success'
     needs:
       - prepare-release
       - github-release
-      - package-js
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
+      actions: read
     env:
       RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
 
@@ -1044,17 +489,13 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download prepared release workspace
-        uses: actions/download-artifact@v4
-        with:
-          name: prepared-release
-          path: .
-
       - name: Download npm package artifact
         uses: actions/download-artifact@v4
         with:
           name: npm-packages
           path: .
+          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
+          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -1137,15 +578,15 @@ jobs:
 
   publish-jsr:
     name: Publish JSR packages
-    if: always() && needs.prepare-release.outputs.should-publish == 'true' && needs.github-release.result == 'success' && needs.package-js.result == 'success'
+    if: always() && needs.prepare-release.outputs.should-publish == 'true' && needs.github-release.result == 'success'
     needs:
       - prepare-release
       - github-release
-      - package-js
     runs-on: [self-hosted, Linux, X64]
     permissions:
       contents: read
       id-token: write
+      actions: read
     env:
       RELEASE_VERSION: ${{ needs.prepare-release.outputs.release-version }}
 
@@ -1153,11 +594,20 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download prepared release workspace
+      - name: Download generated artifacts
         uses: actions/download-artifact@v4
         with:
-          name: prepared-release
-          path: .
+          name: check-generated
+          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
+          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
+
+      - name: Download protocol WASM
+        uses: actions/download-artifact@v4
+        with:
+          name: check-protocol-wasm
+          path: ts/packages/trellis/auth/protocol_wasm
+          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
+          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
 
       - name: Set up Deno
         uses: denoland/setup-deno@v2
@@ -1258,6 +708,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      actions: read
     env:
       RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
 
@@ -1274,6 +725,8 @@ jobs:
         with:
           name: verified-image-${{ matrix.image }}
           path: /tmp
+          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
+          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
 
       - name: Normalize image owner
         id: owner
