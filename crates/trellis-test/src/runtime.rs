@@ -69,6 +69,9 @@ pub struct TrellisTestRuntimeBuilder {
     retention: WorkdirRetention,
     timeouts: TestTimeouts,
     timeouts_explicit: bool,
+    extra_origins: Vec<String>,
+    admin_username: Option<String>,
+    admin_password: Option<String>,
 }
 
 impl Default for TrellisTestRuntimeBuilder {
@@ -81,6 +84,9 @@ impl Default for TrellisTestRuntimeBuilder {
             retention: WorkdirRetention::OnFailure,
             timeouts: TestTimeouts::default(),
             timeouts_explicit: false,
+            extra_origins: Vec::new(),
+            admin_username: None,
+            admin_password: None,
         }
     }
 }
@@ -129,6 +135,46 @@ impl TrellisTestRuntimeBuilder {
         self
     }
 
+    /// Replaces the additional allowed HTTP origins.
+    ///
+    /// Every origin is added to the runtime's accepted request origins and
+    /// insecure-origin allow-list, so a browser app served from its own
+    /// development origin (for example `http://localhost:5174`) can complete a
+    /// portal login against this runtime.
+    #[must_use]
+    pub fn extra_origins(mut self, origins: Vec<String>) -> Self {
+        self.extra_origins = origins;
+        self
+    }
+
+    /// Adds one additional allowed HTTP origin.
+    #[must_use]
+    pub fn extra_origin(mut self, origin: impl Into<String>) -> Self {
+        self.extra_origins.push(origin.into());
+        self
+    }
+
+    /// Pins the sandbox administrator's local username.
+    ///
+    /// The default is [`ADMIN_USERNAME`]. The value in effect is available from
+    /// [`TrellisTestRuntime::admin_username`].
+    #[must_use]
+    pub fn admin_username(mut self, username: impl Into<String>) -> Self {
+        self.admin_username = Some(username.into());
+        self
+    }
+
+    /// Pins the sandbox administrator's local password.
+    ///
+    /// The default is a fresh random value. Whichever value is in effect is
+    /// available from [`TrellisTestRuntime::admin_password`] so a real browser or
+    /// portal-driven test can type the administrator credentials.
+    #[must_use]
+    pub fn admin_password(mut self, password: impl Into<String>) -> Self {
+        self.admin_password = Some(password.into());
+        self
+    }
+
     /// Starts an isolated runtime.
     ///
     /// # Errors
@@ -148,6 +194,9 @@ impl TrellisTestRuntimeBuilder {
             self.timeouts
         };
         validate_timeouts(&timeouts)?;
+        for origin in &self.extra_origins {
+            validate_origin(origin)?;
+        }
 
         let cli = resolve_binary(self.cli_binary, "TRELLIS_TEST_CLI_BIN", "Trellis CLI")?;
         let server = resolve_binary(
@@ -186,12 +235,29 @@ impl TrellisTestRuntimeBuilder {
             return Err(error);
         }
 
-        let password = generate_password();
+        let username = self
+            .admin_username
+            .clone()
+            .unwrap_or_else(|| ADMIN_USERNAME.to_owned());
+        let password = self
+            .admin_password
+            .clone()
+            .unwrap_or_else(generate_password);
+        validate_admin_credentials(&username, &password)?;
         for attempt in 1..=MAX_STARTUP_ATTEMPTS {
             let sandbox = Sandbox::create(&parent, self.retention)?;
             state.set_sandbox(sandbox);
             match start_once(
-                &mut state, &cli, &server, &nats, &path, timeouts, &password, deadline,
+                &mut state,
+                &cli,
+                &server,
+                &nats,
+                &path,
+                timeouts,
+                &username,
+                &password,
+                deadline,
+                &self.extra_origins,
             )
             .await
             {
@@ -315,8 +381,10 @@ async fn start_once(
     nats: &NatsExecutable,
     path: &OsString,
     timeouts: TestTimeouts,
+    username: &str,
     password: &str,
     deadline: Instant,
+    extra_origins: &[String],
 ) -> Result<TrellisTestRuntime, (TrellisTestError, bool)> {
     let lease = PortLease::reserve().map_err(|e| (e, false))?;
     let ports = lease.ports().map_err(|e| (e, false))?;
@@ -325,12 +393,21 @@ async fn start_once(
     let websocket_url = format!("ws://127.0.0.1:{}", ports.websocket);
     let monitor_url = format!("http://127.0.0.1:{}", ports.monitor);
 
-    let config_path = generate_bundle(state, cli, path, ports, &public_origin, timeouts, deadline)
-        .await
-        .map_err(|e| {
-            state.sandbox_mut().mark_failed();
-            (e, false)
-        })?;
+    let config_path = generate_bundle(
+        state,
+        cli,
+        path,
+        ports,
+        &public_origin,
+        timeouts,
+        deadline,
+        extra_origins,
+    )
+    .await
+    .map_err(|e| {
+        state.sandbox_mut().mark_failed();
+        (e, false)
+    })?;
     edit_config_toml(&config_path, ports.http).map_err(|e| {
         state.sandbox_mut().mark_failed();
         (e, false)
@@ -397,7 +474,7 @@ async fn start_once(
     if let Err(error) = bootstrap_first_admin(
         &public_origin,
         &token,
-        ADMIN_USERNAME,
+        username,
         password,
         remaining_ms(request_deadline),
     )
@@ -410,7 +487,7 @@ async fn start_once(
     // `start` has one real upper bound until it returns a usable runtime.
     let admin = match tokio::time::timeout_at(
         deadline.into(),
-        AdminSession::connect(&public_origin, ADMIN_USERNAME, password),
+        AdminSession::connect(&public_origin, username, password),
     )
     .await
     {
@@ -441,6 +518,7 @@ async fn start_once(
         admin: Some(admin),
         supervisor: Some(supervisor),
         sandbox: Some(sandbox),
+        username: username.to_owned(),
         password: password.to_owned(),
         names: Vec::new(),
         participants: Vec::new(),
@@ -482,6 +560,7 @@ pub struct TrellisTestRuntime {
     admin: Option<AdminSession>,
     supervisor: Option<ProcessSupervisor>,
     sandbox: Option<Sandbox>,
+    username: String,
     password: String,
     names: Vec<String>,
     participants: Vec<(String, String)>,
@@ -525,6 +604,23 @@ impl TrellisTestRuntime {
     #[must_use]
     pub fn workdir(&self) -> &Path {
         &self.workdir
+    }
+
+    /// Local administrator username for the isolated sandbox.
+    #[must_use]
+    pub fn admin_username(&self) -> &str {
+        &self.username
+    }
+
+    /// Local administrator password for the isolated sandbox.
+    ///
+    /// This is the sandbox-only credential, exposed so a real browser or
+    /// portal-driven test can type the administrator username and password into
+    /// the login form. Treat it as a secret: never log it or include it in
+    /// uploaded evidence.
+    #[must_use]
+    pub fn admin_password(&self) -> &str {
+        &self.password
     }
 
     fn admin(&self) -> Result<&AdminSession, TrellisTestError> {
@@ -882,6 +978,52 @@ fn validate_timeouts(timeouts: &TestTimeouts) -> Result<(), TrellisTestError> {
     Ok(())
 }
 
+/// Rejects an empty username or a password the runtime's local-identity policy
+/// would reject, before any server side effect.
+fn validate_admin_credentials(username: &str, password: &str) -> Result<(), TrellisTestError> {
+    let invalid = |reason: &str| {
+        TrellisTestError::new(
+            TrellisTestErrorKind::InvalidConfiguration,
+            TrellisTestStage::Validation,
+            format!("invalid administrator credentials: {reason}"),
+        )
+    };
+    if username.is_empty() || username.chars().any(char::is_control) {
+        return Err(invalid(
+            "the username must be non-empty without control characters",
+        ));
+    }
+    if password.chars().count() < 8 {
+        return Err(invalid("the password must be at least 8 characters"));
+    }
+    Ok(())
+}
+
+/// Rejects an extra origin that is not a bare HTTP(S) origin.
+fn validate_origin(origin: &str) -> Result<(), TrellisTestError> {
+    let invalid = |reason: &str| {
+        TrellisTestError::new(
+            TrellisTestErrorKind::InvalidConfiguration,
+            TrellisTestStage::Validation,
+            format!("invalid extra origin '{origin}': {reason}"),
+        )
+    };
+    let parsed = url::Url::parse(origin).map_err(|error| invalid(&error.to_string()))?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err(invalid("must be an http(s) origin with a host"));
+    }
+    if !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(invalid(
+            "must not carry credentials, a query, or a fragment",
+        ));
+    }
+    Ok(())
+}
+
 fn request_ms(timeouts: &TestTimeouts) -> u64 {
     u64::try_from(timeouts.request.as_millis()).unwrap_or(u64::MAX)
 }
@@ -1015,6 +1157,7 @@ async fn generate_bundle(
     public_origin: &str,
     timeouts: TestTimeouts,
     deadline: Instant,
+    extra_origins: &[String],
 ) -> Result<PathBuf, TrellisTestError> {
     // Reject non-UTF-8 sandbox paths before generating any configuration.
     crate::sandbox::require_utf8_path(state.sandbox().root(), "sandbox")?;
@@ -1041,6 +1184,9 @@ async fn generate_bundle(
         .arg(format!("ws://127.0.0.1:{}", ports.websocket))
         .arg("--public-origin")
         .arg(public_origin);
+    for origin in extra_origins {
+        command.arg("--extra-origin").arg(origin);
+    }
     let command_deadline = deadline.min(Instant::now() + timeouts.request);
     let (ok, stdout, stderr) = run_captured(
         state.supervisor(),
@@ -1463,6 +1609,15 @@ mod tests {
             Some("http://127.0.0.1:1/x?adminAccountToken=t")
         );
         assert_eq!(extract_bootstrap_url("no url here"), None);
+    }
+
+    #[test]
+    fn admin_credentials_are_validated() {
+        use super::validate_admin_credentials;
+        assert!(validate_admin_credentials("trellis-test-admin", "long-enough").is_ok());
+        assert!(validate_admin_credentials("", "long-enough").is_err());
+        assert!(validate_admin_credentials("bad\nname", "long-enough").is_err());
+        assert!(validate_admin_credentials("trellis-test-admin", "short").is_err());
     }
 
     #[test]

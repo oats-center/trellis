@@ -29,6 +29,13 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 Ports are chosen automatically from kernel-assigned loopback reservations; you
 never select them.
 
+A runtime accepts only its own loopback origin by default. If a browser app or
+operator console is served from a different development origin, allow it with
+`TrellisTestRuntime::builder().extra_origin("http://localhost:5174")` (or
+`extra_origins(vec![...])`). Each origin is added to the runtime's accepted
+request origins and insecure-origin allow-list, so that app can complete a
+portal login against the harness runtime.
+
 ## Example
 
 ```rust,no_run
@@ -56,8 +63,34 @@ runtime.shutdown().await?;
 ```
 
 Your application owns the clients and services it connects; stop those
-transports before calling [`TrellisTestRuntime::shutdown`]. The runtime owns only
-its own administration connection and the server/NATS processes.
+transports before calling [`TrellisTestRuntime::shutdown`]. The runtime owns
+only its own administration connection and the server/NATS processes.
+
+## Browser and portal-driven tests
+
+The runtime exposes the isolated administrator credentials it bootstrapped:
+`TrellisTestRuntime::admin_username()` and `admin_password()`. Use them to drive
+a real browser or portal login against `trellis_url()` (for example the
+first-run administrator setup form). Both values are sandbox-only secrets; never
+log them or include them in uploaded evidence.
+
+You can also pin them so the test knows them up front:
+
+```rust,no_run
+# use trellis_test::TrellisTestRuntime;
+# async fn example() -> Result<(), trellis_test::TrellisTestError> {
+let mut runtime = TrellisTestRuntime::builder()
+    .admin_username("trellis-test-admin")
+    .admin_password("a-known-test-password")
+    .start()
+    .await?;
+# runtime.shutdown().await?;
+# Ok(())
+# }
+```
+
+If a browser app or operator console is served from a different origin, allow it
+with `extra_origin` so its portal login is accepted.
 
 ## Participants without a generated Rust package
 
