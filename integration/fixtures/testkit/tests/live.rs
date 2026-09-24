@@ -418,3 +418,43 @@ async fn t16_cancelling_start_does_not_orphan_infrastructure() {
         .expect("start after cancelling another start");
     runtime.shutdown().await.expect("shutdown runtime");
 }
+
+/// T12: automatic port assignment works across independent processes. Two child
+/// test processes each start a runtime while this process also starts one, with
+/// no caller-specified ports.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn t12_automatic_ports_across_processes() {
+    let exe = std::env::current_exe().expect("current test executable");
+    let mut children = Vec::new();
+    for _ in 0..2 {
+        let child = std::process::Command::new(&exe)
+            .args(["--exact", "t12_child_runtime", "--ignored", "--nocapture"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn child test process");
+        children.push(child);
+    }
+
+    let mut runtime = TrellisTestRuntime::builder()
+        .start()
+        .await
+        .expect("start runtime in the parent process");
+    runtime.shutdown().await.expect("shutdown runtime");
+
+    for mut child in children {
+        let status = child.wait().expect("wait for the child test process");
+        assert!(status.success(), "a concurrent runtime process failed");
+    }
+}
+
+/// Started only by `t12_automatic_ports_across_processes` as a child process.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "invoked as a child process by t12"]
+async fn t12_child_runtime() {
+    let mut runtime = TrellisTestRuntime::builder()
+        .start()
+        .await
+        .expect("start runtime in a child process");
+    runtime.shutdown().await.expect("shutdown runtime");
+}

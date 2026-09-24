@@ -340,3 +340,21 @@ pub(crate) fn redact_secrets(input: &str, secrets: &[&str]) -> String {
     }
     redacted
 }
+
+#[cfg(test)]
+mod tests {
+    use super::redact_secrets;
+
+    #[test]
+    fn redaction_replaces_every_occurrence() {
+        assert_eq!(
+            redact_secrets("token=abc secret=abc tail", &["abc"]),
+            "token=[redacted] secret=[redacted] tail"
+        );
+    }
+
+    #[test]
+    fn redaction_ignores_empty_secrets() {
+        assert_eq!(redact_secrets("unchanged", &[""]), "unchanged");
+    }
+}

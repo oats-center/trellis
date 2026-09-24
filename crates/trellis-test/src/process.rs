@@ -374,3 +374,32 @@ pub(crate) fn run_captured(
     }
     Ok((success, stdout.text(), stderr.text()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_tail_is_bounded() {
+        let tail = OutputTail::default();
+        tail.push(&vec![b'a'; TAIL_LIMIT + 512]);
+        assert_eq!(tail.text().len(), TAIL_LIMIT);
+    }
+
+    #[test]
+    fn output_tail_handles_split_utf8() {
+        let tail = OutputTail::default();
+        // An emoji split across two read chunks must still decode.
+        tail.push(&[0xF0, 0x9F]);
+        tail.push(&[0x98, 0x80]);
+        assert!(tail.text().contains('\u{1F600}'));
+    }
+
+    #[test]
+    fn output_tail_caps_unterminated_lines() {
+        let tail = OutputTail::default();
+        // A single missing newline must not grow the retained buffer past the limit.
+        tail.push(&vec![b'x'; LINE_LIMIT + 4096]);
+        assert_eq!(tail.text().len(), TAIL_LIMIT);
+    }
+}

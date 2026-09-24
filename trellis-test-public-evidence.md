@@ -41,9 +41,8 @@
 ## Live runtime evidence
 - CLI/server/NATS paths, versions, hashes, and build/source SHA: `target/debug/trellis`,
   `target/debug/trellis-server` (0.100.0), and `~/.cache/trellis/nats-server-v2.14.4`.
-- Linux runner/architecture and actual tested cases: x86_64 Linux; fixture live target 14/14
-  (T02, T04, T05, T06, T07, T08, T09, T10, T11, T14, T15, T16, T21, T23); artifact-only smoke 7/7 (T07 filtered);
-  full `cargo test --workspace` exit 0.
+- Linux runner/architecture and actual tested cases: x86_64 Linux; fixture live target 15/15 active
+  (T02, T04–T12, T14, T15, T16, T21, T23); artifact-only smoke passes; full `cargo test --workspace` exit 0.
 - macOS runner/architecture and actual tested cases: not run.
 - Concurrent-runtime isolation evidence: T07 starts eight runtimes in one process; all HTTP/NATS/
   WebSocket endpoints distinct.
@@ -60,7 +59,7 @@
 |---|---|---|---|---|---|
 | T01 | `sandbox::tests::*`, `cargo test -p trellis-test --lib` | local | feature tip | PASS | 5 unit tests, no infra |
 | T02 | `t02_missing_or_invalid_binaries_fail` | fixture `--test live` | feature tip | PASS | InvalidBinary before startup |
-| T03 | (version parsing) | — | | PARTIAL | implemented; explicit test pending |
+| T03 | `version_comparison_ignores_build_metadata_only` | `cargo test -p trellis-test --lib` | feature tip | PASS | prerelease/build handling |
 | T04 | `t04_real_rpc_and_event_between_provider_and_caller` | fixture `--test live` | feature tip | PASS | RPC + event |
 | T05 | `t05_agent_caller_calls_the_provider` | fixture `--test live` | feature tip | PASS | agent-bound session |
 | T06 | `t06_two_providers_have_distinct_deployments` | fixture `--test live` | feature tip | PASS | distinct deployments/instances |
@@ -69,7 +68,7 @@
 | T09 | `t09_duplicate_names_are_rejected` | fixture `--test live` | feature tip | PASS | DuplicateName |
 | T10 | `t10_unsupported_participant_kind_is_rejected` | fixture `--test live` | feature tip | PASS | device rejected |
 | T11 | `t11_missing_nats_fails_cleanly` | fixture `--test live` | feature tip | PASS | clean failure, no skip |
-| T12 | (cross-process) | — | | NOT RUN | artifact smoke covers in-process only |
+| T12 | `t12_automatic_ports_across_processes` | fixture `--test live` | feature tip | PASS | two child processes + parent |
 | T13 | `port_conflict_matches_only_selected_ports`, `port_lease_*` | `cargo test -p trellis-test --lib` | feature tip | PARTIAL | classification + lease; real occupied-port case pending |
 | T14 | `t14_shutdown_is_idempotent` | fixture `--test live` | feature tip | PASS | idempotent shutdown |
 | T15 | `t15_dropping_a_runtime_cleans_up` | fixture `--test live` | feature tip | PASS | drop stops the server |
@@ -81,7 +80,7 @@
 | T21 | `t21_complete_session_does_not_write_the_default_store` | fixture `--test live` | feature tip | PASS | storage-free bind |
 | T22 | T07 distinct endpoints | fixture `--test live` | feature tip | PASS | loopback only |
 | T23 | `t23_sandbox_path_with_spaces_works` | fixture `--test live` | feature tip | PASS | spaced sandbox path |
-| T24 | (bounded redacted tails) | — | | PARTIAL | bounded tails + redaction implemented; split-token test pending |
+| T24 | `output_tail_*`, `redaction_*` | `cargo test -p trellis-test --lib` | feature tip | PASS | bounded tail, split UTF-8, redaction |
 | T25 | (DownloadPinned) | — | | NOT RUN | pending |
 | T26 | projection `diff -r` + second install | `cargo xtask install` | feature tip | PASS | identical + idempotent |
 | T27 | `cargo package` three crates | local | feature tip | PASS | verified archives |

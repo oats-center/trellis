@@ -991,3 +991,23 @@ fn classify_startup(
         .with_output(stdout_tail, stderr_tail);
     (with_output, false)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::versions_differ;
+    use semver::Version;
+
+    fn version(text: &str) -> Version {
+        Version::parse(text).expect("parse version")
+    }
+
+    #[test]
+    fn version_comparison_ignores_build_metadata_only() {
+        let base = version("0.100.0");
+        assert!(!versions_differ(&base, &version("0.100.0+build.5")));
+        assert!(versions_differ(&base, &version("0.100.1")));
+        assert!(versions_differ(&base, &version("0.101.0")));
+        assert!(versions_differ(&base, &version("0.100.0-rc.1")));
+        assert!(versions_differ(&version("0.100.0-rc.1"), &version("0.100.0-rc.2")));
+    }
+}
