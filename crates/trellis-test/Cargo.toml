@@ -25,7 +25,7 @@ tempfile = "3.15.0"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 toml_edit = { workspace = true }
-trellis-rs = { path = "../trellis", version = "0.100.0" }
+trellis-rs = { path = "../trellis", version = "0.100.0-rc.2" }
 ulid = "1.2.0"
 url = { workspace = true }
 

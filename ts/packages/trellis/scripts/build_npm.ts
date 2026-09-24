@@ -47,7 +47,7 @@ await buildTypeScriptPackage({
     "@nats-io/transport-node": "^3.3.1",
     "@noble/curves": "^2.0.1",
     "@noble/hashes": "1.8.0",
-    "@oatscenter/result": "^0.100.0",
+    "@oatscenter/result": "^0.100.0-rc.2",
     "js-sha256": "^0.11.1",
     pino: "^10.3.1",
     tweetnacl: "^1.0.3",

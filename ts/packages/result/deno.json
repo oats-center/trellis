@@ -1,7 +1,7 @@
 {
   "extends": "../../deno.json",
   "name": "@oatscenter/result",
-  "version": "0.100.0",
+  "version": "0.100.0-rc.2",
   "license": "Apache-2.0",
   "exports": "./mod.ts",
   "imports": {

@@ -2,7 +2,7 @@ default-registry = "trellis"
 
 [package]
 name = "trellis"
-version = "0.100.0"
+version = "0.100.0-rc.2"
 
 [sources]
 types = "src/builtin_source/types.trellis"

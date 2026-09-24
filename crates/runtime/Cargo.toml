@@ -54,9 +54,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 trellis-protocol.workspace = true
 trellis-runtime-apis = { path = "../runtime-apis" }
-trellis-events-runtime = { path = "../events-runtime", version = "0.100.0" }
-trellis-idl = { path = "../idl", version = "0.100.0" }
-trellis-jobs-runtime = { path = "../jobs-runtime", version = "0.100.0" }
+trellis-events-runtime = { path = "../events-runtime", version = "0.100.0-rc.2" }
+trellis-idl = { path = "../idl", version = "0.100.0-rc.2" }
+trellis-jobs-runtime = { path = "../jobs-runtime", version = "0.100.0-rc.2" }
 trellis-rs = { path = "../trellis", features = ["runtime-internals"] }
 tower = { version = "0.5.3", features = ["util"] }
 ulid = "1.2.1"

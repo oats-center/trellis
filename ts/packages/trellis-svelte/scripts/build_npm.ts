@@ -46,8 +46,8 @@ const jsrRuntimeDependencyVersion =
 const dependencies = resolveInternalNpmDependenciesForBuild(
   {
     "@nats-io/nats-core": "^3.3.1",
-    "@oatscenter/result": "^0.100.0",
-    "@oatscenter/trellis": "^0.100.0",
+    "@oatscenter/result": "^0.100.0-rc.2",
+    "@oatscenter/trellis": "^0.100.0-rc.2",
     typebox: "^1.0.15",
     ulid: "^3.0.2",
   },

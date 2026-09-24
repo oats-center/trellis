@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "@oatscenter/trellis": "^0.100.0"
+    "@oatscenter/trellis": "^0.100.0-rc.2"
   },
   "description": "Generated Trellis APIs and participants.",
   "exports": {
@@ -14,5 +14,5 @@
   "sideEffects": false,
   "trellisGenerated": true,
   "type": "module",
-  "version": "0.100.0"
+  "version": "0.100.0-rc.2"
 }

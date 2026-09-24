@@ -20,10 +20,10 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 opentelemetry_sdk.workspace = true
 tracing-opentelemetry.workspace = true
-trellis-bootstrap = { path = "../bootstrap", version = "0.100.0" }
-trellis-local-nats = { path = "../local-nats", version = "0.100.0" }
-trellis-runtime = { path = "../runtime", version = "0.100.0" }
-trellis-rs = { path = "../trellis", version = "0.100.0", features = ["telemetry-otlp"] }
+trellis-bootstrap = { path = "../bootstrap", version = "0.100.0-rc.2" }
+trellis-local-nats = { path = "../local-nats", version = "0.100.0-rc.2" }
+trellis-runtime = { path = "../runtime", version = "0.100.0-rc.2" }
+trellis-rs = { path = "../trellis", version = "0.100.0-rc.2", features = ["telemetry-otlp"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

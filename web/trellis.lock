@@ -3,9 +3,9 @@ root = "trellis-web-generated"
 
 [[packages]]
 name = "trellis"
-version = "0.100.0"
+version = "0.100.0-rc.2"
 digest = "351HnUzHKb3mL9ywXi0iiawhcYstruqKuwBW0-c1kUY"
-distribution-digest = "sha256:d0026568c202b5d0fd49f5d50250308d89c87398fdf62b9bdaa3a4ca3e047ed2"
+distribution-digest = "sha256:615798409c674923fd130b138b2ff011966b24baffdb3def126750090db029e5"
 dependencies = []
 
 [packages.source]
@@ -14,13 +14,13 @@ path = "./../crates/runtime"
 
 [[packages]]
 name = "trellis-web-generated"
-version = "0.100.0"
-digest = "XgLd1CMjQkXxi2FMoLfeRrkvbSvADd3d7_OhhcGeLa0"
-distribution-digest = "sha256:0de52b8f6dbc6da942abadf47f7b39540dd59074517a83adb8237521d917efc1"
+version = "0.100.0-rc.2"
+digest = "B2i3q4HHBm5AiZgZbnsfPn6aV_aEs3f-r8oAk74XpJI"
+distribution-digest = "sha256:6f931c5bb9b2f27fe5603f5617b3ec8cd43d0fed9d6d4b13f0c8ff1cbd23ea98"
 
 [[packages.dependencies]]
 name = "trellis"
-version = "0.100.0"
+version = "0.100.0-rc.2"
 digest = "351HnUzHKb3mL9ywXi0iiawhcYstruqKuwBW0-c1kUY"
 
 [packages.source]

@@ -1,7 +1,7 @@
 {
   "extends": "../../deno.json",
   "name": "@oatscenter/trellis-svelte",
-  "version": "0.100.0",
+  "version": "0.100.0-rc.2",
   "exports": "./src/index.ts",
   "tasks": {
     "build:npm": "deno run -A ./scripts/build_npm.ts"

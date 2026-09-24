@@ -19,5 +19,5 @@ sha2.workspace = true
 tar = "0.4.46"
 tempfile = "3.27.0"
 thiserror.workspace = true
-trellis-bootstrap = { path = "../bootstrap", version = "0.100.0" }
+trellis-bootstrap = { path = "../bootstrap", version = "0.100.0-rc.2" }
 ureq = "3.3.0"
