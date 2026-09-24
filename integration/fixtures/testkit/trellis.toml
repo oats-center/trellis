@@ -1,0 +1,12 @@
+[package]
+name = "trellis-test-fixture"
+version = "0.100.0"
+
+[sources]
+echo = "contract.trellis"
+
+[generate.rust]
+output = "crates/trellis-test-fixture"
+
+[dependencies]
+trellis = { package = "trellis", path = "../../../crates/runtime" }

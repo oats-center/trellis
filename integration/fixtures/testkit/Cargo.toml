@@ -1,0 +1,16 @@
+[package]
+name = "trellis-test-fixture-live"
+version = "0.100.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+futures-util = "0.3"
+trellis-rs = "0.100.0"
+trellis-test-fixture = { path = "crates/trellis-test-fixture" }
+
+[dev-dependencies]
+trellis-test = "0.100.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

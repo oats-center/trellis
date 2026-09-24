@@ -1,0 +1,15 @@
+model Value { value: string; }
+
+api echo@v1 {
+  title "Testkit echo";
+  description "External Rust testkit acceptance fixture.";
+  rpc Echo { input Value; output Value; }
+  event Observed { payload Value; }
+  capabilities { public { allows { rpc Echo; publish event Observed; subscribe event Observed; } } }
+}
+
+service Provider { implements echo; }
+app Caller { use echo { rpc Echo; subscribe event Observed; } }
+agent AgentCaller { use echo { rpc Echo; subscribe event Observed; } }
+app RestrictedCaller {}
+device UnsupportedDevice {}
