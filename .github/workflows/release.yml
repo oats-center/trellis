@@ -1006,14 +1006,10 @@ jobs:
           export TRELLIS_CACHE="$RUNNER_TEMP/trellis-cache"
           cargo build --manifest-path Cargo.toml --locked --package trellis-cli
           trellis="$GITHUB_WORKSPACE/target/debug/trellis"
-          for project in \
-            crates/events-runtime \
-            crates/jobs-runtime \
-            crates/runtime \
-            ts/packages/trellis
-          do
-            (cd "$project" && "$trellis" publish)
-          done
+          # The canonical APIs live in one native package (`crates/runtime`,
+          # package `trellis`); the other crates and TypeScript packages are
+          # generated consumers and carry no publishable `trellis.toml`.
+          (cd crates/runtime && "$trellis" publish)
 
   publish-npm:
     name: Publish npm packages
