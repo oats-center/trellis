@@ -155,6 +155,11 @@ jobs:
         with:
           deno-version: ${{ env.DENO_VERSION }}
 
+      # The web build resolves SvelteKit's internal modules through the shared
+      # ts/ import map, so the TypeScript workspace's node_modules must exist.
+      - name: Install TypeScript workspace dependencies
+        run: deno install --config ts/deno.json
+
       # Consume the already-generated API artifacts and protocol WASM; do not
       # re-run the developer wrapper that recompiles xtask and the WASM.
       - name: Build embedded browser apps
