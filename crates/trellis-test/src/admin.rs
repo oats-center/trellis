@@ -375,6 +375,7 @@ pub(crate) async fn bootstrap_first_admin(
     );
     let response = client
         .post(&url)
+        .header("origin", trellis_url)
         .json(&json!({ "username": username, "password": password }))
         .send()
         .await
