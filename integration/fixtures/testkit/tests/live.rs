@@ -399,3 +399,22 @@ async fn t11_missing_nats_fails_cleanly() {
             | TrellisTestErrorKind::Timeout
     ));
 }
+
+/// T16: cancelling an in-progress `start` after the server is spawned does not
+/// orphan infrastructure that blocks a later runtime.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn t16_cancelling_start_does_not_orphan_infrastructure() {
+    let handle = tokio::spawn(async {
+        TrellisTestRuntime::builder().start().await.map(|_| ())
+    });
+    // Let the future spawn the server and begin readiness polling.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    handle.abort();
+    let _ = handle.await;
+
+    let mut runtime = TrellisTestRuntime::builder()
+        .start()
+        .await
+        .expect("start after cancelling another start");
+    runtime.shutdown().await.expect("shutdown runtime");
+}
