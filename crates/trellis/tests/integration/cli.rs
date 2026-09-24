@@ -16,6 +16,32 @@ use trellis_local_nats::{
 };
 use ulid::Ulid;
 
+/// Configures a spawned child to receive `SIGTERM` when this process exits.
+///
+/// Linux-only; the CLI/server test owns its children directly and needs no
+/// external test crate for this tiny guard.
+#[cfg(target_os = "linux")]
+fn terminate_on_parent_exit(command: &mut Command) {
+    use std::os::unix::process::CommandExt as _;
+    let parent_pid = std::process::id();
+    // SAFETY: only async-signal-safe libc calls run between fork and exec.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() != parent_pid as libc::pid_t {
+                return Err(std::io::Error::other("parent exited before exec"));
+            }
+            Ok(())
+        });
+    }
+}
+
+/// No parent-death signal is available off Linux.
+#[cfg(not(target_os = "linux"))]
+fn terminate_on_parent_exit(_command: &mut Command) {}
+
 /// Deliberately bogus NATS URLs baked into the bundle so managed mode's endpoint
 /// override is observable: nothing listens on these, yet the report must be valid.
 const BOGUS_NATS_URL: &str = "nats://nats.invalid:4222";
@@ -128,7 +154,7 @@ struct ChildGuard {
 
 impl ChildGuard {
     fn spawn(command: &mut Command, label: &'static str) -> Self {
-        trellis_test::terminate_on_parent_exit(command);
+        terminate_on_parent_exit(command);
         let child = command
             .spawn()
             .unwrap_or_else(|error| panic!("spawn {label}: {error}"));

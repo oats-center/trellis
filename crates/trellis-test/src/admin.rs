@@ -1,126 +1,233 @@
-//! Administrator automation: complete the real local login and drive admin RPCs.
+//! Administrator automation through the projected generated Auth API.
+//!
+//! All administration uses the generated `trellis.auth@v1` client projected
+//! into this crate; the only HTTP calls are the existing local-login and
+//! first-administrator portal endpoints, which the SDK does not expose as RPCs.
 
-use std::path::Path;
+use std::time::Duration;
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use trellis_rs::auth::{
     complete_local_login, connect_admin_client_async, start_agent_login, StartAgentLoginOpts,
 };
 use trellis_rs::client::CallError;
-use trellis_runtime_apis::apis::trellis_auth_v1::rpc::{
-    DeploymentsApplyError, ParticipantsGetError as AuthParticipantsGetError,
-};
-use trellis_runtime_apis::apis::trellis_auth_v1::Client as AuthClient;
-use trellis_runtime_apis::types::{
+use trellis_rs::generated::ParticipantDescriptor;
+
+use crate::apis::trellis_auth_v1::rpc::DeploymentsApplyError;
+use crate::apis::trellis_auth_v1::Client as AuthClient;
+use crate::error::{TrellisTestError, TrellisTestErrorKind, TrellisTestStage};
+use crate::types::{
     Approval, ApprovalMode, ApprovedCapability, ApprovedResource, AuthDeploymentsApplyRequest,
-    AuthDeploymentsCreateRequest, AuthDeploymentsCreateRequestKind, AuthParticipantsGetRequest,
-    AuthParticipantsInstallRequest, AuthPortalsGrantOverridesPutRequest,
-    AuthServiceInstancesProvisionRequest, ConsentRequest,
+    AuthDeploymentsCreateRequest, AuthDeploymentsCreateRequestKind, AuthParticipantsInstallRequest,
+    AuthPortalsGrantOverridesPutRequest, AuthServiceInstancesProvisionRequest, ConsentRequest,
 };
 
-use crate::error::TrellisTestError;
-use crate::runtime::TrellisTestRuntime;
+/// Fixed local username for the isolated sandbox administrator.
+pub(crate) const ADMIN_USERNAME: &str = "trellis-test-admin";
 
 fn wire<T: serde::de::DeserializeOwned>(value: impl Serialize) -> Result<T, TrellisTestError> {
-    let value =
-        serde_json::to_value(value).map_err(|error| TrellisTestError::Config(error.to_string()))?;
-    serde_json::from_value(value).map_err(|error| TrellisTestError::Config(error.to_string()))
+    let value = serde_json::to_value(value).map_err(|error| {
+        TrellisTestError::new(
+            TrellisTestErrorKind::InvalidConfiguration,
+            TrellisTestStage::ParticipantInstallation,
+            error.to_string(),
+        )
+    })?;
+    serde_json::from_value(value).map_err(|error| {
+        TrellisTestError::new(
+            TrellisTestErrorKind::InvalidConfiguration,
+            TrellisTestStage::ParticipantInstallation,
+            error.to_string(),
+        )
+    })
 }
 
 fn idempotency_key() -> String {
     ulid::Ulid::new().to_string()
 }
 
-/// A provisioned service instance and the seed its service must present to connect.
-pub struct TrellisTestServiceInstance {
-    /// Instance id assigned by the platform.
-    pub instance_id: String,
-    /// Session seed the service reads from `TRELLIS_SEED`.
-    pub seed: String,
+/// Renders a generated newtype string wrapper without depending on its shape.
+fn value_text(value: &impl Serialize) -> String {
+    match serde_json::to_value(value) {
+        Ok(Value::String(text)) => text,
+        Ok(other) => other.to_string(),
+        Err(_) => String::new(),
+    }
 }
 
-/// Connection material for a provisioned caller (client) participant.
-///
-/// The harness cannot produce a typed client — that type belongs to the caller's own generated
-/// contract — so it hands back exactly what a client needs to connect:
-/// `ServiceConnectOptions::new(&session.trellis_url, &session.seed)`.
-pub struct TrellisTestClientSession {
-    /// Control-plane base URL.
-    pub trellis_url: String,
-    /// Session seed for the provisioned instance.
-    pub seed: String,
-    /// Instance id assigned by the platform.
-    pub instance_id: String,
-    /// Participant identity that owns the instance.
-    pub participant_id: String,
+/// A logged-in client session's connection material.
+pub(crate) struct ClientSession {
+    pub(crate) login_session_id: String,
+    pub(crate) session_seed: String,
 }
 
-/// An authenticated administrator client for a test runtime.
-pub struct TrellisTestAdmin {
+/// Completes a fresh participant-bound login for an app/agent caller.
+pub(crate) async fn login_client(
+    trellis_url: &str,
+    participant_id: &str,
+    username: &str,
+    password: &str,
+    timeout_ms: u64,
+) -> Result<ClientSession, TrellisTestError> {
+    let challenge = start_agent_login(&StartAgentLoginOpts {
+        trellis_url,
+        participant_id,
+        allow_insecure_origin: false,
+    })
+    .await
+    .map_err(|error| {
+        TrellisTestError::new(
+            TrellisTestErrorKind::Authentication,
+            TrellisTestStage::ClientLogin,
+            format!("starting the caller login: {error}"),
+        )
+    })?;
+    let login_url = challenge.login_url().to_owned();
+    complete_local_login(trellis_url, &login_url, username, password)
+        .await
+        .map_err(|error| {
+            TrellisTestError::new(
+                TrellisTestErrorKind::Authentication,
+                TrellisTestStage::ClientLogin,
+                format!("completing the caller login: {error}"),
+            )
+        })?;
+    let state = challenge
+        .complete_session(trellis_url)
+        .await
+        .map_err(|error| {
+            TrellisTestError::new(
+                TrellisTestErrorKind::Authentication,
+                TrellisTestStage::ClientLogin,
+                format!("binding the caller session: {error}"),
+            )
+        })?;
+    let _ = timeout_ms;
+    Ok(ClientSession {
+        login_session_id: state.login_session_id,
+        session_seed: state.session_seed,
+    })
+}
+
+/// An authenticated administrator session for one test runtime.
+pub(crate) struct AdminSession {
     auth: AuthClient,
-    trellis_url: String,
-    deployment: String,
+    pub(crate) trellis_url: String,
+    pub(crate) timeout_ms: u64,
 }
 
-impl TrellisTestRuntime {
-    /// Completes the real local login as the seeded administrator and returns an admin client.
-    ///
-    /// The login runs the ordinary detached-agent flow — start, local password, consent approval —
-    /// and binds the session **without persisting it**, so a test never writes the machine's
-    /// session store.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the login flow is denied or the resulting session is not an
-    /// administrator.
-    pub async fn connect_admin(&self) -> Result<TrellisTestAdmin, TrellisTestError> {
+impl AdminSession {
+    /// Completes the real local login as the sandbox administrator.
+    pub(crate) async fn connect(
+        trellis_url: &str,
+        username: &str,
+        password: &str,
+        timeout_ms: u64,
+    ) -> Result<Self, TrellisTestError> {
         let challenge = start_agent_login(&StartAgentLoginOpts {
-            trellis_url: self.trellis_url(),
-            participant_id: trellis_runtime_apis::participants::trellis_cli::PARTICIPANT_ID,
+            trellis_url,
+            participant_id: crate::participants::trellis_cli::PARTICIPANT_ID,
             allow_insecure_origin: false,
         })
         .await
-        .map_err(|error| TrellisTestError::Runtime(error.to_string()))?;
+        .map_err(|error| {
+            TrellisTestError::new(
+                TrellisTestErrorKind::Authentication,
+                TrellisTestStage::AdministratorLogin,
+                format!("starting the administrator login: {error}"),
+            )
+        })?;
         let login_url = challenge.login_url().to_owned();
-        complete_local_login(
-            self.trellis_url(),
-            &login_url,
-            self.admin_username(),
-            self.admin_password(),
-        )
-        .await
-        .map_err(|error| TrellisTestError::Runtime(format!("local login failed: {error}")))?;
-        let outcome = challenge
-            .complete_without_persistence(self.trellis_url())
+        complete_local_login(trellis_url, &login_url, username, password)
             .await
             .map_err(|error| {
-                TrellisTestError::Runtime(format!("login completion failed: {error}"))
+                TrellisTestError::new(
+                    TrellisTestErrorKind::Authentication,
+                    TrellisTestStage::AdministratorLogin,
+                    format!("completing the local login: {error}"),
+                )
             })?;
-        let generated = connect_admin_client_async(&outcome.state)
+        let state = challenge
+            .complete_session(trellis_url)
             .await
-            .map_err(|error| TrellisTestError::Runtime(error.to_string()))?;
-        Ok(TrellisTestAdmin {
+            .map_err(|error| {
+                TrellisTestError::new(
+                    TrellisTestErrorKind::Authentication,
+                    TrellisTestStage::AdministratorLogin,
+                    format!("binding the administrator session: {error}"),
+                )
+            })?;
+        let generated = connect_admin_client_async(&state).await.map_err(|error| {
+            TrellisTestError::new(
+                TrellisTestErrorKind::Authentication,
+                TrellisTestStage::AdministratorLogin,
+                format!("connecting the administrator client: {error}"),
+            )
+        })?;
+        Ok(Self {
             auth: AuthClient::from_generated(generated),
-            trellis_url: self.trellis_url().to_owned(),
-            deployment: self.deployment().to_owned(),
+            trellis_url: trellis_url.to_owned(),
+            timeout_ms,
         })
     }
-}
 
-impl TrellisTestAdmin {
-    /// Default deployment name this admin client was created for.
-    #[must_use]
-    pub fn deployment(&self) -> &str {
-        &self.deployment
+    /// Confirms the administrator boundary with a generated `Sessions.Me` call.
+    pub(crate) async fn verify(&self) -> Result<(), TrellisTestError> {
+        let request = crate::types::AuthSessionsMeRequest {};
+        self.auth
+            .sessions_me(&request)
+            .await
+            .map(|_| ())
+            .map_err(|error| {
+                TrellisTestError::new(
+                    TrellisTestErrorKind::Authentication,
+                    TrellisTestStage::AdministratorLogin,
+                    format!("verifying the administrator session: {error}"),
+                )
+            })
     }
 
-    /// Creates a service deployment with `display_name` and returns its deployment id.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the deployment cannot be created.
-    pub async fn create_deployment(&self, display_name: &str) -> Result<String, TrellisTestError> {
+    /// Installs `P` at revision 0, returning the server-confirmed revision.
+    pub(crate) async fn install_participant<P: ParticipantDescriptor>(
+        &self,
+    ) -> Result<u64, TrellisTestError> {
+        let evidence = P::package_evidence();
+        let response = self
+            .auth
+            .participants_install(&AuthParticipantsInstallRequest {
+                expected_revision: wire("0")?,
+                idempotency_key: wire(idempotency_key())?,
+                package_digest: evidence.root_digest().to_owned(),
+                package_evidence: wire(evidence)?,
+                participant_path: P::PATH.to_owned(),
+                platform_trust: Some(false),
+            })
+            .await
+            .map_err(|error| {
+                TrellisTestError::new(
+                    TrellisTestErrorKind::AdminRpc,
+                    TrellisTestStage::ParticipantInstallation,
+                    format!("installing participant {}: {error}", P::ID),
+                )
+            })?;
+        let revision = value_text(&response.participant.revision)
+            .parse::<u64>()
+            .map_err(|_| {
+                TrellisTestError::new(
+                    TrellisTestErrorKind::AdminRpc,
+                    TrellisTestStage::ParticipantInstallation,
+                    "the install response carried an invalid revision",
+                )
+            })?;
+        Ok(revision)
+    }
+
+    /// Creates a service deployment named `display_name` and returns its id.
+    pub(crate) async fn create_deployment(
+        &self,
+        display_name: &str,
+    ) -> Result<String, TrellisTestError> {
         let response = self
             .auth
             .deployments_create(&AuthDeploymentsCreateRequest {
@@ -134,50 +241,40 @@ impl TrellisTestAdmin {
                 idempotency_key: wire(idempotency_key())?,
             })
             .await
-            .map_err(|error| TrellisTestError::Runtime(error.to_string()))?;
+            .map_err(|error| {
+                TrellisTestError::new(
+                    TrellisTestErrorKind::AdminRpc,
+                    TrellisTestStage::DeploymentCreateApply,
+                    format!("creating deployment '{display_name}': {error}"),
+                )
+            })?;
         Ok(value_text(&response.deployment.deployment_id))
     }
-}
 
-impl TrellisTestAdmin {
-    /// Compiles `source` and applies the selected participant to `deployment_id`, approving the
-    /// server-computed consent request exactly as `trellis svc apply --yes` does.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the participant cannot be compiled, the apply is rejected, or the
-    /// re-apply after consent still fails.
-    pub async fn apply_participant(
+    /// Applies `P` to `deployment_id`, approving the server-computed consent.
+    pub(crate) async fn apply_participant<P: ParticipantDescriptor>(
         &self,
         deployment_id: &str,
-        source: &Path,
-        participant_id: Option<&str>,
     ) -> Result<(), TrellisTestError> {
-        self.install_participant(source, participant_id).await?;
-        let participant = trellis_cli::app::deploy::compile_participant_input(
-            source,
-            participant_id,
-            None,
-            &[],
-            &[],
-        )
-        .map_err(|error| TrellisTestError::Config(format!("compiling participant: {error}")))?;
-        // A freshly created deployment applies at revision 0; the list entry's `version` field is
-        // the deployment's own version, not the revision `Deployments.Apply` expects.
+        let evidence = P::package_evidence();
         let mut request = AuthDeploymentsApplyRequest {
-            expected_revision: wire("0")?,
             approval: None,
             deployment_id: wire(deployment_id)?,
+            expected_revision: wire("0")?,
             idempotency_key: wire(idempotency_key())?,
-            package_evidence: participant.package_evidence,
-            participant_path: participant.participant_path,
-            package_digest: participant.package_digest,
+            package_digest: evidence.root_digest().to_owned(),
+            package_evidence: wire(evidence)?,
+            participant_path: P::PATH.to_owned(),
         };
         match self.auth.deployments_apply(&request).await {
             Ok(_) => Ok(()),
             Err(error) => {
                 let consent = consent_request(&error).ok_or_else(|| {
-                    TrellisTestError::Runtime(format!("applying participant failed: {error}"))
+                    TrellisTestError::new(
+                        TrellisTestErrorKind::AdminRpc,
+                        TrellisTestStage::DeploymentCreateApply,
+                        format!("applying participant {}: {error}", P::ID),
+                    )
                 })?;
                 request.approval = Some(approve_required(&consent));
                 self.auth
@@ -185,25 +282,21 @@ impl TrellisTestAdmin {
                     .await
                     .map(|_| ())
                     .map_err(|error| {
-                        TrellisTestError::Runtime(format!(
-                            "applying participant after consent failed: {error}"
-                        ))
+                        TrellisTestError::new(
+                            TrellisTestErrorKind::AdminRpc,
+                            TrellisTestStage::DeploymentCreateApply,
+                            format!("applying participant {} after consent: {error}", P::ID),
+                        )
                     })
             }
         }
     }
-}
 
-impl TrellisTestAdmin {
-    /// Provisions a service instance for `deployment_id` and returns its id and session seed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the platform rejects the provisioning.
-    pub async fn provision_service_instance(
+    /// Provisions a service instance and returns its id and identity seed.
+    pub(crate) async fn provision_service_instance(
         &self,
         deployment_id: &str,
-    ) -> Result<TrellisTestServiceInstance, TrellisTestError> {
+    ) -> Result<(String, String), TrellisTestError> {
         let (seed, key) = trellis_rs::auth::generate_session_keypair();
         let instance = self
             .auth
@@ -215,122 +308,24 @@ impl TrellisTestAdmin {
                 idempotency_key: wire(idempotency_key())?,
             })
             .await
-            .map_err(|error| TrellisTestError::Runtime(error.to_string()))?
-            .instance;
-        Ok(TrellisTestServiceInstance {
-            instance_id: value_text(&instance.instance_id),
-            seed,
-        })
-    }
-}
-
-impl TrellisTestAdmin {
-    /// Creates `display_name` as a deployment of `source`'s participant and provisions one
-    /// instance for it, returning the material a caller connects with.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the participant cannot be compiled, applied, or provisioned.
-    pub async fn register_client(
-        &self,
-        display_name: &str,
-        source: &Path,
-        participant_id: Option<&str>,
-    ) -> Result<TrellisTestClientSession, TrellisTestError> {
-        let deployment_id = self.create_deployment(display_name).await?;
-        self.apply_participant(&deployment_id, source, participant_id)
-            .await?;
-        let instance = self.provision_service_instance(&deployment_id).await?;
-        Ok(TrellisTestClientSession {
-            trellis_url: self.trellis_url.clone(),
-            seed: instance.seed,
-            instance_id: instance.instance_id,
-            participant_id: participant_id.unwrap_or_default().to_owned(),
-        })
-    }
-}
-
-impl TrellisTestAdmin {
-    /// Installs (or updates the definition of) `source`'s participant, as `trellis participants
-    /// install` does. A participant must be installed before a deployment can apply it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the participant cannot be compiled or the install is rejected.
-    pub async fn install_participant(
-        &self,
-        source: &Path,
-        participant_id: Option<&str>,
-    ) -> Result<(), TrellisTestError> {
-        let participant = trellis_cli::app::deploy::compile_participant_input(
-            source,
-            participant_id,
-            None,
-            &[],
-            &[],
-        )
-        .map_err(|error| TrellisTestError::Config(format!("compiling participant: {error}")))?;
-        let expected_revision = match self
-            .auth
-            .participants_get(&AuthParticipantsGetRequest {
-                participant_id: wire(&participant.participant_id)?,
-                revision: None,
-            })
-            .await
-        {
-            Ok(current) => current
-                .participant
-                .revision
-                .to_string()
-                .trim_matches('"')
-                .to_owned(),
-            Err(CallError::Declared(error))
-                if matches!(
-                    error.as_ref(),
-                    AuthParticipantsGetError::AuthError(error)
-                        if error.payload().is_ok_and(|details| details.code.as_ref() == "not_found")
-                ) =>
-            {
-                "0".to_owned()
-            }
-            Err(error) => {
-                return Err(TrellisTestError::Runtime(format!(
-                    "reading participant revision: {error}"
-                )));
-            }
-        };
-        self.auth
-            .participants_install(&AuthParticipantsInstallRequest {
-                expected_revision: wire(expected_revision)?,
-                idempotency_key: wire(idempotency_key())?,
-                package_digest: wire(participant.package_digest)?,
-                package_evidence: participant.package_evidence,
-                participant_path: wire(participant.participant_path)?,
-                platform_trust: Some(false),
-            })
-            .await
             .map_err(|error| {
-                TrellisTestError::Runtime(format!("installing participant: {error}"))
-            })?;
-        Ok(())
+                TrellisTestError::new(
+                    TrellisTestErrorKind::AdminRpc,
+                    TrellisTestStage::ServiceProvisioning,
+                    format!("provisioning a service instance: {error}"),
+                )
+            })?
+            .instance;
+        Ok((value_text(&instance.instance_id), seed))
     }
-}
 
-impl TrellisTestAdmin {
-    /// Configures the built-in portal's consent ceiling for `participant_id`, so a browser app
-    /// participant can be consented to during its portal login.
-    ///
-    /// Mirrors the TypeScript harness's `ensurePortalConsentPolicy`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the platform rejects the override.
-    pub async fn ensure_portal_consent_policy(
+    /// Sets the built-in portal's consent ceiling for `participant_id`.
+    pub(crate) async fn ensure_portal_consent_policy(
         &self,
         participant_id: &str,
         capability_ids: &[String],
     ) -> Result<(), TrellisTestError> {
-        let request: AuthPortalsGrantOverridesPutRequest = wire(serde_json::json!({
+        let request: AuthPortalsGrantOverridesPutRequest = wire(json!({
             "portalId": "builtin",
             "participantId": participant_id,
             "directCapabilities": capability_ids,
@@ -343,10 +338,69 @@ impl TrellisTestAdmin {
             .portals_grant_overrides_put(&request)
             .await
             .map_err(|error| {
-                TrellisTestError::Runtime(format!("setting portal consent policy: {error}"))
+                TrellisTestError::new(
+                    TrellisTestErrorKind::AdminRpc,
+                    TrellisTestStage::ClientLogin,
+                    format!("setting the portal consent policy: {error}"),
+                )
             })?;
         Ok(())
     }
+}
+
+/// Completes the first-administrator flow for a bootstrap `token`.
+pub(crate) async fn bootstrap_first_admin(
+    trellis_url: &str,
+    token: &str,
+    username: &str,
+    password: &str,
+    timeout_ms: u64,
+) -> Result<(), TrellisTestError> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(timeout_ms))
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| {
+            TrellisTestError::new(
+                TrellisTestErrorKind::Bootstrap,
+                TrellisTestStage::AdministratorBootstrap,
+                format!("building the bootstrap HTTP client: {error}"),
+            )
+        })?;
+    let url = format!(
+        "{}/auth/account-flow/{}/local-password",
+        trellis_url.trim_end_matches('/'),
+        token
+    );
+    let response = client
+        .post(&url)
+        .json(&json!({ "username": username, "password": password }))
+        .send()
+        .await
+        .map_err(|error| {
+            TrellisTestError::new(
+                TrellisTestErrorKind::Bootstrap,
+                TrellisTestStage::AdministratorBootstrap,
+                format!("posting the first-administrator credentials: {error}"),
+            )
+        })?;
+    let status = response.status();
+    let body: Value = response.json().await.map_err(|error| {
+        TrellisTestError::new(
+            TrellisTestErrorKind::Bootstrap,
+            TrellisTestStage::AdministratorBootstrap,
+            format!("reading the first-administrator response: {error}"),
+        )
+    })?;
+    if !status.is_success() || body.get("status").and_then(Value::as_str) != Some("created") {
+        return Err(TrellisTestError::new(
+            TrellisTestErrorKind::Bootstrap,
+            TrellisTestStage::AdministratorBootstrap,
+            format!("first-administrator setup failed with status {status}"),
+        ));
+    }
+    Ok(())
 }
 
 /// Extracts the server-computed consent request from an apply rejection.
@@ -388,14 +442,5 @@ fn approve_required(consent: &ConsentRequest) -> Approval {
         expected_grant_revision: consent.expected_grant_revision,
         installed_revision: consent.installed_revision,
         mode: ApprovalMode::Capabilities,
-    }
-}
-
-/// Renders a generated newtype string wrapper without depending on its concrete shape.
-fn value_text(value: &impl Serialize) -> String {
-    match serde_json::to_value(value) {
-        Ok(Value::String(text)) => text,
-        Ok(other) => other.to_string(),
-        Err(_) => String::new(),
     }
 }

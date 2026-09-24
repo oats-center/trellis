@@ -1,4 +1,5 @@
 use std::fs;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -234,6 +235,15 @@ impl RuntimeConfig {
             .as_ref()
             .and_then(|http| http.port)
             .unwrap_or(3000)
+    }
+
+    /// Returns the configured HTTP bind address, or the unspecified IPv4 default.
+    #[must_use]
+    pub fn http_bind_address(&self) -> IpAddr {
+        self.http
+            .as_ref()
+            .and_then(|http| http.bind_address)
+            .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
     }
 
     /// Resolves validated storage for the platform subsystem.
@@ -525,6 +535,9 @@ pub struct HttpConfig {
     /// TCP port for the HTTP server.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
+    /// Address the HTTP listener binds to. Absent binds the unspecified IPv4 address.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bind_address: Option<IpAddr>,
     /// Public browser origin for runtime URLs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_origin: Option<String>,

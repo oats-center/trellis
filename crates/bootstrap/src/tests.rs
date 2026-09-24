@@ -734,8 +734,8 @@ fn local_nats_config_uses_host_paths() {
     assert!(config.contains("timeout: \"30s\""));
     assert!(config.contains("listen: 127.0.0.1:8080"));
     assert!(config.contains("no_tls: true"));
-    assert!(config.contains("store_dir: /tmp/trellis/nats/data"));
-    assert!(config.contains("include /tmp/trellis/nats/jwt.local.conf"));
+    assert!(config.contains("store_dir: \"/tmp/trellis/nats/data\""));
+    assert!(config.contains("include \"/tmp/trellis/nats/jwt.local.conf\""));
     assert!(
         !config.contains("0.0.0.0"),
         "local render binds loopback only"
@@ -808,4 +808,21 @@ fn user_jwt_from_creds(creds: &str) -> &str {
         }
     }
     panic!("missing NATS user JWT block")
+}
+
+#[test]
+fn local_nats_config_quotes_host_paths_with_spaces() {
+    let config = render_local_nats_config(
+        "trellis",
+        "/tmp/trellis data/store dir",
+        "/tmp/trellis data/jwt config.conf",
+        4222,
+        8080,
+        8222,
+    );
+    assert!(config.contains("store_dir: \"/tmp/trellis data/store dir\""));
+    assert!(config.contains("include \"/tmp/trellis data/jwt config.conf\""));
+
+    let rendered = render_local_jwt_config("dir: ./resolver\n", "a\"b\\c");
+    assert_eq!(rendered, r#"dir: "a\"b\\c""#);
 }

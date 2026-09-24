@@ -35,6 +35,7 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
         paths: None,
         http: Some(HttpConfig {
             port: Some(options.runtime.trellis_port),
+            bind_address: None,
             public_origin: Some(options.runtime.public_origin.clone()),
             origins: Some({
                 let mut origins = vec![options.runtime.public_origin.clone()];

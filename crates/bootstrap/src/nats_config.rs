@@ -368,6 +368,20 @@ fn malformed(path: &Path, line: usize, message: &'static str) -> NatsConfigError
     }
 }
 
+/// Quotes a filesystem path for a NATS configuration value, escaping `"` and `\`.
+fn quote_nats_path(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('"');
+    for character in value.chars() {
+        if character == '"' || character == '\\' {
+            quoted.push('\\');
+        }
+        quoted.push(character);
+    }
+    quoted.push('"');
+    quoted
+}
+
 /// Render the local development NATS server config with host-path JetStream store and JWT config.
 ///
 /// All listeners bind to loopback only; the container-facing [`render_nats_config`] keeps
@@ -381,6 +395,8 @@ pub fn render_local_nats_config(
     websocket_port: u16,
     monitor_port: u16,
 ) -> String {
+    let store_dir = quote_nats_path(store_dir);
+    let jwt_config_path = quote_nats_path(jwt_config_path);
     format!(
         r#"server_name: {server_name}
 
@@ -408,6 +424,7 @@ include {jwt_config_path}
 /// Render a generated JWT resolver config with mutable resolver data in `resolver_dir`.
 #[must_use]
 pub fn render_local_jwt_config(config: &str, resolver_dir: &str) -> String {
+    let resolver_dir = quote_nats_path(resolver_dir);
     config
         .lines()
         .map(|line| {

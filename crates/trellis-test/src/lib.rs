@@ -1,46 +1,47 @@
-//! Owns a real Trellis runtime for Rust service tests.
+//! Isolated live Trellis runtimes for Rust integration tests.
 //!
-//! A [`TrellisTestRuntime`] creates fresh accounts, a real NATS process, real SQLite stores, and a
-//! real control plane in one work directory, then stops and removes them. Participants are
-//! registered through their generated contracts and callers connect through ordinary generated
-//! clients, so tests exercise the same boundaries production does.
+//! [`TrellisTestRuntime`] orchestrates normal production executables — the
+//! released `trellis` CLI and `trellis-server` — out of process. It generates a
+//! real bootstrap bundle, starts managed NATS, reserves four loopback ports
+//! automatically, completes the real first-administrator bootstrap and login,
+//! and exposes helpers that install participants and provision identities using
+//! the generated administration API.
 //!
-//! Tests must use a multi-thread Tokio runtime (`#[tokio::test(flavor = "multi_thread", ...)]`).
-//! A current-thread runtime starves the control plane's subsystems: its auth callout handshake
-//! fails and startup reports an authorization violation.
+//! The crate has no dependency on private Trellis implementation crates: its
+//! only Trellis dependency is the published `trellis-rs` facade, and the
+//! administration API is projected as generated source under `runtime_api`.
+//!
+//! Applications own the generated clients and services they connect; stop those
+//! transports before calling [`TrellisTestRuntime::shutdown`].
+//!
+//! ```no_run
+//! # async fn example() -> Result<(), trellis_test::TrellisTestError> {
+//! use trellis_test::TrellisTestRuntime;
+//! let mut runtime = TrellisTestRuntime::builder().start().await?;
+//! let _url = runtime.trellis_url();
+//! runtime.shutdown().await?;
+//! # Ok(())
+//! # }
+//! ```
+
+#[path = "runtime_api/lib.rs"]
+#[allow(warnings, clippy::all, clippy::pedantic)]
+mod runtime_api;
+
+// The generated administration source uses crate-root paths such as
+// `crate::apis`, `crate::types`, `crate::__types`, and `crate::PaginationError`.
+// Re-export them at the crate root without exposing them to users.
+#[allow(unused_imports)]
+pub(crate) use runtime_api::*;
 
 mod admin;
-mod config;
 mod error;
-mod ports;
+mod identity;
+mod process;
 mod runtime;
+mod sandbox;
 
-pub use admin::TrellisTestAdmin;
-pub use error::TrellisTestError;
-pub use runtime::{
-    TrellisTestRuntime, TrellisTestRuntimeOptions, TrellisTestTimeouts, DEFAULT_ADMIN_USERNAME,
-};
-
-/// Requests termination of a spawned child when this process exits.
-///
-/// Linux-only: sets `PR_SET_PDEATHSIG` to `SIGTERM` before `exec`, so a harness child never
-/// outlives the test process that spawned it.
-pub fn terminate_on_parent_exit(_command: &mut std::process::Command) {
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::process::CommandExt as _;
-        // SAFETY: `pre_exec` runs between fork and exec, where only async-signal-safe calls are
-        // legal. `prctl` and `getppid` are both safe there.
-        unsafe {
-            _command.pre_exec(|| {
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                if libc::getppid() == 1 {
-                    return Err(std::io::Error::other("parent already exited before exec"));
-                }
-                Ok(())
-            });
-        }
-    }
-}
+pub use error::{TrellisTestError, TrellisTestErrorKind, TrellisTestStage};
+pub use identity::{InstalledParticipant, TestClientIdentity, TestServiceIdentity};
+pub use runtime::{NatsSource, TestTimeouts, TrellisTestRuntime, TrellisTestRuntimeBuilder};
+pub use sandbox::WorkdirRetention;

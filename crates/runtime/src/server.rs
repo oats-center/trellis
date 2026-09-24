@@ -1,5 +1,5 @@
 use std::future::Future;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -61,7 +61,7 @@ pub fn build_version_info(mode: RuntimeMode) -> VersionInfo {
 pub async fn bind_http_listener(
     config: &RuntimeConfig,
 ) -> Result<tokio::net::TcpListener, ServerError> {
-    let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, config.http_port()));
+    let addr = SocketAddr::new(config.http_bind_address(), config.http_port());
     tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|source| ServerError::Bind { addr, source })

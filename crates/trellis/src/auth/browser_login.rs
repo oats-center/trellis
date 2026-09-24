@@ -265,7 +265,7 @@ impl AgentLoginChallenge {
     /// Wait for detached portal completion, bind the session, and persist it to the machine's
     /// session store.
     ///
-    /// Test harnesses should prefer [`Self::complete_without_persistence`] so a run never writes
+    /// Test harnesses should prefer [`Self::complete_session`] so a run never writes
     /// outside its own work directory.
     ///
     /// # Errors
@@ -282,18 +282,22 @@ impl AgentLoginChallenge {
         Ok(outcome)
     }
 
-    /// Wait for detached portal completion, then bind the session without persisting it.
-    /// Retains the challenge key so completion can be retried after a transport or storage failure.
+    /// Complete a detached agent-login flow and return the bound session in memory without
+    /// persisting it and without requiring administrator privilege.
+    ///
+    /// Reuses the normal poll, signed bind, response validation, and origin validation. The
+    /// returned [`AdminSessionState`] is ordinary session data; its historical administrator
+    /// naming does not grant administrator privilege. Test harnesses use this so a run never
+    /// reads or writes the default session store.
     ///
     /// # Errors
     ///
-    /// Returns an auth error when the flow is denied, expires, cannot bind, or the resulting
-    /// session is not an administrator.
-    #[doc = concat!("Asynchronous Trellis API operation `", stringify!(complete_without_persistence), "`.")]
-    pub async fn complete_without_persistence(
+    /// Returns an auth error when the flow is denied, expires, or cannot bind.
+    #[doc = concat!("Asynchronous Trellis API operation `", stringify!(complete_session), "`.")]
+    pub async fn complete_session(
         &self,
         trellis_url: &str,
-    ) -> Result<AdminLoginOutcome, TrellisAuthError> {
+    ) -> Result<AdminSessionState, TrellisAuthError> {
         let AgentLoginChallenge {
             flow_id,
             login_url: _,
@@ -318,16 +322,29 @@ impl AgentLoginChallenge {
             *allow_insecure_origin,
         )
         .await?;
-        let expires_at = bound.expires_at;
-        let state = AdminSessionState {
+        Ok(AdminSessionState {
             participant_id: participant_id.clone(),
             login_session_id: bound.login_session_id,
             trellis_url: trellis_url.to_string(),
             session_seed: session_seed.clone(),
-            expires_at,
+            expires_at: bound.expires_at,
             allow_insecure_origin: *allow_insecure_origin,
-        };
+        })
+    }
 
+    /// Wait for detached portal completion, then bind the session without persisting it.
+    /// Retains the challenge key so completion can be retried after a transport or storage failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an auth error when the flow is denied, expires, cannot bind, or the resulting
+    /// session is not an administrator.
+    #[doc = concat!("Asynchronous Trellis API operation `", stringify!(complete_without_persistence), "`.")]
+    pub async fn complete_without_persistence(
+        &self,
+        trellis_url: &str,
+    ) -> Result<AdminLoginOutcome, TrellisAuthError> {
+        let state = self.complete_session(trellis_url).await?;
         let client = connect_admin_client_async(&state).await?;
         let response = client
             .request_api_value("trellis.auth@v1", "Sessions.Me", json!({}))
