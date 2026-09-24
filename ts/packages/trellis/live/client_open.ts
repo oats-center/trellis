@@ -190,7 +190,14 @@ export async function openLive<T>(
     receiveMaxPayloadBytes: maxPayload,
     input: JSON.parse(inputJson),
   });
-  return await openLiveSession(host, subject, subject, "standalone", body, openId);
+  return await openLiveSession(
+    host,
+    subject,
+    subject,
+    "standalone",
+    body,
+    openId,
+  );
 }
 
 /** Open one Operation-watch live session on the existing control route. */

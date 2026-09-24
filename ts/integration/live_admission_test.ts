@@ -35,7 +35,9 @@ function b64url(value: string): string {
 }
 
 function liveBaseSubject(): string {
-  return `live.v1.route.${b64url(HEALTH_API)}.${b64url(HEALTH_DEPLOYMENT)}.Watch`;
+  return `live.v1.route.${b64url(HEALTH_API)}.${
+    b64url(HEALTH_DEPLOYMENT)
+  }.Watch`;
 }
 
 /**

@@ -23,11 +23,11 @@ export {
 } from "./runtime/health_schemas.ts";
 export {
   type ConnectedTrellisService,
-  type LiveHandler,
   type GeneratedServiceParticipant,
   type HealthCheckHandler,
   type HealthInfoHandler,
   type JobHandler,
+  type LiveHandler,
   type OperationHandler,
   type OperationRegistration,
   type RpcHandler,

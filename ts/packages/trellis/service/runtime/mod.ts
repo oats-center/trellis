@@ -32,13 +32,13 @@ export {
   HealthHeartbeatSampleCodec,
 } from "../../internal_sdk/generated/types/_internal/p0.js";
 export {
-  type LiveHandler,
   type GeneratedServiceParticipant,
   type HealthCheckHandler,
   type HealthInfoHandler,
   type JobHandler,
   type JobQueue,
   type JobsFacadeOf,
+  type LiveHandler,
   type OperationHandler,
   type OperationRegistration,
   type RpcHandler,

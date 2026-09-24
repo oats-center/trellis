@@ -649,7 +649,11 @@ Deno.test("T17 owner-directed live controls route to the accepting replica", asy
       })().catch(() => undefined);
       await second.close().orThrow();
       const secondEnd = await second.closed;
-      assertEquals(secondEnd.reason, "cancelled", "the deployment still serves");
+      assertEquals(
+        secondEnd.reason,
+        "cancelled",
+        "the deployment still serves",
+      );
       await secondPump;
     } finally {
       await caller.connection.close();
