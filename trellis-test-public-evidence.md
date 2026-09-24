@@ -81,7 +81,7 @@
 | T22 | T07 distinct endpoints | fixture `--test live` | feature tip | PASS | loopback only |
 | T23 | `t23_sandbox_path_with_spaces_works` | fixture `--test live` | feature tip | PASS | spaced sandbox path |
 | T24 | `output_tail_*`, `redaction_*` | `cargo test -p trellis-test --lib` | feature tip | PASS | bounded tail, split UTF-8, redaction |
-| T25 | (DownloadPinned) | — | | NOT RUN | pending |
+| T25 | `t25_download_pinned_acquires_verified_nats` | fixture `--test download` | feature tip | PASS | real verified download |
 | T26 | projection `diff -r` + second install | `cargo xtask install` | feature tip | PASS | identical + idempotent |
 | T27 | `cargo package` three crates | local | feature tip | PASS | verified archives |
 | T28 | artifact-only consumer smoke | `scripts/verify-rust-test-package.sh` | feature tip | PASS | no checkout, 7 live pass |
