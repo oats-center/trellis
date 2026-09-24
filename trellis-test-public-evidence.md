@@ -67,7 +67,7 @@
 | T08 | `t08_restricted_caller_is_denied` | fixture `--test live` | feature tip | PASS | real denial, handler not run |
 | T09 | `t09_duplicate_names_are_rejected` | fixture `--test live` | feature tip | PASS | DuplicateName |
 | T10 | `t10_unsupported_participant_kind_is_rejected` | fixture `--test live` | feature tip | PASS | device rejected |
-| T11 | (missing NATS / early exit) | — | | PARTIAL | implemented; explicit test pending |
+| T11 | `t11_missing_nats_fails_cleanly` | fixture `--test live` | feature tip | PASS | clean failure, no skip |
 | T12 | (cross-process) | — | | NOT RUN | artifact smoke covers in-process only |
 | T13 | `port_conflict_matches_only_selected_ports`, `port_lease_*` | `cargo test -p trellis-test --lib` | feature tip | PARTIAL | classification + lease; real occupied-port case pending |
 | T14 | `t14_shutdown_is_idempotent` | fixture `--test live` | feature tip | PASS | idempotent shutdown |

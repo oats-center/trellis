@@ -373,3 +373,29 @@ async fn t15_dropping_a_runtime_cleans_up() {
     }
     assert!(stopped, "the dropped runtime's server should stop");
 }
+
+/// T11: a missing real NATS executable fails startup cleanly instead of hiding
+/// a skip.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn t11_missing_nats_fails_cleanly() {
+    use trellis_test::{NatsSource, TestTimeouts};
+
+    let result = TrellisTestRuntime::builder()
+        .nats(NatsSource::Path("/nonexistent/nats-server".into()))
+        .timeouts(TestTimeouts {
+            startup: Duration::from_secs(45),
+            ..TestTimeouts::default()
+        })
+        .start()
+        .await;
+    let error = match result {
+        Ok(_) => panic!("a missing NATS executable must fail"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error.kind(),
+        TrellisTestErrorKind::ProcessExited
+            | TrellisTestErrorKind::Bootstrap
+            | TrellisTestErrorKind::Timeout
+    ));
+}
