@@ -1495,8 +1495,14 @@ mod nats_reply_permission_tests {
         false
     }
 
+    /// The broker tests each start a real nats-server on ephemeral ports; running
+    /// them concurrently races their port reservations and can hang a test, so
+    /// serialize them.
+    static BROKER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[tokio::test]
     async fn bt01_response_expiry_is_independent_of_the_large_count_allowance() {
+        let _broker = BROKER_LOCK.lock().await;
         let broker = TestBroker::start("{ max: 65535, expires: \"250ms\" }");
         let (provider, _provider_errors) = connect(&broker.url, "provider").await;
         let (consumer, _consumer_errors) = connect(&broker.url, "consumer").await;
@@ -1566,6 +1572,7 @@ mod nats_reply_permission_tests {
 
     #[tokio::test]
     async fn bt02_response_count_is_independent_of_static_live_delivery() {
+        let _broker = BROKER_LOCK.lock().await;
         let broker = TestBroker::start("{ max: 3, expires: \"60s\" }");
         let (provider, provider_errors) = connect(&broker.url, "provider").await;
         let (consumer, _consumer_errors) = connect(&broker.url, "consumer").await;
@@ -1625,6 +1632,7 @@ mod nats_reply_permission_tests {
 
     #[tokio::test]
     async fn bt03_static_namespaces_are_isolated() {
+        let _broker = BROKER_LOCK.lock().await;
         let broker = TestBroker::start("{ max: 65535, expires: \"60s\" }");
         let (provider, provider_errors) = connect(&broker.url, "provider").await;
         let (consumer, consumer_errors) = connect(&broker.url, "consumer").await;
@@ -1663,6 +1671,7 @@ mod nats_reply_permission_tests {
 
     #[tokio::test]
     async fn bt04_only_operation_observe_receives_live_delivery() {
+        let _broker = BROKER_LOCK.lock().await;
         let broker = TestBroker::start_with_consumer(
             "{ max: 65535, expires: \"60s\" }",
             consumer_permissions(operation_permission(PermissionAction::Observe)),
