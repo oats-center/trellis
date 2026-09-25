@@ -28,9 +28,11 @@ Deno.test("generated codecs preserve wire representations and composition", () =
 
   assertEquals(decoded.id as string, "01ARZ3NDEKTSV4RRFFQ69G5FAV");
   assertEquals(decoded.count, 9223372036854775807n);
+  assertEquals((decoded as Record<string, unknown>).future, true);
   assertEquals(model.encode(decoded), {
     id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
     count: "9223372036854775807",
+    future: true,
   });
   assertEquals(
     generated.codecs.bytes.encode(new Uint8Array([0, 1, 254, 255])),

@@ -182,6 +182,21 @@ export const codecs = Object.freeze({
   model<const F extends Readonly<Record<string, ModelField>>>(
     fields: F,
   ): Codec<ModelValue<F>> {
+    const known = new Set(Object.keys(fields));
+    const preserveUnknown = (
+      source: Record<string, unknown>,
+      target: Record<string, unknown>,
+    ): void => {
+      for (const [name, value] of Object.entries(source)) {
+        if (known.has(name)) continue;
+        Object.defineProperty(target, name, {
+          value,
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+      }
+    };
     return codec(
       (value) => {
         if (
@@ -195,6 +210,7 @@ export const codecs = Object.freeze({
           if (source[name] === undefined && "optional" in field) continue;
           decoded[name] = field.decode(source[name]);
         }
+        preserveUnknown(source, decoded);
         return decoded as ModelValue<F>;
       },
       (value) => {
@@ -209,6 +225,7 @@ export const codecs = Object.freeze({
           if (fieldValue === undefined && "optional" in field) continue;
           encoded[name] = field.encode(fieldValue);
         }
+        preserveUnknown(value as Record<string, unknown>, encoded);
         return encoded;
       },
     );
