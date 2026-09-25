@@ -47,7 +47,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let login = start_agent_login(&StartAgentLoginOpts {
         trellis_url: &url,
         participant_id: "runtime-trellis.LiveProbeCaller",
-        allow_insecure_origin: false,
     })
     .await?;
     println!("liveprobe login {}", login.login_url());

@@ -21,8 +21,6 @@ pub struct BuiltinLiveProviderConnectOptions<'a> {
     pub trellis_url: &'a str,
     /// Connect/request timeout in milliseconds.
     pub timeout_ms: u64,
-    /// Accept a non-loopback HTTP origin explicitly allow-listed by the runtime.
-    pub allow_insecure_origin: bool,
 }
 
 /// Connect a built-in live provider through normal bootstrap and validate its
@@ -104,7 +102,6 @@ async fn connect<C: ParticipantDescriptor>(
         provisioned_identity_seed_base64url: identity_seed_base64url,
         name: None,
         timeout_ms: options.timeout_ms,
-        allow_insecure_origin: options.allow_insecure_origin,
     })
     .await
     .map_err(|error| RuntimeError::Platform(format!("built-in live provider connect: {error}")))

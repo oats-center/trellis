@@ -371,13 +371,11 @@ pub(crate) async fn start_read_only(
     )
     .map_err(|error| crate::supervisor::RuntimeError::Platform(error.to_string()))?;
     let trellis_origin = config.public_origin();
-    let allow_insecure_origin = config.public_origin_allows_insecure();
     let cache = AuthorizationProviderCache::attach_runtime(
         client,
         &AuthorizationRegistryBinding::from_runtime_parts(authorization.context_bucket.clone()),
         RuntimeAuthorizationTrust {
             trellis_origin,
-            allow_insecure_origin,
             issuer: None,
             policy,
         },

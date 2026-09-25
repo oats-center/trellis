@@ -425,7 +425,6 @@ async fn login_command(format: OutputFormat, args: &LoginArgs) -> miette::Result
     let challenge = authlib::start_agent_login(&authlib::StartAgentLoginOpts {
         trellis_url: &args.trellis_url,
         participant_id: trellis_runtime_apis::participants::trellis_cli::PARTICIPANT_ID,
-        allow_insecure_origin: args.allow_insecure_origin,
     })
     .await
     .into_diagnostic()?;

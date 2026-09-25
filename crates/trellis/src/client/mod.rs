@@ -21,9 +21,7 @@ pub use auth::SessionAuth;
 pub(crate) use authorization::AuthorizationContextLease;
 #[cfg(any(test, feature = "runtime-internals"))]
 pub use authorization::AuthorizationRegistryBinding;
-pub use authorization::{
-    canonical_trellis_origin, canonical_trellis_origin_with_insecure, AuthorizationProviderCache,
-};
+pub use authorization::{canonical_trellis_origin, AuthorizationProviderCache};
 pub use authorization::{
     AuthorizationApiBinding, AuthorizationContextBundle, AuthorizationContextCache,
     AuthorizationContextPolicy, AuthorizationInstallation, AuthorizationNativeTransport,

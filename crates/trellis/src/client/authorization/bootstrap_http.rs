@@ -4,48 +4,32 @@ use trellis_protocol::{parse_authorization_context, SignedAuthorizationContext};
 use super::super::http_error::read_bounded_http_body;
 use super::super::{decode_trellis_http_error, TrellisClientError};
 
-/// Return the configured HTTPS origin, allowing explicitly selected loopback HTTP.
+/// Return the canonical HTTP(S) origin of the configured Trellis URL.
+///
+/// Plaintext HTTP is accepted here: whether a runtime serves it is the
+/// runtime's own decision, taken from its public origin and
+/// `[http] allow_insecure_origins`. Clients no longer carry a local insecure
+/// mode.
 ///
 /// # Errors
 ///
-/// Returns [`TrellisClientError::Bootstrap`] when the URL is not an accepted
-/// origin or carries credentials, a query, or a fragment.
+/// Returns [`TrellisClientError::Bootstrap`] when the URL is not an absolute
+/// HTTP(S) URL or carries credentials, a query, or a fragment.
 pub fn canonical_trellis_origin(trellis_url: &str) -> Result<String, TrellisClientError> {
-    canonical_trellis_origin_with_insecure(trellis_url, false)
-}
-
-/// Return the configured origin, additionally accepting non-loopback HTTP when
-/// the caller explicitly allow-listed it as an insecure origin.
-///
-/// Callers select this only from an explicit operator opt-in (for example the
-/// CLI `--allow-insecure-origin` flag or a service's connect options); the
-/// default path stays [`canonical_trellis_origin`].
-pub fn canonical_trellis_origin_with_insecure(
-    trellis_url: &str,
-    allow_insecure: bool,
-) -> Result<String, TrellisClientError> {
     let url = reqwest::Url::parse(trellis_url)
         .map_err(|error| TrellisClientError::Bootstrap(format!("invalid Trellis URL: {error}")))?;
-    let origin = url.origin().ascii_serialization();
-    let loopback = match url.host() {
-        Some(url::Host::Ipv4(address)) => address.is_loopback(),
-        Some(url::Host::Ipv6(address)) => address.is_loopback(),
-        Some(url::Host::Domain("localhost")) => true,
-        _ => false,
-    };
-    let scheme_allowed =
-        url.scheme() == "https" || (url.scheme() == "http" && (loopback || allow_insecure));
-    if !scheme_allowed
+    if !matches!(url.scheme(), "https" | "http")
+        || url.host().is_none()
         || !url.username().is_empty()
         || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
     {
         return Err(TrellisClientError::Bootstrap(
-            "Trellis URL must be HTTPS, or explicitly configured loopback HTTP, without embedded credentials, query, or fragment".into(),
+            "Trellis URL must be an absolute HTTP(S) URL without embedded credentials, query, or fragment".into(),
         ));
     }
-    Ok(origin)
+    Ok(url.origin().ascii_serialization())
 }
 
 /// Pre-NATS HTTP credential and context recovery client.
@@ -58,12 +42,9 @@ pub(crate) struct BootstrapHttp {
 }
 
 impl BootstrapHttp {
-    pub(crate) fn new(trellis_url: &str, allow_insecure: bool) -> Result<Self, TrellisClientError> {
-        let base = reqwest::Url::parse(&canonical_trellis_origin_with_insecure(
-            trellis_url,
-            allow_insecure,
-        )?)
-        .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
+    pub(crate) fn new(trellis_url: &str) -> Result<Self, TrellisClientError> {
+        let base = reqwest::Url::parse(&canonical_trellis_origin(trellis_url)?)
+            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(30))
@@ -168,23 +149,29 @@ pub(crate) fn persisted_signed_context(
 
 #[cfg(test)]
 mod tests {
-    use super::{canonical_trellis_origin, canonical_trellis_origin_with_insecure};
+    use super::canonical_trellis_origin;
 
     #[test]
-    fn strict_origin_rejects_non_loopback_http() {
-        assert!(canonical_trellis_origin("http://phi.oats:3000").is_err());
-        assert!(canonical_trellis_origin("http://localhost:3000").is_ok());
-        assert!(canonical_trellis_origin("http://127.0.0.1:3000").is_ok());
-        assert!(canonical_trellis_origin("https://phi.oats").is_ok());
+    fn accepts_absolute_http_and_https_origins() {
+        assert_eq!(
+            canonical_trellis_origin("http://phi.oats:3000").unwrap(),
+            "http://phi.oats:3000"
+        );
+        assert_eq!(
+            canonical_trellis_origin("http://localhost:3000").unwrap(),
+            "http://localhost:3000"
+        );
+        assert_eq!(
+            canonical_trellis_origin("https://phi.oats").unwrap(),
+            "https://phi.oats"
+        );
     }
 
     #[test]
-    fn explicit_insecure_origin_accepts_non_loopback_http() {
-        assert_eq!(
-            canonical_trellis_origin_with_insecure("http://phi.oats:3000", true).unwrap(),
-            "http://phi.oats:3000"
-        );
-        assert!(canonical_trellis_origin_with_insecure("http://phi.oats:3000", false).is_err());
-        assert!(canonical_trellis_origin_with_insecure("http://phi.oats:3000?x=1", true).is_err());
+    fn rejects_relative_credentials_query_and_fragment() {
+        assert!(canonical_trellis_origin("/bootstrap").is_err());
+        assert!(canonical_trellis_origin("http://phi.oats:3000?x=1").is_err());
+        assert!(canonical_trellis_origin("http://user@phi.oats:3000").is_err());
+        assert!(canonical_trellis_origin("ftp://phi.oats").is_err());
     }
 }

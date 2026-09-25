@@ -260,23 +260,6 @@ impl RuntimeConfig {
             .unwrap_or_else(|| format!("http://localhost:{}", self.http_port()))
     }
 
-    /// Returns whether the configured public origin deliberately permits plaintext HTTP.
-    ///
-    /// Loopback and HTTPS origins never need authorization; a non-loopback HTTP origin
-    /// must be explicitly listed in `[http] allow_insecure_origins`.
-    pub(crate) fn public_origin_allows_insecure(&self) -> bool {
-        let public_origin = self.public_origin();
-        let Some(origin) = CanonicalOrigin::parse(&public_origin) else {
-            return false;
-        };
-        if origin.is_loopback() || origin.is_https() {
-            return false;
-        }
-        self.http
-            .as_ref()
-            .is_some_and(|http| http.allows_insecure_origin(&public_origin))
-    }
-
     /// Rejects a non-loopback plaintext public origin unless the operator authorized it.
     fn validate_http_public_origin(&self) -> Result<(), ConfigError> {
         let Some(http) = self.http.as_ref() else {

@@ -180,7 +180,6 @@ async fn state_acceptance() -> Result<(), Box<dyn std::error::Error>> {
     let challenge = start_agent_login(&StartAgentLoginOpts {
         trellis_url: &url,
         participant_id: "runtime-trellis.StateCaller",
-        allow_insecure_origin: false,
     })
     .await?;
     println!("rust login {}", challenge.login_url());

@@ -60,27 +60,6 @@ pub fn derive_device_user_companion(
     trellis_url: &str,
     child_participant_id: &str,
 ) -> Result<DeviceCompanionIdentity, TrellisAuthError> {
-    derive_device_user_companion_with_insecure_origin(
-        device_root_secret,
-        trellis_url,
-        child_participant_id,
-        false,
-    )
-}
-
-/// Derive the installation credential for one exact origin-bound child participant,
-/// accepting a non-loopback HTTP origin only when explicitly selected.
-///
-/// # Errors
-///
-/// Returns an invalid-argument error for a non-32-byte root secret, invalid Trellis
-/// URL, empty child identity, or an HKDF expansion failure.
-pub fn derive_device_user_companion_with_insecure_origin(
-    device_root_secret: &[u8],
-    trellis_url: &str,
-    child_participant_id: &str,
-    allow_insecure_origin: bool,
-) -> Result<DeviceCompanionIdentity, TrellisAuthError> {
     if device_root_secret.len() != 32 {
         return Err(TrellisAuthError::InvalidArgument(format!(
             "invalid device root secret length: {} (expected 32)",
@@ -92,9 +71,8 @@ pub fn derive_device_user_companion_with_insecure_origin(
             "companion participant ID must not be empty".into(),
         ));
     }
-    let origin =
-        crate::client::canonical_trellis_origin_with_insecure(trellis_url, allow_insecure_origin)
-            .map_err(|error| TrellisAuthError::InvalidArgument(error.to_string()))?;
+    let origin = crate::client::canonical_trellis_origin(trellis_url)
+        .map_err(|error| TrellisAuthError::InvalidArgument(error.to_string()))?;
     let mut info = Vec::new();
     for part in [
         DEVICE_USER_COMPANION_DOMAIN.as_bytes(),

@@ -179,13 +179,11 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             .await
             .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     let public_origin = context.config.public_origin();
-    let allow_insecure_origin = context.config.public_origin_allows_insecure();
     let authorization_contexts = auth::AuthorizationContextService::start(
         Arc::new(auth_store.clone()),
         context.trellis_nats.clone(),
         authorization_config.clone(),
         public_origin.clone(),
-        allow_insecure_origin,
         now / 1_000,
     )
     .await

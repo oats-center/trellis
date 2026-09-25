@@ -598,11 +598,6 @@ impl RuntimeContext {
         self.config.public_origin()
     }
 
-    /// Return whether the configured non-loopback HTTP origin is allowed.
-    pub(crate) fn public_origin_allows_insecure(&self) -> bool {
-        self.config.public_origin_allows_insecure()
-    }
-
     pub(crate) fn register_http_router(&self, router: axum::Router) -> Result<(), RuntimeError> {
         let mut registered = self
             .http_router
@@ -917,7 +912,6 @@ const BUILTIN_LIVE_PROVIDER_CONNECT_TIMEOUT_MS: u64 = 30_000;
 /// cannot be connected fails startup before any live router serves traffic.
 async fn bootstrap_live_providers(context: &RuntimeContext) -> Result<(), RuntimeError> {
     let trellis_url = context.public_origin();
-    let allow_insecure_origin = context.public_origin_allows_insecure();
     for role in crate::platform::LiveProviderRole::roles_for_mode(context.mode) {
         let identity_seed = crate::platform::load_live_provider_seed(&context.config, role)?;
         let client = crate::platform::connect_builtin_live_provider(
@@ -926,7 +920,6 @@ async fn bootstrap_live_providers(context: &RuntimeContext) -> Result<(), Runtim
             crate::platform::BuiltinLiveProviderConnectOptions {
                 trellis_url: &trellis_url,
                 timeout_ms: BUILTIN_LIVE_PROVIDER_CONNECT_TIMEOUT_MS,
-                allow_insecure_origin,
             },
         )
         .await?;

@@ -44,10 +44,8 @@ async fn start_auth_request(
     redirect_to: &str,
     participant_id: &str,
     auth: &SessionAuth,
-    allow_insecure_origin: bool,
 ) -> Result<AuthStartResponse, TrellisAuthError> {
-    let trellis_url =
-        crate::client::canonical_trellis_origin_with_insecure(trellis_url, allow_insecure_origin)?;
+    let trellis_url = crate::client::canonical_trellis_origin(trellis_url)?;
     let request_id = ulid::Ulid::new().to_string();
     let issued_at = now_ms()?;
     let unsigned_request = json!({
@@ -112,10 +110,8 @@ struct AgentFlowStatusResponse {
 async fn fetch_agent_flow_status(
     trellis_url: &str,
     flow_id: &str,
-    allow_insecure_origin: bool,
 ) -> Result<AgentFlowStatusResponse, TrellisAuthError> {
-    let trellis_url =
-        crate::client::canonical_trellis_origin_with_insecure(trellis_url, allow_insecure_origin)?;
+    let trellis_url = crate::client::canonical_trellis_origin(trellis_url)?;
     let client = HttpClient::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30))
@@ -145,30 +141,9 @@ pub async fn poll_agent_flow_until_ready(
     poll_interval: Duration,
     timeout_after: Duration,
 ) -> Result<String, TrellisAuthError> {
-    poll_agent_flow_until_ready_with_insecure_origin(
-        trellis_url,
-        flow_id,
-        poll_interval,
-        timeout_after,
-        false,
-    )
-    .await
-}
-
-#[doc = concat!("Asynchronous Trellis API operation `", stringify!(poll_agent_flow_until_ready), "`.")]
-pub async fn poll_agent_flow_until_ready_with_insecure_origin(
-    trellis_url: &str,
-    flow_id: &str,
-    poll_interval: Duration,
-    timeout_after: Duration,
-    allow_insecure_origin: bool,
-) -> Result<String, TrellisAuthError> {
     let deadline = tokio::time::Instant::now() + timeout_after;
     loop {
-        match fetch_agent_flow_status(trellis_url, flow_id, allow_insecure_origin)
-            .await?
-            .state
-        {
+        match fetch_agent_flow_status(trellis_url, flow_id).await?.state {
             AgentFlowState::Approved | AgentFlowState::Consumed => return Ok(flow_id.to_string()),
             AgentFlowState::ChooseProvider
             | AgentFlowState::Authenticated
@@ -195,10 +170,8 @@ async fn bind_session(
     flow_id: &str,
     participant_id: &str,
     auth: &SessionAuth,
-    allow_insecure_origin: bool,
 ) -> Result<BoundSession, TrellisAuthError> {
-    let trellis_url =
-        crate::client::canonical_trellis_origin_with_insecure(trellis_url, allow_insecure_origin)?;
+    let trellis_url = crate::client::canonical_trellis_origin(trellis_url)?;
     let client = HttpClient::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30))
@@ -303,32 +276,22 @@ impl AgentLoginChallenge {
             login_url: _,
             session_seed,
             participant_id,
-            allow_insecure_origin,
             auth,
         } = self;
-        let flow_id = poll_agent_flow_until_ready_with_insecure_origin(
+        let flow_id = poll_agent_flow_until_ready(
             trellis_url,
             flow_id,
             DETACHED_LOGIN_POLL_INTERVAL,
             Duration::from_secs(300),
-            *allow_insecure_origin,
         )
         .await?;
-        let bound = bind_session(
-            trellis_url,
-            &flow_id,
-            participant_id,
-            auth,
-            *allow_insecure_origin,
-        )
-        .await?;
+        let bound = bind_session(trellis_url, &flow_id, participant_id, auth).await?;
         Ok(AdminSessionState {
             participant_id: participant_id.clone(),
             login_session_id: bound.login_session_id,
             trellis_url: trellis_url.to_string(),
             session_seed: session_seed.clone(),
             expires_at: bound.expires_at,
-            allow_insecure_origin: *allow_insecure_origin,
         })
     }
 
@@ -392,21 +355,14 @@ pub async fn start_agent_login(
         opts.trellis_url.trim_end_matches('/'),
         detached_login_redirect_to()?.trim_start_matches('/')
     );
-    let response = start_auth_request(
-        opts.trellis_url,
-        &redirect_to,
-        opts.participant_id,
-        &auth,
-        opts.allow_insecure_origin,
-    )
-    .await?;
+    let response =
+        start_auth_request(opts.trellis_url, &redirect_to, opts.participant_id, &auth).await?;
 
     Ok(AgentLoginChallenge {
         flow_id: response.flow_id,
         login_url: response.login_url,
         session_seed,
         participant_id: opts.participant_id.to_owned(),
-        allow_insecure_origin: opts.allow_insecure_origin,
         auth,
     })
 }
@@ -427,7 +383,6 @@ pub async fn start_admin_reauth(
         &redirect_to,
         &state.participant_id,
         &auth,
-        state.allow_insecure_origin,
     )
     .await?;
     Ok(AdminReauthOutcome::Flow(Box::new(AgentLoginChallenge {
@@ -435,7 +390,6 @@ pub async fn start_admin_reauth(
         login_url: response.login_url,
         session_seed: state.session_seed.clone(),
         participant_id: state.participant_id.clone(),
-        allow_insecure_origin: state.allow_insecure_origin,
         auth,
     })))
 }

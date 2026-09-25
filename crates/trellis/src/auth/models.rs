@@ -20,9 +20,6 @@ pub struct AdminSessionState {
     /// Session expiry in Unix milliseconds, when bounded.
     #[doc = concat!("The `", stringify!(expires_at), "` value.")]
     pub expires_at: Option<i64>,
-    /// Whether this login explicitly accepted a non-loopback HTTP origin.
-    #[serde(default)]
-    pub allow_insecure_origin: bool,
 }
 
 impl AdminSessionState {
@@ -77,8 +74,6 @@ pub struct AgentLoginChallenge {
     #[doc = concat!("The `", stringify!(session_seed), "` value.")]
     pub session_seed: String,
     pub(crate) participant_id: String,
-    /// Whether this flow explicitly accepted a non-loopback HTTP origin.
-    pub allow_insecure_origin: bool,
     #[doc = concat!("The `", stringify!(auth), "` value.")]
     pub auth: SessionAuth,
 }
@@ -90,9 +85,6 @@ pub struct StartAgentLoginOpts<'a> {
     pub trellis_url: &'a str,
     /// Generated participant identity requesting the user session.
     pub participant_id: &'a str,
-    /// Accept a non-loopback HTTP Trellis origin explicitly allow-listed by the
-    /// operator. Defaults to strict HTTPS-or-loopback validation.
-    pub allow_insecure_origin: bool,
 }
 
 /// Successful agent-login result after the admin user has been verified.

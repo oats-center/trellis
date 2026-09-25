@@ -6,18 +6,15 @@ use crate::generated::Client;
 pub async fn connect_admin_client_async(
     state: &AdminSessionState,
 ) -> Result<Client, TrellisAuthError> {
-    Ok(Client::connect_user(
-        UserConnectOptions::new(
-            &state.trellis_url,
-            5_000,
-            UserSessionCredentials {
-                login_session_id: &state.login_session_id,
-                session_key_seed_base64url: &state.session_seed,
-            },
-            &state.participant_id,
-        )
-        .with_insecure_origin(state.allow_insecure_origin),
-    )
+    Ok(Client::connect_user(UserConnectOptions::new(
+        &state.trellis_url,
+        5_000,
+        UserSessionCredentials {
+            login_session_id: &state.login_session_id,
+            session_key_seed_base64url: &state.session_seed,
+        },
+        &state.participant_id,
+    ))
     .await?)
 }
 

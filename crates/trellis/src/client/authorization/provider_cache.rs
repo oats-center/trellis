@@ -25,8 +25,6 @@ use super::types::AuthorizationRegistryBinding;
 pub struct RuntimeAuthorizationTrust {
     /// Configured origin for public issuer-key resolution.
     pub trellis_origin: String,
-    /// Whether `trellis_origin` was explicitly allow-listed as an insecure origin.
-    pub allow_insecure_origin: bool,
     /// Locally owned issuer, if this runtime issues contexts itself.
     pub issuer: Option<AuthorizationIssuerKey>,
     /// Bounds applied to every resolved context.
@@ -293,7 +291,7 @@ impl AuthorizationProviderCache {
         Self::open(
             nats,
             binding,
-            BootstrapHttp::new(&trust.trellis_origin, trust.allow_insecure_origin)?,
+            BootstrapHttp::new(&trust.trellis_origin)?,
             trust.issuer,
             trust.policy,
             None,

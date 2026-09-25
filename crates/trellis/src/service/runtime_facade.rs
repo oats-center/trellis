@@ -197,9 +197,6 @@ pub struct ServiceConnectOptions<'a> {
     provisioned_identity_seed_base64url: &'a str,
     /// Request/connect timeout in milliseconds.
     timeout_ms: u64,
-    /// Accept a non-loopback HTTP Trellis origin explicitly allow-listed by the
-    /// operator. Defaults to strict HTTPS-or-loopback validation.
-    allow_insecure_origin: bool,
 }
 
 impl<'a> ServiceConnectOptions<'a> {
@@ -210,7 +207,6 @@ impl<'a> ServiceConnectOptions<'a> {
             name: None,
             provisioned_identity_seed_base64url,
             timeout_ms: DEFAULT_TIMEOUT_MS,
-            allow_insecure_origin: false,
         }
     }
 
@@ -223,13 +219,6 @@ impl<'a> ServiceConnectOptions<'a> {
     /// Set the request/connect timeout in milliseconds.
     pub const fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
         self.timeout_ms = timeout_ms;
-        self
-    }
-
-    /// Accept a non-loopback HTTP Trellis origin explicitly allow-listed by the
-    /// operator. Defaults to strict HTTPS-or-loopback validation.
-    pub const fn with_insecure_origin(mut self, allow_insecure_origin: bool) -> Self {
-        self.allow_insecure_origin = allow_insecure_origin;
         self
     }
 }
@@ -1362,7 +1351,6 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
                 name: options.name,
                 provisioned_identity_seed_base64url: options.provisioned_identity_seed_base64url,
                 timeout_ms: options.timeout_ms,
-                allow_insecure_origin: options.allow_insecure_origin,
             })
             .await?;
         let binding = parse_bootstrap_binding(&client)?;

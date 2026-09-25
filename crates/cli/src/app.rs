@@ -292,7 +292,6 @@ mod tests {
             trellis_url: "http://localhost:3000".to_string(),
             session_seed: "seed".to_string(),
             expires_at: Some(1_767_225_600_000),
-            allow_insecure_origin: false,
         }
     }
 

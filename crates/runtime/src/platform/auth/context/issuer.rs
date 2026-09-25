@@ -239,7 +239,6 @@ impl AuthorizationContextService {
         nats: async_nats::Client,
         config: AuthorizationConfig,
         trellis_origin: String,
-        allow_insecure_origin: bool,
         now_seconds: i64,
     ) -> Result<Self, AuthorizationStateError> {
         let trust = Arc::new(
@@ -261,7 +260,6 @@ impl AuthorizationContextService {
             &client_registry_binding,
             RuntimeAuthorizationTrust {
                 trellis_origin,
-                allow_insecure_origin,
                 issuer: Some(trust.issuer.clone()),
                 policy: trust.policy.clone(),
             },

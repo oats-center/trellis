@@ -12,7 +12,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let login = start_agent_login(&StartAgentLoginOpts {
         trellis_url: &url,
         participant_id: "trellis.console",
-        allow_insecure_origin: false,
     })
     .await?;
     println!("health login {}", login.login_url());

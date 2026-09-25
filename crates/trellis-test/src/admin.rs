@@ -77,7 +77,6 @@ pub(crate) async fn login_client(
     let challenge = start_agent_login(&StartAgentLoginOpts {
         trellis_url,
         participant_id,
-        allow_insecure_origin: false,
     })
     .await
     .map_err(|error| login_error("starting the caller login", &error))?;
@@ -161,7 +160,6 @@ impl AdminSession {
         let challenge = start_agent_login(&StartAgentLoginOpts {
             trellis_url,
             participant_id: crate::participants::trellis_cli::PARTICIPANT_ID,
-            allow_insecure_origin: false,
         })
         .await
         .map_err(|error| {
