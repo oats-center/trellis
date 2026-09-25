@@ -264,6 +264,7 @@ Deno.test("NX02 rust console client receives Health Watch", async () => {
     await completeRustLogin(
       runtime,
       [
+        "cargo",
         "run",
         "--manifest-path",
         fromFileUrl(new URL("../../Cargo.toml", import.meta.url)),
