@@ -667,9 +667,17 @@ fn render_action(
             } else {
                 format!("{rust_name}Error")
             };
+            let output_decl = if *download {
+                format!(
+                    "#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]\npub struct {rust_name}Output {{ #[serde(flatten)] pub response: {}, #[serde(default, skip_serializing_if = \"Option::is_none\")] pub transfer: Option<trellis_rs::client::DownloadTransferGrant> }}\n",
+                    type_path(output)
+                )
+            } else {
+                format!("pub type {rust_name}Output = {};\n", type_path(output))
+            };
             let mut out = format!(
-                "pub type {rust_name}Input = {};\npub type {rust_name}Output = {};\npub struct {rust_name};\nimpl {rust_name} {{ pub const API_ID: &'static str = super::API_ID; pub const DESCRIPTOR_NAME: &'static str = {:?}; pub const KEY: &'static str = {key:?}; pub const SUBJECT: &'static str = {:?}; pub const CALLER_CAPABILITIES: &'static [&'static str] = &{}; pub const ERRORS: &'static [&'static str] = &{}; pub const DOWNLOAD: bool = {download}; pub const CURSOR_PAGINATION: bool = {}; }}\n",
-                type_path(input), type_path(output), format!("rpc.{name}"),
+                "pub type {rust_name}Input = {};\n{output_decl}pub struct {rust_name};\nimpl {rust_name} {{ pub const API_ID: &'static str = super::API_ID; pub const DESCRIPTOR_NAME: &'static str = {:?}; pub const KEY: &'static str = {key:?}; pub const SUBJECT: &'static str = {:?}; pub const CALLER_CAPABILITIES: &'static [&'static str] = &{}; pub const ERRORS: &'static [&'static str] = &{}; pub const DOWNLOAD: bool = {download}; pub const CURSOR_PAGINATION: bool = {}; }}\n",
+                type_path(input), format!("rpc.{name}"),
                 format!("rpc.{version}.{key}"),
                 string_slice(capabilities(InteractionDirection::Call)),
                 qualified_errors(api, errors), pagination.is_some(),
@@ -1864,12 +1872,12 @@ mod tests {
             r#"use fixture_sdk::{
     apis::fixture_main_v1::{
         operations::{Work, WorkResumeSignal},
-        rpc::Get,
+        rpc::{Get, GetOutput},
         Client as MainClient,
     },
     apis::fixture_other_v2::{events::Changed, lives::Watch},
     participants::{fixture_backend, fixture_caller},
-    types::Values,
+    types::{Status, Values},
 };
 
 fn accepts_rpc<D: trellis_rs::generated::RpcDescriptor>() {}
@@ -1918,6 +1926,50 @@ fn descriptors_and_facades_use_generated_support() {
     let _ = accepts_operation_client;
     let _: fn(trellis_rs::generated::Client) -> fixture_caller::Client =
         fixture_caller::Client::from_generated;
+}
+
+#[test]
+fn download_output_round_trips_transfer_grant() {
+    use trellis_rs::client::{
+        DownloadTransferDirection, DownloadTransferGrant, FileInfo, TransferGrantType,
+    };
+    use trellis_rs::generated::Codec;
+
+    let grant = DownloadTransferGrant {
+        type_name: TransferGrantType::TransferGrant,
+        direction: DownloadTransferDirection::Receive,
+        service: "backend".into(),
+        session_key: "session".into(),
+        transfer_id: "transfer".into(),
+        subject: "transfer.v1.download.backend.transfer".into(),
+        expires_at: "2030-01-01T00:00:00Z".into(),
+        chunk_bytes: 1024,
+        info: FileInfo {
+            key: "evidence/a".into(),
+            size: 3,
+            updated_at: "2030-01-01T00:00:00Z".into(),
+            digest: "SHA-256=abc".into(),
+            content_type: None,
+            metadata: Default::default(),
+        },
+    };
+    let output = GetOutput {
+        response: Values {
+            name: "value".to_owned().into(),
+            status: Status::Ready,
+            signed: 1i64.into(),
+            unsigned: 1u64.into(),
+            finite: 1.0.into(),
+            bytes: vec![1, 2, 3].into(),
+        },
+        transfer: Some(grant.clone()),
+    };
+
+    let encoded = Codec::encode(&output).unwrap();
+    assert!(encoded.get("transfer").is_some());
+    assert_eq!(encoded.get("name").and_then(|value| value.as_str()), Some("value"));
+    let decoded: GetOutput = Codec::decode(encoded).unwrap();
+    assert_eq!(decoded.transfer, Some(grant));
 }
 "#,
         )

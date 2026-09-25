@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use clap::Parser;
 use futures_util::stream;
+use service_trellis::apis::demo_service_fieldops_v1::rpc::EvidenceDownloadOutput;
 use service_trellis::participants::demo_rust_service_service::{Participant, Provider};
 use service_trellis::types::{
     AssignmentsListResponse, AuditRecordedEvent, EvidenceDeleteResponse, EvidenceDownloadResponse,
@@ -183,16 +184,19 @@ async fn main() -> anyhow::Result<()> {
                         .metadata(input.key.as_ref())
                         .await?
                         .ok_or_else(|| ServerError::Nats("evidence not found".into()))?;
-                    Ok(EvidenceDownloadResponse {
-                        key: info.key.into(),
-                        size: info.size.into(),
-                        digest: info.digest.unwrap_or_else(|| "unknown".into()).into(),
-                        updated_at: info
-                            .modified_at
-                            .map_or_else(|| "unknown".to_owned(), |value| value.to_string())
-                            .into(),
-                        content_type: None,
-                        metadata: Default::default(),
+                    Ok(EvidenceDownloadOutput {
+                        response: EvidenceDownloadResponse {
+                            key: info.key.into(),
+                            size: info.size.into(),
+                            digest: info.digest.unwrap_or_else(|| "unknown".into()).into(),
+                            updated_at: info
+                                .modified_at
+                                .map_or_else(|| "unknown".to_owned(), |value| value.to_string())
+                                .into(),
+                            content_type: None,
+                            metadata: Default::default(),
+                        },
+                        transfer: None,
                     })
                 }
             }
