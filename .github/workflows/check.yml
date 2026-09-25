@@ -329,6 +329,18 @@ jobs:
           name: check-protocol-wasm
           path: ts/packages/trellis/auth/protocol_wasm
 
+      - name: Prime the pinned NATS cache
+        # The transport broker tests start a real nats-server and resolve it from
+        # TRELLIS_CACHE_DIR (or ~/.cache/trellis); otherwise the first one
+        # downloads it while its siblings wait on the install lock, which can
+        # outlast their 30s delivery bound on a loaded runner.
+        run: |
+          set -euo pipefail
+          bash scripts/acquire-test-nats.sh --dest /tmp/trellis-test-nats
+          version="$(jq -r '.["nats-server"].version' crates/local-nats/nats-binaries.json)"
+          mkdir -p /tmp/trellis-nats-cache
+          cp /tmp/trellis-test-nats/nats-server "/tmp/trellis-nats-cache/nats-server-v${version}"
+
       - name: Check formatting
         run: |
           cargo fmt --manifest-path Cargo.toml --all --check
@@ -337,6 +349,8 @@ jobs:
         run: cargo clippy --manifest-path Cargo.toml --workspace --all-targets -- -D warnings
 
       - name: Test Rust workspace
+        env:
+          TRELLIS_CACHE_DIR: /tmp/trellis-nats-cache
         run: cargo test --manifest-path Cargo.toml --workspace
 
   typescript:
