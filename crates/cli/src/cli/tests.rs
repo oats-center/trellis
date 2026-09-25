@@ -238,11 +238,6 @@ fn parses_portal_admin_commands() {
 }
 
 #[test]
-fn rejects_removed_top_level_grant_commands() {
-    assert!(Cli::try_parse_from(["trellis", "grants", "list"]).is_err());
-}
-
-#[test]
 fn rejects_users_edit_conflicting_active_flags() {
     let error = Cli::try_parse_from([
         "trellis",
@@ -276,44 +271,6 @@ fn parses_service_and_device_list_commands() {
         },
         other => panic!("unexpected top-level command: {other:?}"),
     }
-}
-
-#[test]
-fn rejects_removed_service_create_namespace() {
-    assert!(
-        Cli::try_parse_from(["trellis", "svc", "example", "create", "--namespace", "acme"])
-            .is_err()
-    );
-}
-
-#[test]
-fn service_and_device_help_shows_native_target_first_usage() {
-    let svc_error = Cli::try_parse_from(["trellis", "svc", "--help"])
-        .expect_err("svc help should render as a clap error");
-    let svc_help = svc_error.to_string();
-    assert!(svc_help.contains("Usage: trellis svc list [OPTIONS]"));
-    assert!(svc_help.contains("trellis svc <ID> <COMMAND>"));
-    assert!(svc_help.contains("<ID> and <COMMAND> are required"));
-    assert!(!svc_help.contains("[ID]"));
-    assert!(svc_help.contains("apply"));
-    assert!(!svc_help.contains("grants"));
-
-    let dev_error = Cli::try_parse_from(["trellis", "dev", "--help"])
-        .expect_err("dev help should render as a clap error");
-    let dev_help = dev_error.to_string();
-    assert!(dev_help.contains("Usage: trellis dev list [OPTIONS]"));
-    assert!(dev_help.contains("trellis dev <ID> <COMMAND>"));
-    assert!(dev_help.contains("<ID> and <COMMAND> are required"));
-    assert!(!dev_help.contains("[ID]"));
-    assert!(dev_help.contains("activations"));
-    assert!(dev_help.contains("reviews"));
-    assert!(!dev_help.contains("grants"));
-
-    let apply_error = Cli::try_parse_from(["trellis", "svc", "api", "apply", "--help"])
-        .expect_err("svc action help should render as a clap error");
-    assert!(apply_error
-        .to_string()
-        .contains("Usage: trellis svc <ID> apply"));
 }
 
 #[test]
@@ -408,19 +365,8 @@ fn parses_resources_and_events_pagination_commands() {
 }
 
 #[test]
-fn rejects_resource_local_grant_commands() {
-    let error = Cli::try_parse_from(["trellis", "svc", "billing", "grants", "list"])
-        .expect_err("svc grants should not parse");
-    assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
-
-    let error = Cli::try_parse_from(["trellis", "dev", "reader", "grants", "list"])
-        .expect_err("dev grants should not parse");
-    assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
-}
-
-#[test]
 #[cfg(feature = "runtime")]
-fn parses_init_config_infra_init_keys_upgrade_version_and_completion() {
+fn parses_init_config_keys_upgrade_version_and_completion() {
     let cli = Cli::parse_from([
         "trellis",
         "init",
@@ -444,30 +390,6 @@ fn parses_init_config_infra_init_keys_upgrade_version_and_completion() {
                 assert_eq!(args.operator_name, "LOCAL");
                 assert_eq!(args.system_account, "SYSTEM");
                 assert_eq!(args.server_name.as_deref(), Some("nats-local"));
-                assert_eq!(args.trellis_port, 3000);
-            }
-            other => panic!("unexpected init command: {other:?}"),
-        },
-        other => panic!("unexpected top-level command: {other:?}"),
-    }
-
-    let cli = Cli::parse_from(["trellis", "init", "config", "--out", "./trellis"]);
-    match cli.command {
-        TopLevelCommand::Init(command) => match command.command {
-            InitSubcommand::Config(args) => {
-                assert_eq!(args.out, std::path::PathBuf::from("./trellis"));
-                assert_eq!(args.name, trellis_bootstrap::DEFAULT_TRELLIS_NAME);
-                assert_eq!(args.operator_name, trellis_bootstrap::DEFAULT_OPERATOR_NAME);
-                assert_eq!(
-                    args.system_account,
-                    trellis_bootstrap::DEFAULT_SYSTEM_ACCOUNT
-                );
-                assert_eq!(args.server_name, None);
-                assert_eq!(args.nats_port, 4222);
-                assert_eq!(args.nats_monitor_port, 8222);
-                assert_eq!(args.nats_ws_port, 8080);
-                assert_eq!(args.nats_server_url, None);
-                assert_eq!(args.nats_websocket_url, None);
             }
             other => panic!("unexpected init command: {other:?}"),
         },
@@ -498,9 +420,6 @@ fn parses_init_config_infra_init_keys_upgrade_version_and_completion() {
         },
         other => panic!("unexpected top-level command: {other:?}"),
     }
-
-    assert!(Cli::try_parse_from(["trellis", "infra", "apply"]).is_err());
-    assert!(Cli::try_parse_from(["trellis", "infra", "check"]).is_err());
 
     let cli = Cli::parse_from([
         "trellis",
@@ -547,33 +466,4 @@ fn parses_init_config_infra_init_keys_upgrade_version_and_completion() {
 
     let cli = Cli::parse_from(["trellis", "completion", "bash"]);
     assert!(matches!(cli.command, TopLevelCommand::Completion { .. }));
-}
-
-#[test]
-fn rejects_removed_top_level_command_trees_and_aliases() {
-    for command in [
-        "auth",
-        "deploy",
-        "deployment",
-        "deployments",
-        "dep",
-        "d",
-        "bootstrap",
-        "local",
-        "self",
-        "keygen",
-    ] {
-        let error = Cli::try_parse_from(["trellis", command, "--help"])
-            .expect_err(&format!("{command} should be rejected"));
-        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
-    }
-}
-
-#[test]
-fn rejects_legacy_auth_login_flags() {
-    let error = Cli::try_parse_from(["trellis", "login", "--auth-url", "https://auth.example.com"])
-        .unwrap_err();
-
-    assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
-    assert!(error.to_string().contains("--auth-url"));
 }

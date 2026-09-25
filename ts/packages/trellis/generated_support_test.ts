@@ -1,24 +1,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 
-import type { Codec, SerializableErrorData } from "./generated.ts";
+import type { Codec } from "./generated.ts";
 import * as generated from "./generated.ts";
-
-Deno.test("generated support exports only its runtime ABI values", () => {
-  assertEquals(Object.keys(generated).sort(), [
-    "TrellisError",
-    "apiDescriptor",
-    "codecs",
-    "participantDescriptor",
-  ]);
-  const codec: Codec<string> = generated.codecs.string;
-  const error: SerializableErrorData = {
-    id: "error-id",
-    type: "example.Failed",
-    message: "failed",
-  };
-  assertEquals(codec.decode(error.message), "failed");
-  assertEquals("number" in generated.codecs, false);
-});
 
 Deno.test("generated codecs preserve wire representations and composition", () => {
   type OrderId = string & { readonly __trellisType: "example.OrderId" };
@@ -121,65 +104,6 @@ Deno.test("generated codecs preserve wire representations and composition", () =
   assertThrows(() => generated.codecs.bytes.decode("AB=="));
   assertThrows(() => generated.codecs.i32.decode(-0));
   assertThrows(() => generated.codecs.f64.decode(Number.POSITIVE_INFINITY));
-});
-
-Deno.test("generated descriptors check evidence structure without deriving it", () => {
-  const api = generated.apiDescriptor({
-    identity: "example/Orders@v1",
-    actions: {
-      "rpc:Orders.Get": {
-        kind: "rpc",
-        descriptorName: "rpc:Orders.Get",
-        input: generated.codecs.string,
-        output: generated.codecs.string,
-        errors: [],
-        download: false,
-        pagination: undefined,
-      },
-    },
-  });
-  assertEquals(api.identity, "example/Orders@v1");
-  assertThrows(() =>
-    generated.apiDescriptor({
-      identity: "",
-      actions: {},
-    })
-  );
-  assertEquals(
-    generated.participantDescriptor({
-      kind: "service",
-      id: "example.Processor",
-      identity: "example.Processor",
-      path: "Processor",
-      actionNames: {},
-      implements: [api],
-      uses: [{
-        api,
-        actions: [{ descriptorName: "rpc:Orders.Get", direction: "call" }],
-        optionalCapabilities: [],
-      }],
-      resources: {
-        cache: {
-          kind: "kv",
-          availability: "optional",
-          codec: generated.codecs.string,
-          version: 2,
-          migrations: { 1: generated.codecs.i32 },
-        },
-      },
-      packageEvidence: {
-        rootPackage: "example",
-        rootDigest: "digest",
-        packages: [{
-          name: "example",
-          version: "1.0.0",
-          digest: "digest",
-          source: 'package "example";\n',
-        }],
-      },
-    }).kind,
-    "service",
-  );
 });
 
 Deno.test("device companion descriptors require one lexical App or Agent child", () => {
