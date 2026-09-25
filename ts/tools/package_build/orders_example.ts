@@ -107,6 +107,15 @@ try {
         `npm:@oatscenter/trellis@${trellisVersion}`,
       );
     }
+    if (name === "@oatscenter/trellis-test") {
+      const testkitVersion = JSON.parse(
+        await Deno.readTextFile(join(testkit, "deno.json")),
+      ).version as string;
+      config.imports[name] = specifier.replace(
+        /^(jsr:@oatscenter\/trellis-test@)[^/]+/,
+        `$1${testkitVersion}`,
+      );
+    }
   }
   await Deno.writeTextFile(join(project, "deno.json"), JSON.stringify(config));
 
