@@ -1240,6 +1240,9 @@ impl<C> ConnectedServiceRuntime<C> {
     }
 
     /// Register one operation business handler and record its runtime-owned lifecycle routes.
+    ///
+    /// An operation control route is a Live route, so this installs the
+    /// connection's live provider owner exactly as [`Self::register_live`] does.
     pub fn register_operation_handler<D, F, Fut>(&mut self, handler: F)
     where
         D: OperationDescriptor + 'static,
@@ -1277,6 +1280,10 @@ impl<C> ConnectedServiceRuntime<C> {
         let subject = self.descriptor_subject("operation", D::API_ID, D::KEY);
         self.registered_subjects.insert(subject.clone());
         self.registered_subjects.insert(control_subject(&subject));
+        self.router
+            .set_live_owner(super::live_router::LiveProviderOwner::new(
+                std::sync::Arc::clone(&self.client),
+            ));
     }
 
     /// Run registered subjects using the default NATS request loop.
