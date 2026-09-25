@@ -1893,7 +1893,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         const current = typeof this.auth.contextDigest === "function"
           ? this.auth.contextDigest()
           : this.auth.contextDigest;
-        if (!current || current === ownGuard.contextDigest) return;
+        if (!current) return;
         const candidate = await ownGuard.prepareReplacement(current);
         if (ownGuard.commitReplacement(candidate)) {
           throw new Error("own authority replacement was rejected");

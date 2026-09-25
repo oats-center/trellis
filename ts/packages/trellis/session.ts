@@ -3481,7 +3481,7 @@ export class Trellis<
       ownGuard,
       refreshOwnAuthority: async () => {
         const current = this.#contextDigest();
-        if (!current || current === ownGuard.contextDigest) return;
+        if (!current) return;
         const candidate = await ownGuard.prepareReplacement(current);
         if (ownGuard.commitReplacement(candidate)) {
           throw new Error("own authority replacement was rejected");
