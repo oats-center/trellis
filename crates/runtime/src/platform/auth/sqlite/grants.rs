@@ -463,6 +463,40 @@ pub(in crate::platform::auth) fn accept_package_evidence(
     Ok(evidence_digest)
 }
 
+/// Whether `next` only adds authority relative to `previous`.
+///
+/// A purely additive replacement leaves every already-issued context valid (it
+/// is narrower than the new authority), so live connections must not be revoked
+/// or kicked. Only a reduction, a shortened expiry, or a participant revision
+/// change requires a fresh context.
+fn additive_authority_change(previous: Option<&GrantBinding>, next: &GrantBinding) -> bool {
+    let Some(previous) = previous else {
+        return true;
+    };
+    next.state == GrantBindingState::Active
+        && previous.state == GrantBindingState::Active
+        && next.installed_revision == previous.installed_revision
+        && expiry_not_shortened(previous.expires_at, next.expires_at)
+        && previous
+            .platform_privileges
+            .iter()
+            .all(|privilege| next.platform_privileges.contains(privilege))
+        && previous
+            .grants
+            .permissions()
+            .iter()
+            .all(|permission| next.grants.permissions().contains(permission))
+}
+
+/// Whether `next` never expires before `previous` (absent means never).
+fn expiry_not_shortened(previous: Option<i64>, next: Option<i64>) -> bool {
+    match (previous, next) {
+        (None, candidate) => candidate.is_none(),
+        (Some(_), None) => true,
+        (Some(previous), Some(candidate)) => candidate >= previous,
+    }
+}
+
 pub(in crate::platform::auth) fn replace_grant_binding(
     connection: &Connection,
     replacement: GrantBindingReplacement,
@@ -745,20 +779,27 @@ pub(in crate::platform::auth) fn replace_grant_binding(
                 .map_err(map_write_error)?;
         }
     }
-    let revoked_contexts = revoke_sql_contexts(
-        connection,
-        &AuthorizationContextSelector::Grant(
-            binding.owner_kind,
-            binding.owner_id.clone(),
-            binding.participant_id.clone(),
-        ),
-        if binding.state == GrantBindingState::Revoked {
-            AuthorizationContextRevocationReason::AuthorityRevoked
-        } else {
-            AuthorizationContextRevocationReason::AuthorityChanged
-        },
-        now.div_euclid(1_000),
-    )?;
+    // Increasing authority never fails a connection: an additive replacement
+    // keeps every issued context valid (narrower than the new authority) and is
+    // picked up at the next ordinary refresh. Only a reduction revokes and kicks.
+    let revoked_contexts = if additive_authority_change(current.as_ref(), &binding) {
+        Vec::new()
+    } else {
+        revoke_sql_contexts(
+            connection,
+            &AuthorizationContextSelector::Grant(
+                binding.owner_kind,
+                binding.owner_id.clone(),
+                binding.participant_id.clone(),
+            ),
+            if binding.state == GrantBindingState::Revoked {
+                AuthorizationContextRevocationReason::AuthorityRevoked
+            } else {
+                AuthorizationContextRevocationReason::AuthorityChanged
+            },
+            now.div_euclid(1_000),
+        )?
+    };
     let mut event_payload = json!({
         "eventType": "Auth.Grants.Changed",
         "eventId": ulid::Ulid::new().to_string(), "occurredAt": now, "binding": binding,
@@ -2815,6 +2856,159 @@ device Device { app Companion { use access { rpc B; optional capability b; } } }
             .unwrap();
         assert_eq!(unchanged.revision, 1);
         assert_eq!(unchanged.provenance, Some(provenance));
+    }
+
+    #[test]
+    fn additive_authority_change_accepts_only_growth() {
+        use trellis_protocol::{ApiSurfaceKind, GrantSet, PermissionAtom};
+
+        let atom = |name: &str| {
+            PermissionAtom::new(
+                PermissionTarget::api_surface("fixture@v1", ApiSurfaceKind::Rpc, name).unwrap(),
+                PermissionAction::Call,
+            )
+            .unwrap()
+        };
+        let base = GrantBinding {
+            owner_kind: GrantOwnerKind::User,
+            owner_id: "usr_1".to_owned(),
+            participant_id: "fixture.Caller".to_owned(),
+            installed_revision: 1,
+            grants: GrantSet::new(vec![atom("A")]),
+            approval_mode: ApprovalMode::Exact,
+            approved_capabilities: Vec::new(),
+            approved_resources: Vec::new(),
+            delegation_ceiling: DelegationCeiling {
+                capabilities: Vec::new(),
+                exact_restrictions: Some(GrantSet::new(vec![atom("A")])),
+                platform_privileges: Vec::new(),
+            },
+            approval_decision_digest: "A".repeat(43),
+            approval_expected_grant_revision: 0,
+            companion_approved: false,
+            platform_privileges: Vec::new(),
+            revision: 1,
+            state: GrantBindingState::Active,
+            expires_at: None,
+            provenance: None,
+            created_at: 1,
+            updated_at: 1,
+        };
+        let with = |grants: Vec<PermissionAtom>| GrantBinding {
+            grants: GrantSet::new(grants),
+            delegation_ceiling: DelegationCeiling {
+                capabilities: Vec::new(),
+                exact_restrictions: Some(GrantSet::new(Vec::new())),
+                platform_privileges: Vec::new(),
+            },
+            ..base.clone()
+        };
+
+        assert!(additive_authority_change(Some(&base), &base));
+        assert!(additive_authority_change(None, &base));
+        assert!(additive_authority_change(
+            Some(&base),
+            &with(vec![atom("A"), atom("B")])
+        ));
+        assert!(!additive_authority_change(Some(&base), &with(Vec::new())));
+        assert!(!additive_authority_change(
+            Some(&base),
+            &with(vec![atom("B")])
+        ));
+
+        let mut shortened = base.clone();
+        shortened.expires_at = Some(10);
+        assert!(!additive_authority_change(Some(&base), &shortened));
+        assert!(additive_authority_change(Some(&shortened), &base));
+
+        let mut revoked = base.clone();
+        revoked.state = GrantBindingState::Revoked;
+        assert!(!additive_authority_change(Some(&base), &revoked));
+
+        let mut reinstalled = base.clone();
+        reinstalled.installed_revision = 2;
+        assert!(!additive_authority_change(Some(&base), &reinstalled));
+
+        let mut privileged = base.clone();
+        privileged.platform_privileges = vec![PlatformPrivilege::Admin];
+        assert!(additive_authority_change(Some(&base), &privileged));
+        assert!(!additive_authority_change(Some(&privileged), &base));
+    }
+
+    #[tokio::test]
+    async fn non_reducing_grant_replacement_keeps_live_contexts_while_a_reduction_kicks() {
+        use trellis_protocol::GrantSet;
+
+        let now: i64 = 1_700_000_000_000;
+        let store = SqliteAuthorizationStore::open_in_memory().unwrap();
+        let actor =
+            crate::platform::auth::tests::conformance::fixtures::install_login_mutation_actor(
+                &store, now,
+            )
+            .await
+            .unwrap();
+        let current = store
+            .get_grant_binding(
+                actor.owner_kind,
+                actor.owner_id.clone(),
+                actor.participant_id.clone(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        // A replacement that does not reduce authority must leave the active
+        // context alone: no revocation, no kick.
+        let mut additive = binding_replacement_from(&current);
+        additive.approval_decision_digest =
+            trellis_protocol::digest_json(&json!(["additive"])).unwrap();
+        let (additive_binding, actions) = store
+            .run(move |connection| replace_grant_binding(connection, additive, now + 1))
+            .await
+            .unwrap();
+        assert_eq!(additive_binding.revision, current.revision + 1);
+        assert!(
+            !actions
+                .iter()
+                .any(|action| action.kind == PostCommitActionKind::Kick),
+            "adding authority must not kick live connections"
+        );
+
+        let mut reduction = binding_replacement_from(&additive_binding);
+        reduction.grants = GrantSet::new(Vec::new());
+        reduction.delegation_ceiling.exact_restrictions = Some(GrantSet::new(Vec::new()));
+        let (_, actions) = store
+            .run(move |connection| replace_grant_binding(connection, reduction, now + 2))
+            .await
+            .unwrap();
+        assert!(
+            actions
+                .iter()
+                .any(|action| action.kind == PostCommitActionKind::Kick),
+            "removing authority must revoke and kick live connections"
+        );
+    }
+
+    fn binding_replacement_from(binding: &GrantBinding) -> GrantBindingReplacement {
+        GrantBindingReplacement {
+            owner_kind: binding.owner_kind,
+            owner_id: binding.owner_id.clone(),
+            participant_id: binding.participant_id.clone(),
+            installed_revision: binding.installed_revision,
+            grants: binding.grants.clone(),
+            approval_mode: binding.approval_mode,
+            approved_capabilities: binding.approved_capabilities.clone(),
+            approved_resources: binding.approved_resources.clone(),
+            delegation_ceiling: binding.delegation_ceiling.clone(),
+            approval_decision_digest: "A".repeat(43),
+            companion_approved: binding.companion_approved,
+            platform_privileges: binding.platform_privileges.clone(),
+            state: binding.state,
+            expires_at: binding.expires_at,
+            provenance: binding.provenance.clone(),
+            expected_revision: binding.revision,
+            expected_current_installed_revision: Some(binding.installed_revision),
+        }
     }
 
     #[tokio::test]
