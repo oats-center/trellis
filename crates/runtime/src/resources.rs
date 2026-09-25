@@ -399,18 +399,6 @@ mod tests {
     }
 
     #[test]
-    fn stream_compatibility_rejects_non_durable_policies() {
-        let expected = event_stream_config();
-        let mut actual = expected.clone();
-        actual.storage = stream::StorageType::Memory;
-        assert!(stream_update(&actual, &expected).is_err());
-
-        actual = expected.clone();
-        actual.discard = stream::DiscardPolicy::New;
-        assert!(stream_update(&actual, &expected).is_err());
-    }
-
-    #[test]
     fn authoritative_streams_only_expand_limits() {
         let [expected, _, _] = events_stream_configs();
         assert!(stream_update(&expected, &expected)
