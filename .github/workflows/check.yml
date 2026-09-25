@@ -283,7 +283,7 @@ jobs:
   rust:
     name: Rust
     needs: [install, wasm, portal]
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - name: Check out repository
@@ -632,7 +632,7 @@ jobs:
   live-typescript:
     name: TypeScript live integration
     needs: [install, wasm, portal, build]
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - name: Check out repository
