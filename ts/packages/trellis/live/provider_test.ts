@@ -73,6 +73,7 @@ function makeProvider(nats: NatsConnection): LiveProvider {
       },
       action: "subscribe",
     },
+    refreshOwnAuthority: async () => {},
     retainCallerAuthority: async () => authority("owner"),
     manager: new LiveSessionManager(),
   };
