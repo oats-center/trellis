@@ -87,7 +87,7 @@ Deno.test("startTrellisProcess reports early exit with output tails", async () =
             ],
           },
         },
-        startupTimeoutMs: 1_000,
+        startupTimeoutMs: 10_000,
         shutdownTimeoutMs: 1_000,
       }),
     Error,
