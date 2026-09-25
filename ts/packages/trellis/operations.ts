@@ -486,6 +486,27 @@ export interface OperationTransport {
   ): AsyncResult<FileInfo, TransferError>;
 }
 
+/**
+ * Await one operation transport request, converting a rejection into a Result.
+ *
+ * A transport failure is a refused request, never a thrown exception, so every
+ * operation caller receives a Result it can inspect.
+ *
+ * @param request - Starts one transport request.
+ * @returns The request value, or the Result that refuses it.
+ */
+async function settleRequest<T>(
+  request: () => AsyncResult<T, TransportError | UnexpectedError>,
+): Promise<T | Result<never, TransportError | UnexpectedError>> {
+  try {
+    return await request().take();
+  } catch (cause) {
+    return err(
+      cause instanceof UnexpectedError ? cause : new UnexpectedError({ cause }),
+    );
+  }
+}
+
 function operationRequestBody(input: unknown, invocationId: string): JsonValue {
   return { invocationId, input: input as JsonValue };
 }
@@ -966,10 +987,12 @@ class RuntimeOperationRef<
         body.input = encodeOperationInput(signals?.[signal], input);
       }
 
-      const responseValue = await this.#transport.requestJson(
-        controlSubject(this.#descriptor.subject),
-        body,
-      ).take();
+      const responseValue = await settleRequest(() =>
+        this.#transport.requestJson(
+          controlSubject(this.#descriptor.subject),
+          body,
+        )
+      );
       if (isErr(responseValue)) {
         return err(responseValue.error);
       }
@@ -1061,13 +1084,15 @@ class RuntimeOperationRef<
     OperationControlError | UnexpectedError
   > {
     return AsyncResult.from((async () => {
-      const responseValue = await this.#transport.requestJson(
-        controlSubject(this.#descriptor.subject),
-        {
-          action,
-          operationId: this.id,
-        },
-      ).take();
+      const responseValue = await settleRequest(() =>
+        this.#transport.requestJson(
+          controlSubject(this.#descriptor.subject),
+          {
+            action,
+            operationId: this.id,
+          },
+        )
+      );
       if (isErr(responseValue)) {
         return err(responseValue.error);
       }
@@ -1193,13 +1218,15 @@ function invokeOperation<
   TransportError | UnexpectedError
 > {
   return AsyncResult.from((async () => {
-    const responseValue = await transport.requestJson(
-      descriptor.subject,
-      operationRequestBody(
-        encodeOperationInput(descriptor.input, input),
-        invocationId,
-      ),
-    ).take();
+    const responseValue = await settleRequest(() =>
+      transport.requestJson(
+        descriptor.subject,
+        operationRequestBody(
+          encodeOperationInput(descriptor.input, input),
+          invocationId,
+        ),
+      )
+    );
     if (isErr(responseValue)) {
       return responseValue;
     }
