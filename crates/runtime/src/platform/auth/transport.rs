@@ -1677,7 +1677,7 @@ mod nats_reply_permission_tests {
             consumer_permissions(operation_permission(PermissionAction::Observe)),
         );
         let (provider, _provider_errors) = connect(&broker.url, "provider").await;
-        let (consumer, _consumer_errors) = connect(&broker.url, "consumer").await;
+        let (consumer, consumer_errors) = connect(&broker.url, "consumer").await;
         let mut live = consumer.subscribe(live_subject()).await.unwrap();
         provider.flush().await.unwrap();
         consumer.flush().await.unwrap();
@@ -1685,12 +1685,21 @@ mod nats_reply_permission_tests {
             .publish(live_subject(), b"observe".to_vec().into())
             .await
             .unwrap();
+        let observed = tokio::time::timeout(Duration::from_secs(30), live.next())
+            .await
+            .ok()
+            .flatten();
+        // Report a broker refusal as itself rather than as a delivery that never
+        // arrived; only the observe permission may receive operation delivery.
+        if observed.is_none() {
+            assert!(
+                !error_mentioning(&consumer_errors, "Permissions Violation").await,
+                "an observe-only operation consumer was refused its own live delivery"
+            );
+        }
         assert_eq!(
-            next_within(&mut live, "operation observation")
-                .await
-                .payload
-                .as_ref(),
-            b"observe"
+            observed.map(|message| message.payload).as_ref(),
+            Some(&b"observe".to_vec().into())
         );
 
         for action in [PermissionAction::Invoke, PermissionAction::Cancel] {

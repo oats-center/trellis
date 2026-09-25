@@ -897,7 +897,14 @@ jobs:
           tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
 
       - name: Package the public crates
-        run: cargo package --manifest-path Cargo.toml -p trellis-protocol -p trellis-rs -p trellis-testkit
+        # Verify the packaged crates against the workspace crates being released
+        # rather than whatever versions crates.io currently holds: `cargo package`
+        # ignores the manifest's [patch] section, so the patches are explicit.
+        run: |
+          cargo package --manifest-path Cargo.toml \
+            -p trellis-protocol -p trellis-rs -p trellis-testkit \
+            --config 'patch.crates-io.trellis-protocol.path="crates/protocol"' \
+            --config 'patch.crates-io.trellis-rs.path="crates/trellis"'
 
       - name: Upload public Rust packages
         uses: actions/upload-artifact@v4
