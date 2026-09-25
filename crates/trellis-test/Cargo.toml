@@ -1,5 +1,5 @@
 [package]
-name = "trellis-test"
+name = "trellis-testkit"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

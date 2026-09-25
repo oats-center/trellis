@@ -11,7 +11,7 @@ marked `publish = false`; runtime implementation for public authoring lives
 behind modules of the `trellis-rs` facade.
 
 Exactly three crates are intended for publication: `trellis-rs` (the facade),
-`trellis-protocol` (canonical protocol objects), and `trellis-test` (the
+`trellis-protocol` (canonical protocol objects), and `trellis-testkit` (the
 external live-test harness). Every other workspace crate is internal.
 
 **Crates in this repository:**
@@ -22,7 +22,7 @@ external live-test harness). Every other workspace crate is internal.
 | `trellis-auth-adapters`   | Unpublished compatibility/test package for auth adapters         |
 | `trellis-rs`              | Curated public Rust facade for clients and services              |
 | `trellis-protocol`        | Public canonical protocol objects                                |
-| `trellis-test`            | Public out-of-process live-test harness                          |
+| `trellis-testkit`         | Public out-of-process live-test harness                          |
 | `trellis-cli`             | Operator CLI crate for the `trellis` binary                      |
 | `trellis-client`          | Unpublished compatibility package for `trellis_rs::client`       |
 | `trellis-codegen-rust`    | Internal Rust SDK code generation                                |

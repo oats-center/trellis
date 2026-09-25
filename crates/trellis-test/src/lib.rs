@@ -15,8 +15,8 @@
 //! transports before calling [`TrellisTestRuntime::shutdown`].
 //!
 //! ```no_run
-//! # async fn example() -> Result<(), trellis_test::TrellisTestError> {
-//! use trellis_test::TrellisTestRuntime;
+//! # async fn example() -> Result<(), trellis_testkit::TrellisTestError> {
+//! use trellis_testkit::TrellisTestRuntime;
 //! let mut runtime = TrellisTestRuntime::builder().start().await?;
 //! let _url = runtime.trellis_url();
 //! runtime.shutdown().await?;

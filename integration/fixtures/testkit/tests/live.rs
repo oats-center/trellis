@@ -11,7 +11,6 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use trellis_rs::client::EventSubscribeOptions;
 use trellis_rs::service::ServerError;
-use trellis_test::{TrellisTestErrorKind, TrellisTestRuntime};
 use trellis_test_fixture::participants::trellis_test_fixture_caller::{
     Client as CallerClient, Participant as CallerParticipant,
 };
@@ -21,6 +20,7 @@ use trellis_test_fixture::participants::trellis_test_fixture_provider::{
 use trellis_test_fixture::participants::trellis_test_fixture_restricted_caller::Participant as RestrictedCallerParticipant;
 use trellis_test_fixture::participants::trellis_test_fixture_unsupported_device::Participant as UnsupportedDeviceParticipant;
 use trellis_test_fixture::types::Value;
+use trellis_testkit::{TrellisTestErrorKind, TrellisTestRuntime};
 
 /// A running provider service plus the count of executed Echo handlers.
 struct ProviderFixture {
@@ -540,7 +540,7 @@ async fn t15_dropping_a_runtime_cleans_up() {
 /// a skip.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn t11_missing_nats_fails_cleanly() {
-    use trellis_test::{NatsSource, TestTimeouts};
+    use trellis_testkit::{NatsSource, TestTimeouts};
 
     let result = TrellisTestRuntime::builder()
         .nats(NatsSource::Path("/nonexistent/nats-server".into()))
@@ -876,7 +876,7 @@ async fn wait_until_process_gone(pid: u32, timeout: Duration) -> bool {
 /// T19: all three retention policies and a surviving preexisting sibling.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn t19_retention_policies_and_sibling_survival() {
-    use trellis_test::WorkdirRetention;
+    use trellis_testkit::WorkdirRetention;
 
     let parent = std::env::temp_dir().join(format!("trellis-retention-{}", std::process::id()));
     std::fs::create_dir_all(&parent).expect("create the retention parent");

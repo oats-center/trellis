@@ -250,7 +250,7 @@ jobs:
             --manifest-path integration/fixtures/testkit/Cargo.toml \
             --config "patch.crates-io.trellis-protocol.path=\"$GITHUB_WORKSPACE/crates/protocol\"" \
             --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\"" \
-            --config "patch.crates-io.trellis-test.path=\"$GITHUB_WORKSPACE/crates/trellis-test\"" \
+            --config "patch.crates-io.trellis-testkit.path=\"$GITHUB_WORKSPACE/crates/trellis-test\"" \
             --test live \
             --message-format=json > "$RUNNER_TEMP/testkit-live.json"
           executable="$(jq -r 'select(.executable != null) | .executable' "$RUNNER_TEMP/testkit-live.json" | tail -n1)"
@@ -906,7 +906,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
 
       - name: Package the public crates
-        run: cargo package --manifest-path Cargo.toml -p trellis-protocol -p trellis-rs -p trellis-test
+        run: cargo package --manifest-path Cargo.toml -p trellis-protocol -p trellis-rs -p trellis-testkit
 
       - name: Upload public Rust packages
         uses: actions/upload-artifact@v4
@@ -923,7 +923,7 @@ jobs:
           mkdir -p "$bundle/packages" "$bundle/binaries" "$bundle/nats" "$bundle/consumer"
           cp target/package/trellis-protocol-*.crate \
              target/package/trellis-rs-*.crate \
-             target/package/trellis-test-*.crate "$bundle/packages/"
+             target/package/trellis-testkit-*.crate "$bundle/packages/"
           cp target/debug/trellis target/debug/trellis-server "$bundle/binaries/"
           cp -R integration/fixtures/testkit/. "$bundle/consumer/"
           rm -rf "$bundle/consumer/target"

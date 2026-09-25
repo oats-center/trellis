@@ -412,7 +412,7 @@ jobs:
           # run_publish waits for protocol to enter the index before this contracts dry-run.
           publish_workspace_crate trellis-rs
           # The public testkit follows the facade into the index.
-          publish_workspace_crate trellis-test
+          publish_workspace_crate trellis-testkit
 
           echo "Published ${#published[@]} crate(s)"
           for item in "${published[@]}"; do

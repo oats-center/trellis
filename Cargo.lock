@@ -5707,7 +5707,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "trellis-test"
+name = "trellis-testkit"
 version = "0.100.0"
 dependencies = [
  "base64 0.22.1",

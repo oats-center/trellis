@@ -252,7 +252,7 @@ fn failed_extraction_leaves_no_staging_dir() {
 
 // The probe-based readiness tests below are deterministic (no sockets): real TCP
 // behavior of the probe is covered by `ManagedNatsServer::start` in the live
-// `cli.server-managed-nats` case, the trellis-test NATS smoke, and the executed
+// `cli.server-managed-nats` case, the trellis-testkit NATS smoke, and the executed
 // runtime image smoke.
 
 #[test]

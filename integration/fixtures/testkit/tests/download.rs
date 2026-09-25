@@ -4,7 +4,7 @@
 //! download. Run it deliberately after network prerequisites are available:
 //! `cargo test --test download`.
 
-use trellis_test::{NatsSource, TrellisTestRuntime};
+use trellis_testkit::{NatsSource, TrellisTestRuntime};
 
 /// T25: `DownloadPinned` delegates to the real server's verified acquisition.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
