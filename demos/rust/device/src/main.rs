@@ -293,11 +293,7 @@ async fn download_evidence(client: Option<&ConnectedClient>) -> anyhow::Result<(
     let response = service
         .evidence_download(&EvidenceDownloadRequest { key: key.into() })
         .await?;
-    println!(
-        "Evidence {} is {} bytes",
-        response.response.key,
-        *response.response.size
-    );
+    println!("Evidence {} is {} bytes", response.key, *response.size);
     Ok(())
 }
 
