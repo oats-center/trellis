@@ -82,14 +82,23 @@ impl StateRuntime {
         nats: async_nats::Client,
         repository: SqliteAuthorizationStore,
         verifier: RuntimeAuthVerifier,
+        ephemeral: bool,
     ) -> Result<Self, RuntimeError> {
+        let storage = if ephemeral {
+            tracing::warn!(
+                "using in-memory NATS JetStream storage; this mode is not production ready"
+            );
+            jetstream::stream::StorageType::Memory
+        } else {
+            jetstream::stream::StorageType::File
+        };
         let jetstream = jetstream::new(nats);
         let config = kv::Config {
             bucket: BUCKET.to_owned(),
             description: OWNERSHIP_MARKER.to_owned(),
             history: 1,
             max_age: Duration::ZERO,
-            storage: jetstream::stream::StorageType::File,
+            storage,
             ..Default::default()
         };
         let store = match jetstream.get_key_value(BUCKET).await {
@@ -106,12 +115,9 @@ impl StateRuntime {
         let status = store.status().await.map_err(|error| {
             RuntimeError::Platform(format!("failed to inspect {BUCKET}: {error}"))
         })?;
-        if status.history() != 1
-            || status.max_age() != Duration::ZERO
-            || status.info.config.storage != jetstream::stream::StorageType::File
-        {
+        if status.history() != 1 || status.max_age() != Duration::ZERO {
             return Err(RuntimeError::Platform(format!(
-                "{BUCKET} has incompatible history, TTL, or storage configuration"
+                "{BUCKET} has incompatible history or TTL configuration"
             )));
         }
         Ok(Self {
