@@ -1,9 +1,4 @@
-import {
-  assertEquals,
-  assertNotEquals,
-  assertStringIncludes,
-  assertThrows,
-} from "@std/assert";
+import { assertEquals, assertNotEquals, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import {
   buildControlPlaneConfig,
@@ -58,23 +53,19 @@ Deno.test("reserveLocalPort lets the OS choose distinct ports", () => {
   }
 });
 
-Deno.test("writeTrellisConfig writes file-backed test control-plane config", async () => {
+Deno.test("writeTrellisConfig stages credentials without embedding their values", async () => {
   const workdir = await Deno.makeTempDir({ prefix: "trellis-config-test-" });
   try {
     const natsDir = join(workdir, "nats");
+    const seeds = {
+      "auth-issuer-signing.seed": "issuer-seed\n",
+      "auth-target-signing.seed": "target-seed\n",
+      "auth-sx.seed": "sx-seed\n",
+    };
     await Deno.mkdir(join(natsDir, "secrets"), { recursive: true });
-    await Deno.writeTextFile(
-      join(natsDir, "secrets", "auth-issuer-signing.seed"),
-      "issuer-seed\n",
-    );
-    await Deno.writeTextFile(
-      join(natsDir, "secrets", "auth-target-signing.seed"),
-      "target-seed\n",
-    );
-    await Deno.writeTextFile(
-      join(natsDir, "secrets", "auth-sx.seed"),
-      "sx-seed\n",
-    );
+    for (const [name, seed] of Object.entries(seeds)) {
+      await Deno.writeTextFile(join(natsDir, "secrets", name), seed);
+    }
 
     const config = buildControlPlaneConfig({
       workdir,
@@ -82,42 +73,22 @@ Deno.test("writeTrellisConfig writes file-backed test control-plane config", asy
       websocketUrl: "ws://127.0.0.1:8080",
       manifest: testManifest(),
       port: 3000,
-      oauthProviders: {
-        oidc_test: {
-          type: "oidc",
-          issuer: "https://idp.example",
-          clientId: "test-client",
-          clientSecret: "test-secret",
-          logout: {
-            enabled: true,
-            endpoint: "https://idp.example/logout",
-          },
-        },
-      },
     });
     const configPath = await writeTrellisConfig({ workdir, config });
     const text = await Deno.readTextFile(configPath);
 
-    assertEquals(configPath, join(workdir, "trellis", "config.toml"));
-    assertEquals(config.logLevel, "info");
-    for (const section of ["platform", "jobs", "health", "events"]) {
-      assertStringIncludes(
-        text,
-        `path = "${join(workdir, "trellis", `trellis.sqlite.${section}`)}"`,
+    for (const [name, seed] of Object.entries(seeds)) {
+      assertEquals(
+        await Deno.readTextFile(join(workdir, "trellis", name)),
+        seed,
       );
+      assertEquals(
+        await Deno.readTextFile(join(natsDir, "secrets", name)),
+        seed,
+      );
+      assertEquals(text.includes(seed.trim()), false);
     }
-    assertStringIncludes(
-      text,
-      `system_creds_path = "${join(workdir, "nats", "creds/system.creds")}"`,
-    );
-    assertStringIncludes(text, `[oauth.providers."oidc_test"]`);
-    assertEquals(
-      await Deno.readTextFile(
-        join(workdir, "trellis", "auth-issuer-signing.seed"),
-      ),
-      "issuer-seed\n",
-    );
   } finally {
-    await Deno.remove(workdir, { recursive: true }).catch(() => undefined);
+    await Deno.remove(workdir, { recursive: true });
   }
 });

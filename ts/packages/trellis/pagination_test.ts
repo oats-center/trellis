@@ -65,19 +65,16 @@ Deno.test("cursor pagination is lazy, serial, and preserves input and options", 
   assertEquals(await iterator.next(), { value: undefined, done: true });
 });
 
-Deno.test("generated cursor methods extend only paginated one-page calls", () => {
-  const acceptsGeneratedCaller = (
-    caller: CallerRuntime<typeof consoleParticipant>,
-  ) => {
-    caller.usersList({ page: { limit: 10 } });
-    caller.usersList.pages({});
-    caller.usersList.items({}, { timeout: 123 });
-    // @ts-expect-error Non-paginated RPCs keep only their one-page method.
-    caller.grantsGet.pages({});
-  };
-
-  assertEquals(typeof acceptsGeneratedCaller, "function");
-});
+/** Compile-only consumer coverage; the tests below exercise pagination behavior. */
+export function checkGeneratedCursorTypes(
+  caller: CallerRuntime<typeof consoleParticipant>,
+): void {
+  caller.usersList({ page: { limit: 10 } });
+  caller.usersList.pages({});
+  caller.usersList.items({}, { timeout: 123 });
+  // @ts-expect-error Non-paginated RPCs keep only their one-page method.
+  caller.grantsGet.pages({});
+}
 
 Deno.test("concurrent next calls still request one page at a time", async () => {
   const responses: Array<(page: Page) => void> = [];

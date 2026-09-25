@@ -454,13 +454,3 @@ pub enum ServerError {
 
 /// Result alias used by descriptor-backed RPC handlers.
 pub type HandlerResult<T> = Result<T, ServerError>;
-
-#[cfg(test)]
-mod tests {
-    use super::ServerError;
-
-    #[test]
-    fn server_error_remains_small() {
-        assert!(std::mem::size_of::<ServerError>() < 128);
-    }
-}

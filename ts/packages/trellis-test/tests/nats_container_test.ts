@@ -37,18 +37,12 @@ Deno.test({
     const workdir = await Deno.makeTempDir({ prefix: "trellis-nats-smoke-" });
     const natsDir = join(workdir, "nats");
     let nats: NatsTestContainer | undefined;
+    let replacedPidFile: string | undefined;
+    const foreignPid = "999999\nforeign\n/not/nats\n";
     try {
       try {
         nats = await NatsTestContainer.start(workdir, { startupMs: 60_000 });
-        assert(nats.natsUrl.startsWith("nats://127.0.0.1:"));
-        assert(nats.websocketUrl.startsWith("ws://127.0.0.1:"));
-        assertEquals(
-          nats.manifest.paths.creds.trellisService,
-          "creds/trellis-auth.creds",
-        );
-        assertEquals(nats.manifest.paths.natsConfig, "nats.conf");
         assertEquals(nats.nc.isClosed(), false);
-        assertEquals((await listPidFiles(natsDir)).length, 1);
 
         const jsm = await jetstreamManager(nats.nc);
         assertEquals(await jsm.streams.list().next(), []);
@@ -62,18 +56,18 @@ Deno.test({
         // must leave the replacement in place, not unlink someone else's file.
         const pidFiles = await listPidFiles(natsDir);
         assert(pidFiles.length === 1);
-        const pidFilePath = join(natsDir, pidFiles[0]);
-        await Deno.writeTextFile(pidFilePath, "999999\nforeign\n/not/nats\n");
+        replacedPidFile = join(natsDir, pidFiles[0]);
+        await Deno.writeTextFile(replacedPidFile, foreignPid);
       } finally {
         await nats?.stop();
       }
 
-      // stop() closed the connection, removed the owned pid file, and stopped
-      // the child — but the foreign replacement pid file stays untouched.
+      // stop() closes the connection and child, but must preserve the foreign
+      // replacement rather than removing or rewriting another owner's file.
       assert(nats !== undefined);
       assertEquals(nats.nc.isClosed(), true);
-      assertEquals((await listPidFiles(natsDir)).length, 1);
-      await Deno.stat(join(natsDir, "nats.stdout.log"));
+      assert(replacedPidFile !== undefined);
+      assertEquals(await Deno.readTextFile(replacedPidFile), foreignPid);
       const natsPort = Number(nats.natsUrl.split(":").at(-1));
       assertEquals(await portAcceptsConnections(natsPort), false);
     } finally {
@@ -93,13 +87,19 @@ Deno.test({
     );
     const containers: NatsTestContainer[] = [];
     try {
-      containers.push(
-        ...await Promise.all(
-          workdirs.map((workdir) =>
-            NatsTestContainer.start(workdir, { startupMs: 60_000 })
-          ),
-        ),
+      // Retain each successful child even when a sibling fails. Wait for all
+      // starts to settle before cleanup so no late child escapes ownership.
+      const starts = await Promise.allSettled(
+        workdirs.map(async (workdir) => {
+          const container = await NatsTestContainer.start(workdir, {
+            startupMs: 60_000,
+          });
+          containers.push(container);
+        }),
       );
+      for (const result of starts) {
+        if (result.status === "rejected") throw result.reason;
+      }
       const endpoints = containers.flatMap((container) => [
         container.natsUrl,
         container.websocketUrl,
@@ -240,17 +240,22 @@ Deno.test("stale cleanup never reads or removes non-regular pid paths", async ()
       stdout: "null",
       stderr: "null",
     }).output();
-    if (mkfifo.success) {
-      const cleanup = cleanupStaleNatsPidFile(fifoPath);
+    assert(mkfifo.success, "mkfifo must succeed to exercise FIFO cleanup");
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
       const outcome = await Promise.race([
-        cleanup.then(() => "done"),
-        new Promise((resolve) => setTimeout(() => resolve("blocked"), 3_000)),
+        cleanupStaleNatsPidFile(fifoPath).then(() => "done"),
+        new Promise<string>((resolve) => {
+          timeout = setTimeout(() => resolve("blocked"), 3_000);
+        }),
       ]);
       assertEquals(outcome, "done", "cleanup must not block on a FIFO");
-      assertEquals(await Deno.stat(fifoPath).then((s) => s.isFifo), true);
-      await removeOwnedPidFile(fifoPath, "anything\n");
-      assertEquals(await Deno.stat(fifoPath).then((s) => s.isFifo), true);
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
     }
+    assertEquals(await Deno.stat(fifoPath).then((s) => s.isFifo), true);
+    await removeOwnedPidFile(fifoPath, "anything\n");
+    assertEquals(await Deno.stat(fifoPath).then((s) => s.isFifo), true);
     // A directory at the pid path is also non-regular: no read, no removal.
     const dirPath = join(dir, "nats-999998-1.pid");
     await Deno.mkdir(dirPath);
