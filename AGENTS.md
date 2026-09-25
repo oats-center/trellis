@@ -23,6 +23,70 @@
   layout, styling, or component-structure changes in that project, and treat it
   as the local design contract.
 
+## Functional Verification Only (Mandatory)
+
+**Test functionality, not the current implementation's shape.** Every new or
+changed test must exercise a meaningful action and establish an observable
+outcome. Be able to name the real failure it catches; calling something an
+"invariant", "regression test", "conformance check", or "drift guard" is not a
+justification. Existing tests are not precedent: delete or replace low-value
+assertions encountered in the affected area rather than preserving them.
+
+- Start with live integration through the ordinary production runtime and real
+  public clients for runtime functionality. Use the smallest real boundary in
+  `design/core/testing-patterns.md` when a focused component test proves a
+  distinct behavior more directly. Do not make every cheap algorithm test start
+  a server, and do not substitute mocks for distributed functionality.
+- Do not add or retain tests that merely repeat defaults, constructor field
+  assignments, constants, configuration literals, private object shapes,
+  source/AST substrings, documentation wording, or implementation inventories.
+  A value asserted after a real operation, transformation, round trip, or
+  lifecycle transition can prove functionality; assigning a value and asserting
+  that same value does not.
+- Do not test that an unreleased command, field, alias, code path, or earlier
+  implementation was removed or stays absent. Delete its obsolete tests. Test
+  the supported replacement behavior instead. Validate malformed or forbidden
+  inputs only where their handling is a real supported behavioral contract.
+- Keep focused tests for meaningful algorithms, parsing, security, data
+  integrity, concurrency, and independent wire/cryptographic interoperability.
+  Compile actual consumers to test public typing or generated APIs; do not grep
+  generated output. Keep only fixtures and vectors consumed by a justified
+  behavioral test, not a separate conformance catalog or reconciliation matrix.
+- Avoid duplicate coverage of the same failure through multiple wrappers or
+  languages when they execute the same underlying implementation. Cross-language
+  tests must prove an actual interoperability boundary.
+
+### Runtime Checks Must Have a Behavioral Reason
+
+This rule also applies to production validation, not just test code. Do not add
+or retain a startup/configuration "drift guard" merely to verify that stored
+settings equal the literals the implementation currently writes. Do not add
+local-versus-external or test-versus-production branching just to preserve such
+a check.
+
+Validate external or persisted state when a mismatch would violate a concrete
+supported requirement, such as authorization, data integrity, retention, or
+promised restart durability. Explain that failure, validate only what the
+requirement needs, and exercise the resulting behavior at a real boundary.
+Do not delete genuine safety checks merely because they compare values.
+
+For example, hardcoding `storage == File` is not evidence that State works.
+Exercise put/get, revision conflicts, deletion, and the promised lifecycle.
+An ephemeral fixture does not need cross-run durability; a deployment promising
+persistent state does. Treat a requirement-changing storage choice explicitly,
+not as an excuse for a test-only runtime or a configuration-equality test.
+
+### Runtime Cost Is Part of Test Quality
+
+Reuse producer-built executables in CI; execution jobs must not rebuild the same
+server or CLI. Keep independent suites parallel with isolated state, use bounded
+readiness/event waits instead of arbitrary sleeps, and avoid repeated expensive
+setup that proves nothing new. Do not hide core coverage behind skips, retries,
+longer timeouts, or a nightly-only lane to obtain a green or faster result.
+Report which behavior was verified and which checks actually ran, including
+limitations. Do not add policy-text tests, source-scraping enforcement, test
+inventories, or evidence ledgers to enforce this section.
+
 ## Repo-Wide Engineering Rules
 
 - Keep changes minimal and aligned with the existing architecture.
