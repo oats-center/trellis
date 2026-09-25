@@ -250,6 +250,13 @@ pub(super) fn resolve_snapshot(
         return Err(AuthorizationStateError::NotAuthorized);
     }
     if !authority.readiness {
+        if authority
+            .missing_required
+            .iter()
+            .any(|reason| reason.starts_with("stale-resource:"))
+        {
+            return Err(AuthorizationStateError::MaterializationStale);
+        }
         if let Some(resource) = authority
             .missing_required
             .iter()
