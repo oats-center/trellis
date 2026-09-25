@@ -209,15 +209,14 @@ pub async fn check(
     match jetstream.get_key_value(&leases.bucket).await {
         Ok(store) => match store.status().await {
             Ok(status)
-                if status.history() == 1
-                    && status.max_age() == Duration::from_millis(leases.ttl_ms)
+                if status.max_age() == Duration::from_millis(leases.ttl_ms)
                     && (leases.replicas == 0
                         || status.info.config.num_replicas == usize::from(leases.replicas)) =>
             {
                 report.push(
                     "nats.kv.leases",
                     RuntimeCheckStatus::Ok,
-                    "lease bucket exists with compatible history, TTL, and replicas",
+                    "lease bucket exists with compatible TTL and replicas",
                 );
             }
             Ok(_) => report.push(
@@ -751,15 +750,13 @@ async fn run_owned(
     ownership: &mut RuntimeOwnership,
     stop: Option<crate::shutdown::StopHandle>,
 ) -> Result<(), RuntimeError> {
-    let storage = if nats_override.is_some() {
-        tracing::warn!("using in-memory NATS JetStream storage; this mode is not production ready");
-        async_nats::jetstream::stream::StorageType::Memory
-    } else {
-        async_nats::jetstream::stream::StorageType::File
-    };
-    ExpectedRuntimeResources::for_mode(mode, &config, storage)
-        .converge_streams(trellis_nats.clone())
-        .await?;
+    ExpectedRuntimeResources::for_mode(
+        mode,
+        &config,
+        async_nats::jetstream::stream::StorageType::File,
+    )
+    .converge_streams(trellis_nats.clone())
+    .await?;
     let stores = RuntimeStores::from_config(&config, mode)?;
     stores.migrate_all()?;
     let context = RuntimeContext {
@@ -1189,30 +1186,6 @@ mod tests {
         fn drop(&mut self) {
             self.0.store(true, Ordering::SeqCst);
         }
-    }
-
-    #[test]
-    fn runtime_options_carries_nats_endpoint_override() {
-        let options = RuntimeOptions {
-            mode: RuntimeMode::All,
-            config: RuntimeConfig::from_toml_str("").expect("empty config"),
-            reset_admin: false,
-            nats_override: Some(NatsEndpointOverride {
-                servers: "nats://127.0.0.1:4222".to_string(),
-                websocket: Some("ws://127.0.0.1:8080".to_string()),
-            }),
-        };
-        assert_eq!(
-            options.nats_override.as_ref().map(|o| o.servers.as_str()),
-            Some("nats://127.0.0.1:4222")
-        );
-        assert_eq!(options.clone(), options);
-
-        let plain = RuntimeOptions {
-            nats_override: None,
-            ..options.clone()
-        };
-        assert_eq!(plain.nats_override, None);
     }
 
     #[tokio::test]
