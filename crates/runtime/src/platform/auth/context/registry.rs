@@ -210,7 +210,6 @@ async fn check_policy(
     if status.max_age() != max_age
         || status.info.config.max_message_size != max_value_size
         || status.info.config.max_bytes != -1
-        || status.history() != 1
         || status.info.config.num_replicas != replicas
     {
         return Err(storage(format!(

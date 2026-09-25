@@ -1283,7 +1283,6 @@ mod nats {
             .map_err(|error| storage(format!("failed to inspect {}: {error}", store.name)))?;
         let actual_max_value_size = status.info.config.max_message_size;
         for (field, expected, actual) in [
-            ("history", "1".to_owned(), status.history().to_string()),
             (
                 "max_age",
                 format!("{}ms", max_age.as_millis()),

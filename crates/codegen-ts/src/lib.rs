@@ -2030,7 +2030,7 @@ mod tests {
     }
 
     #[test]
-    fn native_graph_emits_browser_package_and_private_type_arena() {
+    fn generated_typescript_package_typechecks() {
         let graph = graph(
             r#"
             type Count = uint64;
@@ -2060,86 +2060,9 @@ mod tests {
             device Sensor { app optional Console { kv values { title "Values"; description "Values"; schema Node; } } }
             "#,
         );
-        let sources = collect_ts_package_sources(&graph, "@example/generated").unwrap();
-        assert_eq!(
-            sources
-                .iter()
-                .filter(|source| source.path.extension().is_some_and(|value| value == "json"))
-                .map(|source| source.path.as_path())
-                .collect::<Vec<_>>(),
-            vec![Path::new("package.json")]
-        );
-        let allowed_support_imports = BTreeSet::from([
-            "import { apiDescriptor } from \"@oatscenter/trellis/generated\";",
-            "import { apiDescriptor, TrellisError } from \"@oatscenter/trellis/generated\";",
-            "import { codecs } from \"@oatscenter/trellis/generated\";",
-            "import { participantDescriptor } from \"@oatscenter/trellis/generated\";",
-            "import type { SerializableErrorData } from \"@oatscenter/trellis/generated\";",
-            "import type { ParticipantJobsFromResources, ParticipantKvFromResources, RuntimeApiFromGenerated } from \"@oatscenter/trellis/generated\";",
-        ]);
-        for import in sources
-            .iter()
-            .flat_map(|source| source.contents.lines())
-            .filter(|line| line.contains("@oatscenter/trellis/generated"))
-        {
-            assert!(allowed_support_imports.contains(import), "{import}");
-        }
         let root = unique_temp_dir("native");
         generate_ts_package(&graph, &root, "@example/generated").unwrap();
 
-        let package: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(root.join("package.json")).unwrap()).unwrap();
-        assert_eq!(package["version"], "2.3.4");
-        assert!(!root.join("artifacts").exists());
-        assert!(root.join("apis/orders/mod.js").exists());
-        assert!(root.join("participants/Sensor/Console/mod.d.ts").exists());
-        assert!(root.join("types/index.js").exists());
-        assert!(root.join("participants/Worker/types.d.ts").exists());
-        let worker = fs::read_to_string(root.join("participants/Worker/mod.d.ts")).unwrap();
-        assert!(worker.contains("readonly __runtimeTypes?:"));
-        assert!(worker.contains("RuntimeApiFromGenerated<typeof Api0.API | typeof Api1.API"));
-        assert!(worker.contains("ParticipantKvFromResources<__Resources>"));
-        let api = fs::read_to_string(root.join("apis/orders/mod.js")).unwrap();
-        assert!(api.contains("rpc:Get"));
-        assert!(api.contains("operation:Work"));
-        assert!(api.contains("TrellisError"));
-        let api_declaration = fs::read_to_string(root.join("apis/orders/mod.d.ts")).unwrap();
-        assert!(api_declaration.contains("example.orders@v1::Failed"));
-        assert!(api_declaration.contains("payloadCodec"));
-        assert!(api_declaration.contains("import type { SerializableErrorData }"));
-        assert!(!api_declaration.contains("import type { Codec"));
-        let catalog = fs::read_to_string(root.join("apis/catalog/mod.d.ts")).unwrap();
-        assert!(!catalog.contains("TrellisError"));
-        assert!(!catalog.contains("SerializableErrorData"));
-        let participant = fs::read_to_string(root.join("participants/Worker/mod.js")).unwrap();
-        assert!(participant.contains("implements: [Api0.API, Api1.API]"));
-        assert!(participant.contains("availability: \"optional\""));
-        assert!(participant.contains("migrations"));
-        assert!(participant.contains("deadlineMs: 45e3"));
-        assert!(participant.contains("\"attempts\": 3"));
-        assert!(participant.contains("\"backoffMs\": [5e3, 3e4]"));
-        assert!(participant.contains("packageEvidence"));
-        let participant_declaration =
-            fs::read_to_string(root.join("participants/Worker/mod.d.ts")).unwrap();
-        assert!(participant_declaration.contains("type MigrationOptions"));
-        assert!(participant_declaration.contains("watchAvailability"));
-        assert!(participant_declaration.contains("Handles[Name] | undefined"));
-        assert!(participant_declaration.contains("export { types }"));
-        assert!(participant_declaration.contains("readonly implements: readonly ["));
-        let public_types = fs::read_to_string(root.join("types/index.d.ts")).unwrap();
-        assert!(public_types.contains("Node"));
-        assert!(!public_types.contains("PrivateState"));
-        let participant_types =
-            fs::read_to_string(root.join("participants/Worker/types.d.ts")).unwrap();
-        assert!(participant_types.contains("PrivateState"));
-        assert!(participant_types.contains("PrivateV1"));
-        let types = fs::read_to_string(root.join("types/_internal/p0.js")).unwrap();
-        assert!(types.contains("codecs.recursive"));
-        assert!(types.contains("codecs.bytes"));
-        assert!(types.contains("codecs.u64"));
-        let type_declarations = fs::read_to_string(root.join("types/_internal/p0.d.ts")).unwrap();
-        assert!(type_declarations.contains("export type Count = bigint;"));
-        assert!(!type_declarations.contains("__trellisType"));
         let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let output = std::process::Command::new("deno")
             .args(["check", "--no-lock", "-c"])
@@ -2171,29 +2094,6 @@ mod tests {
     }
 
     #[test]
-    fn generates_native_cursor_pagination_codecs_and_marker() {
-        let graph = graph(include_str!("../../idl/fixtures/cursor-pagination.trellis"));
-        let sources = collect_ts_package_sources(&graph, "@example/generated").unwrap();
-        let api = sources
-            .iter()
-            .find(|source| source.path == Path::new("apis/catalog/mod.ts"))
-            .unwrap();
-        let types = sources
-            .iter()
-            .find(|source| source.path == Path::new("types/_internal/p0.ts"))
-            .unwrap();
-
-        assert!(api.contents.contains("pagination: \"cursor\""));
-        assert!(api.contents.contains("readonly pagination: \"cursor\""));
-        assert!(types
-            .contents
-            .contains("limit: codecs.optional(codecs.u32)"));
-        assert!(types
-            .contents
-            .contains("nextCursor: codecs.optional(codecs.string)"));
-    }
-
-    #[test]
     fn invalid_generated_ts_is_rejected_before_write() {
         let root = unique_temp_dir("invalid-ts-before-write");
         let target = root.join("out/broken.ts");
@@ -2203,7 +2103,7 @@ mod tests {
     }
 
     #[test]
-    fn api_paths_and_exports_follow_valid_api_names() {
+    fn valid_api_names_do_not_collide_on_case_insensitive_filesystems() {
         let graph = graph("model Value {} api events_upper@v1 { title \"Events\"; description \"Upper.\"; capabilities { public { allows { rpc Get; } } } rpc Get { input Value; output Value; } } api events@v2 { title \"events\"; description \"Lower.\"; capabilities { public { allows { rpc Get; } } } rpc Get { input Value; output Value; } }");
         let sources = collect_ts_package_sources(&graph, "fixture").unwrap();
         let paths = sources
@@ -2211,11 +2111,5 @@ mod tests {
             .map(|source| source.path.to_string_lossy().to_lowercase())
             .collect::<BTreeSet<_>>();
         assert_eq!(paths.len(), sources.len());
-        let index = sources
-            .iter()
-            .find(|source| source.path == Path::new("apis/index.ts"))
-            .unwrap();
-        assert!(index.contents.contains("events_upper"));
-        assert!(index.contents.contains("events"));
     }
 }

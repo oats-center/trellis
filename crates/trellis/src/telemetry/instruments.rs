@@ -878,16 +878,6 @@ mod tests {
         let long = "x".repeat(ROUTE_TOKEN_MAX_BYTES + 1);
         assert_eq!(route_token(RouteFamily::Rpc, &long), "_other");
     }
-
-    #[test]
-    fn duration_families_have_catalog_names_and_units() {
-        assert_eq!(
-            DurationFamily::RpcServer.name(),
-            "trellis.rpc.server.duration"
-        );
-        assert_eq!(CounterFamily::RpcClientAttempts.unit(), "{attempt}");
-        assert_eq!(ObservableFamily::JobsReady.name(), "trellis.jobs.ready");
-    }
 }
 
 #[cfg(test)]

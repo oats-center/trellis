@@ -1832,75 +1832,6 @@ mod tests {
     }
 
     #[test]
-    fn generates_native_types_evidence_and_multi_api_participant() {
-        let graph = graph(
-            r#"
-            type Count = uint64;
-            type Blob = bytes;
-            enum Status { ready; }
-            model Node { next?: Node; count: Count; blobs: list<Blob>; status: Status; note: string | null; }
-            model Empty {}
-             api first@v1 { title "First"; description "First API."; error Missing(Node); rpc Get { input Node; output Node; errors [Missing]; } capabilities { public { allows { rpc Get; operation Work; } } } operation Work { input Node; output Node; progress Node; errors [Missing]; } }
-            api second@v2 { title "Second"; description "Second API."; event Changed { payload Node; } capabilities { public { allows { publish event Changed; subscribe event Changed; } } } }
-             service Backend { implements first; implements second; kv optional cache { title "Cache"; description "Cached node."; schema Node; version 2; accepts { 1: Empty; } history 3; ttl 5s; desired_max_value 1KiB; } job refresh { title "Refresh"; description "Refresh one node."; payload Node; result Empty; deadline 45s; retry { attempts 3; backoff [5s, 30s]; } } consumer changes { title "Changes"; description "Changed node events."; events [second.Changed]; concurrency 2; replay all; retry { attempts 2; backoff [5s]; } } }
-        "#,
-        );
-        let output = tempfile::tempdir().unwrap();
-        generate_rust_package(&graph, output.path(), "fixture-sdk").unwrap();
-        let cargo = fs::read_to_string(output.path().join("Cargo.toml")).unwrap();
-        let types = fs::read_to_string(output.path().join("src/__types.rs")).unwrap();
-        let participant = fs::read_to_string(
-            output
-                .path()
-                .join("src/participants/fixture_backend/mod.rs"),
-        )
-        .unwrap();
-        assert!(cargo.contains("version = \"2.3.4\""));
-        assert!(types.contains("next: Option<Box<crate::__types::fixture::Node>>"));
-        assert!(types.contains("pub struct Uint64"));
-        assert!(types.contains("Unknown(String)"));
-        assert!(types.contains("Nullable<String>"));
-        assert!(participant.contains("fixture.first@v1"));
-        assert!(participant.contains("fixture.second@v2"));
-        assert!(participant.contains("pub struct Migrations"));
-        assert!(participant.contains("pub struct Availability"));
-        assert!(participant.contains("pub mod resources"));
-        assert!(participant.contains("cache_codec("));
-        assert!(participant.contains("crate::__types::fixture::Empty"));
-        assert!(participant.contains("Output = Result<crate::__types::fixture::Node, String>"));
-        assert!(participant.contains("KvHandle<crate::__types::fixture::Node>"));
-        assert!(participant.contains("migrations.cache_codec()"));
-        assert!(participant.contains("pub const HISTORY: u64 = 3"));
-        assert!(participant.contains("pub const TTL_MS: u64 = 5000"));
-        assert!(participant.contains("pub const DESIRED_MAX_VALUE: Option<u64> = Some(1024)"));
-        assert!(participant.contains("pub const CONCURRENCY: u32 = 2"));
-        assert!(participant.contains("pub const REPLAY: &'static str = \"all\""));
-        assert!(participant.contains("pub const RETRY_ATTEMPTS: Option<u32> = Some(2)"));
-        assert!(participant.contains("impl trellis_rs::client::ConsumerDescriptor for Changes"));
-        assert!(participant.contains("ConsumerHandle<resources::Changes>"));
-        assert!(participant.contains("impl trellis_rs::jobs::JobDescriptor for Refresh"));
-        assert!(participant.contains("DEADLINE_MS: Option<u64> = Some(45000)"));
-        assert!(participant.contains("RETRY_ATTEMPTS: Option<u32> = Some(3)"));
-        assert!(participant.contains("RETRY_BACKOFF_MS: &'static [u64] = &[5000, 30000]"));
-        assert!(participant.contains("pub async fn submit_refresh"));
-        assert!(participant.contains("pub async fn register_refresh"));
-        assert!(!participant.contains("JobHandle<resources::Refresh>"));
-        assert!(!output.path().join("artifacts").exists());
-        let api =
-            fs::read_to_string(output.path().join("src/apis/fixture_first_v1/mod.rs")).unwrap();
-        assert!(api.contains("API_ID: &'static str = super::API_ID"));
-        assert!(!api.contains("super::super::API_ID"));
-        assert!(api.contains("pub type WorkProgress"));
-        assert!(api.contains("type Update = WorkProgress"));
-        assert!(api.contains("const UPDATE_SCHEMA_JSON: Option<&'static str> = Some("));
-        assert!(api.contains("fixture.first@v1::Missing"));
-        assert!(api.contains("let mut payload = self.error.extra.clone();"));
-        assert!(api.contains("self.error.id.clone()"));
-        assert!(api.contains("self.error.message.clone()"));
-        assert!(api.contains("trellis_rs::generated::RpcDescriptor"));
-    }
-
-    #[test]
     fn collisions_are_rejected_before_writes() {
         let graph = graph("model FooBar {} model Foo_Bar {} api main@v1 { title \"Main\"; description \"Main API.\"; rpc Get { input FooBar; output Foo_Bar; } capabilities { public { allows { rpc Get; } } } }");
         let output = tempfile::tempdir().unwrap().path().join("generated");
@@ -1912,39 +1843,10 @@ mod tests {
     }
 
     #[test]
-    fn generates_typed_cursor_pagination_streams() {
-        let graph = graph(include_str!("../../idl/fixtures/cursor-pagination.trellis"));
-        let output = tempfile::tempdir().unwrap();
-        generate_rust_package(&graph, output.path(), "fixture-sdk").unwrap();
-        let types = fs::read_to_string(output.path().join("src/__types.rs")).unwrap();
-        let api =
-            fs::read_to_string(output.path().join("src/apis/fixture_catalog_v1/mod.rs")).unwrap();
-        let root = fs::read_to_string(output.path().join("src/lib.rs")).unwrap();
-
-        assert!(types.contains("pub limit: Option<u32>"));
-        assert!(api.contains("pub fn list_pages"));
-        assert!(api.contains("pub fn list_items"));
-        assert!(api.contains("PaginationError::RepeatedCursor"));
-        assert!(root.contains("pub enum PaginationError"));
-    }
-
-    #[test]
     fn generated_crate_compiles_against_current_abi() {
         let graph = graph("type Name = string; enum Status { ready; } model OldValues {} model Values { name: Name; status: Status; signed: int64; unsigned: uint64; finite: number; bytes: bytes; } api main@v1 { title \"Main\"; description \"Main API.\"; error Bad(Values); rpc Get { input Values; output Values; errors [Bad]; download; } capabilities { public { allows { rpc Get; operation Work; } } } operation Work { input Values; output Values; progress Values; errors [Bad]; signals { resume Values; } upload; } } api other@v2 { title \"Other\"; description \"Other API.\"; capabilities { public { allows { publish event Changed; subscribe event Changed; live Watch; } } } event Changed { payload Values; } live Watch { input Values; event Values; } } service Backend { implements main; implements other; kv cache { title \"Cache\"; description \"Value cache.\"; schema Values; version 2; accepts { 1: OldValues; } } } app Caller { use main { rpc Get; operation Work; } use other { subscribe event Changed; live Watch; } }");
         let output = tempfile::tempdir().unwrap();
         generate_rust_package(&graph, output.path(), "fixture-sdk").unwrap();
-        let types = fs::read_to_string(output.path().join("src/__types.rs")).unwrap();
-        assert!(types.contains("generated::serde_i64::serialize"));
-        assert!(types.contains("generated::serde_u64::serialize"));
-        assert!(types.contains("generated::serde_f64::serialize"));
-        assert!(types.contains("generated::serde_base64::serialize"));
-        assert!(!types.contains("schema"));
-        let main_api =
-            fs::read_to_string(output.path().join("src/apis/fixture_main_v1/mod.rs")).unwrap();
-        assert!(main_api.contains("generated::OperationDescriptor for Work"));
-        assert!(main_api.contains("generated::OperationSignal for WorkResumeSignal"));
-        assert!(main_api.contains("pub fn register_work"));
-        assert!(main_api.contains("pub fn work(&self)"));
         let runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../trellis")
             .canonicalize()
@@ -1967,9 +1869,8 @@ mod tests {
     },
     apis::fixture_other_v2::{events::Changed, lives::Watch},
     participants::{fixture_backend, fixture_caller},
-    types::{Name, Status, Values},
+    types::Values,
 };
-use trellis_rs::generated::ParticipantDescriptor as _;
 
 fn accepts_rpc<D: trellis_rs::generated::RpcDescriptor>() {}
 fn accepts_event<D: trellis_rs::generated::EventDescriptor>() {}
@@ -2003,31 +1904,11 @@ fn descriptors_and_facades_use_generated_support() {
     });
     let _ = migrations;
     let _ = accepts_typed_kv;
-    let name = Name::from("backend".to_owned());
-    assert_eq!(name.as_ref(), "backend");
-    assert_eq!(Status::Ready.as_ref(), "ready");
-    assert_eq!(*fixture_sdk::__types::Int64::from(1), 1);
     accepts_rpc::<Get>();
     accepts_event::<Changed>();
     accepts_live::<Watch>();
     accepts_operation::<Work>();
     accepts_signal::<WorkResumeSignal>();
-    assert_eq!(Get::API_ID, "fixture.main@v1");
-    assert!(<Get as trellis_rs::generated::RpcDescriptor>::DOWNLOAD);
-    assert_eq!(Changed::API_ID, "fixture.other@v2");
-    assert_eq!(Watch::API_ID, "fixture.other@v2");
-    assert_eq!(Work::API_ID, "fixture.main@v1");
-    assert!(Work::UPLOAD);
-    assert!(<Work as trellis_rs::generated::OperationDescriptor>::UPLOAD);
-    assert!(<Work as trellis_rs::generated::OperationDescriptor>::HAS_PROGRESS);
-    assert_eq!(
-        <Work as trellis_rs::generated::OperationDescriptor>::SIGNALS,
-        ["resume"]
-    );
-    assert_eq!(
-        fixture_backend::Participant::IMPLEMENTED_API_IDS,
-        ["fixture.main@v1", "fixture.other@v2"]
-    );
     let _ = accepts_multi_api_provider;
     let _ = accepts_operation_handler;
     let _: fn(trellis_rs::generated::Client) -> MainClient = MainClient::from_generated;

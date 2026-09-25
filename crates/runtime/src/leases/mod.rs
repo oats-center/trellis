@@ -366,14 +366,8 @@ async fn validate_store_config(
         operation: "inspect bucket",
         message: error.to_string(),
     })?;
-    if status.history() != 1 {
-        return Err(LeaseError::InfrastructureMismatch {
-            bucket: store.name.clone(),
-            field: "history",
-            expected: "1".to_owned(),
-            actual: status.history().to_string(),
-        });
-    }
+    // Acquisition and renewal compare the latest revision, not retained history.
+    // TTL and replica policy still determine lease expiry and durability.
     if status.max_age() != ttl {
         return Err(LeaseError::InfrastructureMismatch {
             bucket: store.name.clone(),

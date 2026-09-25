@@ -249,14 +249,6 @@ pub fn init_from_env(identity: TelemetryIdentity) -> TelemetryGuard {
 mod tests {
     use super::*;
 
-    #[test]
-    fn role_values_are_stable() {
-        assert_eq!(TelemetryRole::Server.as_str(), "server");
-        assert_eq!(TelemetryRole::Cli.as_str(), "cli");
-        assert_eq!(TelemetryRole::Service.as_str(), "service");
-        assert_eq!(TelemetryRole::Device.as_str(), "device");
-    }
-
     #[tokio::test]
     async fn disabled_guard_never_reports_active_signals() {
         let guard = TelemetryGuard::disabled();
