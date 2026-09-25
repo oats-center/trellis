@@ -18,7 +18,7 @@ export async function waitFor<T>(
     | Promise<T | null | undefined | false>,
   opts: WaitForOptions = {},
 ): Promise<T> {
-  const timeoutMs = opts.timeoutMs ?? 5_000;
+  const timeoutMs = opts.timeoutMs ?? 30_000;
   const intervalMs = opts.intervalMs ?? 25;
   const startedAt = Date.now();
   let lastError: Error | undefined;

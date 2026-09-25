@@ -1328,7 +1328,7 @@ export async function connectClientWithDeps<
       ),
       maxReconnectAttempts: DEFAULT_RUNTIME_MAX_RECONNECT_ATTEMPTS,
       ignoreAuthErrorAbort: true,
-      timeout: args.timeout ?? 10_000,
+      timeout: args.timeout ?? 30_000,
       inboxPrefix: bootstrap.connectInfo.transport.inboxPrefix,
       authenticator: runtimeAuth.authenticators,
     });

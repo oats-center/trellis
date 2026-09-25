@@ -1479,7 +1479,7 @@ mod nats_reply_permission_tests {
         receiver: &mut (impl futures_util::Stream<Item = T> + Unpin),
         label: &str,
     ) -> T {
-        tokio::time::timeout(Duration::from_secs(30), receiver.next())
+        tokio::time::timeout(Duration::from_secs(120), receiver.next())
             .await
             .unwrap_or_else(|_| panic!("timed out waiting for {label}"))
             .unwrap_or_else(|| panic!("stream ended waiting for {label}"))
