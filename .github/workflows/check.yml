@@ -56,7 +56,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target
-          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-${{ github.sha }}
+          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}
           restore-keys: |
             cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-
             cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-
@@ -215,7 +215,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target
-          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-runtime-binaries-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-${{ github.sha }}
+          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-runtime-binaries-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}
           restore-keys: |
             cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-runtime-binaries-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-
             cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-runtime-binaries-
@@ -268,6 +268,9 @@ jobs:
           for bin in trellis-runtime-acceptance caller resources events live_probe live_probe_caller empty_watch; do
             cp "target/debug/${bin}" dist/runtime-binaries/fixtures/
           done
+          # Test helpers are debug builds with full debug info; strip it so the
+          # shared artifact is a fraction of its size for every consumer.
+          find dist/runtime-binaries -type f -exec strip --strip-unneeded {} + 2>/dev/null || true
           tar -C dist/runtime-binaries -czf dist/runtime-binaries.tar.gz .
 
       - name: Upload runtime binaries
@@ -318,7 +321,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target
-          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-${{ github.sha }}
+          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}
           restore-keys: |
             cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-
             cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-
