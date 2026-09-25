@@ -3355,8 +3355,14 @@ export class Trellis<
             );
           }
           // Cancellation is live before the first awaited open allocation.
+          // Fencing is synchronous and local; the bounded close exchange that
+          // follows is what tells the provider to abort its own handler, so a
+          // consumer abort must not leave the provider waiting out peer
+          // inactivity.
           const abort = () => {
-            subscription?.fence();
+            const current = subscription;
+            current?.fence();
+            if (current) void current.close().take().catch(() => undefined);
           };
           opts?.signal?.addEventListener("abort", abort, { once: true });
           if (opts?.signal?.aborted) {
@@ -3389,9 +3395,12 @@ export class Trellis<
             payload,
           );
           // The abort listener was installed before the open; a signal that
-          // fired during it is observed here.
+          // fired during it is observed here. The bounded close exchange tells
+          // the provider to abort its handler instead of waiting out peer
+          // inactivity for a session the caller never received.
           if (opts?.signal?.aborted) {
             subscription.fence();
+            void subscription.close().take().catch(() => undefined);
             throw new LiveStreamError("cancelled", "live open was aborted");
           }
           owned = true;
