@@ -708,12 +708,12 @@ async fn cli_server_managed_nats() {
     fs::write(&config_path, external_config).expect("write external NATS config");
 
     for (name, subjects, max_messages_per_subject, discard_new_per_subject) in [
-        ("trellis_consumer_dlq", "_trellis.consumer.dlq.>", -1, false),
+        ("trellis_consumer_dlq", "_trellis.consumer.dlq.>", 1, true),
         (
             "trellis_consumer_replays",
             "_trellis.consumer.replay.>",
             1,
-            true,
+            false,
         ),
     ] {
         for stream_name in [
@@ -839,7 +839,7 @@ async fn cli_server_managed_nats() {
             max_messages: -1,
             max_messages_per_subject: 1,
             max_bytes: -1,
-            discard_new_per_subject: true,
+            discard_new_per_subject: false,
             allow_direct: true,
             ..Default::default()
         })
