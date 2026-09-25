@@ -78,10 +78,10 @@ connection walkthroughs, and exact public signatures belong in:
 
 Exactly three Rust crates are intended for publication: `trellis-rs` (the
 curated facade for clients and services), `trellis-protocol` (canonical protocol
-objects), and `trellis-test` (the external live-test harness). Every other
+objects), and `trellis-testkit` (the external live-test harness). Every other
 workspace crate is internal and marked `publish = false`.
 
-`trellis-test` orchestrates the released `trellis` and `trellis-server`
+`trellis-testkit` orchestrates the released `trellis` and `trellis-server`
 executables out of process. Its only Trellis Cargo dependency is the published
 `trellis-rs` facade; it consumes a projected copy of the generated
 administration source rather than linking `trellis-runtime-apis`. It never links

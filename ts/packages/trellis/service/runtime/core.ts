@@ -1889,6 +1889,16 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       },
       sign: async (bytes) => await this.auth.sign(bytes),
       ownGuard,
+      refreshOwnAuthority: async () => {
+        const current = typeof this.auth.contextDigest === "function"
+          ? this.auth.contextDigest()
+          : this.auth.contextDigest;
+        if (!current || current === ownGuard.contextDigest) return;
+        const candidate = await ownGuard.prepareReplacement(current);
+        if (ownGuard.commitReplacement(candidate)) {
+          throw new Error("own authority replacement was rejected");
+        }
+      },
       permission: toVerifierPermission(observe),
       retainCallerAuthority: (callerDigest, permission) =>
         LiveAuthorityGuard.retain(cache, callerDigest, {

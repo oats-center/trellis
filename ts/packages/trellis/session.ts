@@ -3479,6 +3479,14 @@ export class Trellis<
       },
       sign: async (digest) => await this.#auth.sign(digest),
       ownGuard,
+      refreshOwnAuthority: async () => {
+        const current = this.#contextDigest();
+        if (!current || current === ownGuard.contextDigest) return;
+        const candidate = await ownGuard.prepareReplacement(current);
+        if (ownGuard.commitReplacement(candidate)) {
+          throw new Error("own authority replacement was rejected");
+        }
+      },
       permission: toVerifierPermission(descriptor.permission),
       retainCallerAuthority: (digest, permission) =>
         LiveAuthorityGuard.retain(cache, digest, {

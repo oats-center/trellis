@@ -98,6 +98,15 @@ export type LiveProviderHost = {
   sign: (digest: Uint8Array) => Promise<Uint8Array>;
   /** Retained own-provider authority; its digest is the current context. */
   ownGuard: ProviderAuthorityPort;
+  /**
+   * Re-retain the connection's current own context and commit it onto
+   * `ownGuard`, so an identity-preserving context replacement keeps serving
+   * live sessions.
+   *
+   * @throws When no current context is available, or the replacement does not
+   * preserve the pinned identity or the provider's required permission.
+   */
+  refreshOwnAuthority: () => Promise<void>;
   /** Route permission the admitted observer must hold. */
   permission: PermissionAtom;
   /** Route session kind used for admission-level telemetry. */
@@ -291,6 +300,30 @@ export class LiveProvider {
   /** Return the guard's current own-context digest, never a frozen copy. */
   #ownDigest(): string {
     return this.#host.ownGuard.contextDigest;
+  }
+
+  /**
+   * Refresh the retained own authority before a failed own-context check ends
+   * a session.
+   *
+   * @returns true when the retained own authority is healthy again.
+   */
+  async #refreshOwnAuthority(): Promise<boolean> {
+    try {
+      await this.#host.refreshOwnAuthority();
+    } catch {
+      return false;
+    }
+    return this.#host.ownGuard.checkNow() === undefined;
+  }
+
+  /**
+   * Report whether the provider's own authority is unusable after attempting a
+   * refresh, so a replaced context never drops a live session.
+   */
+  async #ownAuthorityLost(): Promise<boolean> {
+    if (!this.#host.ownGuard.checkNow()) return false;
+    return !(await this.#refreshOwnAuthority());
   }
 
   wildcardSubject(baseSubject: string): string {
@@ -577,7 +610,7 @@ export class LiveProvider {
     if (outcome.startSource) {
       if (record.phase !== "active" || record.closed) return;
       if (
-        this.#host.ownGuard.checkNow() ||
+        await this.#ownAuthorityLost() ||
         record.callerGuard.checkNow()
       ) {
         await this.#terminate(
@@ -889,7 +922,7 @@ export class LiveProvider {
       record.timer.dispose();
       return;
     }
-    if (this.#host.ownGuard.checkNow()) {
+    if (await this.#ownAuthorityLost()) {
       await this.#terminate(
         record,
         authorityLostEnd(this.#host.ownGuard.checkNow() ?? "coverage_lost"),
@@ -1121,7 +1154,7 @@ export class LiveProvider {
     ) {
       throw new LiveStreamError("closed", "live session is closed");
     }
-    if (this.#host.ownGuard.checkNow() || record.callerGuard.checkNow()) {
+    if (await this.#ownAuthorityLost() || record.callerGuard.checkNow()) {
       await this.#terminate(
         record,
         authorityLostEnd(
