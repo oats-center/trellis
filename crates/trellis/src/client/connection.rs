@@ -33,6 +33,7 @@ fn participant_kind_label(kind: &trellis_protocol::AuthorizationPrincipalKind) -
 }
 
 use super::events::{EVENT_ID_HEADER, EVENT_TIME_HEADER};
+use crate::client::authorization::is_retriable_authorization_code;
 use crate::client::operations::OperationTransport;
 use crate::client::proof::{base64url_decode, new_request_id, now_iat_seconds};
 use crate::client::transfer::{get_download_grant, DownloadTransferGrant};
@@ -1289,8 +1290,7 @@ impl TrellisClient {
             loop {
                 match contexts.refresh(&auth).await {
                     Err(TrellisClientError::BootstrapHttp { code, .. })
-                        if kind == trellis_protocol::AuthorizationPrincipalKind::Service
-                            && code == "resource_pending" =>
+                        if is_retriable_authorization_code(&code) =>
                     {
                         tokio::time::sleep(retry_delay).await;
                         retry_delay = (retry_delay * 2).min(Duration::from_secs(1));

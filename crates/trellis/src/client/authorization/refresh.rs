@@ -10,6 +10,18 @@ use super::super::{proof::new_request_id, SessionAuth, TrellisClientError};
 use super::own_context::{system_now_millis, AuthorizationContextCache};
 use super::types::{AuthorizationCredential, AuthorizationInstallation};
 
+/// Authorization codes that report in-flight materialization rather than denial.
+///
+/// The server returns these while approved authority, dependencies, or resources
+/// are still being materialized. They are retriable with a bounded backoff: a
+/// participant's growing authority must never fail a caller.
+pub(crate) fn is_retriable_authorization_code(code: &str) -> bool {
+    matches!(
+        code,
+        "resource_pending" | "dependency_pending" | "authorization_pending"
+    )
+}
+
 fn is_terminal_refresh_error(code: &str) -> bool {
     matches!(
         code,

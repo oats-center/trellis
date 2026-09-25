@@ -36,3 +36,24 @@ export async function decodeTrellisHttpError(
   }
   return new TrellisHttpError(response.status, code);
 }
+
+/**
+ * Authorization codes that report in-flight materialization rather than denial.
+ *
+ * The server returns these while approved authority, dependencies, or resources
+ * are still being materialized for the participant. They are transient and
+ * identical in meaning to every client: retry after a bounded backoff, never
+ * treat as terminal. Growth of a participant's own authority must never fail a
+ * caller, so every bootstrap, bind, connect, device, and refresh retry loop
+ * shares this predicate instead of matching one code each.
+ */
+export const RETRIABLE_AUTHORIZATION_CODES: readonly string[] = [
+  "resource_pending",
+  "dependency_pending",
+  "authorization_pending",
+];
+
+/** Return whether one decoded HTTP error code is a retriable in-flight state. */
+export function isRetriableAuthorizationCode(code: string): boolean {
+  return RETRIABLE_AUTHORIZATION_CODES.includes(code);
+}

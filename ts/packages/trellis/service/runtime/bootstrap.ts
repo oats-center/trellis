@@ -16,6 +16,7 @@ import {
 import { AuthorizationContextRefreshResponseSchema } from "../../auth/authorization/types.ts";
 import {
   decodeTrellisHttpError,
+  isRetriableAuthorizationCode,
   TrellisHttpError,
 } from "../../auth/http_error.ts";
 import { ContractResourceBindingsSchema } from "../../participant.ts";
@@ -181,7 +182,7 @@ async function fetchServiceBootstrapInfoOnce(args: {
           error.code,
         ).terminal
         ? "terminal"
-        : error.code === "resource_pending"
+        : isRetriableAuthorizationCode(error.code)
         ? "pending"
         : error.status === 503
         ? "unavailable"
@@ -255,7 +256,8 @@ export async function fetchServiceBootstrapInfo(args: {
       unavailableAttempt = 0;
     } catch (cause) {
       if (
-        cause instanceof TrellisHttpError && cause.code === "resource_pending"
+        cause instanceof TrellisHttpError &&
+        isRetriableAuthorizationCode(cause.code)
       ) {
         await delay(bootstrapUnavailableRetryDelayMs(unavailableAttempt));
         unavailableAttempt += 1;

@@ -1,7 +1,11 @@
 import { Value } from "typebox/value";
 import { ulid } from "ulid";
 
-import { decodeTrellisHttpError, TrellisHttpError } from "../http_error.ts";
+import {
+  decodeTrellisHttpError,
+  isRetriableAuthorizationCode,
+  TrellisHttpError,
+} from "../http_error.ts";
 import { recordCatalogCounter } from "../../telemetry/metrics.ts";
 import type { TrellisAuth } from "../session_auth.ts";
 import type { AuthorizationContextCache } from "./client_context.ts";
@@ -119,7 +123,7 @@ export async function refreshAuthorizationContextWithMetadata(args: {
       );
       outcome = classified.terminal
         ? "terminal"
-        : error.code === "resource_pending"
+        : isRetriableAuthorizationCode(error.code)
         ? "pending"
         : response.status === 503
         ? "unavailable"

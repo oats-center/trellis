@@ -14,7 +14,11 @@ import {
   UnexpectedError,
 } from "@oatscenter/result";
 import { ulid } from "ulid";
-import { decodeTrellisHttpError, TrellisHttpError } from "./auth/http_error.ts";
+import {
+  decodeTrellisHttpError,
+  isRetriableAuthorizationCode,
+  TrellisHttpError,
+} from "./auth/http_error.ts";
 import {
   connectClientWithDeps,
   type ConnectedTrellisClient,
@@ -587,7 +591,7 @@ async function fetchDeviceBootstrap(args: {
         new AuthorizationContextRefreshError(error.status, error.code)
             .terminal
           ? "terminal"
-          : error.code === "resource_pending"
+          : isRetriableAuthorizationCode(error.code)
           ? "pending"
           : error.status === 503
           ? "unavailable"
@@ -821,7 +825,7 @@ export async function connectDeviceWithDeps<
     } catch (error) {
       if (
         !(error instanceof TrellisHttpError) || error.status !== 503 ||
-        error.code !== "resource_pending"
+        !isRetriableAuthorizationCode(error.code)
       ) {
         throw error;
       }

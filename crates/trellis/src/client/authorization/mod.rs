@@ -21,6 +21,7 @@ pub(crate) use provider_cache::AuthorizationContextLease;
 pub use provider_cache::AuthorizationProviderCache;
 #[cfg(feature = "runtime-internals")]
 pub use provider_cache::{RuntimeAuthorizationIoCounters, RuntimeAuthorizationTrust};
+pub(crate) use refresh::is_retriable_authorization_code;
 pub(crate) use refresh::spawn_authorization_context_refresh_task;
 #[cfg(feature = "runtime-internals")]
 pub use types::AuthorizationRegistryBinding;

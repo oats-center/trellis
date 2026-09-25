@@ -31,7 +31,10 @@ import {
   browserInstallationScope,
   type BrowserSessionCredential,
 } from "./auth/browser/storage.ts";
-import { decodeTrellisHttpError } from "./auth/http_error.ts";
+import {
+  decodeTrellisHttpError,
+  isRetriableAuthorizationCode,
+} from "./auth/http_error.ts";
 import {
   importEd25519PrivateKeyFromSeedBase64url,
   publicKeyBase64urlFromSeed,
@@ -706,7 +709,7 @@ async function bindClientFlow(args: {
   for (const delay of [100, 200, 400, 800]) {
     if (response.status !== 503) break;
     const error = await decodeTrellisHttpError(response.clone());
-    if (error.code !== "authorization_pending") break;
+    if (!isRetriableAuthorizationCode(error.code)) break;
     await new Promise((resolve) => setTimeout(resolve, delay));
     response = await fetch(url, init);
   }
@@ -870,7 +873,7 @@ async function recoverClientBootstrapWithRetry(args: {
       }
       if (
         error instanceof AuthorizationContextRefreshError &&
-        error.code === "resource_pending"
+        isRetriableAuthorizationCode(error.code)
       ) {
         if (performance.now() >= deadlineMs) throw error;
         await new Promise((resolve) => setTimeout(resolve, 100));
