@@ -1107,11 +1107,7 @@ jobs:
   verify-images:
     name: Build verified ${{ matrix.image }} image
     needs: [install, wasm, portal, build-targets-linux]
-    # The OATS self-hosted runners are rootless Podman Quadlets whose
-    # Docker-compatible socket does not satisfy buildx/build-push-action or the
-    # managed-NATS smoke (tmpfs/SELinux flags). Assemble and smoke on a real
-    # Docker host instead.
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 45
     strategy:
       fail-fast: false
