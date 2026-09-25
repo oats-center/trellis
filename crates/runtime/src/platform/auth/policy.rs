@@ -356,6 +356,7 @@ pub(crate) enum AvailabilityReason {
     ProviderUnavailable,
     ProviderIncompatible,
     ResourceUnavailable,
+    ResourceStale,
     CompanionUnavailable,
     NotSelected,
 }
@@ -526,19 +527,24 @@ pub(crate) fn resolve_authority(
                 && approval.kind == declaration.kind.into()
                 && approval.commitment == commitment
         });
-        let usable = usable_resources.iter().find(|resource| {
+        let present = usable_resources.iter().find(|resource| {
             resource.local_name == *name
                 && resource.resource_kind == resource_kind_name(declaration.kind)
                 && resource.owner_participant_id == resolved.participant_id
-                && resource.state == ResourceBindingState::Available
         });
+        let usable = present.filter(|resource| resource.state == ResourceBindingState::Available);
         let available = approval.is_some() && usable.is_some();
+        // A row that exists but is not yet Available is still being materialized,
+        // not permanently missing, so issuance can treat it as retriable stale.
+        let stale = approval.is_some() && present.is_some() && usable.is_none();
         resource_availability.insert(
             name.clone(),
             Availability {
                 available,
                 reason: (!available).then_some(if approval.is_none() {
                     AvailabilityReason::NotApproved
+                } else if stale {
+                    AvailabilityReason::ResourceStale
                 } else {
                     AvailabilityReason::ResourceUnavailable
                 }),
@@ -548,8 +554,9 @@ pub(crate) fn resolve_authority(
             allowed.extend(selected.iter().filter(|permission| matches!(permission.target(), PermissionTarget::ParticipantResource { participant, resource, name: resource_name } if participant == &resolved.participant_id && *resource == declaration.kind && resource_name == name)).cloned());
         }
         if !available && !declaration.optional {
+            let prefix = if stale { "stale-resource" } else { "resource" };
             missing_required.push(format!(
-                "resource:{}:{name}",
+                "{prefix}:{}:{name}",
                 resource_kind_name(declaration.kind)
             ));
         }
