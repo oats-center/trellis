@@ -287,7 +287,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         context.trellis_nats.clone(),
         auth_store.clone(),
         verifier.clone(),
-        context.nats_override.is_some(),
     )
     .await?;
     let auth_operation = AuthOperationRuntime::new(
