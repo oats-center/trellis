@@ -179,7 +179,11 @@ pub async fn check(
         }
     };
     let jetstream = async_nats::jetstream::new(trellis_nats.clone());
-    let expected_resources = ExpectedRuntimeResources::for_mode(mode, &config);
+    let expected_resources = ExpectedRuntimeResources::for_mode(
+        mode,
+        &config,
+        async_nats::jetstream::stream::StorageType::File,
+    );
     for expected in expected_resources.streams() {
         let check_name = format!("nats.stream.{}", expected.name.to_ascii_lowercase());
         match jetstream.get_stream(&expected.name).await {
@@ -747,7 +751,13 @@ async fn run_owned(
     ownership: &mut RuntimeOwnership,
     stop: Option<crate::shutdown::StopHandle>,
 ) -> Result<(), RuntimeError> {
-    ExpectedRuntimeResources::for_mode(mode, &config)
+    let storage = if nats_override.is_some() {
+        tracing::warn!("using in-memory NATS JetStream storage; this mode is not production ready");
+        async_nats::jetstream::stream::StorageType::Memory
+    } else {
+        async_nats::jetstream::stream::StorageType::File
+    };
+    ExpectedRuntimeResources::for_mode(mode, &config, storage)
         .converge_streams(trellis_nats.clone())
         .await?;
     let stores = RuntimeStores::from_config(&config, mode)?;

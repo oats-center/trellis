@@ -22,7 +22,11 @@ pub(crate) struct ExpectedRuntimeResources {
 }
 
 impl ExpectedRuntimeResources {
-    pub(crate) fn for_mode(mode: RuntimeMode, config: &RuntimeConfig) -> Self {
+    pub(crate) fn for_mode(
+        mode: RuntimeMode,
+        config: &RuntimeConfig,
+        storage: stream::StorageType,
+    ) -> Self {
         let subsystems = mode.subsystems();
         let mut streams = Vec::new();
         if subsystems.contains(&SubsystemName::Platform)
@@ -41,6 +45,9 @@ impl ExpectedRuntimeResources {
         }
         if subsystems.contains(&SubsystemName::Health) {
             streams.push(health_stream_config(config));
+        }
+        for stream in &mut streams {
+            stream.storage = storage;
         }
         Self {
             subsystems,
@@ -101,11 +108,10 @@ fn stream_update(
     if actual.name != expected.name
         || actual.subjects != expected.subjects
         || actual.retention != expected.retention
-        || actual.storage != expected.storage
         || actual.discard != expected.discard
         || actual.sources != expected.sources
     {
-        return Err("stream identity, subjects, retention, storage, or discard policy differs");
+        return Err("stream identity, subjects, retention, or discard policy differs");
     }
 
     if matches!(
@@ -329,7 +335,7 @@ mod tests {
     }
 
     fn names(mode: RuntimeMode) -> Vec<String> {
-        ExpectedRuntimeResources::for_mode(mode, &config())
+        ExpectedRuntimeResources::for_mode(mode, &config(), stream::StorageType::File)
             .streams()
             .iter()
             .map(|stream| stream.name.clone())
@@ -369,7 +375,11 @@ mod tests {
 
     #[test]
     fn all_mode_is_the_union_without_duplicate_event_streams() {
-        let expected = ExpectedRuntimeResources::for_mode(RuntimeMode::All, &config());
+        let expected = ExpectedRuntimeResources::for_mode(
+            RuntimeMode::All,
+            &config(),
+            stream::StorageType::File,
+        );
         assert_eq!(
             expected
                 .streams()
