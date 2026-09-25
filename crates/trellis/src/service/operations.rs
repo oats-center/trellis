@@ -2573,6 +2573,12 @@ where
                             (repository, fence, Arc::clone(&gate), id, sequence),
                         ));
                     }
+                    if current.record.cancellation_requested {
+                        // A cancelled operation stops handing out signals, so a
+                        // handler waiting for one observes the request and
+                        // returns to let the runtime finalize the cancellation.
+                        return None;
+                    }
                     if let Some(signal) = current
                         .record
                         .signals
