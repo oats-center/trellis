@@ -10,6 +10,14 @@ Proof-bearing JSON requests hash the complete raw request body before known
 fields are projected, so unknown members remain integrity-bound even when an
 open DTO ignores them.
 
+The proof formats are independent of the JavaScript cryptography
+implementation. Browser clients use WebCrypto when the operations Trellis needs
+are usable there and an equivalent portable implementation otherwise; both
+produce identical signed bytes. HTTPS is the normal deployment transport. An
+operator may explicitly authorize plaintext HTTP for a non-loopback public
+origin, which changes transport protection only: every proof format, digest,
+and key derivation stays the same.
+
 `trellis.session-proof.v1` supports these purposes:
 
 - `browser-auth-request`;
@@ -96,7 +104,7 @@ commits browser generation-fenced login state, then invokes context refresh.
 
 ## Context Refresh
 
-`POST /bootstrap/context/refresh` accepts the old context digest, participant
+`POST /auth/context/refresh` accepts the old context digest, participant
 identity, request ID, issued-at milliseconds, and session proof. It revalidates
 current principal, credential/login when present, exact `GrantBinding`,
 installed revision, resource evidence, and issuer state. It returns the shared

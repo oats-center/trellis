@@ -3,7 +3,8 @@ import {
   initializeProtocolWasmSync,
 } from "./protocol_wasm.ts";
 import * as protocol from "./protocol_wasm/trellis_protocol_wasm.js";
-import { base64urlDecode, base64urlEncode, toArrayBuffer } from "./utils.ts";
+import type { Ed25519Signer } from "./crypto.ts";
+import { base64urlDecode, base64urlEncode } from "./utils.ts";
 
 /** Strict signature envelope shared by auth, bootstrap, and context refresh. */
 export const SESSION_PROOF_FORMAT_V1 = "trellis.session-proof.v1" as const;
@@ -82,18 +83,14 @@ export async function sessionProofSigningDigest(
 /** Sign the Rust-produced digest, then verify the declared key and signature in Rust. */
 export async function signSessionProof(
   input: SessionProofInput,
-  privateKey: CryptoKey,
+  signer: Ed25519Signer,
   signerPublicKey: string,
 ): Promise<SessionProof> {
   const digest = base64urlDecode(await sessionProofSigningDigest(input));
-  const signature = await crypto.subtle.sign(
-    { name: "Ed25519" },
-    privateKey,
-    toArrayBuffer(digest),
-  );
+  const signature = await signer.sign(digest);
   const proof: SessionProof = {
     format: SESSION_PROOF_FORMAT_V1,
-    signature: base64urlEncode(new Uint8Array(signature)),
+    signature: base64urlEncode(signature),
   };
   await verifySessionProof(
     input,

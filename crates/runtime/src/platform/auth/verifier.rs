@@ -349,7 +349,7 @@ pub(crate) async fn start_read_only(
         .map_err(crate::supervisor::RuntimeError::Config)?;
     let now = now_seconds()
         .map_err(|error| crate::supervisor::RuntimeError::Platform(error.to_string()))?;
-    let http = config.http.as_ref().ok_or_else(|| {
+    config.http.as_ref().ok_or_else(|| {
         crate::supervisor::RuntimeError::Platform(
             "HTTP configuration is required for issuer resolution".into(),
         )
@@ -370,11 +370,8 @@ pub(crate) async fn start_read_only(
         authorization.maximum_permissions,
     )
     .map_err(|error| crate::supervisor::RuntimeError::Platform(error.to_string()))?;
-    let trellis_origin = http
-        .public_origin
-        .clone()
-        .unwrap_or_else(|| format!("http://localhost:{}", config.http_port()));
-    let allow_insecure_origin = http.allows_insecure_origin(&trellis_origin);
+    let trellis_origin = config.public_origin();
+    let allow_insecure_origin = config.public_origin_allows_insecure();
     let cache = AuthorizationProviderCache::attach_runtime(
         client,
         &AuthorizationRegistryBinding::from_runtime_parts(authorization.context_bucket.clone()),

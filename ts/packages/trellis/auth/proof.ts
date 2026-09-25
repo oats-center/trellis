@@ -1,12 +1,7 @@
-import {
-  base64urlDecode,
-  base64urlEncode,
-  sha256,
-  toArrayBuffer,
-  utf8,
-} from "./utils.ts";
-import { importEd25519PublicKeyFromBase64url } from "./keys.ts";
 import { AsyncResult } from "@oatscenter/result";
+
+import { type Ed25519Signer, trellisCrypto } from "./crypto.ts";
+import { base64urlDecode, base64urlEncode, sha256, utf8 } from "./utils.ts";
 
 export type ProofParams = {
   contextDigest: string;
@@ -117,7 +112,7 @@ export function buildEventProofInput(
 }
 
 export async function createProof(
-  privateKey: CryptoKey,
+  signer: Ed25519Signer,
   params: ProofParams,
 ): Promise<string> {
   const input = buildProofInput(
@@ -129,16 +124,11 @@ export async function createProof(
     params.requestId,
   );
   const digest = await sha256(input);
-  const sig = await crypto.subtle.sign(
-    { name: "Ed25519" },
-    privateKey,
-    toArrayBuffer(digest),
-  );
-  return base64urlEncode(new Uint8Array(sig));
+  return base64urlEncode(await signer.sign(digest));
 }
 
 export async function createEventProof(
-  privateKey: CryptoKey,
+  signer: Ed25519Signer,
   params: EventProofParams,
 ): Promise<string> {
   const input = buildEventProofInput(
@@ -150,12 +140,7 @@ export async function createEventProof(
     params.eventTime,
   );
   const digest = await sha256(input);
-  const sig = await crypto.subtle.sign(
-    { name: "Ed25519" },
-    privateKey,
-    toArrayBuffer(digest),
-  );
-  return base64urlEncode(new Uint8Array(sig));
+  return base64urlEncode(await signer.sign(digest));
 }
 
 export async function verifyProof(
@@ -174,12 +159,12 @@ export async function verifyProof(
     );
     const digest = await sha256(input);
     const signature = base64urlDecode(proofBase64url);
-    const pub = await importEd25519PublicKeyFromBase64url(publicSessionKey);
-    return crypto.subtle.verify(
-      { name: "Ed25519" },
-      pub,
-      toArrayBuffer(signature),
-      toArrayBuffer(digest),
+    const publicKey = base64urlDecode(publicSessionKey);
+    if (publicKey.length !== 32) return false;
+    return await (await trellisCrypto()).verifyEd25519(
+      publicKey,
+      digest,
+      signature,
     );
   });
   return result.unwrapOr(false);
@@ -201,12 +186,12 @@ export async function verifyEventProof(
     );
     const digest = await sha256(input);
     const signature = base64urlDecode(proofBase64url);
-    const pub = await importEd25519PublicKeyFromBase64url(publicSessionKey);
-    return crypto.subtle.verify(
-      { name: "Ed25519" },
-      pub,
-      toArrayBuffer(signature),
-      toArrayBuffer(digest),
+    const publicKey = base64urlDecode(publicSessionKey);
+    if (publicKey.length !== 32) return false;
+    return await (await trellisCrypto()).verifyEd25519(
+      publicKey,
+      digest,
+      signature,
     );
   });
   return result.unwrapOr(false);

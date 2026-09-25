@@ -9,6 +9,8 @@
 
 import { metrics } from "@opentelemetry/api";
 
+import { randomUuid } from "../auth/crypto.ts";
+
 export {
   buildTrellisErrorMetricAttributes,
   recordCatalogCounter,
@@ -234,7 +236,7 @@ async function initialize(
       "trellis.role": "browser",
       "trellis.app": options.app,
       // Document-lifetime cumulative-stream identity; never a user identity.
-      "service.instance.id": crypto.randomUUID(),
+      "service.instance.id": randomUuid(),
     };
     const tracerProvider = new web.WebTracerProvider({
       resource: resources.resourceFromAttributes(attributes),

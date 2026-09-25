@@ -36,6 +36,7 @@ import type { ParticipantKvMetadata } from "./participant_runtime/metadata.ts";
 import type { EventConsumerResourceBinding } from "./participant_runtime/schemas.ts";
 import type { StaticDecode } from "typebox";
 import { buildEventProofInput } from "./auth/proof.ts";
+import { trellisCrypto } from "./auth/crypto.ts";
 import {
   AuthorizationProviderCache,
   type AuthorizationProviderEvent,
@@ -665,8 +666,7 @@ export function toArrayBuffer(data: Uint8Array): ArrayBuffer {
 }
 
 export async function sha256(data: Uint8Array): Promise<Uint8Array> {
-  const digest = await crypto.subtle.digest("SHA-256", toArrayBuffer(data));
-  return new Uint8Array(digest);
+  return await (await trellisCrypto()).sha256(data);
 }
 
 export function buildProofInput(

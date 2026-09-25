@@ -1,3 +1,5 @@
+import { trellisCrypto } from "./crypto.ts";
+
 export type JsonValue =
   | null
   | boolean
@@ -53,8 +55,7 @@ export function base64urlDecode(s: string): Uint8Array {
 }
 
 export async function sha256(data: Uint8Array): Promise<Uint8Array> {
-  const digest = await crypto.subtle.digest("SHA-256", toArrayBuffer(data));
-  return new Uint8Array(digest);
+  return await (await trellisCrypto()).sha256(data);
 }
 
 function canonicalizeUnknownJsonValue(value: unknown): string {

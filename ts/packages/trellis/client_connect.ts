@@ -25,7 +25,6 @@ import {
   base64urlDecode,
   base64urlEncode,
   BrowserSessionStore,
-  toArrayBuffer,
 } from "./auth/browser.ts";
 import {
   browserInstallationScope,
@@ -35,10 +34,6 @@ import {
   decodeTrellisHttpError,
   isRetriableAuthorizationCode,
 } from "./auth/http_error.ts";
-import {
-  importEd25519PrivateKeyFromSeedBase64url,
-  publicKeyBase64urlFromSeed,
-} from "./auth/keys.ts";
 import { createAuth, type TrellisAuth } from "./auth/session_auth.ts";
 import { estimateMidpointClockOffsetMs } from "./auth/time.ts";
 import { type CallerRuntime, createCallerRuntime } from "./caller.ts";
@@ -603,21 +598,12 @@ async function createSessionKeyRuntimeIdentity(
   const runtimeSeed = runtimeSessionKeySeed
     ? base64urlDecode(runtimeSessionKeySeed)
     : seed;
-  const privateKey = await importEd25519PrivateKeyFromSeedBase64url(
-    base64urlEncode(runtimeSeed),
-  );
-  const sessionKey = publicKeyBase64urlFromSeed(runtimeSeed);
   const runtimeAuth = await createAuth({
     sessionKeySeed: base64urlEncode(runtimeSeed),
   });
-  const sign = async (data: Uint8Array): Promise<Uint8Array> => {
-    const signature = await crypto.subtle.sign(
-      "Ed25519",
-      privateKey,
-      toArrayBuffer(data),
-    );
-    return new Uint8Array(signature);
-  };
+  const sessionKey = runtimeAuth.sessionKey;
+  const sign = async (data: Uint8Array): Promise<Uint8Array> =>
+    await runtimeAuth.sign(data);
 
   const identity: ClientRuntimeIdentity = {
     mode,

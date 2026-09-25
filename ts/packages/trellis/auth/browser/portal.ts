@@ -1,4 +1,5 @@
 import { decodeTrellisHttpError } from "../http_error.ts";
+import { sha256 } from "../utils.ts";
 import { type PortalFlowState, PortalFlowStateSchema } from "./flow_types.ts";
 import type { StaticDecode } from "typebox";
 import { Type } from "typebox";
@@ -40,11 +41,7 @@ export async function createPortalBinding(): Promise<PortalBinding> {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   return {
     secret: base64Url(bytes),
-    digest: base64Url(
-      new Uint8Array(
-        await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes)),
-      ),
-    ),
+    digest: base64Url(await sha256(Uint8Array.from(bytes))),
   };
 }
 
@@ -71,11 +68,7 @@ export async function getOrCreatePortalBinding(
   if (secret !== stored) storage.setItem(key, secret);
   return {
     secret,
-    digest: base64Url(
-      new Uint8Array(
-        await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes)),
-      ),
-    ),
+    digest: base64Url(await sha256(Uint8Array.from(bytes))),
   };
 }
 

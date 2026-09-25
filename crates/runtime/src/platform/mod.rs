@@ -178,17 +178,8 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         auth::NatsAuthEphemeralRepository::ensure(context.trellis_nats.clone(), connection_max_age)
             .await
             .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let public_origin = context
-        .config
-        .http
-        .as_ref()
-        .and_then(|http| http.public_origin.clone())
-        .unwrap_or_else(|| format!("http://localhost:{}", context.config.http_port()));
-    let allow_insecure_origin = context
-        .config
-        .http
-        .as_ref()
-        .is_some_and(|http| http.allows_insecure_origin(&public_origin));
+    let public_origin = context.config.public_origin();
+    let allow_insecure_origin = context.config.public_origin_allows_insecure();
     let authorization_contexts = auth::AuthorizationContextService::start(
         Arc::new(auth_store.clone()),
         context.trellis_nats.clone(),

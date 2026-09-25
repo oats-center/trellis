@@ -18,6 +18,7 @@ import {
   startDeviceActivationWithDeps,
 } from "../device.ts";
 import { TransportError } from "../errors/index.ts";
+import { trellisCrypto } from "../auth/crypto.ts";
 import { base64urlDecode, base64urlEncode } from "../auth/utils.ts";
 
 const PendingActivationStateSchema = Type.Object({
@@ -186,11 +187,9 @@ function defaultActivationStateDir(): string {
 }
 
 async function hashOrigin(origin: string): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(origin),
+  return base64urlEncode(
+    await (await trellisCrypto()).sha256(new TextEncoder().encode(origin)),
   );
-  return base64urlEncode(new Uint8Array(digest));
 }
 
 async function deriveStoreIdentity(

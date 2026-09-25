@@ -102,6 +102,12 @@ Verifiers resolve authority by context digest, reject a mismatching
 the exact action in the signed grant. Messages never carry complete contexts or
 grant sets.
 
+Transport policy is server-owned. Trellis accepts HTTPS origins and loopback
+HTTP origins normally. A non-loopback HTTP public origin is refused at startup
+unless the operator lists it in `[http] allow_insecure_origins`; browser
+applications never opt into insecure transport and use the same client code for
+both deployments.
+
 Auth Callout validates the short-lived route JWT, reconstructs and verifies the
 connect proof, reloads the immutable context by digest, rechecks current
 issuable state, and derives NATS permissions from accepted grants plus exact
@@ -142,7 +148,7 @@ cookie and CAS-backed state record.
 
 `POST /auth/requests/{flowId}/bind` verifies the bind proof and creates a user
 login, but returns no authorization context. The client commits the validated
-login result, then calls `/bootstrap/context/refresh` to obtain current
+login result, then calls `/auth/context/refresh` to obtain current
 authorization. Browser persistence is IndexedDB `trellis-auth` version 3, store
 `installations`, keyed only by canonical Trellis origin plus stable participant
 ID. Generation, public-key, flow, and login compare-and-swap fences prevent a

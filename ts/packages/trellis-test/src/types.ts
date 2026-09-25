@@ -57,6 +57,11 @@ export type TrellisTestRuntimeStartOptions = {
   consoleSource?: TrellisControlPlaneWebSource;
   /** Route the advertised browser WebSocket endpoint through a replaceable TCP proxy. */
   rotatableWebsocketProxy?: boolean;
+  /**
+   * Non-loopback host used as the browser public origin and advertised WebSocket
+   * host, so the document is an ordinary insecure browser context.
+   */
+  browserHost?: string;
   /** Platform TTL overrides (milliseconds) for the isolated test control plane. */
   ttlMs?: Partial<TrellisControlPlaneTtlMs>;
   timeouts?: {

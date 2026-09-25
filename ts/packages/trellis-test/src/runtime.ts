@@ -57,22 +57,30 @@ class TcpProxy {
   readonly #target: Deno.ConnectOptions;
   readonly #connections = new Set<Deno.Conn>();
 
-  private constructor(listener: Deno.TcpListener, target: Deno.ConnectOptions) {
+  private constructor(
+    listener: Deno.TcpListener,
+    target: Deno.ConnectOptions,
+    advertisedHost: string,
+  ) {
     this.#listener = listener;
     this.#target = target;
-    this.url = `ws://127.0.0.1:${listener.addr.port}`;
+    this.url = `ws://${advertisedHost}:${listener.addr.port}`;
     this.#accept();
   }
 
-  static start(targetUrl: string): TcpProxy {
+  static start(
+    targetUrl: string,
+    options: { bindHostname?: string; advertisedHost?: string } = {},
+  ): TcpProxy {
     const target = new URL(targetUrl);
     return new TcpProxy(
-      Deno.listen({ hostname: "127.0.0.1", port: 0 }),
+      Deno.listen({ hostname: options.bindHostname ?? "127.0.0.1", port: 0 }),
       {
         transport: "tcp",
         hostname: target.hostname,
         port: Number(target.port),
       },
+      options.advertisedHost ?? "127.0.0.1",
     );
   }
 
@@ -127,6 +135,8 @@ class TcpProxy {
 /** Runs an isolated Trellis control plane and NATS server for integration tests. */
 export class TrellisTestRuntime implements AsyncDisposable {
   readonly trellisUrl: string;
+  /** Public browser origin; loopback unless a non-loopback browser host was requested. */
+  readonly publicOrigin: string;
   readonly natsUrl: string;
   readonly workdir: string;
   /** Local test-admin username used by the harness bootstrap. */
@@ -240,6 +250,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
 
   private constructor(args: {
     trellisUrl: string;
+    publicOrigin: string;
     workdir: string;
     deployment: string;
     keepWorkdir: boolean;
@@ -256,6 +267,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
     ownsWorkdir?: boolean;
   }) {
     this.trellisUrl = args.trellisUrl;
+    this.publicOrigin = args.publicOrigin;
     this.natsUrl = args.nats.natsUrl;
     this.workdir = args.workdir;
     this.#deployment = args.deployment;
@@ -367,18 +379,27 @@ export class TrellisTestRuntime implements AsyncDisposable {
       nats = await NatsTestContainer.start(workdir, {
         startupMs: timeouts.startupMs,
       });
-      if (options.rotatableWebsocketProxy) {
-        websocketProxy = TcpProxy.start(nats.websocketUrl);
+      const browserHost = options.browserHost;
+      if (options.rotatableWebsocketProxy || browserHost) {
+        websocketProxy = TcpProxy.start(nats.websocketUrl, {
+          ...(browserHost
+            ? { bindHostname: "0.0.0.0", advertisedHost: browserHost }
+            : {}),
+        });
       }
       portLease = reserveLocalPort();
       const port = portLease.port;
-      const trellisUrl = `http://localhost:${port}`;
+      const trellisUrl = browserHost
+        ? `http://${browserHost}:${port}`
+        : `http://localhost:${port}`;
+      const publicOrigin = trellisUrl;
       const config = buildControlPlaneConfig({
         workdir,
         natsUrl: nats.natsUrl,
         websocketUrl: websocketProxy?.url ?? nats.websocketUrl,
         manifest: nats.manifest,
         port,
+        publicOrigin,
         oauthProviders: options.oauthProviders,
         webOrigins: options.webOrigins,
         webSource: options.webSource,
@@ -410,6 +431,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
       });
       return new TrellisTestRuntime({
         trellisUrl: startedControlPlane.trellisUrl,
+        publicOrigin,
         workdir,
         deployment,
         keepWorkdir: options.keepWorkdir ?? false,
@@ -625,12 +647,6 @@ export class TrellisTestRuntime implements AsyncDisposable {
     const retired = this.#websocketProxy;
     const replacement = TcpProxy.start(this.#nats.websocketUrl);
     this.#config.client.natsServers = [replacement.url];
-    this.#config.web.allowInsecureOrigins = [
-      ...this.#config.web.allowInsecureOrigins.filter((origin) =>
-        origin !== retired.url
-      ),
-      replacement.url,
-    ];
     await writeTrellisConfig({
       workdir: this.workdir,
       config: this.#config,

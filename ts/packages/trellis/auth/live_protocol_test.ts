@@ -13,11 +13,8 @@ import {
   liveValidateSubject,
   liveVerifyServerProof,
 } from "./protocol_wasm.ts";
-import { base64urlEncode, toArrayBuffer, utf8 } from "./utils.ts";
-import {
-  importEd25519PrivateKeyFromSeedBase64url,
-  publicKeyBase64urlFromPrivateKey,
-} from "./keys.ts";
+import { trellisCrypto } from "./crypto.ts";
+import { base64urlEncode, utf8 } from "./utils.ts";
 import vectors from "../../../../integration/fixtures/protocol/live-protocol/vectors.json" with {
   type: "json",
 };
@@ -33,30 +30,20 @@ type ProofVector = {
 
 Deno.test("provider server-message proofs match the pinned language-neutral vectors", async () => {
   for (const vector of vectors as ProofVector[]) {
-    const keySeed = base64urlEncode(
-      new Uint8Array(
-        (vector.keySeedHex.match(/../g) ?? []).map((byte) =>
-          Number.parseInt(byte, 16)
-        ),
+    const keySeed = new Uint8Array(
+      (vector.keySeedHex.match(/../g) ?? []).map((byte) =>
+        Number.parseInt(byte, 16)
       ),
     );
-    const signingKey = await importEd25519PrivateKeyFromSeedBase64url(
-      keySeed,
-    );
-    const publicKey = await publicKeyBase64urlFromPrivateKey(signingKey);
+    const signer = await (await trellisCrypto()).signerFromSeed(keySeed);
+    const publicKey = signer.publicKey;
     const body = utf8(vector.bodyUtf8);
     const digest = liveServerProofDigest(
       vector.contextDigest,
       vector.subject,
       body,
     );
-    const signature = new Uint8Array(
-      await crypto.subtle.sign(
-        { name: "Ed25519" },
-        signingKey,
-        toArrayBuffer(digest),
-      ),
-    );
+    const signature = await signer.sign(digest);
     assertEquals(
       base64urlEncode(signature),
       vector.proof,

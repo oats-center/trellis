@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use url::{Host, Url};
 
 use crate::{RuntimeMode, SubsystemName};
 
@@ -109,6 +110,7 @@ impl RuntimeConfig {
     ///
     pub fn validate_for_mode(&self, mode: RuntimeMode) -> Result<(), ConfigError> {
         self.validate_distinct_sqlite_paths()?;
+        self.validate_http_public_origin()?;
         self.validate_oauth_provider_secrets()?;
         self.resolve_nats_runtime()?;
         self.resolve_leases()?;
@@ -244,6 +246,64 @@ impl RuntimeConfig {
             .as_ref()
             .and_then(|http| http.bind_address)
             .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+    }
+
+    /// Resolves the canonical public browser origin, defaulting to loopback HTTP.
+    #[must_use]
+    pub fn public_origin(&self) -> String {
+        self.http
+            .as_ref()
+            .and_then(|http| http.public_origin.as_deref())
+            .map(str::trim)
+            .filter(|origin| !origin.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| format!("http://localhost:{}", self.http_port()))
+    }
+
+    /// Returns whether the configured public origin deliberately permits plaintext HTTP.
+    ///
+    /// Loopback and HTTPS origins never need authorization; a non-loopback HTTP origin
+    /// must be explicitly listed in `[http] allow_insecure_origins`.
+    pub(crate) fn public_origin_allows_insecure(&self) -> bool {
+        let public_origin = self.public_origin();
+        let Some(origin) = CanonicalOrigin::parse(&public_origin) else {
+            return false;
+        };
+        if origin.is_loopback() || origin.is_https() {
+            return false;
+        }
+        self.http
+            .as_ref()
+            .is_some_and(|http| http.allows_insecure_origin(&public_origin))
+    }
+
+    /// Rejects a non-loopback plaintext public origin unless the operator authorized it.
+    fn validate_http_public_origin(&self) -> Result<(), ConfigError> {
+        let Some(http) = self.http.as_ref() else {
+            return Ok(());
+        };
+        let public_origin = self.public_origin();
+        let Some(origin) = CanonicalOrigin::parse(&public_origin) else {
+            return Err(ConfigError::InvalidPublicOrigin {
+                origin: public_origin,
+            });
+        };
+        if let Some(entries) = http.allow_insecure_origins.as_ref() {
+            for entry in entries {
+                if CanonicalOrigin::parse(entry).is_none() {
+                    return Err(ConfigError::InvalidInsecureOrigin {
+                        origin: entry.clone(),
+                    });
+                }
+            }
+        }
+        if origin.is_loopback() || origin.is_https() || http.allows_insecure_origin(&public_origin)
+        {
+            return Ok(());
+        }
+        Err(ConfigError::InsecurePublicOrigin {
+            origin: origin.to_string(),
+        })
     }
 
     /// Resolves validated storage for the platform subsystem.
@@ -567,12 +627,67 @@ pub struct HttpConfig {
 impl HttpConfig {
     /// Returns true when `origin` is explicitly allow-listed as an insecure origin.
     pub(crate) fn allows_insecure_origin(&self, origin: &str) -> bool {
-        let origin = origin.trim_end_matches('/');
+        let Some(candidate) = CanonicalOrigin::parse(origin) else {
+            return false;
+        };
         self.allow_insecure_origins.as_ref().is_some_and(|origins| {
             origins
                 .iter()
-                .any(|allowed| allowed.trim_end_matches('/') == origin)
+                .any(|allowed| CanonicalOrigin::parse(allowed).as_ref() == Some(&candidate))
         })
+    }
+}
+
+/// A canonical `scheme://host[:port]` browser origin.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CanonicalOrigin {
+    serialized: String,
+    loopback: bool,
+    https: bool,
+}
+
+impl CanonicalOrigin {
+    /// Parses and canonicalizes an HTTP(S) origin.
+    ///
+    /// Credentials, query, fragment, non-HTTP(S) schemes, and missing hosts are
+    /// rejected so an allow-list entry can only ever name an origin.
+    fn parse(value: &str) -> Option<Self> {
+        let url = Url::parse(value.trim()).ok()?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return None;
+        }
+        if !url.username().is_empty() || url.password().is_some() {
+            return None;
+        }
+        if url.query().is_some() || url.fragment().is_some() {
+            return None;
+        }
+        let loopback = match url.host()? {
+            Host::Domain(host) => host.eq_ignore_ascii_case("localhost"),
+            Host::Ipv4(address) => address.is_loopback(),
+            Host::Ipv6(address) => address.is_loopback(),
+        };
+        Some(Self {
+            serialized: url.origin().ascii_serialization(),
+            loopback,
+            https: url.scheme() == "https",
+        })
+    }
+
+    /// Whether this origin names a loopback host.
+    fn is_loopback(&self) -> bool {
+        self.loopback
+    }
+
+    /// Whether this origin uses HTTPS.
+    fn is_https(&self) -> bool {
+        self.https
+    }
+}
+
+impl std::fmt::Display for CanonicalOrigin {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.serialized)
     }
 }
 
@@ -1209,6 +1324,24 @@ pub enum ConfigError {
         field: &'static str,
         /// Validation failure reason.
         reason: &'static str,
+    },
+    /// The configured HTTP public origin is not a valid absolute HTTP(S) origin.
+    #[error("invalid runtime config [http] public_origin '{origin}': must be an absolute HTTP(S) origin")]
+    InvalidPublicOrigin {
+        /// Offending public origin value.
+        origin: String,
+    },
+    /// An `[http] allow_insecure_origins` entry is not a valid HTTP(S) origin.
+    #[error("invalid runtime config [http] allow_insecure_origins entry '{origin}': must be an absolute HTTP(S) origin without credentials, query, or fragment")]
+    InvalidInsecureOrigin {
+        /// Offending allow-list entry.
+        origin: String,
+    },
+    /// The public origin serves plaintext HTTP from a non-loopback host without explicit authorization.
+    #[error("runtime refuses to serve plaintext HTTP from non-loopback public origin '{origin}'; add it to [http] allow_insecure_origins to permit plaintext operation")]
+    InsecurePublicOrigin {
+        /// Rejected public origin.
+        origin: String,
     },
 }
 

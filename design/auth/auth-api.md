@@ -16,7 +16,7 @@ device-connect APIs.
 
 | Method | Route                          | Purpose                                                         |
 | ------ | ------------------------------ | --------------------------------------------------------------- |
-| `GET`  | `/.well-known/trellis`         | Canonical origin and current online issuer metadata             |
+| `GET`  | `/auth/keys/{keyId}`           | Current issuer signing key by key ID                            |
 | `POST` | `/bootstrap/service`           | Admit a provisioned service and return shared installation data |
 | `POST` | `/bootstrap/device`            | Admit an approved device and return shared installation data    |
 | `POST` | `/auth/device/enroll`          | Create/resume proof-bound device review                         |

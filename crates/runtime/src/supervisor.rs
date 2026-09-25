@@ -595,19 +595,12 @@ impl RuntimeContext {
 
     /// Resolve the public origin used for provider bootstrap and advertised URLs.
     pub(crate) fn public_origin(&self) -> String {
-        self.config
-            .http
-            .as_ref()
-            .and_then(|http| http.public_origin.clone())
-            .unwrap_or_else(|| format!("http://localhost:{}", self.config.http_port()))
+        self.config.public_origin()
     }
 
     /// Return whether the configured non-loopback HTTP origin is allowed.
-    pub(crate) fn allows_insecure_origin(&self, origin: &str) -> bool {
-        self.config
-            .http
-            .as_ref()
-            .is_some_and(|http| http.allows_insecure_origin(origin))
+    pub(crate) fn public_origin_allows_insecure(&self) -> bool {
+        self.config.public_origin_allows_insecure()
     }
 
     pub(crate) fn register_http_router(&self, router: axum::Router) -> Result<(), RuntimeError> {
@@ -924,7 +917,7 @@ const BUILTIN_LIVE_PROVIDER_CONNECT_TIMEOUT_MS: u64 = 30_000;
 /// cannot be connected fails startup before any live router serves traffic.
 async fn bootstrap_live_providers(context: &RuntimeContext) -> Result<(), RuntimeError> {
     let trellis_url = context.public_origin();
-    let allow_insecure_origin = context.allows_insecure_origin(&trellis_url);
+    let allow_insecure_origin = context.public_origin_allows_insecure();
     for role in crate::platform::LiveProviderRole::roles_for_mode(context.mode) {
         let identity_seed = crate::platform::load_live_provider_seed(&context.config, role)?;
         let client = crate::platform::connect_builtin_live_provider(
@@ -1179,6 +1172,41 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[tokio::test]
+    async fn refuses_plaintext_non_loopback_public_origin_without_authorization() {
+        let config = RuntimeConfig::from_toml_str(
+            r#"
+[http]
+public_origin = "http://trellis-demo.lan:3000"
+allow_insecure_origins = []
+"#,
+        )
+        .expect("parse config");
+
+        let error = run_with_stop(
+            RuntimeOptions {
+                mode: RuntimeMode::All,
+                config,
+                reset_admin: false,
+                nats_override: None,
+            },
+            None,
+        )
+        .await
+        .expect_err("startup must refuse an unauthorized plaintext public origin");
+
+        match error {
+            RuntimeError::Config(error) => {
+                assert!(error.to_string().contains("allow_insecure_origins"));
+                assert!(matches!(
+                    error,
+                    crate::ConfigError::InsecurePublicOrigin { .. }
+                ));
+            }
+            other => panic!("unexpected startup error: {other}"),
+        }
+    }
 
     struct DropMarker(Arc<AtomicBool>);
 

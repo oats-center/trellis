@@ -18,10 +18,8 @@ import type {
 import type { OperationRef } from "../operations.ts";
 import type { GeneratedParticipant } from "../participant_runtime/participant.ts";
 import { decodeTrellisHttpError } from "./http_error.ts";
-import {
-  importEd25519PrivateKeyFromSeedBase64url,
-  publicKeyBase64urlFromPrivateKey,
-} from "./keys.ts";
+import { trellisCrypto } from "./crypto.ts";
+import { publicKeyBase64urlFromSeed } from "./keys.ts";
 import { createAuth } from "./session_auth.ts";
 import {
   SESSION_PROOF_FORMAT_V1,
@@ -32,7 +30,6 @@ import {
   base64urlEncode,
   canonicalizeJsonValue,
   sha256,
-  toArrayBuffer,
   utf8,
 } from "./utils.ts";
 
@@ -143,40 +140,19 @@ async function hkdfSha256(
   info: string | Uint8Array,
   length: number,
 ): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    toArrayBuffer(inputKeyingMaterial),
-    "HKDF",
-    false,
-    ["deriveBits"],
+  return await (await trellisCrypto()).hkdfSha256(
+    inputKeyingMaterial,
+    new Uint8Array(0),
+    typeof info === "string" ? utf8(info) : info,
+    length,
   );
-  const derivedBits = await crypto.subtle.deriveBits(
-    {
-      name: "HKDF",
-      hash: "SHA-256",
-      salt: toArrayBuffer(new Uint8Array(0)),
-      info: toArrayBuffer(typeof info === "string" ? utf8(info) : info),
-    },
-    key,
-    length * 8,
-  );
-  return new Uint8Array(derivedBits);
 }
 
 async function hmacSha256(
   keyBytes: Uint8Array,
   data: Uint8Array,
 ): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    toArrayBuffer(keyBytes),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  return new Uint8Array(
-    await crypto.subtle.sign("HMAC", key, toArrayBuffer(data)),
-  );
+  return await (await trellisCrypto()).hmacSha256(keyBytes, data);
 }
 
 function crockfordEncode(bytes: Uint8Array): string {
@@ -237,12 +213,7 @@ export async function deriveDeviceIdentity(
     32,
   );
   const identitySeedBase64url = base64urlEncode(identitySeed);
-  const identityPrivateKey = await importEd25519PrivateKeyFromSeedBase64url(
-    identitySeedBase64url,
-  );
-  const publicIdentityKey = await publicKeyBase64urlFromPrivateKey(
-    identityPrivateKey,
-  );
+  const publicIdentityKey = publicKeyBase64urlFromSeed(identitySeed);
   return {
     identitySeed,
     identitySeedBase64url,

@@ -4,10 +4,7 @@ import { Codec } from "@nats-io/nkeys/lib/codec.js";
 import { ulid } from "ulid";
 
 import type { AuthorizationProviderCache } from "./authorization_context.ts";
-import {
-  importEd25519PrivateKeyFromSeedBase64url,
-  publicKeyBase64urlFromSeed,
-} from "./keys.ts";
+import { trellisCrypto } from "./crypto.ts";
 import { createProof } from "./proof.ts";
 import {
   type SessionProof,
@@ -20,7 +17,6 @@ import {
   base64urlEncode,
   canonicalizeJsonValue,
   sha256,
-  toArrayBuffer,
   utf8,
 } from "./utils.ts";
 
@@ -62,10 +58,8 @@ export async function createAuth(
   opts: { sessionKeySeed: string; contextDigest?: string | (() => string) },
 ): Promise<TrellisAuth> {
   const seed = base64urlDecode(opts.sessionKeySeed);
-  const privateKey = await importEd25519PrivateKeyFromSeedBase64url(
-    opts.sessionKeySeed,
-  );
-  const sessionKey = publicKeyBase64urlFromSeed(seed);
+  const signer = await (await trellisCrypto()).signerFromSeed(seed);
+  const sessionKey = signer.publicKey;
   const encodedSeed = Codec.encodeSeed(Prefix.User, seed);
   const sessionNkey = fromSeed(encodedSeed).getPublicKey();
   let serverClockOffsetMs = 0;
@@ -80,12 +74,7 @@ export async function createAuth(
   };
 
   const sign = async (data: Uint8Array): Promise<Uint8Array> => {
-    const sig = await crypto.subtle.sign(
-      { name: "Ed25519" },
-      privateKey,
-      toArrayBuffer(data),
-    );
-    return new Uint8Array(sig);
+    return await signer.sign(data);
   };
 
   const currentIat = (): number =>
@@ -101,7 +90,7 @@ export async function createAuth(
     },
     contextDigest: resolveContextDigest,
     createProof: (subject, payloadHash, reply, requestId, iat) =>
-      createProof(privateKey, {
+      createProof(signer, {
         contextDigest: resolveContextDigest(),
         subject,
         reply,
@@ -109,8 +98,7 @@ export async function createAuth(
         iat: iat ?? currentIat(),
         requestId: requestId ?? ulid(),
       }),
-    signSessionProof: (input) =>
-      signSessionProof(input, privateKey, sessionKey),
+    signSessionProof: (input) => signSessionProof(input, signer, sessionKey),
     natsConnectOptions: (options) => {
       return Promise.resolve({
         authenticator: [

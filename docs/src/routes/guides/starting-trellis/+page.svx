@@ -278,3 +278,33 @@ At this point you have:
 - Trellis running from the installed `trellis-server`
 - Rust runtime health and readiness checks returning version and mode metadata
 - Console running from source for UI development
+
+## 8. Serve plaintext HTTP on a non-loopback origin
+
+HTTPS is the normal deployment transport. When an operator deliberately runs
+Trellis on plaintext HTTP from a non-loopback host, the public origin must be
+authorized explicitly; otherwise `trellis-server` refuses to start before it
+serves browser assets. Loopback HTTP such as `http://localhost:3000` needs no
+entry.
+
+Production:
+
+```toml
+[http]
+public_origin = "https://trellis.example.com"
+allow_insecure_origins = []
+```
+
+Development or LAN demo:
+
+```toml
+[http]
+public_origin = "http://trellis-demo.lan:3000"
+allow_insecure_origins = ["http://trellis-demo.lan:3000"]
+```
+
+`[http] origins` and `[http] allow_insecure_origins` are different: `origins`
+lists browser origins that may participate, while `allow_insecure_origins`
+authorizes plaintext transport for a specific origin. Applications do not
+change between these deployments; the browser client uses the same connection
+call and the same proof formats either way.

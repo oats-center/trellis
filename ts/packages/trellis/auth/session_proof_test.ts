@@ -1,9 +1,6 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { ulid } from "ulid";
-import {
-  importEd25519PrivateKeyFromSeedBase64url,
-  publicKeyBase64urlFromSeed,
-} from "./keys.ts";
+import { trellisCrypto } from "./crypto.ts";
 import {
   parseSessionProof,
   SESSION_PROOF_FORMAT_V1,
@@ -16,13 +13,11 @@ import { base64urlDecode, base64urlEncode, sha256 } from "./utils.ts";
 
 async function identity() {
   const seed = crypto.getRandomValues(new Uint8Array(32));
-  const publicKey = publicKeyBase64urlFromSeed(seed);
+  const privateKey = await (await trellisCrypto()).signerFromSeed(seed);
   return {
-    publicKey,
-    privateKey: await importEd25519PrivateKeyFromSeedBase64url(
-      base64urlEncode(seed),
-    ),
-    keyId: base64urlEncode(await sha256(base64urlDecode(publicKey))),
+    publicKey: privateKey.publicKey,
+    privateKey,
+    keyId: base64urlEncode(await sha256(base64urlDecode(privateKey.publicKey))),
     seed,
   };
 }

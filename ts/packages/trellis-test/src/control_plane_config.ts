@@ -151,10 +151,12 @@ export function buildControlPlaneConfig(args: {
   webSource?: TrellisControlPlaneWebSource;
   portalSource?: TrellisControlPlaneWebSource;
   consoleSource?: TrellisControlPlaneWebSource;
+  /** Overrides the runtime public browser origin; defaults to loopback HTTP. */
+  publicOrigin?: string;
   ttlMs?: Partial<TrellisControlPlaneTtlMs>;
 }): TrellisControlPlaneConfig {
   const natsDir = join(args.natsWorkdir ?? args.workdir, "nats");
-  const publicOrigin = `http://localhost:${args.port}`;
+  const publicOrigin = args.publicOrigin ?? `http://localhost:${args.port}`;
   return {
     logLevel: "info",
     port: args.port,
@@ -164,7 +166,6 @@ export function buildControlPlaneConfig(args: {
       publicOrigin,
       allowInsecureOrigins: [
         publicOrigin,
-        args.websocketUrl,
         ...(args.webOrigins ?? []),
       ],
       source: args.webSource,
