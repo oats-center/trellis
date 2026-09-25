@@ -92,6 +92,22 @@ try {
     );
     config.links.push(`./.sdk/${name}`);
   }
+  // The example pins the published version range; for a prerelease candidate
+  // (e.g. 0.100.0-rc.2) that range no longer matches the local package, so pin
+  // the example's @oatscenter/trellis imports to the locally built version.
+  const trellisVersion = JSON.parse(
+    await Deno.readTextFile(join(project, ".sdk", "trellis", "package.json")),
+  ).version as string;
+  for (const [name, specifier] of Object.entries(config.imports)) {
+    if (
+      name === "@oatscenter/trellis" || name.startsWith("@oatscenter/trellis/")
+    ) {
+      config.imports[name] = specifier.replace(
+        /^npm:@oatscenter\/trellis@[^/]+/,
+        `npm:@oatscenter/trellis@${trellisVersion}`,
+      );
+    }
+  }
   await Deno.writeTextFile(join(project, "deno.json"), JSON.stringify(config));
 
   const bin = join(isolated, "bin");
