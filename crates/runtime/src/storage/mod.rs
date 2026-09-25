@@ -408,6 +408,16 @@ fn apply_sqlite_pragmas(
                 path: config.path.clone(),
                 source,
             })?;
+        // WAL + synchronous=NORMAL stays durable across process crashes and drops
+        // the per-commit fsync, which is a multi-second stall on the CI HDD.
+        if journal_mode.eq_ignore_ascii_case("wal") {
+            connection
+                .pragma_update(None, "synchronous", "normal")
+                .map_err(|source| StoreError::ConfigureSqlite {
+                    path: config.path.clone(),
+                    source,
+                })?;
+        }
     }
     Ok(())
 }
