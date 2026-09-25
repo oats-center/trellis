@@ -2679,7 +2679,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "trellis-test"
+name = "trellis-test-fixture"
+version = "0.100.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "trellis-rs",
+]
+
+[[package]]
+name = "trellis-test-fixture-live"
+version = "0.100.0"
+dependencies = [
+ "futures-util",
+ "reqwest",
+ "tokio",
+ "trellis-rs",
+ "trellis-test-fixture",
+ "trellis-testkit",
+]
+
+[[package]]
+name = "trellis-testkit"
 version = "0.100.0"
 dependencies = [
  "base64 0.22.1",
@@ -2698,28 +2720,6 @@ dependencies = [
  "trellis-rs",
  "ulid",
  "url",
-]
-
-[[package]]
-name = "trellis-test-fixture"
-version = "0.100.0"
-dependencies = [
- "futures-util",
- "serde",
- "serde_json",
- "trellis-rs",
-]
-
-[[package]]
-name = "trellis-test-fixture-live"
-version = "0.100.0"
-dependencies = [
- "futures-util",
- "reqwest",
- "tokio",
- "trellis-rs",
- "trellis-test",
- "trellis-test-fixture",
 ]
 
 [[package]]
