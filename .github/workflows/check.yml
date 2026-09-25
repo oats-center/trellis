@@ -534,6 +534,8 @@ jobs:
     needs: [install, wasm, portal, build]
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 45
+    env:
+      TMPDIR: /dev/shm
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -586,10 +588,16 @@ jobs:
           (
             while true; do
               echo "=== $(date -u +%H:%M:%S) ==="
-              echo "loadavg: $(cat /proc/loadavg)"
+              echo "loadavg: $(cat /proc/loadavg) nproc=$(nproc 2>/dev/null)"
               grep -E 'MemTotal|MemAvailable|SwapTotal|SwapFree' /proc/meminfo
               for pressure in cpu io memory; do
                 [ -r "/proc/pressure/${pressure}" ] && echo "psi ${pressure}: $(cat "/proc/pressure/${pressure}")"
+              done
+              for cg in /sys/fs/cgroup/io.stat /sys/fs/cgroup/io.max /sys/fs/cgroup/cpu.max /sys/fs/cgroup/memory.max; do
+                [ -r "$cg" ] && echo "cgroup $cg: $(tr '\n' '|' < "$cg")"
+              done
+              for pid in $(pgrep -x trellis-server 2>/dev/null; pgrep -x nats-server 2>/dev/null); do
+                echo "io pid $pid $(grep -E 'read_bytes|write_bytes' "/proc/$pid/io" 2>/dev/null | tr '\n' ' ')"
               done
               df -h /tmp "$GITHUB_WORKSPACE" 2>/dev/null | tail -3
               vmstat 1 2 2>/dev/null | tail -1
