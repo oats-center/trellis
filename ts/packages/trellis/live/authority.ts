@@ -261,7 +261,28 @@ export class LiveAuthorityGuard {
     const settled = await cache.waitRotationSettled(30_000);
     if (!cache.maintenanceFor(this.#epoch)) return this.checkNow();
     if (!settled) return "coverage_lost";
-    const generation = cache.connectionGeneration();
+    return await this.#rebind(cache.connectionGeneration());
+  }
+
+  /**
+   * Rebind onto the current transport generation after an ordinary reconnect
+   * changed it without a planned rotation.
+   *
+   * Unlike {@link reconcile}, this is not gated on a planned rotation: a
+   * long-lived provider guard must adopt the replacement attachment before it
+   * can admit new sessions. The predecessor lease is released only after the
+   * replacement evidence is retained and validated, so a failed rebind leaves
+   * the guard reporting the precise loss.
+   */
+  async rebindCurrentGeneration(): Promise<LiveAuthorityLost | undefined> {
+    const generation = this.#cache.connectionGeneration();
+    if (generation === this.#epoch) return this.checkNow();
+    return await this.#rebind(generation);
+  }
+
+  /** Retain, validate and install coverage for `generation`, releasing the predecessor on success. */
+  async #rebind(generation: number): Promise<LiveAuthorityLost | undefined> {
+    const cache = this.#cache;
     const digest = this.#tracksLocal
       ? cache.currentLocalContextDigest()
       : this.#digest;

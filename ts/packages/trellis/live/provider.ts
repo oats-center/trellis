@@ -86,6 +86,8 @@ export type ProviderAuthorityPort = {
   maintenance(): boolean;
   /** Reconcile across a planned rotation; returns the terminal loss, if any. */
   reconcile(): Promise<LiveAuthorityLost | undefined>;
+  /** Rebind onto the current transport generation after an ordinary reconnect. */
+  rebindCurrentGeneration(): Promise<LiveAuthorityLost | undefined>;
   allows(permission: PermissionAtom): boolean;
   subscribeChanges(callback: () => void): () => void;
   release(): void;
@@ -330,6 +332,13 @@ export class LiveProvider {
     if (guard.maintenance()) return await guard.reconcile();
     const lost = guard.checkNow();
     if (!lost) return undefined;
+    if (lost === "epoch_changed") {
+      // An ordinary reconnect replaced the physical attachment without a planned
+      // rotation. Rebind this long-lived guard onto the new generation so new
+      // sessions are admitted; existing sessions were already fenced by the real
+      // outage.
+      return await guard.rebindCurrentGeneration();
+    }
     if (await this.#refreshOwnAuthority()) return undefined;
     return guard.checkNow() ?? lost;
   }

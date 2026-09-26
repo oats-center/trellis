@@ -52,6 +52,7 @@ function authority(kind: string): ProviderAuthorityPort {
     checkNow: () => undefined,
     maintenance: () => false,
     reconcile: async () => undefined,
+    rebindCurrentGeneration: () => Promise.resolve(undefined),
     allows: () => true,
     subscribeChanges: () => () => {},
     release: () => {},

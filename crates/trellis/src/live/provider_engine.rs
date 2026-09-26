@@ -643,7 +643,7 @@ impl ProviderSessionRecord {
         if self.finished.load(Ordering::Acquire) || self.session.phase() != ProviderPhase::Active {
             return;
         }
-        if let Err(lost) = self.own_guard.reconcile().await {
+        if let Err(lost) = self.reconcile_own_epoch().await {
             self.commit_end(super::manager::authority_end(&lost));
             self.begin_close(Instant::now());
             self.spawn_close_driver(nats);
@@ -699,10 +699,24 @@ impl ProviderSessionRecord {
     /// Reconcile both retained guards across a planned rotation, returning the
     /// first terminal authority loss, if any.
     pub(crate) async fn reconcile_authority(&self) -> Option<LiveAuthorityLost> {
-        if let Err(lost) = self.own_guard.reconcile().await {
+        if let Err(lost) = self.reconcile_own_epoch().await {
             return Some(lost);
         }
         self.caller_guard.reconcile().await.err()
+    }
+
+    /// Reconcile the long-lived own guard across either a planned rotation or an
+    /// ordinary reconnect, rebinding it onto the replacement epoch so new
+    /// sessions can still be admitted after a real transport outage.
+    async fn reconcile_own_epoch(&self) -> Result<(), LiveAuthorityLost> {
+        if self.own_guard.maintenance() {
+            return self.own_guard.reconcile().await;
+        }
+        match self.own_guard.check_now() {
+            Ok(()) => Ok(()),
+            Err(LiveAuthorityLost::EpochChanged) => self.own_guard.rebind_current_epoch().await,
+            Err(lost) => Err(lost),
+        }
     }
 
     /// Spawn the one owned cleanup-then-ack driver for this session.

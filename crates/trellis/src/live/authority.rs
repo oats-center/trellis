@@ -227,7 +227,34 @@ impl LiveAuthorityGuard {
         if !settled {
             return Err(LiveAuthorityLost::CoverageLost);
         }
+        self.rebind(self.cache.epoch()).await
+    }
+
+    /// Rebind onto the current transport epoch after an ordinary reconnect.
+    ///
+    /// Unlike [`Self::reconcile`], this is not gated on a planned rotation: a
+    /// long-lived provider guard must adopt the replacement physical attachment
+    /// before it can admit new sessions. The predecessor lease is released only
+    /// after the replacement evidence is retained and validated.
+    ///
+    /// # Errors
+    ///
+    /// Returns the precise [`LiveAuthorityLost`] when the replacement coverage is
+    /// unavailable or does not preserve the pinned identity or permission.
+    pub(crate) async fn rebind_current_epoch(&self) -> Result<(), LiveAuthorityLost> {
         let generation = self.cache.epoch();
+        let expected = *self
+            .expected_epoch
+            .read()
+            .map_err(|_| LiveAuthorityLost::CoverageUnknown)?;
+        if generation == expected {
+            return self.check_now();
+        }
+        self.rebind(generation).await
+    }
+
+    /// Retain, validate and install coverage for `generation`, releasing the predecessor on success.
+    async fn rebind(&self, generation: u64) -> Result<(), LiveAuthorityLost> {
         let digest = if self.tracks_local {
             self.cache
                 .current_local_context_digest()

@@ -56,21 +56,27 @@ class TcpProxy {
   readonly #listener: Deno.TcpListener;
   readonly #target: Deno.ConnectOptions;
   readonly #connections = new Set<Deno.Conn>();
+  #interrupted = false;
 
   private constructor(
     listener: Deno.TcpListener,
     target: Deno.ConnectOptions,
     advertisedHost: string,
+    scheme: string,
   ) {
     this.#listener = listener;
     this.#target = target;
-    this.url = `ws://${advertisedHost}:${listener.addr.port}`;
+    this.url = `${scheme}://${advertisedHost}:${listener.addr.port}`;
     this.#accept();
   }
 
   static start(
     targetUrl: string,
-    options: { bindHostname?: string; advertisedHost?: string } = {},
+    options: {
+      bindHostname?: string;
+      advertisedHost?: string;
+      scheme?: string;
+    } = {},
   ): TcpProxy {
     const target = new URL(targetUrl);
     return new TcpProxy(
@@ -81,12 +87,44 @@ class TcpProxy {
         port: Number(target.port),
       },
       options.advertisedHost ?? "127.0.0.1",
+      options.scheme ?? "ws",
     );
+  }
+
+  /**
+   * Interrupt the path: drop every live connection and refuse new ones while
+   * keeping the listener bound, so an ordinary reconnect cannot succeed until
+   * {@link restore}. This models a real transport outage rather than a logical
+   * event synthesized inside the client.
+   */
+  interrupt(): void {
+    this.#interrupted = true;
+    for (const connection of [...this.#connections]) {
+      try {
+        connection.close();
+      } catch {
+        // The peer may have closed first.
+      }
+    }
+    this.#connections.clear();
+  }
+
+  /** Restore the path after {@link interrupt}; new connections forward again. */
+  restore(): void {
+    this.#interrupted = false;
   }
 
   async #accept(): Promise<void> {
     try {
       for await (const client of this.#listener) {
+        if (this.#interrupted) {
+          try {
+            client.close();
+          } catch {
+            // The peer may have closed first.
+          }
+          continue;
+        }
         this.#connections.add(client);
         void this.#forward(client);
       }
@@ -218,6 +256,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
   #configPath: string | undefined;
   #config: ReturnType<typeof buildControlPlaneConfig> | undefined;
   #websocketProxy: TcpProxy | undefined;
+  #nativeProxy: TcpProxy | undefined;
   #trellisOptions: TrellisTestRuntimeStartOptions["trellis"] | undefined;
   #keepWorkdir: boolean;
   #ownsWorkdir: boolean;
@@ -260,6 +299,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
     configPath?: string;
     config?: ReturnType<typeof buildControlPlaneConfig>;
     websocketProxy?: TcpProxy;
+    nativeProxy?: TcpProxy;
     trellisOptions?: TrellisTestRuntimeStartOptions["trellis"];
     nats: NatsTestContainer;
     controlPlane?: TrellisProcessHandle;
@@ -281,6 +321,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
     this.#configPath = args.configPath;
     this.#config = args.config;
     this.#websocketProxy = args.websocketProxy;
+    this.#nativeProxy = args.nativeProxy;
     this.#trellisOptions = args.trellisOptions;
     this.#admin = args.admin;
     this.deployments = {
@@ -369,6 +410,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
     let controlPlane: TrellisProcessHandle | undefined;
     let portLease: ReservedPort | undefined;
     let websocketProxy: TcpProxy | undefined;
+    let nativeProxy: TcpProxy | undefined;
     try {
       const timeouts = {
         startupMs: options.timeouts?.startupMs ?? 30_000,
@@ -387,6 +429,9 @@ export class TrellisTestRuntime implements AsyncDisposable {
             : {}),
         });
       }
+      if (options.interruptibleNativeProxy) {
+        nativeProxy = TcpProxy.start(nats.natsUrl, { scheme: "nats" });
+      }
       portLease = reserveLocalPort();
       const port = portLease.port;
       const trellisUrl = browserHost
@@ -397,6 +442,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
         workdir,
         natsUrl: nats.natsUrl,
         websocketUrl: websocketProxy?.url ?? nats.websocketUrl,
+        nativeNatsServers: nativeProxy?.url,
         manifest: nats.manifest,
         port,
         publicOrigin,
@@ -442,6 +488,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
         configPath,
         config,
         websocketProxy,
+        nativeProxy,
         trellisOptions: options.trellis,
         nats,
         controlPlane: startedControlPlane,
@@ -451,6 +498,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
       portLease?.release();
       await controlPlane?.stop().catch(() => undefined);
       websocketProxy?.stop();
+      nativeProxy?.stop();
       await nats?.stop().catch(() => undefined);
       if (!options.keepWorkdir) {
         await Deno.remove(workdir, { recursive: true }).catch(() => undefined);
@@ -637,6 +685,26 @@ export class TrellisTestRuntime implements AsyncDisposable {
     });
   }
 
+  /**
+   * Interrupts the advertised native NATS path: every native client drops and
+   * cannot reconnect until {@link restoreNativeTransport}. Only available when
+   * the runtime was started with `interruptibleNativeProxy`.
+   */
+  interruptNativeTransport(): void {
+    if (this.#nativeProxy === undefined) {
+      throw new Error("Runtime was not started with interruptibleNativeProxy");
+    }
+    this.#nativeProxy.interrupt();
+  }
+
+  /** Restores the native NATS path interrupted by {@link interruptNativeTransport}. */
+  restoreNativeTransport(): void {
+    if (this.#nativeProxy === undefined) {
+      throw new Error("Runtime was not started with interruptibleNativeProxy");
+    }
+    this.#nativeProxy.restore();
+  }
+
   /** Replaces the browser WebSocket endpoint and retires the prior listener. */
   async rotateWebsocketProxy(): Promise<[string, string]> {
     if (
@@ -694,6 +762,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
       failures.push(error);
     }
     this.#websocketProxy?.stop();
+    this.#nativeProxy?.stop();
     try {
       await this.#nats.stop();
     } catch (error) {

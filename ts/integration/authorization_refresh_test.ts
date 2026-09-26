@@ -356,3 +356,129 @@ Deno.test("a Rust provider live session rebinds an unchanged caller context acro
     }
   }, runtimeOptions);
 });
+
+/**
+ * A real native-path outage case: the proactive refresh must land while the
+ * physical path is down, and recovery must stay an ordinary logical reconnect.
+ * `refreshLeadSeconds: 30` puts the refresh ~16s after issuance and the original
+ * context expiry ~46s after, leaving room to hold the outage across the refresh
+ * and still recover before the credential expires.
+ */
+const outageRuntimeOptions = {
+  ...runtimeOptions,
+  interruptibleNativeProxy: true,
+  authorization: {
+    contextLifetimeSeconds: 76,
+    refreshLeadSeconds: 30,
+    refreshJitterSeconds: 0,
+    minimumContextLifetimeSeconds: 46,
+  },
+};
+
+Deno.test("an authorization refresh during a real transport outage does not suppress recovery", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: `outage-provider-${crypto.randomUUID()}`,
+      contract: participants.Provider.participant,
+    });
+    const name = `outage-provider-${crypto.randomUUID()}`;
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.Provider.participant,
+      name,
+      seed: identity.seed,
+    }).orThrow();
+    const serviceExit = service.wait().catch((error: unknown) => error);
+    await service.handleEcho(({ input }) => Result.ok(input));
+    let providerStarts = 0;
+    await service.handleWatch(async ({ emit, signal }) => {
+      providerStarts += 1;
+      while (!signal.aborted) {
+        const emitted = await emit({ value: `frame-${Date.now()}` });
+        if (emitted.isErr()) return;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    });
+    const caller = await runtime.connectClient({
+      name: `outage-caller-${crypto.randomUUID()}`,
+      contract: participants.Caller.participant,
+    });
+    try {
+      assertEquals(
+        (await caller.echo({ value: "before" }).orThrow()).value,
+        "before",
+      );
+
+      // A real outage of the native NATS path: both endpoints drop and cannot
+      // reconnect until the path is restored.
+      runtime.interruptNativeTransport();
+      await runtime.waitFor(
+        () =>
+          service.connection.status.phase !== "connected" &&
+          caller.connection.status.phase !== "connected",
+        { timeoutMs: 20_000 },
+      );
+      const downAt = Date.now();
+
+      // Hold across the proactive refresh (~issuance + 16s, which the outage
+      // observation precedes) so its installation is in flight while down.
+      while (Date.now() < downAt + 20_000) {
+        assert(
+          service.connection.status.phase !== "connected",
+          "the outage must keep the logical connection down until restored",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+
+      runtime.restoreNativeTransport();
+
+      // Recovery is an ordinary logical reconnect: the same runtime connection
+      // returns to connected and Live resumes instead of waiting on planned
+      // maintenance.
+      await runtime.waitFor(
+        () =>
+          service.connection.status.phase === "connected" &&
+          caller.connection.status.phase === "connected",
+        { timeoutMs: 30_000 },
+      );
+      assertEquals(
+        (await caller.echo({ value: "after" }).orThrow()).value,
+        "after",
+      );
+
+      // Live is usable again: a fresh session opens and streams through the
+      // resumed provider and consumer managers.
+      const feed = await caller.watch({}).orThrow();
+      const frames: string[] = [];
+      let sessionError: unknown;
+      const drain = (async () => {
+        try {
+          for await (const value of feed) {
+            frames.push(value.value);
+            if (frames.length >= 2) return;
+          }
+        } catch (error) {
+          sessionError = error;
+        }
+      })();
+      try {
+        await runtime.waitFor(() => frames.length >= 2, { timeoutMs: 20_000 });
+      } finally {
+        await feed.return?.();
+        await drain;
+      }
+      if (sessionError) throw sessionError;
+      assert(frames.length >= 2, "Live must deliver after recovery");
+      assertEquals(
+        providerStarts,
+        1,
+        "the provider handler must run exactly once for the recovered session",
+      );
+    } finally {
+      await caller.connection.close();
+      await service.stop();
+      // The logical connection survived the outage; the service never terminated.
+      assertEquals(await serviceExit, undefined);
+    }
+  }, outageRuntimeOptions);
+});

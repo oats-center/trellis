@@ -59,6 +59,11 @@ export type TrellisTestRuntimeStartOptions = {
   /** Route the advertised browser WebSocket endpoint through a replaceable TCP proxy. */
   rotatableWebsocketProxy?: boolean;
   /**
+   * Advertise an interruptible TCP proxy as the native NATS transport so tests
+   * can drop and restore the real physical path for native clients.
+   */
+  interruptibleNativeProxy?: boolean;
+  /**
    * Non-loopback host used as the browser public origin and advertised WebSocket
    * host, so the document is an ordinary insecure browser context.
    */

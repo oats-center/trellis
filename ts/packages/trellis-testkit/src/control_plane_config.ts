@@ -155,6 +155,8 @@ export function buildControlPlaneConfig(args: {
   natsWorkdir?: string;
   natsUrl: string;
   websocketUrl: string;
+  /** Overrides the native NATS servers advertised to clients; defaults to `natsUrl`. */
+  nativeNatsServers?: string;
   manifest: LocalNatsBootstrapManifest;
   port: number;
   oauthProviders?: Record<string, TrellisControlPlaneOAuthProvider>;
@@ -240,7 +242,7 @@ export function buildControlPlaneConfig(args: {
     sessionKeySeed: generateSessionSeed(),
     client: {
       natsServers: [args.websocketUrl],
-      nativeNatsServers: [args.natsUrl],
+      nativeNatsServers: [args.nativeNatsServers ?? args.natsUrl],
     },
     oauth: {
       redirectBase: `${publicOrigin}/auth/callback`,
