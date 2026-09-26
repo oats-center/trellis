@@ -21,6 +21,7 @@ import {
   refreshAuthorizationContextWithMetadata,
   startAuthorizationContextRefresh,
 } from "./auth/authorization_context.ts";
+import { installAuthorizationRefresh } from "./auth/authorization/install_refresh.ts";
 import {
   base64urlDecode,
   base64urlEncode,
@@ -753,7 +754,9 @@ async function bindClientFlow(args: {
   return {
     sessionId: parsed.session.sessionId,
     expiresAt: parsed.session.expiresAt,
-    serverNow: parsed.serverNow / 1_000,
+    // Verification consumes integer Unix seconds; the response is in
+    // milliseconds, so truncate rather than leave a fractional second.
+    serverNow: Math.floor(parsed.serverNow / 1_000),
     serverClockOffsetMs,
   };
 }
@@ -830,7 +833,7 @@ async function recoverClientBootstrapWithRetry(args: {
       );
       return {
         status: "ready",
-        serverNow: result.response.serverNow / 1_000,
+        serverNow: Math.floor(result.response.serverNow / 1_000),
         apiBindings: result.response.apiBindings,
         resourceBindings: result.response.authorization.resourceRuntime,
         connectInfo: {
@@ -1383,8 +1386,8 @@ export async function connectClientWithDeps<
       bootstrap.resourceBindings,
       authorizationContexts.current().context.grants.permissions,
     ),
-    onTransportEvent: (event) =>
-      authorizationProviderCache?.observeTransportEvent(event),
+    onTransportEvent: (event, planned) =>
+      authorizationProviderCache?.observeTransportEvent(event, planned),
     ...(args.log
       ? {
         lifecycleLog: {
@@ -1394,9 +1397,6 @@ export async function connectClientWithDeps<
       }
       : {}),
   });
-  connection.subscribe((status) =>
-    authorizationProviderCache.observeConnectionPhase(status.phase)
-  );
   const api = bindApiRoutes(
     getParticipantRuntime(args.participant).usedApi,
     bootstrap.apiBindings,
@@ -1483,22 +1483,19 @@ export async function connectClientWithDeps<
       return result.context;
     },
     onRefresh: async (context) => {
-      nc.setServers(
-        selectClientRuntimeTransportServers(
-          authorizationContexts.transportRuntimeBinding().transports,
-        ),
-      );
-      if (connection.status.phase === "connected") await nc.reconnect();
-      await authorizationProviderCache.waitReady({ timeoutMs: 30_000 });
-      const generation = authorizationProviderCache.connectionGeneration();
-      await authorizationProviderCache.retainOwnCandidate(
-        context.contextDigest,
-        generation,
-      );
-      authorizationProviderCache.promoteOwnCandidate(
-        context.contextDigest,
-        generation,
-      );
+      await installAuthorizationRefresh({
+        connection,
+        provider: authorizationProviderCache,
+        contextDigest: context.contextDigest,
+        updateTransport: () => {
+          nc.setServers(
+            selectClientRuntimeTransportServers(
+              authorizationContexts.transportRuntimeBinding().transports,
+            ),
+          );
+        },
+        reconnect: () => nc.reconnect(),
+      });
     },
     onTerminalFailure: async (error) => {
       if (!nc.isClosed()) {

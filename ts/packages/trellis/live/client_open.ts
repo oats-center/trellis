@@ -274,10 +274,10 @@ async function openLiveSession<T>(
     const session = { seq: 0n };
     const closeFn = (): Promise<LiveCloseReceipt> =>
       closeExchange(host, offer, core, session, clock, retainedProvider);
-    const fence = (): LiveEnd | undefined => {
-      const localLost = retainedLocal.checkNow();
+    const fence = async (): Promise<LiveEnd | undefined> => {
+      const localLost = await retainedLocal.reconcile();
       if (localLost) return authorityLostEnd(localLost);
-      const peerLost = retainedProvider.checkNow();
+      const peerLost = await retainedProvider.reconcile();
       if (peerLost) return authorityLostEnd(peerLost);
       return undefined;
     };
@@ -645,8 +645,8 @@ async function runPump<T>(
   );
   const ingress = new MsgIngress();
   let subscription: Subscription | undefined;
-  const localFence = (): boolean => {
-    const localLost = localGuard.checkNow();
+  const localFence = async (): Promise<boolean> => {
+    const localLost = await localGuard.reconcile();
     if (localLost) {
       core.discardQueue();
       core.commitEnd(authorityLostEnd(localLost));
@@ -654,9 +654,9 @@ async function runPump<T>(
     }
     return false;
   };
-  const authorityFence = (): boolean => {
-    if (localFence()) return true;
-    const peerLost = providerGuard.checkNow();
+  const authorityFence = async (): Promise<boolean> => {
+    if (await localFence()) return true;
+    const peerLost = await providerGuard.reconcile();
     if (peerLost) {
       core.discardQueue();
       core.commitEnd(authorityLostEnd(peerLost));
@@ -696,7 +696,7 @@ async function runPump<T>(
       );
       return;
     }
-    if (authorityFence()) return;
+    if (await authorityFence()) return;
     core.setPhase("activating");
     const deadlines = LiveDeadlines.preparedUntil(deadlineMs);
 
@@ -758,7 +758,7 @@ async function runPump<T>(
       core.commitDrainIfComplete();
       if (core.committedEnd()) return;
       const draining = core.phase === "draining";
-      if (draining ? localFence() : authorityFence()) return;
+      if (await (draining ? localFence() : authorityFence())) return;
       if (draining) {
         // Data ingress and peer pulse work are stopped; only the bounded local
         // drain, its stall deadline and the local guard remain. Real handoff
@@ -846,7 +846,7 @@ async function runPump<T>(
       if (winner === "credit") continue;
       if (winner === "change") {
         changeResolvers = Promise.withResolvers();
-        if (authorityFence()) return;
+        if (await authorityFence()) return;
         continue;
       }
       if (winner === "timer") {
@@ -897,7 +897,7 @@ async function runPump<T>(
                   receivedSeq: pendingCredit.received,
                   consumedSeq: pendingCredit.consumed,
                 },
-                deadlineMs,
+                undefined,
                 providerGuard,
               );
               if (response && response.kind === "ack") {
@@ -917,7 +917,7 @@ async function runPump<T>(
       }
       const msg = message;
       if (!msg) continue;
-      if (authorityFence()) return;
+      if (await authorityFence()) return;
       let frame;
       try {
         frame = liveParseFrame(msg.data, offer.limits.maxDataBodyBytes);
@@ -1011,7 +1011,7 @@ async function runPump<T>(
             receivedSeq: core.receivedSeq().toString(),
             consumedSeq: core.consumedSeq().toString(),
           },
-          deadlineMs,
+          undefined,
           providerGuard,
         );
         if (
@@ -1049,7 +1049,7 @@ async function runPump<T>(
             receivedSeq: core.receivedSeq().toString(),
             consumedSeq: core.consumedSeq().toString(),
           },
-          deadlineMs,
+          undefined,
           providerGuard,
         );
         const end = frame.terminal.error
@@ -1151,7 +1151,7 @@ async function verifyProviderFrame(
     }
     if (providerGuard.commitReplacement(candidate)) return false;
   }
-  return providerGuard.checkNow() === undefined;
+  return (await providerGuard.reconcile()) === undefined;
 }
 
 async function controlAttempt(
@@ -1159,7 +1159,7 @@ async function controlAttempt(
   core: { telemetry: LiveTelemetryOwner },
   offer: LiveOfferWire,
   control: Record<string, string>,
-  deadlineMs: number,
+  deadlineMs: number | undefined,
   providerGuard: LiveAuthorityGuard,
 ): Promise<LiveControlResponse | undefined> {
   const reply = inbox(host.inboxPrefix);
@@ -1175,7 +1175,12 @@ async function controlAttempt(
     reply,
   );
   const clock = host.clock ?? productionLiveClock;
-  const remaining = deadlineMs - clock.nowMs();
+  // An explicit deadline bounds the opening/close budget. Post-activation
+  // controls (credit, pulse, end-ack) pass no absolute deadline: the opening
+  // reservation must not expire a session that is already active.
+  const remaining = deadlineMs === undefined
+    ? Number.POSITIVE_INFINITY
+    : deadlineMs - clock.nowMs();
   if (remaining <= 0) return undefined;
   const sub = host.nats.subscribe(reply);
   try {
@@ -1221,7 +1226,7 @@ async function controlAttempt(
       }
       if (providerGuard.commitReplacement(candidate)) return undefined;
     }
-    if (providerGuard.checkNow()) return undefined;
+    if (await providerGuard.reconcile()) return undefined;
     let response: LiveControlResponse;
     try {
       response = liveParseControlResponse(received.data);

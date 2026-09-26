@@ -70,11 +70,11 @@ for name in os.listdir(os.path.join(bundle, "packages")):
     if not name.endswith(".crate"):
         continue
     stem = name[: -len(".crate")]
-    for package in ("trellis-protocol", "trellis-rs", "trellis-test"):
+    for package in ("trellis-protocol", "trellis-rs", "trellis-testkit"):
         prefix = f"{package}-"
         if stem.startswith(prefix):
             packages[package] = stem[len(prefix):]
-for package in ("trellis-protocol", "trellis-rs", "trellis-test"):
+for package in ("trellis-protocol", "trellis-rs", "trellis-testkit"):
     if package not in packages:
         raise SystemExit(f"missing {package} .crate in packages/")
 

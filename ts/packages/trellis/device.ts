@@ -76,6 +76,7 @@ import {
   AuthorizationProviderCache,
   startAuthorizationContextRefresh,
 } from "./auth/authorization_context.ts";
+import { installAuthorizationRefresh } from "./auth/authorization/install_refresh.ts";
 import { type CallerRuntime, createCallerRuntime } from "./caller.ts";
 import {
   bindApiRoutes,
@@ -920,8 +921,8 @@ export async function connectDeviceWithDeps<
       connectInfo.apiBindings,
       connectInfo.resourceBindings,
     ),
-    onTransportEvent: (event) =>
-      authorizationProviderCache.observeTransportEvent(event),
+    onTransportEvent: (event, planned) =>
+      authorizationProviderCache.observeTransportEvent(event, planned),
     log: false,
     lifecycleLog: {
       log,
@@ -952,9 +953,6 @@ export async function connectDeviceWithDeps<
   ) {
     transitionConnectionAvailability(connection, true, "connected");
   }
-  connection.subscribe((status) =>
-    authorizationProviderCache.observeConnectionPhase(status.phase)
-  );
   const runtimeApi = bindApiRoutes(
     getParticipantRuntime(args.participant).api,
     connectInfo.apiBindings,
@@ -1007,17 +1005,12 @@ export async function connectDeviceWithDeps<
       }
     },
     onRefresh: async (context) => {
-      if (connection.status.phase === "connected") await nc.reconnect();
-      await authorizationProviderCache.waitReady({ timeoutMs: 30_000 });
-      const generation = authorizationProviderCache.connectionGeneration();
-      await authorizationProviderCache.retainOwnCandidate(
-        context.contextDigest,
-        generation,
-      );
-      authorizationProviderCache.promoteOwnCandidate(
-        context.contextDigest,
-        generation,
-      );
+      await installAuthorizationRefresh({
+        connection,
+        provider: authorizationProviderCache,
+        contextDigest: context.contextDigest,
+        reconnect: () => nc.reconnect(),
+      });
     },
     onTerminalFailure: async () => {
       if (!nc.isClosed()) await nc.close();

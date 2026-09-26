@@ -38,8 +38,10 @@ default request timeout, event stream selection, no-responder retry, and health
 heartbeat interval. Deployment/instance assignment, installed
 package/participant evidence, exact grants, resources, signed context, route
 JWT, and transport endpoints are resolved server-side. Authorization state is
-process-memory-only and refreshes on reconnect; no authorization-context store
-or client-supplied deployment/digest fields exist. The complete example is in
+process-memory-only and is refreshed proactively as SDK-owned maintenance; a
+refreshed route credential may rotate the physical NATS attachment without
+ending the logical connection. No authorization-context store or client-supplied
+deployment/digest fields exist. The complete example is in
 `/guides/write-a-service/service-entrypoint`.
 
 For a participant declaring RPC `Orders.Create`, with matching generated input
@@ -219,7 +221,7 @@ Browser apps use
 `TrellisClient.connect({ participant, trellisUrl, auth:
 "browser" })` or the
 [Svelte integration](llms-svelte.txt). Let the Trellis client own its auth
-installation, refresh, reconnect, and normal `logout()`.
+installation, proactive refresh, transport maintenance, and normal `logout()`.
 
 A generated device companion is established only through the parent device's
 activation flow and separate user consent. It has its own ordinary App/Agent

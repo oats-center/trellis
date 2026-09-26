@@ -31,13 +31,14 @@ value, KV is typed history, and Store is raw bytes.
 
 Use Operations for caller-visible durable workflows. They are restartable and at
 least once. Use Jobs for private queued work. Consumer concurrency is local per
-process; retry and Events DLQ behavior are runtime-managed. Live observations are transient and
-owner-cancelled, not durable replay.
+process; retry and Events DLQ behavior are runtime-managed. Live observations
+are transient and owner-cancelled, not durable replay.
 
 Expected domain failures use generated Result-style errors. Preserve request
-correlation, cancellation, timeout, and orderly stop/wait behavior. Transport
-loss triggers the owned refresh/reconnect lifecycle; authorization contexts and
-route credentials remain process-memory state.
+correlation, cancellation, timeout, and orderly stop/wait behavior.
+Authorization refresh is owned SDK maintenance that preserves the logical
+connection; genuine transport loss triggers the owned recovery lifecycle.
+Authorization contexts and route credentials remain process-memory state.
 
 ## Minimal installable service example
 

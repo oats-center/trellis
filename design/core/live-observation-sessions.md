@@ -85,11 +85,16 @@ materialization rather than context atoms, so the peer check is the selected
 binding plus tuple/identity matching, while the locally retained observer atom
 is required exactly.
 
-An identity-preserving authorization refresh on an unchanged transport epoch
-does not close the session, reset sequence/credit, or reinvoke the handler. A
-changed runtime key, logical connection id, selected deployment, or removed
-route ends the session. Invalid or foreign frames are discarded without
-extending liveness and without closing an otherwise valid session.
+An identity-preserving authorization refresh preserves the logical Trellis
+connection. A planned credential rotation may replace the physical NATS
+attachment without closing Live: retained self/peer guards pause new decisions
+while exact revocation coverage is re-established on the replacement attachment,
+then continue exactly where the session stopped. Sequence, credit, handler, and
+session identity continue, and the session is not recreated. Unexpected
+transport loss remains disruptive and terminal per the existing rules. A changed
+runtime key, logical connection id, selected deployment, or removed route ends
+the session. Invalid or foreign frames are discarded without extending liveness
+and without closing an otherwise valid session.
 
 ## Credit and buffering
 

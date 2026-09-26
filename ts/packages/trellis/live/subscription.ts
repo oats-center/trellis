@@ -318,7 +318,9 @@ export class LiveSubscription<T> implements AsyncIterableIterator<T> {
   readonly #core: ConsumerCore<T>;
   readonly #cancellation: LiveCancellation;
   readonly #closeFn: () => Promise<LiveCloseReceipt>;
-  readonly #fence: (() => LiveEnd | undefined) | undefined;
+  readonly #fence:
+    | (() => LiveEnd | undefined | Promise<LiveEnd | undefined>)
+    | undefined;
   readonly #closed = Promise.withResolvers<LiveEnd>();
   #closedResolved = false;
   #nextPending = false;
@@ -331,7 +333,7 @@ export class LiveSubscription<T> implements AsyncIterableIterator<T> {
     cancellation: LiveCancellation,
     closeFn: () => Promise<LiveCloseReceipt>,
     permit?: { [Symbol.dispose](): void },
-    fence?: () => LiveEnd | undefined,
+    fence?: () => LiveEnd | undefined | Promise<LiveEnd | undefined>,
   ) {
     this.#core = core;
     this.#cancellation = cancellation;
@@ -384,7 +386,7 @@ export class LiveSubscription<T> implements AsyncIterableIterator<T> {
         }
         // A continuing current-authority check fences queued data before it is
         // handed to the application.
-        const fenced = this.#fence?.();
+        const fenced = await this.#fence?.();
         if (fenced) {
           this.#core.discardQueue();
           this.#core.commitEnd(fenced);

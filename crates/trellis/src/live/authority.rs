@@ -104,13 +104,17 @@ pub(crate) enum LiveGuardRequirement {
 pub(crate) struct LiveAuthorityCandidate {
     lease: AuthorizationContextLease,
     identity: PinnedPeerIdentity,
+    digest: String,
 }
 
 /// One retained live-authority guard over an existing provider-cache lease.
 pub(crate) struct LiveAuthorityGuard {
     cache: AuthorizationProviderCache,
     lease: RwLock<AuthorizationContextLease>,
-    expected_epoch: u64,
+    expected_epoch: RwLock<u64>,
+    digest: RwLock<String>,
+    /// Whether this guard tracks the connection's own refreshable authority.
+    tracks_local: bool,
     identity: PinnedPeerIdentity,
     permission: Option<PermissionAtom>,
     peer: Option<PinnedPeerIdentity>,
@@ -131,6 +135,7 @@ impl LiveAuthorityGuard {
         let expected_epoch = cache.epoch();
         let lease = retain_live_lease(cache, digest, expected_epoch).await?;
         let identity = pinned_identity(&lease);
+        let tracks_local = cache.current_local_context_digest().as_deref() == Some(digest);
         let (permission, peer) = match requirement {
             LiveGuardRequirement::Observer(permission) => {
                 if !lease.allows(&permission) {
@@ -149,7 +154,9 @@ impl LiveAuthorityGuard {
         Ok(Self {
             cache: cache.clone(),
             lease: RwLock::new(lease),
-            expected_epoch,
+            expected_epoch: RwLock::new(expected_epoch),
+            digest: RwLock::new(digest.to_owned()),
+            tracks_local,
             identity,
             permission,
             peer,
@@ -178,6 +185,95 @@ impl LiveAuthorityGuard {
             .map_or(0, |lease| lease.signed_context().unsigned.expires_at)
     }
 
+    /// Return whether this guard is inside a planned credential rotation whose
+    /// replacement coverage is not yet established.
+    ///
+    /// The logical connection and its session remain alive; the guard pauses new
+    /// decisions until it rebinds onto the replacement physical attachment.
+    #[must_use]
+    pub(crate) fn maintenance(&self) -> bool {
+        if self.lease.read().is_err() {
+            return false;
+        }
+        let Ok(epoch) = self.expected_epoch.read() else {
+            return false;
+        };
+        self.cache.maintenance_for(*epoch)
+    }
+
+    /// Reconcile this guard across a planned physical credential rotation.
+    ///
+    /// Returns `Ok(())` when the guard is usable (including after a successful
+    /// rebind) and the precise terminal loss otherwise. A rebind waits, within a
+    /// bounded budget, for the rotation's coverage to settle, then re-resolves
+    /// the guard's exact digest on the replacement attachment, re-validates the
+    /// pinned identity and role requirement, and only then releases the
+    /// predecessor lease.
+    pub(crate) async fn reconcile(&self) -> Result<(), LiveAuthorityLost> {
+        if !self.maintenance() {
+            return self.check_now();
+        }
+        let settled = self
+            .cache
+            .wait_rotation_settled(std::time::Duration::from_secs(30))
+            .await;
+        let expected = *self
+            .expected_epoch
+            .read()
+            .map_err(|_| LiveAuthorityLost::CoverageUnknown)?;
+        if !self.cache.maintenance_for(expected) {
+            return self.check_now();
+        }
+        if !settled {
+            return Err(LiveAuthorityLost::CoverageLost);
+        }
+        let generation = self.cache.epoch();
+        let digest = if self.tracks_local {
+            self.cache
+                .current_local_context_digest()
+                .ok_or(LiveAuthorityLost::CoverageLost)?
+        } else {
+            self.digest
+                .read()
+                .map(|digest| digest.clone())
+                .unwrap_or_default()
+        };
+        if digest.is_empty() {
+            return Err(LiveAuthorityLost::CoverageLost);
+        }
+        let lease = retain_live_lease(&self.cache, &digest, generation).await?;
+        let identity = pinned_identity(&lease);
+        if identity != self.identity {
+            return Err(LiveAuthorityLost::IdentityChanged);
+        }
+        if let Some(expected_peer) = &self.peer {
+            if &identity != expected_peer {
+                return Err(LiveAuthorityLost::IdentityChanged);
+            }
+        }
+        if let Some(permission) = &self.permission {
+            if !lease.allows(permission) {
+                return Err(LiveAuthorityLost::PermissionLost);
+            }
+        }
+        {
+            let mut slot = self
+                .lease
+                .write()
+                .map_err(|_| LiveAuthorityLost::CoverageUnknown)?;
+            let old = std::mem::replace(&mut *slot, lease);
+            drop(slot);
+            drop(old);
+        }
+        if let Ok(mut epoch) = self.expected_epoch.write() {
+            *epoch = generation;
+        }
+        if let Ok(mut stored) = self.digest.write() {
+            *stored = digest;
+        }
+        Ok(())
+    }
+
     /// Perform the synchronous local authority check.
     ///
     /// Uses only retained local state: no network read, no cold context
@@ -187,6 +283,13 @@ impl LiveAuthorityGuard {
     ///
     /// Returns the precise [`LiveAuthorityLost`] reason, never a lossy boolean.
     pub(crate) fn check_now(&self) -> Result<(), LiveAuthorityLost> {
+        if self.maintenance() {
+            return Ok(());
+        }
+        let expected_epoch = *self
+            .expected_epoch
+            .read()
+            .map_err(|_| LiveAuthorityLost::CoverageUnknown)?;
         let lease = self
             .lease
             .read()
@@ -198,7 +301,7 @@ impl LiveAuthorityGuard {
         if !health.healthy {
             return Err(LiveAuthorityLost::TransportUnavailable);
         }
-        if self.cache.epoch() != self.expected_epoch || lease.epoch() != self.expected_epoch {
+        if self.cache.epoch() != expected_epoch || lease.epoch() != expected_epoch {
             return Err(LiveAuthorityLost::EpochChanged);
         }
         if !self.cache.live_guard_entry_is_covered(&lease) {
@@ -248,7 +351,11 @@ impl LiveAuthorityGuard {
         &self,
         digest: &str,
     ) -> Result<LiveAuthorityCandidate, LiveAuthorityLost> {
-        let lease = retain_live_lease(&self.cache, digest, self.expected_epoch).await?;
+        let expected_epoch = *self
+            .expected_epoch
+            .read()
+            .map_err(|_| LiveAuthorityLost::CoverageUnknown)?;
+        let lease = retain_live_lease(&self.cache, digest, expected_epoch).await?;
         let identity = pinned_identity(&lease);
         if identity != self.identity {
             return Err(LiveAuthorityLost::IdentityChanged);
@@ -263,7 +370,11 @@ impl LiveAuthorityGuard {
                 return Err(LiveAuthorityLost::PermissionLost);
             }
         }
-        Ok(LiveAuthorityCandidate { lease, identity })
+        Ok(LiveAuthorityCandidate {
+            lease,
+            identity,
+            digest: digest.to_owned(),
+        })
     }
 
     /// Atomically install a prepared replacement on the same transport epoch.
@@ -279,14 +390,17 @@ impl LiveAuthorityGuard {
         &self,
         candidate: LiveAuthorityCandidate,
     ) -> Result<(), LiveAuthorityLost> {
-        if self.cache.epoch() != self.expected_epoch
-            || candidate.lease.epoch() != self.expected_epoch
-        {
+        let expected_epoch = *self
+            .expected_epoch
+            .read()
+            .map_err(|_| LiveAuthorityLost::CoverageUnknown)?;
+        if self.cache.epoch() != expected_epoch || candidate.lease.epoch() != expected_epoch {
             return Err(LiveAuthorityLost::EpochChanged);
         }
         if candidate.identity != self.identity {
             return Err(LiveAuthorityLost::IdentityChanged);
         }
+        let digest = candidate.digest.clone();
         let mut slot = self
             .lease
             .write()
@@ -294,6 +408,9 @@ impl LiveAuthorityGuard {
         let old = std::mem::replace(&mut *slot, candidate.lease);
         drop(slot);
         drop(old);
+        if let Ok(mut stored) = self.digest.write() {
+            *stored = digest;
+        }
         Ok(())
     }
 
@@ -325,7 +442,11 @@ impl LiveAuthorityGuard {
         payload: &[u8],
         headers: &async_nats::HeaderMap,
     ) -> Result<(), LiveErrorCode> {
-        self.check_now()
+        // Reconcile rather than a synchronous check: a planned credential
+        // rotation pauses control decisions until exact coverage is rebound on
+        // the replacement attachment instead of applying them from a stale lease.
+        self.reconcile()
+            .await
             .map_err(|_| LiveErrorCode::PermissionDenied)?;
         let session_key = header_once(headers, "session-key")?;
         if session_key != self.identity.session_key {

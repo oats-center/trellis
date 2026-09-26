@@ -71,7 +71,9 @@ secret manager, CLI parser, or application configuration system if preferred.
 participant and GrantBinding, and resolves Trellis resources. `handleOrdersCreate()`
 registers the provider. `wait()` supervises the running service; `stop()` closes
 its resources. Authorization contexts and route credentials remain in process
-memory and are refreshed on reconnect.
+memory and are refreshed proactively as SDK-owned maintenance; a refreshed
+credential may rotate the physical NATS attachment without reconnecting the
+logical service connection.
 
 The shared `/service` entrypoint supports Node-compatible native runtimes,
 including Deno. For Rust, use the generated facade described in

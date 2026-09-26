@@ -8,6 +8,23 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- Authorization credential rotation is now transparent maintenance of the
+  existing logical Trellis connection. A refreshed routing credential may rotate
+  the physical NATS attachment, but a planned rotation no longer presents as a
+  public disconnected/reconnecting cycle, no longer suspends application
+  authorization, and no longer increments the logical Live generation or cancels
+  retained Live sessions. Retained Live guards pause while exact authorization
+  and revocation coverage is re-established on the replacement attachment, then
+  continue with the same session identity, sequence, credit, and handler;
+  revocation, permission loss, binding changes, unexpected transport loss, and
+  broker authorization rejection still fail closed.
+- Proactive service/device authorization refresh no longer fails silently on a
+  fractional-second `serverNow`, and live credit/pulse/end-ack controls are no
+  longer bounded by the 15-second opening reservation, so retained Live sessions
+  keep flowing instead of stalling on their credit window.
+
 ## [0.100.0-rc.2] - 2026-09-24
 
 ### Added

@@ -289,11 +289,6 @@ impl ConnectionRegistration {
         self.transition("usable", "connected");
     }
 
-    /// Records one observed refresh that kept the connection usable.
-    pub fn refreshed(&self) {
-        self.transition("usable", "refreshed");
-    }
-
     /// Records suspended coverage.
     pub fn suspended(&self, reason: &'static str) {
         self.transition("suspended", reason);

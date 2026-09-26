@@ -72,7 +72,7 @@ xtask/Cargo.lock
 /crates/eventlog-runtime/trellis/
 /crates/jobs-runtime/trellis/
 /web/trellis/
-/ts/packages/trellis-test/trellis/
+/ts/packages/trellis-testkit/trellis/
 /integration/fixtures/runtime/crates/runtime-trellis/
 /integration/fixtures/runtime/packages/runtime-trellis/
 /demos/rust/service/trellis/

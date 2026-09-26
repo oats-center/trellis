@@ -349,6 +349,10 @@ pub struct LiveSubscription<T> {
     pub(crate) activated: bool,
     /// Retained provider authority; a loss fences queued yields.
     pub(crate) guard: Arc<super::authority::LiveAuthorityGuard>,
+    /// Waker bridge for a paused guard rebind across a planned rotation.
+    pub(crate) guard_waker: Arc<std::sync::Mutex<Option<std::task::Waker>>>,
+    /// Guards one in-flight rebind task per subscription.
+    pub(crate) guard_reconcile_started: Arc<std::sync::atomic::AtomicBool>,
     /// One shared close result for repeated close calls.
     pub(crate) close_result: std::sync::Mutex<Option<LiveCloseReceipt>>,
 }
@@ -373,8 +377,35 @@ impl<T> LiveSubscription<T> {
             cancellation,
             activated: false,
             guard,
+            guard_waker: Arc::new(std::sync::Mutex::new(None)),
+            guard_reconcile_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             close_result: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Pause this subscription until a planned rotation's coverage is rebound.
+    fn begin_guard_reconcile(&self, waker: &std::task::Waker) {
+        if let Ok(mut slot) = self.guard_waker.lock() {
+            *slot = Some(waker.clone());
+        }
+        if self.guard_reconcile_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let guard = self.guard.clone();
+        let waker_slot = self.guard_waker.clone();
+        let started = self.guard_reconcile_started.clone();
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        handle.spawn(async move {
+            let _ = guard.reconcile().await;
+            started.store(false, Ordering::Release);
+            if let Ok(mut slot) = waker_slot.lock() {
+                if let Some(waker) = slot.take() {
+                    waker.wake();
+                }
+            }
+        });
     }
 
     /// Return the committed terminal outcome, waiting for closure.
@@ -521,6 +552,13 @@ impl<T> Stream for LiveSubscription<T> {
         }
         if this.core.committed_end().is_none() && matches!(this.core.phase(), ConsumerPhase::Active)
         {
+            // A planned credential rotation pauses yields while exact coverage
+            // is rebound onto the replacement attachment; it never terminates
+            // an otherwise-authorized session.
+            if this.guard.maintenance() {
+                this.begin_guard_reconcile(cx.waker());
+                return Poll::Pending;
+            }
             if let Err(lost) = this.guard.check_now() {
                 this.core.discard_queue();
                 this.core.commit_end(authority_failure(&lost));

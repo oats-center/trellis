@@ -63,7 +63,15 @@ export type ObserveTrellisConnectionOptions = {
   log?: LoggerLike | false;
   lifecycleLog?: TrellisConnectionLifecycleLogOptions;
   availability?: TrellisAvailability;
-  onTransportEvent?: (event: unknown) => void;
+  /**
+   * Receives every raw transport event.
+   *
+   * `planned` is true when the event belongs to an in-progress planned
+   * authorization-credential rotation and must therefore reach internal
+   * authorization bookkeeping without becoming a logical connection
+   * transition. @internal
+   */
+  onTransportEvent?: (event: unknown, planned: boolean) => void;
   /** Process-local handle started before the transport connected. @internal */
   telemetry?: ConnectionTelemetryHandle;
 };
@@ -75,7 +83,7 @@ export type ObserveNatsTrellisConnectionOptions = {
   log?: LoggerLike | false;
   lifecycleLog?: TrellisConnectionLifecycleLogOptions;
   availability?: TrellisAvailability;
-  onTransportEvent?: (event: unknown) => void;
+  onTransportEvent?: (event: unknown, planned: boolean) => void;
   /** Process-local handle started before the transport connected. @internal */
   telemetry?: ConnectionTelemetryHandle;
 };
@@ -101,6 +109,116 @@ const attachTelemetry = Symbol("attachTelemetry");
 const transitionTelemetry = Symbol("transitionTelemetry");
 const terminalTelemetry = Symbol("terminalTelemetry");
 const disposeTelemetry = Symbol("disposeTelemetry");
+const beginTransportRotation = Symbol("beginTransportRotation");
+const observeTransportStatus = Symbol("observeTransportStatus");
+const escalateTransportRotation = Symbol("escalateTransportRotation");
+const installTransportBase = Symbol("installTransportBase");
+
+/**
+ * Classification of one raw transport event: `planned` events belong to the
+ * active planned credential rotation and stay out of the logical lifecycle.
+ * @internal
+ */
+type TransportEventDisposition = "planned" | "unexpected";
+
+/**
+ * Handle for one planned authorization-credential transport rotation.
+ * @internal
+ */
+export type AuthorizationTransportRotationHandle = {
+  /** Resolves once the planned physical reconnect has been observed. */
+  readonly reconnected: Promise<void>;
+  /** Finish the rotation after the candidate is promoted. */
+  complete(): void;
+};
+
+/**
+ * Connection-owned classification of a physical NATS credential rotation.
+ *
+ * A planned rotation replaces the physical attachment while preserving the
+ * logical Trellis connection. Events that belong to it still reach
+ * authorization/provider bookkeeping but are never translated into public
+ * Trellis lifecycle transitions. A loss observed after the expected reconnect,
+ * or any event outside a rotation, is unplanned and stays fail-closed.
+ * @internal
+ */
+class AuthorizationTransportRotation {
+  #active = false;
+  #reconnected = false;
+  #pendingLossEvent: unknown;
+  #resolveReconnected: (() => void) | undefined;
+  #reconnectedPromise: Promise<void> = Promise.resolve();
+
+  /** Begin one rotation. A second concurrent rotation is a programming error. */
+  begin(): AuthorizationTransportRotationHandle {
+    if (this.#active) {
+      throw new Error("authorization transport rotation is already active");
+    }
+    this.#active = true;
+    this.#reconnected = false;
+    this.#pendingLossEvent = undefined;
+    this.#reconnectedPromise = new Promise<void>((resolve) => {
+      this.#resolveReconnected = resolve;
+    });
+    return {
+      reconnected: this.#reconnectedPromise,
+      complete: () => this.#clear(),
+    };
+  }
+
+  #clear(): void {
+    this.#active = false;
+    this.#reconnected = false;
+    this.#pendingLossEvent = undefined;
+    this.#resolveReconnected = undefined;
+  }
+
+  /** Return whether a planned rotation is currently in progress. */
+  get active(): boolean {
+    return this.#active;
+  }
+
+  /** Classify one raw transport event against the active rotation. */
+  observe(event: unknown): TransportEventDisposition {
+    if (!this.#active) return "unexpected";
+    const type = rawTransportEventType(event);
+    switch (type) {
+      case "disconnect":
+      case "disconnected":
+      case "reconnecting":
+      case "forceReconnect":
+        if (this.#reconnected) return "unexpected";
+        this.#pendingLossEvent = event;
+        return "planned";
+      case "reconnect":
+        this.#reconnected = true;
+        this.#pendingLossEvent = undefined;
+        this.#resolveReconnected?.();
+        this.#resolveReconnected = undefined;
+        return "planned";
+      default:
+        return "unexpected";
+    }
+  }
+
+  /**
+   * Abandon an in-progress rotation, returning the suppressed physical loss
+   * (if any) so the logical connection can publish the real outage.
+   */
+  escalate(): unknown {
+    const pending = this.#active && !this.#reconnected
+      ? this.#pendingLossEvent
+      : undefined;
+    this.#clear();
+    return pending;
+  }
+}
+
+function rawTransportEventType(event: unknown): string | undefined {
+  if (!event || typeof event !== "object") return undefined;
+  const type = (event as { type?: unknown }).type;
+  return typeof type === "string" ? type : undefined;
+}
 
 type ConnectionTelemetryHandle = ReturnType<typeof trackConnection>;
 
@@ -157,6 +275,8 @@ export class TrellisConnection {
   #stopped = false;
   #telemetry?: ReturnType<typeof trackConnection>;
   #telemetryUsable = false;
+  #transportBase: TrellisConnectionTransportMetadata = {};
+  readonly #rotation = new AuthorizationTransportRotation();
   readonly live = new LiveSessionManager();
 
   /** Creates a Trellis connection lifecycle handle. */
@@ -218,6 +338,32 @@ export class TrellisConnection {
     for (const listener of this.#availabilityListeners) {
       listener(this.#availability);
     }
+  }
+
+  [installTransportBase](base: TrellisConnectionTransportMetadata): void {
+    this.#transportBase = base;
+  }
+
+  /** @internal Begin one planned authorization-credential transport rotation. */
+  [beginTransportRotation](): AuthorizationTransportRotationHandle {
+    return this.#rotation.begin();
+  }
+
+  /** @internal Feed one raw transport event to the rotation classifier. */
+  [observeTransportStatus](event: unknown): TransportEventDisposition {
+    return this.#rotation.observe(event);
+  }
+
+  /** @internal Publish the suppressed physical loss after a failed rotation. */
+  [escalateTransportRotation](): void {
+    const event = this.#rotation.escalate();
+    if (event === undefined) return;
+    const status = statusFromTransportEvent(
+      this.#status.kind,
+      event,
+      this.#transportBase,
+    );
+    if (status) this.setStatus(status);
   }
 
   [attachTelemetry](telemetry?: ConnectionTelemetryHandle): void {
@@ -341,9 +487,34 @@ export function installConnectionAvailability(
 export function transitionConnectionAvailability(
   connection: TrellisConnection,
   usable: boolean,
-  reason: "connected" | "coverage_lost" | "resumed" | "refreshed" | "revoked",
+  reason: "connected" | "coverage_lost" | "resumed" | "revoked",
 ): void {
   connection[transitionTelemetry](usable ? "usable" : "suspended", reason);
+}
+
+/**
+ * Begin one planned authorization-credential transport rotation.
+ *
+ * The physical NATS attachment may rotate, but the logical Trellis connection
+ * is preserved: the returned handle must be completed only after the candidate
+ * authorization is admitted and promoted, and cancelled on any failure. @internal
+ */
+export function beginAuthorizationTransportRotation(
+  connection: TrellisConnection,
+): AuthorizationTransportRotationHandle {
+  return connection[beginTransportRotation]();
+}
+
+/**
+ * Publish a suppressed physical loss after a planned rotation failed.
+ *
+ * A rotation that times out or is interrupted must not leave a permanently
+ * "connected" logical state over a dead physical attachment. @internal
+ */
+export function escalateAuthorizationTransportRotation(
+  connection: TrellisConnection,
+): void {
+  connection[escalateTransportRotation]();
 }
 
 /** Observes a narrow transport status stream as a Trellis connection lifecycle. */
@@ -380,6 +551,7 @@ export function observeTrellisConnection(
     options.transport,
     options.transportName,
   );
+  connection[installTransportBase](baseTransport);
 
   if (statusIterator) {
     statusTask = (async () => {
@@ -388,9 +560,16 @@ export function observeTrellisConnection(
           const next = await statusIterator.next();
           if (next.done) return;
           const event = next.value;
-          options.onTransportEvent?.(event);
+          const disposition = connection[observeTransportStatus](event);
+          const planned = disposition === "planned";
+          options.onTransportEvent?.(event, planned);
           if (stopped) {
             return;
+          }
+          if (planned) {
+            // Physical rotation of authorization credentials is maintenance of
+            // the logical connection, not a logical disconnect/reconnect.
+            continue;
           }
 
           const status = statusFromTransportEvent(

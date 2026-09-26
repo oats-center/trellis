@@ -140,8 +140,7 @@ own attempt context. No raw exported request payload is attached.
 The deterministic owner proof lives with each production owner rather than in
 the capture pipeline: `ts/packages/trellis/connection_test.ts` drives the real
 `observeTrellisConnection` handle through `connecting`→`usable`→`suspended`→
-`resumed`→terminal for both `service` and `device`, asserts a same-context
-`refreshed` transition leaves the active count at one, and asserts final cleanup
+`resumed`→terminal for both `service` and `device`, and asserts final cleanup
 clears every previously represented aggregate to zero.
 `authorization_context_test.ts` wraps the real `verifyLocalAuthorization`
 boundary for a valid request, a valid Event, an invalid proof (with telemetry

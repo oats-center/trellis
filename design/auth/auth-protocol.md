@@ -10,13 +10,13 @@ Proof-bearing JSON requests hash the complete raw request body before known
 fields are projected, so unknown members remain integrity-bound even when an
 open DTO ignores them.
 
-The proof formats are independent of the JavaScript cryptography
-implementation. Browser clients use WebCrypto when the operations Trellis needs
-are usable there and an equivalent portable implementation otherwise; both
-produce identical signed bytes. HTTPS is the normal deployment transport. An
-operator may explicitly authorize plaintext HTTP for a non-loopback public
-origin, which changes transport protection only: every proof format, digest,
-and key derivation stays the same.
+The proof formats are independent of the JavaScript cryptography implementation.
+Browser clients use WebCrypto when the operations Trellis needs are usable there
+and an equivalent portable implementation otherwise; both produce identical
+signed bytes. HTTPS is the normal deployment transport. An operator may
+explicitly authorize plaintext HTTP for a non-loopback public origin, which
+changes transport protection only: every proof format, digest, and key
+derivation stays the same.
 
 `trellis.session-proof.v1` supports these purposes:
 
@@ -111,10 +111,17 @@ installed revision, resource evidence, and issuer state. It returns the shared
 `runtime` plus `transports` installation shape, including a new short-lived
 route JWT.
 
-Clients use refresh on cold restoration and once per disconnected episode. Fresh
-native bootstrap uses the context returned by bootstrap. A failed reconnect
-attempt may reuse its already verified refreshed context until a connection
-succeeds; the next disconnected episode refreshes again.
+Clients refresh proactively before expiry, and during actual recovery when
+needed. Fresh native bootstrap uses the context returned by bootstrap. A
+refreshed routing credential may require the SDK to rotate the physical NATS
+attachment internally; that rotation is maintenance of the existing logical
+Trellis connection. The predecessor stays application-current until the
+candidate has been admitted and exact authorization and revocation coverage has
+been re-established on the replacement attachment, and the candidate is promoted
+only then. A refresh that fails before rotation leaves a still-valid predecessor
+untouched and retries with bounded backoff; a rotation that cannot be admitted
+falls back to ordinary transport-loss semantics rather than leaving a logically
+connected attachment that is not actually usable.
 
 ## Signed Authorization Context
 
@@ -187,13 +194,13 @@ transport permissions but do not define semantic authority.
 
 ## Live Observation Sessions
 
-Live observations and Operation watchers are authorized live sessions rather than repeated
-request/reply. An opening request is a bounded, verified request; the provider
-answers with a signed offer and, per session, signs every data frame, challenge,
-end frame, and control response. This provider-message proof is a distinct proof
-domain from application request proofs: it binds the exact subject actually
-published to (the negotiated data subject for provider frames, the validated
-reply inbox for control responses) and the exact raw body.
+Live observations and Operation watchers are authorized live sessions rather
+than repeated request/reply. An opening request is a bounded, verified request;
+the provider answers with a signed offer and, per session, signs every data
+frame, challenge, end frame, and control response. This provider-message proof
+is a distinct proof domain from application request proofs: it binds the exact
+subject actually published to (the negotiated data subject for provider frames,
+the validated reply inbox for control responses) and the exact raw body.
 
 Control requests are verified through the same request path as other live
 traffic: the authenticated caller tuple, exact route action permission, session

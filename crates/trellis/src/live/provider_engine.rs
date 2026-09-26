@@ -174,16 +174,20 @@ impl ProviderSessionRecord {
         self.manager.upgrade().ok_or(LiveErrorCode::Disconnected)
     }
 
-    pub(crate) fn signed_headers(
+    pub(crate) async fn signed_headers(
         &self,
         subject: &str,
         body: &[u8],
     ) -> Result<async_nats::HeaderMap, LiveErrorCode> {
+        // Pause signed handoffs until any planned credential rotation has
+        // re-established exact coverage for both retained guards.
         self.own_guard
-            .check_now()
+            .reconcile()
+            .await
             .map_err(|_| LiveErrorCode::PermissionDenied)?;
         self.caller_guard
-            .check_now()
+            .reconcile()
+            .await
             .map_err(|_| LiveErrorCode::PermissionDenied)?;
         let manager = self.manager()?;
         let digest = manager
@@ -590,7 +594,8 @@ impl ProviderSessionRecord {
                 };
                 let published = {
                     let _lane = self.output_lane.lock().await;
-                    let Ok(signed) = self.signed_headers(reply.as_str(), &body) else {
+                    let signed = self.signed_headers(reply.as_str(), &body).await;
+                    let Ok(signed) = signed else {
                         return;
                     };
                     nats.publish_with_headers(reply, signed, Bytes::from(body))
@@ -622,7 +627,8 @@ impl ProviderSessionRecord {
                     return;
                 };
                 let _lane = self.output_lane.lock().await;
-                let Ok(signed) = self.signed_headers(reply.as_str(), &body) else {
+                let signed = self.signed_headers(reply.as_str(), &body).await;
+                let Ok(signed) = signed else {
                     return;
                 };
                 let _ = nats
@@ -637,13 +643,13 @@ impl ProviderSessionRecord {
         if self.finished.load(Ordering::Acquire) || self.session.phase() != ProviderPhase::Active {
             return;
         }
-        if let Err(lost) = self.own_guard.check_now() {
+        if let Err(lost) = self.own_guard.reconcile().await {
             self.commit_end(super::manager::authority_end(&lost));
             self.begin_close(Instant::now());
             self.spawn_close_driver(nats);
             return;
         }
-        if let Err(lost) = self.caller_guard.check_now() {
+        if let Err(lost) = self.caller_guard.reconcile().await {
             self.commit_end(super::manager::authority_end(&lost));
             self.begin_close(Instant::now());
             self.spawn_close_driver(nats);
@@ -690,12 +696,13 @@ impl ProviderSessionRecord {
         earliest
     }
 
-    /// Return the first typed authority loss across both retained guards.
-    pub(crate) fn authority_lost(&self) -> Option<LiveAuthorityLost> {
-        self.own_guard
-            .check_now()
-            .err()
-            .or_else(|| self.caller_guard.check_now().err())
+    /// Reconcile both retained guards across a planned rotation, returning the
+    /// first terminal authority loss, if any.
+    pub(crate) async fn reconcile_authority(&self) -> Option<LiveAuthorityLost> {
+        if let Err(lost) = self.own_guard.reconcile().await {
+            return Some(lost);
+        }
+        self.caller_guard.reconcile().await.err()
     }
 
     /// Spawn the one owned cleanup-then-ack driver for this session.
@@ -742,7 +749,8 @@ impl ProviderSessionRecord {
             return;
         };
         let _lane = self.output_lane.lock().await;
-        let Ok(signed) = self.signed_headers(&pending.reply, &body) else {
+        let signed = self.signed_headers(&pending.reply, &body).await;
+        let Ok(signed) = signed else {
             return;
         };
         let _ = nats
@@ -994,7 +1002,7 @@ pub(crate) async fn publish_data_frame(
     // Admission is checked before anything is signed or published; a full
     // window returns ResourceExhausted without consuming the sequence.
     session.validate_frame_slot(body_len, max_data_body_bytes)?;
-    let headers = record.signed_headers(&session.data_subject, &body)?;
+    let headers = record.signed_headers(&session.data_subject, &body).await?;
     // The serialized frame is retained payload until the wire handoff.
     if let Ok(telemetry) = record.telemetry.lock() {
         telemetry.buffered(body_len as i64);
@@ -1039,7 +1047,7 @@ pub(crate) async fn publish_challenge(
         challenge.last_sent_seq,
     ))
     .map_err(|_| LiveErrorCode::ProtocolError)?;
-    let headers = record.signed_headers(&session.data_subject, &body)?;
+    let headers = record.signed_headers(&session.data_subject, &body).await?;
     nats.publish_with_headers(session.data_subject.clone(), headers, Bytes::from(body))
         .await
         .map_err(|_| LiveErrorCode::PeerLost)?;
@@ -1080,7 +1088,7 @@ pub(crate) async fn publish_end(
     let final_seq = session.highest_sent.load(Ordering::Acquire);
     let body = serde_json::to_vec(&end_frame(&session.session_id, final_seq, terminal))
         .map_err(|_| LiveErrorCode::ProtocolError)?;
-    let headers = record.signed_headers(&session.data_subject, &body)?;
+    let headers = record.signed_headers(&session.data_subject, &body).await?;
     let mut last_error = None;
     for attempt in 0..END_PUBLISH_ATTEMPTS {
         match nats

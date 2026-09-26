@@ -162,7 +162,10 @@ export class LiveAuthorityGuard {
   #lease: LiveLeaseView | undefined;
   readonly #requirement: LiveGuardRequirement;
   readonly #identity: PinnedPeerIdentity;
-  readonly #epoch: number;
+  #epoch: number;
+  #digest: string;
+  /** Whether this guard tracks the connection's own refreshable authority. */
+  readonly #tracksLocal: boolean;
 
   private constructor(
     cache: AuthorizationProviderCache,
@@ -170,12 +173,16 @@ export class LiveAuthorityGuard {
     requirement: LiveGuardRequirement,
     identity: PinnedPeerIdentity,
     epoch: number,
+    digest: string,
+    tracksLocal: boolean,
   ) {
     this.#cache = cache;
     this.#lease = lease;
     this.#requirement = requirement;
     this.#identity = identity;
     this.#epoch = epoch;
+    this.#digest = digest;
+    this.#tracksLocal = tracksLocal;
   }
 
   /**
@@ -207,6 +214,8 @@ export class LiveAuthorityGuard {
         requirement,
         identity,
         epoch,
+        digest,
+        cache.currentLocalContextDigest() === digest,
       );
     } catch (error) {
       cache.releaseLiveLease(lease);
@@ -222,6 +231,64 @@ export class LiveAuthorityGuard {
   /** Return the retained context digest. */
   get contextDigest(): string {
     return this.#lease?.verified.contextDigest ?? "";
+  }
+
+  /**
+   * Return whether this guard is inside a planned credential rotation whose
+   * replacement coverage is not yet established.
+   *
+   * The logical connection and its session remain alive; the guard pauses new
+   * decisions until it rebinds onto the replacement physical attachment.
+   */
+  maintenance(): boolean {
+    if (!this.#lease) return false;
+    return this.#cache.maintenanceFor(this.#epoch);
+  }
+
+  /**
+   * Reconcile this guard across a planned physical credential rotation.
+   *
+   * Returns `undefined` when the guard is usable (including after a successful
+   * rebind) and the precise terminal loss otherwise. A rebind waits, within a
+   * bounded budget, for the rotation's coverage to settle, then re-resolves the
+   * guard's exact digest on the replacement attachment, re-validates pinned
+   * identity and the role requirement, and only then releases the predecessor
+   * lease.
+   */
+  async reconcile(): Promise<LiveAuthorityLost | undefined> {
+    if (!this.maintenance()) return this.checkNow();
+    const cache = this.#cache;
+    const settled = await cache.waitRotationSettled(30_000);
+    if (!cache.maintenanceFor(this.#epoch)) return this.checkNow();
+    if (!settled) return "coverage_lost";
+    const generation = cache.connectionGeneration();
+    const digest = this.#tracksLocal
+      ? cache.currentLocalContextDigest()
+      : this.#digest;
+    if (digest === undefined) return "coverage_lost";
+    let lease: LiveLeaseView;
+    try {
+      lease = await retainLease(cache, digest, generation);
+    } catch (error) {
+      return authorityLostFrom(error) ?? "coverage_lost";
+    }
+    const identity = identityOf(lease.verified.context);
+    if (!sameIdentity(identity, this.#identity)) {
+      cache.releaseLiveLease(lease);
+      return "identity_changed";
+    }
+    if (this.#requirement.kind === "observer") {
+      if (!grantAllows(lease.verified.context, this.#requirement.permission)) {
+        cache.releaseLiveLease(lease);
+        return "permission_lost";
+      }
+    }
+    const previous = this.#lease;
+    this.#lease = lease;
+    this.#epoch = generation;
+    this.#digest = digest;
+    if (previous) cache.releaseLiveLease(previous);
+    return undefined;
   }
 
   /** Return the retained context expiry in Unix seconds. */
@@ -245,6 +312,7 @@ export class LiveAuthorityGuard {
   checkNow(): LiveAuthorityLost | undefined {
     const lease = this.#lease;
     if (!lease) return "coverage_lost";
+    if (this.maintenance()) return undefined;
     if (!this.#cache.health().healthy) return "transport_unavailable";
     if (this.#cache.connectionGeneration() !== this.#epoch) {
       return "epoch_changed";
@@ -301,6 +369,8 @@ export class LiveAuthorityGuard {
         this.#requirement,
         identity,
         this.#epoch,
+        digest,
+        this.#tracksLocal,
       );
     } catch (error) {
       this.#cache.releaseLiveLease(lease);
@@ -329,6 +399,7 @@ export class LiveAuthorityGuard {
     if (!candidateLease) return "coverage_lost";
     const previous = this.#lease;
     this.#lease = candidateLease;
+    this.#digest = candidate.#digest;
     if (previous) this.#cache.releaseLiveLease(previous);
     return undefined;
   }

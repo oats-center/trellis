@@ -327,7 +327,7 @@
         ]
       },
       "jsr:@oatscenter/trellis-svelte@0.100.0": {},
-      "jsr:@oatscenter/trellis-test@0.100.0": {
+      "jsr:@oatscenter/trellis-testkit@0.100.0": {
         "dependencies": [
           "jsr:@oatscenter/trellis@0.100",
           "jsr:@std/assert@^1.0.19",

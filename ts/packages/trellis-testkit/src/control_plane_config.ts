@@ -37,6 +37,13 @@ export type TrellisControlPlaneConfig = {
       };
     };
   };
+  /** Authorization-context lifetime policy written to `[auth.authorization]`. */
+  authorization: {
+    contextLifetimeSeconds: number;
+    refreshLeadSeconds: number;
+    refreshJitterSeconds: number;
+    minimumContextLifetimeSeconds: number;
+  };
   ttlMs: {
     sessions: number;
     oauth: number;
@@ -73,6 +80,10 @@ export type TrellisControlPlaneConfig = {
 
 /** Platform TTL settings (milliseconds) for an isolated test control plane. */
 export type TrellisControlPlaneTtlMs = TrellisControlPlaneConfig["ttlMs"];
+
+/** Authorization-context lifetime policy for an isolated test control plane. */
+export type TrellisControlPlaneAuthorization =
+  TrellisControlPlaneConfig["authorization"];
 
 /** Serializable OAuth/OIDC provider config for test control planes. */
 export type TrellisControlPlaneOAuthProvider =
@@ -154,6 +165,7 @@ export function buildControlPlaneConfig(args: {
   /** Overrides the runtime public browser origin; defaults to loopback HTTP. */
   publicOrigin?: string;
   ttlMs?: Partial<TrellisControlPlaneTtlMs>;
+  authorization?: Partial<TrellisControlPlaneAuthorization>;
 }): TrellisControlPlaneConfig {
   const natsDir = join(args.natsWorkdir ?? args.workdir, "nats");
   const publicOrigin = args.publicOrigin ?? `http://localhost:${args.port}`;
@@ -180,6 +192,13 @@ export function buildControlPlaneConfig(args: {
         passwordPolicy: { minLength: 8 },
         passwordHashing: { profile: "insecure-test-fast" },
       },
+    },
+    authorization: {
+      contextLifetimeSeconds: 300,
+      refreshLeadSeconds: 60,
+      refreshJitterSeconds: 15,
+      minimumContextLifetimeSeconds: 76,
+      ...args.authorization,
     },
     ttlMs: {
       sessions: 24 * 60 * 60_000,
@@ -348,10 +367,10 @@ xkey_seed_file = "./auth-sx.seed"
 
 [auth.authorization]
 issuer_signing_seed_file = "./authorization-issuer.seed"
-context_lifetime_seconds = 300
-refresh_lead_seconds = 60
-refresh_jitter_seconds = 15
-minimum_context_lifetime_seconds = 76
+context_lifetime_seconds = ${args.config.authorization.contextLifetimeSeconds}
+refresh_lead_seconds = ${args.config.authorization.refreshLeadSeconds}
+refresh_jitter_seconds = ${args.config.authorization.refreshJitterSeconds}
+minimum_context_lifetime_seconds = ${args.config.authorization.minimumContextLifetimeSeconds}
 maximum_bootstrap_jwt_lifetime_seconds = 3600
 allowed_clock_skew_seconds = 30
 maximum_context_bytes = 16384

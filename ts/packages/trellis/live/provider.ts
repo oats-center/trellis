@@ -82,6 +82,10 @@ export type ProviderAuthorityPort = {
   readonly contextDigest: string;
   readonly identity: PinnedPeerIdentity;
   checkNow(): LiveAuthorityLost | undefined;
+  /** True while a planned credential rotation is awaiting rebind. */
+  maintenance(): boolean;
+  /** Reconcile across a planned rotation; returns the terminal loss, if any. */
+  reconcile(): Promise<LiveAuthorityLost | undefined>;
   allows(permission: PermissionAtom): boolean;
   subscribeChanges(callback: () => void): () => void;
   release(): void;
@@ -318,12 +322,16 @@ export class LiveProvider {
   }
 
   /**
-   * Report whether the provider's own authority is unusable after attempting a
-   * refresh, so a replaced context never drops a live session.
+   * Report the provider's own authority loss after attempting maintenance or a
+   * same-generation refresh, so a replaced context never drops a live session.
    */
-  async #ownAuthorityLost(): Promise<boolean> {
-    if (!this.#host.ownGuard.checkNow()) return false;
-    return !(await this.#refreshOwnAuthority());
+  async #ownAuthorityLost(): Promise<LiveAuthorityLost | undefined> {
+    const guard = this.#host.ownGuard;
+    if (guard.maintenance()) return await guard.reconcile();
+    const lost = guard.checkNow();
+    if (!lost) return undefined;
+    if (await this.#refreshOwnAuthority()) return undefined;
+    return guard.checkNow() ?? lost;
   }
 
   wildcardSubject(baseSubject: string): string {
@@ -609,16 +617,12 @@ export class LiveProvider {
     }
     if (outcome.startSource) {
       if (record.phase !== "active" || record.closed) return;
-      if (
-        await this.#ownAuthorityLost() ||
-        record.callerGuard.checkNow()
-      ) {
+      const ownLost = await this.#ownAuthorityLost();
+      const callerLost = await record.callerGuard.reconcile();
+      if (ownLost || callerLost) {
         await this.#terminate(
           record,
-          authorityLostEnd(
-            this.#host.ownGuard.checkNow() ??
-              record.callerGuard.checkNow() ?? "coverage_lost",
-          ),
+          authorityLostEnd(ownLost ?? callerLost ?? "coverage_lost"),
         );
         return;
       }
@@ -922,18 +926,14 @@ export class LiveProvider {
       record.timer.dispose();
       return;
     }
-    if (await this.#ownAuthorityLost()) {
-      await this.#terminate(
-        record,
-        authorityLostEnd(this.#host.ownGuard.checkNow() ?? "coverage_lost"),
-      );
+    const ownLost = await this.#ownAuthorityLost();
+    if (ownLost) {
+      await this.#terminate(record, authorityLostEnd(ownLost));
       return;
     }
-    if (record.callerGuard.checkNow()) {
-      await this.#terminate(
-        record,
-        authorityLostEnd(record.callerGuard.checkNow() ?? "coverage_lost"),
-      );
+    const callerLost = await record.callerGuard.reconcile();
+    if (callerLost) {
+      await this.#terminate(record, authorityLostEnd(callerLost));
       return;
     }
     const now = this.#clock.nowMs();
@@ -1154,13 +1154,12 @@ export class LiveProvider {
     ) {
       throw new LiveStreamError("closed", "live session is closed");
     }
-    if (await this.#ownAuthorityLost() || record.callerGuard.checkNow()) {
+    const ownLost = await this.#ownAuthorityLost();
+    const callerLost = await record.callerGuard.reconcile();
+    if (ownLost || callerLost) {
       await this.#terminate(
         record,
-        authorityLostEnd(
-          this.#host.ownGuard.checkNow() ?? record.callerGuard.checkNow() ??
-            "coverage_lost",
-        ),
+        authorityLostEnd(ownLost ?? callerLost ?? "coverage_lost"),
       );
       throw new LiveStreamError("closed", "live session is closed");
     }

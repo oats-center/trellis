@@ -766,8 +766,8 @@ Deno.test("provider reconnect resolves a fresh context and revocation watch", as
   const value = await provider(registry);
   try {
     await value.resolveContext(chain.contextDigest);
-    value.observeConnectionPhase("disconnected");
-    value.observeConnectionPhase("connected");
+    value.observeTransportEvent({ type: "disconnect" });
+    value.observeTransportEvent({ type: "reconnect" });
     await value.resolveContext(chain.contextDigest);
     assertEquals(value.ioCounters().contextGets, 2);
   } finally {
@@ -808,8 +808,8 @@ Deno.test("provider discards a pending resolution from an old connection generat
     while (!registry.reads.includes(chain.contextDigest)) {
       await Promise.resolve();
     }
-    value.observeConnectionPhase("disconnected");
-    value.observeConnectionPhase("connected");
+    value.observeTransportEvent({ type: "disconnect" });
+    value.observeTransportEvent({ type: "reconnect" });
     release();
     await assertRejects(
       () => stale,
@@ -1505,14 +1505,14 @@ Deno.test("provider coverage gauge follows the retained own and peer installatio
       "peer:covered": 1,
       "peer:unavailable": 0,
     });
-    value.observeConnectionPhase("disconnected");
+    value.observeTransportEvent({ type: "disconnect" });
     assertEquals(await coverage(), {
       "own:covered": 0,
       "own:unavailable": 1,
       "peer:covered": 0,
       "peer:unavailable": 0,
     });
-    value.observeConnectionPhase("connected");
+    value.observeTransportEvent({ type: "reconnect" });
     await value.waitReady();
     await value.retainOwnContext();
     assertEquals(await coverage(), {

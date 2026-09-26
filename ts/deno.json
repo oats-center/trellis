@@ -24,7 +24,6 @@
     "test:result": "deno test -A packages/result",
     "test:trellis": "deno test -A packages/trellis",
     "test:trellis-svelte": "deno test -A packages/trellis-svelte",
-    "test:trellis-testkit": "deno test -A packages/trellis-testkit",
     "test:packages": {
       "dependencies": [
         "test:result",
@@ -48,7 +47,8 @@
     "test:browser:coverage": "TRELLIS_BROWSER_COVERAGE_SOURCEMAP=1 deno task browser:embedded && deno test -A -c browser/deno.json browser/*.browser_test.ts && deno task coverage:browser",
     "coverage:browser": "deno run -A tools/browser_v8_to_lcov.ts",
     "coverage:browser:merge": "deno run -A tools/browser_v8_to_lcov.ts --append-to ../coverage/live-integration/lcov.info",
-    "trellis": "bash ../scripts/trellis-cli.sh"
+    "trellis": "bash ../scripts/trellis-cli.sh",
+    "test:trellis-testkit": "deno test -A packages/trellis-testkit"
   },
   "imports": {
     "@libsql/client": "npm:@libsql/client@^0.15.15",

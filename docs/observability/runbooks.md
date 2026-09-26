@@ -70,9 +70,9 @@ Check the owner's task, SQL/storage health, decode/verification errors and poiso
 
 ## Connection suspended
 
-**Signal:** native connections remain suspended for minutes rather than completing normal short refresh/reconnect transitions.
+**Signal:** native connections remain suspended rather than recovering, or suspend without an unexpected transport loss.
 
-Inspect own-context coverage, current/candidate digest and admitted epoch in sanitized traces/logs. Distinguish a rejected credential, a valid credential with revoked predecessor, broken watch coverage, ordinary restart and a changed resource generation. Do not force the local usable flag or revive retired handles. Repair the owning connection lifecycle or dependency; use the existing retry/terminal classification.
+A routine proactive authorization refresh must not suspend a connection: the refreshed credential rotates the physical NATS attachment while the logical connection stays usable, so a suspended connection indicates a rejected credential, lost coverage, or a real transport failure. Inspect own-context coverage, current/candidate digest and admitted epoch in sanitized traces/logs. Distinguish a rejected credential, a valid credential with revoked predecessor, broken watch coverage, ordinary restart and a changed resource generation. Do not force the local usable flag or revive retired handles. Repair the owning connection lifecycle or dependency; use the existing retry/terminal classification.
 
 ## Route overflow
 

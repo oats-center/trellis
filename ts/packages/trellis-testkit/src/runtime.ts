@@ -406,6 +406,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
         portalSource: options.portalSource,
         consoleSource: options.consoleSource,
         ttlMs: options.ttlMs,
+        authorization: options.authorization,
       });
       const configPath = await writeTrellisConfig({ workdir, config });
       const startedControlPlane = await startTrellisProcess({

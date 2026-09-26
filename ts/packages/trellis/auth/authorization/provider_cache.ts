@@ -126,6 +126,8 @@ export class AuthorizationProviderCache {
   #connected = true;
   #started = false;
   #generation = 0;
+  #rotationOpen = false;
+  #plannedGeneration: number | undefined;
   #ownEntry?: ProviderContextEntry;
   #onOwnInvalidated?: () => void;
   #onOwnResumed?: () => void;
@@ -215,6 +217,8 @@ export class AuthorizationProviderCache {
     this.#stopCoverage?.();
     this.#stopCoverage = undefined;
     this.#generation += 1;
+    this.#rotationOpen = false;
+    this.#plannedGeneration = undefined;
     this.#stopped = true;
     for (const entry of this.#contexts.values()) this.#invalidate(entry);
     this.#contexts.clear();
@@ -392,13 +396,65 @@ export class AuthorizationProviderCache {
     if (mode === "promote") {
       this.#cache.promote(digest);
     }
+    this.#rotationOpen = false;
     this.#ownUsable = true;
     this.#onOwnResumed?.();
+    this.#notifyLiveChanges();
     return true;
   }
 
   connectionGeneration(): number {
     return this.#generation;
+  }
+
+  /** Return whether a planned rotation is awaiting coverage promotion. @internal */
+  rotationOpen(): boolean {
+    return this.#rotationOpen;
+  }
+
+  /**
+   * Return whether one retained generation was opened by a planned rotation
+   * and can still be rebound onto the replacement physical attachment. @internal
+   */
+  maintenanceFor(epoch: number): boolean {
+    return this.#plannedGeneration !== undefined &&
+      epoch < this.#plannedGeneration;
+  }
+
+  /** Return the installed own-context digest, if any. @internal */
+  currentLocalContextDigest(): string | undefined {
+    return this.#cache.storedContextDigest();
+  }
+
+  /** Abandon an unfinished planned rotation so retained guards fail closed. @internal */
+  abandonRotation(): void {
+    this.#rotationOpen = false;
+    this.#plannedGeneration = undefined;
+    this.#notifyLiveChanges();
+  }
+
+  /**
+   * Wait, within a bounded budget, for a planned rotation to settle: either its
+   * coverage is promoted onto the replacement attachment or it is abandoned.
+   * @internal
+   */
+  waitRotationSettled(timeoutMs: number): Promise<boolean> {
+    if (!this.#rotationOpen) return Promise.resolve(true);
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (value: boolean): void => {
+        if (settled) return;
+        settled = true;
+        unsubscribe();
+        clearTimeout(timer);
+        resolve(value);
+      };
+      const unsubscribe = this.subscribeLiveChanges(() => {
+        if (!this.#rotationOpen) finish(true);
+      });
+      const timer = setTimeout(() => finish(!this.#rotationOpen), timeoutMs);
+      if (!this.#rotationOpen) finish(true);
+    });
   }
 
   async #retainOwnContext(digest: string, generation: number): Promise<void> {
@@ -444,15 +500,72 @@ export class AuthorizationProviderCache {
     this.#notifyLiveChanges();
   }
 
-  /** React to an authoritative NATS authentication rejection during reconnect. */
-  observeTransportEvent(event: unknown): void {
+  /**
+   * Apply one raw framework transport event to provider readiness.
+   *
+   * Provider verification coverage is tied to the physical NATS attachment,
+   * so a physical loss always invalidates retained coverage and forces exact
+   * coverage to be rebuilt on the replacement attachment. `planned` marks a
+   * loss that is part of an in-progress authorization-credential rotation:
+   * coverage is still rebuilt, but the owner's logical application
+   * availability is not withdrawn.
+   */
+  observeTransportEvent(event: unknown, planned = false): void {
     if (!event || typeof event !== "object") return;
     const status = event as { type?: unknown; data?: unknown };
+    switch (status.type) {
+      case "disconnect":
+      case "disconnected":
+      case "reconnecting":
+      case "forceReconnect":
+        this.#observePhysicalConnected(false, planned);
+        break;
+      case "reconnect":
+        this.#observePhysicalConnected(true, planned);
+        break;
+    }
     if (
       status.type === "error" &&
       String(status.data).toLowerCase().includes("authorization")
     ) {
       this.refreshOwnAuthorization();
+    }
+  }
+
+  #observePhysicalConnected(connected: boolean, planned: boolean): void {
+    const wasConnected = this.#connected;
+    this.#connected = connected;
+    if (wasConnected && !this.#connected) {
+      // A planned rotation keeps the owner's logical availability installed:
+      // the predecessor remains application-current until the candidate is
+      // admitted and promoted on the replacement attachment.
+      if (!planned) {
+        this.#ownUsable = false;
+        this.#onOwnInvalidated?.();
+      }
+      if (this.#ownEntry) this.#release(this.#ownEntry);
+      this.#ownEntry = undefined;
+      this.#generation += 1;
+      if (planned) {
+        this.#rotationOpen = true;
+        this.#plannedGeneration = this.#generation;
+      } else {
+        this.#rotationOpen = false;
+        this.#plannedGeneration = undefined;
+      }
+      for (const entry of this.#contexts.values()) this.#invalidate(entry);
+      this.#contexts.clear();
+      this.#inFlight.clear();
+      this.#notifyLiveChanges();
+    }
+    if (!wasConnected && this.#connected) {
+      for (const ready of this.#connectedWaiters) ready();
+      this.#connectedWaiters.clear();
+      this.#notifyLiveChanges();
+      if (!this.#cache.hasCandidate()) {
+        const generation = this.#generation;
+        void this.#restoreOwnContext(generation);
+      }
     }
   }
 
@@ -520,33 +633,6 @@ export class AuthorizationProviderCache {
       contextResolves: this.#contextResolves,
       contextVerifications: this.#contextVerifications,
     };
-  }
-
-  /** Apply framework-level NATS lifecycle state to provider readiness. */
-  observeConnectionPhase(
-    phase: "connected" | "disconnected" | "reconnecting" | "error" | "closed",
-  ): void {
-    if (phase === "error") return;
-    const wasConnected = this.#connected;
-    this.#connected = phase === "connected";
-    if (wasConnected && !this.#connected) {
-      this.#ownUsable = false;
-      this.#onOwnInvalidated?.();
-      if (this.#ownEntry) this.#release(this.#ownEntry);
-      this.#ownEntry = undefined;
-      this.#generation += 1;
-      for (const entry of this.#contexts.values()) this.#invalidate(entry);
-      this.#contexts.clear();
-      this.#inFlight.clear();
-    }
-    if (!wasConnected && this.#connected) {
-      for (const ready of this.#connectedWaiters) ready();
-      this.#connectedWaiters.clear();
-      if (!this.#cache.hasCandidate()) {
-        const generation = this.#generation;
-        void this.#restoreOwnContext(generation);
-      }
-    }
   }
 
   async #restoreOwnContext(generation: number): Promise<void> {

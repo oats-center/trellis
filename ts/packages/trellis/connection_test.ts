@@ -220,14 +220,6 @@ Deno.test("production connection owner publishes usable, suspended, resumed, and
         ),
         true,
       );
-      // A verified same-context refresh must not suspend usable coverage.
-      transitionConnectionAvailability(connection, true, "refreshed");
-      assertEquals(
-        (await states()).some(([participantKind, state, value]) =>
-          participantKind === kind && state === "usable" && value === 1
-        ),
-        true,
-      );
       // Withdrawn own coverage suspends without counting a second connection.
       transitionConnectionAvailability(connection, false, "coverage_lost");
       const suspended = await states();

@@ -50,6 +50,8 @@ function authority(kind: string): ProviderAuthorityPort {
     contextDigest: digest(kind),
     identity: { ...identity(kind) },
     checkNow: () => undefined,
+    maintenance: () => false,
+    reconcile: async () => undefined,
     allows: () => true,
     subscribeChanges: () => () => {},
     release: () => {},

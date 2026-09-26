@@ -124,7 +124,8 @@ API-scoped; subjects and physical resource names are not grants.
 
 The server resolves assignment, installed artifacts, grants, resources, online
 issuer, route JWT, inbox, and exact transports. Clients verify that response.
-The libraries own proofs, context verification, refresh, and reconnect.
+The libraries own proofs, context verification, proactive refresh, and
+transport maintenance.
 Authorization contexts, route JWTs, transport endpoints, grants, clock offset,
 and issuer keys are process-memory-only. Browser IndexedDB version 3 persists
 only the session seed, nullable login metadata, pending flow, and generation

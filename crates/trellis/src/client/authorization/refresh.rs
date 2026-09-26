@@ -207,6 +207,56 @@ pub(crate) async fn refresh(
     ))
 }
 
+/// Install one prepared authorization candidate as transparent maintenance.
+///
+/// The physical NATS attachment may rotate to admit refreshed routing
+/// credentials, but the logical connection is preserved. The predecessor
+/// stays application-current until the candidate is admitted, its exact
+/// revocation coverage is retained on the replacement attachment, and the
+/// candidate is promoted. The planned-rotation marker is held across the whole
+/// transaction so a failure never leaves a logically connected attachment that
+/// is not actually usable.
+pub(crate) async fn install_prepared_authorization(
+    contexts: &AuthorizationContextCache,
+    auth: &SessionAuth,
+    nats: &async_nats::Client,
+    applied: &mut super::super::connection::AppliedNativeAuthorization,
+    provider: &super::AuthorizationProviderCache,
+    rotation: &super::AuthorizationTransportRotation,
+    live: Option<&crate::live::manager::LiveSessionManager>,
+    timeout_ms: u64,
+) -> Result<String, TrellisClientError> {
+    let (candidate_digest, _) = contexts.prepare_refresh(auth).await?;
+    let refreshed = super::super::connection::AppliedNativeAuthorization::from_cache(contexts)?;
+    let rotates = applied.rotates_to(&refreshed);
+    if rotates {
+        provider.begin_planned_rotation();
+    }
+    if let Err(error) = super::super::connection::apply_native_authorization_refresh(
+        nats, applied, refreshed, timeout_ms, rotation, contexts, live,
+    )
+    .await
+    {
+        provider.abandon_rotation();
+        return Err(error);
+    }
+    if let Err(error) = provider
+        .retain_own_context(&candidate_digest, provider.epoch())
+        .await
+    {
+        provider.abandon_rotation();
+        rotation.cancel();
+        return Err(error);
+    }
+    if let Err(error) = provider.finalize_own_installation(&candidate_digest, true) {
+        provider.abandon_rotation();
+        rotation.cancel();
+        return Err(error);
+    }
+    rotation.complete();
+    Ok(candidate_digest)
+}
+
 /// Background own-context refresh on the retained NATS connection.
 pub(crate) fn spawn_authorization_context_refresh_task(
     contexts: Arc<AuthorizationContextCache>,
@@ -217,6 +267,8 @@ pub(crate) fn spawn_authorization_context_refresh_task(
     >,
     provider: super::AuthorizationProviderCache,
     timeout_ms: u64,
+    rotation: Arc<super::AuthorizationTransportRotation>,
+    live: Arc<crate::live::manager::LiveSessionManager>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
@@ -263,42 +315,19 @@ pub(crate) fn spawn_authorization_context_refresh_task(
                 contexts.request_coverage_reconciliation();
                 continue;
             }
-            match contexts.prepare_refresh(&auth).await {
-                Ok((candidate_digest, _)) => {
-                    let refreshed =
-                        match super::super::connection::AppliedNativeAuthorization::from_cache(
-                            &contexts,
-                        ) {
-                            Ok(state) => state,
-                            Err(error) => {
-                                tracing::warn!(%error, "refreshed native runtime is invalid");
-                                continue;
-                            }
-                        };
-                    if let Err(error) =
-                        super::super::connection::apply_native_authorization_refresh(
-                            &nats,
-                            &mut applied,
-                            refreshed,
-                            timeout_ms,
-                        )
-                        .await
-                    {
-                        tracing::warn!(%error, "native connection refresh will retry");
-                        contexts.request_refresh();
-                    } else if let Err(error) = provider
-                        .retain_own_context(&candidate_digest, provider.epoch())
-                        .await
-                    {
-                        tracing::warn!(%error, "refreshed own-context coverage is unavailable");
-                        contexts.request_refresh();
-                    } else if let Err(error) =
-                        provider.finalize_own_installation(&candidate_digest, true)
-                    {
-                        tracing::warn!(%error, "refreshed authorization promotion failed");
-                        contexts.request_refresh();
-                    }
-                }
+            match install_prepared_authorization(
+                &contexts,
+                &auth,
+                &nats,
+                &mut applied,
+                &provider,
+                &rotation,
+                Some(&live),
+                timeout_ms,
+            )
+            .await
+            {
+                Ok(_) => {}
                 Err(TrellisClientError::BootstrapHttp { status, code })
                     if is_terminal_refresh_error(&code) =>
                 {

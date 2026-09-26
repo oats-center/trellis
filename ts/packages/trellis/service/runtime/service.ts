@@ -31,6 +31,7 @@ import {
   AuthorizationProviderCache,
   startAuthorizationContextRefresh,
 } from "../../auth/authorization_context.ts";
+import { installAuthorizationRefresh } from "../../auth/authorization/install_refresh.ts";
 import { TrellisHttpError } from "../../auth/http_error.ts";
 import type { InferSchemaType } from "../../participant.ts";
 import type {
@@ -1214,8 +1215,8 @@ export async function createConnectedService<
     kind: "service",
     nc: args.nc,
     availability: args.availability,
-    onTransportEvent: (event) =>
-      args.authorizationProviderCache?.observeTransportEvent(event),
+    onTransportEvent: (event, planned) =>
+      args.authorizationProviderCache?.observeTransportEvent(event, planned),
     log: false,
     lifecycleLog: {
       log: resolvedLog,
@@ -1223,11 +1224,6 @@ export async function createConnectedService<
     },
     ...(args.telemetry ? { telemetry: args.telemetry } : {}),
   });
-  if (args.authorizationProviderCache) {
-    connection.subscribe((status) =>
-      args.authorizationProviderCache?.observeConnectionPhase(status.phase)
-    );
-  }
   const currentApi = (args.runtime.trellisApi ?? args.runtime.api) as
     & TOwnedApi
     & TTrellisApi;
@@ -2972,25 +2968,19 @@ export function connectTrellisServiceWithRuntimeDeps<
             }
           },
           onRefresh: async (context) => {
-            nc.setServers(
-              selectRuntimeTransportServers(
-                authorizationContexts.transportRuntimeBinding().transports,
-              ),
-            );
-            if (service.connection.status.phase === "connected") {
-              await nc.reconnect();
-            }
-            await authorizationProviderCache.waitReady({ timeoutMs: 30_000 });
-            const generation = authorizationProviderCache
-              .connectionGeneration();
-            await authorizationProviderCache.retainOwnCandidate(
-              context.contextDigest,
-              generation,
-            );
-            authorizationProviderCache.promoteOwnCandidate(
-              context.contextDigest,
-              generation,
-            );
+            await installAuthorizationRefresh({
+              connection: service.connection,
+              provider: authorizationProviderCache,
+              contextDigest: context.contextDigest,
+              updateTransport: () => {
+                nc.setServers(
+                  selectRuntimeTransportServers(
+                    authorizationContexts.transportRuntimeBinding().transports,
+                  ),
+                );
+              },
+              reconnect: () => nc.reconnect(),
+            });
           },
           onTerminalFailure: async () => {
             if (!nc.isClosed()) await nc.close();

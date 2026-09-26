@@ -44,8 +44,10 @@ let mut service = connect(
 
 Trellis resolves deployment/instance assignment, installed package/participant
 evidence, exact grants, resources, signed context, route JWT, and endpoints
-server-side. Authorization state is process-memory-only and refreshes on
-reconnect; there is no context-store parameter.
+server-side. Authorization state is process-memory-only and is refreshed
+proactively as SDK-owned maintenance; a refreshed route credential may rotate
+the physical NATS attachment without ending the logical connection. There is no
+context-store parameter.
 
 Register generated providers before `service.run().await`. The service lifecycle
 supervises its request host and workers. `with_timeout_ms(...)` bounds

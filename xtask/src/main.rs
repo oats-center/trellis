@@ -105,7 +105,7 @@ where
 const TRELLIS_PROJECTS: &[&str] = &[
     // Trellis has a small fixed API DAG. Replace this list with dynamic graph
     // discovery only if maintaining it becomes a real problem.
-    "ts/packages/trellis-test",
+    "ts/packages/trellis-testkit",
     "web",
     "integration/fixtures/runtime",
     "integration/fixtures/runtime-removed",
@@ -156,7 +156,7 @@ fn run_install(update: bool) -> Result<()> {
     }
     std::fs::copy(
         root.join("crates/local-nats/nats-binaries.json"),
-        root.join("ts/packages/trellis-test/src/nats-binaries.json"),
+        root.join("ts/packages/trellis-testkit/src/nats-binaries.json"),
     )
     .into_diagnostic()?;
     Ok(())

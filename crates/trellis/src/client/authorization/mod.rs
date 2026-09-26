@@ -7,6 +7,7 @@ mod own_context;
 mod provider_cache;
 mod refresh;
 mod registry;
+mod rotation;
 mod types;
 
 pub use bootstrap_http::canonical_trellis_origin;
@@ -21,8 +22,10 @@ pub(crate) use provider_cache::AuthorizationContextLease;
 pub use provider_cache::AuthorizationProviderCache;
 #[cfg(feature = "runtime-internals")]
 pub use provider_cache::{RuntimeAuthorizationIoCounters, RuntimeAuthorizationTrust};
+pub(crate) use refresh::install_prepared_authorization;
 pub(crate) use refresh::is_retriable_authorization_code;
 pub(crate) use refresh::spawn_authorization_context_refresh_task;
+pub(crate) use rotation::{AuthorizationTransportRotation, TransportRotationDisposition};
 #[cfg(feature = "runtime-internals")]
 pub use types::AuthorizationRegistryBinding;
 pub use types::{

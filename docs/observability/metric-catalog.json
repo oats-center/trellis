@@ -172,7 +172,7 @@
       "unit": "{transition}",
       "attributes": {
         "trellis.participant.kind": ["user", "service", "device"],
-        "trellis.reason": ["connected", "disconnect", "coverage_lost", "revoked", "refreshed", "resumed", "terminal", "closed"]
+        "trellis.reason": ["connected", "disconnect", "coverage_lost", "revoked", "resumed", "terminal", "closed"]
       },
       "owner": "Existing connection lifecycle",
       "observation": "At completed state changes only. Never per poll or reconnect retry log."

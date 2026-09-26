@@ -7,6 +7,7 @@ import type {
 } from "@oatscenter/trellis";
 
 import type {
+  TrellisControlPlaneAuthorization,
   TrellisControlPlaneOAuthProvider,
   TrellisControlPlaneTtlMs,
   TrellisControlPlaneWebSource,
@@ -64,6 +65,8 @@ export type TrellisTestRuntimeStartOptions = {
   browserHost?: string;
   /** Platform TTL overrides (milliseconds) for the isolated test control plane. */
   ttlMs?: Partial<TrellisControlPlaneTtlMs>;
+  /** Authorization-context lifetime overrides for the isolated test control plane. */
+  authorization?: Partial<TrellisControlPlaneAuthorization>;
   timeouts?: {
     startupMs?: number;
     waitForMs?: number;

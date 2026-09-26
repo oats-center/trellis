@@ -744,7 +744,7 @@ pub(crate) async fn spawn_session_drivers(
                 _ = own_changes.recv() => {}
                 _ = caller_changes.recv() => {}
             }
-            if let Some(lost) = record.authority_lost() {
+            if let Some(lost) = record.reconcile_authority().await {
                 record.commit_end(crate::live::manager::authority_end(&lost));
                 record.begin_close(tokio::time::Instant::now());
                 record.spawn_close_driver(nats.clone());

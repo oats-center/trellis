@@ -613,7 +613,7 @@ impl<T> ConsumerPump<T> {
                 return;
             }
             self.core.set_phase(ConsumerPhase::Activating);
-            if let Err(lost) = self.guard.check_now() {
+            if let Err(lost) = self.guard.reconcile().await {
                 self.core.commit_end(authority_failure(&lost));
                 return;
             }
@@ -719,7 +719,7 @@ impl<T> ConsumerPump<T> {
                         }
                     }
                     _ = guard_changes.recv() => {
-                        if let Err(lost) = self.guard.check_now() {
+                        if let Err(lost) = self.guard.reconcile().await {
                             self.core.discard_queue();
                             self.core.commit_end(authority_failure(&lost));
                             return;
@@ -727,7 +727,7 @@ impl<T> ConsumerPump<T> {
                     }
                     _ = wait_until(next) => {
                         let now = tokio::time::Instant::now();
-                        if let Err(lost) = self.guard.check_now() {
+                        if let Err(lost) = self.guard.reconcile().await {
                             self.core.discard_queue();
                             self.core.commit_end(authority_failure(&lost));
                             return;
@@ -796,7 +796,7 @@ impl<T> ConsumerPump<T> {
                         };
                         // Incoming-frame admission performs a local current-state
                         // check before any frame influences state.
-                        if let Err(lost) = self.guard.check_now() {
+                        if let Err(lost) = self.guard.reconcile().await {
                             self.core.discard_queue();
                             self.core.commit_end(authority_failure(&lost));
                             return;

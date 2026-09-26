@@ -2601,7 +2601,7 @@
           "npm:ulid@^3.0.2"
         ]
       },
-      "packages/trellis-test": {
+      "packages/trellis-testkit": {
         "dependencies": [
           "jsr:@oatscenter/trellis@0.100",
           "jsr:@std/assert@^1.0.19",

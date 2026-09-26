@@ -320,7 +320,9 @@ export async function fetchServiceBootstrapInfo(args: {
     }
     return {
       status: "ready",
-      serverNow: response.serverNow / 1_000,
+      // Verification consumes integer Unix seconds; the response is in
+      // milliseconds, so truncate rather than leave a fractional second.
+      serverNow: Math.floor(response.serverNow / 1_000),
       serverClockOffsetMs,
       connectInfo: {
         connectionId: response.runtime.connectionId,

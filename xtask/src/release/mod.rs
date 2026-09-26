@@ -300,7 +300,7 @@ mod tests {
             "[workspace.package]\nversion = \"0.8.2\"\n",
         )
         .expect("write workspace manifest");
-        let manifest = root.join("ts/packages/trellis-test/deno.json");
+        let manifest = root.join("ts/packages/trellis-testkit/deno.json");
         fs::create_dir_all(manifest.parent().expect("manifest parent"))
             .expect("mkdir manifest parent");
         fs::write(
@@ -333,7 +333,7 @@ mod tests {
         .expect("write workspace manifest");
         for (project, name) in [
             ("crates/runtime", "trellis"),
-            ("ts/packages/trellis-test", "trellis-test-generated"),
+            ("ts/packages/trellis-testkit", "trellis-testkit-generated"),
             ("web", "trellis-web-generated"),
         ] {
             let dir = root.join(project);
@@ -352,7 +352,7 @@ mod tests {
             },
         )
         .expect("prepare release");
-        for project in ["crates/runtime", "ts/packages/trellis-test", "web"] {
+        for project in ["crates/runtime", "ts/packages/trellis-testkit", "web"] {
             assert!(fs::read_to_string(root.join(project).join("trellis.toml"))
                 .expect("read IDL manifest")
                 .contains("version = \"0.100.0-rc.1\""));

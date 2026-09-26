@@ -78,7 +78,7 @@ for key in ("source_sha", "target", "version", "packages", "files", "executables
         raise SystemExit(f"artifact-manifest.json is missing '{key}'")
 if not manifest["source_sha"] or not manifest["version"]:
     raise SystemExit("artifact-manifest.json has an empty source_sha or version")
-for package in ("trellis-protocol", "trellis-rs", "trellis-test"):
+for package in ("trellis-protocol", "trellis-rs", "trellis-testkit"):
     if not manifest["packages"].get(package):
         raise SystemExit(f"artifact-manifest.json is missing the {package} version")
 
@@ -159,15 +159,15 @@ PY
 
 protocol_dir="$(find "$work/packages" -maxdepth 1 -type d -name 'trellis-protocol-*' | head -1)"
 rs_dir="$(find "$work/packages" -maxdepth 1 -type d -name 'trellis-rs-*' | head -1)"
-test_dir="$(find "$work/packages" -maxdepth 1 -type d -name 'trellis-test-*' | head -1)"
+test_dir="$(find "$work/packages" -maxdepth 1 -type d -name 'trellis-testkit-*' | head -1)"
 [[ -n "$protocol_dir" && -n "$rs_dir" && -n "$test_dir" ]] || {
   echo "missing one of the extracted public crates" >&2
   exit 1
 }
 
 # The projected generated administration source must ship inside the testkit.
-if ! tar tzf "$packages_dir"/trellis-test-*.crate | grep 'src/runtime_api/lib.rs' > /dev/null; then
-  echo "trellis-test.crate is missing the generated administration projection" >&2
+if ! tar tzf "$packages_dir"/trellis-testkit-*.crate | grep 'src/runtime_api/lib.rs' > /dev/null; then
+  echo "trellis-testkit.crate is missing the generated administration projection" >&2
   exit 1
 fi
 
@@ -179,7 +179,7 @@ cat > "$config" <<EOF
 [patch.crates-io]
 trellis-protocol = { path = "$protocol_dir" }
 trellis-rs = { path = "$rs_dir" }
-trellis-test = { path = "$test_dir" }
+trellis-testkit = { path = "$test_dir" }
 EOF
 
 export CARGO_HOME="$work/cargo-home"
