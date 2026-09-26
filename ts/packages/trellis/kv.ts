@@ -125,7 +125,15 @@ function kvError(
   return new KVError({
     operation,
     cause,
-    context: key === undefined ? undefined : { key },
+    context: {
+      ...(key === undefined ? {} : { key }),
+      ...(cause instanceof Error && "code" in cause
+        ? { code: cause.code }
+        : {}),
+      ...(cause instanceof Error && "subject" in cause
+        ? { subject: cause.subject }
+        : {}),
+    },
   });
 }
 
@@ -477,7 +485,16 @@ export class TypedKV<T> {
       AsyncResult.from((async () => {
         try {
           this.#assertCurrent();
-          return Result.ok(await this.kv.keys(filter));
+          const keys = await this.kv.keys(filter);
+          return Result.ok({
+            async *[Symbol.asyncIterator]() {
+              try {
+                yield* keys;
+              } catch (cause) {
+                throw kvError("keys", undefined, cause);
+              }
+            },
+          });
         } catch (cause) {
           return Result.err(kvError("keys", undefined, cause));
         }

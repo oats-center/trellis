@@ -552,8 +552,6 @@ sessions = 86400000
 oauth = 300000
 device_flow = 1800000
 pending_auth = 300000
-connections = 7200000
-nats_jwt = 3600000
 
 [jobs.storage]
 kind = "sqlite"

@@ -87,6 +87,14 @@
 //!         platform_privileges: vec![],
 //!         extensions: Map::new(),
 //!         critical: vec![],
+//!         transport_authorization: trellis_protocol::TransportAuthorizationV1 {
+//!             format: trellis_protocol::TRANSPORT_AUTHORIZATION_FORMAT_V1.into(),
+//!             account: "AACCOUNT".into(),
+//!             publish_allow: vec![],
+//!             subscribe_allow: vec![],
+//!             response: None,
+//!             hard_expires_at: None,
+//!         },
 //!     },
 //!     &issuer_key,
 //! )?;
@@ -148,6 +156,7 @@ use sha2::{Digest as _, Sha256};
 use crate::{
     canonicalize_json, ApiSurfaceKind, AuthorizationErrorCode, GrantOwnerKind, GrantSet,
     PermissionAction, PermissionAtom, PermissionTarget, PlatformPrivilege, ProtocolError,
+    TransportAuthorizationV1,
 };
 
 /// Issuer-signed authorization-context wire format and signature domain.
@@ -161,7 +170,7 @@ const MAXIMUM_REQUEST_ID_BYTES: usize = 256;
 const MAXIMUM_EVENT_ID_BYTES: usize = 256;
 const MAXIMUM_SAFE_JSON_INTEGER: i64 = 9_007_199_254_740_991;
 
-fn authorization_error<'a>(
+pub(crate) fn authorization_error<'a>(
     code: AuthorizationErrorCode,
     tokens: impl IntoIterator<Item = &'a str>,
     message: impl Into<String>,
@@ -340,7 +349,7 @@ fn complete_digest<T: Serialize>(value: &T) -> Result<String, ProtocolError> {
     Ok(encode_base64url(&sha256(canonical.as_bytes())))
 }
 
-fn validate_text(value: &str, path: &[&str]) -> Result<(), ProtocolError> {
+pub(crate) fn validate_text(value: &str, path: &[&str]) -> Result<(), ProtocolError> {
     if value.is_empty()
         || value.trim() != value
         || value.chars().any(|character| character.is_ascii_control())
@@ -372,7 +381,7 @@ fn validate_inbox_prefix(value: &str) -> Result<(), ProtocolError> {
     Ok(())
 }
 
-fn is_utf16_strictly_sorted(values: &[String]) -> bool {
+pub(crate) fn is_utf16_strictly_sorted(values: &[String]) -> bool {
     values
         .windows(2)
         .all(|pair| pair[0].encode_utf16().cmp(pair[1].encode_utf16()).is_lt())
@@ -633,6 +642,8 @@ pub struct UnsignedAuthorizationContext {
     pub extensions: Map<String, Value>,
     /// Canonical critical extension names.
     pub critical: Vec<String>,
+    /// Exact signed transport policy admitted for this context.
+    pub transport_authorization: TransportAuthorizationV1,
 }
 
 /// Issuer-signed authorization context.
@@ -847,6 +858,7 @@ fn validate_context_fields(
             ));
         }
     }
+    context.transport_authorization.validate()?;
     validate_extensions(&context.extensions, &context.critical)
 }
 
@@ -1846,6 +1858,14 @@ mod tests {
                 platform_privileges: vec![PlatformPrivilege::Admin],
                 extensions: Map::new(),
                 critical: vec![],
+                transport_authorization: TransportAuthorizationV1 {
+                    format: crate::TRANSPORT_AUTHORIZATION_FORMAT_V1.to_owned(),
+                    account: "AACCOUNT".to_owned(),
+                    publish_allow: vec![],
+                    subscribe_allow: vec![],
+                    response: None,
+                    hard_expires_at: None,
+                },
             },
             &issuer_key,
         )

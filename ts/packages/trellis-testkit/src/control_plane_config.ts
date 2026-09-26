@@ -49,8 +49,6 @@ export type TrellisControlPlaneConfig = {
     oauth: number;
     deviceFlow: number;
     pendingAuth: number;
-    connections: number;
-    natsJwt: number;
   };
   nats: {
     servers: string;
@@ -207,8 +205,6 @@ export function buildControlPlaneConfig(args: {
       oauth: 5 * 60_000,
       deviceFlow: 30 * 60_000,
       pendingAuth: 5 * 60_000,
-      connections: 2 * 60 * 60_000,
-      natsJwt: 60 * 60_000,
       ...args.ttlMs,
     },
     nats: {
@@ -404,8 +400,6 @@ sessions = ${args.config.ttlMs.sessions}
 oauth = ${args.config.ttlMs.oauth}
 device_flow = ${args.config.ttlMs.deviceFlow}
 pending_auth = ${args.config.ttlMs.pendingAuth}
-connections = ${args.config.ttlMs.connections}
-nats_jwt = ${args.config.ttlMs.natsJwt}
 ${storage("jobs")}
 [health]
 transport_retention_hours = 1

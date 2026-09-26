@@ -24,7 +24,9 @@ export class StoreError extends TrellisError<StoreErrorData> {
     },
   ) {
     const { operation, ...baseOptions } = options;
-    const message = `Store ${operation || ""} failed`;
+    const message = `Store ${operation || ""} failed${
+      options.cause instanceof Error ? `: ${options.cause.message}` : ""
+    }`;
     super(message, baseOptions);
     this.operation = operation;
   }

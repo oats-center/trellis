@@ -308,9 +308,15 @@ where
                 },
             );
         }
-        for (api_id, provider_deployment_id) in updates {
+        if !updates.is_empty() {
             repository
-                .put_api_binding(consumer_binding_scope, &api_id, &provider_deployment_id)
+                .put_api_bindings(
+                    consumer_binding_scope,
+                    updates,
+                    crate::platform::auth::transport_attachments::TransportReevaluateScope::Participant {
+                        participant_id: participant.participant_id.clone(),
+                    },
+                )
                 .await?;
         }
         Ok(bindings)

@@ -24,7 +24,9 @@ export class TransferError extends TrellisError<TransferErrorData> {
     },
   ) {
     const { operation, ...baseOptions } = options;
-    const message = `Transfer ${operation || "operation"} failed`;
+    const message = `Transfer ${operation || "operation"} failed${
+      options.cause instanceof Error ? `: ${options.cause.message}` : ""
+    }`;
     super(message, baseOptions);
     this.operation = operation;
   }

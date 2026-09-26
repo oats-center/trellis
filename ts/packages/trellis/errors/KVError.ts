@@ -27,7 +27,9 @@ export class KVError extends TrellisError<KVErrorData> {
     },
   ) {
     const { operation, ...baseOptions } = options;
-    const msg = `KV ${operation || ""} failed`;
+    const msg = `KV ${operation || ""} failed${
+      options.cause instanceof Error ? `: ${options.cause.message}` : ""
+    }`;
     super(msg, baseOptions);
     this.operation = operation;
   }

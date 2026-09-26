@@ -9,10 +9,10 @@ use trellis_rs::client::SessionAuth;
 
 use super::auth::resources::{DestroyResourcePayload, ReconcileResourcePayload};
 use super::auth::{
-    validate_connection_kick_response, AuthConnectionPresence, AuthEphemeralRepository,
-    AuthorizationContextService, AuthorizationStateError, NatsAuthEphemeralRepository,
-    OutboxRepository, PostCommitActionKind, PostCommitActionRecord, SessionRepository,
-    SqliteAuthorizationStore,
+    AuthAttachmentState, AuthConnectionPresence, AuthEphemeralRepository,
+    AuthorizationContextService, AuthorizationStateError, ConnectionKickOutcome,
+    NatsAuthEphemeralRepository, OutboxRepository, PostCommitActionKind, PostCommitActionRecord,
+    SessionRepository, SqliteAuthorizationStore,
 };
 use crate::shutdown::StopHandle;
 use crate::supervisor::RuntimeError;
@@ -221,6 +221,7 @@ impl AuthPostCommitRuntime {
                     .await
                 }
             }
+            PostCommitActionKind::TransportReevaluate => self.reevaluate_transport(action).await,
         }
     }
 
@@ -242,17 +243,27 @@ impl AuthPostCommitRuntime {
             .dispatch_registry_action(digest, revocation, now_millis()? / 1_000)
             .await?;
         if revocation {
-            let connections = self
-                .ephemeral
-                .list_connection_presence_by_context(digest)
-                .await?;
-            tracing::info!(
-                context_digest = digest,
-                physical_connection_count = connections.len(),
-                "enumerated authoritative physical connections for revoked context"
-            );
-            for connection in connections {
-                self.kick_connection(&connection).await?;
+            let reason = payload.get("reason").and_then(|value| {
+                serde_json::from_value::<
+                    super::auth::context::AuthorizationContextRevocationReason,
+                >(value.clone())
+                .ok()
+            });
+            if reason.is_some_and(
+                super::auth::context::AuthorizationContextRevocationReason::requires_immediate_physical_kick,
+            ) {
+                let connections = self
+                    .ephemeral
+                    .list_connection_presence_by_context(digest)
+                    .await?;
+                tracing::info!(
+                    context_digest = digest,
+                    physical_connection_count = connections.len(),
+                    "enumerated authoritative physical connections for hard-security revocation"
+                );
+                for connection in connections {
+                    self.kick_connection(&connection).await?;
+                }
             }
         }
         tracing::debug!(
@@ -456,7 +467,21 @@ impl AuthPostCommitRuntime {
 
     async fn kick(&self, action: &PostCommitActionRecord) -> Result<(), AuthorizationStateError> {
         let payload = &action.payload;
-        let connections = if let Some(connections) = payload.get("connections") {
+        let connections = if let Some(target) = payload.get("target") {
+            let target: super::auth::transport_attachments::PhysicalAttachmentTarget =
+                serde_json::from_value(target.clone())
+                    .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
+            self.ephemeral
+                .list_connection_presence(None)
+                .await?
+                .into_iter()
+                .filter(|connection| {
+                    connection.connection_id == target.physical_connection_id
+                        && connection.server_id == target.server_id
+                        && connection.client_id == target.client_id
+                })
+                .collect()
+        } else if let Some(connections) = payload.get("connections") {
             serde_json::from_value::<Vec<super::auth::AuthConnectionPresence>>(connections.clone())
                 .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?
         } else if let Some(session_id) = payload.get("sessionId").and_then(Value::as_str) {
@@ -527,6 +552,91 @@ impl AuthPostCommitRuntime {
         Ok(())
     }
 
+    /// Re-evaluates present transport policy for the exact physical attachments
+    /// in one typed scope.
+    ///
+    /// A socket is kicked only when its admitted policy is no longer covered by
+    /// present authority, or when present authority is genuinely invalid. A
+    /// transient storage failure retries instead of erasing the enforcement.
+    async fn reevaluate_transport(
+        &self,
+        action: &PostCommitActionRecord,
+    ) -> Result<(), AuthorizationStateError> {
+        use crate::platform::auth::transport_attachments::{
+            TransportReevaluatePayload, TRANSPORT_REEVALUATE_FORMAT_V1,
+        };
+
+        let request: TransportReevaluatePayload = serde_json::from_value(action.payload.clone())
+            .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
+        if request.format != TRANSPORT_REEVALUATE_FORMAT_V1 {
+            return Err(AuthorizationStateError::InvalidRecord(
+                "unknown transport reevaluation payload format".to_owned(),
+            ));
+        }
+        let selector = request.scope.to_context_selector();
+        let contexts = self.repository.list_contexts_by_selector(selector).await?;
+        let now = now_millis()?;
+        let mut seen = std::collections::BTreeSet::new();
+        let mut kicked: Vec<AuthConnectionPresence> = Vec::new();
+        for context in contexts {
+            if !seen.insert(context.context_digest.clone()) {
+                continue;
+            }
+            let attachments = self
+                .ephemeral
+                .list_connection_presence_by_context(&context.context_digest)
+                .await?;
+            if attachments.is_empty() {
+                continue;
+            }
+            match self
+                .contexts
+                .current_transport_policy(&context.context_digest, now)
+                .await
+            {
+                Ok(allowed) => {
+                    for attachment in attachments {
+                        let covered = attachment
+                            .transport_authorization
+                            .is_covered_by(&allowed)
+                            .map_err(|error| {
+                                AuthorizationStateError::InvalidRecord(error.to_string())
+                            })?;
+                        if !covered {
+                            kicked.push(attachment);
+                        }
+                    }
+                }
+                Err(error) if transport_reevaluation_is_transient(&error) => return Err(error),
+                Err(error) => {
+                    tracing::warn!(
+                        context_digest = %context.context_digest,
+                        %error,
+                        "transport reevaluation found invalid authority; kicking attachments"
+                    );
+                    kicked.extend(attachments);
+                }
+            }
+        }
+        for connection in kicked {
+            let mut event = super::auth::connection_event_action::<
+                trellis_runtime_apis::apis::trellis_auth_v1::events::ConnectionsKicked,
+            >(
+                &connection,
+                "Auth.Connections.Kicked",
+                "kicked",
+                Some("transport_reevaluate"),
+                now,
+            )?;
+            event.predecessor_action_id = Some(action.action_id.clone());
+            self.repository
+                .enqueue_post_commit_actions(vec![event])
+                .await?;
+            self.kick_connection(&connection).await?;
+        }
+        Ok(())
+    }
+
     async fn kick_connection(
         &self,
         connection: &AuthConnectionPresence,
@@ -535,18 +645,12 @@ impl AuthPostCommitRuntime {
             .client_id
             .parse::<u64>()
             .map_err(|_| AuthorizationStateError::InvalidRecord("invalid client id".to_owned()))?;
-        let response = self
-            .system_client
-            .request(
-                format!("$SYS.REQ.SERVER.{}.KICK", connection.server_id),
-                Bytes::from(
-                    serde_json::to_vec(&serde_json::json!({ "cid": client_id }))
-                        .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?,
-                ),
-            )
-            .await
-            .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
-        let outcome = validate_connection_kick_response(&response.payload, &connection.server_id)?;
+        let outcome = super::auth::transport_attachments::request_kick(
+            &self.system_client,
+            &connection.server_id,
+            client_id,
+        )
+        .await?;
         tracing::info!(
             context_digest = %connection.context_digest,
             runtime_connection_id = %connection.runtime_connection_id,
@@ -556,9 +660,32 @@ impl AuthPostCommitRuntime {
             ?outcome,
             "processed authorization connection kick"
         );
-        self.ephemeral
-            .delete_connection_presence(&connection.connection_id, connection.storage_revision)
-            .await
+        match outcome {
+            ConnectionKickOutcome::Disconnected => {
+                self.ephemeral
+                    .delete_connection_presence(
+                        &connection.connection_id,
+                        connection.storage_revision,
+                    )
+                    .await
+            }
+            // A pending admission might not have registered yet; its successful
+            // callout response could still be in flight, so keep the record and
+            // let reconciliation settle it rather than treating it as a ghost.
+            ConnectionKickOutcome::AlreadyAbsent
+                if connection.attachment_state == AuthAttachmentState::Pending =>
+            {
+                Ok(())
+            }
+            ConnectionKickOutcome::AlreadyAbsent => {
+                self.ephemeral
+                    .delete_connection_presence(
+                        &connection.connection_id,
+                        connection.storage_revision,
+                    )
+                    .await
+            }
+        }
     }
 }
 
@@ -573,6 +700,15 @@ fn now_millis() -> Result<i64, AuthorizationStateError> {
         .as_millis()
         .try_into()
         .map_err(|_| AuthorizationStateError::Storage("current time overflow".to_owned()))
+}
+
+/// Errors that mean "cannot prove removal yet". These must retry rather than
+/// erase a pending enforcement action.
+fn transport_reevaluation_is_transient(error: &AuthorizationStateError) -> bool {
+    matches!(
+        error,
+        AuthorizationStateError::Storage(_) | AuthorizationStateError::StorageConflict
+    )
 }
 
 #[cfg(test)]

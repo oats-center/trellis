@@ -8,8 +8,8 @@ export class TrellisHttpError extends Error {
   /** Exact machine-readable Trellis error code. */
   readonly code: string;
 
-  constructor(status: number, code: string) {
-    super(`Trellis HTTP ${status}: ${code}`);
+  constructor(status: number, code: string, message?: string) {
+    super(`Trellis HTTP ${status}: ${code}${message ? `: ${message}` : ""}`);
     this.name = "TrellisHttpError";
     this.status = status;
     this.code = code;
@@ -21,6 +21,7 @@ export async function decodeTrellisHttpError(
   response: Response,
 ): Promise<TrellisHttpError> {
   let code = INVALID_HTTP_ERROR_ENVELOPE;
+  let message: string | undefined;
   try {
     const body: unknown = await response.json();
     if (
@@ -30,11 +31,14 @@ export async function decodeTrellisHttpError(
       body.error.code.length > 0
     ) {
       code = body.error.code;
+      if ("message" in body.error && typeof body.error.message === "string") {
+        message = body.error.message;
+      }
     }
   } catch {
     // The local code keeps malformed responses distinct from server error codes.
   }
-  return new TrellisHttpError(response.status, code);
+  return new TrellisHttpError(response.status, code, message);
 }
 
 /**

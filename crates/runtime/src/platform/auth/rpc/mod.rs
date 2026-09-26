@@ -2311,7 +2311,8 @@ impl AuthRpcProcessor {
             .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
         let connection_id = required_string(&input, "connectionId")?;
         let idempotency_key = required_string(&input, "idempotencyKey")?;
-        self.ephemeral
+        let connection = self
+            .ephemeral
             .list_connection_presence(None)
             .await?
             .into_iter()
@@ -2344,7 +2345,8 @@ impl AuthRpcProcessor {
                     ]),
                     kind: PostCommitActionKind::Kick,
                     payload: json!({
-                        "connectionId": connection_id,
+                        "format": crate::platform::auth::transport_attachments::PHYSICAL_ATTACHMENT_KICK_FORMAT_V1,
+                        "target": crate::platform::auth::transport_attachments::physical_attachment_target(&connection),
                         "reason": input.get("reason").and_then(Value::as_str),
                     }),
                     created_at: now,

@@ -124,8 +124,6 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
                 oauth: Some(300_000),
                 device_flow: Some(1_800_000),
                 pending_auth: Some(300_000),
-                connections: Some(7_200_000),
-                nats_jwt: Some(3_600_000),
             }),
         }),
         jobs: Some(SubsystemConfig {

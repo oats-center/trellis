@@ -2199,19 +2199,17 @@ impl OperationTransport for TrellisClient {
         &'a self,
         grant: UploadTransferGrant,
         reader: &'a mut R,
-        expected_size: Option<u64>,
     ) -> Result<FileInfo, TrellisClientError>
     where
         R: tokio::io::AsyncRead + Unpin + Send + ?Sized + 'a,
     {
-        crate::client::transfer::put_upload_grant_from(self, &grant, reader, expected_size).await
+        crate::client::transfer::put_upload_grant_from(self, &grant, reader).await
     }
 
     async fn put_upload_transfer_from_with_cancel<'a, R>(
         &'a self,
         grant: UploadTransferGrant,
         reader: &'a mut R,
-        expected_size: Option<u64>,
         cancellation: &'a crate::client::TransferCancellation,
     ) -> Result<FileInfo, TrellisClientError>
     where
@@ -2221,7 +2219,6 @@ impl OperationTransport for TrellisClient {
             self,
             &grant,
             reader,
-            expected_size,
             Some(cancellation),
         )
         .await

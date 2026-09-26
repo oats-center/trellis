@@ -228,43 +228,31 @@ pub(crate) async fn put_upload_grant(
     body: impl AsRef<[u8]>,
 ) -> Result<FileInfo, TrellisClientError> {
     let bytes = body.as_ref();
-    let expected_size = u64::try_from(bytes.len()).map_err(|_| {
-        TrellisClientError::TransferProtocol("upload length does not fit in u64".to_string())
-    })?;
     let mut reader = std::io::Cursor::new(bytes);
-    put_upload_grant_from(client, grant, &mut reader, Some(expected_size)).await
+    put_upload_grant_from(client, grant, &mut reader).await
 }
 
 pub(crate) async fn put_upload_grant_from<R>(
     client: &TrellisClient,
     grant: &UploadTransferGrant,
     reader: &mut R,
-    expected_size: Option<u64>,
 ) -> Result<FileInfo, TrellisClientError>
 where
     R: AsyncRead + Unpin + Send + ?Sized,
 {
-    put_upload_grant_from_with_cancel(client, grant, reader, expected_size, None).await
+    put_upload_grant_from_with_cancel(client, grant, reader, None).await
 }
 
 pub(crate) async fn put_upload_grant_from_with_cancel<R>(
     client: &TrellisClient,
     grant: &UploadTransferGrant,
     reader: &mut R,
-    expected_size: Option<u64>,
     cancellation: Option<&TransferCancellation>,
 ) -> Result<FileInfo, TrellisClientError>
 where
     R: AsyncRead + Unpin + Send + ?Sized,
 {
     validate_grant(&grant.session_key, client)?;
-    if let (Some(expected_size), Some(max_bytes)) = (expected_size, grant.max_bytes) {
-        if expected_size > max_bytes {
-            return Err(TrellisClientError::TransferProtocol(format!(
-                "upload exceeds max bytes: attempted {expected_size}, max {max_bytes}"
-            )));
-        }
-    }
     let max_chunk = transfer_chunk_size(grant.chunk_bytes)?;
     let context_digest = client.authorization_context_digest()?;
     let mut seq: u64 = 0;
@@ -305,14 +293,6 @@ where
         let next = transferred.checked_add(count as u64).ok_or_else(|| {
             TrellisClientError::TransferProtocol("upload size overflow".to_string())
         })?;
-        if let Some(expected_size) = expected_size {
-            if next > expected_size {
-                let _ = send_transfer_cancel(client, &grant.subject, &context_digest, seq).await;
-                return Err(TrellisClientError::TransferProtocol(format!(
-                    "upload size mismatch: expected {expected_size}, got at least {next}"
-                )));
-            }
-        }
         if let Some(max_bytes) = grant.max_bytes {
             if next > max_bytes {
                 let _ = send_transfer_cancel(client, &grant.subject, &context_digest, seq).await;
@@ -386,15 +366,6 @@ where
         seq = seq.checked_add(1).ok_or_else(|| {
             TrellisClientError::TransferProtocol("upload sequence overflow".to_string())
         })?;
-    }
-
-    if let Some(expected_size) = expected_size {
-        if transferred != expected_size {
-            let _ = send_transfer_cancel(client, &grant.subject, &context_digest, seq).await;
-            return Err(TrellisClientError::TransferProtocol(format!(
-                "upload size mismatch: expected {expected_size}, got {transferred}"
-            )));
-        }
     }
 
     let digest = format!("SHA-256={}", URL_SAFE_NO_PAD.encode(hasher.finalize()));

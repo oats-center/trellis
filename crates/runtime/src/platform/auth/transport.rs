@@ -1,111 +1,138 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use trellis_protocol::{
-    ApiSurfaceKind, AuthorizationPrincipalKind, ParticipantResourceKind, PermissionAction,
-    PermissionAtom, UnsignedAuthorizationContext,
+    ApiSurfaceKind, AuthorizationPrincipalKind, GrantSet, ParticipantResourceKind,
+    PermissionAction, PermissionAtom, TransportAuthorizationV1, TransportResponseAuthorizationV1,
+    TRANSPORT_AUTHORIZATION_FORMAT_V1,
 };
 use trellis_rs::client::AuthorizationApiBinding;
 
 use super::evidence::{ApiRuntimeProjection, RuntimeActionKind};
 use super::{
     AuthorizationRegistryBinding, AuthorizationStateError, ParticipantBindingRecord,
-    ResourceBindingEvidence, ResourceProviderIdentity,
+    ParticipantBindingState, ResourceBindingEvidence, ResourceProviderIdentity,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TransportPermissions {
-    pub publish: Vec<String>,
-    pub subscribe: Vec<String>,
+/// Resolved inputs for compiling the exact transport policy of one issuance or
+/// admission snapshot.
+pub(crate) struct TransportAuthorizationInputs<'a> {
+    /// Target NATS account public id.
+    pub account: &'a str,
+    /// Authenticated principal class.
+    pub principal_kind: AuthorizationPrincipalKind,
+    /// Installed participant assignment.
+    pub participant_id: &'a str,
+    /// Logical runtime connection id.
+    pub connection_id: &'a str,
+    /// Canonical session public key.
+    pub session_key: &'a str,
+    /// Authoritative reply inbox prefix.
+    pub inbox_prefix: &'a str,
+    /// Deployment id for deployed principals.
+    pub deployment_id: Option<&'a str>,
+    /// Runtime instance id for deployed principals.
+    pub instance_id: Option<&'a str>,
+    /// Exact effective permissions.
+    pub grants: &'a GrantSet,
+    /// Exact installed participant binding.
+    pub binding: &'a ParticipantBindingRecord,
+    /// Exact resource evidence supporting the grant set.
+    pub resource_bindings: &'a [ResourceBindingEvidence],
+    /// Exact selected API provider bindings.
+    pub api_bindings: &'a BTreeMap<String, AuthorizationApiBinding>,
+    /// Authorization registry binding.
+    pub registry: &'a AuthorizationRegistryBinding,
+    /// Bounded response allowance for this principal class, if any.
+    pub response: Option<TransportResponseAuthorizationV1>,
+    /// Exclusive Unix-seconds hard deadline, if any.
+    pub hard_expires_at: Option<i64>,
 }
 
-pub(crate) fn compile_transport_permissions(
-    context: &UnsignedAuthorizationContext,
-    binding: &ParticipantBindingRecord,
-    resource_bindings: &[ResourceBindingEvidence],
-    api_bindings: &std::collections::BTreeMap<String, AuthorizationApiBinding>,
-    registry: &AuthorizationRegistryBinding,
-) -> Result<TransportPermissions, AuthorizationStateError> {
-    if binding.participant_id != context.participant_id {
+/// Compile the exact transport policy for one resolved issuance or admission
+/// snapshot. This is the only compiler of actual broker policy.
+///
+/// # Errors
+///
+/// Returns [`AuthorizationStateError`] when the resolved evidence is
+/// inconsistent for the binding.
+pub(crate) fn compile_transport_authorization(
+    inputs: TransportAuthorizationInputs<'_>,
+) -> Result<TransportAuthorizationV1, AuthorizationStateError> {
+    if inputs.binding.participant_id != inputs.participant_id {
         return invalid("issuable state does not match participant binding");
     }
-    let resolved = binding.resolve()?;
+    let resolved = inputs.binding.resolve()?;
 
     let mut publish = BTreeSet::new();
     let mut subscribe = BTreeSet::new();
     compile_authorization_registry_transport(
-        &context.inbox_prefix,
-        &registry.context_bucket,
+        inputs.inbox_prefix,
+        &inputs.registry.context_bucket,
         &mut publish,
         &mut subscribe,
     );
+    // Every admitted client may read its own broker-admission identity and
+    // installed permissions. No other `$SYS` administration is granted.
+    publish.insert("$SYS.REQ.USER.INFO".to_owned());
     if matches!(
-        context.principal_kind,
+        inputs.principal_kind,
         AuthorizationPrincipalKind::Service | AuthorizationPrincipalKind::Device
     ) {
         publish.insert("$JS.API.INFO".to_owned());
-        if matches!(
-            context.principal_kind,
-            AuthorizationPrincipalKind::Service | AuthorizationPrincipalKind::Device
-        ) {
-            let deployment_id = context
-                .deployment_id
-                .as_deref()
-                .ok_or_else(|| invalid_error("deployed provider is missing deployment identity"))?;
-            let bucket = format!("trellis_operations_{deployment_id}");
-            let stream = format!("KV_{bucket}");
-            publish.insert(format!("$KV.{bucket}.>"));
-            publish.insert(format!("$JS.API.STREAM.CREATE.{stream}"));
-            publish.insert(format!("$JS.API.CONSUMER.DELETE.{stream}.>"));
-            publish.insert(format!("$JS.API.$KV.{bucket}.>"));
-            kv_read(&bucket, &mut publish);
+        let deployment_id = inputs
+            .deployment_id
+            .ok_or_else(|| invalid_error("deployed provider is missing deployment identity"))?;
+        let bucket = format!("trellis_operations_{deployment_id}");
+        let stream = format!("KV_{bucket}");
+        publish.insert(format!("$KV.{bucket}.>"));
+        publish.insert(format!("$JS.API.STREAM.CREATE.{stream}"));
+        publish.insert(format!("$JS.API.CONSUMER.DELETE.{stream}.>"));
+        publish.insert(format!("$JS.API.$KV.{bucket}.>"));
+        kv_read(&bucket, &mut publish);
 
-            let staging = format!("trellis_operation_staging_{deployment_id}");
-            let staging_stream = format!("OBJ_{staging}");
-            publish.insert(format!("$O.{staging}.C.>"));
-            publish.insert(format!("$O.{staging}.M.>"));
-            publish.insert(format!("$JS.API.STREAM.INFO.{staging_stream}"));
-            publish.insert(format!("$JS.API.STREAM.MSG.GET.{staging_stream}"));
-            publish.insert(format!("$JS.API.STREAM.PURGE.{staging_stream}"));
-            publish.insert(format!("$JS.API.CONSUMER.CREATE.{staging_stream}"));
-            publish.insert(format!("$JS.API.CONSUMER.CREATE.{staging_stream}.>"));
-            publish.insert(format!("$JS.API.CONSUMER.INFO.{staging_stream}.>"));
-            publish.insert(format!("$JS.API.CONSUMER.MSG.NEXT.{staging_stream}.>"));
-            publish.insert(format!("$JS.API.CONSUMER.DELETE.{staging_stream}.>"));
-            publish.insert(format!("$JS.FC.{staging_stream}.>"));
-            publish.insert(format!("$JS.ACK.{staging_stream}.>"));
-        }
-        let deployment_id = context.deployment_id.as_deref().ok_or_else(|| {
-            invalid_error("deployed principal is missing deployment identity".to_owned())
-        })?;
-        let instance_id = context.instance_id.as_deref().ok_or_else(|| {
+        let staging = format!("trellis_operation_staging_{deployment_id}");
+        let staging_stream = format!("OBJ_{staging}");
+        publish.insert(format!("$O.{staging}.C.>"));
+        publish.insert(format!("$O.{staging}.M.>"));
+        publish.insert(format!("$JS.API.STREAM.INFO.{staging_stream}"));
+        publish.insert(format!("$JS.API.STREAM.MSG.GET.{staging_stream}"));
+        publish.insert(format!("$JS.API.STREAM.PURGE.{staging_stream}"));
+        publish.insert(format!("$JS.API.CONSUMER.CREATE.{staging_stream}"));
+        publish.insert(format!("$JS.API.CONSUMER.CREATE.{staging_stream}.>"));
+        publish.insert(format!("$JS.API.CONSUMER.INFO.{staging_stream}.>"));
+        publish.insert(format!("$JS.API.CONSUMER.MSG.NEXT.{staging_stream}.>"));
+        publish.insert(format!("$JS.API.CONSUMER.DELETE.{staging_stream}.>"));
+        publish.insert(format!("$JS.FC.{staging_stream}.>"));
+        publish.insert(format!("$JS.ACK.{staging_stream}.>"));
+
+        let instance_id = inputs.instance_id.ok_or_else(|| {
             invalid_error("deployed principal is missing instance identity".to_owned())
         })?;
-        let kind = match context.principal_kind {
+        let kind = match inputs.principal_kind {
             AuthorizationPrincipalKind::Service => "service",
             AuthorizationPrincipalKind::Device => "device",
             AuthorizationPrincipalKind::User => unreachable!(),
         };
         publish.insert(format!(
             "health.v1.heartbeat.{kind}.{}.{}.{}.{}.{}",
-            URL_SAFE_NO_PAD.encode(context.participant_id.as_bytes()),
-            URL_SAFE_NO_PAD.encode(binding.participant_digest.as_bytes()),
+            URL_SAFE_NO_PAD.encode(inputs.participant_id.as_bytes()),
+            URL_SAFE_NO_PAD.encode(inputs.binding.participant_digest.as_bytes()),
             URL_SAFE_NO_PAD.encode(deployment_id.as_bytes()),
             URL_SAFE_NO_PAD.encode(instance_id.as_bytes()),
-            context.session_key,
+            inputs.session_key,
         ));
     }
 
-    let deployment_id = context.deployment_id.as_deref();
+    let deployment_id = inputs.deployment_id;
     for (api_id, api) in &resolved.implemented_apis {
         let deployment_id = deployment_id
             .ok_or_else(|| invalid_error("API provider is missing deployment identity"))?;
-        let instance_id = context
+        let instance_id = inputs
             .instance_id
-            .as_deref()
             .ok_or_else(|| invalid_error("API provider is missing instance identity"))?;
-        let session_prefix = &context.session_key[..16.min(context.session_key.len())];
+        let session_prefix = &inputs.session_key[..16.min(inputs.session_key.len())];
         for (key, action) in &api.actions {
             let name = key.split_once(':').map_or(key.as_str(), |(_, name)| name);
             compile_provider_action(
@@ -114,7 +141,7 @@ pub(crate) fn compile_transport_permissions(
                     deployment_id,
                     instance_id,
                     session_prefix,
-                    connection_id: &context.connection_id,
+                    connection_id: inputs.connection_id,
                 },
                 name,
                 action,
@@ -124,7 +151,7 @@ pub(crate) fn compile_transport_permissions(
         }
     }
 
-    for atom in context.grants.permissions() {
+    for atom in inputs.grants.permissions() {
         if let Some((api_id, _, _)) = atom.target().as_api_surface() {
             let api = resolved
                 .referenced_apis
@@ -132,8 +159,8 @@ pub(crate) fn compile_transport_permissions(
                 .ok_or_else(|| invalid_error(format!("grant references unknown API {api_id}")))?;
             compile_api_surface(
                 api,
-                api_bindings,
-                &context.connection_id,
+                inputs.api_bindings,
+                inputs.connection_id,
                 atom,
                 &mut publish,
                 &mut subscribe,
@@ -149,7 +176,8 @@ pub(crate) fn compile_transport_permissions(
             if atom.action() != PermissionAction::Control {
                 return invalid("operation signal grant must use control action");
             }
-            let deployment_id = &api_bindings
+            let deployment_id = &inputs
+                .api_bindings
                 .get(api_id)
                 .ok_or_else(|| invalid_error(format!("API {api_id} is not bound")))?
                 .provider_deployment_id;
@@ -158,12 +186,13 @@ pub(crate) fn compile_transport_permissions(
                     .map_err(|error| invalid_error(error.to_string()))?;
             publish.insert(format!("{subject}.control"));
         } else if let Some((participant_id, kind, name)) = atom.target().as_participant_resource() {
-            if participant_id != context.participant_id {
+            if participant_id != inputs.participant_id {
                 return invalid("resource grant belongs to another participant");
             }
-            let resource = resource_binding(resource_bindings, kind, name)?;
+            let resource = resource_binding(inputs.resource_bindings, kind, name)?;
             if kind == ParticipantResourceKind::State {
-                let binding = api_bindings
+                let binding = inputs
+                    .api_bindings
                     .get(trellis_runtime_apis::apis::trellis_state_v1::API_ID)
                     .ok_or_else(|| invalid_error("State API binding is unavailable"))?;
                 let action = match atom.action() {
@@ -181,7 +210,8 @@ pub(crate) fn compile_transport_permissions(
                     .map_err(|error| invalid_error(error.to_string()))?,
                 );
             } else if kind == ParticipantResourceKind::EventConsumer {
-                let binding = api_bindings
+                let binding = inputs
+                    .api_bindings
                     .get(trellis_runtime_apis::apis::trellis_events_v1::API_ID)
                     .ok_or_else(|| invalid_error("Events API binding is unavailable"))?;
                 let methods: &[&str] = match atom.action() {
@@ -214,9 +244,28 @@ pub(crate) fn compile_transport_permissions(
         }
     }
 
-    Ok(TransportPermissions {
-        publish: publish.into_iter().collect(),
-        subscribe: subscribe.into_iter().collect(),
+    Ok(TransportAuthorizationV1 {
+        format: TRANSPORT_AUTHORIZATION_FORMAT_V1.to_owned(),
+        account: inputs.account.to_owned(),
+        publish_allow: publish.into_iter().collect(),
+        subscribe_allow: subscribe.into_iter().collect(),
+        response: inputs.response,
+        hard_expires_at: inputs.hard_expires_at,
+    })
+}
+
+/// Bounded response allowance for the principal class that owns a policy.
+pub(crate) fn transport_response_allowance(
+    principal_kind: AuthorizationPrincipalKind,
+    binding: &ParticipantBindingRecord,
+) -> Option<TransportResponseAuthorizationV1> {
+    let allowed = principal_kind == AuthorizationPrincipalKind::Service
+        || (principal_kind == AuthorizationPrincipalKind::Device
+            && binding.state == ParticipantBindingState::Resolved
+            && !binding.projection.implemented_apis.is_empty());
+    allowed.then_some(TransportResponseAuthorizationV1 {
+        max_messages: 65_535,
+        ttl_ms: 120_000,
     })
 }
 
@@ -1063,19 +1112,20 @@ mod nats_reply_permission_tests {
     use futures_util::StreamExt;
     use trellis_local_nats::{ManagedNatsServer, NatsBinarySource, NatsOutput, NatsServerBinary};
     use trellis_protocol::{
-        ApiSurfaceKind, AuthorizationPrincipalKind, GrantOwnerKind, GrantSet, ParticipantKind,
-        PermissionAction, PermissionAtom, PermissionTarget, UnsignedAuthorizationContext,
+        ApiSurfaceKind, AuthorizationPrincipalKind, GrantSet, ParticipantKind, PermissionAction,
+        PermissionAtom, PermissionTarget, TransportAuthorizationV1,
+        TransportResponseAuthorizationV1,
     };
     use trellis_rs::client::AuthorizationApiBinding;
 
-    use super::compile_transport_permissions;
+    use super::{compile_transport_authorization, TransportAuthorizationInputs};
     use crate::platform::auth::{
         domain::ParticipantBindingState,
         evidence::{
             ActionRuntimeProjection, ApiRuntimeProjection, ParticipantRuntimeProjection,
             RuntimeActionKind,
         },
-        AuthorizationRegistryBinding, ParticipantBindingRecord, TransportPermissions,
+        AuthorizationRegistryBinding, ParticipantBindingRecord,
     };
 
     const API_ID: &str = "fieldops.sites@v1";
@@ -1152,45 +1202,6 @@ mod nats_reply_permission_tests {
         }
     }
 
-    fn context(
-        connection_id: &str,
-        session_key: &str,
-        participant_id: &str,
-        inbox_prefix: String,
-        grants: GrantSet,
-        deployment: Option<&str>,
-        instance: Option<&str>,
-    ) -> UnsignedAuthorizationContext {
-        UnsignedAuthorizationContext {
-            format: "trellis.auth.v1".to_owned(),
-            issuer_key_id: "issuer".to_owned(),
-            connection_id: connection_id.to_owned(),
-            session_key: session_key.to_owned(),
-            principal_id: format!("principal.{connection_id}"),
-            principal_kind: if deployment.is_some() {
-                AuthorizationPrincipalKind::Service
-            } else {
-                AuthorizationPrincipalKind::User
-            },
-            participant_id: participant_id.to_owned(),
-            owner_kind: GrantOwnerKind::Deployment,
-            owner_id: "deployment".to_owned(),
-            grant_revision: 1,
-            identity_key_id: None,
-            login_session_id: None,
-            deployment_id: deployment.map(str::to_owned),
-            instance_id: instance.map(str::to_owned),
-            inbox_prefix,
-            issued_at: 0,
-            not_before: 0,
-            expires_at: i64::MAX,
-            grants,
-            platform_privileges: Vec::new(),
-            extensions: serde_json::Map::new(),
-            critical: Vec::new(),
-        }
-    }
-
     fn api_bindings() -> BTreeMap<String, AuthorizationApiBinding> {
         BTreeMap::from([(
             API_ID.to_owned(),
@@ -1206,42 +1217,51 @@ mod nats_reply_permission_tests {
         }
     }
 
-    fn provider_permissions() -> TransportPermissions {
-        compile_transport_permissions(
-            &context(
-                PROVIDER_CONNECTION,
-                "sites-session-key",
-                "fieldops.Sites",
-                "_INBOX.sites".to_owned(),
-                GrantSet::new(Vec::new()),
-                Some(PROVIDER_DEPLOYMENT),
-                Some("sites-instance"),
-            ),
-            &binding("fieldops.Sites", "Sites", true),
-            &[],
-            &api_bindings(),
-            &registry(),
-        )
+    fn provider_policy() -> TransportAuthorizationV1 {
+        let grants = GrantSet::new(Vec::new());
+        compile_transport_authorization(TransportAuthorizationInputs {
+            account: "ATESTACCOUNT",
+            principal_kind: AuthorizationPrincipalKind::Service,
+            participant_id: "fieldops.Sites",
+            connection_id: PROVIDER_CONNECTION,
+            session_key: "sites-session-key",
+            inbox_prefix: "_INBOX.sites",
+            deployment_id: Some(PROVIDER_DEPLOYMENT),
+            instance_id: Some("sites-instance"),
+            grants: &grants,
+            binding: &binding("fieldops.Sites", "Sites", true),
+            resource_bindings: &[],
+            api_bindings: &api_bindings(),
+            registry: &registry(),
+            response: Some(TransportResponseAuthorizationV1 {
+                max_messages: 65_535,
+                ttl_ms: 120_000,
+            }),
+            hard_expires_at: None,
+        })
         .expect("provider permissions compile")
     }
 
-    fn consumer_permissions(permission: PermissionAtom) -> TransportPermissions {
+    fn consumer_policy(permission: PermissionAtom) -> TransportAuthorizationV1 {
         let consumer_token = URL_SAFE_NO_PAD.encode(CONSUMER_CONNECTION.as_bytes());
-        compile_transport_permissions(
-            &context(
-                CONSUMER_CONNECTION,
-                CONSUMER_SESSION_KEY,
-                "fieldops.Caller",
-                format!("_INBOX.{consumer_token}"),
-                GrantSet::new(vec![permission]),
-                None,
-                None,
-            ),
-            &binding("fieldops.Caller", "Caller", false),
-            &[],
-            &api_bindings(),
-            &registry(),
-        )
+        let grants = GrantSet::new(vec![permission]);
+        compile_transport_authorization(TransportAuthorizationInputs {
+            account: "ATESTACCOUNT",
+            principal_kind: AuthorizationPrincipalKind::User,
+            participant_id: "fieldops.Caller",
+            connection_id: CONSUMER_CONNECTION,
+            session_key: CONSUMER_SESSION_KEY,
+            inbox_prefix: &format!("_INBOX.{consumer_token}"),
+            deployment_id: None,
+            instance_id: None,
+            grants: &grants,
+            binding: &binding("fieldops.Caller", "Caller", false),
+            resource_bindings: &[],
+            api_bindings: &api_bindings(),
+            registry: &registry(),
+            response: None,
+            hard_expires_at: None,
+        })
         .expect("consumer permissions compile")
     }
 
@@ -1261,10 +1281,10 @@ mod nats_reply_permission_tests {
         .unwrap()
     }
 
-    fn compiled_permissions() -> (TransportPermissions, TransportPermissions) {
+    fn compiled_permissions() -> (TransportAuthorizationV1, TransportAuthorizationV1) {
         (
-            provider_permissions(),
-            consumer_permissions(live_subscribe_permission()),
+            provider_policy(),
+            consumer_policy(live_subscribe_permission()),
         )
     }
 
@@ -1331,12 +1351,15 @@ mod nats_reply_permission_tests {
         fn start(response_allowance: &str) -> Self {
             Self::start_with_consumer(
                 response_allowance,
-                consumer_permissions(live_subscribe_permission()),
+                consumer_policy(live_subscribe_permission()),
             )
         }
 
-        fn start_with_consumer(response_allowance: &str, consumer: TransportPermissions) -> Self {
-            let provider = provider_permissions();
+        fn start_with_consumer(
+            response_allowance: &str,
+            consumer: TransportAuthorizationV1,
+        ) -> Self {
+            let provider = provider_policy();
             let binary = resolve_pinned_binary();
             // Broker tests run in parallel, so an ephemeral port observed by
             // `free_port()` can be claimed by a sibling test before this
@@ -1355,10 +1378,10 @@ mod nats_reply_permission_tests {
                      {{ user: \"provider\", password: \"pw\", permissions: {{ publish: {provider_publish}, subscribe: {provider_subscribe}, allow_responses: {response_allowance} }} }},\n\
                      {{ user: \"consumer\", password: \"pw\", permissions: {{ publish: {consumer_publish}, subscribe: {consumer_subscribe} }} }}\n\
                      ]\n}}\n",
-                    provider_publish = nats_list(&provider.publish),
-                    provider_subscribe = nats_list(&provider.subscribe),
-                    consumer_publish = nats_list(&consumer.publish),
-                    consumer_subscribe = nats_list(&consumer.subscribe),
+                    provider_publish = nats_list(&provider.publish_allow),
+                    provider_subscribe = nats_list(&provider.subscribe_allow),
+                    consumer_publish = nats_list(&consumer.publish_allow),
+                    consumer_subscribe = nats_list(&consumer.subscribe_allow),
                 );
                 std::fs::write(&config_path, &config).expect("write config");
                 let pid_file = dir.path().join("nats.pid");
@@ -1447,32 +1470,42 @@ mod nats_reply_permission_tests {
             URL_SAFE_NO_PAD.encode(CONSUMER_CONNECTION.as_bytes())
         );
 
-        let live_subscribe = consumer_permissions(live_subscribe_permission());
-        assert!(live_subscribe.publish.contains(&live));
-        assert!(live_subscribe.subscribe.contains(&delivery));
+        let live_subscribe = consumer_policy(live_subscribe_permission());
+        assert!(live_subscribe.publish_allow.contains(&live));
+        assert!(live_subscribe.subscribe_allow.contains(&delivery));
         assert!(!live_subscribe
-            .publish
+            .publish_allow
             .contains(&format!("{operation}.control")));
 
-        let observe = consumer_permissions(operation_permission(PermissionAction::Observe));
-        assert!(observe.publish.contains(&format!("{operation}.control")));
+        let observe = consumer_policy(operation_permission(PermissionAction::Observe));
         assert!(observe
-            .publish
+            .publish_allow
+            .contains(&format!("{operation}.control")));
+        assert!(observe
+            .publish_allow
             .contains(&format!("{operation}.observe.*.*")));
-        assert!(observe.subscribe.contains(&delivery));
-        assert!(!observe.publish.contains(&live));
+        assert!(observe.subscribe_allow.contains(&delivery));
+        assert!(!observe.publish_allow.contains(&live));
 
-        let invoke = consumer_permissions(operation_permission(PermissionAction::Invoke));
-        assert!(invoke.publish.contains(&operation));
-        assert!(invoke.publish.contains(&format!("{operation}.control")));
-        assert!(!invoke.subscribe.contains(&delivery));
-        assert!(!invoke.publish.contains(&format!("{operation}.observe.*.*")));
+        let invoke = consumer_policy(operation_permission(PermissionAction::Invoke));
+        assert!(invoke.publish_allow.contains(&operation));
+        assert!(invoke
+            .publish_allow
+            .contains(&format!("{operation}.control")));
+        assert!(!invoke.subscribe_allow.contains(&delivery));
+        assert!(!invoke
+            .publish_allow
+            .contains(&format!("{operation}.observe.*.*")));
 
-        let cancel = consumer_permissions(operation_permission(PermissionAction::Cancel));
-        assert!(cancel.publish.contains(&format!("{operation}.control")));
-        assert!(!cancel.publish.contains(&operation));
-        assert!(!cancel.subscribe.contains(&delivery));
-        assert!(!cancel.publish.contains(&format!("{operation}.observe.*.*")));
+        let cancel = consumer_policy(operation_permission(PermissionAction::Cancel));
+        assert!(cancel
+            .publish_allow
+            .contains(&format!("{operation}.control")));
+        assert!(!cancel.publish_allow.contains(&operation));
+        assert!(!cancel.subscribe_allow.contains(&delivery));
+        assert!(!cancel
+            .publish_allow
+            .contains(&format!("{operation}.observe.*.*")));
     }
 
     async fn next_within<T: Send + 'static>(
@@ -1521,7 +1554,7 @@ mod nats_reply_permission_tests {
 
         let reply = format!("{consumer_inbox}.r1");
         assert!(
-            !compiled_permissions().1.publish.contains(&reply),
+            !compiled_permissions().1.publish_allow.contains(&reply),
             "no static grant may already permit the response inbox"
         );
         consumer
@@ -1674,7 +1707,7 @@ mod nats_reply_permission_tests {
         let _broker = BROKER_LOCK.lock().await;
         let broker = TestBroker::start_with_consumer(
             "{ max: 65535, expires: \"60s\" }",
-            consumer_permissions(operation_permission(PermissionAction::Observe)),
+            consumer_policy(operation_permission(PermissionAction::Observe)),
         );
         let (provider, _provider_errors) = connect(&broker.url, "provider").await;
         let (consumer, consumer_errors) = connect(&broker.url, "consumer").await;
@@ -1705,7 +1738,7 @@ mod nats_reply_permission_tests {
         for action in [PermissionAction::Invoke, PermissionAction::Cancel] {
             let broker = TestBroker::start_with_consumer(
                 "{ max: 65535, expires: \"60s\" }",
-                consumer_permissions(operation_permission(action)),
+                consumer_policy(operation_permission(action)),
             );
             let (consumer, errors) = connect(&broker.url, "consumer").await;
             let _denied = consumer.subscribe(live_subject()).await.unwrap();

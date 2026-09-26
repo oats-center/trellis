@@ -3516,6 +3516,9 @@ export class TrellisServiceSession<
         if (closed instanceof Error) {
           throw closed;
         }
+        if (!this.#stopPromise) {
+          throw new Error("Trellis service connection closed unexpectedly");
+        }
       } finally {
         await this.stop();
       }

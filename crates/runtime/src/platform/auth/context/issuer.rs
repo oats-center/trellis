@@ -3,7 +3,7 @@ use std::{cmp, sync::Arc};
 use serde_json::{json, Map, Value};
 use trellis_protocol::{
     authorization_context_refresh_at, canonicalize_json, sign_authorization_context,
-    UnsignedAuthorizationContext, AUTHORIZATION_CONTEXT_FORMAT_V1,
+    TransportAuthorizationV1, UnsignedAuthorizationContext, AUTHORIZATION_CONTEXT_FORMAT_V1,
 };
 use trellis_rs::client::{AuthorizationProviderCache, RuntimeAuthorizationTrust};
 
@@ -12,6 +12,7 @@ use super::{
     AuthorizationContextRecord, AuthorizationContextRegistry, AuthorizationContextRepository,
     AuthorizationContextState, AuthorizationRegistryBinding,
 };
+use crate::platform::auth::compile_transport_authorization;
 use crate::{
     config::AuthorizationConfig,
     platform::auth::{
@@ -19,10 +20,10 @@ use crate::{
             issuance_snapshot_token, ContextRepository, IssuanceConnection, IssuanceCredential,
             IssuanceSnapshotToken,
         },
-        compile_transport_permissions,
         sqlite::{common::sql_error, contexts::sqlite_issuance_snapshot},
-        AuthorizationStateError, IdempotencyResultRecord, IdempotentOutcome,
-        IssuableAuthorizationState, SqliteAuthorizationStore, TransportPermissions,
+        transport_response_allowance, AuthorizationStateError, IdempotencyResultRecord,
+        IdempotentOutcome, IssuableAuthorizationState, SqliteAuthorizationStore,
+        TransportAuthorizationInputs,
     },
 };
 
@@ -42,6 +43,7 @@ pub(crate) struct AuthorizationContextService {
     registry: AuthorizationContextRegistry,
     validator_cache: AuthorizationProviderCache,
     config: AuthorizationConfig,
+    target_account: String,
 }
 
 impl AuthorizationContextService {
@@ -58,77 +60,72 @@ impl AuthorizationContextService {
         self.validator_cache.clone()
     }
 
-    pub(crate) async fn transport_permissions(
+    /// Resolves the policy currently allowed for an already-pinned connection
+    /// scope.
+    ///
+    /// This does not require the admitted context to still byte-match present
+    /// authority. Callers prove safety by comparing the context's signed policy
+    /// against the result (`A <= D`), so a benign grant expansion does not deny
+    /// a safe older context. Genuinely invalid underlying authority (inactive
+    /// principal, revoked issuer, unavailable credential, inactive binding)
+    /// still fails.
+    pub(crate) async fn current_transport_policy(
         &self,
-        context: &trellis_protocol::VerifiedAuthorizationContext,
-        now_seconds: i64,
-    ) -> Result<TransportPermissions, AuthorizationStateError> {
-        let signed = &context.signed_context().unsigned;
+        context_digest: &str,
+        now_ms: i64,
+    ) -> Result<TransportAuthorizationV1, AuthorizationStateError> {
         let durable = self
             .repository
-            .get_context_by_digest(context.context_digest())
+            .get_context_by_digest(context_digest)
             .await?
             .ok_or_else(|| {
                 AuthorizationStateError::InvalidRecord(
                     "authorization context is missing from durable state".to_owned(),
                 )
             })?;
-        let now_ms = seconds_to_millis(now_seconds)?;
         let current = self
             .repository
             .run_read(move |connection| {
                 let transaction = connection.unchecked_transaction().map_err(sql_error)?;
-                let active: bool = transaction
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM auth_authorization_contexts AS context
-                     JOIN auth_authorization_issuers AS issuer ON issuer.key_id = context.issuer_key_id
-                     WHERE context.context_digest = ?1 AND context.state = 'active'
-                       AND context.revoked_at IS NULL AND context.published_at IS NOT NULL
-                       AND context.not_before <= ?2 AND context.expires_at > ?2
-                       AND issuer.revoked_at IS NULL)",
-                        rusqlite::params![durable.context_digest, now_seconds],
-                        |row| row.get(0),
-                    )
-                    .map_err(sql_error)?;
-                if !active {
-                    return Err(AuthorizationStateError::NotAuthorized);
-                }
-                let scope = IssuanceConnection {
-                    credential: match (&durable.login_session_id, &durable.identity_key_id) {
-                        (Some(id), None) => IssuanceCredential::Login(id.clone()),
-                        (None, Some(id)) => IssuanceCredential::Native(id.clone()),
-                        _ => return Err(AuthorizationStateError::NotAuthorized),
-                    },
-                    connection_id: durable.connection_id.clone(),
-                    session_public_key: durable.session_public_key.clone(),
-                };
+                let scope = issuance_connection(&durable)?;
                 let snapshot = sqlite_issuance_snapshot(&transaction, &scope)?;
-                if issuance_snapshot_token(&snapshot)?.0 != durable.issuance_snapshot_token {
-                    return Err(AuthorizationStateError::NotAuthorized);
-                }
                 let current = crate::platform::auth::issuance::resolve_snapshot(snapshot, now_ms)?;
-                if !current.matches_context(
-                    &durable.signed_context()?.unsigned,
-                    durable.installed_revision,
-                ) {
-                    return Err(AuthorizationStateError::NotAuthorized);
-                }
                 transaction.commit().map_err(sql_error)?;
                 Ok(current)
             })
             .await?;
-        let permissions = compile_transport_permissions(
-            signed,
+        self.compile_policy_for(current).await
+    }
+
+    async fn compile_policy_for(
+        &self,
+        current: IssuableAuthorizationState,
+    ) -> Result<TransportAuthorizationV1, AuthorizationStateError> {
+        let api_bindings = crate::platform::auth::current_api_bindings(
+            self.repository.as_ref(),
             &current.participant,
-            &current.resource_bindings,
-            &crate::platform::auth::current_api_bindings(
-                self.repository.as_ref(),
-                &current.participant,
-                signed.deployment_id.as_deref(),
-            )
-            .await?,
-            &AuthorizationRegistryBinding::from_config(&self.config),
-        )?;
+            current.deployment_id.as_deref(),
+        )
+        .await?;
+        let permissions = compile_transport_authorization(TransportAuthorizationInputs {
+            account: &self.target_account,
+            principal_kind: current.principal_kind,
+            participant_id: &current.participant.participant_id,
+            connection_id: &current.connection_id,
+            session_key: &current.session_public_key,
+            inbox_prefix: &current.inbox_prefix,
+            deployment_id: current.deployment_id.as_deref(),
+            instance_id: current.instance_id.as_deref(),
+            grants: &current.grant_set,
+            binding: &current.participant,
+            resource_bindings: &current.resource_bindings,
+            api_bindings: &api_bindings,
+            registry: &AuthorizationRegistryBinding::from_config(&self.config),
+            response: transport_response_allowance(current.principal_kind, &current.participant),
+            hard_expires_at: current
+                .expires_at
+                .map(|expires_at| expires_at.div_euclid(1_000)),
+        })?;
         Ok(permissions)
     }
 
@@ -240,6 +237,7 @@ impl AuthorizationContextService {
         config: AuthorizationConfig,
         trellis_origin: String,
         now_seconds: i64,
+        target_account: String,
     ) -> Result<Self, AuthorizationStateError> {
         let trust = Arc::new(
             VerifiedTrustMaterial::load(&config, now_seconds)
@@ -272,6 +270,7 @@ impl AuthorizationContextService {
             registry,
             validator_cache,
             config,
+            target_account,
         };
         service.repair_unpublished(now_seconds).await?;
         let mut after = None;
@@ -392,7 +391,7 @@ impl AuthorizationContextService {
             .load_issuance_snapshot(&request.connection)
             .await?;
         let initial = super::super::issuance::resolve_snapshot(snapshot, now_millis)?;
-        crate::platform::auth::resolve_api_bindings(
+        let api_bindings = crate::platform::auth::resolve_api_bindings(
             self.repository.as_ref(),
             &initial.participant,
             initial.deployment_id.as_deref(),
@@ -408,6 +407,29 @@ impl AuthorizationContextService {
         }
         let authorization = super::super::issuance::resolve_snapshot(snapshot.clone(), now_millis)?;
         let expires_at = context_expiry(&authorization, &self.config, now_seconds)?;
+        let transport_authorization =
+            compile_transport_authorization(TransportAuthorizationInputs {
+                account: &self.target_account,
+                principal_kind: authorization.principal_kind,
+                participant_id: &authorization.participant.participant_id,
+                connection_id: &authorization.connection_id,
+                session_key: &authorization.session_public_key,
+                inbox_prefix: &authorization.inbox_prefix,
+                deployment_id: authorization.deployment_id.as_deref(),
+                instance_id: authorization.instance_id.as_deref(),
+                grants: &authorization.grant_set,
+                binding: &authorization.participant,
+                resource_bindings: &authorization.resource_bindings,
+                api_bindings: &api_bindings,
+                registry: &AuthorizationRegistryBinding::from_config(&self.config),
+                response: transport_response_allowance(
+                    authorization.principal_kind,
+                    &authorization.participant,
+                ),
+                hard_expires_at: authorization
+                    .expires_at
+                    .map(|expires_at| expires_at.div_euclid(1_000)),
+            })?;
 
         if authorization.grant_set.permissions().len() > self.config.maximum_permissions {
             return Err(AuthorizationStateError::InvalidRecord(
@@ -443,6 +465,7 @@ impl AuthorizationContextService {
             platform_privileges: authorization.binding.platform_privileges.clone(),
             extensions: Map::new(),
             critical: Vec::new(),
+            transport_authorization,
         };
         let signed = sign_authorization_context(unsigned, &self.trust.issuer_signing_key)
             .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
@@ -654,6 +677,21 @@ fn seconds_to_millis(seconds: i64) -> Result<i64, AuthorizationStateError> {
     seconds
         .checked_mul(1_000)
         .ok_or_else(|| AuthorizationStateError::InvalidRecord("timestamp overflow".to_owned()))
+}
+
+/// Rebuilds the pinned issuance scope recorded with a durable context.
+fn issuance_connection(
+    durable: &AuthorizationContextRecord,
+) -> Result<IssuanceConnection, AuthorizationStateError> {
+    Ok(IssuanceConnection {
+        credential: match (&durable.login_session_id, &durable.identity_key_id) {
+            (Some(id), None) => IssuanceCredential::Login(id.clone()),
+            (None, Some(id)) => IssuanceCredential::Native(id.clone()),
+            _ => return Err(AuthorizationStateError::NotAuthorized),
+        },
+        connection_id: durable.connection_id.clone(),
+        session_public_key: durable.session_public_key.clone(),
+    })
 }
 
 fn context_issue_idempotency(

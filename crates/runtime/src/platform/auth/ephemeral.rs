@@ -434,6 +434,7 @@ pub(crate) struct AuthConnectionPresence {
     pub format: String,
     pub connection_id: String,
     pub runtime_connection_id: String,
+    pub session_key: String,
     pub login_session_id: Option<String>,
     pub principal_id: String,
     pub principal_kind: trellis_protocol::AuthorizationPrincipalKind,
@@ -441,6 +442,10 @@ pub(crate) struct AuthConnectionPresence {
     pub deployment_id: Option<String>,
     pub instance_id: Option<String>,
     pub context_digest: String,
+    pub transport_authorization: trellis_protocol::TransportAuthorizationV1,
+    pub transport_authorization_digest: String,
+    pub attachment_state: AuthAttachmentState,
+    pub pending_deadline: Option<i64>,
     pub server_id: String,
     pub client_id: String,
     pub user_nkey: String,
@@ -448,6 +453,17 @@ pub(crate) struct AuthConnectionPresence {
     pub connected_at: i64,
     pub last_seen_at: i64,
     pub version: u64,
+}
+
+/// Admission state of a retained physical attachment.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum AuthAttachmentState {
+    /// Recorded before the callout result is published; broker registration is
+    /// not yet confirmed.
+    Pending,
+    /// The callout completed, or broker inventory confirmed the attachment.
+    Confirmed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -496,7 +512,7 @@ impl AuthConnectionPresence {
         require_format(
             "format",
             &self.format,
-            "trellis.auth-connection-presence.v1",
+            "trellis.auth-connection-presence.v2",
         )?;
         require_digest("connectionId", &self.connection_id)?;
         self.runtime_connection_id
@@ -532,16 +548,63 @@ impl AuthConnectionPresence {
             }
         }
         require_digest("contextDigest", &self.context_digest)?;
+        super::domain::validate_ed25519_public_key("sessionKey", &self.session_key)?;
+        self.transport_authorization
+            .validate()
+            .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
+        require_digest(
+            "transportAuthorizationDigest",
+            &self.transport_authorization_digest,
+        )?;
+        let policy_digest = self
+            .transport_authorization
+            .digest()
+            .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
+        if self.transport_authorization_digest != policy_digest {
+            return invalid("transportAuthorizationDigest does not match the admitted policy");
+        }
+        match self.attachment_state {
+            AuthAttachmentState::Pending => {
+                let deadline = self.pending_deadline.ok_or_else(|| {
+                    AuthorizationStateError::InvalidRecord(
+                        "pending attachment requires an admission deadline".to_owned(),
+                    )
+                })?;
+                require_protocol_timestamp("pendingDeadline", deadline)?;
+            }
+            AuthAttachmentState::Confirmed => {
+                if self.pending_deadline.is_some() {
+                    return invalid("confirmed attachment cannot carry an admission deadline");
+                }
+            }
+        }
         require_nonempty("serverId", &self.server_id)?;
         require_nonempty("clientId", &self.client_id)?;
         require_nonempty("userNkey", &self.user_nkey)?;
         validate_optional_text("remoteAddress", self.remote_address.as_deref())?;
         require_protocol_timestamp("connectedAt", self.connected_at)?;
         require_protocol_timestamp("lastSeenAt", self.last_seen_at)?;
-        if self.last_seen_at < self.connected_at || self.version != 1 {
+        if self.last_seen_at < self.connected_at || self.version != 2 {
             return invalid("connection presence timestamps or version are invalid");
         }
         Ok(())
+    }
+
+    /// Server-issued authenticated NATS user name that identifies this exact
+    /// admitted context and physical attachment.
+    pub(crate) fn authenticated_name(&self) -> String {
+        format!(
+            "trellis.auth.v1:{}:{}:{}",
+            self.context_digest, self.server_id, self.client_id
+        )
+    }
+
+    /// Whether a broker-reported disconnect user identifies this attachment.
+    ///
+    /// The callout installs the authenticated name marker, but a broker or an
+    /// older record may still report the one-use user NKey.
+    pub(crate) fn matches_disconnect_user(&self, user: &str) -> bool {
+        user == self.user_nkey || user == self.authenticated_name()
     }
 }
 
@@ -675,6 +738,11 @@ pub(crate) trait AuthEphemeralRepository: Send + Sync {
     ) -> Result<(), AuthorizationStateError>;
     async fn put_connection_presence(
         &self,
+        record: AuthConnectionPresence,
+    ) -> Result<u64, AuthorizationStateError>;
+    async fn replace_connection_presence(
+        &self,
+        expected_revision: u64,
         record: AuthConnectionPresence,
     ) -> Result<u64, AuthorizationStateError>;
     async fn delete_connection_presence(
@@ -815,6 +883,25 @@ impl AuthEphemeralRepository for InMemoryAuthEphemeralRepository {
         record.storage_revision = 1;
         lock(&self.connections)?.insert(record.connection_id.clone(), record);
         Ok(1)
+    }
+
+    async fn replace_connection_presence(
+        &self,
+        expected_revision: u64,
+        mut record: AuthConnectionPresence,
+    ) -> Result<u64, AuthorizationStateError> {
+        record.validate()?;
+        let mut records = lock(&self.connections)?;
+        let current = records
+            .get(&record.connection_id)
+            .ok_or(AuthorizationStateError::StorageConflict)?;
+        if current.storage_revision != expected_revision {
+            return Err(AuthorizationStateError::StorageConflict);
+        }
+        record.storage_revision = current.storage_revision + 1;
+        let revision = record.storage_revision;
+        records.insert(record.connection_id.clone(), record);
+        Ok(revision)
     }
 
     async fn delete_connection_presence(
@@ -1016,7 +1103,6 @@ mod nats {
         /// Opens or creates and validates both auth-owned KV buckets.
         pub(crate) async fn ensure(
             client: async_nats::Client,
-            connection_max_age: Duration,
         ) -> Result<Self, AuthorizationStateError> {
             let jetstream = jetstream::new(client);
             let browser_flows = open_or_create(
@@ -1033,8 +1119,10 @@ mod nats {
                 16_384,
             )
             .await?;
+            // Active attachment records are retained until the broker confirms
+            // the attachment is gone; they must not be TTL-evicted.
             let connections =
-                open_or_create(&jetstream, CONNECTIONS_BUCKET, connection_max_age, 16_384).await?;
+                open_or_create(&jetstream, CONNECTIONS_BUCKET, Duration::ZERO, 16_384).await?;
             Ok(Self {
                 browser_flows,
                 oauth_states,
@@ -1045,7 +1133,6 @@ mod nats {
         /// Validates all required auth-owned KV buckets without creating or updating them.
         pub(crate) async fn check(
             client: async_nats::Client,
-            connection_max_age: Duration,
         ) -> Result<(), AuthorizationStateError> {
             let jetstream = jetstream::new(client);
             for (bucket, max_age, max_value_size) in [
@@ -1055,7 +1142,7 @@ mod nats {
                     65_536,
                 ),
                 (OAUTH_STATE_BUCKET, Duration::from_millis(900_000), 16_384),
-                (CONNECTIONS_BUCKET, connection_max_age, 16_384),
+                (CONNECTIONS_BUCKET, Duration::ZERO, 16_384),
             ] {
                 let store = jetstream.get_key_value(bucket).await.map_err(|error| {
                     storage(format!(
@@ -1147,6 +1234,26 @@ mod nats {
                 .put(record.connection_id.clone(), encode(&record)?)
                 .await
                 .map_err(|error| storage(format!("failed to write connection presence: {error}")))
+        }
+
+        async fn replace_connection_presence(
+            &self,
+            expected_revision: u64,
+            record: AuthConnectionPresence,
+        ) -> Result<u64, AuthorizationStateError> {
+            record.validate()?;
+            let entry = current_entry(&self.connections, &record.connection_id).await?;
+            if entry.revision != expected_revision {
+                return Err(AuthorizationStateError::StorageConflict);
+            }
+            update(
+                &self.connections,
+                &record.connection_id,
+                &record,
+                entry.revision,
+            )
+            .await?;
+            Ok(entry.revision + 1)
         }
 
         async fn delete_connection_presence(

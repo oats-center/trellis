@@ -5647,6 +5647,30 @@ export class Trellis<
             return err(error);
           }
 
+          if (response.headers?.get("status") === "error") {
+            const errorData = parse(TrellisErrorDataSchema, json).take();
+            if (isErr(errorData)) {
+              return err(createTransportError({
+                code: "trellis.request.invalid_response",
+                message:
+                  "Trellis returned an invalid operation error response.",
+                hint: "Inspect the provider's operation error response.",
+                cause: errorData.error,
+                context: { subject },
+              }));
+            }
+            return err(createTransportError({
+              code: "trellis.operation.remote_error",
+              message: errorData.message,
+              hint: "Inspect the provider error and its context.",
+              context: {
+                subject,
+                remoteErrorType: errorData.type,
+                remoteContext: errorData.context,
+              },
+            }));
+          }
+
           span.setStatus({ code: SpanStatusCode.OK });
           return ok(json);
         } catch (cause) {

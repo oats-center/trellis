@@ -224,7 +224,6 @@ pub trait OperationTransport {
         &'a self,
         grant: UploadTransferGrant,
         reader: &'a mut R,
-        expected_size: Option<u64>,
     ) -> impl Future<Output = Result<FileInfo, TrellisClientError>> + Send + 'a
     where
         R: AsyncRead + Unpin + Send + ?Sized + 'a;
@@ -233,7 +232,6 @@ pub trait OperationTransport {
         &'a self,
         grant: UploadTransferGrant,
         reader: &'a mut R,
-        expected_size: Option<u64>,
         cancellation: &'a TransferCancellation,
     ) -> impl Future<Output = Result<FileInfo, TrellisClientError>> + Send + 'a
     where
@@ -267,7 +265,6 @@ pub struct OperationTransferReaderInputBuilder<'a, 'b, T, D: OperationDescriptor
     invoker: &'b OperationInvoker<'a, T, D>,
     input: &'b D::Input,
     reader: &'b mut R,
-    expected_size: Option<u64>,
 }
 
 /// Successful result for starting an operation and uploading its transfer body.
@@ -470,7 +467,6 @@ where
     pub fn transfer_from<R>(
         self,
         reader: &'b mut R,
-        expected_size: Option<u64>,
     ) -> OperationTransferReaderInputBuilder<'a, 'b, T, D, R>
     where
         D: TransferOperationDescriptor,
@@ -480,7 +476,6 @@ where
             invoker: self.invoker,
             input: self.input,
             reader,
-            expected_size,
         }
     }
 }
@@ -534,10 +529,7 @@ where
             .start(self.input)
             .await
             .map_err(OperationTransferStartError::Start)?;
-        let file_info = match operation_ref
-            .transfer_from(self.reader, self.expected_size)
-            .await
-        {
+        let file_info = match operation_ref.transfer_from(self.reader).await {
             Ok(file_info) => file_info,
             Err(source) => {
                 return Err(OperationTransferStartError::Upload {
@@ -735,11 +727,7 @@ where
     }
 
     /// Upload a transfer from a borrowed asynchronous reader after this operation is accepted.
-    pub async fn transfer_from<R>(
-        &self,
-        reader: &mut R,
-        expected_size: Option<u64>,
-    ) -> Result<FileInfo, TrellisClientError>
+    pub async fn transfer_from<R>(&self, reader: &mut R) -> Result<FileInfo, TrellisClientError>
     where
         R: AsyncRead + Unpin + Send + ?Sized,
     {
@@ -748,16 +736,13 @@ where
                 "operation does not have an accepted transfer session".into(),
             )
         })?;
-        self.transport
-            .put_upload_transfer_from(grant, reader, expected_size)
-            .await
+        self.transport.put_upload_transfer_from(grant, reader).await
     }
 
     /// Upload from a borrowed reader and authenticate cancellation when requested.
     pub async fn transfer_from_with_cancel<R>(
         &self,
         reader: &mut R,
-        expected_size: Option<u64>,
         cancellation: &TransferCancellation,
     ) -> Result<FileInfo, TrellisClientError>
     where
@@ -769,7 +754,7 @@ where
             )
         })?;
         self.transport
-            .put_upload_transfer_from_with_cancel(grant, reader, expected_size, cancellation)
+            .put_upload_transfer_from_with_cancel(grant, reader, cancellation)
             .await
     }
 
@@ -1286,7 +1271,6 @@ mod tests {
             &'a self,
             _grant: UploadTransferGrant,
             _reader: &'a mut R,
-            _expected_size: Option<u64>,
         ) -> Result<FileInfo, TrellisClientError>
         where
             R: AsyncRead + Unpin + Send + ?Sized + 'a,
@@ -1300,7 +1284,6 @@ mod tests {
             &'a self,
             _grant: UploadTransferGrant,
             _reader: &'a mut R,
-            _expected_size: Option<u64>,
             _cancellation: &'a TransferCancellation,
         ) -> Result<FileInfo, TrellisClientError>
         where

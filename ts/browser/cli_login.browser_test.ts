@@ -1,4 +1,5 @@
 import { assert, assertEquals } from "@std/assert";
+import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {
@@ -113,5 +114,22 @@ Deno.test("CLI login authorizes independent runtime keys through one durable log
     const second = await runCli(["--format", "json", "whoami"], configHome);
     assertEquals(second.code, 0, second.stderr);
     assertEquals(jsonOutput(second.stdout).userId, login.userId);
+
+    const provisioned = await runtime.registerService({
+      name: "listed-service",
+      contract: participants.Provider.participant,
+    });
+    const instances = await runCli(
+      ["--format", "json", "svc", "test", "instances"],
+      configHome,
+    );
+    assertEquals(instances.code, 0, instances.stderr);
+    const listed = jsonOutput(instances.stdout).instances;
+    assert(Array.isArray(listed));
+    assert(
+      listed.some((item) =>
+        item.instanceId === provisioned.instanceId && item.state === "active"
+      ),
+    );
   }, browserRuntimeOptions());
 });

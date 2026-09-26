@@ -816,7 +816,7 @@ pub(in crate::platform::auth) fn replace_grant_binding(
     // issued under, and is revoked only when the replacement no longer covers
     // its exact effective authority. Increasing authority keeps every narrower
     // context attached and is picked up at the next ordinary refresh.
-    let revoked_contexts = if binding.state == GrantBindingState::Active {
+    let _revoked_contexts = if binding.state == GrantBindingState::Active {
         let now_seconds = now.div_euclid(1_000);
         let replacement = &participant.projection;
         let mut previous_projections: BTreeMap<u64, Option<ParticipantRuntimeProjection>> =
@@ -898,29 +898,6 @@ pub(in crate::platform::auth) fn replace_grant_binding(
         last_error: None,
     };
     let mut actions = vec![event];
-    for context in revoked_contexts {
-        actions.push(PostCommitActionRecord {
-            predecessor_action_id: Some(super::super::context::context_revocation_action_id(
-                &context,
-            )?),
-            action_id: trellis_protocol::digest_json(&json!({
-                "grantKick": context.connection_id,
-                "participantId": binding.participant_id,
-                "revision": binding.revision,
-            }))
-            .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?,
-            kind: PostCommitActionKind::Kick,
-            payload: json!({
-                "connectionId": context.connection_id,
-                "reason": "grant_replaced",
-            }),
-            created_at: now,
-            attempts: 0,
-            next_attempt_at: now,
-            claimed_until: None,
-            last_error: None,
-        });
-    }
     actions.extend(super::resources::reconcile_sql_resource_catalog(
         connection, &binding, now,
     )?);
@@ -1086,23 +1063,40 @@ impl SqliteAuthorizationStore {
         .await
     }
 
-    pub(crate) async fn put_api_binding(
+    pub(crate) async fn put_api_bindings(
         &self,
-        participant_id: &str,
-        api_id: &str,
-        provider_deployment_id: &str,
+        binding_scope: &str,
+        updates: Vec<(String, String)>,
+        reevaluate: crate::platform::auth::transport_attachments::TransportReevaluateScope,
     ) -> Result<(), AuthorizationStateError> {
-        let participant_id = participant_id.to_owned();
-        let api_id = api_id.to_owned();
-        let provider_deployment_id = provider_deployment_id.to_owned();
+        let binding_scope = binding_scope.to_owned();
         self.run(move |connection| {
-            connection.execute(
-                "INSERT INTO auth_api_bindings (participant_id, api_id, provider_deployment_id) VALUES (?1, ?2, ?3)
-                 ON CONFLICT(participant_id, api_id) DO UPDATE SET provider_deployment_id = excluded.provider_deployment_id",
-                rusqlite::params![participant_id, api_id, provider_deployment_id],
-            ).map_err(sql_error)?;
-            Ok(())
-        }).await
+            let transaction = connection.transaction().map_err(sql_error)?;
+            for (api_id, provider_deployment_id) in &updates {
+                transaction
+                    .execute(
+                        "INSERT INTO auth_api_bindings (participant_id, api_id, provider_deployment_id) VALUES (?1, ?2, ?3)
+                         ON CONFLICT(participant_id, api_id) DO UPDATE SET provider_deployment_id = excluded.provider_deployment_id",
+                        rusqlite::params![binding_scope, api_id, provider_deployment_id],
+                    )
+                    .map_err(sql_error)?;
+            }
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?
+                .as_millis()
+                .try_into()
+                .map_err(|_| AuthorizationStateError::Storage("current time overflow".to_owned()))?;
+            super::outbox::insert_sql_post_commit_actions(
+                &transaction,
+                &[crate::platform::auth::transport_attachments::transport_reevaluate_action(
+                    &reevaluate,
+                    now,
+                )?],
+            )?;
+            transaction.commit().map_err(sql_error)
+        })
+        .await
     }
 
     pub(crate) async fn get_api_bindings(
@@ -2023,19 +2017,13 @@ impl super::super::GrantRepository for SqliteAuthorizationStore {
         SqliteAuthorizationStore::get_api_binding(self, participant_id, api_id).await
     }
 
-    async fn put_api_binding(
+    async fn put_api_bindings(
         &self,
-        participant_id: &str,
-        api_id: &str,
-        provider_deployment_id: &str,
+        binding_scope: &str,
+        updates: Vec<(String, String)>,
+        reevaluate: super::super::transport_attachments::TransportReevaluateScope,
     ) -> Result<(), AuthorizationStateError> {
-        SqliteAuthorizationStore::put_api_binding(
-            self,
-            participant_id,
-            api_id,
-            provider_deployment_id,
-        )
-        .await
+        SqliteAuthorizationStore::put_api_bindings(self, binding_scope, updates, reevaluate).await
     }
 
     async fn compiled_installed_evidence(
@@ -2972,6 +2960,7 @@ device Device { app Companion { use access { rpc B; optional capability b; } } }
                 .any(|action| action.kind == PostCommitActionKind::Kick),
             "adding authority must not kick live connections"
         );
+        assert_eq!(transport_reevaluate_count(&store).await, 0);
 
         let mut reduction = binding_replacement_from(&additive_binding);
         reduction.grants = GrantSet::new(Vec::new());
@@ -2983,9 +2972,30 @@ device Device { app Companion { use access { rpc B; optional capability b; } } }
         assert!(
             actions
                 .iter()
-                .any(|action| action.kind == PostCommitActionKind::Kick),
-            "removing authority must revoke and kick live connections"
+                .all(|action| action.kind != PostCommitActionKind::Kick),
+            "removing authority must not use the ambiguous logical kick target"
         );
+        assert_eq!(
+            transport_reevaluate_count(&store).await,
+            1,
+            "removing authority must enqueue scope-correct transport reevaluation"
+        );
+    }
+
+    async fn transport_reevaluate_count(store: &SqliteAuthorizationStore) -> i64 {
+        store
+            .run_read(|connection| {
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM auth_post_commit_actions
+                         WHERE kind = 'transport_reevaluate'",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(sql_error)
+            })
+            .await
+            .unwrap()
     }
 
     fn binding_replacement_from(binding: &GrantBinding) -> GrantBindingReplacement {
@@ -4073,16 +4083,33 @@ service Missing { implements orders; }
     #[tokio::test]
     async fn api_bindings_are_scoped_to_consumer_deployment_and_api() {
         let store = SqliteAuthorizationStore::open_in_memory().expect("store");
+        let scope = |id: &str| {
+            crate::platform::auth::transport_attachments::TransportReevaluateScope::Participant {
+                participant_id: id.to_owned(),
+            }
+        };
         store
-            .put_api_binding("consumer-z", "orders@v1", "provider-z")
+            .put_api_bindings(
+                "consumer-z",
+                vec![("orders@v1".to_owned(), "provider-z".to_owned())],
+                scope("consumer-z"),
+            )
             .await
             .expect("initial binding");
         store
-            .put_api_binding("consumer-a", "orders@v1", "provider-a")
+            .put_api_bindings(
+                "consumer-a",
+                vec![("orders@v1".to_owned(), "provider-a".to_owned())],
+                scope("consumer-a"),
+            )
             .await
             .expect("other consumer binding");
         store
-            .put_api_binding("consumer-z", "billing@v1", "provider-b")
+            .put_api_bindings(
+                "consumer-z",
+                vec![("billing@v1".to_owned(), "provider-b".to_owned())],
+                scope("consumer-z"),
+            )
             .await
             .expect("other API binding");
 

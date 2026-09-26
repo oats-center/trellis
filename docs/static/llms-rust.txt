@@ -145,9 +145,11 @@ provider limits. Trellis does not adopt or destroy foreign-owned physical
 resources.
 
 Store readers/writers support bounded streaming through `write_from` and
-`read_into`; whole-buffer helpers remain available. Transfer-capable operation
-builders accept `transfer_from(reader, expected_size)`. Completion checks size
-and SHA-256; cancellation is authenticated and acknowledged.
+`read_into`; whole-buffer helpers remain available. Generated Operation
+references upload bytes with `upload(body)`; lower-level operation builders
+stream with `transfer_from(reader)` without a caller-supplied size or hash.
+Trellis counts and hashes bytes while sending and verifies size and SHA-256 on
+receipt; cancellation is authenticated and acknowledged.
 
 Prepared events and SQL outbox stores allow event intents to participate in a
 local SQL transaction. The application owns its transaction and migration

@@ -99,6 +99,7 @@ struct BootstrapAuthorization {
 
 pub(super) async fn service_bootstrap<R, E>(
     State(state): State<AuthHttpState<R, E>>,
+    headers: HeaderMap,
     Json(raw): Json<Value>,
 ) -> Result<Json<BootstrapResponse>, HttpError>
 where
@@ -113,13 +114,14 @@ where
         + 'static,
     E: AuthEphemeralRepository + Clone,
 {
-    bootstrap(&state, raw, ProvisionedIdentityKind::Service)
+    bootstrap(&state, &headers, raw, ProvisionedIdentityKind::Service)
         .await
         .map(Json)
 }
 
 pub(super) async fn device_bootstrap<R, E>(
     State(state): State<AuthHttpState<R, E>>,
+    headers: HeaderMap,
     Json(raw): Json<Value>,
 ) -> Result<Json<BootstrapResponse>, HttpError>
 where
@@ -134,13 +136,14 @@ where
         + 'static,
     E: AuthEphemeralRepository + Clone,
 {
-    bootstrap(&state, raw, ProvisionedIdentityKind::Device)
+    bootstrap(&state, &headers, raw, ProvisionedIdentityKind::Device)
         .await
         .map(Json)
 }
 
 async fn bootstrap<R, E>(
     state: &AuthHttpState<R, E>,
+    headers: &HeaderMap,
     raw: Value,
     expected_kind: ProvisionedIdentityKind,
 ) -> Result<BootstrapResponse, HttpError>
@@ -217,7 +220,34 @@ where
         now_ms()?,
         state.proof_policy,
     )
-    .map_err(|_| HttpError::unauthorized("invalid_proof"))?;
+    .map_err(|_| {
+        let error = HttpError::unauthorized("invalid_proof");
+        let Some(host) = headers
+            .get(axum::http::header::HOST)
+            .and_then(|host| host.to_str().ok())
+        else {
+            return error;
+        };
+        let scheme = state
+            .public_origin
+            .split_once("://")
+            .map(|(scheme, _)| scheme)
+            .unwrap_or("http");
+        let request_origin = format!("{scheme}://{host}");
+        if request_origin == state.public_origin {
+            error
+        } else {
+            tracing::warn!(
+                request_origin = %request_origin,
+                public_origin = %state.public_origin,
+                "native bootstrap proof failed with a different request Host"
+            );
+            error.with_message(format!(
+                "request origin {request_origin} (inferred from Host) differs from configured public_origin {}; bootstrap proofs must sign the configured public_origin; use it as the service URL",
+                state.public_origin
+            ))
+        }
+    })?;
 
     let evidence = crate::platform::auth::evidence::PackageEvidenceInput::from_generated_wire(
         request.package_evidence,

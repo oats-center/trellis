@@ -298,22 +298,7 @@ pub async fn check(
                 ),
             }
         }
-        let user_jwt_ttl_ms = crate::platform::auth_callout::resolve_user_jwt_ttl_ms(
-            config
-                .platform
-                .as_ref()
-                .and_then(|platform| platform.ttl_ms.as_ref())
-                .and_then(|ttl| ttl.nats_jwt),
-        )
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-        let connection_max_age =
-            crate::platform::auth_callout::connection_presence_max_age(user_jwt_ttl_ms)
-                .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-        match crate::platform::auth::NatsAuthEphemeralRepository::check(
-            trellis_nats.clone(),
-            connection_max_age,
-        )
-        .await
+        match crate::platform::auth::NatsAuthEphemeralRepository::check(trellis_nats.clone()).await
         {
             Ok(()) => report.push(
                 "nats.auth_kv",

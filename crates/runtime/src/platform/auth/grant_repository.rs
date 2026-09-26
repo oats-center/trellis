@@ -88,11 +88,13 @@ pub(crate) trait GrantRepository: Send + Sync {
         api_id: &str,
     ) -> Result<Option<String>, AuthorizationStateError>;
 
-    async fn put_api_binding(
+    /// Replaces the consumer's provider selection for these APIs and atomically
+    /// enqueues one reevaluation of the consumer's transport policy.
+    async fn put_api_bindings(
         &self,
-        participant_id: &str,
-        api_id: &str,
-        provider_deployment_id: &str,
+        binding_scope: &str,
+        updates: Vec<(String, String)>,
+        reevaluate: super::transport_attachments::TransportReevaluateScope,
     ) -> Result<(), AuthorizationStateError>;
 
     async fn accept_presented_package(

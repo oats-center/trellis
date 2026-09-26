@@ -10,6 +10,7 @@ use super::super::AuthorizationStateError;
 pub(crate) struct HttpError {
     pub(super) status: StatusCode,
     pub(super) code: &'static str,
+    message: Option<String>,
 }
 
 impl HttpError {
@@ -17,6 +18,7 @@ impl HttpError {
         Self {
             status: StatusCode::BAD_REQUEST,
             code,
+            message: None,
         }
     }
 
@@ -24,6 +26,7 @@ impl HttpError {
         Self {
             status: StatusCode::UNAUTHORIZED,
             code,
+            message: None,
         }
     }
 
@@ -31,6 +34,7 @@ impl HttpError {
         Self {
             status: StatusCode::FORBIDDEN,
             code,
+            message: None,
         }
     }
 
@@ -38,6 +42,7 @@ impl HttpError {
         Self {
             status: StatusCode::NOT_FOUND,
             code,
+            message: None,
         }
     }
 
@@ -45,6 +50,7 @@ impl HttpError {
         Self {
             status: StatusCode::CONFLICT,
             code,
+            message: None,
         }
     }
 
@@ -52,6 +58,7 @@ impl HttpError {
         Self {
             status: StatusCode::GONE,
             code,
+            message: None,
         }
     }
 
@@ -59,6 +66,7 @@ impl HttpError {
         Self {
             status: StatusCode::BAD_GATEWAY,
             code,
+            message: None,
         }
     }
 
@@ -66,6 +74,7 @@ impl HttpError {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
             code,
+            message: None,
         }
     }
 
@@ -73,7 +82,13 @@ impl HttpError {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             code,
+            message: None,
         }
+    }
+
+    pub(super) fn with_message(mut self, message: String) -> Self {
+        self.message = Some(message);
+        self
     }
 }
 
@@ -195,10 +210,14 @@ pub(super) fn map_issuance_error(error: AuthorizationStateError) -> HttpError {
 
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
+        let mut error = json!({ "code": self.code });
+        if let Some(message) = self.message {
+            error["message"] = json!(message);
+        }
         (
             self.status,
             [(CONTENT_TYPE, "application/json")],
-            Json(json!({ "error": { "code": self.code } })),
+            Json(json!({ "error": error })),
         )
             .into_response()
     }

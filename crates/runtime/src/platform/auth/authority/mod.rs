@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -52,6 +54,7 @@ pub(crate) struct IssuanceSnapshot {
     pub binding: super::GrantBinding,
     pub participant: ParticipantBindingRecord,
     pub resources: Vec<ResourceBindingEvidence>,
+    pub api_bindings: BTreeMap<String, String>,
     pub issuer: trellis_protocol::AuthorizationIssuerKey,
 }
 

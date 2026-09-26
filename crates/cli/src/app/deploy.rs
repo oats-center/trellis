@@ -610,10 +610,11 @@ async fn service_instances(
     id: &str,
     args: &SvcInstancesArgs,
 ) -> miette::Result<()> {
+    let resolved_id = resolve_deployment_id(DeploymentKind::Service, id).await?;
     let (_state, connected) = connect_authenticated_cli_client().await?;
     let instances = AuthClient::from_generated(connected.clone())
         .service_instances_list(&auth_types::AuthServiceInstancesListRequest {
-            deployment_id: Some(wire(id)?),
+            deployment_id: Some(wire(resolved_id)?),
             state: (!args.disabled)
                 .then_some(auth_types::AuthServiceInstancesListRequestState::Active),
             page: Some(trellis_runtime_apis::CursorQuery {
@@ -1047,7 +1048,7 @@ fn print_service_instances_result<T: serde::Serialize>(
 
     print_value_table(
         &serde_json::to_value(instances).into_diagnostic()?,
-        &["instanceId", "deploymentId", "disabled"],
+        &["instanceId", "deploymentId", "state"],
     )
 }
 

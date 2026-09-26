@@ -15,6 +15,7 @@ mod participant;
 mod permissions;
 mod session_proof;
 mod subjects;
+pub mod transport_authorization;
 
 pub use authorization::{
     authorization_context_refresh_at, authorization_context_signing_digest,
@@ -80,4 +81,8 @@ pub use subjects::{
     encode_subject_token, event_patterns_overlap, route_queue_group,
     validate_event_descriptor_subject, DerivedApiSubjects, DerivedEventSubjects,
     EventDescriptorIdentity,
+};
+pub use transport_authorization::{
+    subject_union_covered_by, TransportAuthorizationV1, TransportPolicyClass,
+    TransportResponseAuthorizationV1, TRANSPORT_AUTHORIZATION_FORMAT_V1,
 };

@@ -66,6 +66,30 @@ pub enum AuthorizationContextRevocationReason {
     AdministrativeRevoke,
 }
 
+impl AuthorizationContextRevocationReason {
+    /// Whether this revocation must physically end admitted sockets even when
+    /// present transport policy would still cover them.
+    ///
+    /// These are hard-security events: an explicit administrative revocation,
+    /// a revoked or compromised issuer, a revoked credential or login, or a
+    /// disabled security identity. Every other reason is an ordinary authority
+    /// or lifecycle change, enforced by scope-correct transport reevaluation.
+    pub(crate) fn requires_immediate_physical_kick(self) -> bool {
+        matches!(
+            self,
+            Self::AdministrativeRevoke
+                | Self::IssuerRevoked
+                | Self::SessionRevoked
+                | Self::SessionExpired
+                | Self::CredentialChanged
+                | Self::PrincipalInactive
+                | Self::DeviceInactive
+                | Self::DeploymentInactive
+                | Self::InstanceInactive
+        )
+    }
+}
+
 /// Durable signed authorization context and its publication lifecycle.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -123,7 +147,9 @@ pub struct AuthorizationContextCommit {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuthorizationContextSelector {
     Login(String),
+    RuntimeConnection(String),
     Principal(String),
+    Participant(String),
     Grant(super::super::GrantOwnerKind, String, String),
     Deployment(String),
     Instance(String),
@@ -604,43 +630,13 @@ where
     F: FnMut(&AuthorizationContextRecord) -> Result<bool, AuthorizationStateError>,
 {
     require_protocol_timestamp("revokedAt", revoked_at)?;
-    let contexts = match selector {
-        AuthorizationContextSelector::Login(id) => query_sql_contexts(
-            connection,
-            "state != 'revoked' AND login_session_id = ?1 ORDER BY context_digest",
-            &[id],
-        )?,
-        AuthorizationContextSelector::Principal(id) => query_sql_contexts(
-            connection,
-            "state != 'revoked' AND principal_id = ?1 ORDER BY context_digest",
-            &[id],
-        )?,
-        AuthorizationContextSelector::Deployment(id) => query_sql_contexts(
-            connection,
-            "state != 'revoked' AND owner_kind = 'deployment' AND owner_id = ?1 ORDER BY context_digest",
-            &[id],
-        )?,
-        AuthorizationContextSelector::Grant(kind, id, participant_id) => {
-            let kind = encode_enum(*kind)?;
-            query_sql_contexts(connection,
-                "state != 'revoked' AND owner_kind = ?1 AND owner_id = ?2
-                 AND participant_id = ?3 ORDER BY context_digest",
-                &[&kind, id, participant_id],
-            )?
-        }
-        AuthorizationContextSelector::Instance(id) => query_sql_contexts(
-            connection,
-            "state != 'revoked' AND principal_id IN (
-                SELECT principal_id FROM auth_instances WHERE instance_id = ?1
-             ) ORDER BY context_digest",
-            &[id],
-        )?,
-        AuthorizationContextSelector::Issuer(id) => query_sql_contexts(
-            connection,
-            "state != 'revoked' AND issuer_key_id = ?1 ORDER BY context_digest",
-            &[id],
-        )?,
-    };
+    let (predicate, parameters) = selector_predicate(selector)?;
+    let references: Vec<&dyn ToSql> = parameters.iter().map(|value| value as &dyn ToSql).collect();
+    let contexts = query_sql_contexts(
+        connection,
+        &format!("state != 'revoked' AND {predicate} ORDER BY context_digest"),
+        &references,
+    )?;
     let mut revoked = Vec::with_capacity(contexts.len());
     for mut context in contexts {
         if !should_revoke(&context)? {
@@ -677,7 +673,65 @@ where
         )?;
         revoked.push(context);
     }
+    if !revoked.is_empty() {
+        insert_context_action(
+            connection,
+            &crate::platform::auth::transport_attachments::transport_reevaluate_action(
+                &crate::platform::auth::transport_attachments::TransportReevaluateScope::from_context_selector(selector),
+                revoked_at.saturating_mul(1_000),
+            )?,
+        )?;
+    }
     Ok(revoked)
+}
+
+/// Read-only listing of every context in a selector scope, revoked or not.
+///
+/// Transport reevaluation must see attachments admitted by contexts that the
+/// same change just revoked, so this deliberately omits the active-state filter.
+pub(crate) fn list_sql_contexts_by_selector(
+    connection: &rusqlite::Connection,
+    selector: &AuthorizationContextSelector,
+) -> Result<Vec<AuthorizationContextRecord>, AuthorizationStateError> {
+    let (predicate, parameters) = selector_predicate(selector)?;
+    let references: Vec<&dyn ToSql> = parameters.iter().map(|value| value as &dyn ToSql).collect();
+    query_sql_contexts(connection, &predicate, &references)
+}
+
+/// WHERE-clause fragment and parameters selecting a context scope.
+fn selector_predicate(
+    selector: &AuthorizationContextSelector,
+) -> Result<(String, Vec<String>), AuthorizationStateError> {
+    Ok(match selector {
+        AuthorizationContextSelector::Login(id) => {
+            ("login_session_id = ?1".to_owned(), vec![id.clone()])
+        }
+        AuthorizationContextSelector::RuntimeConnection(id) => {
+            ("connection_id = ?1".to_owned(), vec![id.clone()])
+        }
+        AuthorizationContextSelector::Principal(id) => {
+            ("principal_id = ?1".to_owned(), vec![id.clone()])
+        }
+        AuthorizationContextSelector::Participant(id) => {
+            ("participant_id = ?1".to_owned(), vec![id.clone()])
+        }
+        AuthorizationContextSelector::Deployment(id) => (
+            "owner_kind = 'deployment' AND owner_id = ?1".to_owned(),
+            vec![id.clone()],
+        ),
+        AuthorizationContextSelector::Grant(kind, id, participant_id) => (
+            "owner_kind = ?1 AND owner_id = ?2 AND participant_id = ?3".to_owned(),
+            vec![encode_enum(*kind)?, id.clone(), participant_id.clone()],
+        ),
+        AuthorizationContextSelector::Instance(id) => (
+            "principal_id IN (SELECT principal_id FROM auth_instances WHERE instance_id = ?1)"
+                .to_owned(),
+            vec![id.clone()],
+        ),
+        AuthorizationContextSelector::Issuer(id) => {
+            ("issuer_key_id = ?1".to_owned(), vec![id.clone()])
+        }
+    })
 }
 
 fn insert_context_action(
@@ -816,6 +870,7 @@ fn context_action(
         }),
         PostCommitActionKind::Event
         | PostCommitActionKind::Kick
+        | PostCommitActionKind::TransportReevaluate
         | PostCommitActionKind::ResourceReconcile => unreachable!(),
     };
     let canonical = canonicalize_json(&payload)
@@ -838,17 +893,6 @@ fn context_action(
         claimed_until: None,
         last_error: None,
     })
-}
-
-pub(crate) fn context_revocation_action_id(
-    context: &AuthorizationContextRecord,
-) -> Result<String, AuthorizationStateError> {
-    Ok(context_action(
-        context,
-        PostCommitActionKind::ContextRevoke,
-        context.revocation_reason,
-    )?
-    .action_id)
 }
 
 fn nonempty(name: &str, value: &str) -> Result<(), AuthorizationStateError> {

@@ -526,6 +526,12 @@ impl SqliteAuthorizationStore {
             {
                 return Ok(());
             }
+            let failure_scope =
+                crate::platform::auth::transport_attachments::TransportReevaluateScope::Grant {
+                    owner_kind: catalog.owner_kind,
+                    owner_id: catalog.owner_id.clone(),
+                    participant_id: catalog.participant_id.clone(),
+                };
             let revision = super::validation::next_version(catalog.revision)?;
             let state = if actual.is_some() { ResourceCatalogState::Ready } else { ResourceCatalogState::Failed };
             let (_, participant) = load_installed_participant(
@@ -596,6 +602,16 @@ impl SqliteAuthorizationStore {
                     )?;
                     super::outbox::insert_sql_post_commit_actions(&transaction, &actions)?;
                 }
+            } else {
+                // A resource that failed to materialize narrows the owning
+                // grant's present transport policy, so re-evaluate its sockets.
+                super::outbox::insert_sql_post_commit_actions(
+                    &transaction,
+                    &[crate::platform::auth::transport_attachments::transport_reevaluate_action(
+                        &failure_scope,
+                        now,
+                    )?],
+                )?;
             }
             transaction.commit().map_err(sql_error)
         }).await

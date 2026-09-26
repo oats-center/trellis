@@ -371,7 +371,10 @@ export class ServiceTransfer {
             const streamed = (await entry.stream()).take();
             if (isErr(streamed)) {
               return Result.err(
-                new TransferError({ operation: "stream", cause: streamed.error }),
+                new TransferError({
+                  operation: "stream",
+                  cause: streamed.error,
+                }),
               );
             }
             return Result.ok(streamed);
@@ -544,7 +547,7 @@ export class ServiceTransfer {
         new TransferError({
           operation,
           cause: value.error,
-          context: { store: bucket },
+          context: { store: bucket, ...value.error.getContext() },
         }),
       );
     }

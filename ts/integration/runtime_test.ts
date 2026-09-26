@@ -1,7 +1,7 @@
 import { jetstreamManager } from "@nats-io/jetstream";
 import { credsAuthenticator, headers as natsHeaders } from "@nats-io/nats-core";
 import { connect } from "@nats-io/transport-node";
-import { Result } from "@oatscenter/trellis";
+import { isErr, Result } from "@oatscenter/trellis";
 import { TransportError } from "@oatscenter/trellis/errors";
 import { RetryJobError, TrellisService } from "@oatscenter/trellis/service";
 import { assert, assertEquals, assertRejects } from "@std/assert";
@@ -27,6 +27,66 @@ const transientProgress = {
     payload: Uint8Array.from([4, 5, 6]),
   },
 };
+
+Deno.test("service bootstrap reports the configured origin when the URL uses a different host", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: "bootstrap-origin-provider",
+      contract: participants.Provider.participant,
+    });
+    const wrongUrl = new URL(runtime.trellisUrl);
+    wrongUrl.hostname = wrongUrl.hostname === "localhost"
+      ? "127.0.0.1"
+      : "localhost";
+    const result = await TrellisService.connect({
+      trellisUrl: wrongUrl.origin,
+      participant: participants.Provider.participant,
+      seed: identity.seed,
+    }).take();
+    assert(isErr(result));
+    assert(result.error.cause instanceof Error);
+    assert(result.error.cause.message.includes("invalid_proof"));
+    assert(result.error.cause.message.includes(wrongUrl.origin));
+    assert(
+      result.error.cause.message.includes(new URL(runtime.trellisUrl).origin),
+    );
+
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.Provider.participant,
+      seed: identity.seed,
+    }).orThrow();
+    await service.stop();
+  });
+});
+
+Deno.test("service wait rejects an unrequested transport close but accepts stop", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: "wait-close-provider",
+      contract: participants.Provider.participant,
+    });
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.Provider.participant,
+      seed: identity.seed,
+    }).orThrow();
+    const exited = service.wait().catch((error: unknown) => error);
+    await service.connection.close();
+    const error = await exited;
+    assert(error instanceof Error);
+    assert(error.message.includes("closed unexpectedly"));
+
+    const healthy = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.Provider.participant,
+      seed: identity.seed,
+    }).orThrow();
+    const healthyExit = healthy.wait();
+    await healthy.stop();
+    await healthyExit;
+  });
+});
 
 Deno.test("generated TypeScript caller reaches Rust provider", async () => {
   const providerArgv = rustFixtureArgv("trellis-runtime-acceptance");
@@ -551,6 +611,18 @@ Deno.test("generated runtime workflows", async (t) => {
         const terminal = await operation.wait().orThrow();
         assertEquals(terminal.state, "completed");
         assertEquals(terminal.output?.value, "completed work");
+        const rejected = await client.work({ value: "different" }).start(
+          undefined,
+          { invocationId: operation.id },
+        ).take();
+        assert(isErr(rejected));
+        assert(rejected.error instanceof TransportError);
+        assertEquals(rejected.error.code, "trellis.operation.remote_error");
+        assert(
+          rejected.error.message.includes(
+            "Invocation id was already accepted with different input",
+          ),
+        );
       });
       await t.step(
         "cancellation aborts and fences the active handler",

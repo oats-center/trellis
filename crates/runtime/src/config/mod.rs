@@ -1125,12 +1125,6 @@ pub struct PlatformTtlConfig {
     /// matching browser-flow record retention).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_auth: Option<u64>,
-    /// Connection tracking TTL.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub connections: Option<u64>,
-    /// NATS JWT TTL.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub nats_jwt: Option<u64>,
 }
 
 /// Storage configuration for a built-in runtime subsystem.

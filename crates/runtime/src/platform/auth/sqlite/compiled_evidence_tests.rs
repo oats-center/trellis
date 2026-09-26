@@ -693,26 +693,25 @@ async fn warm_caches_keep_provider_selection_current() {
 #[tokio::test]
 async fn current_bindings_are_exact_and_compile_nothing() {
     let store = SqliteAuthorizationStore::open_in_memory().expect("store");
-    store
-        .put_api_binding(
-            "consumer-deployment",
-            "cache-test.billing@v1",
-            "billing-provider",
-        )
-        .await
-        .expect("billing binding");
-    store
-        .put_api_binding(
-            "consumer-deployment",
-            "trellis.events@v1",
-            "events-provider",
-        )
-        .await
-        .expect("events binding");
-    store
-        .put_api_binding("consumer-deployment", "unrelated@v1", "unrelated-provider")
-        .await
-        .expect("unrelated binding");
+    let scope = |id: &str| {
+        crate::platform::auth::transport_attachments::TransportReevaluateScope::Participant {
+            participant_id: id.to_owned(),
+        }
+    };
+    for (api_id, provider) in [
+        ("cache-test.billing@v1", "billing-provider"),
+        ("trellis.events@v1", "events-provider"),
+        ("unrelated@v1", "unrelated-provider"),
+    ] {
+        store
+            .put_api_bindings(
+                "consumer-deployment",
+                vec![(api_id.to_owned(), provider.to_owned())],
+                scope("consumer-deployment"),
+            )
+            .await
+            .expect("consumer binding");
+    }
     let consumer = synthetic_consumer();
     let bindings = current_api_bindings(&store, &consumer, Some("consumer-deployment"))
         .await

@@ -22,6 +22,7 @@ pub(super) fn resolve_snapshot(
         binding,
         participant,
         resources,
+        api_bindings: _,
         issuer,
     } = snapshot;
     if principal.state != PrincipalState::Active {
@@ -477,6 +478,7 @@ mod tests {
                 error: None,
             },
             resources: Vec::new(),
+            api_bindings: BTreeMap::new(),
             issuer: AuthorizationIssuerKey {
                 key_id: "issuer".to_owned(),
                 public_key: "unused".to_owned(),

@@ -17,12 +17,11 @@ use nats_jwt_rs::Claims;
 use nkeys::{KeyPair, KeyPairType, XKey};
 use serde::Deserialize;
 use subtle::ConstantTimeEq;
-use trellis_protocol::{AuthorizationPrincipalKind, ParticipantKind, VerifiedAuthorizationContext};
+use trellis_protocol::{TransportAuthorizationV1, VerifiedAuthorizationContext};
 
-use super::auth::context::AuthorizationContextRepository;
 use super::auth::{
-    AuthConnectionPresence, AuthEphemeralRepository, AuthorizationContextService,
-    AuthorizationStateError, NatsAuthEphemeralRepository, ParticipantBindingState,
+    AuthAttachmentState, AuthConnectionPresence, AuthEphemeralRepository,
+    AuthorizationContextService, AuthorizationStateError, NatsAuthEphemeralRepository,
 };
 use crate::shutdown::StopHandle;
 use crate::supervisor::RuntimeError;
@@ -32,10 +31,14 @@ const AUTH_CALLOUT_QUEUE: &str = "trellis";
 const DISCONNECT_SUBJECT: &str = "$SYS.ACCOUNT.*.DISCONNECT";
 const SERVER_XKEY_HEADER: &str = "Nats-Server-Xkey";
 const CONNECT_TOKEN_FORMAT: &str = "trellis.nats-connect-token.v1";
-const DEFAULT_USER_JWT_TTL_MS: i64 = 300_000;
-const CONNECTION_PRESENCE_GRACE_MS: i64 = 60_000;
 const MAX_CONCURRENT_REQUESTS: usize = 32;
 const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+/// Bounded window in which a written attachment record is considered a pending
+/// admission rather than an established socket: long enough for a successful
+/// callout response to reach the broker and register, not a socket lifetime.
+const ADMISSION_PENDING_MS: i64 = 60_000;
+const RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
+const RECONCILE_INTERVAL_MS: i64 = 30_000;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -100,6 +103,10 @@ impl CalloutKeys {
         })
     }
 
+    pub(crate) fn target_account(&self) -> &str {
+        &self.target_account
+    }
+
     fn validate_bootstrap_jwt(
         &self,
         jwt: &str,
@@ -133,35 +140,36 @@ impl CalloutKeys {
     fn authorized_user_jwt(
         &self,
         user_nkey: &str,
-        principal_kind: AuthorizationPrincipalKind,
-        device_implements_apis: bool,
-        permissions: super::auth::TransportPermissions,
-        expires_at_seconds: i64,
+        permissions: &TransportAuthorizationV1,
+        authenticated_name: &str,
+        expires_at_seconds: Option<i64>,
     ) -> Result<String, AuthorizationStateError> {
-        let mut claims = User::new_claims(user_nkey.to_owned(), user_nkey.to_owned());
+        let mut claims = User::new_claims(authenticated_name.to_owned(), user_nkey.to_owned());
         claims.aud = Some(self.target_account.clone());
-        claims.exp = Some(expires_at_seconds);
+        claims.exp = expires_at_seconds;
         let payload = claims.payload_mut();
         payload.issuer_account = Some(self.target_account.clone());
+        let response = match &permissions.response {
+            Some(response) => Some(ResponsePermission {
+                max_messages: i64::try_from(response.max_messages).map_err(|_| {
+                    AuthorizationStateError::InvalidRecord(
+                        "response message count exceeds i64".to_owned(),
+                    )
+                })?,
+                ttl: Duration::from_millis(response.ttl_ms),
+            }),
+            None => None,
+        };
         payload.permissions.permissions = Permissions {
             publish: Permission {
-                allow: permissions.publish,
+                allow: permissions.publish_allow.clone(),
                 deny: Vec::new(),
             },
             subscribe: Permission {
-                allow: permissions.subscribe,
+                allow: permissions.subscribe_allow.clone(),
                 deny: Vec::new(),
             },
-            resp: (principal_kind == AuthorizationPrincipalKind::Service
-                || (principal_kind == AuthorizationPrincipalKind::Device
-                    && device_implements_apis))
-                .then_some(ResponsePermission {
-                    max_messages: 65_535,
-                    // A finite reply policy for ordinary bounded responses. Live
-                    // observation traffic uses its own connection-scoped grants
-                    // and never depends on an indefinitely retained reply allowance.
-                    ttl: Duration::from_secs(120),
-                }),
+            resp: response,
         };
         claims.encode(&self.target_signing_key).map_err(|error| {
             AuthorizationStateError::Storage(format!("failed to sign NATS user JWT: {error}"))
@@ -205,7 +213,7 @@ struct CalloutProcessor {
     ephemeral: NatsAuthEphemeralRepository,
     repository: super::auth::SqliteAuthorizationStore,
     keys: CalloutKeys,
-    user_jwt_ttl_ms: i64,
+    system_client: async_nats::Client,
     limiter: Arc<CalloutLimiter>,
 }
 
@@ -249,7 +257,6 @@ impl AuthCallout {
         repository: super::auth::SqliteAuthorizationStore,
         contexts: super::auth::AuthorizationContextService,
         keys: CalloutKeys,
-        user_jwt_ttl_ms: i64,
     ) -> Result<Self, AuthorizationStateError> {
         let subscriber = client
             .queue_subscribe(AUTH_CALLOUT_SUBJECT, AUTH_CALLOUT_QUEUE.to_owned())
@@ -277,7 +284,7 @@ impl AuthCallout {
                 ephemeral,
                 repository,
                 keys,
-                user_jwt_ttl_ms,
+                system_client,
                 limiter: Arc::new(CalloutLimiter::default()),
             },
         })
@@ -285,6 +292,8 @@ impl AuthCallout {
 
     pub(crate) async fn run(mut self, stop: StopHandle) -> Result<(), RuntimeError> {
         let mut requests = tokio::task::JoinSet::new();
+        let mut reconcile = tokio::time::interval(RECONCILE_INTERVAL);
+        reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 () = stop.stopped() => break,
@@ -309,6 +318,11 @@ impl AuthCallout {
                     self.processor.process_disconnect(&message.payload).await
                         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
                 }
+                _ = reconcile.tick() => {
+                    if let Err(error) = self.processor.reconcile().await {
+                        tracing::warn!(%error, "attachment reconciliation failed");
+                    }
+                }
             }
         }
 
@@ -328,41 +342,6 @@ impl AuthCallout {
     }
 }
 
-pub(crate) fn resolve_user_jwt_ttl_ms(
-    configured: Option<u64>,
-) -> Result<i64, AuthorizationStateError> {
-    let ttl = configured
-        .unwrap_or(DEFAULT_USER_JWT_TTL_MS as u64)
-        .try_into()
-        .map_err(|_| {
-            AuthorizationStateError::InvalidRecord(
-                "NATS user JWT TTL exceeds i64 milliseconds".to_owned(),
-            )
-        })?;
-    if ttl <= 0 {
-        return invalid("NATS user JWT TTL must be positive");
-    }
-    Ok(ttl)
-}
-
-pub(crate) fn connection_presence_max_age(
-    user_jwt_ttl_ms: i64,
-) -> Result<Duration, AuthorizationStateError> {
-    let max_age = user_jwt_ttl_ms
-        .checked_add(CONNECTION_PRESENCE_GRACE_MS)
-        .ok_or_else(|| {
-            AuthorizationStateError::InvalidRecord(
-                "NATS user JWT TTL overflows connection presence retention".to_owned(),
-            )
-        })?;
-    let max_age = u64::try_from(max_age).map_err(|_| {
-        AuthorizationStateError::InvalidRecord(
-            "NATS connection presence retention must be positive".to_owned(),
-        )
-    })?;
-    Ok(Duration::from_millis(max_age))
-}
-
 impl CalloutProcessor {
     async fn process_disconnect(&self, payload: &[u8]) -> Result<(), AuthorizationStateError> {
         let Ok(event) = serde_json::from_slice::<DisconnectEvent>(payload) else {
@@ -376,31 +355,207 @@ impl CalloutProcessor {
         else {
             return Ok(());
         };
-        if server_id.is_empty() || user_nkey.is_empty() {
+        if server_id.is_empty() {
             return Ok(());
         }
-        let connection_id = connection_id(&server_id, &client_id.to_string(), &user_nkey)?;
+        let client_id = client_id.to_string();
         let Some(connection) = self
             .ephemeral
             .list_connection_presence(None)
             .await?
             .into_iter()
-            .find(|connection| connection.connection_id == connection_id)
+            .find(|connection| {
+                connection.server_id == server_id && connection.client_id == client_id
+            })
         else {
             return Ok(());
         };
+        if !connection.matches_disconnect_user(&user_nkey) {
+            tracing::warn!(
+                server_id = %server_id,
+                client_id = %client_id,
+                "NATS disconnect user does not match the retained physical attachment"
+            );
+            return Ok(());
+        }
+        self.close_retained_attachment(&connection, "disconnected")
+            .await
+    }
+
+    /// Converges retained attachment records with authoritative broker
+    /// inventory. Unreachable servers stay visible; only a successful inventory
+    /// read proves an attachment absent.
+    async fn reconcile(&self) -> Result<(), AuthorizationStateError> {
+        use std::collections::{BTreeSet, HashMap};
+
+        let now = now_millis()?;
+        let retained = self.ephemeral.list_connection_presence(None).await?;
+        let retained_physical: HashMap<(String, String), ()> = retained
+            .iter()
+            .map(|record| ((record.server_id.clone(), record.client_id.clone()), ()))
+            .collect();
+
+        let mut servers: BTreeSet<String> = retained
+            .iter()
+            .map(|record| record.server_id.clone())
+            .collect();
+        match super::auth::transport_attachments::discover_servers(&self.system_client).await {
+            Ok(discovered) => servers.extend(discovered),
+            Err(error) => {
+                tracing::warn!(%error, "attachment reconciliation could not discover servers")
+            }
+        }
+
+        let mut observed: HashMap<(String, u64), String> = HashMap::new();
+        let mut answered: BTreeSet<String> = BTreeSet::new();
+        for server_id in &servers {
+            match super::auth::transport_attachments::paginate_connz(&self.system_client, server_id)
+                .await
+            {
+                Ok(connections) => {
+                    answered.insert(server_id.clone());
+                    for connection in connections {
+                        if connection.is_callout_owned() {
+                            if let Some(user) = connection.authorized_user {
+                                observed.insert((server_id.clone(), connection.cid), user);
+                            }
+                        }
+                    }
+                }
+                Err(error) => tracing::warn!(
+                    server_id = %server_id,
+                    %error,
+                    "attachment reconciliation could not read broker inventory"
+                ),
+            }
+        }
+
+        for record in &retained {
+            let Ok(cid) = record.client_id.parse::<u64>() else {
+                continue;
+            };
+            match observed.get(&(record.server_id.clone(), cid)) {
+                Some(user) if record.matches_disconnect_user(user) => {
+                    if record.attachment_state == AuthAttachmentState::Pending
+                        || now.saturating_sub(record.last_seen_at) >= RECONCILE_INTERVAL_MS
+                    {
+                        let mut confirmed = record.clone();
+                        confirmed.attachment_state = AuthAttachmentState::Confirmed;
+                        confirmed.pending_deadline = None;
+                        confirmed.last_seen_at = now;
+                        if let Err(error) = self
+                            .ephemeral
+                            .replace_connection_presence(record.storage_revision, confirmed)
+                            .await
+                        {
+                            tracing::debug!(
+                                %error,
+                                "attachment confirmation raced with another writer"
+                            );
+                        }
+                    }
+                }
+                Some(_) => {
+                    tracing::warn!(
+                        server_id = %record.server_id,
+                        cid,
+                        "retained attachment identity no longer matches its socket"
+                    );
+                    self.request_untracked_kick(&record.server_id, cid).await?;
+                    self.close_retained_attachment(record, "reconciled_identity_mismatch")
+                        .await?;
+                }
+                None => match record.attachment_state {
+                    AuthAttachmentState::Pending => {
+                        if record
+                            .pending_deadline
+                            .is_some_and(|deadline| deadline <= now)
+                        {
+                            self.close_retained_attachment(record, "reconciled_unregistered")
+                                .await?;
+                        }
+                    }
+                    AuthAttachmentState::Confirmed => {
+                        if answered.contains(&record.server_id)
+                            && self.attachment_absent(&record.server_id, cid).await?
+                        {
+                            self.close_retained_attachment(record, "reconciled_absent")
+                                .await?;
+                        }
+                    }
+                },
+            }
+        }
+
+        for ((server_id, cid), _) in &observed {
+            if retained_physical.contains_key(&(server_id.clone(), cid.to_string())) {
+                continue;
+            }
+            self.request_untracked_kick(server_id, *cid).await?;
+        }
+        Ok(())
+    }
+
+    async fn attachment_absent(
+        &self,
+        server_id: &str,
+        cid: u64,
+    ) -> Result<bool, AuthorizationStateError> {
+        match super::auth::transport_attachments::connz(
+            &self.system_client,
+            server_id,
+            0,
+            Some(cid),
+        )
+        .await
+        {
+            Ok((connections, _)) => Ok(connections.is_empty()),
+            Err(error) => {
+                tracing::warn!(
+                    server_id = %server_id,
+                    cid,
+                    %error,
+                    "attachment absence could not be proven"
+                );
+                Ok(false)
+            }
+        }
+    }
+
+    async fn request_untracked_kick(
+        &self,
+        server_id: &str,
+        cid: u64,
+    ) -> Result<(), AuthorizationStateError> {
+        let outcome =
+            super::auth::transport_attachments::request_kick(&self.system_client, server_id, cid)
+                .await?;
+        tracing::warn!(
+            server_id = %server_id,
+            cid,
+            ?outcome,
+            "kicked untracked callout-owned NATS attachment"
+        );
+        Ok(())
+    }
+
+    async fn close_retained_attachment(
+        &self,
+        connection: &AuthConnectionPresence,
+        reason: &str,
+    ) -> Result<(), AuthorizationStateError> {
         self.ephemeral
-            .delete_connection_presence(&connection_id, connection.storage_revision)
+            .delete_connection_presence(&connection.connection_id, connection.storage_revision)
             .await?;
         let now = now_millis()?;
         self.repository
             .enqueue_post_commit_actions(vec![super::auth::connection_event_action::<
                 trellis_runtime_apis::apis::trellis_auth_v1::events::ConnectionsClosed,
             >(
-                &connection,
+                connection,
                 "Auth.Connections.Closed",
                 "closed",
-                Some("disconnected"),
+                Some(reason),
                 now,
             )?])
             .await
@@ -568,11 +723,24 @@ impl CalloutProcessor {
 
             let client_id = request.client_info.id.to_string();
             let connection_id = connection_id(&request.server.id, &client_id, &request.user_nkey)?;
+            let admitted_policy = verified_context
+                .signed_context()
+                .unsigned
+                .transport_authorization
+                .clone();
+            let admitted_policy_digest = admitted_policy
+                .digest()
+                .map_err(|error| denied(error.to_string()))?;
             let mut presence = AuthConnectionPresence {
                 storage_revision: 0,
-                format: "trellis.auth-connection-presence.v1".to_owned(),
+                format: "trellis.auth-connection-presence.v2".to_owned(),
                 connection_id: connection_id.clone(),
                 runtime_connection_id: verified_context.connection_id().to_owned(),
+                session_key: verified_context
+                    .signed_context()
+                    .unsigned
+                    .session_key
+                    .clone(),
                 login_session_id: verified_context.login_session_id().map(str::to_owned),
                 principal_id: verified_context.principal_id().to_owned(),
                 principal_kind: verified_context.principal_kind(),
@@ -588,13 +756,20 @@ impl CalloutProcessor {
                     .instance_id
                     .clone(),
                 context_digest: verified_context.context_digest().to_owned(),
+                transport_authorization: admitted_policy.clone(),
+                transport_authorization_digest: admitted_policy_digest,
+                attachment_state: AuthAttachmentState::Pending,
+                pending_deadline: Some(
+                    now.checked_add(ADMISSION_PENDING_MS)
+                        .ok_or_else(|| denied("pending admission deadline overflowed"))?,
+                ),
                 server_id: request.server.id.clone(),
                 client_id,
                 user_nkey: request.user_nkey.clone(),
                 remote_address: Some(request.client_info.host.clone()),
                 connected_at: now,
                 last_seen_at: now,
-                version: 1,
+                version: 2,
             };
             let presence_started = std::time::Instant::now();
             let presence_revision = self
@@ -627,9 +802,9 @@ impl CalloutProcessor {
 
             let result = async {
                 let permissions_started = std::time::Instant::now();
-                let permissions = self
+                let allowed = self
                     .contexts
-                    .transport_permissions(&verified_context, now_seconds)
+                    .current_transport_policy(verified_context.context_digest(), now)
                     .await;
                 crate::telemetry::record_duration(
                     crate::telemetry::DurationMetric::AuthCallout,
@@ -637,86 +812,45 @@ impl CalloutProcessor {
                     "auth",
                     "authorize",
                     "permissions",
-                    if permissions.is_ok() {
+                    if allowed.is_ok() {
                         crate::telemetry::Outcome::Ok
                     } else {
                         crate::telemetry::Outcome::Error
                     },
                 );
-                let permissions = permissions.map_err(|error| denied(error.to_string()))?;
-                let device_implements_apis =
-                    if verified_context.principal_kind() == AuthorizationPrincipalKind::Device {
-                        let retained = self
-                            .repository
-                            .get_context_by_digest(verified_context.context_digest())
-                            .await?
-                            .ok_or_else(|| {
-                                denied("authorization context is missing from durable state")
-                            })?;
-                        self.repository
-                            .get_installed_participant_record(
-                                verified_context.participant_id().to_owned(),
-                                Some(retained.installed_revision),
-                            )
-                            .await?
-                            .is_some_and(|(_, participant)| {
-                                participant.participant_kind == ParticipantKind::Device
-                                    && participant.state == ParticipantBindingState::Resolved
-                                    && !participant.projection.implemented_apis.is_empty()
-                            })
-                    } else {
-                        false
-                    };
+                let allowed = allowed.map_err(|error| denied(error.to_string()))?;
+                let admitted = &admitted_policy;
+                if !admitted
+                    .is_covered_by(&allowed)
+                    .map_err(|error| denied(error.to_string()))?
+                {
+                    return Err(denied(
+                        "admitted transport policy is not covered by current authority",
+                    ));
+                }
                 tracing::debug!(
-                    publish_count = permissions.publish.len(),
-                    subscribe_count = permissions.subscribe.len(),
-                    jobs_list_services = permissions
-                        .publish
-                        .iter()
-                        .any(|subject| subject == "rpc.v1.Jobs.ListServices"),
-                    jobs_metrics = permissions
-                        .publish
-                        .iter()
-                        .any(|subject| subject == "rpc.v1.Jobs.Metrics"),
-                    events_query = permissions
-                        .publish
-                        .iter()
-                        .any(|subject| subject == "rpc.v1.events.Query"),
-                    health_watch = permissions
-                        .publish
-                        .iter()
-                        .any(|subject| subject == "live.v1.route.Health.Watch"),
-                    "compiled NATS authorization permissions"
+                    publish_count = admitted.publish_allow.len(),
+                    subscribe_count = admitted.subscribe_allow.len(),
+                    hard_expires_at = ?admitted.hard_expires_at,
+                    "installed signed NATS authorization policy"
                 );
-                let expires_at_ms = [
-                    Some(
-                        verified_context
-                            .expires_at()
-                            .checked_mul(1_000)
-                            .ok_or_else(|| denied("authorization context expiry overflowed"))?,
-                    ),
-                    Some(
-                        now.checked_add(self.user_jwt_ttl_ms)
-                            .ok_or_else(|| denied("NATS user JWT expiry overflowed"))?,
-                    ),
-                ]
-                .into_iter()
-                .flatten()
-                .min()
-                .ok_or_else(|| denied("NATS user JWT has no expiry bound"))?;
-                if expires_at_ms <= now {
-                    return Err(denied("NATS user JWT expiry has elapsed"));
-                }
-                let expires_at_seconds = expires_at_ms / 1_000;
-                if expires_at_seconds <= now_seconds {
-                    return Err(denied("NATS user JWT expiry is below one second"));
-                }
+                let expires_at_seconds = match admitted.hard_expires_at {
+                    Some(deadline) => {
+                        if deadline <= now_seconds {
+                            return Err(denied(
+                                "admitted transport policy hard deadline has elapsed",
+                            ));
+                        }
+                        Some(deadline)
+                    }
+                    None => None,
+                };
+                let authenticated_name = presence.authenticated_name();
                 let jwt_started = std::time::Instant::now();
                 let jwt = self.keys.authorized_user_jwt(
                     &request.user_nkey,
-                    verified_context.principal_kind(),
-                    device_implements_apis,
-                    permissions,
+                    &admitted,
+                    &authenticated_name,
                     expires_at_seconds,
                 );
                 crate::telemetry::record_duration(
@@ -1015,7 +1149,7 @@ fn invalid_denial<T>() -> Result<T, AuthorizationStateError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::auth::TransportPermissions;
+    use trellis_protocol::{TransportResponseAuthorizationV1, TRANSPORT_AUTHORIZATION_FORMAT_V1};
 
     #[test]
     fn disconnect_advisory_reconstructs_exact_connection_identity() {
@@ -1037,24 +1171,6 @@ mod tests {
             ),
             connection_id("srv-A", "42", "USESSION")
         );
-    }
-
-    #[test]
-    fn connection_presence_retention_follows_resolved_user_jwt_ttl() {
-        let default_ttl = resolve_user_jwt_ttl_ms(None).unwrap();
-        assert_eq!(default_ttl, 300_000);
-        assert_eq!(
-            connection_presence_max_age(default_ttl).unwrap(),
-            Duration::from_millis(360_000)
-        );
-
-        let configured_ttl = resolve_user_jwt_ttl_ms(Some(45_000)).unwrap();
-        assert_eq!(configured_ttl, 45_000);
-        assert_eq!(
-            connection_presence_max_age(configured_ttl).unwrap(),
-            Duration::from_millis(105_000)
-        );
-        assert!(connection_presence_max_age(i64::MAX).is_err());
     }
 
     #[test]
@@ -1105,15 +1221,22 @@ mod tests {
         .is_err());
 
         let issued_user_nkey = KeyPair::new_user().public_key();
+        let authenticated_name = "trellis.auth.v1:digest:srv-A:42";
         let issued = keys.authorized_user_jwt(
             &issued_user_nkey,
-            AuthorizationPrincipalKind::Service,
-            false,
-            TransportPermissions {
-                publish: vec!["rpc.v1.Example".to_owned()],
-                subscribe: vec!["_INBOX.example.>".to_owned()],
+            &TransportAuthorizationV1 {
+                format: TRANSPORT_AUTHORIZATION_FORMAT_V1.to_owned(),
+                account: target_account.clone(),
+                publish_allow: vec!["rpc.v1.Example".to_owned()],
+                subscribe_allow: vec!["_INBOX.example.>".to_owned()],
+                response: Some(TransportResponseAuthorizationV1 {
+                    max_messages: 65_535,
+                    ttl_ms: 120_000,
+                }),
+                hard_expires_at: None,
             },
-            200,
+            authenticated_name,
+            Some(200),
         )?;
         let payload = issued
             .split('.')
@@ -1122,7 +1245,7 @@ mod tests {
         let claims: serde_json::Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload)?)?;
         assert_eq!(claims["iss"], target_signing_key.public_key());
         assert_eq!(claims["sub"], issued_user_nkey);
-        assert_eq!(claims["name"], issued_user_nkey);
+        assert_eq!(claims["name"], authenticated_name);
         assert_eq!(claims["aud"], target_account);
         assert_eq!(claims["exp"], 200);
         assert_eq!(claims["nats"]["issuer_account"], target_account);
@@ -1138,13 +1261,16 @@ mod tests {
 
         let device_without_apis = keys.authorized_user_jwt(
             &issued_user_nkey,
-            AuthorizationPrincipalKind::Device,
-            false,
-            TransportPermissions {
-                publish: Vec::new(),
-                subscribe: Vec::new(),
+            &TransportAuthorizationV1 {
+                format: TRANSPORT_AUTHORIZATION_FORMAT_V1.to_owned(),
+                account: target_account.clone(),
+                publish_allow: Vec::new(),
+                subscribe_allow: Vec::new(),
+                response: None,
+                hard_expires_at: None,
             },
-            200,
+            authenticated_name,
+            None,
         )?;
         let payload = device_without_apis
             .split('.')
@@ -1152,16 +1278,23 @@ mod tests {
             .ok_or("issued JWT has no payload")?;
         let claims: serde_json::Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload)?)?;
         assert!(claims["nats"]["resp"].is_null());
+        assert!(claims["exp"].is_null());
 
         let device_with_apis = keys.authorized_user_jwt(
             &issued_user_nkey,
-            AuthorizationPrincipalKind::Device,
-            true,
-            TransportPermissions {
-                publish: Vec::new(),
-                subscribe: Vec::new(),
+            &TransportAuthorizationV1 {
+                format: TRANSPORT_AUTHORIZATION_FORMAT_V1.to_owned(),
+                account: target_account.clone(),
+                publish_allow: Vec::new(),
+                subscribe_allow: Vec::new(),
+                response: Some(TransportResponseAuthorizationV1 {
+                    max_messages: 65_535,
+                    ttl_ms: 120_000,
+                }),
+                hard_expires_at: None,
             },
-            200,
+            authenticated_name,
+            Some(500),
         )?;
         let payload = device_with_apis
             .split('.')
@@ -1169,6 +1302,7 @@ mod tests {
             .ok_or("issued JWT has no payload")?;
         let claims: serde_json::Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload)?)?;
         assert_eq!(claims["nats"]["resp"]["max"], 65_535);
+        assert_eq!(claims["exp"], 500);
 
         let mut request = AuthRequest {
             user_nkey: issued_user_nkey.clone(),

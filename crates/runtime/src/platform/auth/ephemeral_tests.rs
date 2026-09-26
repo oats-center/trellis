@@ -282,11 +282,27 @@ async fn repository_conformance(repository: impl AuthEphemeralRepository + Clone
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64;
+    let transport_authorization = trellis_protocol::TransportAuthorizationV1 {
+        format: trellis_protocol::TRANSPORT_AUTHORIZATION_FORMAT_V1.to_owned(),
+        account: nkeys::KeyPair::new_account().public_key(),
+        publish_allow: vec!["rpc.v1.Example".to_owned()],
+        subscribe_allow: vec!["_INBOX.>".to_owned()],
+        response: None,
+        hard_expires_at: None,
+    };
+    let transport_authorization_digest = transport_authorization.digest().unwrap();
+    let session_key = base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        ed25519_dalek::SigningKey::from_bytes(&[7_u8; 32])
+            .verifying_key()
+            .to_bytes(),
+    );
     let connection = AuthConnectionPresence {
         storage_revision: 0,
-        format: "trellis.auth-connection-presence.v1".to_owned(),
+        format: "trellis.auth-connection-presence.v2".to_owned(),
         connection_id: DIGEST.to_owned(),
         runtime_connection_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned(),
+        session_key,
         login_session_id: Some("01ARZ3NDEKTSV4RRFFQ69G5FAW".to_owned()),
         principal_id: "usr_01".to_owned(),
         principal_kind: trellis_protocol::AuthorizationPrincipalKind::User,
@@ -294,16 +310,33 @@ async fn repository_conformance(repository: impl AuthEphemeralRepository + Clone
         deployment_id: None,
         instance_id: None,
         context_digest: DIGEST.to_owned(),
+        transport_authorization,
+        transport_authorization_digest,
+        attachment_state: AuthAttachmentState::Pending,
+        pending_deadline: Some(now + 60_000),
         server_id: "server-1".to_owned(),
         client_id: "42".to_owned(),
         user_nkey: "user-nkey".to_owned(),
         remote_address: Some("127.0.0.1".to_owned()),
         connected_at: now,
         last_seen_at: now,
-        version: 1,
+        version: 2,
     };
-    repository
+    let revision = repository
         .put_connection_presence(connection.clone())
+        .await
+        .unwrap();
+    // Confirmation is a compare-and-swap: a stale revision must not overwrite
+    // the retained attachment.
+    let mut confirmed = connection.clone();
+    confirmed.attachment_state = AuthAttachmentState::Confirmed;
+    confirmed.pending_deadline = None;
+    assert!(repository
+        .replace_connection_presence(revision + 1, confirmed.clone())
+        .await
+        .is_err());
+    let confirmed_revision = repository
+        .replace_connection_presence(revision, confirmed)
         .await
         .unwrap();
     let mut second_connection = connection;
@@ -324,7 +357,7 @@ async fn repository_conformance(repository: impl AuthEphemeralRepository + Clone
         2
     );
     repository
-        .delete_connection_presence(DIGEST, 1)
+        .delete_connection_presence(DIGEST, confirmed_revision)
         .await
         .unwrap();
     let remaining = repository
@@ -406,20 +439,32 @@ async fn nats_kv_repository_conforms() {
         }
     }
     let client = client.expect("NATS did not start");
-    let repository = NatsAuthEphemeralRepository::ensure(
-        client.clone(),
-        std::time::Duration::from_millis(120_000),
-    )
-    .await
-    .unwrap();
+    let repository = NatsAuthEphemeralRepository::ensure(client.clone())
+        .await
+        .unwrap();
     repository_conformance(repository).await;
-    let error =
-        NatsAuthEphemeralRepository::ensure(client, std::time::Duration::from_millis(360_000))
-            .await
-            .expect_err("old connection presence retention must be incompatible");
+    // A presence bucket created with a TTL would silently evict active
+    // attachments, so a TTL-bearing bucket must be rejected rather than adopted.
+    let jetstream = async_nats::jetstream::new(client.clone());
+    jetstream
+        .delete_key_value("trellis_auth_connections")
+        .await
+        .unwrap();
+    jetstream
+        .create_key_value(async_nats::jetstream::kv::Config {
+            bucket: "trellis_auth_connections".to_owned(),
+            history: 1,
+            max_age: std::time::Duration::from_millis(120_000),
+            max_value_size: 16_384,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let error = NatsAuthEphemeralRepository::check(client)
+        .await
+        .expect_err("a TTL-bearing presence bucket must be rejected");
     let error = error.to_string();
     assert!(error.contains("max_age"), "{error}");
-    assert!(error.contains("360000ms"), "{error}");
     assert!(error.contains("120000ms"), "{error}");
     drop(server);
 }

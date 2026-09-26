@@ -163,28 +163,25 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .config
         .resolve_nats_auth_callout()
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let user_jwt_ttl_ms = auth_callout::resolve_user_jwt_ttl_ms(
-        context
-            .config
-            .platform
-            .as_ref()
-            .and_then(|platform| platform.ttl_ms.as_ref())
-            .and_then(|ttl| ttl.nats_jwt),
+    let ephemeral = auth::NatsAuthEphemeralRepository::ensure(context.trellis_nats.clone())
+        .await
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let public_origin = context.config.public_origin();
+    let callout_keys = CalloutKeys::from_files(
+        &callout.issuer_signing_seed_file,
+        &callout.target_signing_seed_file,
+        &callout.xkey_seed_file,
+        &nats.auth_creds_path,
+        &nats.trellis_creds_path,
     )
     .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let connection_max_age = auth_callout::connection_presence_max_age(user_jwt_ttl_ms)
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let ephemeral =
-        auth::NatsAuthEphemeralRepository::ensure(context.trellis_nats.clone(), connection_max_age)
-            .await
-            .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let public_origin = context.config.public_origin();
     let authorization_contexts = auth::AuthorizationContextService::start(
         Arc::new(auth_store.clone()),
         context.trellis_nats.clone(),
         authorization_config.clone(),
         public_origin.clone(),
         now / 1_000,
+        callout_keys.target_account().to_owned(),
     )
     .await
     .map_err(|error| RuntimeError::Platform(error.to_string()))?;
@@ -214,15 +211,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         ephemeral.clone(),
         auth_store.clone(),
         authorization_contexts.clone(),
-        CalloutKeys::from_files(
-            &callout.issuer_signing_seed_file,
-            &callout.target_signing_seed_file,
-            &callout.xkey_seed_file,
-            &nats.auth_creds_path,
-            &nats.trellis_creds_path,
-        )
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?,
-        user_jwt_ttl_ms,
+        callout_keys,
     )
     .await
     .map_err(|error| RuntimeError::Platform(error.to_string()))?;

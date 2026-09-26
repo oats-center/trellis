@@ -5,6 +5,7 @@ use super::super::authority::ContextRepository;
 use super::super::authority::{
     IssuanceConnection, IssuanceCredential, IssuanceCredentialRecord, IssuanceSnapshot,
 };
+use super::super::context::{AuthorizationContextRecord, AuthorizationContextSelector};
 use super::super::{AuthorizationStateError, GrantOwnerKind, ResourceBindingEvidence};
 use super::common::{decode_enum, decode_json, encode_enum, sql_error, to_sql_version};
 use super::evidence::load_deployment;
@@ -28,6 +29,18 @@ impl SqliteAuthorizationStore {
                 &participant_id,
                 installed_revision,
             )
+        })
+        .await
+    }
+
+    /// Lists every durable context in a selector scope, revoked or not, so
+    /// transport reevaluation sees attachments the same change just revoked.
+    pub(crate) async fn list_contexts_by_selector(
+        &self,
+        selector: AuthorizationContextSelector,
+    ) -> Result<Vec<AuthorizationContextRecord>, AuthorizationStateError> {
+        self.run_read(move |connection| {
+            super::super::context::list_sql_contexts_by_selector(connection, &selector)
         })
         .await
     }
@@ -158,6 +171,29 @@ pub(in crate::platform::auth) fn sqlite_issuance_snapshot(
         &participant_id,
         binding.installed_revision,
     )?;
+    // Include the mutable selected API provider bindings in the snapshot so
+    // the issuance concurrency token covers the exact policy inputs.
+    let binding_scope = match owner_kind {
+        GrantOwnerKind::User => participant_id.as_str(),
+        GrantOwnerKind::Deployment => owner_id.as_str(),
+    };
+    let api_bindings = {
+        let mut statement = connection
+            .prepare(
+                "SELECT api_id, provider_deployment_id FROM auth_api_bindings
+                     WHERE participant_id = ?1 ORDER BY api_id",
+            )
+            .map_err(sql_error)?;
+        let rows = statement
+            .query_map([binding_scope], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?;
+        rows.into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
     let issuer = connection.query_row(
         "SELECT key_id, public_key FROM auth_authorization_issuers WHERE is_current = 1 AND revoked_at IS NULL",
         [], |row| Ok(trellis_protocol::AuthorizationIssuerKey {
@@ -174,6 +210,7 @@ pub(in crate::platform::auth) fn sqlite_issuance_snapshot(
         binding,
         participant,
         resources,
+        api_bindings,
         issuer,
     })
 }

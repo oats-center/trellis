@@ -85,6 +85,14 @@ pub(crate) async fn install_login_mutation_actor(
         platform_privileges: vec![PlatformPrivilege::Admin],
         extensions: Map::new(),
         critical: Vec::new(),
+        transport_authorization: trellis_protocol::TransportAuthorizationV1 {
+            format: trellis_protocol::TRANSPORT_AUTHORIZATION_FORMAT_V1.to_owned(),
+            account: "AACCOUNT".to_owned(),
+            publish_allow: Vec::new(),
+            subscribe_allow: Vec::new(),
+            response: None,
+            hard_expires_at: None,
+        },
     };
     let signed = sign_authorization_context(unsigned.clone(), &signing_key)?;
     let context_digest = signed.digest()?;

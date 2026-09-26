@@ -434,6 +434,7 @@ type OperationControlErrorFrame = {
   error: {
     type: string;
     message: string;
+    context?: Record<string, JsonValue>;
   };
 };
 
@@ -692,8 +693,14 @@ function hasObserverCallbacks<TProgress, TOutput, TUpdate>(
 
 function decodeAcceptedEnvelope<TProgress, TOutput>(
   value: JsonValue,
-): Result<OperationAcceptedEnvelope<TProgress, TOutput>, TransportError> {
+): Result<
+  OperationAcceptedEnvelope<TProgress, TOutput>,
+  OperationControlError
+> {
   try {
+    if (isOperationControlErrorFrame(value)) {
+      return err(controlFrameToError(value));
+    }
     const envelope = value as OperationAcceptedEnvelope<TProgress, TOutput>;
     if (envelope?.kind !== "accepted" || !envelope.ref || !envelope.snapshot) {
       throw new Error(
@@ -1213,7 +1220,7 @@ function invokeOperation<
   invocationId: string,
 ): AsyncResult<
   InvokedOperation<TDesc, TProgress, TOutput, TUpdate>,
-  TransportError | UnexpectedError
+  OperationControlError | UnexpectedError
 > {
   return AsyncResult.from((async () => {
     const responseValue = await settleRequest(() =>
@@ -1934,12 +1941,13 @@ function controlFrameToError(
 
   return createTransportError({
     code: "trellis.operation.control_error",
-    message: "Trellis rejected the operation control request.",
+    message: frame.error.message,
     hint:
       "Check the operation state, then retry the action if it still applies.",
     context: {
       controlErrorType: frame.error.type,
       controlErrorMessage: frame.error.message,
+      ...(frame.error.context ? { remoteContext: frame.error.context } : {}),
     },
   });
 }

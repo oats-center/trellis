@@ -91,6 +91,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         snapshot.output.as_ref().map(|output| output.value.as_str()),
         Some("completed")
     );
+
+    let bytes: Vec<u8> = (0..131_073).map(|index| (index % 251) as u8).collect();
+    let upload = runtime
+        .upload()
+        .start(&operations::UploadInput {
+            value: "rust-upload".to_owned(),
+            extra: Default::default(),
+        })
+        .await?;
+    let info = upload.upload(&bytes).await?;
+    assert_eq!(info.size, bytes.len() as u64);
+    upload
+        .signal::<operations::UploadContinueSignal>(&Value {
+            value: "continue".to_owned(),
+            extra: Default::default(),
+        })
+        .await?;
+    let snapshot = upload.wait().await?;
+    assert_eq!(snapshot.state, OperationState::Completed);
+    assert_eq!(
+        snapshot.output.as_ref().map(|output| output.value.as_str()),
+        Some("rust-upload:131073:false")
+    );
     println!("rust caller complete");
     std::io::stdout().flush()?;
     telemetry.shutdown().await;

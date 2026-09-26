@@ -38,8 +38,9 @@ pub(super) use builtins::{
     jobs_runtime_participant_binding, portal_participant_binding,
 };
 pub(crate) use ephemeral::{
-    validate_connection_kick_response, AuthConnectionPresence, AuthEphemeralRepository,
-    ConsentApproval, ConsentRequest, NatsAuthEphemeralRepository,
+    validate_connection_kick_response, AuthAttachmentState, AuthConnectionPresence,
+    AuthEphemeralRepository, ConnectionKickOutcome, ConsentApproval, ConsentRequest,
+    NatsAuthEphemeralRepository,
 };
 pub(crate) use grant_repository::{
     ConsentAuthorityPreconditions, ConsentBindingPrecondition, GrantRepository,
@@ -56,9 +57,12 @@ pub(crate) mod resources;
 pub(crate) mod rpc;
 mod sqlite;
 mod transport;
+pub(crate) mod transport_attachments;
 pub(crate) mod verifier;
 
-pub(super) use transport::{compile_transport_permissions, TransportPermissions};
+pub(super) use transport::{
+    compile_transport_authorization, transport_response_allowance, TransportAuthorizationInputs,
+};
 
 pub(crate) use api_bindings::{current_api_bindings, resolve_api_bindings};
 

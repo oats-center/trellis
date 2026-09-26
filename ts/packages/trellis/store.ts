@@ -331,7 +331,7 @@ export async function ensureExistingStoreOptions(
 ): Promise<void> {
   const status = await store.status();
   const actualTtlMs = status.ttl > 0 ? Math.floor(status.ttl / 1_000_000) : 0;
-  if (actualTtlMs !== (options.ttlMs ?? 0)) {
+  if (options.ttlMs !== undefined && actualTtlMs !== options.ttlMs) {
     throw new Error(`Store '${name}' TTL does not match its binding`);
   }
 }
@@ -378,7 +378,19 @@ export class TypedStore {
         return Result.ok(new TypedStore(store, options));
       } catch (cause) {
         return Result.err(
-          new StoreError({ operation: "open", cause, context: { name } }),
+          new StoreError({
+            operation: "open",
+            cause,
+            context: {
+              name,
+              ...(cause instanceof Error && "code" in cause
+                ? { code: cause.code }
+                : {}),
+              ...(cause instanceof Error && "subject" in cause
+                ? { subject: cause.subject }
+                : {}),
+            },
+          }),
         );
       }
     })());

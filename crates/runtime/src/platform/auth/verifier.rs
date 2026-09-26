@@ -636,6 +636,14 @@ mod tests {
                 platform_privileges: vec![],
                 extensions: Map::new(),
                 critical: vec![],
+                transport_authorization: trellis_protocol::TransportAuthorizationV1 {
+                    format: trellis_protocol::TRANSPORT_AUTHORIZATION_FORMAT_V1.to_owned(),
+                    account: "AACCOUNT".to_owned(),
+                    publish_allow: vec![],
+                    subscribe_allow: vec![],
+                    response: None,
+                    hard_expires_at: None,
+                },
             },
             &issuer_key,
         )

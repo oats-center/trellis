@@ -491,6 +491,9 @@ pub enum PostCommitActionKind {
     ContextRevoke,
     /// Reconcile one committed resource approval with its physical provider.
     ResourceReconcile,
+    /// Re-evaluate current transport policy for exact physical attachments in
+    /// one typed scope. Carries a scope selector, never a frozen allowlist.
+    TransportReevaluate,
 }
 
 /// Durable post-commit side-effect intent.

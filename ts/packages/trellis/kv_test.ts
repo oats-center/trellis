@@ -1,10 +1,14 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertInstanceOf, assertRejects } from "@std/assert";
+import { jetstreamManager } from "@nats-io/jetstream";
+import { NatsTestContainer } from "../trellis-testkit/src/nats_container.ts";
+import { KVError } from "./errors/KVError.ts";
 import { Result, UnexpectedError } from "@oatscenter/result";
 
 import {
   decodeResourceValue,
   encodeResourceValue,
   type KvRepresentation,
+  TypedKV,
 } from "./kv.ts";
 
 const current: KvRepresentation<{ count: number }> = {
@@ -64,4 +68,34 @@ Deno.test("resource migration is direct, fallible, and read-only", async () => {
       1: () => Result.err(new UnexpectedError({ cause: new Error("failed") })),
     }, historical)
   );
+});
+
+Deno.test("KV keys exposes the broker error if its bucket disappears", async () => {
+  const workdir = await Deno.makeTempDir({ prefix: "trellis-kv-keys-" });
+  let nats: NatsTestContainer | undefined;
+  try {
+    nats = await NatsTestContainer.start(workdir);
+    const kv = (await TypedKV.open(nats.nc, "missing_after_open", current))
+      .orThrow();
+    await kv.put("present", { count: 1 }).orThrow();
+    assertEquals(await Array.fromAsync((await kv.keys()).orThrow()), [
+      "present",
+    ]);
+
+    await (await jetstreamManager(nats.nc)).streams.delete(
+      "KV_missing_after_open",
+    );
+    let failure: unknown;
+    try {
+      await Array.fromAsync((await kv.keys()).orThrow());
+    } catch (error) {
+      failure = error;
+    }
+    assertInstanceOf(failure, KVError);
+    assertEquals(failure.operation, "keys");
+    assertEquals(failure.message.includes("not found"), true);
+  } finally {
+    await nats?.stop();
+    await Deno.remove(workdir, { recursive: true });
+  }
 });
