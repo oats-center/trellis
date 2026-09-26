@@ -11,14 +11,32 @@ import {
   escalateAuthorizationTransportRotation,
   type TrellisConnection,
 } from "../../connection.ts";
-import type { AuthorizationProviderCache } from "./provider_cache.ts";
+
+/**
+ * Provider operations one authorization-refresh installation drives.
+ *
+ * The installation depends on this narrow contract rather than the concrete
+ * cache so the rotation decision can be exercised directly. @internal
+ */
+export type AuthorizationRefreshProvider = {
+  /** Wait for the connected registry to be admitted. @internal */
+  waitReady(options: { timeoutMs: number }): Promise<void>;
+  /** Exact admitted connection generation to retain the candidate on. @internal */
+  connectionGeneration(): number;
+  /** Retain exact revocation coverage for the candidate digest. @internal */
+  retainOwnCandidate(digest: string, generation: number): Promise<void>;
+  /** Promote the candidate once its coverage is current. @internal */
+  promoteOwnCandidate(digest: string, generation: number): void;
+  /** Abandon the planned rotation so retained guards fail closed. @internal */
+  abandonRotation(): void;
+};
 
 /** Inputs for one internal authorization-refresh installation. @internal */
 export type AuthorizationRefreshInstallation = {
   /** Logical connection the refresh maintains. @internal */
   connection: TrellisConnection;
   /** Process-local provider cache that must retain the candidate coverage. @internal */
-  provider: AuthorizationProviderCache;
+  provider: AuthorizationRefreshProvider;
   /** Exact digest of the prepared candidate context. @internal */
   contextDigest: string;
   /** Update transport endpoints before any planned rotation. @internal */
@@ -32,12 +50,19 @@ export type AuthorizationRefreshInstallation = {
 /**
  * Install one prepared authorization candidate as transparent maintenance.
  *
- * The physical NATS attachment may rotate, but the logical connection is
- * preserved: the predecessor stays application-current until the candidate is
- * admitted, its exact revocation coverage is retained on the replacement
- * attachment, and the candidate is promoted. Failure cancels the planned
- * rotation and escalates to the ordinary transport-loss path so a dead
- * physical attachment never stays logically "connected".
+ * The physical NATS attachment rotates to admit the replacement credential, but
+ * the logical connection is preserved: the predecessor stays
+ * application-current until the candidate is admitted, its exact revocation
+ * coverage is retained on the replacement attachment, and the candidate is
+ * promoted. Failure cancels the planned rotation and escalates to the ordinary
+ * transport-loss path so a dead physical attachment never stays logically
+ * "connected".
+ *
+ * Installation never consults the public diagnostic status: a prepared
+ * replacement belongs to the physical attachment the connection owns, and the
+ * logical phase can lag behind it or report a nonterminal transport error. The
+ * planned-rotation classifier suppresses the physical loss events this rotation
+ * produces, and escalation republishes a real outage if it cannot complete.
  *
  * @internal
  */
@@ -45,33 +70,24 @@ export async function installAuthorizationRefresh(
   args: AuthorizationRefreshInstallation,
 ): Promise<void> {
   const timeoutMs = args.timeoutMs ?? 30_000;
-  // A planned rotation is only meaningful on a logically connected attachment;
-  // otherwise this is ordinary reconciliation on the current attachment.
-  const rotates = args.connection.status.phase === "connected";
-  const rotation = rotates
-    ? beginAuthorizationTransportRotation(args.connection)
-    : undefined;
+  const rotation = beginAuthorizationTransportRotation(args.connection);
   try {
     await args.updateTransport?.();
-    if (rotation) {
-      await args.reconnect();
-      await bounded(rotation.reconnected, timeoutMs);
-    }
+    await args.reconnect();
+    await bounded(rotation.reconnected, timeoutMs);
     await args.provider.waitReady({ timeoutMs });
     const generation = args.provider.connectionGeneration();
     await args.provider.retainOwnCandidate(args.contextDigest, generation);
     args.provider.promoteOwnCandidate(args.contextDigest, generation);
-    rotation?.complete();
+    rotation.complete();
   } catch (error) {
-    if (rotation) {
-      // Fail closed: the rotation will not be promoted, so retained Live
-      // guards must stop waiting and report the real authority loss. Escalating
-      // also clears the planned-rotation classification; when a physical loss
-      // was suppressed and the expected reconnect never happened, it is
-      // published as a genuine logical disconnect rather than left hidden.
-      args.provider.abandonRotation();
-      escalateAuthorizationTransportRotation(args.connection);
-    }
+    // Fail closed: the rotation will not be promoted, so retained Live guards
+    // must stop waiting and report the real authority loss. Escalating also
+    // clears the planned-rotation classification; when a physical loss was
+    // suppressed and the expected reconnect never happened, it is published as a
+    // genuine logical disconnect rather than left hidden.
+    args.provider.abandonRotation();
+    escalateAuthorizationTransportRotation(args.connection);
     throw error;
   }
 }

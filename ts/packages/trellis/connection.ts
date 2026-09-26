@@ -449,8 +449,9 @@ export class TrellisConnection {
     } else if (status.phase === "connected") {
       this.live.resume();
     } else if (status.phase === "error") {
-      // A diagnostic transport error is not a terminal authority decision:
-      // keep the current usable/suspended observation and live ownership.
+      // A terminal close failure or transport-status watcher failure: record the
+      // error phase without publishing a clean close or a suspend transition.
+      // Nonterminal raw transport errors never reach here.
     } else {
       this.live.suspend();
       if (this.#telemetryUsable) {
@@ -577,8 +578,11 @@ export function observeTrellisConnection(
             event,
             baseTransport,
           );
+          // A nonterminal transport diagnostic is reported to lifecycle logging
+          // and raw transport bookkeeping, but it never moves the logical phase:
+          // only a real close transitions the connection to error/closed.
+          logTransportLifecycleEvent(options, event);
           if (status) {
-            logTransportLifecycleEvent(options, event);
             connection.setStatus(status);
           }
         }
@@ -837,7 +841,11 @@ function statusFromTransportEvent(
     case "reconnect":
       return createStatus(kind, "connected", transport);
     case "error":
-      return createStatus(kind, "error", transport);
+      // A raw NATS error event is a diagnostic, not a terminal authority
+      // decision or a logical disconnect. It reaches lifecycle logging and the
+      // raw transport bookkeeping, while the current logical phase is retained;
+      // a terminal failure still arrives through closed().
+      return null;
     case "closed":
       return createStatus(kind, "closed", transport);
     default:

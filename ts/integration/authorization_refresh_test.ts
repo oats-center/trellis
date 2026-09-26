@@ -20,7 +20,7 @@ import { assert, assertEquals } from "@std/assert";
 import { fromFileUrl } from "@std/path";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
-import { withTrellisRuntime } from "./_support/runtime.ts";
+import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
 
 /** Built server binary supplied by the live test harness. */
 function serverBinary(): string {
@@ -209,6 +209,150 @@ Deno.test("an active live observation continues across consumer and provider aut
       // A normally closed session settles its provider source; the clean stop
       // is the expected terminal, not a lost-authority failure.
       assertEquals(await exit, undefined);
+    }
+  }, runtimeOptions);
+});
+
+/**
+ * Issue the caller context later than the provider's so the provider's own
+ * scheduled rotation lands while the retained caller digest is unchanged.
+ */
+const CALLER_CONTEXT_OFFSET_MS = 20_000;
+
+/**
+ * Observe across the provider's scheduled rotation (31s after issuance) and
+ * past its original context expiry (46s after issuance), while stopping before
+ * the offset caller context would refresh (51s after issuance). Crossing the
+ * provider expiry is what proves the rotation happened: a provider that failed
+ * to refresh would lose its own guard and terminate the session there.
+ */
+const RUST_ROTATION_OBSERVATION_MS = 26_000;
+
+Deno.test("a Rust provider live session rebinds an unchanged caller context across its own credential rotation", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: `refresh-live-rust-${crypto.randomUUID()}`,
+      contract: participants.LiveProbeProvider.participant,
+    });
+    const process = new Deno.Command("setsid", {
+      args: rustFixtureArgv("live_probe"),
+      env: {
+        TRELLIS_URL: runtime.trellisUrl,
+        TRELLIS_IDENTITY_SEED: identity.seed,
+        CARGO_TARGET_DIR: fromFileUrl(
+          new URL("../../target", import.meta.url),
+        ),
+      },
+      stdout: "inherit",
+      stderr: "inherit",
+    }).spawn();
+    let exited = false;
+    const processStatus = process.status.then((status) => {
+      exited = true;
+      return status;
+    });
+    const installer = await runtime.connectClient({
+      name: `refresh-live-rust-installer-${crypto.randomUUID()}`,
+      contract: participants.LiveProbeCaller.participant,
+    });
+    try {
+      // The Rust provider serves no RPC until it is connected, so a successful
+      // Inspect is the readiness signal the rotation window is measured from.
+      await runtime.waitFor(async () => {
+        if (exited) {
+          throw new Error(
+            `Rust liveprobe provider exited: ${
+              JSON.stringify(
+                await processStatus,
+              )
+            }`,
+          );
+        }
+        return (await installer.inspect(
+          { runId: "readiness", streamId: "readiness" },
+          { timeout: 1_000 },
+        )).isOk();
+      }, { timeoutMs: 120_000 });
+
+      await new Promise((resolve) =>
+        setTimeout(resolve, CALLER_CONTEXT_OFFSET_MS)
+      );
+
+      const caller = await runtime.connectClient({
+        name: `refresh-live-rust-caller-${crypto.randomUUID()}`,
+        contract: participants.LiveProbeCaller.participant,
+      });
+      try {
+        const runId = `refresh-live-rust-${crypto.randomUUID()}`;
+        const feed = await caller.watch({ runId, streamId: "quiet" }).orThrow();
+        const frames: bigint[] = [];
+        let ended = false;
+        let sessionError: unknown;
+        const drain = (async () => {
+          try {
+            for await (const frame of feed) frames.push(frame.index);
+          } catch (error) {
+            sessionError = error;
+          } finally {
+            ended = true;
+          }
+        })();
+
+        // Drive one released frame at a time across the provider's rotation. A
+        // guard that cannot rebind the unchanged caller context on the new
+        // epoch stops delivering and terminates the session in this window.
+        let next = 1n;
+        const startedAt = Date.now();
+        let loopError: unknown;
+        try {
+          while (Date.now() - startedAt < RUST_ROTATION_OBSERVATION_MS) {
+            await caller.release({
+              runId,
+              streamId: "quiet",
+              throughIndex: next,
+              finish: false,
+              fail: false,
+            }).orThrow();
+            await runtime.waitFor(() => frames.length >= Number(next), {
+              timeoutMs: 10_000,
+            });
+            next += 1n;
+            await new Promise((resolve) => setTimeout(resolve, 500));
+          }
+        } catch (error) {
+          loopError = error;
+        }
+
+        if (sessionError) throw sessionError;
+        if (loopError) throw loopError;
+        assert(
+          frames.length >= 2,
+          "the Rust provider session must deliver frames across its rotation",
+        );
+        assertEquals(ended, false, "the session must not report terminal");
+
+        const status = await installer.inspect({ runId, streamId: "quiet" })
+          .orThrow();
+        assertEquals(
+          status.starts,
+          1n,
+          "the provider handler must not be restarted",
+        );
+        assertEquals(
+          status.active,
+          1n,
+          "the provider source must stay active",
+        );
+
+        await feed.return?.();
+        await drain;
+      } finally {
+        await caller.connection.close();
+      }
+    } finally {
+      await installer.connection.close();
+      if (!exited) Deno.kill(-process.pid, "SIGTERM");
+      await processStatus;
     }
   }, runtimeOptions);
 });

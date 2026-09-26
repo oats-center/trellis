@@ -1022,15 +1022,9 @@ impl AuthorizationProviderCache {
                 "revocation coverage changed during resolution".into(),
             ));
         }
-        if state
-            .contexts
-            .get(digest)
-            .is_some_and(|existing| existing.leases.load(Ordering::Acquire) > 0)
-        {
-            return Err(TrellisClientError::AuthorizationUnavailable(
-                "provider context is still leased".into(),
-            ));
-        }
+        // [`Self::discard_unusable_context`] already detached any predecessor, so
+        // installing the resolved entry can no longer collide with a stale leased
+        // entry for the same digest.
         state
             .insert_context(digest.to_owned(), entry.clone())
             .map_err(|_| {
@@ -1112,11 +1106,31 @@ impl AuthorizationProviderCache {
         self.access_clock.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// Detach an indexed entry that cannot serve new leases for the current
+    /// transport.
+    ///
+    /// Reaching here means [`Self::lease_cached_context`] rejected the entry as
+    /// stale-epoch, uncovered or expired. A stale-epoch entry is always detached
+    /// from the digest index, even while existing live guards still hold leases:
+    /// their leases keep the retired `Arc` and its revocation watch alive, so a
+    /// planned physical rotation can install the successor coverage for the same
+    /// digest on the replacement attachment before the old guard releases its
+    /// predecessor. Refusing to detach a leased stale entry is what prevented an
+    /// unchanged peer context from rebinding across a new transport epoch.
+    ///
+    /// A same-epoch entry that is merely uncovered or expired keeps the original
+    /// fail-closed rule: a live lease pins it until its holder releases it, so
+    /// unusable evidence is never silently replaced.
     fn discard_unusable_context(&self, digest: &str) -> Result<(), TrellisClientError> {
+        let epoch = self.epoch();
         let mut state = self.write_state()?;
         let Some(entry) = state.contexts.get(digest) else {
             return Ok(());
         };
+        if entry.epoch != epoch {
+            state.contexts.remove(digest);
+            return Ok(());
+        }
         if entry.leases.load(Ordering::Acquire) > 0 {
             return Err(TrellisClientError::AuthorizationUnavailable(
                 "provider context is still leased".into(),

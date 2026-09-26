@@ -5,11 +5,10 @@ import {
   InMemoryMetricExporter,
   MeterProvider,
   PeriodicExportingMetricReader,
-} from "npm:@opentelemetry/sdk-metrics@^2.7.0";
+} from "@opentelemetry/sdk-metrics";
 import { trackConnection, trackCoverage } from "./telemetry/lifecycle.ts";
 
 import {
-  installConnectionAvailability,
   observeTrellisConnection,
   startConnectionTelemetry,
   transitionConnectionAvailability,
@@ -17,6 +16,7 @@ import {
   type TrellisConnectionStatus,
   type TrellisConnectionStatusTransport,
 } from "./connection.ts";
+import { installAuthorizationRefresh } from "./auth/authorization/install_refresh.ts";
 
 class FakeStatusStream implements TrellisConnectionStatusTransport {
   #events: unknown[] = [];
@@ -364,19 +364,90 @@ Deno.test("observeTrellisConnection publishes close transition from close", asyn
   assertEquals(phases, ["connected", "closed"]);
 });
 
-Deno.test("observeTrellisConnection publishes error transition from status stream", async () => {
+Deno.test("a diagnostic transport error keeps the logical phase and reaches raw observers", async () => {
+  const stream = new FakeStatusStream();
+  const events: Array<{ event: unknown; planned: boolean }> = [];
+  const connection = observeTrellisConnection({
+    kind: "client",
+    transport: stream,
+    onTransportEvent: (event, planned) => events.push({ event, planned }),
+  });
+  const phases: string[] = [];
+  connection.subscribe((status) => phases.push(status.phase));
+  const error = new Error("diagnostic");
+
+  stream.push({ type: "error", error });
+  await delay();
+
+  // A raw transport error is not a logical lifecycle decision: the current
+  // phase is retained and the diagnostic still reaches raw bookkeeping.
+  assertEquals(connection.status.phase, "connected");
+  assertEquals(phases, ["connected"]);
+  assertEquals(events.length, 1);
+  assertEquals(events[0]?.planned, false);
+  assertEquals((events[0]?.event as { error?: unknown })?.error, error);
+});
+
+Deno.test("installAuthorizationRefresh rotates a prepared replacement regardless of diagnostic status", async () => {
   const stream = new FakeStatusStream();
   const connection = observeTrellisConnection({
     kind: "client",
     transport: stream,
   });
-  const error = new Error("status failed");
+  const calls: string[] = [];
+  let abandoned = false;
+  const provider = {
+    waitReady: () => {
+      calls.push("waitReady");
+      return Promise.resolve();
+    },
+    connectionGeneration: () => {
+      calls.push("generation");
+      return 7;
+    },
+    retainOwnCandidate: (digest: string, generation: number) => {
+      calls.push(`retain:${digest}:${generation}`);
+      return Promise.resolve();
+    },
+    promoteOwnCandidate: (digest: string, generation: number) => {
+      calls.push(`promote:${digest}:${generation}`);
+    },
+    abandonRotation: () => {
+      abandoned = true;
+    },
+  };
+  try {
+    // A prepared replacement belongs to the physical attachment: even when an
+    // observer is left in a non-connected diagnostic phase, installation must
+    // still rotate the physical credential and promote the candidate.
+    connection.setStatus({
+      kind: "client",
+      phase: "error",
+      observedAt: new Date(),
+    });
 
-  stream.push({ type: "error", error });
-  await delay();
+    await installAuthorizationRefresh({
+      connection,
+      provider,
+      contextDigest: "candidate-digest",
+      reconnect: () => {
+        calls.push("reconnect");
+        stream.push({ type: "reconnect" });
+        return Promise.resolve();
+      },
+    });
 
-  assertEquals(connection.status.phase, "error");
-  assertEquals(connection.status.transport?.error, error);
+    assertEquals(abandoned, false);
+    assertEquals(calls, [
+      "reconnect",
+      "waitReady",
+      "generation",
+      "retain:candidate-digest:7",
+      "promote:candidate-digest:7",
+    ]);
+  } finally {
+    await connection.close();
+  }
 });
 
 Deno.test("observeTrellisConnection publishes error transition from closed result", async () => {
