@@ -112,16 +112,19 @@ installed revision, resource evidence, and issuer state. It returns the shared
 route JWT.
 
 Clients refresh proactively before expiry, and during actual recovery when
-needed. Fresh native bootstrap uses the context returned by bootstrap. A
-refreshed routing credential may require the SDK to rotate the physical NATS
-attachment internally; that rotation is maintenance of the existing logical
-Trellis connection. The predecessor stays application-current until the
-candidate has been admitted and exact authorization and revocation coverage has
-been re-established on the replacement attachment, and the candidate is promoted
-only then. A refresh that fails before rotation leaves a still-valid predecessor
-untouched and retries with bounded backoff; a rotation that cannot be admitted
-falls back to ordinary transport-loss semantics rather than leaving a logically
-connected attachment that is not actually usable.
+needed. Fresh native bootstrap uses the context returned by bootstrap.
+
+A renewable authorization context and routing credential are not a lease on a
+physical NATS connection. An identity-preserving refresh validates and retains
+the new context on the current attachment, then promotes it in place. It does
+not reconnect a healthy socket. Next-connect credentials and endpoint selections
+are kept current independently of the policy already admitted on that socket. If
+current authority safely covers the admitted policy but offers additional
+transport capabilities, the SDK exposes a retained upgrade notification. Only an
+explicit application request or an otherwise necessary physical reconnect adopts
+the wider policy. Removed admitted authority is enforced by server-directed
+disconnection of the affected physical attachment. A refresh that fails leaves a
+still-valid predecessor untouched and retries with bounded backoff.
 
 ## Signed Authorization Context
 
@@ -135,7 +138,7 @@ connected attachment that is not actually usable.
 - exact effective `GrantSetV1`;
 - exact resource evidence;
 - server-issued inbox prefix; and
-- transport authorization bindings.
+- a signature-bound transport authorization policy (`transportAuthorization`).
 
 The server persists exact signed bytes plus the complete issuance snapshot in
 Auth SQL before use. The digest-keyed NATS KV record is an exact runtime mirror.
@@ -184,13 +187,73 @@ Callout:
 2. loads and verifies the context by digest;
 3. requires every redundant token field to equal the context;
 4. rechecks current credential/principal/grant/participant/resource/issuer
-   evidence against the immutable issuance snapshot;
-5. derives exact publish/subscribe permissions; and
-6. records physical connection presence.
+   evidence against the immutable issuance snapshot and confirms the signed
+   transport policy is still covered by current authoritative state;
+5. installs the exact publish/subscribe policy signed into that context and
+   records physical connection presence; and
+6. returns a user claim whose authenticated name identifies the admitted context
+   and physical attachment.
 
-The issued NATS user JWT is short-lived and bounded by the route token, context,
-login/credential, grant, resource, and issuer limits. NATS ACLs enforce
-transport permissions but do not define semantic authority.
+Auth Callout verifies initial/reconnect credentials and installs the exact
+transport policy signed into the selected admissible context. The returned NATS
+user claim is not bounded by renewable context or route-token lifetimes. It is
+bounded only by actual underlying authorization deadlines when they exist.
+Existing sockets remain subject to authoritative revocation and
+physical-attachment enforcement. Admission identity and policy are retained
+until the broker confirms the attachment is gone; ordinary context renewal does
+not change that admitted record. A delayed control-plane partition can postpone
+an active kick; Trellis does not promise disconnection before the enforcement
+path reaches the broker, and it never reports a failed kick as complete.
+
+The issued NATS user JWT carries no periodic lifetime of its own. NATS ACLs
+enforce transport permissions but do not define semantic authority.
+
+### Transport Authorization
+
+The signed authorization context includes a required `transportAuthorization`
+value of wire format `trellis.transport-authorization.v1`:
+
+- `account`: the target NATS account public ID the policy applies to;
+- `publishAllow`: sorted, deduplicated NATS subject patterns the attachment may
+  publish;
+- `subscribeAllow`: sorted, deduplicated NATS subject patterns it may subscribe
+  to;
+- `response`: `null`, or a bounded response allowance with `maxMessages` and
+  `ttlMs`, both positive safe integers (`ttlMs` in milliseconds); and
+- `hardExpiresAt`: `null`, or the exclusive Unix-seconds deadline of the real
+  underlying authorization, which is not the context or route-token renewal
+  window.
+
+The policy is signature-bound with the context. Its digest is
+`base64url(SHA-256(canonical JSON of transportAuthorization))`, computed with
+the shared canonical-JSON implementation; the digest excludes the context
+digest, issuance time, grant revision, routing-JWT bytes, endpoint list, and
+local transport generation. The policy compares admitted policy **A** against
+currently allowed policy **D** for the same account: `A <= D` when every
+published and subscribed subject A permits is also permitted by D, A's response
+allowance is absent or covered by D's with at least the same count and duration,
+and A's hard deadline is no later than D's (`null` is infinity). `A <= D` and
+`D <= A` is `current`; only `A <= D` is a passive `upgrade_available`; otherwise
+the socket requires `reduction_required`. A changed target account always
+requires a new physical attachment.
+
+Subject containment is decided against the NATS grammar the compiler emits
+(literal tokens, `*` matching exactly one token, and terminal `>` matching one
+or more tokens), never by literal string-set subtraction: `a.>` covers `a.b`,
+while `a.*` does not cover `a.b.c`. One shared pure implementation is used by
+both SDKs.
+
+The admitted attachment's authenticated name is
+`trellis.auth.v1:<contextDigest>:<serverId>:<decimalClientId>`; the claim
+subject remains the broker-generated one-use user NKey. After each actual
+successful connection the SDK performs one bounded own-user information request
+on that attachment (`$SYS.REQ.USER.INFO`), validates the local generation and
+reply identity, resolves the named signed context, and confirms the
+broker-reported account and permissions match that signed policy. The hard
+deadline comes from that named signed policy. Because a named context is
+immutable historical evidence, its later ordinary expiration does not invalidate
+the attachment, and it is not reused as current application authorization after
+expiry. A hard security revocation of its provenance remains server-enforced.
 
 ## Live Observation Sessions
 

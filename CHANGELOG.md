@@ -10,16 +10,6 @@ and this project adheres to
 
 ### Fixed
 
-- Authorization credential rotation is now transparent maintenance of the
-  existing logical Trellis connection. A refreshed routing credential may rotate
-  the physical NATS attachment, but a planned rotation no longer presents as a
-  public disconnected/reconnecting cycle, no longer suspends application
-  authorization, and no longer increments the logical Live generation or cancels
-  retained Live sessions. Retained Live guards pause while exact authorization
-  and revocation coverage is re-established on the replacement attachment, then
-  continue with the same session identity, sequence, credit, and handler;
-  revocation, permission loss, binding changes, unexpected transport loss, and
-  broker authorization rejection still fail closed.
 - Proactive service/device authorization refresh no longer fails silently on a
   fractional-second `serverNow`, and live credit/pulse/end-ack controls are no
   longer bounded by the 15-second opening reservation, so retained Live sessions
@@ -38,6 +28,19 @@ and this project adheres to
 
 ### Changed
 
+- Refreshing renewable Trellis authorization no longer restarts a healthy NATS
+  connection. An identity-preserving refresh retains the new context in place
+  and keeps the physical attachment; additional transport authority is adopted
+  only by an explicit application transport refresh or an otherwise necessary
+  reconnect, and removed admitted authority is enforced by a server-directed
+  disconnection of the exact physical attachment. Open contexts now bind their
+  exact compiled transport policy, and the admitted NATS user claim is bounded
+  only by genuine underlying authorization deadlines rather than a periodic
+  user-JWT lifetime. Active connection presence is retained until the broker
+  confirms the attachment is gone.
+- Removed the obsolete periodic admitted-user NATS JWT lifetime and the active
+  connection-presence maximum age derived from it. Browser flow, OAuth, and
+  auth-pending TTLs are unchanged.
 - Rust generated model types round-trip unknown own fields through a flattened
   `extra` map. This matches the open-model behavior of the generated TypeScript
   codecs, so additively extended payloads survive a decode/encode in both

@@ -83,6 +83,14 @@ and issuer keys in bounded process memory only. Provider-context caches have a
 entries cancel their revocation watchers. There is no durable trust floor or
 authorization-context store.
 
+Each signed context also binds the exact transport policy compiled for it, so a
+client can compare the policy actually admitted on a physical attachment with
+current allowed policy without reimplementing the server's permission compiler.
+Renewing that policy never restarts a healthy attachment: an identity-preserving
+refresh promotes application authorization in place, a wider policy is a
+retained passive upgrade, and a reduction is enforced by server-directed
+disconnection of the affected physical attachment.
+
 ## Proofs And Transport
 
 Bootstrap and browser bind use `trellis.session-proof.v1`. Proofs bind their
@@ -110,9 +118,12 @@ both deployments.
 
 Auth Callout validates the short-lived route JWT, reconstructs and verifies the
 connect proof, reloads the immutable context by digest, rechecks current
-issuable state, and derives NATS permissions from accepted grants plus exact
-participant/resource evidence. It never infers authority from subject strings or
-trusts the redundant session key independently.
+issuable state, and installs the exact transport policy signed into that
+context. It never infers authority from subject strings or trusts the redundant
+session key independently. The returned user claim is bounded only by genuine
+underlying authorization deadlines, not renewable context or route-token
+lifetimes, and the admitted identity and policy are retained until the broker
+confirms the attachment is gone.
 
 ## Bootstrap
 
