@@ -134,20 +134,28 @@ class TcpProxy {
   }
 
   async #forward(client: Deno.Conn): Promise<void> {
+    let upstream: Deno.Conn | undefined;
     try {
-      const upstream = await Deno.connect(this.#target);
+      // Check before opening the upstream and again immediately after, so a
+      // partition that lands in that interval closes both sides instead of
+      // silently forwarding through the outage.
+      if (this.#interrupted) return;
+      upstream = await Deno.connect(this.#target);
+      if (this.#interrupted) return;
       this.#connections.add(upstream);
       await Promise.allSettled([
         client.readable.pipeTo(upstream.writable),
         upstream.readable.pipeTo(client.writable),
       ]);
-      this.#connections.delete(upstream);
-      try {
-        upstream.close();
-      } catch {
-        // The stream may already have closed the connection.
-      }
     } finally {
+      if (upstream !== undefined) {
+        this.#connections.delete(upstream);
+        try {
+          upstream.close();
+        } catch {
+          // The stream may already have closed the connection.
+        }
+      }
       this.#connections.delete(client);
       try {
         client.close();

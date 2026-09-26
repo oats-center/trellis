@@ -358,127 +358,188 @@ Deno.test("a Rust provider live session rebinds an unchanged caller context acro
 });
 
 /**
- * A real native-path outage case: the proactive refresh must land while the
- * physical path is down, and recovery must stay an ordinary logical reconnect.
- * `refreshLeadSeconds: 30` puts the refresh ~16s after issuance and the original
- * context expiry ~46s after, leaving room to hold the outage across the refresh
- * and still recover before the credential expires.
+ * A real native-path outage case: the participant's actual TCP path to NATS is
+ * cut while the proactive refresh fires, then restored on the same endpoint.
+ * `shortAuthorizationLifetimes` schedules the refresh ~31s after issuance and
+ * leaves the predecessor sufficient only until ~46s, so holding the outage for
+ * ~36s puts the refresh inside the outage and a ~54s settle puts the final
+ * checks past the predecessor window. This is test-fixture timing, not a
+ * production default.
  */
 const outageRuntimeOptions = {
   ...runtimeOptions,
   interruptibleNativeProxy: true,
-  authorization: {
-    contextLifetimeSeconds: 76,
-    refreshLeadSeconds: 30,
-    refreshJitterSeconds: 0,
-    minimumContextLifetimeSeconds: 46,
-  },
 };
 
-Deno.test("an authorization refresh during a real transport outage does not suppress recovery", async () => {
+/** Hold the participant transport down across the scheduled refresh. */
+const OUTAGE_HOLD_MS = 36_000;
+
+/**
+ * Settle past the original context's effective validity so a later success
+ * cannot be explained by the predecessor credential still being accepted.
+ */
+const PRE_EXPIRY_SETTLE_MS = 54_000;
+
+Deno.test("a real native NATS outage recovers after authorization refresh and resumes Rust/TS Live", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
-      name: `outage-provider-${crypto.randomUUID()}`,
-      contract: participants.Provider.participant,
+      name: `outage-live-rust-${crypto.randomUUID()}`,
+      contract: participants.LiveProbeProvider.participant,
     });
-    const name = `outage-provider-${crypto.randomUUID()}`;
-    const service = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
-      participant: participants.Provider.participant,
-      name,
-      seed: identity.seed,
-    }).orThrow();
-    const serviceExit = service.wait().catch((error: unknown) => error);
-    await service.handleEcho(({ input }) => Result.ok(input));
-    let providerStarts = 0;
-    await service.handleWatch(async ({ emit, signal }) => {
-      providerStarts += 1;
-      while (!signal.aborted) {
-        const emitted = await emit({ value: `frame-${Date.now()}` });
-        if (emitted.isErr()) return;
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
+    const process = new Deno.Command("setsid", {
+      args: rustFixtureArgv("live_probe"),
+      env: {
+        TRELLIS_URL: runtime.trellisUrl,
+        TRELLIS_IDENTITY_SEED: identity.seed,
+        // Keep a refresh/reconnect alive across the deliberately unavailable
+        // transport instead of cycling through the 5s production default.
+        TRELLIS_TIMEOUT_MS: "45000",
+        CARGO_TARGET_DIR: fromFileUrl(
+          new URL("../../target", import.meta.url),
+        ),
+      },
+      stdout: "inherit",
+      stderr: "inherit",
+    }).spawn();
+    let exited = false;
+    const processStatus = process.status.then((status) => {
+      exited = true;
+      return status;
     });
     const caller = await runtime.connectClient({
-      name: `outage-caller-${crypto.randomUUID()}`,
-      contract: participants.Caller.participant,
+      name: `outage-live-caller-${crypto.randomUUID()}`,
+      contract: participants.LiveProbeCaller.participant,
     });
+    // Scheduled refresh and predecessor expiry are measured from the caller's
+    // context issuance, so the fixture window is anchored at connection time.
+    const callerConnectedAt = Date.now();
+    const phases: string[] = [];
+    const unsubscribe = caller.connection.subscribe((status) =>
+      phases.push(status.phase)
+    );
     try {
-      assertEquals(
-        (await caller.echo({ value: "before" }).orThrow()).value,
-        "before",
-      );
+      // Establish real functionality before cutting transport: a successful
+      // Inspect proves the Rust process booted, both sides authenticated, the
+      // NATS route works, and generated routing works.
+      await runtime.waitFor(async () => {
+        if (exited) {
+          throw new Error(
+            `Rust liveprobe provider exited: ${
+              JSON.stringify(
+                await processStatus,
+              )
+            }`,
+          );
+        }
+        return (await caller.inspect(
+          { runId: "readiness", streamId: "readiness" },
+          { timeout: 1_000 },
+        )).isOk();
+      }, { timeoutMs: 120_000 });
 
-      // A real outage of the native NATS path: both endpoints drop and cannot
-      // reconnect until the path is restored.
       runtime.interruptNativeTransport();
+
+      // A genuine outage, not a synthesized status event: the caller must
+      // publish a real non-connected logical phase.
       await runtime.waitFor(
-        () =>
-          service.connection.status.phase !== "connected" &&
-          caller.connection.status.phase !== "connected",
+        () => phases.some((phase) => phase !== "connected"),
         { timeoutMs: 20_000 },
       );
-      const downAt = Date.now();
+      const downPhase = caller.connection.status.phase;
+      assert(
+        downPhase !== "connected",
+        "the real transport cut must leave the caller logically disconnected",
+      );
 
-      // Hold across the proactive refresh (~issuance + 16s, which the outage
-      // observation precedes) so its installation is in flight while down.
-      while (Date.now() < downAt + 20_000) {
+      // Hold the cut across the scheduled refresh (~31s after issuance) so both
+      // endpoints refresh while genuinely disconnected.
+      while (Date.now() - callerConnectedAt < OUTAGE_HOLD_MS) {
+        const phase = caller.connection.status.phase;
         assert(
-          service.connection.status.phase !== "connected",
+          phase !== "connected",
           "the outage must keep the logical connection down until restored",
         );
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
+      assert(!exited, "the Rust provider must survive the outage");
 
       runtime.restoreNativeTransport();
 
-      // Recovery is an ordinary logical reconnect: the same runtime connection
-      // returns to connected and Live resumes instead of waiting on planned
-      // maintenance.
+      // Ordinary NATS reconnect on the same advertised endpoint: no client or
+      // provider recreation and no manual resume. The same logical caller must
+      // return to connected.
       await runtime.waitFor(
-        () =>
-          service.connection.status.phase === "connected" &&
-          caller.connection.status.phase === "connected",
+        () => caller.connection.status.phase === "connected",
         { timeoutMs: 30_000 },
       );
-      assertEquals(
-        (await caller.echo({ value: "after" }).orThrow()).value,
-        "after",
-      );
 
-      // Live is usable again: a fresh session opens and streams through the
-      // resumed provider and consumer managers.
-      const feed = await caller.watch({}).orThrow();
-      const frames: string[] = [];
+      // Recovery immediately after restoration is necessary but not sufficient:
+      // settle past the predecessor's effective validity window first.
+      const remaining = PRE_EXPIRY_SETTLE_MS - (Date.now() - callerConnectedAt);
+      if (remaining > 0) {
+        await new Promise((resolve) => setTimeout(resolve, remaining));
+      }
+      assert(!exited, "the Rust provider must still be running");
+
+      // Ordinary RPC recovery on the same caller against the same Rust process.
+      await caller.inspect({ runId: "after", streamId: "after" }).orThrow();
+
+      // New Live work: the same caller opens a fresh observation against the
+      // same Rust provider, releases index 1, and receives the real signed
+      // frame on both sides' resumed Live managers.
+      const runId = `outage-live-${crypto.randomUUID()}`;
+      const streamId = "recovered";
+      const feed = await caller.watch({ runId, streamId }).orThrow();
+      const frames: Array<{
+        runId: string;
+        streamId: string;
+        index: bigint;
+      }> = [];
       let sessionError: unknown;
       const drain = (async () => {
         try {
-          for await (const value of feed) {
-            frames.push(value.value);
-            if (frames.length >= 2) return;
+          for await (const frame of feed) {
+            frames.push(frame);
+            if (frames.length >= 1) return;
           }
         } catch (error) {
           sessionError = error;
         }
       })();
       try {
-        await runtime.waitFor(() => frames.length >= 2, { timeoutMs: 20_000 });
+        await caller.release({
+          runId,
+          streamId,
+          throughIndex: 1n,
+          finish: false,
+          fail: false,
+        }).orThrow();
+        await runtime.waitFor(() => frames.length >= 1, { timeoutMs: 20_000 });
       } finally {
         await feed.return?.();
         await drain;
       }
       if (sessionError) throw sessionError;
-      assert(frames.length >= 2, "Live must deliver after recovery");
+      assertEquals(frames[0]?.runId, runId, "the frame carries the run");
       assertEquals(
-        providerStarts,
-        1,
-        "the provider handler must run exactly once for the recovered session",
+        frames[0]?.streamId,
+        streamId,
+        "the frame carries the stream",
+      );
+      assertEquals(
+        frames[0]?.index,
+        1n,
+        "the frame carries the released index",
+      );
+      assert(
+        !exited,
+        "the Rust provider must have served the recovered Live session",
       );
     } finally {
+      unsubscribe();
       await caller.connection.close();
-      await service.stop();
-      // The logical connection survived the outage; the service never terminated.
-      assertEquals(await serviceExit, undefined);
+      if (!exited) Deno.kill(-process.pid, "SIGTERM");
+      await processStatus;
     }
   }, outageRuntimeOptions);
 });

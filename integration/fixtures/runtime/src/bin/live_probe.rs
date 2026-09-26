@@ -226,7 +226,14 @@ impl Drop for SourceCursor {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = std::env::var("TRELLIS_URL")?;
     let identity = std::env::var("TRELLIS_IDENTITY_SEED")?;
-    let mut service = Participant::connect(ServiceConnectOptions::new(&url, &identity)).await?;
+    // The outage acceptance case keeps a refresh/reconnect alive across a
+    // deliberately unavailable transport; opt into a longer ordinary SDK
+    // timeout without changing the production default.
+    let mut options = ServiceConnectOptions::new(&url, &identity);
+    if let Ok(raw_timeout_ms) = std::env::var("TRELLIS_TIMEOUT_MS") {
+        options = options.with_timeout_ms(raw_timeout_ms.parse()?);
+    }
+    let mut service = Participant::connect(options).await?;
     let mut provider = Provider::new(&mut service);
     let registry: Registry = Arc::new(Mutex::new(HashMap::new()));
 
