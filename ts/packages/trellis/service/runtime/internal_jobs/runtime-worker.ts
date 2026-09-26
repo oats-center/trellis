@@ -55,6 +55,17 @@ export class JobsInfrastructureMissingError extends Error {
   }
 }
 
+/** A provisioned job queue's durable consumer is absent from its work stream. */
+export class JobsConsumerMissingError extends Error {
+  constructor(stream: string, consumer: string, queueType: string) {
+    super(
+      `Jobs consumer '${consumer}' was not found in stream '${stream}' while starting queue '${queueType}'. ` +
+        "The queue's provisioned JetStream resource is missing; restore the matching NATS store or reprovision the deployment.",
+    );
+    this.name = "JobsConsumerMissingError";
+  }
+}
+
 type WorkMessageLike = {
   data: Uint8Array;
   subject: string;
@@ -648,8 +659,15 @@ async function getConsumerInfo(
   try {
     return await jsm.consumers.info(stream, queue.consumerName);
   } catch (error) {
-    if (isStreamNotFoundError(error) || isConsumerNotFoundError(error)) {
+    if (isStreamNotFoundError(error)) {
       throw new JobsInfrastructureMissingError(stream, queue.queueType);
+    }
+    if (isConsumerNotFoundError(error)) {
+      throw new JobsConsumerMissingError(
+        stream,
+        queue.consumerName,
+        queue.queueType,
+      );
     }
     throw error;
   }

@@ -8,8 +8,15 @@ import {
 import type { StoreError } from "../../errors/index.ts";
 import {
   installConnectionAvailability,
+  installConnectionTransportUpgrade,
+  replaceTransportAttachment,
   type TrellisAvailability,
 } from "../../connection.ts";
+import {
+  readOwnAdmission,
+  TransportAuthorizationState,
+} from "../../auth/authorization/transport_state.ts";
+import { TransportRefreshError } from "../../errors/TransportRefreshError.ts";
 import { TypedKV } from "../../kv.ts";
 import {
   type StoreWaitOptions,
@@ -1207,6 +1214,10 @@ export async function createConnectedService<
     deploymentId: string;
   };
   authorizationProviderCache?: AuthorizationProviderCache;
+  /** Explicit physical-attachment replacement owned by the service runtime. @internal */
+  refreshTransport?: () => AsyncResult<void, TransportRefreshError>;
+  /** Additional raw-transport hook for application-level bookkeeping. @internal */
+  onTransportEvent?: (event: unknown) => void;
   /** Process-local connection handle started before the transport connected. @internal */
   telemetry?: ReturnType<typeof startConnectionTelemetry>;
 }): Promise<TrellisServiceSession<TOwnedApi, TTrellisApi, TJobs, TKv>> {
@@ -1215,8 +1226,11 @@ export async function createConnectedService<
     kind: "service",
     nc: args.nc,
     availability: args.availability,
-    onTransportEvent: (event, planned) =>
-      args.authorizationProviderCache?.observeTransportEvent(event, planned),
+    refreshTransport: args.refreshTransport,
+    onTransportEvent: (event) => {
+      args.authorizationProviderCache?.observeTransportEvent(event);
+      args.onTransportEvent?.(event);
+    },
     log: false,
     lifecycleLog: {
       log: resolvedLog,
@@ -2795,6 +2809,45 @@ export function connectTrellisServiceWithRuntimeDeps<
         ...sessionAuth,
         authorizationProviderCache,
       };
+      const transportState = new TransportAuthorizationState();
+      const applyServiceAdmission = async (): Promise<void> => {
+        const digest = authorizationContexts.storedContextDigest();
+        if (digest === undefined) return;
+        const policy = authorizationContexts.current().context
+          .transportAuthorization;
+        const own = await readOwnAdmission(nc, 5_000);
+        await transportState.recordAdmission({
+          contextDigest: own?.contextDigest ?? digest,
+          policy,
+          allowed: policy,
+          nowUnixSeconds: authorizationContexts.correctedNowSeconds(),
+        });
+      };
+      const refreshServiceTransport = (): AsyncResult<
+        void,
+        TransportRefreshError
+      > =>
+        AsyncResult.from(
+          (async () => {
+            if (nc.isClosed()) {
+              return Result.err(TransportRefreshError.connectionClosed());
+            }
+            const timeoutMs = 30_000;
+            try {
+              await replaceTransportAttachment(nc, timeoutMs);
+              await authorizationProviderCache.waitReady({ timeoutMs });
+              await authorizationProviderCache.retainOwnContext();
+              await applyServiceAdmission();
+              return Result.ok(undefined);
+            } catch (error) {
+              return Result.err(
+                error instanceof TransportRefreshError
+                  ? error
+                  : TransportRefreshError.fromTransport(error),
+              );
+            }
+          })(),
+        );
 
       try {
         const contractRuntime = getParticipantRuntime(args.participant);
@@ -2837,6 +2890,18 @@ export function connectTrellisServiceWithRuntimeDeps<
           contractEventConsumers: contractRuntime.eventConsumers,
           apiBindings: bootstrap.binding.apiBindings,
           ephemeralEventNeeds: participantEphemeralEventNeeds(args.participant),
+          refreshTransport: refreshServiceTransport,
+          onTransportEvent: (event) => {
+            const type = (event as { type?: unknown } | null)?.type;
+            if (
+              type === "disconnect" || type === "disconnected" ||
+              type === "reconnecting" || type === "forceReconnect"
+            ) {
+              transportState.markDisconnected();
+            } else if (type === "reconnect") {
+              void applyServiceAdmission().catch(() => undefined);
+            }
+          },
           runtime,
           bindings: bootstrap.binding.resources,
           availability: participantAvailability(
@@ -2855,6 +2920,13 @@ export function connectTrellisServiceWithRuntimeDeps<
           bootstrap.binding.apiBindings,
           bootstrap.binding.resources,
         );
+        transportState.onStatusChanged((status) =>
+          installConnectionTransportUpgrade(
+            service.connection,
+            status === "upgrade_available",
+          )
+        );
+        await applyServiceAdmission();
         authorizationProviderCache.onOwnInvalidated(() => {
           transitionConnectionAvailability(
             service.connection,
@@ -2956,7 +3028,6 @@ export function connectTrellisServiceWithRuntimeDeps<
           },
           onRefresh: async (context) => {
             await installAuthorizationRefresh({
-              connection: service.connection,
               provider: authorizationProviderCache,
               contextDigest: context.contextDigest,
               updateTransport: () => {
@@ -2966,8 +3037,11 @@ export function connectTrellisServiceWithRuntimeDeps<
                   ),
                 );
               },
-              reconnect: () => nc.reconnect(),
             });
+            await transportState.recompute(
+              context.context.transportAuthorization,
+              authorizationContexts.correctedNowSeconds(),
+            );
           },
           onTerminalFailure: async () => {
             if (!nc.isClosed()) await nc.close();

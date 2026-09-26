@@ -1,0 +1,180 @@
+{
+  "format": "trellis.transport-authorization.v1",
+  "note": "Shared transport-authorization policy vectors consumed by both the Rust protocol crate and the TypeScript WASM wrapper, so wildcard containment and canonical digests agree across languages.",
+  "cases": [
+    {
+      "name": "single token wildcard inclusion is a passive upgrade",
+      "admitted": {
+        "format": "trellis.transport-authorization.v1",
+        "account": "AACCOUNT",
+        "publishAllow": ["rpc.v1.Orders.*"],
+        "subscribeAllow": ["events.v1.>"],
+        "response": null,
+        "hardExpiresAt": null
+      },
+      "allowed": {
+        "format": "trellis.transport-authorization.v1",
+        "account": "AACCOUNT",
+        "publishAllow": ["rpc.v1.>"],
+        "subscribeAllow": ["events.v1.>"],
+        "response": null,
+        "hardExpiresAt": null
+      },
+      "now": 1000,
+      "class": "upgrade_available",
+      "reverseClass": "reduction_required"
+    },
+    {
+      "name": "single token wildcard does not cross token boundaries",
+      "admitted": {
+        "format": "trellis.transport-authorization.v1",
+        "account": "AACCOUNT",
+        "publishAllow": ["a.*"],
+        "subscribeAllow": [],
+        "response": null,
+        "hardExpiresAt": null
+      },
+      "allowed": {
+        "format": "trellis.transport-authorization.v1",
+        "account": "AACCOUNT",
+        "publishAllow": ["a.b.c"],
+        "subscribeAllow": [],
+        "response": null,
+        "hardExpiresAt": null
+      },
+      "now": 1000,
+      "class": "reduction_required"
+    },
+    {
+      "name": "an equivalent literal union covers a terminal wildcard",
+      "admitted": {
+        "format": "trellis.transport-authorization.v1",
+        "account": "AACCOUNT",
+        "publishAllow": ["a.b", "a.c"],
+        "subscribeAllow": [],
+        "response": null,
+        "hardExpiresAt": null
+      },
+      "allowed": {
+        "format": "trellis.transport-authorization.v1",
+        "account": "AACCOUNT",
+        "publishAllow": ["a.>"],
+        "subscribeAllow": [],
+        "response": null,
+        "hardExpiresAt": null
+      },
+      "now": 1000,
+      "class": "upgrade_available"
+    },
+    {
+      "name": "a changed account requires a new attachment",
+      "admitted": {
+        "format": "trellis.transport-authorization.v1",
+        "account": "AONE",
+        "publishAllow": ["a"],
+        "subscribeAllow": [],
+        "response": null,
+        "hardExpiresAt": null
+      },
+      "allowed": {
+        "format": "trellis.transport-authorization.v1",
+        "account": "ATWO",
+        "publishAllow": ["a"],
+        "subscribeAllow": [],
+        "response": null,
+        "hardExpiresAt": null
+      },
+      "now": 1000,
+      "class": "reduction_required"
+    },
+    {
+      "name": "an elapsed hard deadline requires reduction",
+      "admitted": {
+        "format": "trellis.transport-authorization.v1",
+        "account": "AACCOUNT",
+        "publishAllow": ["a"],
+        "subscribeAllow": [],
+        "response": null,
+        "hardExpiresAt": 500
+      },
+      "allowed": {
+        "format": "trellis.transport-authorization.v1",
+        "account": "AACCOUNT",
+        "publishAllow": ["a"],
+        "subscribeAllow": [],
+        "response": null,
+        "hardExpiresAt": 5000
+      },
+      "now": 1000,
+      "class": "reduction_required"
+    },
+    {
+      "name": "a narrower response allowance is not covered",
+      "admitted": {
+        "format": "trellis.transport-authorization.v1",
+        "account": "AACCOUNT",
+        "publishAllow": ["a"],
+        "subscribeAllow": [],
+        "response": { "maxMessages": 5, "ttlMs": 1000 },
+        "hardExpiresAt": null
+      },
+      "allowed": {
+        "format": "trellis.transport-authorization.v1",
+        "account": "AACCOUNT",
+        "publishAllow": ["a"],
+        "subscribeAllow": [],
+        "response": { "maxMessages": 1, "ttlMs": 1000 },
+        "hardExpiresAt": null
+      },
+      "now": 1000,
+      "class": "reduction_required"
+    },
+    {
+      "name": "identical policies are current",
+      "admitted": {
+        "format": "trellis.transport-authorization.v1",
+        "account": "AACCOUNT",
+        "publishAllow": ["rpc.v1.Jobs.ListServices"],
+        "subscribeAllow": ["_INBOX.abc.>"],
+        "response": { "maxMessages": 64, "ttlMs": 60000 },
+        "hardExpiresAt": 2000
+      },
+      "allowed": {
+        "format": "trellis.transport-authorization.v1",
+        "account": "AACCOUNT",
+        "publishAllow": ["rpc.v1.Jobs.ListServices"],
+        "subscribeAllow": ["_INBOX.abc.>"],
+        "response": { "maxMessages": 64, "ttlMs": 60000 },
+        "hardExpiresAt": 2000
+      },
+      "now": 1000,
+      "class": "current"
+    }
+  ],
+  "digests": [
+    {
+      "name": "operation and inbox",
+      "policy": {
+        "format": "trellis.transport-authorization.v1",
+        "account": "AACCOUNT",
+        "publishAllow": ["rpc.v1.Jobs.ListServices"],
+        "subscribeAllow": ["_INBOX.abc.>"],
+        "response": { "maxMessages": 64, "ttlMs": 60000 },
+        "hardExpiresAt": 2000
+      },
+      "digest": "7kE5GxEUqwFhg8NYxH-I5BpbC-7ERY0cGw0K7rAjC1I"
+    },
+    {
+      "name": "terminal wildcard",
+      "policy": {
+        "format": "trellis.transport-authorization.v1",
+        "account": "AACCOUNT",
+        "publishAllow": ["rpc.v1.>"],
+        "subscribeAllow": [],
+        "response": null,
+        "hardExpiresAt": null
+      },
+      "digest": "g-KmC_FL1qm1DgEERay62ZE6DrWU1Ob0zznMjbG4OXc"
+    }
+  ]
+}

@@ -19,7 +19,7 @@ use trellis_protocol::{
     AuthorizationEventPublisher, AuthorizationEventVerificationInput, AuthorizationIssuerKey,
     AuthorizationRequestProof, AuthorizationRequestVerificationInput,
     AuthorizationVerificationPolicy, NativeBootstrapSessionProofInput, PermissionAtom,
-    ProtocolError, SessionProof, SessionProofInput, SessionProofPolicy,
+    ProtocolError, SessionProof, SessionProofInput, SessionProofPolicy, TransportAuthorizationV1,
     UserAuthBindSessionProofInput, UserAuthRequestSessionProofInput, VerifiedAuthorizationContext,
 };
 use wasm_bindgen::prelude::*;
@@ -352,6 +352,40 @@ impl VerifiedAuthorizationContextHandle {
             .assert_current(&policy)
             .map_err(|error| JsError::new(&error.to_string()))
     }
+}
+
+/// Return the canonical digest of a signed transport-authorization policy.
+#[wasm_bindgen]
+pub fn transport_authorization_digest(policy_json: &str) -> Result<String, JsError> {
+    let policy: TransportAuthorizationV1 =
+        serde_json::from_str(policy_json).map_err(|error| JsError::new(&error.to_string()))?;
+    policy
+        .digest()
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Classify admitted transport policy `A` against currently allowed policy `D`.
+///
+/// Returns one of `current`, `upgrade_available`, or `reduction_required` as
+/// JSON, using the same pure full-witness inclusion implementation as the Rust
+/// runtime so both SDKs agree on wildcard containment.
+#[wasm_bindgen]
+pub fn classify_transport_authorization(
+    admitted_json: &str,
+    allowed_json: &str,
+    now_unix_seconds: f64,
+) -> Result<String, JsError> {
+    if !now_unix_seconds.is_finite() {
+        return Err(JsError::new("now must be a finite number"));
+    }
+    let admitted: TransportAuthorizationV1 =
+        serde_json::from_str(admitted_json).map_err(|error| JsError::new(&error.to_string()))?;
+    let allowed: TransportAuthorizationV1 =
+        serde_json::from_str(allowed_json).map_err(|error| JsError::new(&error.to_string()))?;
+    let class = admitted
+        .classify(&allowed, now_unix_seconds as i64)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&class).map_err(|error| JsError::new(&error.to_string()))
 }
 
 /// Generate one canonical live-session nonce from the operating system RNG.

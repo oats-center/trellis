@@ -234,34 +234,26 @@ export class LiveAuthorityGuard {
   }
 
   /**
-   * Return whether this guard is inside a planned credential rotation whose
-   * replacement coverage is not yet established.
+   * Reconcile this guard with current authorization.
    *
-   * The logical connection and its session remain alive; the guard pauses new
-   * decisions until it rebinds onto the replacement physical attachment.
-   */
-  maintenance(): boolean {
-    if (!this.#lease) return false;
-    return this.#cache.maintenanceFor(this.#epoch);
-  }
-
-  /**
-   * Reconcile this guard across a planned physical credential rotation.
-   *
-   * Returns `undefined` when the guard is usable (including after a successful
-   * rebind) and the precise terminal loss otherwise. A rebind waits, within a
-   * bounded budget, for the rotation's coverage to settle, then re-resolves the
-   * guard's exact digest on the replacement attachment, re-validates pinned
-   * identity and the role requirement, and only then releases the predecessor
-   * lease.
+   * A local-tracking guard adopts a newly promoted local context digest in
+   * place: it retains and validates the new exact lease, checks the same
+   * identity and required permission, commits it, and releases the predecessor.
+   * A peer guard accepts replacement evidence only from the verified
+   * signed data/control/challenge path, so it simply re-checks its retained
+   * lease here and reports the precise loss. A real physical loss advances the
+   * generation and is reported as `epoch_changed`.
    */
   async reconcile(): Promise<LiveAuthorityLost | undefined> {
-    if (!this.maintenance()) return this.checkNow();
+    if (!this.#tracksLocal) return this.checkNow();
     const cache = this.#cache;
-    const settled = await cache.waitRotationSettled(30_000);
-    if (!cache.maintenanceFor(this.#epoch)) return this.checkNow();
-    if (!settled) return "coverage_lost";
-    return await this.#rebind(cache.connectionGeneration());
+    const generation = cache.connectionGeneration();
+    const localDigest = cache.currentLocalContextDigest();
+    if (localDigest === undefined) return this.checkNow();
+    if (generation === this.#epoch && localDigest === this.#digest) {
+      return this.checkNow();
+    }
+    return await this.#rebind(generation);
   }
 
   /**
@@ -333,7 +325,6 @@ export class LiveAuthorityGuard {
   checkNow(): LiveAuthorityLost | undefined {
     const lease = this.#lease;
     if (!lease) return "coverage_lost";
-    if (this.maintenance()) return undefined;
     if (!this.#cache.health().healthy) return "transport_unavailable";
     if (this.#cache.connectionGeneration() !== this.#epoch) {
       return "epoch_changed";

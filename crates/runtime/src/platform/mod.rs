@@ -69,6 +69,7 @@ fn browser_flow_ttl_ms(config: &RuntimeConfig) -> Result<i64, RuntimeError> {
 pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, RuntimeError> {
     let _owner = context.owner(crate::ownership::OwnerGroup::Platform)?;
     let auth_store = SqliteAuthorizationStore::open(context.stores.platform()?)?;
+    verify_jetstream_identity(&auth_store, &context.trellis_nats).await?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|error| RuntimeError::Platform(error.to_string()))?
@@ -440,6 +441,99 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         stop,
         join,
     })
+}
+
+// The platform database records authority for resources whose data lives in
+// JetStream. Never trust that evidence after a store swap, even if startup can
+// recreate some of the missing streams and consumers.
+async fn verify_jetstream_identity(
+    auth_store: &SqliteAuthorizationStore,
+    client: &async_nats::Client,
+) -> Result<(), RuntimeError> {
+    use async_nats::jetstream::{context::GetStreamErrorKind, kv, ErrorCode};
+
+    const BUCKET: &str = "TRELLIS_PLATFORM_IDENTITY";
+    const KEY: &str = "store";
+    let (identity, bound) = auth_store
+        .jetstream_identity()
+        .await
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let jetstream = async_nats::jetstream::new(client.clone());
+    let marker = match jetstream.get_stream(format!("KV_{BUCKET}")).await {
+        Ok(_) => Some(jetstream.get_key_value(BUCKET).await.map_err(|error| {
+            RuntimeError::Platform(format!("cannot open JetStream identity bucket: {error}"))
+        })?),
+        Err(error)
+            if matches!(
+                error.kind(),
+                GetStreamErrorKind::JetStream(error)
+                    if error.error_code() == ErrorCode::STREAM_NOT_FOUND
+            ) =>
+        {
+            None
+        }
+        Err(error) => {
+            return Err(RuntimeError::Platform(format!(
+                "cannot inspect JetStream identity bucket: {error}"
+            )));
+        }
+    };
+    if bound && marker.is_none() {
+        return Err(RuntimeError::Platform(
+            "JetStream identity is missing for this platform database; restore the matching NATS store or initialize a fresh environment".to_owned(),
+        ));
+    }
+    let marker = match marker {
+        Some(marker) => marker,
+        None => jetstream
+            .create_key_value(kv::Config {
+                bucket: BUCKET.to_owned(),
+                description: "Platform database to JetStream store identity".to_owned(),
+                storage: async_nats::jetstream::stream::StorageType::File,
+                ..Default::default()
+            })
+            .await
+            .map_err(|error| {
+                RuntimeError::Platform(format!("cannot create JetStream identity bucket: {error}"))
+            })?,
+    };
+    let current = marker.get(KEY).await.map_err(|error| {
+        RuntimeError::Platform(format!("cannot read JetStream identity: {error}"))
+    })?;
+    if bound && current.is_none() {
+        return Err(RuntimeError::Platform(
+            "JetStream identity record is missing for this platform database; restore the matching NATS store or initialize a fresh environment".to_owned(),
+        ));
+    }
+    if let Some(current) = current {
+        if current.as_ref() != identity.as_bytes() {
+            return Err(RuntimeError::Platform(
+                "JetStream belongs to a different platform database; restore the matching NATS store or initialize a fresh environment".to_owned(),
+            ));
+        }
+    } else {
+        marker
+            .create(KEY, identity.clone().into())
+            .await
+            .map_err(|error| {
+                RuntimeError::Platform(format!("cannot write JetStream identity: {error}"))
+            })?;
+    }
+    let confirmed = marker.get(KEY).await.map_err(|error| {
+        RuntimeError::Platform(format!("cannot confirm JetStream identity: {error}"))
+    })?;
+    if confirmed.as_deref() != Some(identity.as_bytes()) {
+        return Err(RuntimeError::Platform(
+            "JetStream identity changed while binding the platform database".to_owned(),
+        ));
+    }
+    if !bound {
+        auth_store
+            .mark_jetstream_bound(identity)
+            .await
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    }
+    Ok(())
 }
 
 async fn connect_nats(

@@ -66,6 +66,11 @@ export {
 export { StoreError } from "./StoreError.ts";
 export { TransportError } from "./TransportError.ts";
 export { TransferError } from "./TransferError.ts";
+export { TransportRefreshError } from "./TransportRefreshError.ts";
+export type {
+  TransportRefreshErrorCode,
+  TransportRefreshErrorData,
+} from "./TransportRefreshError.ts";
 
 export { type AuthErrorData, AuthErrorDataSchema } from "./AuthError.ts";
 export {

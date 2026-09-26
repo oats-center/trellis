@@ -5,6 +5,7 @@ import { JobManager, JobProcessError } from "./job-manager.ts";
 import type { JobKeyCoordinator, JobKeyState } from "./key-coordinator.ts";
 import {
   ackActionForOutcome,
+  JobsConsumerMissingError,
   JobsInfrastructureMissingError,
   progressAckIntervalMs,
   startNatsWorkerHostFromBinding,
@@ -935,7 +936,7 @@ Deno.test("startNatsWorkerHostFromBinding fails closed when approved consumer is
         queueTypes: ["refresh"],
         handler: () => Promise.resolve({}),
       }),
-    JobsInfrastructureMissingError,
-    "Jobs work stream 'JOBS_WORK' was not found while starting queue 'refresh'",
+    JobsConsumerMissingError,
+    "Jobs consumer 'svc-refresh' was not found in stream 'JOBS_WORK' while starting queue 'refresh'",
   );
 });

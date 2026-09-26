@@ -66,6 +66,13 @@ export {
   verifySessionProof,
 } from "./session_proof.ts";
 export {
+  classifyTransportAuthorizationWasm,
+  TRANSPORT_AUTHORIZATION_FORMAT_V1,
+  transportAuthorizationDigestWasm,
+  type TransportAuthorizationV1,
+  type TransportPolicyClass,
+} from "./protocol_wasm.ts";
+export {
   createAuth,
   type NatsConnectOptions,
   type TrellisAuth,

@@ -2,10 +2,13 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE trellis_platform_store_marker (
     id INTEGER PRIMARY KEY CHECK (id = 1),
+    jetstream_id TEXT NOT NULL CHECK (length(jetstream_id) = 32),
+    jetstream_bound INTEGER NOT NULL DEFAULT 0 CHECK (jetstream_bound IN (0, 1)),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-INSERT INTO trellis_platform_store_marker (id) VALUES (1);
+INSERT INTO trellis_platform_store_marker (id, jetstream_id)
+VALUES (1, lower(hex(randomblob(16))));
 
 CREATE TABLE auth_principals (
     principal_id TEXT PRIMARY KEY CHECK (length(principal_id) > 0),

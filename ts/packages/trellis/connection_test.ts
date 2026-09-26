@@ -366,11 +366,11 @@ Deno.test("observeTrellisConnection publishes close transition from close", asyn
 
 Deno.test("a diagnostic transport error keeps the logical phase and reaches raw observers", async () => {
   const stream = new FakeStatusStream();
-  const events: Array<{ event: unknown; planned: boolean }> = [];
+  const events: Array<{ event: unknown }> = [];
   const connection = observeTrellisConnection({
     kind: "client",
     transport: stream,
-    onTransportEvent: (event, planned) => events.push({ event, planned }),
+    onTransportEvent: (event) => events.push({ event }),
   });
   const phases: string[] = [];
   connection.subscribe((status) => phases.push(status.phase));
@@ -384,11 +384,10 @@ Deno.test("a diagnostic transport error keeps the logical phase and reaches raw 
   assertEquals(connection.status.phase, "connected");
   assertEquals(phases, ["connected"]);
   assertEquals(events.length, 1);
-  assertEquals(events[0]?.planned, false);
   assertEquals((events[0]?.event as { error?: unknown })?.error, error);
 });
 
-Deno.test("installAuthorizationRefresh keeps a healthy rotation out of the logical lifecycle", async () => {
+Deno.test("installAuthorizationRefresh promotes in place without replacing the transport", async () => {
   const stream = new FakeStatusStream();
   const connection = observeTrellisConnection({
     kind: "client",
@@ -396,28 +395,32 @@ Deno.test("installAuthorizationRefresh keeps a healthy rotation out of the logic
   });
   const phases: string[] = [];
   connection.subscribe((status) => phases.push(status.phase));
+  let retainedGeneration: number | undefined;
+  let promotedGeneration: number | undefined;
   const provider = {
     waitReady: () => Promise.resolve(),
     connectionGeneration: () => 7,
-    retainOwnCandidate: () => Promise.resolve(),
-    promoteOwnCandidate: () => {},
-    abandonRotation: () => {},
+    retainOwnCandidate: (digest: string, generation: number) => {
+      assertEquals(digest, "candidate-digest");
+      retainedGeneration = generation;
+      return Promise.resolve();
+    },
+    promoteOwnCandidate: (digest: string, generation: number) => {
+      assertEquals(digest, "candidate-digest");
+      promotedGeneration = generation;
+    },
+    releaseCandidate: () => {},
   };
   try {
-    // A healthy attachment rotates as planned maintenance: the physical
-    // disconnect/reconnect must never reach the logical lifecycle.
+    // Routine renewal retains and promotes the candidate on the current
+    // generation; it never asks the owner to replace the physical attachment.
     await installAuthorizationRefresh({
-      connection,
       provider,
       contextDigest: "candidate-digest",
-      reconnect: () => {
-        stream.push({ type: "disconnect" });
-        stream.push({ type: "reconnecting" });
-        stream.push({ type: "reconnect" });
-        return Promise.resolve();
-      },
     });
 
+    assertEquals(retainedGeneration, 7);
+    assertEquals(promotedGeneration, 7);
     assertEquals(connection.status.phase, "connected");
     assertEquals(phases, ["connected"]);
     assertEquals(connection.live.isAvailable(), true);

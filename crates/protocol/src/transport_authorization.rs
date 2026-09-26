@@ -58,7 +58,8 @@ pub struct TransportAuthorizationV1 {
 }
 
 /// Result of comparing admitted policy `A` with currently allowed policy `D`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TransportPolicyClass {
     /// `A` and `D` are mutually inclusive.
     Current,
@@ -556,5 +557,68 @@ mod tests {
             first.digest().unwrap(),
             policy(&["a", "b"], &["x"]).digest().unwrap()
         );
+    }
+
+    #[test]
+    fn shared_wire_vectors_classify_and_digest_identically() {
+        #[derive(Deserialize)]
+        struct Vectors {
+            cases: Vec<Case>,
+            digests: Vec<DigestCase>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Case {
+            name: String,
+            admitted: TransportAuthorizationV1,
+            allowed: TransportAuthorizationV1,
+            now: i64,
+            class: TransportPolicyClass,
+            #[serde(default)]
+            reverse_class: Option<TransportPolicyClass>,
+        }
+        #[derive(Deserialize)]
+        struct DigestCase {
+            name: String,
+            policy: TransportAuthorizationV1,
+            digest: String,
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../integration/fixtures/protocol/transport-authorization/vectors.json");
+        let raw = std::fs::read_to_string(&path).expect("read shared transport vectors");
+        let vectors: Vectors = serde_json::from_str(&raw).expect("decode shared transport vectors");
+        assert!(
+            !vectors.cases.is_empty(),
+            "shared vectors must cover behavior"
+        );
+        for case in &vectors.cases {
+            assert_eq!(
+                case.admitted
+                    .classify(&case.allowed, case.now)
+                    .expect("classify admitted policy"),
+                case.class,
+                "{}",
+                case.name
+            );
+            if let Some(reverse) = case.reverse_class {
+                assert_eq!(
+                    case.allowed
+                        .classify(&case.admitted, case.now)
+                        .expect("classify reverse policy"),
+                    reverse,
+                    "{} (reverse)",
+                    case.name
+                );
+            }
+        }
+        assert!(!vectors.digests.is_empty());
+        for case in &vectors.digests {
+            assert_eq!(
+                case.policy.digest().expect("digest policy"),
+                case.digest,
+                "{}",
+                case.name
+            );
+        }
     }
 }

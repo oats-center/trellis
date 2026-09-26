@@ -1,4 +1,4 @@
-import type { NatsConnection } from "@nats-io/nats-core";
+import type { NatsConnection, Subscription } from "@nats-io/nats-core";
 
 import type {
   AuthorizationContextHandle,
@@ -73,6 +73,16 @@ class InvalidIssuerResponseError extends Error {}
 /** Provider attach options. */
 export type AuthorizationProviderCacheOptions = { now?: () => number };
 
+/** Read the hint format tag, ignoring any malformed or forged payload. */
+function hintFormat(message: { json<T>(): T }): string | undefined {
+  try {
+    const value = message.json<{ format?: unknown }>();
+    return typeof value?.format === "string" ? value.format : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export type ProviderContextEntry = {
   contextDigest: string;
   context: Record<string, unknown>;
@@ -115,6 +125,10 @@ export class AuthorizationProviderCache {
   readonly #registry: AuthorizationRegistryReader;
   readonly #cache: AuthorizationContextCache;
   readonly #now: () => number;
+  readonly #nats: NatsConnection;
+  readonly #inboxPrefix: string;
+  #hintSubscription?: Subscription;
+  #hintLastTriggeredAt = 0;
   readonly #contexts = new Map<string, ProviderContextEntry>();
   readonly #inFlight = new Map<string, PendingContextEntry>();
   readonly #ownIssuer: AuthorizationIssuerKey;
@@ -126,8 +140,6 @@ export class AuthorizationProviderCache {
   #connected = true;
   #started = false;
   #generation = 0;
-  #rotationOpen = false;
-  #plannedGeneration: number | undefined;
   #ownEntry?: ProviderContextEntry;
   #onOwnInvalidated?: () => void;
   #onOwnResumed?: () => void;
@@ -138,12 +150,16 @@ export class AuthorizationProviderCache {
   readonly #liveChangeListeners = new Set<() => void>();
 
   private constructor(
+    nats: NatsConnection,
     registry: AuthorizationRegistryReader,
     cache: AuthorizationContextCache,
+    inboxPrefix: string,
     options: AuthorizationProviderCacheOptions,
   ) {
+    this.#nats = nats;
     this.#registry = registry;
     this.#cache = cache;
+    this.#inboxPrefix = inboxPrefix;
     this.#now = options.now ?? cache.correctedNowSeconds.bind(cache);
     this.#ownIssuer = structuredClone(cache.bundle().issuer);
   }
@@ -163,12 +179,14 @@ export class AuthorizationProviderCache {
       throw new Error("authorization registry binding does not match");
     }
     return new AuthorizationProviderCache(
+      nats,
       await AuthorizationRegistryReader.open(
         nats,
         binding,
         inboxPrefix,
       ),
       cache,
+      inboxPrefix,
       options,
     );
   }
@@ -179,6 +197,7 @@ export class AuthorizationProviderCache {
     this.#generation += 1;
     this.#stopped = false;
     this.#started = true;
+    this.#startHintSubscription();
     this.#stopCoverage = trackCoverage(() => {
       const healthy = this.#started && !this.#stopped && this.#connected;
       const now = this.#now();
@@ -216,9 +235,9 @@ export class AuthorizationProviderCache {
   stop(): void {
     this.#stopCoverage?.();
     this.#stopCoverage = undefined;
+    void this.#hintSubscription?.unsubscribe();
+    this.#hintSubscription = undefined;
     this.#generation += 1;
-    this.#rotationOpen = false;
-    this.#plannedGeneration = undefined;
     this.#stopped = true;
     for (const entry of this.#contexts.values()) this.#invalidate(entry);
     this.#contexts.clear();
@@ -396,7 +415,6 @@ export class AuthorizationProviderCache {
     if (mode === "promote") {
       this.#cache.promote(digest);
     }
-    this.#rotationOpen = false;
     this.#ownUsable = true;
     this.#onOwnResumed?.();
     this.#notifyLiveChanges();
@@ -407,54 +425,50 @@ export class AuthorizationProviderCache {
     return this.#generation;
   }
 
-  /** Return whether a planned rotation is awaiting coverage promotion. @internal */
-  rotationOpen(): boolean {
-    return this.#rotationOpen;
-  }
-
-  /**
-   * Return whether one retained generation was opened by a planned rotation
-   * and can still be rebound onto the replacement physical attachment. @internal
-   */
-  maintenanceFor(epoch: number): boolean {
-    return this.#plannedGeneration !== undefined &&
-      epoch < this.#plannedGeneration;
-  }
-
   /** Return the installed own-context digest, if any. @internal */
   currentLocalContextDigest(): string | undefined {
     return this.#cache.storedContextDigest();
   }
 
-  /** Abandon an unfinished planned rotation so retained guards fail closed. @internal */
-  abandonRotation(): void {
-    this.#rotationOpen = false;
-    this.#plannedGeneration = undefined;
+  /** Drop an unadmitted prepared candidate after a failed in-place renewal. @internal */
+  releaseCandidate(): void {
+    if (this.#cache.hasCandidate()) {
+      this.#cache.invalidateCandidate(
+        this.#cache.transportCurrent().contextDigest,
+      );
+    }
     this.#notifyLiveChanges();
   }
 
   /**
-   * Wait, within a bounded budget, for a planned rotation to settle: either its
-   * coverage is promoted onto the replacement attachment or it is abandoned.
-   * @internal
+   * Subscribe to the server-issued best-effort authorization-change hint.
+   *
+   * A hint only schedules a normal signed refresh: it cannot install grants,
+   * change the admitted policy, suppress revocation, or initiate reconnect. It
+   * is coalesced to at most one trigger per second, so a lost hint delays
+   * notification but never loses authority enforcement.
    */
-  waitRotationSettled(timeoutMs: number): Promise<boolean> {
-    if (!this.#rotationOpen) return Promise.resolve(true);
-    return new Promise<boolean>((resolve) => {
-      let settled = false;
-      const finish = (value: boolean): void => {
-        if (settled) return;
-        settled = true;
-        unsubscribe();
-        clearTimeout(timer);
-        resolve(value);
-      };
-      const unsubscribe = this.subscribeLiveChanges(() => {
-        if (!this.#rotationOpen) finish(true);
-      });
-      const timer = setTimeout(() => finish(!this.#rotationOpen), timeoutMs);
-      if (!this.#rotationOpen) finish(true);
-    });
+  #startHintSubscription(): void {
+    if (this.#hintSubscription) return;
+    let subscription: Subscription;
+    try {
+      subscription = this.#nats.subscribe(
+        `${this.#inboxPrefix}._trellis.authorization`,
+      );
+    } catch {
+      return;
+    }
+    this.#hintSubscription = subscription;
+    void (async () => {
+      for await (const message of subscription) {
+        if (this.#stopped) return;
+        if (hintFormat(message) !== "trellis.authorization-change.v1") continue;
+        const now = this.#now();
+        if (now - this.#hintLastTriggeredAt < 1) continue;
+        this.#hintLastTriggeredAt = now;
+        this.#cache.requestRefresh();
+      }
+    })().catch(() => undefined);
   }
 
   async #retainOwnContext(digest: string, generation: number): Promise<void> {
@@ -505,12 +519,10 @@ export class AuthorizationProviderCache {
    *
    * Provider verification coverage is tied to the physical NATS attachment,
    * so a physical loss always invalidates retained coverage and forces exact
-   * coverage to be rebuilt on the replacement attachment. `planned` marks a
-   * loss that is part of an in-progress authorization-credential rotation:
-   * coverage is still rebuilt, but the owner's logical application
-   * availability is not withdrawn.
+   * coverage to be rebuilt on the replacement attachment. An ordinary context
+   * renewal never reaches here, because it does not replace the attachment.
    */
-  observeTransportEvent(event: unknown, planned = false): void {
+  observeTransportEvent(event: unknown): void {
     if (!event || typeof event !== "object") return;
     const status = event as { type?: unknown; data?: unknown };
     switch (status.type) {
@@ -518,10 +530,10 @@ export class AuthorizationProviderCache {
       case "disconnected":
       case "reconnecting":
       case "forceReconnect":
-        this.#observePhysicalConnected(false, planned);
+        this.#observePhysicalConnected(false);
         break;
       case "reconnect":
-        this.#observePhysicalConnected(true, planned);
+        this.#observePhysicalConnected(true);
         break;
     }
     if (
@@ -532,27 +544,17 @@ export class AuthorizationProviderCache {
     }
   }
 
-  #observePhysicalConnected(connected: boolean, planned: boolean): void {
+  #observePhysicalConnected(connected: boolean): void {
     const wasConnected = this.#connected;
     this.#connected = connected;
     if (wasConnected && !this.#connected) {
-      // A planned rotation keeps the owner's logical availability installed:
-      // the predecessor remains application-current until the candidate is
-      // admitted and promoted on the replacement attachment.
-      if (!planned) {
-        this.#ownUsable = false;
-        this.#onOwnInvalidated?.();
-      }
+      // Real loss: withdraw the owner's logical availability and require exact
+      // coverage to be rebuilt once a replacement attachment is admitted.
+      this.#ownUsable = false;
+      this.#onOwnInvalidated?.();
       if (this.#ownEntry) this.#release(this.#ownEntry);
       this.#ownEntry = undefined;
       this.#generation += 1;
-      if (planned) {
-        this.#rotationOpen = true;
-        this.#plannedGeneration = this.#generation;
-      } else {
-        this.#rotationOpen = false;
-        this.#plannedGeneration = undefined;
-      }
       for (const entry of this.#contexts.values()) this.#invalidate(entry);
       this.#contexts.clear();
       this.#inFlight.clear();

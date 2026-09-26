@@ -23,6 +23,10 @@ import {
 } from "./auth/authorization_context.ts";
 import { installAuthorizationRefresh } from "./auth/authorization/install_refresh.ts";
 import {
+  readOwnAdmission,
+  TransportAuthorizationState,
+} from "./auth/authorization/transport_state.ts";
+import {
   base64urlDecode,
   base64urlEncode,
   BrowserSessionStore,
@@ -41,11 +45,14 @@ import { type CallerRuntime, createCallerRuntime } from "./caller.ts";
 import type { ClientOpts } from "./client.ts";
 import {
   installConnectionAvailability,
+  installConnectionTransportUpgrade,
   observeNatsTrellisConnection,
+  replaceTransportAttachment,
   startConnectionTelemetry,
   transitionConnectionAvailability,
   type TrellisConnection,
 } from "./connection.ts";
+import { TransportRefreshError } from "./errors/TransportRefreshError.ts";
 import {
   bindApiRoutes,
   type GeneratedParticipant,
@@ -107,7 +114,15 @@ export type ClientResourceMigrations<
 type InstalledClientResources = Readonly<{
   generation: number;
   signature: string;
+  /**
+   * Connection-wide suspension shared across generations. A coverage loss or
+   * recovery flips this without invalidating individual handles.
+   */
   active: { value: boolean };
+  /** Per-resource validity, so a changed/removed binding is invalidated alone. */
+  handles: Readonly<Record<string, { value: boolean }>>;
+  /** Exact bindings this installation was built from, for per-resource reuse. */
+  bindings: ContractResourceBindings;
   kv: Readonly<Record<string, TypedKV<unknown> | undefined>>;
   store: Readonly<Record<string, TypedStore | undefined>>;
 }>;
@@ -139,6 +154,7 @@ function createConnectedClient(args: {
     resourceGeneration: TrellisOpts<RuntimeApi>["resourceGeneration"];
     resourceAvailability: TrellisOpts<RuntimeApi>["resourceAvailability"];
     onSessionNotFound?: TrellisOpts<RuntimeApi>["onSessionNotFound"];
+    transportGate?: TrellisOpts<RuntimeApi>["transportGate"];
   };
 }): Trellis<RuntimeApi, "client", RuntimeStateStores> {
   const trellis = new Trellis<RuntimeApi, "client", RuntimeStateStores>(
@@ -302,10 +318,21 @@ async function resolveClientResources(args: {
   if (args.previous?.signature === signature) return args.previous;
 
   const generation = (args.previous?.generation ?? 0) + 1;
-  const active = { value: true };
-  const isCurrent = () => active.value;
+  const active = args.previous?.active ?? { value: true };
+  const handles: Record<string, { value: boolean }> = {};
   const kv: Record<string, TypedKV<unknown> | undefined> = {};
   const store: Record<string, TypedStore | undefined> = {};
+  const unchanged = (
+    name: string,
+    binding: unknown,
+    kind: "kv" | "store",
+  ): boolean => {
+    if (!args.previous) return false;
+    const previousBinding =
+      (kind === "kv" ? args.previous.bindings.kv : args.previous.bindings.store)
+        ?.[name];
+    return JSON.stringify(previousBinding) === JSON.stringify(binding);
+  };
   for (const [name, descriptor] of Object.entries(args.participant.resources)) {
     if (descriptor.kind === "kv") {
       const binding = args.bindings.kv?.[name];
@@ -316,6 +343,16 @@ async function resolveClientResources(args: {
         kv[name] = undefined;
         continue;
       }
+      const reusable = args.previous?.kv[name];
+      if (reusable && unchanged(name, binding, "kv")) {
+        // An unchanged binding keeps its handle and lifetime ownership; only a
+        // genuinely changed or added member creates a new handle.
+        handles[name] = args.previous!.handles[name]!;
+        kv[name] = reusable;
+        continue;
+      }
+      const handleActive = { value: true };
+      handles[name] = handleActive;
       kv[name] = await TypedKV.open(
         args.nc,
         binding.bucket,
@@ -326,7 +363,7 @@ async function resolveClientResources(args: {
           ttl: binding.ttlMs,
           maxValueBytes: binding.maxValueBytes,
           migrations: args.migrations?.kv?.[name],
-          isCurrent,
+          isCurrent: () => handleActive.value && active.value,
         },
       ).orThrow();
     } else if (descriptor.kind === "store") {
@@ -338,16 +375,36 @@ async function resolveClientResources(args: {
         store[name] = undefined;
         continue;
       }
+      const reusable = args.previous?.store[name];
+      if (reusable && unchanged(name, binding, "store")) {
+        handles[name] = args.previous!.handles[name]!;
+        store[name] = reusable;
+        continue;
+      }
+      const handleActive = { value: true };
+      handles[name] = handleActive;
       store[name] = await TypedStore.open(args.nc, binding.name, {
         bindOnly: true,
         ttlMs: binding.ttlMs,
         maxObjectBytes: binding.maxObjectBytes,
         maxTotalBytes: binding.maxTotalBytes,
-        isCurrent,
+        isCurrent: () => handleActive.value && active.value,
       }).orThrow();
     }
   }
-  return { generation, signature, active, kv, store };
+  // Invalidate only the handles this installation did not carry forward.
+  for (const [name, flag] of Object.entries(args.previous?.handles ?? {})) {
+    if (handles[name] !== flag) flag.value = false;
+  }
+  return {
+    generation,
+    signature,
+    active,
+    handles,
+    bindings: args.bindings,
+    kv,
+    store,
+  };
 }
 
 function clientResourceFacades(state: ClientResourceState) {
@@ -1375,19 +1432,67 @@ export async function connectClientWithDeps<
       ? { noResponderRetry: args.noResponderRetry }
       : {}),
   };
+  const transportState = new TransportAuthorizationState();
+  const currentTransportPolicy = () =>
+    authorizationContexts.current().context.transportAuthorization;
+  const applyClientAdmission = async (): Promise<void> => {
+    const digest = authorizationContexts.storedContextDigest();
+    if (digest === undefined) return;
+    const policy = currentTransportPolicy();
+    const own = await readOwnAdmission(nc, 5_000);
+    await transportState.recordAdmission({
+      contextDigest: own?.contextDigest ?? digest,
+      policy,
+      allowed: policy,
+      nowUnixSeconds: authorizationContexts.correctedNowSeconds(),
+    });
+  };
+  const refreshClientTransport = (): AsyncResult<void, TransportRefreshError> =>
+    AsyncResult.from(
+      (async () => {
+        if (nc.isClosed()) {
+          return Result.err(TransportRefreshError.connectionClosed());
+        }
+        const timeoutMs = args.timeout ?? 30_000;
+        try {
+          await replaceTransportAttachment(nc, timeoutMs);
+          await authorizationProviderCache.waitReady({ timeoutMs });
+          await authorizationProviderCache.retainOwnContext();
+          await applyClientAdmission();
+          return Result.ok(undefined);
+        } catch (error) {
+          return Result.err(
+            error instanceof TransportRefreshError
+              ? error
+              : TransportRefreshError.fromTransport(error),
+          );
+        }
+      })(),
+    );
   const connection = observeNatsTrellisConnection({
     kind: "client",
     nc,
     log: false,
     telemetry: connectionTelemetry,
+    refreshTransport: refreshClientTransport,
     availability: participantAvailability(
       args.participant,
       bootstrap.apiBindings,
       bootstrap.resourceBindings,
       authorizationContexts.current().context.grants.permissions,
     ),
-    onTransportEvent: (event, planned) =>
-      authorizationProviderCache?.observeTransportEvent(event, planned),
+    onTransportEvent: (event) => {
+      authorizationProviderCache?.observeTransportEvent(event);
+      const type = (event as { type?: unknown } | null)?.type;
+      if (
+        type === "disconnect" || type === "disconnected" ||
+        type === "reconnecting" || type === "forceReconnect"
+      ) {
+        transportState.markDisconnected();
+      } else if (type === "reconnect") {
+        void applyClientAdmission().catch(() => undefined);
+      }
+    },
     ...(args.log
       ? {
         lifecycleLog: {
@@ -1397,6 +1502,13 @@ export async function connectClientWithDeps<
       }
       : {}),
   });
+  transportState.onStatusChanged((status) =>
+    installConnectionTransportUpgrade(
+      connection,
+      status === "upgrade_available",
+    )
+  );
+  await applyClientAdmission();
   const api = bindApiRoutes(
     getParticipantRuntime(args.participant).usedApi,
     bootstrap.apiBindings,
@@ -1464,7 +1576,9 @@ export async function connectClientWithDeps<
           });
           return (verified) => {
             if (nextResources !== resourceState.current) {
-              resourceState.current.active.value = false;
+              // Unchanged handles were carried forward and only changed or
+              // removed ones were invalidated, so the generation is not
+              // suspended wholesale.
               resourceState.current = nextResources;
             } else {
               resourceState.current.active.value = true;
@@ -1484,7 +1598,6 @@ export async function connectClientWithDeps<
     },
     onRefresh: async (context) => {
       await installAuthorizationRefresh({
-        connection,
         provider: authorizationProviderCache,
         contextDigest: context.contextDigest,
         updateTransport: () => {
@@ -1494,8 +1607,11 @@ export async function connectClientWithDeps<
             ),
           );
         },
-        reconnect: () => nc.reconnect(),
       });
+      await transportState.recompute(
+        context.context.transportAuthorization,
+        authorizationContexts.correctedNowSeconds(),
+      );
     },
     onTerminalFailure: async (error) => {
       if (!nc.isClosed()) {
@@ -1539,6 +1655,12 @@ export async function connectClientWithDeps<
       resourceAvailability: (name) =>
         connection.availability().resources[name] ?? true,
       onSessionNotFound: handleSessionNotFound,
+      transportGate: {
+        status: () => transportState.status(),
+        admittedPolicy: () => transportState.admittedPolicy(),
+        allowedPolicy: () => transportState.allowedPolicy(),
+        nowSeconds: () => authorizationContexts.correctedNowSeconds(),
+      },
     },
   });
   recordTrellisDuration(

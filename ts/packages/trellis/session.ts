@@ -43,6 +43,11 @@ import {
   type AuthorizationProviderRequest,
 } from "./auth/authorization_context.ts";
 import { AuthorizationProviderUnavailableError } from "./auth/authorization/provider_cache.ts";
+import {
+  requiresTransportUpgrade,
+  type TransportAuthorizationGate,
+  transportUpgradeRequiredError,
+} from "./auth/authorization/transport_state.ts";
 import type {
   AuthorizationVerificationErrorCode,
   PermissionAtom as VerifierPermissionAtom,
@@ -1571,6 +1576,8 @@ export type TrellisOpts<TA extends RuntimeApi> = {
   resourceGeneration?: () => number;
   resourceAvailability?: (name: string) => boolean;
   connection?: TrellisConnection;
+  /** Admitted-transport view for boundary checks, set by the connection owner. @internal */
+  transportGate?: TransportAuthorizationGate;
   onSessionNotFound?: () => MaybePromise<void>;
   contractId?: string;
   contractDigest?: string;
@@ -2519,6 +2526,7 @@ export class Trellis<
   #liveClosers = new Set<() => void>();
   #resourceGeneration: () => number;
   #resourceAvailability: (name: string) => boolean;
+  #transportGate?: TransportAuthorizationGate;
   #stateMigrations: Readonly<
     Record<string, ResourceMigrations<unknown> | undefined>
   >;
@@ -2558,6 +2566,7 @@ export class Trellis<
     this.#resourceGeneration = opts?.resourceGeneration ?? (() => 0);
     this.#resourceAvailability = opts?.resourceAvailability ?? (() => true);
     this.#stateMigrations = opts?.stateMigrations ?? {};
+    this.#transportGate = opts?.transportGate;
     this.#eventConsumers = internalOpts?.[internalEventConsumers] ?? {};
     this.#apiBindings = internalOpts?.[internalApiBindings] ?? {};
     this.#ephemeralEventNeeds = internalOpts?.[internalEphemeralEventNeeds];
@@ -3031,6 +3040,21 @@ export class Trellis<
           phase: "request_encoding",
         });
         return subject;
+      }
+      const gate = this.#transportGate;
+      if (gate) {
+        const upgradeRequired = await requiresTransportUpgrade(gate, {
+          publish: [subject],
+          subscribe: [`${this.#inboxPrefix}.>`],
+        });
+        if (upgradeRequired) {
+          return err(
+            transportUpgradeRequiredError({
+              method: String(method),
+              subject,
+            }),
+          );
+        }
       }
       const route = trellisRoute("rpc", method);
       const span = startClientSpan(route);

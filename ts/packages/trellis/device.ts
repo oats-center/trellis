@@ -65,7 +65,9 @@ import { type StaticDecode, Type } from "typebox";
 import { Value } from "typebox/value";
 import {
   installConnectionAvailability,
+  installConnectionTransportUpgrade,
   observeNatsTrellisConnection,
+  replaceTransportAttachment,
   startConnectionTelemetry,
   transitionConnectionAvailability,
 } from "./connection.ts";
@@ -77,6 +79,11 @@ import {
   startAuthorizationContextRefresh,
 } from "./auth/authorization_context.ts";
 import { installAuthorizationRefresh } from "./auth/authorization/install_refresh.ts";
+import {
+  readOwnAdmission,
+  TransportAuthorizationState,
+} from "./auth/authorization/transport_state.ts";
+import { TransportRefreshError } from "./errors/TransportRefreshError.ts";
 import { type CallerRuntime, createCallerRuntime } from "./caller.ts";
 import {
   bindApiRoutes,
@@ -912,23 +919,77 @@ export async function connectDeviceWithDeps<
     throw new Error("Trellis device runtime connection was not established");
   }
 
+  const transportState = new TransportAuthorizationState();
+  const applyDeviceAdmission = async (): Promise<void> => {
+    const digest = authorizationContexts.storedContextDigest();
+    if (digest === undefined) return;
+    const policy =
+      authorizationContexts.current().context.transportAuthorization;
+    const own = await readOwnAdmission(nc, 5_000);
+    await transportState.recordAdmission({
+      contextDigest: own?.contextDigest ?? digest,
+      policy,
+      allowed: policy,
+      nowUnixSeconds: authorizationContexts.correctedNowSeconds(),
+    });
+  };
+  const refreshDeviceTransport = (): AsyncResult<void, TransportRefreshError> =>
+    AsyncResult.from(
+      (async () => {
+        if (nc.isClosed()) {
+          return Result.err(TransportRefreshError.connectionClosed());
+        }
+        const timeoutMs = 30_000;
+        try {
+          await replaceTransportAttachment(nc, timeoutMs);
+          await authorizationProviderCache.waitReady({ timeoutMs });
+          await authorizationProviderCache.retainOwnContext();
+          await applyDeviceAdmission();
+          return Result.ok(undefined);
+        } catch (error) {
+          return Result.err(
+            error instanceof TransportRefreshError
+              ? error
+              : TransportRefreshError.fromTransport(error),
+          );
+        }
+      })(),
+    );
   const connection = observeNatsTrellisConnection({
     kind: "device",
     nc,
     telemetry: connectionTelemetry,
+    refreshTransport: refreshDeviceTransport,
     availability: participantAvailability(
       args.participant,
       connectInfo.apiBindings,
       connectInfo.resourceBindings,
     ),
-    onTransportEvent: (event, planned) =>
-      authorizationProviderCache.observeTransportEvent(event, planned),
+    onTransportEvent: (event) => {
+      authorizationProviderCache.observeTransportEvent(event);
+      const type = (event as { type?: unknown } | null)?.type;
+      if (
+        type === "disconnect" || type === "disconnected" ||
+        type === "reconnecting" || type === "forceReconnect"
+      ) {
+        transportState.markDisconnected();
+      } else if (type === "reconnect") {
+        void applyDeviceAdmission().catch(() => undefined);
+      }
+    },
     log: false,
     lifecycleLog: {
       log,
       context: { participantId: args.participant.identity },
     },
   });
+  transportState.onStatusChanged((status) =>
+    installConnectionTransportUpgrade(
+      connection,
+      status === "upgrade_available",
+    )
+  );
+  await applyDeviceAdmission();
   let installedAvailability = participantAvailability(
     args.participant,
     connectInfo.apiBindings,
@@ -1006,11 +1067,13 @@ export async function connectDeviceWithDeps<
     },
     onRefresh: async (context) => {
       await installAuthorizationRefresh({
-        connection,
         provider: authorizationProviderCache,
         contextDigest: context.contextDigest,
-        reconnect: () => nc.reconnect(),
       });
+      await transportState.recompute(
+        context.context.transportAuthorization,
+        authorizationContexts.correctedNowSeconds(),
+      );
     },
     onTerminalFailure: async () => {
       if (!nc.isClosed()) await nc.close();
@@ -1036,6 +1099,12 @@ export async function connectDeviceWithDeps<
       api: runtimeApi,
       state: getParticipantRuntime(args.participant).state,
       connection,
+      transportGate: {
+        status: () => transportState.status(),
+        admittedPolicy: () => transportState.admittedPolicy(),
+        allowedPolicy: () => transportState.allowedPolicy(),
+        nowSeconds: () => authorizationContexts.correctedNowSeconds(),
+      },
     },
     connectInfo.transport.inboxPrefix,
   );

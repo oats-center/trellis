@@ -82,9 +82,7 @@ export type ProviderAuthorityPort = {
   readonly contextDigest: string;
   readonly identity: PinnedPeerIdentity;
   checkNow(): LiveAuthorityLost | undefined;
-  /** True while a planned credential rotation is awaiting rebind. */
-  maintenance(): boolean;
-  /** Reconcile across a planned rotation; returns the terminal loss, if any. */
+  /** Reconcile with current authorization; returns the terminal loss, if any. */
   reconcile(): Promise<LiveAuthorityLost | undefined>;
   /** Rebind onto the current transport generation after an ordinary reconnect. */
   rebindCurrentGeneration(): Promise<LiveAuthorityLost | undefined>;
@@ -324,19 +322,18 @@ export class LiveProvider {
   }
 
   /**
-   * Report the provider's own authority loss after attempting maintenance or a
-   * same-generation refresh, so a replaced context never drops a live session.
+   * Report the provider's own authority loss after reconciling against the
+   * current authorization or a same-generation refresh, so a replaced context
+   * never drops a live session.
    */
   async #ownAuthorityLost(): Promise<LiveAuthorityLost | undefined> {
     const guard = this.#host.ownGuard;
-    if (guard.maintenance()) return await guard.reconcile();
-    const lost = guard.checkNow();
+    const lost = await guard.reconcile();
     if (!lost) return undefined;
     if (lost === "epoch_changed") {
-      // An ordinary reconnect replaced the physical attachment without a planned
-      // rotation. Rebind this long-lived guard onto the new generation so new
-      // sessions are admitted; existing sessions were already fenced by the real
-      // outage.
+      // A real reconnect replaced the physical attachment. Rebind this
+      // long-lived guard onto the new generation so new sessions are admitted;
+      // existing sessions were already fenced by the real outage.
       return await guard.rebindCurrentGeneration();
     }
     if (await this.#refreshOwnAuthority()) return undefined;

@@ -70,6 +70,7 @@ export type {
 export { ClientAuthHandledError, TrellisClient } from "./client_connect.ts";
 export type { KvWatchItem, ResourceRevision, TypedKvEntry } from "./kv.ts";
 export type { TrellisErrorInstance } from "./errors/index.ts";
+export type { TransportRefreshErrorCode } from "./errors/index.ts";
 export {
   AuthError,
   KVError,
@@ -80,6 +81,7 @@ export {
   StoreError,
   TransferError,
   TransportError,
+  TransportRefreshError,
   TrellisError,
   UnexpectedError,
   ValidationError,

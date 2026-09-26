@@ -20,6 +20,7 @@ mod resources;
 #[cfg(test)]
 mod rollback_tests;
 mod sessions;
+mod store_identity;
 pub(in crate::platform::auth) mod validation;
 pub(crate) use common::AuthTelemetrySnapshot;
 use common::SqliteConnectionPool;

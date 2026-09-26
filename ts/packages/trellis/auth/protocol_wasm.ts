@@ -181,6 +181,37 @@ export type VerifyAuthorizationEventArgs = {
   revokedAt?: number | null;
 };
 
+/**
+ * Exact signed NATS transport authorization bound into a context.
+ *
+ * Subject patterns use the NATS grammar: literal tokens, `*` matching exactly
+ * one token, and a terminal `>` matching one or more trailing tokens.
+ */
+export type TransportAuthorizationV1 = {
+  /** Wire format; always {@link TRANSPORT_AUTHORIZATION_FORMAT_V1}. */
+  format: string;
+  /** Target NATS account public id the policy applies to. */
+  account: string;
+  /** Subject patterns the attachment may publish. */
+  publishAllow: string[];
+  /** Subject patterns the attachment may subscribe to. */
+  subscribeAllow: string[];
+  /** Bounded response allowance, or null when responses are not permitted. */
+  response: { maxMessages: number; ttlMs: number } | null;
+  /** Exclusive Unix-seconds hard deadline, or null when unbounded. */
+  hardExpiresAt: number | null;
+};
+
+/** Wire format identifier for {@link TransportAuthorizationV1}. */
+export const TRANSPORT_AUTHORIZATION_FORMAT_V1 =
+  "trellis.transport-authorization.v1";
+
+/** Result of classifying admitted transport policy against currently allowed. */
+export type TransportPolicyClass =
+  | "current"
+  | "upgrade_available"
+  | "reduction_required";
+
 /** Projection returned after verifying an online-issued context. */
 export type VerifiedAuthorizationContextTokenProjection = {
   issuer: AuthorizationIssuerKey;
@@ -206,6 +237,7 @@ export type VerifiedAuthorizationContextTokenProjection = {
     expiresAt: number;
     grants: GrantSet;
     platformPrivileges: PlatformPrivilege[];
+    transportAuthorization: TransportAuthorizationV1;
   };
 };
 
@@ -372,6 +404,40 @@ export function assertAuthorizationContextHandleCurrentWasm(
   policy: AuthorizationContextVerificationPolicy,
 ): void {
   handle.assert_current(JSON.stringify(wasmVerificationPolicy(policy)));
+}
+
+/**
+ * Canonical digest of a signed transport-authorization policy.
+ *
+ * This is the same base64url SHA-256 digest the runtime binds into a context,
+ * so browser and raw NATS consumers can confirm they hold the exact policy.
+ */
+export async function transportAuthorizationDigestWasm(
+  policy: TransportAuthorizationV1,
+): Promise<string> {
+  await initializeProtocolWasm();
+  return protocolWasm.transport_authorization_digest(JSON.stringify(policy));
+}
+
+/**
+ * Classify admitted transport policy `A` against currently allowed policy `D`.
+ *
+ * Uses the shared Rust/WASM full-witness inclusion implementation rather than
+ * reimplementing wildcard containment in TypeScript, so both SDKs agree.
+ */
+export async function classifyTransportAuthorizationWasm(
+  admitted: TransportAuthorizationV1,
+  allowed: TransportAuthorizationV1,
+  nowUnixSeconds: number,
+): Promise<TransportPolicyClass> {
+  await initializeProtocolWasm();
+  return JSON.parse(
+    protocolWasm.classify_transport_authorization(
+      JSON.stringify(admitted),
+      JSON.stringify(allowed),
+      nowUnixSeconds,
+    ),
+  ) as TransportPolicyClass;
 }
 
 /** Verify one context-bound request proof using actual received request bytes. */
