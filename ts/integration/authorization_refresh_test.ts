@@ -360,11 +360,13 @@ Deno.test("a Rust provider live session rebinds an unchanged caller context acro
 /**
  * A real native-path outage case: the participant's actual TCP path to NATS is
  * cut while the proactive refresh fires, then restored on the same endpoint.
- * `shortAuthorizationLifetimes` schedules the refresh ~31s after issuance and
- * leaves the predecessor sufficient only until ~46s, so holding the outage for
- * ~36s puts the refresh inside the outage and a ~54s settle puts the final
- * checks past the predecessor window. This is test-fixture timing, not a
- * production default.
+ * Both proof windows are anchored to the moment the path is actually cut, not
+ * to caller connection, so slow provider readiness cannot shorten the outage or
+ * the post-recovery settle. `shortAuthorizationLifetimes` schedules a refresh
+ * at most ~31s after any issuance and leaves a context sufficient only until
+ * ~46s, so a 36s outage guarantees a refresh opportunity while disconnected and
+ * a 55s settle puts the final proof past the cut-time context's validity. This
+ * is test-fixture timing, not a production default.
  */
 const outageRuntimeOptions = {
   ...runtimeOptions,
@@ -375,10 +377,10 @@ const outageRuntimeOptions = {
 const OUTAGE_HOLD_MS = 36_000;
 
 /**
- * Settle past the original context's effective validity so a later success
- * cannot be explained by the predecessor credential still being accepted.
+ * Settle past the cut-time context's effective validity so a later success
+ * cannot be explained by the credential present at the cut still being accepted.
  */
-const PRE_EXPIRY_SETTLE_MS = 54_000;
+const PRE_EXPIRY_SETTLE_MS = 55_000;
 
 Deno.test("a real native NATS outage recovers after authorization refresh and resumes Rust/TS Live", async () => {
   await withTrellisRuntime(async (runtime) => {
@@ -410,9 +412,6 @@ Deno.test("a real native NATS outage recovers after authorization refresh and re
       name: `outage-live-caller-${crypto.randomUUID()}`,
       contract: participants.LiveProbeCaller.participant,
     });
-    // Scheduled refresh and predecessor expiry are measured from the caller's
-    // context issuance, so the fixture window is anchored at connection time.
-    const callerConnectedAt = Date.now();
     const phases: string[] = [];
     const unsubscribe = caller.connection.subscribe((status) =>
       phases.push(status.phase)
@@ -438,6 +437,10 @@ Deno.test("a real native NATS outage recovers after authorization refresh and re
       }, { timeoutMs: 120_000 });
 
       runtime.interruptNativeTransport();
+      // Anchor both proof windows to the real cut: readiness may have consumed
+      // an arbitrary amount of time, and the outage must still span a scheduled
+      // refresh and the settle must still cross the cut-time context's validity.
+      const outageStartedAt = Date.now();
 
       // A genuine outage, not a synthesized status event: the caller must
       // publish a real non-connected logical phase.
@@ -453,7 +456,7 @@ Deno.test("a real native NATS outage recovers after authorization refresh and re
 
       // Hold the cut across the scheduled refresh (~31s after issuance) so both
       // endpoints refresh while genuinely disconnected.
-      while (Date.now() - callerConnectedAt < OUTAGE_HOLD_MS) {
+      while (Date.now() - outageStartedAt < OUTAGE_HOLD_MS) {
         const phase = caller.connection.status.phase;
         assert(
           phase !== "connected",
@@ -474,8 +477,8 @@ Deno.test("a real native NATS outage recovers after authorization refresh and re
       );
 
       // Recovery immediately after restoration is necessary but not sufficient:
-      // settle past the predecessor's effective validity window first.
-      const remaining = PRE_EXPIRY_SETTLE_MS - (Date.now() - callerConnectedAt);
+      // settle past the cut-time context's validity window first.
+      const remaining = PRE_EXPIRY_SETTLE_MS - (Date.now() - outageStartedAt);
       if (remaining > 0) {
         await new Promise((resolve) => setTimeout(resolve, remaining));
       }
