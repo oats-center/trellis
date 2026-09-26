@@ -379,7 +379,7 @@ export const apiReferenceDocs: DocEntry[] = [
     title: "trellis-testkit",
     description:
       "External out-of-process live-test harness for Rust service and app integration tests.",
-    href: "/api/rust/trellis_test/index.html",
+    href: "/api/rust/trellis_testkit/index.html",
     section: "Rustdoc",
   },
 ];

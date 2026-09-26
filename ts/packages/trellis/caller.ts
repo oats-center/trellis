@@ -45,6 +45,17 @@ type SelectedActionShape = {
   payload?: unknown;
 };
 type DescriptorName<T> = T extends `${string}:${infer TName}` ? TName : never;
+
+type OperationDescriptorFor<TAction> = {
+  subject: string;
+  input: TAction extends { input: infer TInput } ? TInput : undefined;
+  output: TAction extends { output: infer TOutput } ? TOutput : undefined;
+  progress: TAction extends { progress: infer TProgress } ? TProgress
+    : undefined;
+  update: TAction extends { update: infer TUpdate } ? TUpdate : undefined;
+  transfer: TAction extends { upload: true } ? { direction: "send" }
+    : undefined;
+};
 type SelectedDescriptor<TSelection> = TSelection extends {
   api: { actions: Readonly<Record<string, unknown>> };
   actions: readonly { descriptorName: string; direction: unknown }[];
@@ -112,9 +123,11 @@ type ActionMethod<TAction extends SelectedActionShape> = TAction["kind"] extends
   : TAction["kind"] extends "operation"
     ? TAction["input"] extends GeneratedCodec ?
         & ((input: CodecValue<TAction["input"]>) => ReturnType<
-          OperationInvoker<never>["input"]
+          OperationInvoker<OperationDescriptorFor<TAction>>["input"]
         >)
-        & { resume: OperationInvoker<never>["resume"] }
+        & {
+          resume: OperationInvoker<OperationDescriptorFor<TAction>>["resume"];
+        }
     : never
   : TAction["kind"] extends "live"
     ? TAction["input"] extends GeneratedCodec

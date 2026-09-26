@@ -14,8 +14,8 @@ use super::super::{
     DeviceActivationReviewRecord, DeviceActivationReviewState, DeviceDelegationState,
     DeviceProvisioningSecretRecord, DeviceRecord, DeviceState, IdempotencyResultRecord,
     PrincipalKind, PrincipalRecord, PrincipalState, ProvisionedIdentityKind,
-    ProvisionedIdentityRecord, ProvisioningSecretState, RuntimeInstanceRecord,
-    RuntimeInstanceState,
+    ProvisionedIdentityRecord, ProvisionedIdentityState, ProvisioningSecretState,
+    RuntimeInstanceRecord, RuntimeInstanceState,
 };
 use super::common::{
     decode_enum, decode_json, encode_enum, encode_json, from_sql_version, map_write_error,
@@ -551,38 +551,170 @@ impl ProvisioningRepository for SqliteAuthorizationStore {
 
     async fn provision_service_identity(
         &self,
-        command: ServiceIdentityProvisioning,
+        mut command: ServiceIdentityProvisioning,
     ) -> Result<IdempotentOutcome<ProvisionedIdentityRecord>, AuthorizationStateError> {
         self.run(move |connection| {
             let transaction = connection.transaction().map_err(sql_error)?;
             if let Some(result) = sqlite_idempotency_replay(&transaction, &command.idempotency)? {
                 return Ok(IdempotentOutcome::Replayed(result));
             }
-            validate_sql_new_runtime_relationships(
-                &transaction,
-                &command.principal,
-                &command.instance,
-                ProvisionedIdentityKind::Service,
-            )?;
-            if command.identity.principal_id != command.principal.principal_id
-                || command.identity.deployment_id != command.instance.deployment_id
-                || command.identity.instance_id != command.instance.instance_id
-                || command.identity.kind != ProvisionedIdentityKind::Service
+            // The identity key is the stable identity. The existing-versus-new
+            // decision is made here, inside the transaction, so a repeated
+            // provision reuses the same principal and instance instead of
+            // racing a separate lookup against a fresh insert.
+            let identity = match load_provisioned_identity(&transaction, &command.identity_key_id)?
             {
-                return Err(AuthorizationStateError::InvalidRecord(
-                    "service identity aggregate does not match exactly".to_owned(),
-                ));
-            }
-            insert_sql_principal(&transaction, &command.principal)?;
-            insert_sql_runtime_instance(&transaction, &command.instance)?;
-            insert_sql_provisioned_identity(&transaction, &command.identity)?;
+                Some(existing) => {
+                    if existing.kind != ProvisionedIdentityKind::Service
+                        || existing.identity_public_key != command.identity_public_key
+                        || existing.deployment_id != command.deployment_id
+                    {
+                        return Err(AuthorizationStateError::InvalidRecord(
+                            "service identity does not match provisioning".to_owned(),
+                        ));
+                    }
+                    if command
+                        .requested_instance_id
+                        .as_ref()
+                        .is_some_and(|requested| requested != &existing.instance_id)
+                    {
+                        return Err(AuthorizationStateError::InvalidRecord(
+                            "requested instance does not match the existing identity".to_owned(),
+                        ));
+                    }
+                    let principal = load_principal(&transaction, &existing.principal_id)?
+                        .ok_or(AuthorizationStateError::StorageConflict)?;
+                    let instance = load_runtime_instance(&transaction, &existing.instance_id)?
+                        .ok_or(AuthorizationStateError::StorageConflict)?;
+                    if existing.state == ProvisionedIdentityState::Revoked
+                        || instance.state == RuntimeInstanceState::Revoked
+                        || principal.state == PrincipalState::Revoked
+                    {
+                        return Err(AuthorizationStateError::InvalidRecord(
+                            "revoked service identity cannot be reprovisioned".to_owned(),
+                        ));
+                    }
+                    let mut authorization_changed = false;
+                    if existing.state != ProvisionedIdentityState::Active {
+                        transaction
+                            .execute(
+                                "UPDATE auth_provisioned_identities SET state = ?1, revoked_at = NULL
+                                 WHERE identity_key_id = ?2",
+                                params![
+                                    encode_enum(ProvisionedIdentityState::Active)?,
+                                    existing.identity_key_id
+                                ],
+                            )
+                            .map_err(map_write_error)?;
+                        authorization_changed = true;
+                    }
+                    if instance.state != RuntimeInstanceState::Active {
+                        transaction
+                            .execute(
+                                "UPDATE auth_instances SET state = ?1, updated_at = ?2, version = ?3
+                                 WHERE instance_id = ?4 AND version = ?5",
+                                params![
+                                    encode_enum(RuntimeInstanceState::Active)?,
+                                    command.created_at,
+                                    to_sql_version(next_version(instance.version)?)?,
+                                    instance.instance_id,
+                                    to_sql_version(instance.version)?
+                                ],
+                            )
+                            .map_err(map_write_error)?;
+                        authorization_changed = true;
+                    }
+                    if principal.state != PrincipalState::Active {
+                        transaction
+                            .execute(
+                                "UPDATE auth_principals SET state = ?1, updated_at = ?2, version = ?3,
+                                        disabled_at = NULL, revoked_at = NULL
+                                 WHERE principal_id = ?4 AND version = ?5",
+                                params![
+                                    encode_enum(PrincipalState::Active)?,
+                                    command.created_at,
+                                    to_sql_version(next_version(principal.version)?)?,
+                                    principal.principal_id,
+                                    to_sql_version(principal.version)?
+                                ],
+                            )
+                            .map_err(map_write_error)?;
+                        authorization_changed = true;
+                    }
+                    if authorization_changed {
+                        revoke_sql_contexts(
+                            &transaction,
+                            &AuthorizationContextSelector::Instance(instance.instance_id.clone()),
+                            AuthorizationContextRevocationReason::InstanceChanged,
+                            command.created_at.div_euclid(1_000),
+                        )?;
+                    }
+                    ProvisionedIdentityRecord {
+                        state: ProvisionedIdentityState::Active,
+                        revoked_at: None,
+                        ..existing
+                    }
+                }
+                None => {
+                    let principal_id = command.proposed_principal_id;
+                    let instance_id = command
+                        .requested_instance_id
+                        .unwrap_or(command.proposed_instance_id);
+                    let principal = PrincipalRecord {
+                        principal_id: principal_id.clone(),
+                        kind: PrincipalKind::Service,
+                        state: PrincipalState::Active,
+                        created_at: command.created_at,
+                        updated_at: command.created_at,
+                        version: 1,
+                        disabled_at: None,
+                        revoked_at: None,
+                    };
+                    let instance = RuntimeInstanceRecord {
+                        instance_id: instance_id.clone(),
+                        deployment_id: command.deployment_id.clone(),
+                        principal_id: principal_id.clone(),
+                        state: RuntimeInstanceState::Active,
+                        created_at: command.created_at,
+                        updated_at: command.created_at,
+                        version: 1,
+                    };
+                    let identity = ProvisionedIdentityRecord {
+                        identity_key_id: command.identity_key_id.clone(),
+                        identity_public_key: command.identity_public_key.clone(),
+                        principal_id,
+                        deployment_id: command.deployment_id.clone(),
+                        instance_id,
+                        kind: ProvisionedIdentityKind::Service,
+                        state: ProvisionedIdentityState::Active,
+                        created_at: command.created_at,
+                        revoked_at: None,
+                    };
+                    validate_provisioned_identity(&identity)?;
+                    validate_sql_new_runtime_relationships(
+                        &transaction,
+                        &principal,
+                        &instance,
+                        ProvisionedIdentityKind::Service,
+                    )?;
+                    insert_sql_principal(&transaction, &principal)?;
+                    insert_sql_runtime_instance(&transaction, &instance)?;
+                    insert_sql_provisioned_identity(&transaction, &identity)?;
+                    identity
+                }
+            };
+            command.idempotency.result = serde_json::json!({
+                "principalId": identity.principal_id,
+                "instanceId": identity.instance_id,
+                "identityKeyId": identity.identity_key_id,
+            });
             insert_sql_idempotency_and_actions(
                 &transaction,
                 &command.idempotency,
                 &command.actions,
             )?;
             transaction.commit().map_err(sql_error)?;
-            Ok(IdempotentOutcome::Applied(command.identity))
+            Ok(IdempotentOutcome::Applied(identity))
         })
         .await
     }
@@ -1248,60 +1380,75 @@ mod tests {
         let identity_public_key = URL_SAFE_NO_PAD.encode(signing_key.verifying_key().as_bytes());
         let identity_key_id =
             URL_SAFE_NO_PAD.encode(Sha256::digest(signing_key.verifying_key().as_bytes()));
+        let first_principal = PrincipalRecord {
+            principal_id: first_principal_id.clone(),
+            kind: PrincipalKind::Service,
+            state: PrincipalState::Active,
+            created_at: NOW,
+            updated_at: NOW,
+            version: 1,
+            disabled_at: None,
+            revoked_at: None,
+        };
+        let first_instance = RuntimeInstanceRecord {
+            instance_id: first_instance_id.clone(),
+            deployment_id: deployment_id.clone(),
+            principal_id: first_principal_id.clone(),
+            state: RuntimeInstanceState::Active,
+            created_at: NOW,
+            updated_at: NOW,
+            version: 1,
+        };
+        let first_identity = ProvisionedIdentityRecord {
+            identity_key_id: identity_key_id.clone(),
+            identity_public_key: identity_public_key.clone(),
+            principal_id: first_principal_id.clone(),
+            deployment_id: deployment_id.clone(),
+            instance_id: first_instance_id.clone(),
+            kind: ProvisionedIdentityKind::Service,
+            state: ProvisionedIdentityState::Active,
+            created_at: NOW,
+            revoked_at: None,
+        };
         let first = ServiceIdentityProvisioning {
-            principal: PrincipalRecord {
-                principal_id: first_principal_id.clone(),
-                kind: PrincipalKind::Service,
-                state: PrincipalState::Active,
-                created_at: NOW,
-                updated_at: NOW,
-                version: 1,
-                disabled_at: None,
-                revoked_at: None,
-            },
-            instance: RuntimeInstanceRecord {
-                instance_id: first_instance_id.clone(),
-                deployment_id: deployment_id.clone(),
-                principal_id: first_principal_id.clone(),
-                state: RuntimeInstanceState::Active,
-                created_at: NOW,
-                updated_at: NOW,
-                version: 1,
-            },
-            identity: ProvisionedIdentityRecord {
-                identity_key_id,
-                identity_public_key,
-                principal_id: first_principal_id.clone(),
-                deployment_id: deployment_id.clone(),
-                instance_id: first_instance_id.clone(),
-                kind: ProvisionedIdentityKind::Service,
-                state: ProvisionedIdentityState::Active,
-                created_at: NOW,
-                revoked_at: None,
-            },
+            deployment_id: deployment_id.clone(),
+            identity_key_id: identity_key_id.clone(),
+            identity_public_key: identity_public_key.clone(),
+            requested_instance_id: Some(first_instance_id.clone()),
+            proposed_principal_id: first_principal_id.clone(),
+            proposed_instance_id: first_instance_id.clone(),
+            created_at: NOW,
             idempotency: idempotency("provision-first"),
             actions: Vec::new(),
         };
         let second_key = SigningKey::from_bytes(&[8; 32]);
         let second_public_key = URL_SAFE_NO_PAD.encode(second_key.verifying_key().as_bytes());
+        let second_identity_key_id =
+            URL_SAFE_NO_PAD.encode(Sha256::digest(second_key.verifying_key().as_bytes()));
+        let second_principal = PrincipalRecord {
+            principal_id: second_principal_id.clone(),
+            ..first_principal.clone()
+        };
+        let second_instance = RuntimeInstanceRecord {
+            instance_id: second_instance_id.clone(),
+            principal_id: second_principal_id.clone(),
+            ..first_instance.clone()
+        };
+        let second_identity = ProvisionedIdentityRecord {
+            identity_key_id: second_identity_key_id.clone(),
+            identity_public_key: second_public_key.clone(),
+            principal_id: second_principal_id.clone(),
+            instance_id: second_instance_id.clone(),
+            ..first_identity.clone()
+        };
         let second = ServiceIdentityProvisioning {
-            principal: PrincipalRecord {
-                principal_id: second_principal_id.clone(),
-                ..first.principal.clone()
-            },
-            instance: RuntimeInstanceRecord {
-                instance_id: second_instance_id.clone(),
-                principal_id: second_principal_id.clone(),
-                ..first.instance.clone()
-            },
-            identity: ProvisionedIdentityRecord {
-                identity_key_id: URL_SAFE_NO_PAD
-                    .encode(Sha256::digest(second_key.verifying_key().as_bytes())),
-                identity_public_key: second_public_key,
-                principal_id: second_principal_id.clone(),
-                instance_id: second_instance_id.clone(),
-                ..first.identity.clone()
-            },
+            deployment_id: deployment_id.clone(),
+            identity_key_id: second_identity_key_id.clone(),
+            identity_public_key: second_public_key.clone(),
+            requested_instance_id: Some(second_instance_id.clone()),
+            proposed_principal_id: second_principal_id.clone(),
+            proposed_instance_id: second_instance_id.clone(),
+            created_at: NOW,
             idempotency: idempotency("provision-second"),
             actions: Vec::new(),
         };
@@ -1314,7 +1461,10 @@ mod tests {
             .await
             .expect("provision second service");
 
-        for (byte, service) in [(1_u8, &first), (2, &second)] {
+        for (byte, principal, identity, instance) in [
+            (1_u8, &first_principal, &first_identity, &first_instance),
+            (2, &second_principal, &second_identity, &second_instance),
+        ] {
             let context_key = SigningKey::from_bytes(&[byte; 32]);
             let public_key = URL_SAFE_NO_PAD.encode(context_key.verifying_key().as_bytes());
             let connection_id = ulid::Ulid::new().to_string();
@@ -1324,16 +1474,16 @@ mod tests {
                     .encode(Sha256::digest(context_key.verifying_key().as_bytes())),
                 connection_id: connection_id.clone(),
                 session_key: public_key.clone(),
-                principal_id: service.principal.principal_id.clone(),
+                principal_id: principal.principal_id.clone(),
                 principal_kind: AuthorizationPrincipalKind::Service,
                 participant_id: participant_id.clone(),
                 owner_kind: GrantOwnerKind::Deployment,
                 owner_id: deployment_id.clone(),
                 grant_revision: 1,
-                identity_key_id: Some(service.identity.identity_key_id.clone()),
+                identity_key_id: Some(identity.identity_key_id.clone()),
                 login_session_id: None,
                 deployment_id: Some(deployment_id.clone()),
-                instance_id: Some(service.instance.instance_id.clone()),
+                instance_id: Some(instance.instance_id.clone()),
                 inbox_prefix: format!("_INBOX.{connection_id}"),
                 issued_at: NOW / 1_000,
                 not_before: NOW / 1_000,
@@ -1372,11 +1522,11 @@ mod tests {
                 .expect("retain authorization context");
         }
 
-        let mut revoked_instance = first.instance.clone();
+        let mut revoked_instance = first_instance.clone();
         revoked_instance.state = RuntimeInstanceState::Revoked;
         revoked_instance.updated_at = NOW + 1_000;
         revoked_instance.version = 2;
-        let mut revoked_identity = first.identity.clone();
+        let mut revoked_identity = first_identity.clone();
         revoked_identity.state = ProvisionedIdentityState::Revoked;
         revoked_identity.revoked_at = Some(NOW + 1_000);
         assert!(matches!(
@@ -1403,7 +1553,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .get_provisioned_identity(&first.identity.identity_key_id)
+                .get_provisioned_identity(&first_identity.identity_key_id)
                 .await
                 .expect("read first identity"),
             Some(revoked_identity)
@@ -1413,14 +1563,14 @@ mod tests {
                 .get_runtime_instance(&second_instance_id)
                 .await
                 .expect("read second instance"),
-            Some(second.instance.clone())
+            Some(second_instance.clone())
         );
         assert_eq!(
             store
-                .get_provisioned_identity(&second.identity.identity_key_id)
+                .get_provisioned_identity(&second_identity.identity_key_id)
                 .await
                 .expect("read second identity"),
-            Some(second.identity.clone())
+            Some(second_identity.clone())
         );
 
         let contexts = store
@@ -1444,6 +1594,85 @@ mod tests {
                 .expect("second context remains in history")
                 .state,
             AuthorizationContextState::Active
+        );
+    }
+
+    #[tokio::test]
+    async fn provisioning_the_same_identity_reuses_its_aggregate() {
+        let store = SqliteAuthorizationStore::open_in_memory().expect("open sqlite auth store");
+        let participant = builtins::auth_runtime_participant_binding(NOW)
+            .expect("build service participant evidence");
+        let participant_id = participant.participant_id.clone();
+        store
+            .put_participant_binding(participant)
+            .await
+            .expect("install service participant evidence");
+        let deployment_id = ulid::Ulid::new().to_string();
+        store
+            .run({
+                let deployment_id = deployment_id.clone();
+                let participant_id = participant_id.clone();
+                move |connection| {
+                    super::super::evidence::put_sql_deployment_evidence(
+                        connection,
+                        DeploymentRecord {
+                            deployment_id,
+                            participant_id,
+                            participant_kind: ParticipantKind::Service,
+                            active: true,
+                            expires_at: None,
+                        },
+                    )
+                }
+            })
+            .await
+            .expect("install deployment evidence");
+
+        let signing_key = SigningKey::from_bytes(&[21; 32]);
+        let identity_public_key = URL_SAFE_NO_PAD.encode(signing_key.verifying_key().as_bytes());
+        let identity_key_id =
+            URL_SAFE_NO_PAD.encode(Sha256::digest(signing_key.verifying_key().as_bytes()));
+        // Each request proposes fresh IDs; the identity key is the stable
+        // identity, so the transaction must reuse the first aggregate.
+        let command = |request_id: &str| ServiceIdentityProvisioning {
+            deployment_id: deployment_id.clone(),
+            identity_key_id: identity_key_id.clone(),
+            identity_public_key: identity_public_key.clone(),
+            requested_instance_id: None,
+            proposed_principal_id: ulid::Ulid::new().to_string(),
+            proposed_instance_id: ulid::Ulid::new().to_string(),
+            created_at: NOW,
+            idempotency: idempotency(request_id),
+            actions: Vec::new(),
+        };
+        let first = store
+            .provision_service_identity(command("provision-first-attempt"))
+            .await
+            .expect("first provision");
+        let second = store
+            .provision_service_identity(command("provision-second-attempt"))
+            .await
+            .expect("second provision");
+        let first_identity = match first {
+            IdempotentOutcome::Applied(identity) => identity,
+            IdempotentOutcome::Replayed(_) => panic!("first provision replayed"),
+        };
+        let second_identity = match second {
+            IdempotentOutcome::Applied(identity) => identity,
+            IdempotentOutcome::Replayed(_) => panic!("second provision replayed"),
+        };
+        assert_eq!(first_identity.principal_id, second_identity.principal_id);
+        assert_eq!(first_identity.instance_id, second_identity.instance_id);
+        assert_eq!(
+            first_identity.identity_key_id,
+            second_identity.identity_key_id
+        );
+        assert_eq!(
+            store
+                .get_provisioned_identity(&identity_key_id)
+                .await
+                .expect("read identity"),
+            Some(first_identity)
         );
     }
 

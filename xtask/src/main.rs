@@ -227,7 +227,7 @@ fn generate_builtin_package(root: &Path) -> Result<()> {
 
 fn project_testkit_admin_source(root: &Path) -> Result<()> {
     let source = root.join("crates/runtime-apis/src");
-    let target = root.join("crates/trellis-test/src/runtime_api");
+    let target = root.join("crates/trellis-testkit/src/runtime_api");
     let staging = root.join("crates/.trellis-test-runtime-api");
     let backup = root.join("crates/.trellis-test-runtime-api-backup");
     if staging.exists() {

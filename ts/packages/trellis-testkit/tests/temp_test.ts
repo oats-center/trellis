@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import { basename } from "@std/path";
 import { sqliteMemoryUrl, tempSqlitePath } from "../src/temp.ts";
 
@@ -10,5 +10,4 @@ Deno.test("tempSqlitePath creates a path with requested basename", async () => {
   const path = await tempSqlitePath("service.sqlite");
 
   assertEquals(basename(path), "service.sqlite");
-  assert(path.includes("trellis-test-sqlite-"));
 });

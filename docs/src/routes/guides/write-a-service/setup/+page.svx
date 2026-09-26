@@ -27,7 +27,7 @@ documentation from that release rather than combining authoring generations.
 mkdir orders-service
 cd orders-service
 deno init
-deno add npm:@oatscenter/trellis jsr:@oatscenter/trellis-test jsr:@std/assert
+deno add npm:@oatscenter/trellis jsr:@oatscenter/trellis-testkit jsr:@std/assert
 ```
 
 Select matching released versions when installing packages. Keep the import

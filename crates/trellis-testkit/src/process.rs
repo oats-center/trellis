@@ -230,7 +230,7 @@ impl ProcessSupervisor {
             shutdown_deadline
         };
         let thread = std::thread::Builder::new()
-            .name("trellis-test-supervisor".to_owned())
+            .name("trellis-testkit-supervisor".to_owned())
             .spawn(move || supervise(rx, deadline))
             .expect("spawn supervisor thread");
         Self {

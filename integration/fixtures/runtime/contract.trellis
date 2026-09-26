@@ -69,6 +69,7 @@ service Provider {
   job keyedWork { title "Keyed work"; description "Runtime keyed queue acceptance."; payload KeyedValue; result KeyedValue; key_concurrency { path key; policy queue; } }
   kv records { title "Records"; description "Rust KV acceptance values."; schema ResourceValue; version 1; history 4; ttl 0ms; }
   store files { title "Files"; description "Runtime fixture transfer files."; ttl 0; desired_max_object 1MiB; desired_max_total 8MiB; }
+  store archive { title "Archive"; description "Runtime fixture secondary transfer destination."; ttl 0; desired_max_object 1MiB; desired_max_total 8MiB; }
   consumer changes { title "Changes"; description "Runtime fixture durable changes."; events [runtime.Changed]; concurrency 1; replay new; }
 }
 service OperationProvider {

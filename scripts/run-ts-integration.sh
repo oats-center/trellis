@@ -91,7 +91,7 @@ build_testkit_live() {
     --manifest-path integration/fixtures/testkit/Cargo.toml \
     --config "patch.crates-io.trellis-protocol.path=\"$root/crates/protocol\"" \
     --config "patch.crates-io.trellis-rs.path=\"$root/crates/trellis\"" \
-    --config "patch.crates-io.trellis-testkit.path=\"$root/crates/trellis-test\"" \
+    --config "patch.crates-io.trellis-testkit.path=\"$root/crates/trellis-testkit\"" \
     --test live \
     --message-format=json > "$json"
   local executable

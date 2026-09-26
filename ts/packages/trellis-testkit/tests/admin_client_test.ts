@@ -19,6 +19,8 @@ Deno.test("concurrent deployment creation shares failure and permits retry", asy
     deploymentIds: new Map(),
     installedParticipants: new Map(),
     pendingApprovals: new Map(),
+    deploymentResourceExpectations: new Map(),
+    resourceReadyTimeoutMs: 30_000,
     rpc: <M extends TrellisTestAdminRpcMethod>(
       method: M,
       _input: AdminRpc[M]["input"],

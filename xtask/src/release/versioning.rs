@@ -448,7 +448,7 @@ fn internal_js_package_names() -> &'static [&'static str] {
         "@oatscenter/result",
         "@oatscenter/trellis",
         "@oatscenter/trellis-svelte",
-        "@oatscenter/trellis-test",
+        "@oatscenter/trellis-testkit",
     ]
 }
 

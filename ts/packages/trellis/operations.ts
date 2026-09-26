@@ -444,8 +444,6 @@ type OperationShape = {
   update?: unknown;
   output?: unknown;
   transfer?: {
-    store?: string;
-    key?: `/${string}`;
     contentType?: `/${string}`;
     metadata?: `/${string}`;
     expiresInMs?: number;

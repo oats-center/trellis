@@ -78,7 +78,7 @@ jobs:
             --manifest-path integration/fixtures/testkit/Cargo.toml \
             --config "patch.crates-io.trellis-protocol.path=\"$GITHUB_WORKSPACE/crates/protocol\"" \
             --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\"" \
-            --config "patch.crates-io.trellis-testkit.path=\"$GITHUB_WORKSPACE/crates/trellis-test\"" \
+            --config "patch.crates-io.trellis-testkit.path=\"$GITHUB_WORKSPACE/crates/trellis-testkit\"" \
             --test live \
             --message-format=json > "$RUNNER_TEMP/testkit-live.json"
           executable="$(jq -r 'select(.executable != null) | .executable' "$RUNNER_TEMP/testkit-live.json" | tail -n1)"
@@ -86,13 +86,13 @@ jobs:
           cp target/release/trellis target/release/trellis-server target/debug/
 
       - name: Acquire the pinned NATS executable
-        run: bash scripts/acquire-test-nats.sh --dest /tmp/trellis-test-nats
+        run: bash scripts/acquire-test-nats.sh --dest /tmp/trellis-testkit-nats
 
       - name: Run the prebuilt testkit live binary with a host probe
         env:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
-          TRELLIS_TEST_NATS_BIN: /tmp/trellis-test-nats/nats-server
+          TRELLIS_TEST_NATS_BIN: /tmp/trellis-testkit-nats/nats-server
           RUST_BACKTRACE: "1"
         run: |
           set +e

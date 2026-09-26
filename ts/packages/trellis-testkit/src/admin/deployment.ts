@@ -45,8 +45,62 @@ export type AdminDeploymentContext = {
     string,
     { digest: string; participantId: string; revision: bigint }
   >;
+  /** Required resources each applied deployment must materialize before use. */
+  deploymentResourceExpectations: Map<string, DeploymentResourceExpectation[]>;
+  /** Startup deadline for awaiting deployment resource materialization. */
+  resourceReadyTimeoutMs: number;
   rpc: AdminDeploymentRpc;
 };
+
+/** One server-approved required resource a deployment must materialize. */
+export type DeploymentResourceExpectation = {
+  resourceKind: string;
+  localName: string;
+};
+
+/** Maps a consent resource kind to its materialized binding kind. */
+function bindingResourceKind(kind: string): string {
+  switch (kind) {
+    case "consumer":
+      return "eventConsumer";
+    case "job":
+      return "jobQueue";
+    default:
+      return kind;
+  }
+}
+
+/**
+ * Waits until every required resource of an applied deployment reports an
+ * available binding, so a service bootstrap never fails with `resource_pending`.
+ */
+async function awaitDeploymentResources(
+  context: AdminDeploymentContext,
+  deploymentId: string,
+): Promise<void> {
+  const expected = context.deploymentResourceExpectations.get(deploymentId);
+  if (expected === undefined || expected.length === 0) return;
+  const deadline = performance.now() + context.resourceReadyTimeoutMs;
+  while (true) {
+    const detail = await context.rpc("authDeploymentsGet", { deploymentId });
+    const missing = expected.filter((expectation) =>
+      !detail.resources.some((resource) =>
+        resource.resourceKind === expectation.resourceKind &&
+        resource.localName === expectation.localName &&
+        resource.state === "available"
+      )
+    );
+    if (missing.length === 0) return;
+    if (performance.now() >= deadline) {
+      throw new Error(
+        `Trellis deployment ${deploymentId} did not materialize required resources within ${context.resourceReadyTimeoutMs}ms: ${
+          missing.map((item) => `${item.resourceKind}:${item.localName}`).join(", ")
+        }`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
 
 /** @internal Applies a deployment, explicitly approving server-computed consent when required. */
 export async function applyWithServerConsent<T>(
@@ -191,6 +245,15 @@ function finalizeParticipantApply(
     participantId: applied.binding.participantId,
     revision: applied.binding.installedRevision,
   });
+  context.deploymentResourceExpectations.set(
+    deploymentId,
+    applied.consentRequest.resources
+      .filter((resource) => resource.required)
+      .map((resource) => ({
+        resourceKind: bindingResourceKind(resource.kind),
+        localName: resource.name,
+      })),
+  );
   recordTrellisDuration(
     "trellis.admin.workflow.duration",
     performance.now() - pending.startedAt,
@@ -359,6 +422,7 @@ export async function provisionServiceInstance(
       participantId: approved.participantId,
     },
   );
+  await awaitDeploymentResources(context, approved.deploymentId);
   return {
     seed: identitySeed,
     deploymentId: approved.deploymentId,

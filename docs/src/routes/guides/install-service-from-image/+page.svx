@@ -40,6 +40,14 @@ Provisioning returns private identity material once. Put the seed in the secret
 manager used by the container platform. Trellis stores only the immutable public
 identity.
 
+Provisioning is idempotent by identity: the Ed25519 identity key is the stable
+identity. A bare `provision` returns the deployment's current instance when one
+exists, reactivating a revivable instance in place, and only mints a new identity
+when none exists. The original private seed cannot be recovered, so store it at
+first provision. Pass `--new` to add another replica deliberately, or
+`--instance-seed <seed>` to select a known identity. A bare provision with more
+than one current instance fails as ambiguous instead of guessing.
+
 ## 4. Run the container
 
 Pass only the runtime URL and the provisioned identity material required by the

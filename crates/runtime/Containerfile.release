@@ -1,0 +1,79 @@
+# The runtime image is assembly-only: the `trellis-server` and `trellis` executables
+# are built once by the native product producer (`.github/workflows/release.yml`,
+# the `build-cli-linux` job) and copied in here. `trellis-server` embeds the
+# generated browser assets at compile time (crates/runtime/build.rs), so no source
+# tree, Rust toolchain, xtask, or conformance copy belongs in this image.
+#
+# The build receives the producer's `trellis-<version>-<target>.tar.gz` archive
+# staged under `dist/native/<goarch>/` in the build context, where the directory
+# name matches buildx's `TARGETARCH` (amd64/arm64).
+
+# Bake the pinned nats-server binary (local-nats/nats-binaries.json) so the runtime
+# image never downloads it at container runtime. TARGETARCH is set by buildx
+# (amd64/arm64); it maps directly onto the pin's linux-<arch> keys. The release URL is
+# derived from the pinned version: the pin file stores version + per-platform sha256
+# only, and the build fails when the pin is missing or malformed (sha must be 64
+# lowercase hex digits). This stage runs on the build platform, so the download is
+# never emulated.
+FROM --platform=$BUILDPLATFORM docker.io/library/debian:bookworm-slim AS nats
+
+ARG TARGETARCH
+
+# The pin file is copied before the RUN so a pin change invalidates this stage's cache.
+COPY crates/local-nats/nats-binaries.json /src/crates/local-nats/nats-binaries.json
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends curl jq ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && asset="linux-${TARGETARCH}" \
+    && version="$(jq -r '.["nats-server"].version // empty' /src/crates/local-nats/nats-binaries.json)" \
+    && sha="$(jq -r --arg asset "$asset" '.["nats-server"].sha256[$asset] // empty' /src/crates/local-nats/nats-binaries.json)" \
+    && if [ -z "$version" ] || [ -z "$sha" ]; then \
+          echo "nats-server pin for ${asset} is missing version or sha256 in local-nats/nats-binaries.json" >&2; \
+         exit 1; \
+       fi \
+    && if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{64}$'; then \
+         echo "nats-server sha256 for ${asset} is not 64 lowercase hex digits: ${sha}" >&2; \
+         exit 1; \
+       fi \
+    && url="https://github.com/nats-io/nats-server/releases/download/v${version}/nats-server-v${version}-linux-${TARGETARCH}.tar.gz" \
+    && curl --fail --location --retry 3 --output /tmp/nats-server.tar.gz "$url" \
+    && actual="$(sha256sum /tmp/nats-server.tar.gz | awk '{print $1}')" \
+    && if [ "$actual" != "$sha" ]; then \
+         echo "sha256 mismatch for nats-server ${asset}: expected ${sha}, got ${actual}" >&2; \
+         exit 1; \
+       fi \
+    && mkdir -p /out \
+    && tar -xzf /tmp/nats-server.tar.gz --strip-components=1 --directory /out \
+    && test -x /out/nats-server \
+    && rm /tmp/nats-server.tar.gz
+
+FROM docker.io/library/debian:bookworm-slim AS runtime
+
+ARG TARGETARCH
+ARG TRELLIS_VERSION=dev
+ARG TRELLIS_REVISION=
+
+LABEL org.opencontainers.image.title="trellis" \
+      org.opencontainers.image.description="Trellis Rust runtime" \
+      org.opencontainers.image.version="${TRELLIS_VERSION}" \
+      org.opencontainers.image.revision="${TRELLIS_REVISION}"
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --user-group --uid 10001 --home-dir /var/lib/trellis trellis \
+    && install --directory --owner trellis --group trellis \
+      /var/lib/trellis /var/cache/trellis /var/log/trellis /run/trellis /etc/trellis
+
+COPY dist/native/${TARGETARCH}/trellis-server /usr/local/bin/trellis-server
+COPY dist/native/${TARGETARCH}/trellis /usr/local/bin/trellis
+COPY --from=nats /out/nats-server /usr/local/bin/nats-server
+
+USER trellis
+WORKDIR /var/lib/trellis
+
+EXPOSE 3000
+
+ENTRYPOINT ["trellis-server"]
+CMD ["--system", "all"]

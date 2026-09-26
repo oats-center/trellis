@@ -10,8 +10,8 @@
   "tasks": {
     "install": "cargo run --manifest-path ../xtask/Cargo.toml -- install",
     "protocol:wasm": "cargo run --manifest-path ../xtask/Cargo.toml -- protocol-wasm",
-    "browser:embedded": "deno task install && deno task protocol:wasm && deno task -c ../web/deno.json build:embedded",
-    "build:runtime": "deno task browser:embedded",
+    "browser:embedded": "deno task -c ../web/deno.json build:embedded",
+    "build:runtime": "deno task install && deno task protocol:wasm && deno task browser:embedded",
     "packages:build:npm": "deno task -c packages/result/deno.json build:npm && deno task -c packages/trellis/deno.json build:npm && deno task -c packages/trellis-svelte/deno.json build:npm",
     "packages:build:npm:installed": "deno task -c packages/result/deno.json build:npm && deno task -c packages/trellis/deno.json build:npm:installed && deno task -c packages/trellis-svelte/deno.json build:npm",
     "test:packaging:built": "deno test -A tools/package_build && deno run -A tools/package_build/demo_consumers.ts",
@@ -39,12 +39,12 @@
         "test:ui-tools"
       ]
     },
-    "test:browser": "deno task browser:embedded && deno test --parallel -A -c browser/deno.json browser/*.browser_test.ts",
+    "test:browser": "deno task install && deno task protocol:wasm && deno task browser:embedded && deno test --parallel -A -c browser/deno.json browser/*.browser_test.ts",
     "test:browser:ui-hosting": "deno test -A -c browser/deno.json browser/ui_hosting.browser_test.ts",
     "test:browser:auth": "deno test -A -c browser/deno.json browser/console_login.browser_test.ts browser/cli_login.browser_test.ts browser/device_agent.browser_test.ts browser/consent_restart.browser_test.ts",
     "test:browser:console": "deno test --parallel -A -c browser/deno.json browser/console_services_devices.browser_test.ts browser/console_portals_grants.browser_test.ts browser/console_users_sessions.browser_test.ts browser/console_observability.browser_test.ts browser/console_navigation_permissions.browser_test.ts",
     "test:browser:functional": "deno task test:browser:auth && deno task test:browser:console",
-    "test:browser:coverage": "TRELLIS_BROWSER_COVERAGE_SOURCEMAP=1 deno task browser:embedded && deno test -A -c browser/deno.json browser/*.browser_test.ts && deno task coverage:browser",
+    "test:browser:coverage": "TRELLIS_BROWSER_COVERAGE_SOURCEMAP=1 deno task install && deno task protocol:wasm && deno task browser:embedded && deno test -A -c browser/deno.json browser/*.browser_test.ts && deno task coverage:browser",
     "coverage:browser": "deno run -A tools/browser_v8_to_lcov.ts",
     "coverage:browser:merge": "deno run -A tools/browser_v8_to_lcov.ts --append-to ../coverage/live-integration/lcov.info",
     "trellis": "bash ../scripts/trellis-cli.sh",

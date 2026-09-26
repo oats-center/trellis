@@ -48,8 +48,8 @@ type RuntimeTimeouts = {
   shutdownMs: number;
 };
 
-const WORKDIR_PREFIX = "trellis-test-";
-const WORKDIR_OWNER_MARKER = ".trellis-test-owner";
+const WORKDIR_PREFIX = "trellis-testkit-";
+const WORKDIR_OWNER_MARKER = ".trellis-testkit-owner";
 
 class TcpProxy {
   readonly url: string;
@@ -474,7 +474,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
       portLease = undefined;
       const deployment = options.deployment ?? "test";
       const adminPassword = options.adminPassword ??
-        `trellis-test-${generateSessionSeed()}`;
+        `trellis-testkit-${generateSessionSeed()}`;
       controlPlane = startedControlPlane;
       const getBootstrapUrl = (): Promise<string> =>
         startedControlPlane.waitForBootstrapUrl(timeouts.startupMs);
@@ -483,6 +483,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
         adminPassword,
         defaultDeployment: deployment,
         getBootstrapUrl,
+        resourceReadyTimeoutMs: timeouts.startupMs,
       });
       return new TrellisTestRuntime({
         trellisUrl: startedControlPlane.trellisUrl,
@@ -588,7 +589,6 @@ export class TrellisTestRuntime implements AsyncDisposable {
     const key = await this.registerClient(args);
     const auth = this.clientAuth(key);
     let client: TrellisTestConnectedClient<TContract> | undefined;
-    const deadline = performance.now() + 2 * this.#timeouts.startupMs;
     let staleAttempts = 0;
     while (!client) {
       try {
@@ -608,26 +608,16 @@ export class TrellisTestRuntime implements AsyncDisposable {
         ) cause = cause.cause;
         if (
           typeof cause === "object" && cause !== null &&
-          "status" in cause && "code" in cause
-        ) {
-          if (
-            cause.status === 503 && cause.code === "resource_pending" &&
-            performance.now() < deadline
-          ) {
-            await new Promise((resolve) => setTimeout(resolve, 100));
-            continue;
-          }
-          if (
-            cause.status === 409 &&
-            [
-              "authority_changed",
-              "consent_decision_stale",
-              "consent_view_changed",
-            ]
-              .includes(String(cause.code)) &&
-            staleAttempts++ < 2
-          ) continue;
-        }
+          "status" in cause && "code" in cause &&
+          cause.status === 409 &&
+          [
+            "authority_changed",
+            "consent_decision_stale",
+            "consent_view_changed",
+          ]
+            .includes(String(cause.code)) &&
+          staleAttempts++ < 2
+        ) continue;
         throw error;
       }
     }

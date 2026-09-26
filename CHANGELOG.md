@@ -73,7 +73,7 @@ and this project adheres to
   a Rust test harness (and vice versa). With no target configured, a single
   detected language still defaults to `trellis`, and multiple targets still
   require explicit outputs.
-- Added `trellis_test::remove_retained_workdirs` to reclaim stale harness-owned
+- Added `trellis_testkit::remove_retained_workdirs` to reclaim stale harness-owned
   sandboxes left by aborted or killed runs. It removes only directories carrying
   this harness's ownership marker, and an age gate leaves currently running
   sandboxes alone.

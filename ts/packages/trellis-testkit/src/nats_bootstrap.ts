@@ -252,7 +252,7 @@ export async function generateLocalNatsBootstrap(args: {
   await Deno.writeTextFile(
     join(args.outDir, "nats.conf"),
     renderNatsConfig({
-      serverName: "trellis-test",
+      serverName: "trellis-testkit",
       ports: args.ports,
       storeDir: join(args.outDir, "data"),
     }),

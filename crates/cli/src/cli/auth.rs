@@ -8,6 +8,10 @@ pub struct LoginArgs {
     #[arg(value_name = "TRELLIS_URL")]
     /// Base URL for the Trellis deployment.
     pub trellis_url: String,
+
+    /// Write the login URL to this path once it is available.
+    #[arg(long = "login-url-file", value_name = "PATH")]
+    pub login_url_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]

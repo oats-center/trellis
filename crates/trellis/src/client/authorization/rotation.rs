@@ -121,9 +121,10 @@ impl AuthorizationTransportRotation {
     /// Abandon a timed-out rotation, reporting whether a physical loss was
     /// suppressed and must now be published as a real logical disconnect.
     pub(crate) fn escalate(&self) -> bool {
-        let loss_pending = self.state.lock().map_or(false, |state| {
-            state.active && !state.reconnected && state.loss_pending
-        });
+        let loss_pending = self
+            .state
+            .lock()
+            .is_ok_and(|state| state.active && !state.reconnected && state.loss_pending);
         self.clear();
         loss_pending
     }

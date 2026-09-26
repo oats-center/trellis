@@ -120,7 +120,7 @@ The JSR publish set is:
 
 - `@oatscenter/result`
 - `@oatscenter/trellis`
-- `@oatscenter/trellis-test`
+- `@oatscenter/trellis-testkit`
 - `@oatscenter/trellis-svelte` from `ts/packages/trellis-svelte/jsr`
 
 The workflow runs JSR dry-runs for the publishable core packages before the release gate. The source `@oatscenter/trellis-svelte` package is built and smoke-tested before release, then staged and published after the matching core JSR version is available; a prepublication JSR dry-run cannot resolve that unreleased dependency.
@@ -129,7 +129,7 @@ The published Rust crate set is:
 
 - `trellis-protocol`
 - `trellis-rs`
-- `trellis-test`
+- `trellis-testkit`
 
 `release prepare` also rewrites the external testkit fixture manifests under
 `integration/fixtures/testkit` so its generated application package carries the
@@ -137,7 +137,7 @@ prepared version. The `rust-testkit-consumer` release job builds a verification
 bundle (the three `.crate` archives, matching CLI/server binaries, a verified
 NATS executable, and the fixture) and runs
 `scripts/verify-rust-test-package.sh` with no repository checkout, patching only
-the three extracted public artifacts. Before the first `trellis-test` upload a
+the three extracted public artifacts. Before the first `trellis-testkit` upload a
 maintainer must confirm the crate name is available and owned by the publisher;
 after publication, repeat the fixture smoke against the real crates.io versions
 with no patch entries.
@@ -287,7 +287,7 @@ cargo run --manifest-path xtask/Cargo.toml -- protocol-wasm
 cargo package --manifest-path Cargo.toml --workspace --allow-dirty \
   --exclude trellis-local-bootstrap --exclude trellis-bootstrap \
   --exclude trellis-local-nats --exclude trellis-jobs-runtime \
-  --exclude trellis-events-runtime --exclude trellis-test \
+  --exclude trellis-events-runtime --exclude trellis-testkit \
   --exclude trellis-protocol-wasm --exclude trellis-codegen-ts \
   --exclude trellis-codegen-rust \
   --exclude trellis-cli --exclude trellis-runtime
@@ -306,7 +306,7 @@ cargo xtask install
 deno task -c ts/deno.json test:result
 deno task -c ts/deno.json test:trellis
 deno task -c ts/deno.json test:trellis-svelte
-deno task -c ts/deno.json test:trellis-test
+deno task -c ts/deno.json test:trellis-testkit
 deno task -c ts/deno.json test:ui-tools
 deno task -c ts/deno.json packages:build:npm
 deno task -c ts/deno.json test:packaging:built
@@ -337,12 +337,17 @@ deno task -c ts/deno.json build:npm
 (cd ts/packages/result && deno publish --dry-run --allow-slow-types --allow-dirty)
 (cd ts/packages/trellis && deno publish --dry-run --allow-slow-types --allow-dirty)
 (cd ts/packages/trellis-testkit && deno publish --dry-run --allow-slow-types --allow-dirty)
-# The runtime image is assembly-only: stage the produced executables first.
+# Release assembly packages already-verified executables: stage them first and
+# use the assembly-only recipe.
 goarch="$(case "$(rustc -vV | sed -n 's/^host: //p')" in x86_64-unknown-linux-gnu) echo amd64;; aarch64-unknown-linux-gnu) echo arm64;; *) echo unknown;; esac)"
 mkdir -p "dist/native/${goarch}"
 cp target/release/trellis target/release/trellis-server "dist/native/${goarch}/"
-docker build -f crates/runtime/Containerfile .
+docker build -f crates/runtime/Containerfile.release .
 docker build -f web/Containerfile .
+
+# The default `crates/runtime/Containerfile` builds the product from source
+# instead, so a clean checkout needs no prior native build:
+# docker build -f crates/runtime/Containerfile .
 ```
 
 If the full integration suites cannot be run, record why and list the focused checks that did run.

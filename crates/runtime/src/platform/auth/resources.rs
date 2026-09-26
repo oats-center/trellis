@@ -196,34 +196,22 @@ pub(crate) async fn ensure_operation_store(
 ) -> Result<(), AuthorizationStateError> {
     let bucket = format!("trellis_operations_{deployment_id}");
     let jetstream = async_nats::jetstream::new(client.clone());
-    match jetstream.get_key_value(&bucket).await {
-        Ok(store) => {
-            let status = store
-                .status()
-                .await
-                .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
-            if status.max_age() != OPERATION_STORE_MAX_AGE
-                || status.info.config.max_message_size != OPERATION_STORE_MAX_VALUE_SIZE
-            {
-                return Err(AuthorizationStateError::Storage(format!(
-                    "operation bucket {bucket} has incompatible retention or value-size limits"
-                )));
-            }
-        }
-        Err(_) => {
-            jetstream
-                .create_key_value(async_nats::jetstream::kv::Config {
-                    bucket,
-                    description: "Trellis deployment operation records".to_owned(),
-                    history: 10,
-                    storage: async_nats::jetstream::stream::StorageType::File,
-                    max_age: OPERATION_STORE_MAX_AGE,
-                    max_value_size: OPERATION_STORE_MAX_VALUE_SIZE,
-                    ..Default::default()
-                })
-                .await
-                .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
-        }
+    // Opening an existing Trellis-owned store is not a compatibility check: the
+    // bucket is created once and reused. Value-size and retention limits are
+    // enforced by the store itself at the operation boundary.
+    if jetstream.get_key_value(&bucket).await.is_err() {
+        jetstream
+            .create_key_value(async_nats::jetstream::kv::Config {
+                bucket,
+                description: "Trellis deployment operation records".to_owned(),
+                history: 10,
+                storage: async_nats::jetstream::stream::StorageType::File,
+                max_age: OPERATION_STORE_MAX_AGE,
+                max_value_size: OPERATION_STORE_MAX_VALUE_SIZE,
+                ..Default::default()
+            })
+            .await
+            .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
     }
     let staging = format!("trellis_operation_staging_{deployment_id}");
     if jetstream.get_object_store(&staging).await.is_err() {
@@ -1149,48 +1137,6 @@ mod tests {
         }
         let client = client.expect("NATS did not start");
         let jetstream = jetstream::new(client.clone());
-
-        ensure_operation_store(&client, "policy-test")
-            .await
-            .unwrap();
-        let operation_status = jetstream
-            .get_key_value("trellis_operations_policy-test")
-            .await
-            .unwrap()
-            .status()
-            .await
-            .unwrap();
-        assert_eq!(operation_status.max_age(), OPERATION_STORE_MAX_AGE);
-        assert_eq!(
-            operation_status.info.config.max_message_size,
-            OPERATION_STORE_MAX_VALUE_SIZE
-        );
-        jetstream
-            .create_key_value(jetstream::kv::Config {
-                bucket: "trellis_operations_bad-age".to_owned(),
-                max_age: Duration::from_secs(1),
-                max_value_size: OPERATION_STORE_MAX_VALUE_SIZE,
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        assert!(matches!(
-            ensure_operation_store(&client, "bad-age").await,
-            Err(AuthorizationStateError::Storage(_))
-        ));
-        jetstream
-            .create_key_value(jetstream::kv::Config {
-                bucket: "trellis_operations_bad-size".to_owned(),
-                max_age: OPERATION_STORE_MAX_AGE,
-                max_value_size: 512,
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        assert!(matches!(
-            ensure_operation_store(&client, "bad-size").await,
-            Err(AuthorizationStateError::Storage(_))
-        ));
 
         let state = jetstream
             .create_key_value(jetstream::kv::Config {

@@ -809,6 +809,9 @@ app cli {
   }
   use state {
     rpc Delete;
+  }
+  use core {
+    rpc Resources.Destroy;
     rpc Resources.Inspect;
     rpc Resources.Query;
   }

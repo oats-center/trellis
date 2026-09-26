@@ -33,7 +33,7 @@ fn participant_kind_label(kind: &trellis_protocol::AuthorizationPrincipalKind) -
 }
 
 use super::events::{EVENT_ID_HEADER, EVENT_TIME_HEADER};
-use crate::client::authorization::is_retriable_authorization_code;
+use crate::client::authorization::refresh_until_materialized;
 use crate::client::authorization::{AuthorizationTransportRotation, TransportRotationDisposition};
 use crate::client::operations::OperationTransport;
 use crate::client::proof::{base64url_decode, new_request_id, now_iat_seconds};
@@ -56,6 +56,20 @@ pub(crate) struct AppliedNativeAuthorization {
     runtime: AuthorizationRuntimeBinding,
     context_digest: String,
     routing_jwt: String,
+}
+
+/// Borrowed collaborators for one physical authorization refresh.
+///
+/// The applied authorization is borrowed mutably for the duration of the
+/// refresh so a candidate is only recorded after the refreshed attachment is
+/// usable.
+pub(crate) struct NativeAuthorizationRefreshContext<'a> {
+    pub(crate) nats: &'a async_nats::Client,
+    pub(crate) applied: &'a mut AppliedNativeAuthorization,
+    pub(crate) contexts: &'a AuthorizationContextCache,
+    pub(crate) rotation: &'a AuthorizationTransportRotation,
+    pub(crate) live: Option<&'a crate::live::manager::LiveSessionManager>,
+    pub(crate) timeout_ms: u64,
 }
 
 impl AppliedNativeAuthorization {
@@ -728,28 +742,6 @@ fn spawn_health_heartbeat_task(
     })
 }
 
-fn spawn_authorization_context_refresh_task(
-    contexts: std::sync::Arc<AuthorizationContextCache>,
-    auth: Arc<SessionAuth>,
-    nats: async_nats::Client,
-    applied_native_authorization: Arc<tokio::sync::Mutex<AppliedNativeAuthorization>>,
-    provider: AuthorizationProviderCache,
-    timeout_ms: u64,
-    rotation: Arc<AuthorizationTransportRotation>,
-    live: Arc<crate::live::manager::LiveSessionManager>,
-) -> JoinHandle<()> {
-    crate::client::authorization::spawn_authorization_context_refresh_task(
-        contexts,
-        auth,
-        nats,
-        applied_native_authorization,
-        provider,
-        timeout_ms,
-        rotation,
-        live,
-    )
-}
-
 /// Connected provider-cache handle returned by attach.
 struct AuthorizationProviderHandle {
     provider: AuthorizationProviderCache,
@@ -973,18 +965,13 @@ pub(crate) async fn apply_native_runtime_refresh(
 }
 
 pub(crate) async fn apply_native_authorization_refresh(
-    nats: &async_nats::Client,
-    applied: &mut AppliedNativeAuthorization,
+    context: &mut NativeAuthorizationRefreshContext<'_>,
     refreshed: AppliedNativeAuthorization,
-    timeout_ms: u64,
-    rotation: &AuthorizationTransportRotation,
-    contexts: &AuthorizationContextCache,
-    live: Option<&crate::live::manager::LiveSessionManager>,
     planned: bool,
 ) -> Result<(), TrellisClientError> {
-    let credentials_changed = applied.context_digest != refreshed.context_digest
-        || applied.routing_jwt != refreshed.routing_jwt;
-    let rotates = applied.rotates_to(&refreshed);
+    let credentials_changed = context.applied.context_digest != refreshed.context_digest
+        || context.applied.routing_jwt != refreshed.routing_jwt;
+    let rotates = context.applied.rotates_to(&refreshed);
     // A planned rotation means the attachment was healthy and Trellis itself is
     // replacing it solely to install new credentials. When the transport is
     // already down, this is ordinary recovery: the refreshed credential is
@@ -992,29 +979,30 @@ pub(crate) async fn apply_native_authorization_refresh(
     // logical transition so the connection returns to connected and Live
     // resumes rather than being captured as maintenance.
     let planned = rotates && planned;
-    if planned && !rotation.begin() {
+    if planned && !context.rotation.begin() {
         return Err(TrellisClientError::Bootstrap(
             "authorization transport rotation is already active".into(),
         ));
     }
     let result = apply_native_runtime_refresh(
-        nats,
-        &applied.runtime,
+        context.nats,
+        &context.applied.runtime,
         &refreshed.runtime,
         credentials_changed,
-        timeout_ms,
+        context.timeout_ms,
     )
     .await;
-    if planned && !rotation.is_active() {
+    if planned && !context.rotation.is_active() {
         // A broker rejection already cancelled the planned rotation and took
         // the fail-closed authorization path.
-        return applied.record(refreshed, result);
+        return context.applied.record(refreshed, result);
     }
     if planned {
         let reconnected = match &result {
             Ok(()) => {
-                rotation
-                    .wait_reconnected(Duration::from_millis(timeout_ms))
+                context
+                    .rotation
+                    .wait_reconnected(Duration::from_millis(context.timeout_ms))
                     .await
             }
             Err(_) => false,
@@ -1023,18 +1011,18 @@ pub(crate) async fn apply_native_authorization_refresh(
             // The maintenance attempt did not complete: fall back to ordinary
             // transport-loss semantics rather than leaving a logically
             // connected attachment that is not actually usable.
-            if rotation.escalate() {
-                contexts.suspend();
-                contexts.request_coverage_reconciliation();
-                if let Some(live) = live {
+            if context.rotation.escalate() {
+                context.contexts.suspend();
+                context.contexts.request_coverage_reconciliation();
+                if let Some(live) = context.live {
                     live.suspend();
                 }
                 return Err(TrellisClientError::Timeout);
             }
-            return applied.record(refreshed, result);
+            return context.applied.record(refreshed, result);
         }
     }
-    applied.record(refreshed, result)
+    context.applied.record(refreshed, result)
 }
 
 /// Connection options for a user/session-key principal.
@@ -1333,33 +1321,10 @@ impl TrellisClient {
             },
             name.map(str::to_owned),
         )?);
-        let mut retry_delay = Duration::from_millis(100);
         // The pending window is bounded by the connect budget: a service whose
         // resources never materialize fails as retryable-unavailable instead of
         // retrying forever or hiding behind a credential error.
-        tokio::time::timeout(Duration::from_millis(timeout_ms), async {
-            loop {
-                match contexts.refresh(&auth).await {
-                    Err(TrellisClientError::BootstrapHttp { code, .. })
-                        if is_retriable_authorization_code(&code) =>
-                    {
-                        tokio::time::sleep(retry_delay).await;
-                        retry_delay = (retry_delay * 2).min(Duration::from_secs(1));
-                    }
-                    result => {
-                        result?;
-                        break;
-                    }
-                }
-            }
-            Ok::<(), TrellisClientError>(())
-        })
-        .await
-        .map_err(|_| {
-            TrellisClientError::AuthorizationUnavailable(
-                "native bootstrap resource materialization exceeded the connect budget".to_owned(),
-            )
-        })??;
+        refresh_until_materialized(&contexts, &auth, timeout_ms).await?;
         let authorization: ServiceBootstrapAuthorization =
             serde_json::from_value(contexts.state_snapshot()?.authorization.ok_or_else(|| {
                 TrellisClientError::Bootstrap("native bootstrap omitted resource evidence".into())
@@ -1504,7 +1469,7 @@ impl TrellisClient {
             opts.name.map(str::to_owned),
         )?;
         let authorization_contexts = Arc::new(authorization_contexts);
-        authorization_contexts.refresh(&auth).await?;
+        refresh_until_materialized(&authorization_contexts, &auth, opts.timeout_ms).await?;
         Self::connect_context(auth, authorization_contexts, opts.timeout_ms, "user").await
     }
 
@@ -1545,16 +1510,20 @@ impl TrellisClient {
             attach_authorization_provider(nats.clone(), authorization_contexts.clone()).await?;
         let applied_native_authorization =
             Arc::new(tokio::sync::Mutex::new(applied_native_authorization));
-        let authorization_context_refresh_task = Some(spawn_authorization_context_refresh_task(
-            authorization_contexts.clone(),
-            auth.clone(),
-            nats.clone(),
-            applied_native_authorization.clone(),
-            provider.provider.clone(),
-            timeout_ms,
-            authorization_transport_rotation.clone(),
-            live.clone(),
-        ));
+        let authorization_context_refresh_task = Some(
+            crate::client::authorization::spawn_authorization_context_refresh_task(
+                crate::client::authorization::AuthorizationRefreshRuntime {
+                    contexts: authorization_contexts.clone(),
+                    auth: auth.clone(),
+                    nats: nats.clone(),
+                    applied_native_authorization: applied_native_authorization.clone(),
+                    provider: provider.provider.clone(),
+                    rotation: authorization_transport_rotation.clone(),
+                    live: Some(live.clone()),
+                    timeout_ms,
+                },
+            ),
+        );
         Ok(Self {
             nats,
             inbox_prefix,
@@ -1632,16 +1601,17 @@ impl TrellisClient {
         let contexts = self.authorization_contexts.as_ref().ok_or_else(|| {
             TrellisClientError::Bootstrap("authorization context unavailable".into())
         })?;
-        let mut applied = self.applied_native_authorization.lock().await;
         crate::client::authorization::install_prepared_authorization(
-            contexts,
-            &self.auth,
-            &self.nats,
-            &mut applied,
-            &self.authorization_provider,
-            &self.authorization_transport_rotation,
-            self.live.as_deref(),
-            self.timeout_ms,
+            &crate::client::authorization::AuthorizationRefreshRuntime {
+                contexts: contexts.clone(),
+                auth: self.auth.clone(),
+                nats: self.nats.clone(),
+                applied_native_authorization: self.applied_native_authorization.clone(),
+                provider: self.authorization_provider.clone(),
+                rotation: self.authorization_transport_rotation.clone(),
+                live: self.live.clone(),
+                timeout_ms: self.timeout_ms,
+            },
         )
         .await?;
         contexts.bundle()

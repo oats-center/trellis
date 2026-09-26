@@ -297,6 +297,10 @@ pub struct DevInstancesArgs {
 pub struct SvcProvisionArgs {
     #[arg(long = "instance-seed")]
     pub instance_seed: Option<String>,
+
+    /// Explicitly create another replica instead of reusing the existing instance.
+    #[arg(long)]
+    pub new: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Args)]

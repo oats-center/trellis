@@ -1063,6 +1063,10 @@ export type AcceptedOperation<
 export type OperationTransferHandle = {
   updates(): AsyncIterable<RuntimeOperationTransferProgress>;
   completed(): AsyncResult<FileInfo, TransferError>;
+  /** Waits for successful staging, then opens the staged upload object. */
+  stream(): AsyncResult<ReadableStream<Uint8Array>, TransferError>;
+  /** Waits for successful staging, then reads the staged upload bytes. */
+  bytes(): AsyncResult<Uint8Array, TransferError>;
 };
 /** Decoded current State value and its opaque storage revision. */
 export type StateValue<T> = Readonly<{
@@ -1255,8 +1259,6 @@ export type RuntimeOperationDesc = {
   cancelCapabilities?: readonly string[];
   controlCapabilities?: readonly string[];
   transfer?: {
-    store: string;
-    key: `/${string}`;
     contentType?: `/${string}`;
     metadata?: `/${string}`;
     expiresInMs?: number;

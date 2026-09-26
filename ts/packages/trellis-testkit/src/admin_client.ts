@@ -51,6 +51,7 @@ export class TrellisTestAdminAutomation {
     defaultDeployment: string;
     getBootstrapUrl: () => Promise<string>;
     bootstrapComplete?: boolean;
+    resourceReadyTimeoutMs?: number;
   }) {
     this.#trellisUrl = args.trellisUrl.replace(/\/$/, "");
     this.#adminPassword = args.adminPassword;
@@ -62,6 +63,8 @@ export class TrellisTestAdminAutomation {
       deploymentIds: new Map(),
       pendingApprovals: new Map(),
       installedParticipants: new Map(),
+      deploymentResourceExpectations: new Map(),
+      resourceReadyTimeoutMs: args.resourceReadyTimeoutMs ?? 30_000,
       rpc: <M extends TrellisTestAdminRpcMethod>(
         method: M,
         input: AdminRpc[M]["input"],
@@ -109,7 +112,7 @@ export class TrellisTestAdminAutomation {
         const sessionKeySeed = generateSessionSeed();
         const client = await TrellisClient.connect({
           trellisUrl: this.#trellisUrl,
-          name: "trellis-test-admin",
+          name: "trellis-testkit-admin",
           timeout: 60_000,
           participant: adminParticipant,
           auth: {

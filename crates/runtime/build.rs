@@ -21,6 +21,11 @@ fn generate_index(root: &Path, output_name: &str) {
     if root.is_dir() {
         collect_files(root, &mut files);
     }
+    assert!(
+        !files.is_empty(),
+        "embedded browser assets are missing at {}; run `cargo xtask build` to prepare them instead of invoking cargo directly",
+        root.display()
+    );
     files.sort();
     let entries = files
         .iter()

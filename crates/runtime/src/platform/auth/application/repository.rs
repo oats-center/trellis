@@ -205,12 +205,20 @@ pub(crate) struct ActivationReviewClaim {
 /// Atomic service identity provisioning.
 #[derive(Clone, Debug)]
 pub(crate) struct ServiceIdentityProvisioning {
-    /// New service principal.
-    pub principal: PrincipalRecord,
-    /// New deployment-owned runtime instance.
-    pub instance: RuntimeInstanceRecord,
-    /// Immutable service identity metadata.
-    pub identity: ProvisionedIdentityRecord,
+    /// Existing deployment ID.
+    pub deployment_id: String,
+    /// Validated stable identity key ID derived from the public key.
+    pub identity_key_id: String,
+    /// Canonical client-generated Ed25519 identity public key.
+    pub identity_public_key: String,
+    /// Explicitly requested stable instance ID, when the caller supplied one.
+    pub requested_instance_id: Option<String>,
+    /// Principal ID proposed for the new-identity case.
+    pub proposed_principal_id: String,
+    /// Instance ID proposed for the new-identity case.
+    pub proposed_instance_id: String,
+    /// Creation time in Unix milliseconds.
+    pub created_at: i64,
     /// Durable proof claim and replay result.
     pub idempotency: IdempotencyResultRecord,
     /// Deterministic post-commit actions.

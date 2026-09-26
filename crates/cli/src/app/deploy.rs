@@ -289,7 +289,12 @@ async fn create_device(format: OutputFormat, id: &str, args: &DevCreateArgs) -> 
             participant_id: wire(None::<String>)?,
             expires_at: wire(None::<String>)?,
             requires_device_delegation: args.requires_device_delegation,
-            review_mode: wire(Some(args.review_mode.as_wire_value()))?,
+            // The review mode is stored as JSON-encoded string bytes, so encode
+            // the canonical representation instead of treating the text as bytes.
+            review_mode: trellis_runtime_apis::__types::Nullable::Value(auth_types::Bytes(
+                serde_json::to_vec(args.review_mode.as_wire_value()).into_diagnostic()?,
+            )),
+
             portal_id: wire(None::<String>)?,
             idempotency_key: wire(cli_idempotency_key())?,
             extra: Default::default(),
@@ -657,17 +662,107 @@ async fn provision_service(
 ) -> miette::Result<()> {
     let resolved_id = resolve_deployment_id(DeploymentKind::Service, id).await?;
     let (_state, connected) = connect_authenticated_cli_client().await?;
-    let (instance_seed, instance_key, generated_seed) = if let Some(seed) = &args.instance_seed {
-        let session_key = authlib::session_public_key(seed).into_diagnostic()?;
-        (seed.clone(), session_key, false)
-    } else {
-        let (seed, key) = generate_session_keypair();
-        (seed, key, true)
+    let client = AuthClient::from_generated(connected.clone());
+
+    // Service identity is stable: a bare provision reuses the deployment's one
+    // current instance instead of minting a duplicate replica.
+    let current = client
+        .service_instances_list(&auth_types::AuthServiceInstancesListRequest {
+            deployment_id: Some(wire(resolved_id.clone())?),
+            state: None,
+            page: Some(trellis_runtime_apis::CursorQuery {
+                cursor: None,
+                limit: Some(100),
+            }),
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?
+        .items
+        .into_iter()
+        .filter(|instance| {
+            instance.state != auth_types::AuthServiceInstancesListResponseentriesItemState::Revoked
+        })
+        .collect::<Vec<_>>();
+
+    let requested_seed = match &args.instance_seed {
+        Some(seed) => Some((
+            seed.clone(),
+            authlib::session_public_key(seed).into_diagnostic()?,
+        )),
+        None => None,
     };
-    let instance = AuthClient::from_generated(connected.clone())
+    if let Some((_, public_key)) = &requested_seed {
+        let matching = current
+            .iter()
+            .filter(|instance| &instance.identity_public_key.0 == public_key)
+            .count();
+        if matching > 1 {
+            return Err(miette::miette!(
+                "more than one instance already uses the supplied instance seed"
+            ));
+        }
+        if matching == 0 && !args.new && !current.is_empty() {
+            return Err(miette::miette!(
+                "deployment already has a service instance; pass --new to add another replica"
+            ));
+        }
+    } else if !args.new {
+        match current.len() {
+            0 => {}
+            1 => {
+                let existing = &current[0];
+                let instance = client
+                    .service_instances_provision(
+                        &auth_types::AuthServiceInstancesProvisionRequest {
+                            deployment_id: wire(resolved_id.clone())?,
+                            instance_id: wire(Some(existing.instance_id.clone()))?,
+                            identity_public_key: wire(existing.identity_public_key.0.clone())?,
+                            participant_id: wire(None::<String>)?,
+                            idempotency_key: wire(cli_idempotency_key())?,
+                            extra: Default::default(),
+                        },
+                    )
+                    .await
+                    .into_diagnostic()?
+                    .instance;
+                print_service_provision_result(format, &instance, None, true)?;
+                return Ok(());
+            }
+            _ => {
+                return Err(miette::miette!(
+                    "deployment has more than one service instance; pass --new or an explicit --instance-seed to choose one"
+                ))
+            }
+        }
+    }
+
+    let (instance_seed, instance_key, generated_seed) = match requested_seed {
+        Some((seed, key)) => (seed, key, false),
+        None => {
+            let (seed, key) = generate_session_keypair();
+            (seed, key, true)
+        }
+    };
+    if args.new
+        && current
+            .iter()
+            .any(|instance| instance.identity_public_key.0 == instance_key)
+    {
+        return Err(miette::miette!(
+            "the supplied or generated identity already exists; choose a different --instance-seed"
+        ));
+    }
+    let requested_instance_id = current
+        .iter()
+        .find(|instance| instance.identity_public_key.0 == instance_key)
+        .map(|instance| instance.instance_id.0.clone())
+        .unwrap_or_else(|| format!("inst_{}", &instance_key[..16]));
+
+    let instance = client
         .service_instances_provision(&auth_types::AuthServiceInstancesProvisionRequest {
             deployment_id: wire(resolved_id.clone())?,
-            instance_id: wire(Some(format!("inst_{}", &instance_key[..16])))?,
+            instance_id: wire(Some(requested_instance_id))?,
             identity_public_key: wire(instance_key)?,
             participant_id: wire(None::<String>)?,
             idempotency_key: wire(cli_idempotency_key())?,
@@ -676,7 +771,12 @@ async fn provision_service(
         .await
         .into_diagnostic()?
         .instance;
-    print_service_provision_result(format, &instance, generated_seed, &instance_seed)
+    print_service_provision_result(
+        format,
+        &instance,
+        generated_seed.then_some(instance_seed.as_str()),
+        false,
+    )
 }
 
 async fn provision_device(
@@ -977,23 +1077,34 @@ fn print_device_instances_result<T: serde::Serialize>(
 fn print_service_provision_result<T: serde::Serialize>(
     format: OutputFormat,
     instance: &T,
-    generated_seed: bool,
-    instance_seed: &str,
+    generated_seed: Option<&str>,
+    reused: bool,
 ) -> miette::Result<()> {
     if output::is_json(format) {
-        output::print_json(
-            &json!({ "instance": instance, "generatedSeed": generated_seed, "instanceSeed": generated_seed.then_some(instance_seed) }),
-        )?;
+        output::print_json(&json!({
+            "instance": instance,
+            "generatedSeed": generated_seed.is_some(),
+            "instanceSeed": generated_seed,
+            "reused": reused,
+        }))?;
         return Ok(());
     }
 
-    output::print_success("provisioned service instance");
+    output::print_success(if reused {
+        "service instance already exists"
+    } else {
+        "provisioned service instance"
+    });
     let value = serde_json::to_value(instance).into_diagnostic()?;
     print_value_field(&value, "instanceId");
     print_value_field(&value, "deploymentId");
     print_value_field(&value, "instanceKey");
-    if generated_seed {
-        output::print_info(&format!("instanceSeed={instance_seed}"));
+    if let Some(seed) = generated_seed {
+        output::print_info(&format!("instanceSeed={seed}"));
+    } else if reused {
+        output::print_info(
+            "Trellis cannot recover the original private seed; reuse the existing provisioned identity",
+        );
     }
     Ok(())
 }

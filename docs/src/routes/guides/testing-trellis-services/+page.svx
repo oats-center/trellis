@@ -11,7 +11,7 @@ authority, transport, and generated caller/provider boundaries.
 
 ## Prerequisites
 
-Install `@oatscenter/trellis-test` and `@std/assert` in the example's Deno
+Install `@oatscenter/trellis-testkit` and `@std/assert` in the example's Deno
 project. Have a matching `trellis-server` executable available. The
 helper downloads pinned NATS binaries on first use, which requires network
 access. Use the committed generated package, or run `trellis generate` after
@@ -24,7 +24,7 @@ Create `service_test.ts`:
 
 ```ts
 import { assertEquals, assertMatch } from "@std/assert";
-import { TrellisTestRuntime } from "@oatscenter/trellis-test";
+import { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { participants } from "orders-trellis";
 import { createOrder } from "./service.ts";
@@ -98,13 +98,13 @@ Expected result: one passing test, with all child processes stopped.
 ### Testing from Rust
 
 A Rust service repository can start the same kind of real runtime with the
-external `trellis-test` crate:
+external `trellis-testkit` crate:
 
 ```rust
-use trellis_test::TrellisTestRuntime;
+use trellis_testkit::TrellisTestRuntime;
 use my_contract::participants::provider::Participant as Provider;
 
-# async fn example() -> Result<(), trellis_test::TrellisTestError> {
+# async fn example() -> Result<(), trellis_testkit::TrellisTestError> {
 let mut runtime = TrellisTestRuntime::builder().start().await?;
 // Always stop the harness, even when an assertion or call returns early.
 let result = exercise(&mut runtime).await;
@@ -114,7 +114,7 @@ result
 
 # async fn exercise(
 #     runtime: &mut TrellisTestRuntime,
-# ) -> Result<(), trellis_test::TrellisTestError> {
+# ) -> Result<(), trellis_testkit::TrellisTestError> {
 let identity = runtime.register_service::<Provider>("provider").await?;
 let mut service = Provider::connect(identity.connect_options()).await?;
 let task = tokio::spawn(async move { service.run().await });
@@ -126,8 +126,8 @@ let _ = task.await;
 ```
 
 Provide the matching `trellis`, `trellis-server`, and `nats-server` executables;
-`trellis-test` chooses its loopback ports automatically. Released usage needs no
-private dependency patches and no Trellis source checkout.
+`trellis-testkit` chooses its loopback ports automatically. Released usage needs
+no private dependency patches and no Trellis source checkout.
 
 For deterministic application transaction behavior, test the actual adapter and
 database instead of starting a network solely to check SQL. In particular,

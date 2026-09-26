@@ -23,8 +23,9 @@ pub use provider_cache::AuthorizationProviderCache;
 #[cfg(feature = "runtime-internals")]
 pub use provider_cache::{RuntimeAuthorizationIoCounters, RuntimeAuthorizationTrust};
 pub(crate) use refresh::install_prepared_authorization;
-pub(crate) use refresh::is_retriable_authorization_code;
+pub(crate) use refresh::refresh_until_materialized;
 pub(crate) use refresh::spawn_authorization_context_refresh_task;
+pub(crate) use refresh::AuthorizationRefreshRuntime;
 pub(crate) use rotation::{AuthorizationTransportRotation, TransportRotationDisposition};
 #[cfg(feature = "runtime-internals")]
 pub use types::AuthorizationRegistryBinding;

@@ -157,14 +157,17 @@ type RuntimeOperationTransferSupport = {
     sessionKey: string;
     permission: PermissionAtom | undefined;
     requiredCapabilities: readonly string[];
-    store: string;
-    key: string;
+    operationId: string;
     expiresInMs: number;
     maxBytes?: number;
     contentType?: string;
     metadata?: Record<string, string>;
     onComplete?: (info: FileInfo) => Promise<void>;
   }): AsyncResult<RuntimeOperationTransferSession, TransferError>;
+  /** Reads an already-staged upload object without re-initiating a transfer. */
+  openStagedOperation(
+    operationId: string,
+  ): AsyncResult<OperationTransferHandle, TransferError>;
 };
 
 type RuntimeOperationFence = Readonly<{
@@ -259,24 +262,6 @@ export class OperationObserverArbiter {
       }
     })();
   }
-}
-
-function asStringPointerValue(
-  operation: string,
-  input: unknown,
-  pointer: `/${string}`,
-  field: string,
-): Result<string, TransferError> {
-  const value = Pointer.Get(input as Record<string, unknown>, pointer);
-  if (typeof value !== "string" || value.length === 0) {
-    return err(
-      new TransferError({
-        operation: "transfer",
-        context: { reason: "invalid_input", operation, field, pointer },
-      }),
-    );
-  }
-  return ok(value);
 }
 
 function asOptionalStringPointerValue(
@@ -2730,15 +2715,16 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             const fence = this.#operationFence(runtime);
             const committed = Reflect.get(runtime.transferGrant, "committed");
             if (Value.Check(FileInfoSchema, committed)) {
+              if (!this.#transferSupport) return;
+              const staged = await this.#transferSupport
+                .openStagedOperation(runtime.id)
+                .take();
+              if (isErr(staged)) return;
               startLeaseHeartbeat(runtime, fence);
               watchCancellation(runtime, fence);
               const transferSession = {
                 grant: runtime.transferGrant,
-                transfer: {
-                  updates: async function* () {},
-                  completed: () =>
-                    AsyncResult.from(Promise.resolve(ok(committed))),
-                },
+                transfer: staged,
               };
               this.#operationTransferSessions.set(runtime.id, transferSession);
               void scheduleHandler(
@@ -2752,12 +2738,6 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               return;
             }
             if (!ctx.transfer || !this.#transferSupport) return;
-            const key = asStringPointerValue(
-              String(operation),
-              runtime.input,
-              ctx.transfer.key,
-              "key",
-            ).take();
             const contentType = asOptionalStringPointerValue(
               runtime.input,
               ctx.transfer.contentType,
@@ -2766,14 +2746,13 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               runtime.input,
               ctx.transfer.metadata,
             ).take();
-            if (isErr(key) || isErr(contentType) || isErr(metadata)) return;
+            if (isErr(contentType) || isErr(metadata)) return;
             const reopened = await this.#transferSupport
               .openOperationTransfer({
                 sessionKey: runtime.callerSessionKey,
                 permission: ctx.permissions?.invoke,
                 requiredCapabilities: ctx.callerCapabilities ?? [],
-                store: ctx.transfer.store,
-                key,
+                operationId: runtime.id,
                 expiresInMs: ctx.transfer.expiresInMs ?? 60_000,
                 ...(ctx.transfer.maxBytes !== undefined
                   ? { maxBytes: ctx.transfer.maxBytes }
@@ -3123,23 +3102,6 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                 continue;
               }
 
-              const key = ctx.transfer.key
-                ? asStringPointerValue(
-                  String(operation),
-                  value.input,
-                  ctx.transfer.key,
-                  "key",
-                ).take()
-                : operationId;
-              if (isErr(key)) {
-                recordOperationServiceError(key.error, {
-                  operation: String(operation),
-                  phase: "start",
-                });
-                this.respondWithError(msg, key.error);
-                continue;
-              }
-
               const contentType = asOptionalStringPointerValue(
                 value.input,
                 ctx.transfer.contentType,
@@ -3171,8 +3133,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                   sessionKey: value.sessionKey,
                   permission: ctx.permissions?.invoke,
                   requiredCapabilities: ctx.callerCapabilities ?? [],
-                  store: ctx.transfer.store,
-                  key,
+                  operationId,
                   expiresInMs: ctx.transfer.expiresInMs ?? 60_000,
                   ...(ctx.transfer.maxBytes !== undefined
                     ? { maxBytes: ctx.transfer.maxBytes }

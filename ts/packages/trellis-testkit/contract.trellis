@@ -7,6 +7,7 @@ app cli {
     rpc Connections.List;
     rpc Deployments.Apply;
     rpc Deployments.Disable;
+    rpc Deployments.Enable;
     rpc Deployments.Get;
     rpc Deployments.Create;
     rpc Devices.Provision;

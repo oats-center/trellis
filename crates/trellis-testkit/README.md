@@ -39,11 +39,11 @@ portal login against the harness runtime.
 ## Example
 
 ```rust,no_run
-use trellis_test::TrellisTestRuntime;
+use trellis_testkit::TrellisTestRuntime;
 use my_contract::participants::my_provider::{Participant as Provider, Provider as ProviderApi};
 use my_contract::participants::my_caller::{Client as CallerClient, Participant as Caller};
 
-# async fn example() -> Result<(), trellis_test::TrellisTestError> {
+# async fn example() -> Result<(), trellis_testkit::TrellisTestError> {
 let mut runtime = TrellisTestRuntime::builder().start().await?;
 
 let provider_identity = runtime.register_service::<Provider>("provider").await?;
@@ -77,8 +77,8 @@ log them or include them in uploaded evidence.
 You can also pin them so the test knows them up front:
 
 ```rust,no_run
-# use trellis_test::TrellisTestRuntime;
-# async fn example() -> Result<(), trellis_test::TrellisTestError> {
+# use trellis_testkit::TrellisTestRuntime;
+# async fn example() -> Result<(), trellis_testkit::TrellisTestError> {
 let mut runtime = TrellisTestRuntime::builder()
     .admin_username("trellis-testkit-admin")
     .admin_password("a-known-test-password")
@@ -129,7 +129,7 @@ Call `TrellisTestRuntime::shutdown` to remove a sandbox according to the
 retention policy. `Drop` and process termination are best-effort: a sandbox can
 survive if the process exits or is killed before cleanup finishes, and
 `OnFailure` intentionally keeps failed-run sandboxes as evidence. Reclaim
-leftovers with `trellis_test::remove_retained_workdirs(parent, older_than)`,
+leftovers with `trellis_testkit::remove_retained_workdirs(parent, older_than)`,
 which only removes sandboxes carrying this harness's ownership marker.
 
 ## Supported platforms

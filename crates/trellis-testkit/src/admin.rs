@@ -25,7 +25,7 @@ use crate::types::{
 };
 
 /// Fixed local username for the isolated sandbox administrator.
-pub(crate) const ADMIN_USERNAME: &str = "trellis-test-admin";
+pub(crate) const ADMIN_USERNAME: &str = "trellis-testkit-admin";
 
 fn wire<T: serde::de::DeserializeOwned>(value: impl Serialize) -> Result<T, TrellisTestError> {
     let value = serde_json::to_value(value).map_err(|error| {

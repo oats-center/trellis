@@ -1227,28 +1227,7 @@ export async function createConnectedService<
   const currentApi = (args.runtime.trellisApi ?? args.runtime.api) as
     & TOwnedApi
     & TTrellisApi;
-  const storeNames = Object.keys(args.bindings.store);
-  const runtimeApi = {
-    ...currentApi,
-    rpc: currentApi.rpc,
-    operations: storeNames.length === 1
-      ? Object.fromEntries(
-        Object.entries(currentApi.operations).map(([name, operation]) => [
-          name,
-          operation.transfer?.store === undefined
-            ? {
-              ...operation,
-              ...(operation.transfer
-                ? {
-                  transfer: { ...operation.transfer, store: storeNames[0] },
-                }
-                : {}),
-            }
-            : operation,
-        ]),
-      )
-      : currentApi.operations,
-  } as TOwnedApi & TTrellisApi;
+  const runtimeApi = currentApi as TOwnedApi & TTrellisApi;
 
   const runtime = TrellisServiceRuntime.create(
     args.name,
@@ -1271,6 +1250,8 @@ export async function createConnectedService<
       transferSupport: {
         openOperationTransfer: (transferArgs) =>
           getTransfer().createOperationUpload(transferArgs),
+        openStagedOperation: (operationId) =>
+          getTransfer().openStagedOperation(operationId),
       },
       operationDeploymentId: args.healthIdentity?.deploymentId,
       operationConnectionId: args.operationConnectionId,
@@ -1416,6 +1397,12 @@ export async function createConnectedService<
         new InternalStoreHandle(args.nc, binding, storeHandleConstructorToken),
       ]),
     ),
+    ...(args.healthIdentity
+      ? {
+        operationStagingBucket:
+          `trellis_operation_staging_${args.healthIdentity.deploymentId}`,
+      }
+      : {}),
   });
 
   const service = Reflect.construct(TrellisServiceSession, [

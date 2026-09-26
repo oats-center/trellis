@@ -20,6 +20,13 @@ persisted state after lease expiry, so application side effects must be
 idempotent. Transfer staging is runtime-managed. An interrupted upload restarts
 from byte zero; committed staged bytes survive executor replacement.
 
+For an `upload;` operation, Trellis stages the transferred bytes in a
+platform-owned store keyed by the operation invocation ID. The handler reads them
+with `transfer.stream()` or `transfer.bytes()` and persists them to whichever
+`service.store.<alias>` it chooses. Staging is not a participant Store
+declaration, so the same handler works whether the service declares zero, one, or
+several stores.
+
 On a generated service registration, `.control(operationId)` gives the **local
 owner** a typed, fenced operation handle with the declared progress, output,
 error, and update types. It fails on a replica without that owner's fence. To

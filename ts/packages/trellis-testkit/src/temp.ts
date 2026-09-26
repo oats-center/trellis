@@ -2,7 +2,7 @@ import { join } from "@std/path";
 
 /** Returns a fresh path suitable for a service-owned SQLite database. */
 export async function tempSqlitePath(name = "test.sqlite"): Promise<string> {
-  const dir = await Deno.makeTempDir({ prefix: "trellis-test-sqlite-" });
+  const dir = await Deno.makeTempDir({ prefix: "trellis-testkit-sqlite-" });
   return join(dir, name);
 }
 

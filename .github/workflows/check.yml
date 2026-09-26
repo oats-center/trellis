@@ -253,7 +253,7 @@ jobs:
             --manifest-path integration/fixtures/testkit/Cargo.toml \
             --config "patch.crates-io.trellis-protocol.path=\"$GITHUB_WORKSPACE/crates/protocol\"" \
             --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\"" \
-            --config "patch.crates-io.trellis-testkit.path=\"$GITHUB_WORKSPACE/crates/trellis-test\"" \
+            --config "patch.crates-io.trellis-testkit.path=\"$GITHUB_WORKSPACE/crates/trellis-testkit\"" \
             --test live \
             --message-format=json > "$RUNNER_TEMP/testkit-live.json"
           executable="$(jq -r 'select(.executable != null) | .executable' "$RUNNER_TEMP/testkit-live.json" | tail -n1)"
@@ -1133,7 +1133,7 @@ jobs:
       matrix:
         include:
           - image: trellis
-            file: crates/runtime/Containerfile
+            file: crates/runtime/Containerfile.release
             title: trellis
             description: Trellis Rust runtime
           - image: console
@@ -1212,7 +1212,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: crates/runtime/Containerfile
+          file: crates/runtime/Containerfile.release
           platforms: linux/amd64
           load: true
           tags: trellis-smoke:test
@@ -1288,7 +1288,7 @@ jobs:
             --tag trellis-smoke-arm64:test \
             --build-arg TRELLIS_VERSION="${{ github.ref_name }}" \
             --build-arg TRELLIS_REVISION="${{ github.sha }}" \
-            --file crates/runtime/Containerfile .
+            --file crates/runtime/Containerfile.release .
 
       - name: Smoke-test managed NATS in the native arm64 image
         shell: bash

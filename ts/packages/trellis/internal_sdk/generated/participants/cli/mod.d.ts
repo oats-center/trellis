@@ -3,10 +3,11 @@ import type { ParticipantJobsFromResources, ParticipantKvFromResources, RuntimeA
 import * as types from "./types.js";
 export { types };
 import * as Api0 from "../../apis/auth/mod.js";
-import * as Api1 from "../../apis/events/mod.js";
-import * as Api2 from "../../apis/health/mod.js";
-import * as Api3 from "../../apis/jobs/mod.js";
-import * as Api4 from "../../apis/state/mod.js";
+import * as Api1 from "../../apis/core/mod.js";
+import * as Api2 from "../../apis/events/mod.js";
+import * as Api3 from "../../apis/health/mod.js";
+import * as Api4 from "../../apis/jobs/mod.js";
+import * as Api5 from "../../apis/state/mod.js";
 type __ActionNames = {
 	readonly "trellis.auth@v1:rpc:Capabilities.List": "Capabilities.List";
 	readonly "trellis.auth@v1:rpc:CapabilityGroups.Delete": "CapabilityGroups.Delete";
@@ -80,6 +81,10 @@ type __ActionNames = {
 	readonly "trellis.auth@v1:event:Grants.Changed": "Grants.Changed";
 	readonly "trellis.auth@v1:event:Issuers.Revoked": "Issuers.Revoked";
 	readonly "trellis.auth@v1:event:Sessions.Revoked": "Sessions.Revoked";
+	readonly "trellis.core@v1:rpc:Resources.Destroy": "Resources.Destroy";
+	readonly "trellis.core@v1:rpc:Resources.Inspect": "core.Resources.Inspect";
+	readonly "trellis.core@v1:rpc:Resources.Query": "core.Resources.Query";
+	readonly "trellis.core@v1:rpc:Surface.Status": "Surface.Status";
 	readonly "trellis.events@v1:rpc:Consumers.Inspect": "Consumers.Inspect";
 	readonly "trellis.events@v1:rpc:Consumers.Query": "Consumers.Query";
 	readonly "trellis.events@v1:rpc:Consumers.ReportDelivery": "Consumers.ReportDelivery";
@@ -113,8 +118,8 @@ type __ActionNames = {
 	readonly "trellis.state@v1:rpc:Delete": "Delete";
 	readonly "trellis.state@v1:rpc:Get": "Get";
 	readonly "trellis.state@v1:rpc:Put": "Put";
-	readonly "trellis.state@v1:rpc:Resources.Inspect": "Resources.Inspect";
-	readonly "trellis.state@v1:rpc:Resources.Query": "Resources.Query";
+	readonly "trellis.state@v1:rpc:Resources.Inspect": "state.Resources.Inspect";
+	readonly "trellis.state@v1:rpc:Resources.Query": "state.Resources.Query";
 };
 type __Resources = {};
 declare const __participant: {
@@ -313,6 +318,19 @@ declare const __participant: {
 	}, {
 		readonly api: typeof Api1.API;
 		readonly actions: readonly [{
+			readonly descriptorName: "rpc:Resources.Destroy";
+			readonly direction: "call";
+		}, {
+			readonly descriptorName: "rpc:Resources.Inspect";
+			readonly direction: "call";
+		}, {
+			readonly descriptorName: "rpc:Resources.Query";
+			readonly direction: "call";
+		}];
+		readonly optionalCapabilities: readonly [];
+	}, {
+		readonly api: typeof Api2.API;
+		readonly actions: readonly [{
 			readonly descriptorName: "rpc:Consumers.Inspect";
 			readonly direction: "call";
 		}, {
@@ -336,13 +354,6 @@ declare const __participant: {
 		}];
 		readonly optionalCapabilities: readonly [];
 	}, {
-		readonly api: typeof Api2.API;
-		readonly actions: readonly [{
-			readonly descriptorName: "rpc:Query";
-			readonly direction: "call";
-		}];
-		readonly optionalCapabilities: readonly [];
-	}, {
 		readonly api: typeof Api3.API;
 		readonly actions: readonly [{
 			readonly descriptorName: "rpc:Query";
@@ -352,13 +363,14 @@ declare const __participant: {
 	}, {
 		readonly api: typeof Api4.API;
 		readonly actions: readonly [{
+			readonly descriptorName: "rpc:Query";
+			readonly direction: "call";
+		}];
+		readonly optionalCapabilities: readonly [];
+	}, {
+		readonly api: typeof Api5.API;
+		readonly actions: readonly [{
 			readonly descriptorName: "rpc:Delete";
-			readonly direction: "call";
-		}, {
-			readonly descriptorName: "rpc:Resources.Inspect";
-			readonly direction: "call";
-		}, {
-			readonly descriptorName: "rpc:Resources.Query";
 			readonly direction: "call";
 		}];
 		readonly optionalCapabilities: readonly [];
@@ -367,7 +379,7 @@ declare const __participant: {
 	readonly resources: __Resources;
 	readonly __runtimeTypes?: {
 		readonly ownedApi: RuntimeApiFromGenerated<never, __ActionNames>;
-		readonly api: RuntimeApiFromGenerated<typeof Api0.API | typeof Api1.API | typeof Api2.API | typeof Api3.API | typeof Api4.API, __ActionNames>;
+		readonly api: RuntimeApiFromGenerated<typeof Api0.API | typeof Api1.API | typeof Api2.API | typeof Api3.API | typeof Api4.API | typeof Api5.API, __ActionNames>;
 		readonly jobs: ParticipantJobsFromResources<__Resources>;
 		readonly kv: ParticipantKvFromResources<__Resources>;
 	};
@@ -385,7 +397,7 @@ export declare const participant: {
 	readonly __runtimeTypes?: typeof __participant.__runtimeTypes;
 	readonly packageEvidence: unknown;
 };
-export declare const PARTICIPANT_DIGEST: "8O2QR0eBkucQxLErznlO6zXzs2VoIyfU5WD_gkHPZCo";
+export declare const PARTICIPANT_DIGEST: "BFswjIUUmWD7szpH1_1Z6J74_XLtuWlx4d4mgdfIabI";
 export type Participant = typeof participant;
 export type ResourceDescriptors = typeof participant.resources;
 export type ResourceHandles<Handles extends { readonly [Name in keyof ResourceDescriptors] : unknown }> = { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "required" ? Name : never] : Handles[Name] } & { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "optional" ? Name : never] : Handles[Name] | undefined };

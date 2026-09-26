@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use crate::error::{TrellisTestError, TrellisTestErrorKind, TrellisTestStage};
 
 /// Ownership marker filename written at the sandbox root.
-const OWNER_MARKER: &str = ".trellis-test-owner";
+const OWNER_MARKER: &str = ".trellis-testkit-owner";
 /// Marker format version, bumped when the marker layout changes.
 const OWNER_MARKER_VERSION: &str = "1";
 
@@ -39,7 +39,7 @@ pub(crate) fn ensure_supported_platform() -> Result<(), TrellisTestError> {
         Err(TrellisTestError::new(
             TrellisTestErrorKind::UnsupportedPlatform,
             TrellisTestStage::Validation,
-            "trellis-test supports Linux only",
+            "trellis-testkit supports Linux only",
         ))
     }
 }
@@ -161,7 +161,7 @@ impl Sandbox {
         retention: WorkdirRetention,
     ) -> Result<Self, TrellisTestError> {
         let ownership_id = ulid::Ulid::new().to_string();
-        let root = parent.join(format!("trellis-test-{ownership_id}"));
+        let root = parent.join(format!("trellis-testkit-{ownership_id}"));
         create_private_dir(&root)?;
         for child in [
             "home", "config", "data", "state", "cache", "runtime", "logs",
@@ -258,7 +258,7 @@ impl Sandbox {
 
 /// Removes stale harness-owned sandbox directories beneath `parent`.
 ///
-/// Only directories named `trellis-test-<id>` whose ownership marker records the
+/// Only directories named `trellis-testkit-<id>` whose ownership marker records the
 /// same `<id>` are removed, so unrelated files and other tools' directories are
 /// never touched. A directory whose most recent modification is within
 /// `older_than` is left alone, so a sweep cannot delete a concurrently running
@@ -296,7 +296,7 @@ pub fn remove_retained_workdirs(
         let name = entry.file_name();
         let Some(ownership_id) = name
             .to_str()
-            .and_then(|name| name.strip_prefix("trellis-test-"))
+            .and_then(|name| name.strip_prefix("trellis-testkit-"))
         else {
             continue;
         };
@@ -412,7 +412,7 @@ mod tests {
         let parent = tempfile::tempdir().expect("temp dir");
         let owned = parent
             .path()
-            .join("trellis-test-01ARZ3NDEKTSV4RRFFQ69G5FAV");
+            .join("trellis-testkit-01ARZ3NDEKTSV4RRFFQ69G5FAV");
         std::fs::create_dir_all(&owned).expect("create owned");
         std::fs::write(
             owned.join(OWNER_MARKER),
@@ -420,12 +420,12 @@ mod tests {
         )
         .expect("write marker");
         // A directory without a matching ownership marker is never touched.
-        let unrelated = parent.path().join("trellis-test-not-owned");
+        let unrelated = parent.path().join("trellis-testkit-not-owned");
         std::fs::create_dir_all(&unrelated).expect("create unrelated");
         // A marker that does not match its directory name is never touched.
         let mismatched = parent
             .path()
-            .join("trellis-test-01ARZ3NDEKTSV4RRFFQ69G5FAW");
+            .join("trellis-testkit-01ARZ3NDEKTSV4RRFFQ69G5FAW");
         std::fs::create_dir_all(&mismatched).expect("create mismatched");
         std::fs::write(
             mismatched.join(OWNER_MARKER),
@@ -445,7 +445,7 @@ mod tests {
         // A freshly created owned directory is left alone by an age-gated sweep.
         let fresh = parent
             .path()
-            .join("trellis-test-01ARZ3NDEKTSV4RRFFQ69G5FAX");
+            .join("trellis-testkit-01ARZ3NDEKTSV4RRFFQ69G5FAX");
         std::fs::create_dir_all(&fresh).expect("create fresh");
         std::fs::write(
             fresh.join(OWNER_MARKER),

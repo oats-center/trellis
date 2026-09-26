@@ -428,6 +428,27 @@ async fn users_edit_command(format: OutputFormat, args: &UserEditArgs) -> miette
     Ok(())
 }
 
+/// Writes the login URL atomically so a detached/nohup caller can read it.
+fn write_login_url_file(path: &std::path::Path, login_url: &str) -> miette::Result<()> {
+    use std::io::Write as _;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    std::fs::create_dir_all(parent).into_diagnostic()?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).into_diagnostic()?;
+    temporary
+        .write_all(login_url.as_bytes())
+        .into_diagnostic()?;
+    temporary.write_all(b"\n").into_diagnostic()?;
+    temporary.flush().into_diagnostic()?;
+    temporary
+        .persist(path)
+        .map_err(|error| error.error)
+        .into_diagnostic()?;
+    Ok(())
+}
+
 async fn login_command(format: OutputFormat, args: &LoginArgs) -> miette::Result<()> {
     let challenge = authlib::start_agent_login(&authlib::StartAgentLoginOpts {
         trellis_url: &args.trellis_url,
@@ -436,6 +457,10 @@ async fn login_command(format: OutputFormat, args: &LoginArgs) -> miette::Result
     .await
     .into_diagnostic()?;
     let login_url = challenge.login_url().to_string();
+
+    if let Some(path) = &args.login_url_file {
+        write_login_url_file(path, &login_url)?;
+    }
 
     if output::is_json(format) {
         output::print_json_progress(&pending_agent_login_json(&login_url))?;

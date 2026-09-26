@@ -63,8 +63,8 @@ export type InitiateUploadArgs = {
   sessionKey: string;
   permission: PermissionAtom | undefined;
   requiredCapabilities: readonly string[];
-  store: string;
-  key: string;
+  /** Invocation id of the operation this upload belongs to; used as the staged object key. */
+  operationId: string;
   expiresInMs: number;
   maxBytes?: number;
   contentType?: string;
@@ -97,6 +97,11 @@ type ServiceTransferOpts = {
   nc: NatsConnection;
   auth: TrellisAuth;
   stores: Record<string, TransferStoreHandle>;
+  /**
+   * Trellis-owned operation upload staging bucket, opened bind-only from the
+   * deployment identity. Never a participant Store declaration.
+   */
+  operationStagingBucket?: string;
   chunkBytes?: number;
 };
 
@@ -113,6 +118,7 @@ export class ServiceTransfer {
   readonly #nc: NatsConnection;
   readonly #auth: TrellisAuth;
   readonly #stores: Record<string, TransferStoreHandle>;
+  readonly #operationStagingBucket: string | undefined;
   readonly #chunkBytes: number;
   readonly #uploadSessions = new Map<string, UploadSession>();
   readonly #downloadSessions = new Map<string, DownloadSession>();
@@ -122,6 +128,7 @@ export class ServiceTransfer {
     this.#nc = opts.nc;
     this.#auth = opts.auth;
     this.#stores = opts.stores;
+    this.#operationStagingBucket = opts.operationStagingBucket;
     this.#chunkBytes = opts.chunkBytes ?? DEFAULT_TRANSFER_CHUNK_BYTES;
     if (
       !Number.isSafeInteger(this.#chunkBytes) || this.#chunkBytes < 1 ||
@@ -136,11 +143,12 @@ export class ServiceTransfer {
   async initiateUpload(
     args: InitiateUploadArgs,
   ): Promise<ResultType<SendTransferGrant, TransferError>> {
-    const store = await this.#openStore(args.store, "initiateUpload");
+    const store = await this.#openOperationStaging("initiateUpload");
     const storeValue = store.take();
     if (isErr(storeValue)) {
       return Result.err(storeValue.error);
     }
+    const key = args.operationId;
 
     const storeStatus = await storeValue.status();
     const storeStatusValue = storeStatus.take();
@@ -165,7 +173,7 @@ export class ServiceTransfer {
     const expiresAtMs = Date.now() + args.expiresInMs;
     const queue = new AsyncChunkQueue();
     const subscription = this.#nc.subscribe(subject);
-    const putPromise = storeValue.put(args.key, queue, {
+    const putPromise = storeValue.put(key, queue, {
       ...(args.contentType ? { contentType: args.contentType } : {}),
       ...(args.metadata ? { metadata: args.metadata } : {}),
     });
@@ -179,7 +187,7 @@ export class ServiceTransfer {
       requiredCapabilities: args.requiredCapabilities,
       expiresAtMs,
       store: storeValue,
-      key: args.key,
+      key,
       ...(maxBytes !== undefined ? { maxBytes } : {}),
       ...(args.contentType ? { contentType: args.contentType } : {}),
       ...(args.metadata ? { metadata: args.metadata } : {}),
@@ -247,6 +255,7 @@ export class ServiceTransfer {
           RuntimeOperationTransferProgress
         >();
         const completed = deferred<ResultType<FileInfo, TransferError>>();
+        const stored = deferred<ResultType<StoredTransfer, TransferError>>();
         let settled = false;
         const settle = (value: ResultType<FileInfo, TransferError>) => {
           if (settled) {
@@ -268,27 +277,117 @@ export class ServiceTransfer {
             settle(Result.ok(info));
           },
           onError: async (error) => {
+            stored.resolve(Result.err(error));
             await args.onError?.(error);
             settle(Result.err(error));
           },
-          onStored: async (stored) => {
-            await args.onStored?.(stored);
+          onStored: async (value) => {
+            stored.resolve(Result.ok(value));
+            await args.onStored?.(value);
           },
         });
         const grantValue = grant.take();
         if (isErr(grantValue)) {
+          stored.resolve(Result.err(grantValue.error));
           return Result.err(grantValue.error);
         }
+
+        const awaitStored = async (): Promise<
+          StoredTransfer | ResultType<never, TransferError>
+        > => (await stored.promise).take();
 
         return Result.ok({
           grant: grantValue,
           transfer: {
             updates: () => updates.subscribe(),
             completed: () => AsyncResult.from(completed.promise),
+            stream: () =>
+              AsyncResult.from((async () => {
+                const value = await awaitStored();
+                if (isErr(value)) return Result.err(value.error);
+                const streamed = (await value.entry.stream()).take();
+                if (isErr(streamed)) {
+                  return Result.err(
+                    new TransferError({
+                      operation: "stream",
+                      cause: streamed.error,
+                    }),
+                  );
+                }
+                return Result.ok(streamed);
+              })()),
+            bytes: () =>
+              AsyncResult.from((async () => {
+                const value = await awaitStored();
+                if (isErr(value)) return Result.err(value.error);
+                const bytes = (await value.entry.bytes()).take();
+                if (isErr(bytes)) {
+                  return Result.err(
+                    new TransferError({
+                      operation: "bytes",
+                      cause: bytes.error,
+                    }),
+                  );
+                }
+                return Result.ok(bytes);
+              })()),
           },
         });
       })(),
     );
+  }
+
+  /**
+   * Reads an already-staged operation upload without starting a new transfer.
+   *
+   * Recovery uses the same deterministic operation id as the staged object key,
+   * so a committed upload remains readable through `stream()`/`bytes()`.
+   */
+  openStagedOperation(
+    operationId: string,
+  ): AsyncResult<OperationTransferHandle, TransferError> {
+    return AsyncResult.from((async (): Promise<
+      ResultType<OperationTransferHandle, TransferError>
+    > => {
+      const store = (await this.#openOperationStaging("openStagedOperation"))
+        .take();
+      if (isErr(store)) return Result.err(store.error);
+      const entry = (await store.get(operationId)).take();
+      if (isErr(entry)) {
+        return Result.err(
+          new TransferError({
+            operation: "openStagedOperation",
+            cause: entry.error,
+            context: { operationId },
+          }),
+        );
+      }
+      const info = fileInfoFromStoreInfo(entry.info);
+      return Result.ok({
+        updates: () => (async function* () {})(),
+        completed: () => AsyncResult.ok(info),
+        stream: () =>
+          AsyncResult.from((async () => {
+            const streamed = (await entry.stream()).take();
+            if (isErr(streamed)) {
+              return Result.err(
+                new TransferError({ operation: "stream", cause: streamed.error }),
+              );
+            }
+            return Result.ok(streamed);
+          })()),
+        bytes: () =>
+          AsyncResult.from((async () => {
+            const bytes = (await entry.bytes()).take();
+            if (isErr(bytes)) {
+              return Result.err(
+                new TransferError({ operation: "bytes", cause: bytes.error }),
+              );
+            }
+            return Result.ok(bytes);
+          })()),
+      });
+    })());
   }
 
   async initiateDownload(
@@ -416,6 +515,36 @@ export class ServiceTransfer {
           operation,
           cause: value.error,
           context: { store: alias },
+        }),
+      );
+    }
+    return Result.ok(value);
+  }
+
+  /**
+   * Opens the Trellis-owned operation staging bucket bind-only. Upload staging
+   * is never a participant Store declaration, so it is not looked up by alias.
+   */
+  async #openOperationStaging(
+    operation: string,
+  ): Promise<ResultType<TypedStore, TransferError>> {
+    const bucket = this.#operationStagingBucket;
+    if (bucket === undefined) {
+      return Result.err(
+        new TransferError({
+          operation,
+          context: { reason: "operation_staging_unavailable" },
+        }),
+      );
+    }
+    const store = await TypedStore.open(this.#nc, bucket, { bindOnly: true });
+    const value = store.take();
+    if (isErr(value)) {
+      return Result.err(
+        new TransferError({
+          operation,
+          cause: value.error,
+          context: { store: bucket },
         }),
       );
     }

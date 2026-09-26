@@ -53,11 +53,19 @@ model:
    support
 2. the caller configures input and sends bytes through
    `operation.<group>.<leaf>.input(input).transfer(body).start()`
-3. the provider waits for durable transfer completion before continuing
-   service-owned processing
+3. Trellis stages the bytes in a platform-owned store keyed by the operation
+   invocation ID; the provider reads them with `transfer.stream()` or
+   `transfer.bytes()` and persists them to whichever `service.store.<alias>` it
+   chooses
+4. the provider continues service-owned processing only after durable transfer
+   completion
 
 Callers do not start the operation first and attach bytes later. The transfer is
 part of the operation start flow.
+
+Upload staging is platform-owned, never a participant Store declaration. The
+operation behaves identically whether the service declares zero, one, or several
+stores, and the domain service chooses its permanent destination explicitly.
 
 ## Receive transfers
 

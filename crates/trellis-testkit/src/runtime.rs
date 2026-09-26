@@ -954,7 +954,7 @@ fn request_timeout(operation: &str, stage: TrellisTestStage) -> TrellisTestError
 /// cancellation never block the caller's executor.
 fn spawn_detached_cleanup(supervisor: ProcessSupervisor, mut sandbox: Sandbox) {
     let _ = std::thread::Builder::new()
-        .name("trellis-test-cleanup".to_owned())
+        .name("trellis-testkit-cleanup".to_owned())
         .spawn(move || {
             supervisor.join();
             let _ = sandbox.cleanup();
@@ -1556,7 +1556,7 @@ fn classify_startup(
     let diagnostics = format!("{stdout_tail}\n{stderr_tail}");
     // Surface the failed runtime's output so a startup failure is diagnosable from
     // the test log; the output is already redacted.
-    eprintln!("trellis-test: server startup output:\n{diagnostics}");
+    eprintln!("trellis-testkit: server startup output:\n{diagnostics}");
     if crate::sandbox::is_port_conflict(&diagnostics, &ports) {
         let conflict = TrellisTestError::new(
             TrellisTestErrorKind::PortConflict,
@@ -1617,10 +1617,10 @@ mod tests {
     #[test]
     fn admin_credentials_are_validated() {
         use super::validate_admin_credentials;
-        assert!(validate_admin_credentials("trellis-test-admin", "long-enough").is_ok());
+        assert!(validate_admin_credentials("trellis-testkit-admin", "long-enough").is_ok());
         assert!(validate_admin_credentials("", "long-enough").is_err());
         assert!(validate_admin_credentials("bad\nname", "long-enough").is_err());
-        assert!(validate_admin_credentials("trellis-test-admin", "short").is_err());
+        assert!(validate_admin_credentials("trellis-testkit-admin", "short").is_err());
     }
 
     #[test]

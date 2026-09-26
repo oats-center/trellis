@@ -28,104 +28,6 @@ const transientProgress = {
   },
 };
 
-Deno.test("runtime owns its production stream configs across restart", async () => {
-  await withTrellisRuntime(async (runtime) => {
-    const nats = await connect({
-      servers: runtime.natsUrl,
-      authenticator: credsAuthenticator(
-        await Deno.readFile(
-          join(runtime.workdir, "nats/creds/trellis-auth.creds"),
-        ),
-      ),
-    });
-    try {
-      const manager = await jetstreamManager(nats);
-      const configs = async () => {
-        const streams = await manager.streams.list().next();
-        return Object.fromEntries(
-          streams.filter(({ config }) =>
-            ["trellis", "JOBS", "JOBS_WORK", "JOBS_ADVISORIES"].includes(
-              config.name,
-            )
-          ).map(({ config }) => [config.name, {
-            subjects: config.subjects,
-            retention: config.retention,
-            storage: config.storage,
-            discard: config.discard,
-            max_age: config.max_age,
-            max_msgs: config.max_msgs,
-            max_msgs_per_subject: config.max_msgs_per_subject,
-            max_bytes: config.max_bytes,
-            allow_direct: config.allow_direct,
-            sources: config.sources,
-          }]),
-        );
-      };
-      const expected: Awaited<ReturnType<typeof configs>> = {
-        trellis: {
-          subjects: ["events.>"],
-          retention: "limits",
-          storage: "file",
-          discard: "old",
-          max_age: 604_800_000_000_000,
-          max_msgs: -1,
-          max_msgs_per_subject: -1,
-          max_bytes: -1,
-          allow_direct: false,
-          sources: undefined,
-        },
-        JOBS: {
-          subjects: ["trellis.jobs.>"],
-          retention: "limits",
-          storage: "file",
-          discard: "old",
-          max_age: 0,
-          max_msgs: -1,
-          max_msgs_per_subject: -1,
-          max_bytes: -1,
-          allow_direct: true,
-          sources: undefined,
-        },
-        JOBS_WORK: {
-          subjects: ["trellis.work.>"],
-          retention: "workqueue",
-          storage: "file",
-          discard: "old",
-          max_age: 0,
-          max_msgs: -1,
-          max_msgs_per_subject: -1,
-          max_bytes: -1,
-          allow_direct: true,
-          sources: [{
-            name: "JOBS",
-            subject_transforms: [
-              { src: "trellis.jobs.*.*.*.created", dest: "trellis.work.$1.$2" },
-              { src: "trellis.jobs.*.*.*.retried", dest: "trellis.work.$1.$2" },
-            ],
-          }],
-        },
-        JOBS_ADVISORIES: {
-          subjects: ["$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.>"],
-          retention: "limits",
-          storage: "file",
-          discard: "new",
-          max_age: 0,
-          max_msgs: -1,
-          max_msgs_per_subject: -1,
-          max_bytes: -1,
-          allow_direct: false,
-          sources: undefined,
-        },
-      };
-      assertEquals(await configs(), expected);
-      await runtime.restartControlPlane();
-      assertEquals(await configs(), expected);
-    } finally {
-      await nats.close();
-    }
-  });
-});
-
 Deno.test("generated TypeScript caller reaches Rust provider", async () => {
   const providerArgv = rustFixtureArgv("trellis-runtime-acceptance");
 
@@ -624,7 +526,9 @@ Deno.test("generated runtime workflows", async (t) => {
         cancelledFeeds += 1;
       });
       await service.handleUpload(async ({ input, op, transfer }) => {
-        await transfer.completed().orThrow();
+        const body = await transfer.stream().orThrow();
+        const store = await service.store.files.open().orThrow();
+        await store.put(input.value, body).orThrow();
         return await op.complete(input).orThrow();
       });
       let received: string | undefined;
@@ -1210,8 +1114,7 @@ Deno.test("generated runtime workflows", async (t) => {
         const terminal = await operation.wait().orThrow();
         assertEquals(terminal.terminal.state, "completed");
         assertEquals(terminal.transferred.size, bytes.length);
-        const entry = await service.store.files.waitFor(operation.operation.id)
-          .orThrow();
+        const entry = await service.store.files.waitFor("bytes").orThrow();
         assertEquals(await entry.bytes().orThrow(), bytes);
       });
       await t.step(

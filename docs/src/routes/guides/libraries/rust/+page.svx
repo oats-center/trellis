@@ -149,10 +149,10 @@ Reconnect performs proof-bound refresh once per disconnected episode.
 
 ## Test against a real runtime
 
-For live integration tests, use the published `trellis-test` crate. It is a
+For live integration tests, use the published `trellis-testkit` crate. It is a
 development dependency that starts the released `trellis` and `trellis-server`
 executables out of process in a private sandbox, selects its loopback ports
 automatically, and returns `connect_options()` values for your generated service
 and caller participants. It needs no Trellis source checkout and no private crate
 patches. See [Test Trellis services](/guides/testing-trellis-services) and the
-[`trellis-test` Rustdoc](/api/rust/trellis_test/index.html).
+[`trellis-testkit` Rustdoc](/api/rust/trellis_testkit/index.html).

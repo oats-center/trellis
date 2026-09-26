@@ -1979,8 +1979,8 @@ fn api_5() -> ApiRuntimeProjection {
 fn participant_0() -> BuiltinParticipant {
     BuiltinParticipant {
         package_digest: PACKAGE_DIGEST,
-        participant_digest: "8O2QR0eBkucQxLErznlO6zXzs2VoIyfU5WD_gkHPZCo",
-        needs_digest: "tPQyctQCn0_x8InDqkT9Lb-d3cITdYCmqUPb2tU_wdI",
+        participant_digest: "BFswjIUUmWD7szpH1_1Z6J74_XLtuWlx4d4mgdfIabI",
+        needs_digest: "OwazsDn4IGIMNeJHKpv3r23kvCGXcHjShQ2X7_T_EC0",
         projection: ParticipantRuntimeProjection {
             participant_id: "trellis.cli".into(),
             participant_kind: ParticipantKind::App,
@@ -1988,6 +1988,7 @@ fn participant_0() -> BuiltinParticipant {
             implemented_apis: BTreeMap::from([]),
             referenced_apis: BTreeMap::from([
                 ("trellis.auth@v1".into(), api_0()),
+                ("trellis.core@v1".into(), api_1()),
                 ("trellis.events@v1".into(), api_2()),
                 ("trellis.health@v1".into(), api_3()),
                 ("trellis.jobs@v1".into(), api_4()),
@@ -2362,6 +2363,24 @@ fn participant_0() -> BuiltinParticipant {
                     PermissionAction::Call,
                 ),
                 api_permission(
+                    "trellis.core@v1",
+                    ApiSurfaceKind::Rpc,
+                    "Resources.Destroy",
+                    PermissionAction::Call,
+                ),
+                api_permission(
+                    "trellis.core@v1",
+                    ApiSurfaceKind::Rpc,
+                    "Resources.Inspect",
+                    PermissionAction::Call,
+                ),
+                api_permission(
+                    "trellis.core@v1",
+                    ApiSurfaceKind::Rpc,
+                    "Resources.Query",
+                    PermissionAction::Call,
+                ),
+                api_permission(
                     "trellis.events@v1",
                     ApiSurfaceKind::Rpc,
                     "Consumers.Inspect",
@@ -2421,18 +2440,6 @@ fn participant_0() -> BuiltinParticipant {
                     "Delete",
                     PermissionAction::Call,
                 ),
-                api_permission(
-                    "trellis.state@v1",
-                    ApiSurfaceKind::Rpc,
-                    "Resources.Inspect",
-                    PermissionAction::Call,
-                ),
-                api_permission(
-                    "trellis.state@v1",
-                    ApiSurfaceKind::Rpc,
-                    "Resources.Query",
-                    PermissionAction::Call,
-                ),
             ]),
             optional_grant_bundles: BTreeMap::from([]),
             required_capabilities: vec![
@@ -2454,11 +2461,12 @@ fn participant_0() -> BuiltinParticipant {
                 "trellis.auth@v1::sessions_revoke".into(),
                 "trellis.auth@v1::users_mutate".into(),
                 "trellis.auth@v1::users_read".into(),
+                "trellis.core@v1::resources_destroy".into(),
+                "trellis.core@v1::resources_read".into(),
                 "trellis.events@v1::manage_consumers".into(),
                 "trellis.events@v1::read".into(),
                 "trellis.health@v1::read".into(),
                 "trellis.jobs@v1::read".into(),
-                "trellis.state@v1::resources_read".into(),
             ],
             optional_capability_definitions: BTreeMap::from([]),
             companion_participant_id: None,
@@ -3320,4 +3328,4 @@ fn resource_permission(
     .expect("generated resource permission")
 }
 
-pub(crate) const PACKAGE_DIGEST: &str = "351HnUzHKb3mL9ywXi0iiawhcYstruqKuwBW0-c1kUY";
+pub(crate) const PACKAGE_DIGEST: &str = "JiXmBn7sIt0wGALg2SJqFXuaCnlJo-qomcQ7g0bR7EU";

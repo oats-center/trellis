@@ -6,7 +6,7 @@
  * from `crates/local-nats/nats-binaries.json` (version + per-platform
  * sha256 only; the release URLs are derived from the version). Verified
  * archives and binaries are cached under
- * `TRELLIS_TEST_CACHE_DIR` (default `~/.cache/trellis-test`) and reused by
+ * `TRELLIS_TEST_CACHE_DIR` (default `~/.cache/trellis-testkit`) and reused by
  * subsequent runs: the cached archive is re-hashed against the pin and the
  * cached binary is byte-compared against a fresh extraction of that verified
  * archive, so a corrupted or replaced cache entry is reinstalled from the pin
@@ -163,7 +163,7 @@ export function trellisTestCacheDir(): string {
     join(
       Deno.env.get("HOME") ?? Deno.env.get("TMPDIR") ?? "/tmp",
       ".cache",
-      "trellis-test",
+      "trellis-testkit",
     );
 }
 

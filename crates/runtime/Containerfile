@@ -1,12 +1,12 @@
-# The runtime image is assembly-only: the `trellis-server` and `trellis` executables
-# are built once by the native product producer (`.github/workflows/release.yml`,
-# the `build-cli-linux` job) and copied in here. `trellis-server` embeds the
-# generated browser assets at compile time (crates/runtime/build.rs), so no source
-# tree, Rust toolchain, xtask, or conformance copy belongs in this image.
+# The default runtime image builds the Trellis CLI and server from source.
 #
-# The build receives the producer's `trellis-<version>-<target>.tar.gz` archive
-# staged under `dist/native/<goarch>/` in the build context, where the directory
-# name matches buildx's `TARGETARCH` (amd64/arm64).
+# From a clean checkout: `podman build -f crates/runtime/Containerfile .`.
+# `cargo xtask build` owns preparation exactly once each (project install,
+# protocol WASM, embedded browser build) before the release `cargo build`, so
+# this image never depends on a prior host build.
+#
+# Release automation that packages already-verified binaries does not use this
+# file; it uses `Containerfile.release`, which only assembles artifacts.
 
 # Bake the pinned nats-server binary (local-nats/nats-binaries.json) so the runtime
 # image never downloads it at container runtime. TARGETARCH is set by buildx
@@ -48,6 +48,36 @@ RUN apt-get update \
     && test -x /out/nats-server \
     && rm /tmp/nats-server.tar.gz
 
+FROM docker.io/library/rust:bookworm AS builder
+
+ARG DENO_VERSION=2.9.4
+ARG TARGETARCH
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates curl unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install the repository-supported Deno and the WASM target the canonical build
+# needs for the protocol bindings.
+RUN case "${TARGETARCH}" in \
+      amd64) deno_arch=x86_64 ;; \
+      arm64) deno_arch=aarch64 ;; \
+      *) echo "unsupported TARGETARCH ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && curl --fail --location --retry 3 \
+         "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-${deno_arch}-unknown-linux-gnu.zip" \
+         --output /tmp/deno.zip \
+    && unzip -d /usr/local/bin /tmp/deno.zip \
+    && rm /tmp/deno.zip \
+    && deno --version \
+    && rustup target add wasm32-unknown-unknown
+
+WORKDIR /src
+COPY . .
+
+RUN cargo run --manifest-path xtask/Cargo.toml -- \
+      build --release -p trellis-cli -p trellis-server
+
 FROM docker.io/library/debian:bookworm-slim AS runtime
 
 ARG TARGETARCH
@@ -66,8 +96,8 @@ RUN apt-get update \
     && install --directory --owner trellis --group trellis \
       /var/lib/trellis /var/cache/trellis /var/log/trellis /run/trellis /etc/trellis
 
-COPY dist/native/${TARGETARCH}/trellis-server /usr/local/bin/trellis-server
-COPY dist/native/${TARGETARCH}/trellis /usr/local/bin/trellis
+COPY --from=builder /src/target/release/trellis-server /usr/local/bin/trellis-server
+COPY --from=builder /src/target/release/trellis /usr/local/bin/trellis
 COPY --from=nats /out/nats-server /usr/local/bin/nats-server
 
 USER trellis

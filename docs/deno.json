@@ -2,7 +2,7 @@
   "workspace": [],
   "tasks": {
     "dev": "deno task docs:api && deno run -A vite dev",
-    "docs:api": "deno task -c ../ts/deno.json protocol:wasm && deno run -A ./scripts/generate_ts_api_docs.ts",
+    "docs:api": "deno task -c ../ts/deno.json protocol:wasm && deno run -A ./scripts/generate_ts_api_docs.ts && deno run -A ./scripts/generate_rust_api_docs.ts",
     "build": "deno task docs:api && deno run -A vite build",
     "preview": "deno run -A vite preview",
     "check": "deno run -A @sveltejs/kit sync && deno run -A svelte-check"

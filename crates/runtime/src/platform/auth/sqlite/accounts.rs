@@ -91,7 +91,12 @@ impl AccountRepository for SqliteAuthorizationStore {
                        AND (?2 IS NULL OR p.state = ?2)
                        AND (?3 IS NULL OR instr(lower(p.principal_id), lower(?3)) > 0
                             OR instr(lower(coalesce(u.display_name, '')), lower(?3)) > 0
-                            OR instr(lower(coalesce(u.email, '')), lower(?3)) > 0)
+                            OR instr(lower(coalesce(u.email, '')), lower(?3)) > 0
+                            OR EXISTS (
+                                SELECT 1 FROM auth_provider_identities identity
+                                WHERE identity.principal_id = p.principal_id
+                                  AND instr(lower(identity.provider_subject), lower(?3)) > 0
+                            ))
                        AND (?4 IS NULL OR (p.created_at, p.principal_id) > (?4, ?5))
                      ORDER BY p.created_at ASC, p.principal_id ASC
                      LIMIT ?6",

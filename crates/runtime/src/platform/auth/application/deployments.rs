@@ -162,7 +162,7 @@ where
     /// conflict when deployment or stable identity relationships do not match.
     pub(crate) async fn provision_service_identity(
         &self,
-        mut input: ProvisionServiceIdentityInput,
+        input: ProvisionServiceIdentityInput,
     ) -> Result<IdempotentOutcome<ProvisionedIdentityRecord>, AuthorizationStateError> {
         super::validation::validate_idempotency_and_actions(&input.idempotency, &input.actions)?;
         super::super::domain::require_protocol_timestamp("createdAt", input.created_at)?;
@@ -170,57 +170,19 @@ where
             "identityPublicKey",
             &input.identity_public_key,
         )?;
-        let principal_id = format!("svc_{}", Ulid::new());
-        let instance_id = input
-            .instance_id
-            .take()
-            .unwrap_or_else(|| format!("ins_{}", Ulid::new()));
-        let principal = PrincipalRecord {
-            principal_id: principal_id.clone(),
-            kind: PrincipalKind::Service,
-            state: PrincipalState::Active,
-            created_at: input.created_at,
-            updated_at: input.created_at,
-            version: 1,
-            disabled_at: None,
-            revoked_at: None,
-        };
-        let instance = RuntimeInstanceRecord {
-            instance_id: instance_id.clone(),
-            deployment_id: input.deployment_id.clone(),
-            principal_id: principal_id.clone(),
-            state: RuntimeInstanceState::Active,
-            created_at: input.created_at,
-            updated_at: input.created_at,
-            version: 1,
-        };
-        let identity = ProvisionedIdentityRecord {
-            identity_key_id: identity_key_id.clone(),
-            identity_public_key: input.identity_public_key,
-            principal_id: principal_id.clone(),
-            deployment_id: input.deployment_id.clone(),
-            instance_id: instance_id.clone(),
-            kind: ProvisionedIdentityKind::Service,
-            state: ProvisionedIdentityState::Active,
-            created_at: input.created_at,
-            revoked_at: None,
-        };
-        super::validation::validate_provisioned_identity(&identity)?;
-        super::validation::validate_provisioning_aggregate(
-            &principal,
-            &instance,
-            ProvisionedIdentityKind::Service,
-        )?;
-        input.idempotency.result = json!({
-            "principalId": principal_id,
-            "instanceId": instance_id,
-            "identityKeyId": identity_key_id,
-        });
+        // The identity key is the stable identity: a repeated provision for the
+        // same key must reuse the existing principal, instance, and identity.
+        // The transaction decides existing-versus-new; the proposed IDs are only
+        // used when no identity exists yet.
         self.repository
             .provision_service_identity(ServiceIdentityProvisioning {
-                principal,
-                instance,
-                identity,
+                deployment_id: input.deployment_id,
+                identity_key_id,
+                identity_public_key: input.identity_public_key,
+                requested_instance_id: input.instance_id,
+                proposed_principal_id: format!("svc_{}", Ulid::new()),
+                proposed_instance_id: format!("ins_{}", Ulid::new()),
+                created_at: input.created_at,
                 idempotency: input.idempotency,
                 actions: input.actions,
             })

@@ -182,6 +182,42 @@ Deno.test("active contract replacement keeps covered connections and drops uncov
         seed: instanceA.seed,
       });
       assert(denied.isErr());
+
+      // Deployment enable restores authority in place: the same seed A
+      // bootstraps the same instance and serves RPC without re-applying the
+      // contract.
+      const disabledRevision = await runtime.callAdminRpc(
+        "authDeploymentsGet",
+        { deploymentId: instanceA.deploymentId },
+      );
+      await runtime.callAdminRpc("authDeploymentsEnable", {
+        deploymentId: instanceA.deploymentId,
+        expectedVersion: disabledRevision.deployment.version,
+        idempotencyKey: crypto.randomUUID(),
+        reason: null,
+      });
+      const serviceAEnabled = await TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant: removedParticipants.Provider.participant,
+        name: "provider-a",
+        seed: instanceA.seed,
+      }).orThrow();
+      cleanups.push(() => serviceAEnabled.stop().catch(() => {}));
+      const serviceAEnabledExit = serviceAEnabled.wait().catch(
+        (error: unknown) => error,
+      );
+      cleanups.push(() => serviceAEnabledExit.catch(() => {}));
+      await serviceAEnabled.handleEcho(({ input }) => Result.ok(input));
+      const enabledConnection = await waitForConnection(
+        runtime,
+        instanceA.deploymentId,
+        instanceA.instanceId,
+      );
+      assertEquals(enabledConnection.instanceId, instanceA.instanceId);
+      assertEquals(
+        (await caller.echo({ value: "after-enable" }).orThrow()).value,
+        "after-enable",
+      );
     } finally {
       for (const cleanup of cleanups) await cleanup();
       await caller.connection.close();

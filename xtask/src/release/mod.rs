@@ -305,7 +305,7 @@ mod tests {
             .expect("mkdir manifest parent");
         fs::write(
             &manifest,
-            "{\n  \"name\": \"@oatscenter/trellis-test\",\n  \"version\": \"0.8.2\",\n  \"imports\": {\n    \"@oatscenter/trellis\": \"jsr:@oatscenter/trellis@^0.8.2\"\n  }\n}\n",
+            "{\n  \"name\": \"@oatscenter/trellis-testkit\",\n  \"version\": \"0.8.2\",\n  \"imports\": {\n    \"@oatscenter/trellis\": \"jsr:@oatscenter/trellis@^0.8.2\"\n  }\n}\n",
         )
         .expect("write manifest");
         prepare_release(

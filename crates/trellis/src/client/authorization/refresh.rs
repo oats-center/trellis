@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::json;
 use trellis_protocol::{
@@ -6,8 +7,16 @@ use trellis_protocol::{
     NativeBootstrapSessionProofInput, SessionProofInput,
 };
 
+use super::super::connection::{
+    apply_native_authorization_refresh, AppliedNativeAuthorization,
+    NativeAuthorizationRefreshContext,
+};
 use super::super::{proof::new_request_id, SessionAuth, TrellisClientError};
-use super::own_context::{system_now_millis, AuthorizationContextCache};
+use super::own_context::{
+    system_now_millis, AuthorizationContextCache, AuthorizationRefreshRequest,
+};
+use super::provider_cache::AuthorizationProviderCache;
+use super::rotation::AuthorizationTransportRotation;
 use super::types::{AuthorizationCredential, AuthorizationInstallation};
 
 /// Authorization codes that report in-flight materialization rather than denial.
@@ -49,6 +58,22 @@ fn is_terminal_refresh_error(code: &str) -> bool {
             | "context_refresh_mismatch"
             | "invalid_proof"
     )
+}
+
+/// Stable, connection-owned collaborators for authorization-context refresh.
+///
+/// One connection owns exactly this set; grouping them keeps the physical
+/// refresh transaction and the background refresh task from threading the same
+/// eight independent parameters and makes the owned surface explicit.
+pub(crate) struct AuthorizationRefreshRuntime {
+    pub(crate) contexts: Arc<AuthorizationContextCache>,
+    pub(crate) auth: Arc<SessionAuth>,
+    pub(crate) nats: async_nats::Client,
+    pub(crate) applied_native_authorization: Arc<tokio::sync::Mutex<AppliedNativeAuthorization>>,
+    pub(crate) provider: AuthorizationProviderCache,
+    pub(crate) rotation: Arc<AuthorizationTransportRotation>,
+    pub(crate) live: Option<Arc<crate::live::manager::LiveSessionManager>>,
+    pub(crate) timeout_ms: u64,
 }
 
 /// Obtain or renew connection authority using only the owner credential and proof.
@@ -207,6 +232,47 @@ pub(crate) async fn refresh(
     ))
 }
 
+/// Retry one signed bootstrap/context refresh until materialization settles.
+///
+/// The server reports a retriable authorization code while approved authority,
+/// dependencies, or resources are still being materialized; a participant's
+/// growing authority must never fail a caller. Only those codes are retried,
+/// with bounded backoff, under a single overall budget equal to the caller's
+/// connection timeout. Terminal authorization errors and non-retriable
+/// infrastructure errors return immediately, and exhausting the budget
+/// reports authorization as unavailable rather than looping forever.
+pub(crate) async fn refresh_until_materialized(
+    contexts: &AuthorizationContextCache,
+    auth: &SessionAuth,
+    timeout_ms: u64,
+) -> Result<(), TrellisClientError> {
+    let mut retry_delay = Duration::from_millis(100);
+    tokio::time::timeout(Duration::from_millis(timeout_ms), async {
+        loop {
+            match contexts.refresh(auth).await {
+                Err(TrellisClientError::BootstrapHttp { code, .. })
+                    if is_retriable_authorization_code(&code) =>
+                {
+                    tokio::time::sleep(retry_delay).await;
+                    retry_delay = (retry_delay * 2).min(Duration::from_secs(1));
+                }
+                result => {
+                    result?;
+                    break;
+                }
+            }
+        }
+        Ok::<(), TrellisClientError>(())
+    })
+    .await
+    .map_err(|_| {
+        TrellisClientError::AuthorizationUnavailable(
+            "bootstrap resource materialization exceeded the connect budget".to_owned(),
+        )
+    })??;
+    Ok(())
+}
+
 /// Install one prepared authorization candidate as transparent maintenance.
 ///
 /// The physical NATS attachment may rotate to admit refreshed routing
@@ -217,67 +283,61 @@ pub(crate) async fn refresh(
 /// transaction so a failure never leaves a logically connected attachment that
 /// is not actually usable.
 pub(crate) async fn install_prepared_authorization(
-    contexts: &AuthorizationContextCache,
-    auth: &SessionAuth,
-    nats: &async_nats::Client,
-    applied: &mut super::super::connection::AppliedNativeAuthorization,
-    provider: &super::AuthorizationProviderCache,
-    rotation: &super::AuthorizationTransportRotation,
-    live: Option<&crate::live::manager::LiveSessionManager>,
-    timeout_ms: u64,
+    runtime: &AuthorizationRefreshRuntime,
 ) -> Result<String, TrellisClientError> {
-    let (candidate_digest, _) = contexts.prepare_refresh(auth).await?;
-    let refreshed = super::super::connection::AppliedNativeAuthorization::from_cache(contexts)?;
+    let (candidate_digest, _) = runtime.contexts.prepare_refresh(&runtime.auth).await?;
+    let refreshed = AppliedNativeAuthorization::from_cache(&runtime.contexts)?;
+    let mut applied = runtime.applied_native_authorization.lock().await;
     let rotates = applied.rotates_to(&refreshed);
     // Planned-rotation maintenance only applies while the physical attachment is
     // healthy. During an already-real outage the refreshed credential is still
     // installed, but the reconnect must take the ordinary recovery branch so the
     // connection and its Live manager are resumed.
-    let planned = rotates && nats.connection_state() == async_nats::connection::State::Connected;
+    let planned =
+        rotates && runtime.nats.connection_state() == async_nats::connection::State::Connected;
     if planned {
-        provider.begin_planned_rotation();
+        runtime.provider.begin_planned_rotation();
     }
-    if let Err(error) = super::super::connection::apply_native_authorization_refresh(
-        nats, applied, refreshed, timeout_ms, rotation, contexts, live, planned,
-    )
-    .await
-    {
-        provider.abandon_rotation();
+    let mut context = NativeAuthorizationRefreshContext {
+        nats: &runtime.nats,
+        applied: &mut applied,
+        contexts: &runtime.contexts,
+        rotation: &runtime.rotation,
+        live: runtime.live.as_deref(),
+        timeout_ms: runtime.timeout_ms,
+    };
+    if let Err(error) = apply_native_authorization_refresh(&mut context, refreshed, planned).await {
+        runtime.provider.abandon_rotation();
         return Err(error);
     }
-    if let Err(error) = provider
-        .retain_own_context(&candidate_digest, provider.epoch())
+    if let Err(error) = runtime
+        .provider
+        .retain_own_context(&candidate_digest, runtime.provider.epoch())
         .await
     {
-        provider.abandon_rotation();
-        rotation.cancel();
+        runtime.provider.abandon_rotation();
+        runtime.rotation.cancel();
         return Err(error);
     }
-    if let Err(error) = provider.finalize_own_installation(&candidate_digest, true) {
-        provider.abandon_rotation();
-        rotation.cancel();
+    if let Err(error) = runtime
+        .provider
+        .finalize_own_installation(&candidate_digest, true)
+    {
+        runtime.provider.abandon_rotation();
+        runtime.rotation.cancel();
         return Err(error);
     }
-    rotation.complete();
+    runtime.rotation.complete();
     Ok(candidate_digest)
 }
 
 /// Background own-context refresh on the retained NATS connection.
 pub(crate) fn spawn_authorization_context_refresh_task(
-    contexts: Arc<AuthorizationContextCache>,
-    auth: Arc<SessionAuth>,
-    nats: async_nats::Client,
-    applied_native_authorization: Arc<
-        tokio::sync::Mutex<super::super::connection::AppliedNativeAuthorization>,
-    >,
-    provider: super::AuthorizationProviderCache,
-    timeout_ms: u64,
-    rotation: Arc<super::AuthorizationTransportRotation>,
-    live: Arc<crate::live::manager::LiveSessionManager>,
+    runtime: AuthorizationRefreshRuntime,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            let delay = match contexts.refresh_delay() {
+            let delay = match runtime.contexts.refresh_delay() {
                 Ok(delay) => delay,
                 Err(error) => {
                     tracing::warn!(%error, "authorization context refresh stopped");
@@ -285,25 +345,24 @@ pub(crate) fn spawn_authorization_context_refresh_task(
                 }
             };
             let request = tokio::select! {
-                () = tokio::time::sleep(delay) => super::own_context::AuthorizationRefreshRequest {
-                    context_digest: contexts.stored_context_digest().ok(),
+                () = tokio::time::sleep(delay) => AuthorizationRefreshRequest {
+                    context_digest: runtime.contexts.stored_context_digest().ok(),
                     refresh_credential: true,
                 },
-                request = contexts.wait_refresh_request() => request,
+                request = runtime.contexts.wait_refresh_request() => request,
             };
             if request.context_digest.is_some()
-                && request.context_digest != contexts.stored_context_digest().ok()
+                && request.context_digest != runtime.contexts.stored_context_digest().ok()
             {
                 continue;
             }
-            let mut applied = applied_native_authorization.lock().await;
             if !request.refresh_credential && request.context_digest.is_some() {
                 if let Some(digest) = request.context_digest {
-                    let epoch = provider.epoch();
-                    match provider.retain_own_context(&digest, epoch).await {
+                    let epoch = runtime.provider.epoch();
+                    match runtime.provider.retain_own_context(&digest, epoch).await {
                         Ok(()) => {
-                            let promote = contexts.candidate_digest().is_ok();
-                            match provider.finalize_own_installation(&digest, promote) {
+                            let promote = runtime.contexts.candidate_digest().is_ok();
+                            match runtime.provider.finalize_own_installation(&digest, promote) {
                                 Ok(()) => continue,
                                 Err(error) => {
                                     tracing::warn!(%error, "authorization coverage publication failed")
@@ -315,39 +374,26 @@ pub(crate) fn spawn_authorization_context_refresh_task(
                         }
                     }
                 }
-                drop(applied);
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                contexts.request_coverage_reconciliation();
+                runtime.contexts.request_coverage_reconciliation();
                 continue;
             }
-            match install_prepared_authorization(
-                &contexts,
-                &auth,
-                &nats,
-                &mut applied,
-                &provider,
-                &rotation,
-                Some(&live),
-                timeout_ms,
-            )
-            .await
-            {
+            match install_prepared_authorization(&runtime).await {
                 Ok(_) => {}
                 Err(TrellisClientError::BootstrapHttp { status, code })
                     if is_terminal_refresh_error(&code) =>
                 {
                     tracing::warn!(status, "authorization context refresh rejected");
-                    if let Err(error) = contexts.clear() {
+                    if let Err(error) = runtime.contexts.clear() {
                         tracing::warn!(%error, "failed to clear rejected authorization context");
                     }
-                    let _ = nats.drain().await;
+                    let _ = runtime.nats.drain().await;
                     return;
                 }
                 Err(error) => {
                     tracing::warn!(%error, "authorization context refresh will retry");
-                    drop(applied);
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    contexts.request_refresh();
+                    runtime.contexts.request_refresh();
                 }
             }
         }
