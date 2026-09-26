@@ -141,10 +141,14 @@ Deno.test("active contract replacement keeps covered connections and drops uncov
         (await caller.echo({ value: "after-reduction" }).orThrow()).value,
         "after-reduction",
       );
+      // The stale physical attachment carrying excess authority must be gone.
+      // The logical runtime connection may legitimately return under the
+      // reduced authority with a new physical connection, so assert on the
+      // physical identity, not the logical one.
       await runtime.waitFor(
         async () =>
           (await liveConnections(runtime, instanceB.deploymentId)).every(
-            (item) => item.runtimeConnectionId !== bBefore.runtimeConnectionId,
+            (item) => item.connectionId !== bBefore.connectionId,
           ),
         { timeoutMs: 30_000 },
       );
