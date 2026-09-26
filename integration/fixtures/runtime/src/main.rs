@@ -9,9 +9,34 @@ use std::sync::{
 use std::time::Duration;
 use tokio::sync::Notify;
 use tracing_subscriber::prelude::*;
+use trellis_rs::client::TrellisClientError;
 use trellis_rs::jobs::JobProcessError;
-use trellis_rs::service::ServiceConnectOptions;
+use trellis_rs::service::{ConnectedServiceRuntime, ServiceConnectOptions, ServiceRuntimeError};
 use trellis_rs::telemetry::{init_from_env, TelemetryIdentity, TelemetryRole};
+
+/// Connect like a supervised service: a transient bootstrap-materialization
+/// denial is retried with backoff instead of exiting the process. The SDK's own
+/// connect budget still bounds each attempt; this only keeps a test provider
+/// alive while the control plane finishes materializing its required resources.
+async fn connect_with_retry(
+    url: &str,
+    identity: &str,
+) -> Result<ConnectedServiceRuntime<Participant>, ServiceRuntimeError> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let mut delay = Duration::from_millis(250);
+    loop {
+        match Participant::connect(ServiceConnectOptions::new(url, identity)).await {
+            Ok(service) => return Ok(service),
+            Err(ServiceRuntimeError::Client(TrellisClientError::AuthorizationUnavailable(_)))
+                if std::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(2));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
     let url = std::env::var("TRELLIS_URL")?;
     let identity = std::env::var("TRELLIS_IDENTITY_SEED")?;
-    let mut service = Participant::connect(ServiceConnectOptions::new(&url, &identity)).await?;
+    let mut service = connect_with_retry(&url, &identity).await?;
     let mut provider = Provider::new(&mut service);
     provider
         .runtime_trellis_runtime_v1()
