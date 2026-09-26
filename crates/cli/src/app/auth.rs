@@ -235,6 +235,7 @@ async fn users_list_command(format: OutputFormat) -> miette::Result<()> {
                 cursor: None,
                 limit: Some(100),
             }),
+            extra: Default::default(),
         })
         .await
         .into_diagnostic()?;
@@ -253,6 +254,7 @@ async fn users_list_command(format: OutputFormat) -> miette::Result<()> {
                 cursor: None,
                 limit: Some(100),
             }),
+            extra: Default::default(),
         })
         .await
         .map(|response| response.items)
@@ -300,6 +302,7 @@ async fn users_show_command(format: OutputFormat, args: &UserRefArgs) -> miette:
     let user = auth_client
         .users_get(&auth_types::AuthUsersGetRequest {
             user_id: wire(&args.user_id)?,
+            extra: Default::default(),
         })
         .await
         .into_diagnostic()?
@@ -341,6 +344,7 @@ async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> mi
             image: wire(None::<String>)?,
             username: wire(Some(username))?,
             idempotency_key: wire(cli_idempotency_key())?,
+            extra: Default::default(),
         })
         .await
         .into_diagnostic()?
@@ -350,6 +354,7 @@ async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> mi
             user_id: wire(&user.user_id)?,
             return_target: wire(None::<String>)?,
             idempotency_key: wire(cli_idempotency_key())?,
+            extra: Default::default(),
         })
         .await
         .into_diagnostic()?;
@@ -377,6 +382,7 @@ async fn users_edit_command(format: OutputFormat, args: &UserEditArgs) -> miette
     let current = auth_client
         .users_get(&auth_types::AuthUsersGetRequest {
             user_id: wire(&args.user_id)?,
+            extra: Default::default(),
         })
         .await
         .into_diagnostic()?
@@ -403,6 +409,7 @@ async fn users_edit_command(format: OutputFormat, args: &UserEditArgs) -> miette
             user_id: wire(&args.user_id)?,
             expected_version: wire(current.version)?,
             idempotency_key: wire(cli_idempotency_key())?,
+            extra: Default::default(),
         })
         .await
         .into_diagnostic()?
@@ -505,7 +512,9 @@ pub(super) async fn current_user(
     connected: &trellis_rs::generated::Client,
 ) -> Result<authlib::AuthenticatedUser, authlib::TrellisAuthError> {
     let response = AuthClient::from_generated(connected.clone())
-        .sessions_me(&auth_types::AuthSessionsMeRequest {})
+        .sessions_me(&auth_types::AuthSessionsMeRequest {
+            extra: Default::default(),
+        })
         .await
         .map_err(|error| authlib::TrellisAuthError::OperationFailed(error.to_string()))?;
     let user = wire::<Option<auth_types::AuthUsersGetResponseuser>>(response.user)
@@ -522,9 +531,11 @@ async fn revoke_current_session(
     connected: &trellis_rs::generated::Client,
 ) -> Result<(), authlib::TrellisAuthError> {
     let auth = AuthClient::from_generated(connected.clone());
-    auth.sessions_logout(&auth_types::AuthSessionsLogoutRequest {})
-        .await
-        .map_err(|error| authlib::TrellisAuthError::OperationFailed(error.to_string()))?;
+    auth.sessions_logout(&auth_types::AuthSessionsLogoutRequest {
+        extra: Default::default(),
+    })
+    .await
+    .map_err(|error| authlib::TrellisAuthError::OperationFailed(error.to_string()))?;
     Ok(())
 }
 
@@ -572,6 +583,7 @@ async fn identity_grants_list_command(
             owner_kind: Some(auth_types::AuthGrantsListRequestOwnerKind::User),
             participant_id: args.participant.as_ref().map(wire).transpose()?,
             state: None,
+            extra: Default::default(),
         })
         .await
         .into_diagnostic()?;
@@ -628,6 +640,7 @@ async fn identity_grants_revoke_command(
             owner_kind: auth_types::AuthGrantsRevokeRequestOwnerKind::User,
             participant_id: wire(&args.participant_id)?,
             reason: wire(&args.reason)?,
+            extra: Default::default(),
         })
         .await
         .into_diagnostic()?;
@@ -655,6 +668,7 @@ async fn identity_grants_get_command(
             owner_id: wire(&owner_id)?,
             owner_kind: auth_types::AuthGrantsGetRequestOwnerKind::User,
             participant_id: wire(&args.participant_id)?,
+            extra: Default::default(),
         })
         .await
         .into_diagnostic()?;
@@ -726,6 +740,7 @@ async fn current_grant_revision(
             owner_id: wire(owner_id)?,
             owner_kind: auth_types::AuthGrantsGetRequestOwnerKind::User,
             participant_id: wire(participant_id)?,
+            extra: Default::default(),
         })
         .await
         .into_diagnostic()?;
@@ -759,6 +774,7 @@ async fn participants_install_command(
             .participants_get(&auth_types::AuthParticipantsGetRequest {
                 participant_id: wire(&participant.participant_id)?,
                 revision: None,
+                extra: Default::default(),
             })
             .await
         {
@@ -783,6 +799,7 @@ async fn participants_install_command(
             package_evidence: participant.package_evidence,
             participant_path: wire(participant.participant_path)?,
             platform_trust: Some(args.platform_trust),
+            extra: Default::default(),
         })
         .await
         .into_diagnostic()?;
@@ -812,6 +829,7 @@ async fn issuers_revoke_command(
             idempotency_key: wire(cli_idempotency_key())?,
             key_id: wire(&args.key_id)?,
             reason: wire(&args.reason)?,
+            extra: Default::default(),
         })
         .await
         .into_diagnostic()?;

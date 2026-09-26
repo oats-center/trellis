@@ -88,6 +88,7 @@ async fn main() -> anyhow::Result<()> {
                             refresh_id: format!("refresh-{}", job.context().request_id),
                             site,
                             status: "completed".into(),
+                            extra: Default::default(),
                         })
                     }
                 }
@@ -129,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
                             .get(input.site_id.as_ref())
                             .await
                             .map_err(|error| ServerError::Nats(error.to_string()))?,
+                        extra: Default::default(),
                     })
                 }
             }
@@ -166,6 +168,7 @@ async fn main() -> anyhow::Result<()> {
                                     .into(),
                                 file_name: None,
                                 content_type: None,
+                                extra: Default::default(),
                             })
                             .collect(),
                         page: service_trellis::__types::CursorPageInfo {
@@ -232,6 +235,7 @@ async fn main() -> anyhow::Result<()> {
                         updated_at: updated_at.into(),
                         content_type: None,
                         metadata: Default::default(),
+                        extra: Default::default(),
                     },
                     transfer: Some(grant.into()),
                 })
@@ -247,6 +251,7 @@ async fn main() -> anyhow::Result<()> {
                     Ok(EvidenceDeleteResponse {
                         key: key.into(),
                         deleted: true,
+                        extra: Default::default(),
                     })
                 }
             }
@@ -275,6 +280,7 @@ async fn main() -> anyhow::Result<()> {
                         .progress(SitesRefreshProgress {
                             stage: "refreshing".to_owned().into(),
                             message: format!("Refreshing {}", input.site_id).into(),
+                            extra: Default::default(),
                         })
                         .await?;
                     let site =
@@ -290,6 +296,7 @@ async fn main() -> anyhow::Result<()> {
                         refresh_id: format!("refresh-{}", input.site_id).into(),
                         site,
                         status: "completed".to_owned().into(),
+                        extra: Default::default(),
                     };
                     operation.complete(output.clone()).await?;
                     publisher
@@ -297,6 +304,7 @@ async fn main() -> anyhow::Result<()> {
                             refresh_id: output.refresh_id,
                             site: output.site,
                             refreshed_at: "2026-05-02T00:00:00.000Z".to_owned().into(),
+                            extra: Default::default(),
                         })
                         .await
                         .map_err(|error| ServerError::Nats(error.to_string()))?;
@@ -318,6 +326,7 @@ async fn main() -> anyhow::Result<()> {
                         .progress(ReportsGenerateProgress {
                             stage: "generating".to_owned().into(),
                             message: "Generating closeout report".to_owned().into(),
+                            extra: Default::default(),
                         })
                         .await?;
                     let assignment = assignments
@@ -343,11 +352,13 @@ async fn main() -> anyhow::Result<()> {
                         summary: "Generated closeout report".to_owned().into(),
                         readiness: "Site context reconciled".to_owned().into(),
                         evidence_status: "Evidence review completed".to_owned().into(),
+                        extra: Default::default(),
                     });
                     let output = ReportsGenerateResponse {
                         report_id: report_id.clone().into(),
                         inspection_id: input.inspection_id.clone(),
                         status: "published".to_owned().into(),
+                        extra: Default::default(),
                     };
                     operation.complete(output).await?;
                     publisher
@@ -356,6 +367,7 @@ async fn main() -> anyhow::Result<()> {
                             inspection_id: input.inspection_id,
                             site_id: assignment.map(|value| value.site_id),
                             published_at: "2026-05-02T00:00:00.000Z".to_owned().into(),
+                            extra: Default::default(),
                         })
                         .await
                         .map_err(|error| ServerError::Nats(error.to_string()))?;
@@ -373,6 +385,7 @@ async fn main() -> anyhow::Result<()> {
                         .progress(EvidenceUploadProgress {
                             stage: "receiving".to_owned().into(),
                             message: "Receiving evidence".to_owned().into(),
+                            extra: Default::default(),
                         })
                         .await?;
                     let info = operation
@@ -388,6 +401,7 @@ async fn main() -> anyhow::Result<()> {
                             disposition: "stored".to_owned().into(),
                             file_name: None,
                             content_type: input.content_type,
+                            extra: Default::default(),
                         })
                         .await?;
                     publisher
@@ -398,6 +412,7 @@ async fn main() -> anyhow::Result<()> {
                             occurred_at: "2026-05-02T00:00:00.000Z".to_owned().into(),
                             related_site_id: None,
                             related_inspection_id: None,
+                            extra: Default::default(),
                         })
                         .await
                         .map_err(|error| ServerError::Nats(error.to_string()))?;
@@ -476,6 +491,7 @@ fn sample_sites() -> Vec<SiteSummary> {
             overdue_inspections: 1,
             latest_status: "attention".to_owned().into(),
             last_report_at: "2026-04-30T16:00:00.000Z".to_owned().into(),
+            extra: Default::default(),
         },
         SiteSummary {
             site_id: "site-south".to_owned().into(),
@@ -484,6 +500,7 @@ fn sample_sites() -> Vec<SiteSummary> {
             overdue_inspections: 0,
             latest_status: "healthy".to_owned().into(),
             last_report_at: "2026-05-01T09:30:00.000Z".to_owned().into(),
+            extra: Default::default(),
         },
     ]
 }
@@ -497,5 +514,6 @@ fn sample_assignments() -> Vec<InspectionAssignment> {
         checklist_name: "Quarterly transformer inspection".to_owned().into(),
         scheduled_for: "2026-05-03T08:00:00.000Z".to_owned().into(),
         priority: Priority::High,
+        extra: Default::default(),
     }]
 }

@@ -45,6 +45,7 @@ pub(super) async fn run(command: EventsCommand) -> miette::Result<()> {
                 subject: None,
                 verification_status: None,
                 window: None,
+                extra: Default::default(),
             };
             if args.all {
                 output::print_json_stream(client.query_items(input)).await
@@ -57,6 +58,7 @@ pub(super) async fn run(command: EventsCommand) -> miette::Result<()> {
                 .inspect(&EventsInspectRequest {
                     event_id: args.event_id,
                     stream_sequence: args.stream_sequence.map(wire).transpose()?,
+                    extra: Default::default(),
                 })
                 .await
                 .into_diagnostic()?,
@@ -71,6 +73,7 @@ pub(super) async fn run(command: EventsCommand) -> miette::Result<()> {
                     resource_id: args.resource_id,
                     status: None,
                     subject: None,
+                    extra: Default::default(),
                 };
                 if args.page.all {
                     output::print_json_stream(client.consumers_query_items(input)).await
@@ -82,6 +85,7 @@ pub(super) async fn run(command: EventsCommand) -> miette::Result<()> {
                 &client
                     .consumers_inspect(&EventsConsumersInspectRequest {
                         resource_id: args.resource_id,
+                        extra: Default::default(),
                     })
                     .await
                     .into_diagnostic()?,
@@ -93,6 +97,7 @@ pub(super) async fn run(command: EventsCommand) -> miette::Result<()> {
                     page: page(&args.page),
                     resource_id: args.resource_id,
                     state: None,
+                    extra: Default::default(),
                 };
                 if args.page.all {
                     output::print_json_stream(client.dead_letters_query_items(input)).await
@@ -105,6 +110,7 @@ pub(super) async fn run(command: EventsCommand) -> miette::Result<()> {
                     .dead_letters_inspect(&EventsDeadLettersInspectRequest {
                         resource_id: args.resource_id,
                         dead_letter_id: args.dead_letter_id,
+                        extra: Default::default(),
                     })
                     .await
                     .into_diagnostic()?,
@@ -116,6 +122,7 @@ pub(super) async fn run(command: EventsCommand) -> miette::Result<()> {
                         dead_letter_id: args.dead_letter_id,
                         expected_revision: wire(args.expected_revision.to_string())?,
                         request_id: args.request_id,
+                        extra: Default::default(),
                     })
                     .await
                     .into_diagnostic()?,
@@ -127,6 +134,7 @@ pub(super) async fn run(command: EventsCommand) -> miette::Result<()> {
                         dead_letter_id: args.dead_letter_id,
                         expected_revision: wire(args.expected_revision.to_string())?,
                         request_id: args.request_id,
+                        extra: Default::default(),
                     })
                     .await
                     .into_diagnostic()?,

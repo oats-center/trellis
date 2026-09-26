@@ -25,6 +25,18 @@ and this project adheres to
   longer bounded by the 15-second opening reservation, so retained Live sessions
   keep flowing instead of stalling on their credit window.
 
+### Changed
+
+- Rust generated model types round-trip unknown own fields through a flattened
+  `extra` map. This matches the open-model behavior of the generated TypeScript
+  codecs, so additively extended payloads survive a decode/encode in both
+  languages.
+- The TypeScript live integration suite runs through one self-contained task
+  (`deno task test:integration`). It stages the Rust executables it needs and
+  relies on the pinned NATS auto-download, so local development and CI run the
+  same command without presetting environment variables and the tests never
+  compile Rust while they run.
+
 ## [0.100.0-rc.2] - 2026-09-24
 
 ### Added

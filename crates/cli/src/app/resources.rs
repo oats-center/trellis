@@ -26,6 +26,7 @@ pub(super) async fn run(format: OutputFormat, command: ResourcesCommand) -> miet
                 }),
                 participant_id: None,
                 state: None,
+                extra: Default::default(),
             };
             if args.all {
                 output::print_json_stream(client.resources_query_items(input)).await
@@ -37,6 +38,7 @@ pub(super) async fn run(format: OutputFormat, command: ResourcesCommand) -> miet
             let response = client
                 .resources_inspect(&ResourcesInspectRequest {
                     resource_id: wire(args.resource_id)?,
+                    extra: Default::default(),
                 })
                 .await
                 .into_diagnostic()?;
@@ -59,6 +61,7 @@ pub(super) async fn run(format: OutputFormat, command: ResourcesCommand) -> miet
                     resource_id: wire(args.resource_id)?,
                     expected_revision: wire(args.expected_revision.to_string())?,
                     confirm_physical_id: wire(args.confirm_physical_id)?,
+                    extra: Default::default(),
                 })
                 .await
                 .into_diagnostic()?,

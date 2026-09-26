@@ -35,6 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             deployment_ids: None,
             instance_ids: None,
             participant_kinds: None,
+            extra: Default::default(),
         })
         .await?;
     let frame = frames

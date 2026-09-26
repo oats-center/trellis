@@ -1111,7 +1111,10 @@ fn resolve_nats(
 ) -> Result<NatsExecutable, TrellisTestError> {
     let source = explicit.unwrap_or_else(|| match std::env::var_os("TRELLIS_TEST_NATS_BIN") {
         Some(value) if !value.is_empty() => NatsSource::Path(PathBuf::from(value)),
-        _ => NatsSource::PathLookup,
+        // With no ambient selection, use the same pinned release the runtime
+        // itself downloads into the cache. Tests therefore never require a
+        // caller to preset an environment variable.
+        _ => NatsSource::DownloadPinned,
     });
     match source {
         NatsSource::DownloadPinned => Ok(NatsExecutable::DownloadPinned),

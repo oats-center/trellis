@@ -227,7 +227,10 @@ jobs:
       - name: Build runtime binaries
         env:
           TRELLIS_OFFICIAL_BUILD: "1"
-        run: cargo build --release --manifest-path Cargo.toml -p trellis-server -p trellis-cli
+        run: |
+          set -euo pipefail
+          cargo build --release --manifest-path Cargo.toml -p trellis-server -p trellis-cli
+          cargo build --manifest-path Cargo.toml -p trellis-runtime --example health_watch
 
       # Cross-language helper/provider executables for the TypeScript integration
       # tests, plus the testkit live test binary. Built once here so the tests do
@@ -263,11 +266,12 @@ jobs:
       - name: Stage runtime binaries
         run: |
           set -euo pipefail
-          mkdir -p dist/runtime-binaries/fixtures
+          mkdir -p dist/runtime-binaries/fixtures dist/runtime-binaries/examples
           cp target/release/trellis target/release/trellis-server target/debug/trellis-testkit-live dist/runtime-binaries/
           for bin in trellis-runtime-acceptance caller resources events live_probe live_probe_caller empty_watch; do
             cp "target/debug/${bin}" dist/runtime-binaries/fixtures/
           done
+          cp target/debug/examples/health_watch dist/runtime-binaries/examples/
           # Test helpers are debug builds with full debug info; strip it so the
           # shared artifact is a fraction of its size for every consumer.
           find dist/runtime-binaries -type f -exec strip --strip-unneeded {} + 2>/dev/null || true
@@ -672,16 +676,7 @@ jobs:
           mkdir -p target/debug
           tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
 
-      - name: Acquire the pinned NATS executable
-        run: bash scripts/acquire-test-nats.sh --dest /tmp/trellis-testkit-nats
-
       - name: Run TypeScript live integration
-        env:
-          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
-          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
-          TRELLIS_TEST_NATS_BIN: /tmp/trellis-testkit-nats/nats-server
-          TRELLIS_TEST_FIXTURE_BIN_DIR: ${{ github.workspace }}/target/debug/fixtures
-          TRELLIS_TESTKIT_LIVE_BIN: ${{ github.workspace }}/target/debug/trellis-testkit-live
         run: deno task -c ts/deno.json test:integration
 
   examples:

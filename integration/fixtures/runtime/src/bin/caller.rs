@@ -49,12 +49,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let echo = runtime
         .echo(&rpc::EchoInput {
             value: "from TypeScript".to_owned(),
+            extra: Default::default(),
         })
         .await?;
     assert_eq!(echo.value, "Rust received from TypeScript");
 
     // Generated Feed call: the provider streams rust-feed-* frames on Watch.
-    let mut frames = runtime.watch(&lives::WatchInput {}).await?;
+    let mut frames = runtime
+        .watch(&lives::WatchInput {
+            extra: Default::default(),
+        })
+        .await?;
     let frame = frames
         .next()
         .await
@@ -71,11 +76,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .work()
         .start(&operations::WorkInput {
             value: "routing-check".to_owned(),
+            extra: Default::default(),
         })
         .await?;
     handle
         .signal::<operations::WorkContinueSignal>(&Value {
             value: "continue".to_owned(),
+            extra: Default::default(),
         })
         .await?;
     let snapshot = handle.wait().await?;

@@ -743,6 +743,7 @@ fn insert_transition(
         header: HealthStatusChangedEventHeader {
             id: event_id.clone().into(),
             time: changed_at.clone(),
+            extra: Default::default(),
         },
         participant: HealthStatusChangedEventParticipant {
             kind: wire(&identity.participant_kind)?,
@@ -750,6 +751,7 @@ fn insert_transition(
             deployment_id: identity.deployment_id.clone(),
             instance_id: identity.instance_id.clone(),
             name: row.participant_name.to_string(),
+            extra: Default::default(),
         },
         previous_status: wire(row.previous_status)?,
         status: wire(row.status)?,
@@ -758,6 +760,7 @@ fn insert_transition(
         changed_at,
         last_seen_at: rfc3339(row.last_seen_at_ns)?,
         summary: row.summary.map(|value| value.to_string().into()),
+        extra: Default::default(),
     };
     transaction.execute(
         "INSERT INTO health_transition_outbox
@@ -963,6 +966,7 @@ mod tests {
                     participant_kinds: None,
                     search: None,
                     statuses: None,
+                    extra: Default::default(),
                 },
                 observed + 62_000_000_000,
             )
@@ -978,6 +982,7 @@ mod tests {
                     history_since: None,
                     instance_id: None,
                     participant_kind: wire("service").unwrap(),
+                    extra: Default::default(),
                 },
                 observed + 62_000_000_000,
             )
@@ -995,6 +1000,7 @@ mod tests {
                     participant_kind: wire("service").unwrap(),
                     start: rfc3339(observed).expect("format start"),
                     step_ms: wire("300000").unwrap(),
+                    extra: Default::default(),
                 },
                 observed + 120_000_000_000,
             )

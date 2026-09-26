@@ -346,6 +346,12 @@ fn render_type_definition(
                 };
                 out.push_str(&format!("pub {rust_field}: {ty},\n"));
             }
+            // Open wire models round-trip unknown own fields so additively
+            // extended payloads survive a decode/encode (parity with the
+            // generated TypeScript codecs).
+            out.push_str(
+                "#[serde(flatten)]\npub extra: serde_json::Map<String, serde_json::Value>,\n",
+            );
             out.push_str("}\n");
             out
         }
@@ -1985,6 +1991,7 @@ fn download_output_round_trips_transfer_grant() {
             unsigned: 1u64.into(),
             finite: 1.0.into(),
             bytes: vec![1, 2, 3].into(),
+            extra: Default::default(),
         },
         transfer: Some(grant.clone()),
     };

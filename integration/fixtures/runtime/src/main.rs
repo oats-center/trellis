@@ -41,6 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             assert_eq!(input.value, "from TypeScript");
             Ok(Value {
                 value: format!("Rust received {}", input.value),
+                extra: Default::default(),
             })
         });
     let release_first = Arc::new(Notify::new());
@@ -84,6 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .submit_keyed_work(KeyedValue {
             key: "shared".to_owned(),
             value: "first".to_owned(),
+            extra: Default::default(),
         })
         .await?;
     loop {
@@ -96,6 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .submit_keyed_work(KeyedValue {
             key: "shared".to_owned(),
             value: "second".to_owned(),
+            extra: Default::default(),
         })
         .await?;
     assert!(tokio::time::timeout(Duration::from_secs(26), second.wait())
@@ -115,6 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .submit_keyed_work(KeyedValue {
             key: "retry".to_owned(),
             value: "retry".to_owned(),
+            extra: Default::default(),
         })
         .await?;
     retry.wait().await?;
@@ -132,6 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Some((
                         Ok(Value {
                             value: format!("rust-feed-{frame}"),
+                            extra: Default::default(),
                         }),
                         frame + 1,
                     ))
@@ -152,7 +157,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     nested: UpdateDetail {
                         count: runtime_trellis::Int64(9_007_199_254_740_993),
                         payload: vec![1, 2, 3].into(),
+                        extra: Default::default(),
                     },
+                    extra: Default::default(),
                 })
                 .await?;
             } else if context
@@ -169,6 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if context.resuming {
                 op.complete(Value {
                     value: "resumed".to_owned(),
+                    extra: Default::default(),
                 })
                 .await?;
                 return Ok(());
@@ -183,7 +191,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     nested: UpdateDetail {
                         count: runtime_trellis::Int64(9_007_199_254_740_993),
                         payload: vec![4, 5, 6].into(),
+                        extra: Default::default(),
                     },
+                    extra: Default::default(),
                 })
                 .await?;
                 op.acknowledge_signal(signal.signal_sequence).await?;
@@ -198,6 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "completed"
                 }
                 .to_owned(),
+                extra: Default::default(),
             })
             .await?;
             Ok(())
@@ -211,6 +222,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })?;
                 op.complete(Value {
                     value: format!("{}:{}:{}", input.value, upload.size, context.resuming),
+                    extra: Default::default(),
                 })
                 .await?;
                 return Ok(());
@@ -225,6 +237,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })?;
             op.complete(Value {
                 value: format!("{}:{}:{}", input.value, upload.size, context.resuming),
+                extra: Default::default(),
             })
             .await?;
             Ok(())

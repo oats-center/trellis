@@ -151,6 +151,8 @@ pub mod trellis {
         #[serde(rename = "installedRevision")]
         pub installed_revision: crate::__types::Uint64,
         pub mode: crate::__types::trellis::ApprovalMode,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum ApprovalMode {
@@ -197,12 +199,16 @@ pub mod trellis {
         #[serde(rename = "consentDigest")]
         pub consent_digest: String,
         pub id: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct ApprovedResource {
         pub commitment: crate::__types::trellis::ResourceCommitment,
         pub kind: crate::__types::trellis::ResourceKind,
         pub name: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthApiSurfaceTarget {
@@ -210,6 +216,8 @@ pub mod trellis {
         pub kind: crate::__types::trellis::AuthApiSurfaceTargetKind,
         pub name: crate::__types::trellis::AuthApiSurfaceTargetName,
         pub surface: crate::__types::trellis::AuthApiSurfaceTargetSurface,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -404,6 +412,8 @@ pub mod trellis {
         pub session_public_key: String,
         pub state: String,
         pub version: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthCapabilitiesListRequest {
@@ -412,6 +422,8 @@ pub mod trellis {
         #[serde(rename = "sourceApi")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub source_api: Option<crate::__types::trellis::AuthCapabilitiesListRequestSourceApi>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -495,6 +507,8 @@ pub mod trellis {
             crate::__types::trellis::AuthCapabilitiesListResponseentriesItemDisplayName,
         #[serde(rename = "sourceApi")]
         pub source_api: crate::__types::Nullable<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -579,6 +593,8 @@ pub mod trellis {
         pub action:
             crate::__types::trellis::AuthCapabilitiesListResponseentriesItemallowsItemAction,
         pub target: crate::__types::Bytes,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum AuthCapabilitiesListResponseentriesItemallowsItemAction {
@@ -659,6 +675,8 @@ pub mod trellis {
         pub kind: crate::__types::trellis::AuthCapabilitiesListResponseentriesItemallowsItemtarget1Kind,
         pub name: crate::__types::trellis::AuthCapabilitiesListResponseentriesItemallowsItemtarget1Name,
         pub surface: crate::__types::trellis::AuthCapabilitiesListResponseentriesItemallowsItemtarget1Surface,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -806,6 +824,8 @@ pub mod trellis {
         pub kind: crate::__types::trellis::AuthCapabilitiesListResponseentriesItemallowsItemtarget2Kind,
         pub operation: crate::__types::trellis::AuthCapabilitiesListResponseentriesItemallowsItemtarget2Operation,
         pub signal: crate::__types::trellis::AuthCapabilitiesListResponseentriesItemallowsItemtarget2Signal,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -928,6 +948,8 @@ pub mod trellis {
         pub name: crate::__types::trellis::AuthCapabilitiesListResponseentriesItemallowsItemtarget3Name,
         pub participant: crate::__types::trellis::AuthCapabilitiesListResponseentriesItemallowsItemtarget3Participant,
         pub resource: crate::__types::trellis::AuthCapabilitiesListResponseentriesItemallowsItemtarget3Resource,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum AuthCapabilitiesListResponseentriesItemallowsItemtarget3Kind {
@@ -1078,6 +1100,8 @@ pub mod trellis {
         #[serde(rename = "idempotencyKey")]
         pub idempotency_key:
             crate::__types::trellis::AuthCapabilityGroupsDeleteRequestIdempotencyKey,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -1134,11 +1158,15 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthCapabilityGroupsDeleteResponse {
         pub success: bool,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthCapabilityGroupsGetRequest {
         #[serde(rename = "groupKey")]
         pub group_key: crate::__types::trellis::AuthCapabilityGroupsGetRequestGroupKey,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -1169,6 +1197,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthCapabilityGroupsGetResponse {
         pub group: crate::__types::trellis::AuthCapabilityGroupsGetResponsegroup,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthCapabilityGroupsGetResponsegroup {
@@ -1187,6 +1217,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::Uint64,
         pub version: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -1296,6 +1328,8 @@ pub mod trellis {
     pub struct AuthCapabilityGroupsListRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub page: Option<crate::__types::CursorQuery>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -1336,6 +1370,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::Uint64,
         pub version: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -1457,6 +1493,8 @@ pub mod trellis {
         #[serde(rename = "includedGroups")]
         pub included_groups:
             Vec<crate::__types::trellis::AuthCapabilityGroupsPutRequestIncludedGroupsItem>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -1617,6 +1655,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthCapabilityGroupsPutResponse {
         pub group: crate::__types::trellis::AuthCapabilityGroupsPutResponsegroup,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthCapabilityGroupsPutResponsegroup {
@@ -1635,6 +1675,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::Uint64,
         pub version: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -1763,6 +1805,8 @@ pub mod trellis {
         #[serde(rename = "userNkey")]
         pub user_nkey: String,
         pub version: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthConnectionsClosedEvent {
@@ -1779,6 +1823,8 @@ pub mod trellis {
         pub reason: crate::__types::Nullable<String>,
         #[serde(rename = "sessionId")]
         pub session_id: crate::__types::trellis::AuthConnectionsClosedEventSessionId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -1933,6 +1979,8 @@ pub mod trellis {
         #[serde(rename = "idempotencyKey")]
         pub idempotency_key: crate::__types::trellis::AuthConnectionsKickRequestIdempotencyKey,
         pub reason: crate::__types::Nullable<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -1991,6 +2039,8 @@ pub mod trellis {
         #[serde(rename = "connectionId")]
         pub connection_id: crate::__types::trellis::AuthConnectionsKickResponseConnectionId,
         pub kicked: bool,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -2033,6 +2083,8 @@ pub mod trellis {
         pub reason: crate::__types::Nullable<String>,
         #[serde(rename = "sessionId")]
         pub session_id: crate::__types::trellis::AuthConnectionsKickedEventSessionId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -2187,6 +2239,8 @@ pub mod trellis {
         #[serde(rename = "sessionId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub session_id: Option<crate::__types::trellis::AuthConnectionsListRequestSessionId>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -2299,6 +2353,8 @@ pub mod trellis {
         pub server_id: crate::__types::trellis::AuthConnectionsListResponseentriesItemServerId,
         #[serde(rename = "userNkey")]
         pub user_nkey: crate::__types::trellis::AuthConnectionsListResponseentriesItemUserNkey,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -2610,6 +2666,8 @@ pub mod trellis {
         pub server_id: crate::__types::trellis::AuthConnectionsOpenedEventServerId,
         #[serde(rename = "sessionId")]
         pub session_id: crate::__types::trellis::AuthConnectionsOpenedEventSessionId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -2825,6 +2883,8 @@ pub mod trellis {
         pub package_evidence: crate::__types::trellis::AuthPackageEvidence,
         #[serde(rename = "participantPath")]
         pub participant_path: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -2900,6 +2960,8 @@ pub mod trellis {
         #[serde(rename = "consentRequest")]
         pub consent_request: crate::__types::trellis::ConsentRequest,
         pub deployment: crate::__types::trellis::AuthDeploymentsCreateResponsedeployment,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthDeploymentsCreateRequest {
@@ -2920,6 +2982,8 @@ pub mod trellis {
         pub requires_device_delegation: bool,
         #[serde(rename = "reviewMode")]
         pub review_mode: crate::__types::Nullable<crate::__types::Bytes>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -3032,6 +3096,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthDeploymentsCreateResponse {
         pub deployment: crate::__types::trellis::AuthDeploymentsCreateResponsedeployment,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthDeploymentsCreateResponsedeployment {
@@ -3068,6 +3134,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::trellis::AuthDeploymentsCreateResponsedeploymentUpdatedAt,
         pub version: crate::__types::trellis::AuthDeploymentsCreateResponsedeploymentVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -3309,6 +3377,8 @@ pub mod trellis {
         #[serde(rename = "idempotencyKey")]
         pub idempotency_key: crate::__types::trellis::AuthDeploymentsDisableRequestIdempotencyKey,
         pub reason: crate::__types::Nullable<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -3382,6 +3452,8 @@ pub mod trellis {
     pub struct AuthDeploymentsDisableResponse {
         pub deployment: crate::__types::trellis::AuthDeploymentsDisableResponsedeployment,
         pub mutation: crate::__types::trellis::AuthDeploymentsDisableResponsemutation,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthDeploymentsDisableResponsedeployment {
@@ -3418,6 +3490,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::trellis::AuthDeploymentsDisableResponsedeploymentUpdatedAt,
         pub version: crate::__types::trellis::AuthDeploymentsDisableResponsedeploymentVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -3657,6 +3731,8 @@ pub mod trellis {
         pub resource_id: crate::__types::trellis::AuthDeploymentsDisableResponsemutationResourceId,
         pub state: crate::__types::trellis::AuthDeploymentsDisableResponsemutationState,
         pub version: crate::__types::trellis::AuthDeploymentsDisableResponsemutationVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -3735,6 +3811,8 @@ pub mod trellis {
         #[serde(rename = "idempotencyKey")]
         pub idempotency_key: crate::__types::trellis::AuthDeploymentsEnableRequestIdempotencyKey,
         pub reason: crate::__types::Nullable<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -3808,6 +3886,8 @@ pub mod trellis {
     pub struct AuthDeploymentsEnableResponse {
         pub deployment: crate::__types::trellis::AuthDeploymentsEnableResponsedeployment,
         pub mutation: crate::__types::trellis::AuthDeploymentsEnableResponsemutation,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthDeploymentsEnableResponsedeployment {
@@ -3844,6 +3924,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::trellis::AuthDeploymentsEnableResponsedeploymentUpdatedAt,
         pub version: crate::__types::trellis::AuthDeploymentsEnableResponsedeploymentVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -4083,6 +4165,8 @@ pub mod trellis {
         pub resource_id: crate::__types::trellis::AuthDeploymentsEnableResponsemutationResourceId,
         pub state: crate::__types::trellis::AuthDeploymentsEnableResponsemutationState,
         pub version: crate::__types::trellis::AuthDeploymentsEnableResponsemutationVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -4156,6 +4240,8 @@ pub mod trellis {
     pub struct AuthDeploymentsGetRequest {
         #[serde(rename = "deploymentId")]
         pub deployment_id: crate::__types::trellis::AuthDeploymentsGetRequestDeploymentId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -4188,6 +4274,8 @@ pub mod trellis {
         pub binding: crate::__types::Nullable<crate::__types::trellis::AuthGrantBinding>,
         pub deployment: crate::__types::trellis::AuthDeploymentsCreateResponsedeployment,
         pub resources: Vec<crate::__types::trellis::AuthResourceBinding>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthDeploymentsListRequest {
@@ -4197,6 +4285,8 @@ pub mod trellis {
         pub page: Option<crate::__types::CursorQuery>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub state: Option<crate::__types::trellis::AuthDeploymentsListRequestState>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -4360,6 +4450,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::trellis::AuthDeploymentsListResponseentriesItemUpdatedAt,
         pub version: crate::__types::trellis::AuthDeploymentsListResponseentriesItemVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -4601,6 +4693,8 @@ pub mod trellis {
         #[serde(rename = "idempotencyKey")]
         pub idempotency_key: crate::__types::trellis::AuthDeploymentsRemoveRequestIdempotencyKey,
         pub reason: crate::__types::Nullable<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -4674,6 +4768,8 @@ pub mod trellis {
     pub struct AuthDeploymentsRemoveResponse {
         pub deployment: crate::__types::trellis::AuthDeploymentsRemoveResponsedeployment,
         pub mutation: crate::__types::trellis::AuthDeploymentsRemoveResponsemutation,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthDeploymentsRemoveResponsedeployment {
@@ -4710,6 +4806,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::trellis::AuthDeploymentsRemoveResponsedeploymentUpdatedAt,
         pub version: crate::__types::trellis::AuthDeploymentsRemoveResponsedeploymentVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -4949,6 +5047,8 @@ pub mod trellis {
         pub resource_id: crate::__types::trellis::AuthDeploymentsRemoveResponsemutationResourceId,
         pub state: crate::__types::trellis::AuthDeploymentsRemoveResponsemutationState,
         pub version: crate::__types::trellis::AuthDeploymentsRemoveResponsemutationVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -5031,6 +5131,8 @@ pub mod trellis {
         pub instance_id: crate::__types::trellis::AuthDeviceUserAuthoritiesApprovedEventInstanceId,
         #[serde(rename = "occurredAt")]
         pub occurred_at: crate::__types::trellis::AuthDeviceUserAuthoritiesApprovedEventOccurredAt,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -5164,6 +5266,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub principal_id:
             Option<crate::__types::trellis::AuthDeviceUserAuthoritiesListRequestPrincipalId>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -5265,6 +5369,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthDeviceUserAuthoritiesListResponseentriesItem {
         pub device: crate::__types::trellis::AuthDeviceUserAuthoritiesListResponseentriesItemdevice,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthDeviceUserAuthoritiesListResponseentriesItemdevice {
@@ -5296,6 +5402,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::trellis::AuthDeviceUserAuthoritiesListResponseentriesItemdeviceUpdatedAt,
         pub version: crate::__types::trellis::AuthDeviceUserAuthoritiesListResponseentriesItemdeviceVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum AuthDeviceUserAuthoritiesListResponseentriesItemdeviceAdministrativeApproval {
@@ -5610,6 +5718,8 @@ pub mod trellis {
         #[serde(rename = "userPrincipalId")]
         pub user_principal_id:
             crate::__types::trellis::AuthDeviceUserAuthoritiesRequestedEventUserPrincipalId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -5739,6 +5849,8 @@ pub mod trellis {
         #[serde(rename = "retryAfterMs")]
         pub retry_after_ms: crate::__types::Uint64,
         pub state: crate::__types::trellis::AuthDeviceUserAuthoritiesResolveProgressState,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum AuthDeviceUserAuthoritiesResolveProgressState {
@@ -5793,6 +5905,8 @@ pub mod trellis {
             crate::__types::trellis::AuthDeviceUserAuthoritiesResolveRequestConfirmationCode,
         #[serde(rename = "flowId")]
         pub flow_id: crate::__types::trellis::AuthDeviceUserAuthoritiesResolveRequestFlowId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -5850,6 +5964,8 @@ pub mod trellis {
     pub struct AuthDeviceUserAuthoritiesResolveResponse {
         pub device: crate::__types::trellis::AuthDeviceUserAuthoritiesResolveResponsedevice,
         pub review: crate::__types::trellis::AuthDeviceUserAuthoritiesResolveResponsereview,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthDeviceUserAuthoritiesResolveResponsedevice {
@@ -5881,6 +5997,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::trellis::AuthDeviceUserAuthoritiesResolveResponsedeviceUpdatedAt,
         pub version: crate::__types::trellis::AuthDeviceUserAuthoritiesResolveResponsedeviceVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum AuthDeviceUserAuthoritiesResolveResponsedeviceAdministrativeApproval {
@@ -6192,6 +6310,8 @@ pub mod trellis {
         pub review_id: crate::__types::trellis::AuthDeviceUserAuthoritiesResolveResponsereviewReviewId,
         pub state: crate::__types::trellis::AuthDeviceUserAuthoritiesResolveResponsereviewState,
         pub version: crate::__types::trellis::AuthDeviceUserAuthoritiesResolveResponsereviewVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -6424,6 +6544,8 @@ pub mod trellis {
         #[serde(rename = "occurredAt")]
         pub occurred_at: crate::__types::trellis::AuthDeviceUserAuthoritiesResolvedEventOccurredAt,
         pub state: crate::__types::trellis::AuthDeviceUserAuthoritiesResolvedEventState,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -6561,6 +6683,8 @@ pub mod trellis {
         #[serde(rename = "reviewId")]
         pub review_id:
             crate::__types::trellis::AuthDeviceUserAuthoritiesReviewRequestedEventReviewId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -6696,6 +6820,8 @@ pub mod trellis {
         #[serde(rename = "reviewId")]
         pub review_id:
             crate::__types::trellis::AuthDeviceUserAuthoritiesReviewsDecideRequestReviewId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum AuthDeviceUserAuthoritiesReviewsDecideRequestDecision {
@@ -6810,6 +6936,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthDeviceUserAuthoritiesReviewsDecideResponse {
         pub review: crate::__types::trellis::AuthDeviceUserAuthoritiesReviewsDecideResponsereview,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthDeviceUserAuthoritiesReviewsDecideResponsereview {
@@ -6838,6 +6966,8 @@ pub mod trellis {
         pub review_id: crate::__types::trellis::AuthDeviceUserAuthoritiesReviewsDecideResponsereviewReviewId,
         pub state: crate::__types::trellis::AuthDeviceUserAuthoritiesReviewsDecideResponsereviewState,
         pub version: crate::__types::trellis::AuthDeviceUserAuthoritiesReviewsDecideResponsereviewVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -7108,6 +7238,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub state:
             Option<crate::__types::trellis::AuthDeviceUserAuthoritiesReviewsListRequestState>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -7256,6 +7388,8 @@ pub mod trellis {
         pub review_id: crate::__types::trellis::AuthDeviceUserAuthoritiesReviewsListResponseentriesItemReviewId,
         pub state: crate::__types::trellis::AuthDeviceUserAuthoritiesReviewsListResponseentriesItemState,
         pub version: crate::__types::trellis::AuthDeviceUserAuthoritiesReviewsListResponseentriesItemVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -7530,6 +7664,8 @@ pub mod trellis {
         pub idempotency_key:
             crate::__types::trellis::AuthDeviceUserAuthoritiesRevokeRequestIdempotencyKey,
         pub reason: crate::__types::Nullable<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -7614,6 +7750,8 @@ pub mod trellis {
         pub device: crate::__types::trellis::AuthDeviceUserAuthoritiesRevokeResponsedevice,
         #[serde(rename = "kickedSessionCount")]
         pub kicked_session_count: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthDeviceUserAuthoritiesRevokeResponsedevice {
@@ -7645,6 +7783,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::trellis::AuthDeviceUserAuthoritiesRevokeResponsedeviceUpdatedAt,
         pub version: crate::__types::trellis::AuthDeviceUserAuthoritiesRevokeResponsedeviceVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum AuthDeviceUserAuthoritiesRevokeResponsedeviceAdministrativeApproval {
@@ -7938,6 +8078,8 @@ pub mod trellis {
         #[serde(rename = "instanceId")]
         pub instance_id: crate::__types::trellis::AuthDevicesDisableRequestInstanceId,
         pub reason: crate::__types::Nullable<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -8011,6 +8153,8 @@ pub mod trellis {
     pub struct AuthDevicesDisableResponse {
         pub device: crate::__types::trellis::AuthDevicesDisableResponsedevice,
         pub mutation: crate::__types::trellis::AuthDevicesDisableResponsemutation,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthDevicesDisableResponsedevice {
@@ -8044,6 +8188,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::trellis::AuthDevicesDisableResponsedeviceUpdatedAt,
         pub version: crate::__types::trellis::AuthDevicesDisableResponsedeviceVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum AuthDevicesDisableResponsedeviceAdministrativeApproval {
@@ -8329,6 +8475,8 @@ pub mod trellis {
         pub resource_id: crate::__types::trellis::AuthDevicesDisableResponsemutationResourceId,
         pub state: crate::__types::trellis::AuthDevicesDisableResponsemutationState,
         pub version: crate::__types::trellis::AuthDevicesDisableResponsemutationVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -8407,6 +8555,8 @@ pub mod trellis {
         #[serde(rename = "instanceId")]
         pub instance_id: crate::__types::trellis::AuthDevicesEnableRequestInstanceId,
         pub reason: crate::__types::Nullable<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -8480,6 +8630,8 @@ pub mod trellis {
     pub struct AuthDevicesEnableResponse {
         pub device: crate::__types::trellis::AuthDevicesEnableResponsedevice,
         pub mutation: crate::__types::trellis::AuthDevicesEnableResponsemutation,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthDevicesEnableResponsedevice {
@@ -8513,6 +8665,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::trellis::AuthDevicesEnableResponsedeviceUpdatedAt,
         pub version: crate::__types::trellis::AuthDevicesEnableResponsedeviceVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum AuthDevicesEnableResponsedeviceAdministrativeApproval {
@@ -8798,6 +8952,8 @@ pub mod trellis {
         pub resource_id: crate::__types::trellis::AuthDevicesEnableResponsemutationResourceId,
         pub state: crate::__types::trellis::AuthDevicesEnableResponsemutationState,
         pub version: crate::__types::trellis::AuthDevicesEnableResponsemutationVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -8876,6 +9032,8 @@ pub mod trellis {
         pub page: Option<crate::__types::CursorQuery>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub state: Option<crate::__types::trellis::AuthDevicesListRequestState>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -9025,6 +9183,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::trellis::AuthDevicesListResponseentriesItemUpdatedAt,
         pub version: crate::__types::trellis::AuthDevicesListResponseentriesItemVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum AuthDevicesListResponseentriesItemAdministrativeApproval {
@@ -9315,6 +9475,8 @@ pub mod trellis {
         pub instance_id: crate::__types::Nullable<String>,
         #[serde(rename = "participantId")]
         pub participant_id: crate::__types::Nullable<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -9373,6 +9535,8 @@ pub mod trellis {
         pub device: crate::__types::trellis::AuthDevicesProvisionResponsedevice,
         #[serde(rename = "provisioningSecret")]
         pub provisioning_secret: crate::__types::Nullable<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthDevicesProvisionResponsedevice {
@@ -9406,6 +9570,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::trellis::AuthDevicesProvisionResponsedeviceUpdatedAt,
         pub version: crate::__types::trellis::AuthDevicesProvisionResponsedeviceVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum AuthDevicesProvisionResponsedeviceAdministrativeApproval {
@@ -9693,6 +9859,8 @@ pub mod trellis {
         #[serde(rename = "instanceId")]
         pub instance_id: crate::__types::trellis::AuthDevicesRemoveRequestInstanceId,
         pub reason: crate::__types::Nullable<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -9766,6 +9934,8 @@ pub mod trellis {
     pub struct AuthDevicesRemoveResponse {
         pub device: crate::__types::trellis::AuthDevicesRemoveResponsedevice,
         pub mutation: crate::__types::trellis::AuthDevicesRemoveResponsemutation,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthDevicesRemoveResponsedevice {
@@ -9799,6 +9969,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::trellis::AuthDevicesRemoveResponsedeviceUpdatedAt,
         pub version: crate::__types::trellis::AuthDevicesRemoveResponsedeviceVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum AuthDevicesRemoveResponsedeviceAdministrativeApproval {
@@ -10084,6 +10256,8 @@ pub mod trellis {
         pub resource_id: crate::__types::trellis::AuthDevicesRemoveResponsemutationResourceId,
         pub state: crate::__types::trellis::AuthDevicesRemoveResponsemutationState,
         pub version: crate::__types::trellis::AuthDevicesRemoveResponsemutationVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -10162,6 +10336,8 @@ pub mod trellis {
         pub field: crate::__types::Nullable<String>,
         pub message: crate::__types::trellis::AuthErrorDetailsMessage,
         pub retryable: bool,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -10241,6 +10417,8 @@ pub mod trellis {
         pub state: crate::__types::trellis::AuthGrantBindingState,
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::trellis::AuthGrantBindingUpdatedAt,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -10458,6 +10636,8 @@ pub mod trellis {
     pub struct AuthGrantSet {
         pub format: String,
         pub permissions: Vec<crate::__types::trellis::AuthPermissionAtom>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthGrantsChangedEvent {
@@ -10466,6 +10646,8 @@ pub mod trellis {
         pub event_id: crate::__types::trellis::AuthGrantsChangedEventEventId,
         #[serde(rename = "occurredAt")]
         pub occurred_at: crate::__types::trellis::AuthGrantsChangedEventOccurredAt,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -10517,6 +10699,8 @@ pub mod trellis {
         pub owner_kind: crate::__types::trellis::AuthGrantsGetRequestOwnerKind,
         #[serde(rename = "participantId")]
         pub participant_id: crate::__types::trellis::AuthGrantsGetRequestParticipantId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -10613,6 +10797,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthGrantsGetResponse {
         pub binding: crate::__types::Nullable<crate::__types::trellis::AuthGrantBinding>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthGrantsListRequest {
@@ -10629,6 +10815,8 @@ pub mod trellis {
         pub participant_id: Option<crate::__types::trellis::AuthGrantsListRequestParticipantId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub state: Option<crate::__types::trellis::AuthGrantsListRequestState>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -10809,6 +10997,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthGrantsMutationResponse {
         pub binding: crate::__types::trellis::AuthGrantBinding,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthGrantsRevokeRequest {
@@ -10824,6 +11014,8 @@ pub mod trellis {
         pub participant_id: crate::__types::trellis::AuthGrantsRevokeRequestParticipantId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub reason: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -10979,6 +11171,8 @@ pub mod trellis {
         pub participant_id: crate::__types::trellis::AuthGrantsSetRequestParticipantId,
         #[serde(rename = "platformPrivileges")]
         pub platform_privileges: Vec<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -11154,6 +11348,8 @@ pub mod trellis {
         pub key_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub reason: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -11186,6 +11382,8 @@ pub mod trellis {
         #[serde(rename = "keyId")]
         pub key_id: String,
         pub state: crate::__types::trellis::AuthIssuersRevokeResponseState,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum AuthIssuersRevokeResponseState {
@@ -11236,6 +11434,8 @@ pub mod trellis {
         pub reason: Option<String>,
         #[serde(rename = "revokedBy")]
         pub revoked_by: crate::__types::trellis::AuthIssuersRevokedEventRevokedBy,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -11331,6 +11531,8 @@ pub mod trellis {
         pub session_public_key: crate::__types::trellis::AuthLoginSessionSessionPublicKey,
         pub state: crate::__types::trellis::AuthLoginSessionState,
         pub version: crate::__types::trellis::AuthLoginSessionVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -11651,6 +11853,8 @@ pub mod trellis {
         pub state_id: String,
         pub status: String,
         pub version: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthOperationSignalTarget {
@@ -11658,6 +11862,8 @@ pub mod trellis {
         pub kind: crate::__types::trellis::AuthOperationSignalTargetKind,
         pub operation: crate::__types::trellis::AuthOperationSignalTargetOperation,
         pub signal: crate::__types::trellis::AuthOperationSignalTargetSignal,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -11780,6 +11986,8 @@ pub mod trellis {
         pub api_id: crate::__types::trellis::AuthOptionalBundleApiId,
         pub id: crate::__types::trellis::AuthOptionalBundleId,
         pub permissions: Vec<crate::__types::trellis::AuthPermissionAtom>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -11840,6 +12048,8 @@ pub mod trellis {
         pub root_digest: String,
         #[serde(rename = "rootPackage")]
         pub root_package: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthPackageSourceEvidence {
@@ -11847,6 +12057,8 @@ pub mod trellis {
         pub name: String,
         pub source: String,
         pub version: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthParticipantResourceTarget {
@@ -11854,6 +12066,8 @@ pub mod trellis {
         pub name: crate::__types::trellis::AuthParticipantResourceTargetName,
         pub participant: crate::__types::trellis::AuthParticipantResourceTargetParticipant,
         pub resource: crate::__types::trellis::AuthParticipantResourceTargetResource,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum AuthParticipantResourceTargetKind {
@@ -11999,6 +12213,8 @@ pub mod trellis {
         pub participant_id: crate::__types::trellis::AuthParticipantsGetRequestParticipantId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub revision: Option<crate::__types::trellis::AuthParticipantsGetRequestRevision>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -12045,6 +12261,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthParticipantsGetResponse {
         pub participant: crate::__types::trellis::InstalledParticipantDetail,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthParticipantsInstallRequest {
@@ -12062,6 +12280,8 @@ pub mod trellis {
         #[serde(rename = "platformTrust")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub platform_trust: Option<bool>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -12108,6 +12328,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthParticipantsInstallResponse {
         pub participant: crate::__types::trellis::InstalledParticipantSummary,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthParticipantsListRequest {
@@ -12115,6 +12337,8 @@ pub mod trellis {
         pub kind: Option<crate::__types::trellis::ResourceOwnerKind>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub page: Option<crate::__types::CursorQuery>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     pub type AuthParticipantsListResponse =
         crate::__types::CursorPage<crate::__types::trellis::InstalledParticipantSummary>;
@@ -12122,6 +12346,8 @@ pub mod trellis {
     pub struct AuthPermissionAtom {
         pub action: crate::__types::trellis::AuthPermissionAtomAction,
         pub target: crate::__types::Bytes,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum AuthPermissionAtomAction {
@@ -12200,6 +12426,8 @@ pub mod trellis {
     pub struct AuthPortalsGetRequest {
         #[serde(rename = "portalId")]
         pub portal_id: crate::__types::trellis::AuthPortalsGetRequestPortalId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -12231,6 +12459,8 @@ pub mod trellis {
     pub struct AuthPortalsGetResponse {
         pub portal: crate::__types::trellis::AuthPortalsGetResponseportal,
         pub routes: Vec<crate::__types::trellis::AuthPortalsGetResponseroutesItem>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthPortalsGetResponseportal {
@@ -12250,6 +12480,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::trellis::AuthPortalsGetResponseportalUpdatedAt,
         pub version: crate::__types::trellis::AuthPortalsGetResponseportalVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -12362,6 +12594,8 @@ pub mod trellis {
         pub providers: crate::__types::Nullable<
             Vec<crate::__types::trellis::AuthPortalsGetResponseportalloginSettingsProvidersItem>,
         >,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -12406,6 +12640,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::trellis::AuthPortalsGetResponseroutesItemUpdatedAt,
         pub version: crate::__types::trellis::AuthPortalsGetResponseroutesItemVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -12535,6 +12771,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub portal_id:
             Option<crate::__types::trellis::AuthPortalsGrantOverridesListRequestPortalId>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -12630,6 +12868,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::Uint64,
         pub version: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -12748,6 +12988,8 @@ pub mod trellis {
         #[serde(rename = "providerId")]
         pub provider_id: crate::__types::trellis::AuthPortalsGrantOverridesListResponseentriesItemroleMappingsItemProviderId,
         pub role: crate::__types::trellis::AuthPortalsGrantOverridesListResponseentriesItemroleMappingsItemRole,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -12901,6 +13143,8 @@ pub mod trellis {
         #[serde(rename = "roleMappings")]
         pub role_mappings:
             Vec<crate::__types::trellis::AuthPortalsGrantOverridesPutRequestroleMappingsItem>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -13045,6 +13289,8 @@ pub mod trellis {
         #[serde(rename = "providerId")]
         pub provider_id: crate::__types::trellis::AuthPortalsGrantOverridesPutRequestroleMappingsItemProviderId,
         pub role: crate::__types::trellis::AuthPortalsGrantOverridesPutRequestroleMappingsItemRole,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -13163,6 +13409,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthPortalsGrantOverridesPutResponse {
         pub policy: crate::__types::trellis::AuthPortalsGrantOverridesPutResponsepolicy,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthPortalsGrantOverridesPutResponsepolicy {
@@ -13187,6 +13435,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::Uint64,
         pub version: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -13305,6 +13555,8 @@ pub mod trellis {
         #[serde(rename = "providerId")]
         pub provider_id: crate::__types::trellis::AuthPortalsGrantOverridesPutResponsepolicyroleMappingsItemProviderId,
         pub role: crate::__types::trellis::AuthPortalsGrantOverridesPutResponsepolicyroleMappingsItemRole,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -13442,6 +13694,8 @@ pub mod trellis {
             crate::__types::trellis::AuthPortalsGrantOverridesRemoveRequestParticipantId,
         #[serde(rename = "portalId")]
         pub portal_id: crate::__types::trellis::AuthPortalsGrantOverridesRemoveRequestPortalId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -13526,6 +13780,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub removed:
             Option<crate::__types::trellis::AuthPortalsGrantOverridesRemoveResponseremoved>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthPortalsGrantOverridesRemoveResponseremoved {
@@ -13550,6 +13806,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::Uint64,
         pub version: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -13668,6 +13926,8 @@ pub mod trellis {
         #[serde(rename = "providerId")]
         pub provider_id: crate::__types::trellis::AuthPortalsGrantOverridesRemoveResponseremovedroleMappingsItemProviderId,
         pub role: crate::__types::trellis::AuthPortalsGrantOverridesRemoveResponseremovedroleMappingsItemRole,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -13801,6 +14061,8 @@ pub mod trellis {
         pub disabled: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub page: Option<crate::__types::CursorQuery>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -13865,6 +14127,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::trellis::AuthPortalsListResponseentriesItemUpdatedAt,
         pub version: crate::__types::trellis::AuthPortalsListResponseentriesItemVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -13979,6 +14243,8 @@ pub mod trellis {
                 crate::__types::trellis::AuthPortalsListResponseentriesItemloginSettingsProvidersItem,
             >,
         >,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -14010,6 +14276,8 @@ pub mod trellis {
     pub struct AuthPortalsLoginSettingsGetRequest {
         #[serde(rename = "portalId")]
         pub portal_id: crate::__types::trellis::AuthPortalsLoginSettingsGetRequestPortalId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -14043,6 +14311,8 @@ pub mod trellis {
         pub portal_id: crate::__types::trellis::AuthPortalsLoginSettingsGetResponsePortalId,
         pub settings: crate::__types::trellis::AuthPortalsLoginSettingsGetResponsesettings,
         pub version: crate::__types::trellis::AuthPortalsLoginSettingsGetResponseVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -14097,6 +14367,8 @@ pub mod trellis {
         pub providers: crate::__types::Nullable<
             Vec<crate::__types::trellis::AuthPortalsLoginSettingsGetResponsesettingsProvidersItem>,
         >,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -14135,6 +14407,8 @@ pub mod trellis {
         #[serde(rename = "portalId")]
         pub portal_id: crate::__types::trellis::AuthPortalsLoginSettingsUpdateRequestPortalId,
         pub settings: crate::__types::trellis::AuthPortalsLoginSettingsUpdateRequestsettings,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -14217,6 +14491,8 @@ pub mod trellis {
                 crate::__types::trellis::AuthPortalsLoginSettingsUpdateRequestsettingsProvidersItem,
             >,
         >,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -14250,6 +14526,8 @@ pub mod trellis {
         pub portal_id: crate::__types::trellis::AuthPortalsLoginSettingsUpdateResponsePortalId,
         pub settings: crate::__types::trellis::AuthPortalsLoginSettingsUpdateResponsesettings,
         pub version: crate::__types::trellis::AuthPortalsLoginSettingsUpdateResponseVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -14306,6 +14584,8 @@ pub mod trellis {
                 crate::__types::trellis::AuthPortalsLoginSettingsUpdateResponsesettingsProvidersItem,
             >,
         >,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -14349,6 +14629,8 @@ pub mod trellis {
         pub login_settings: crate::__types::trellis::AuthPortalsPutRequestloginSettings,
         #[serde(rename = "portalId")]
         pub portal_id: crate::__types::trellis::AuthPortalsPutRequestPortalId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -14455,6 +14737,8 @@ pub mod trellis {
         pub providers: crate::__types::Nullable<
             Vec<crate::__types::trellis::AuthPortalsPutRequestloginSettingsProvidersItem>,
         >,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -14485,6 +14769,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthPortalsPutResponse {
         pub portal: crate::__types::trellis::AuthPortalsPutResponseportal,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthPortalsPutResponseportal {
@@ -14504,6 +14790,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::trellis::AuthPortalsPutResponseportalUpdatedAt,
         pub version: crate::__types::trellis::AuthPortalsPutResponseportalVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -14616,6 +14904,8 @@ pub mod trellis {
         pub providers: crate::__types::Nullable<
             Vec<crate::__types::trellis::AuthPortalsPutResponseportalloginSettingsProvidersItem>,
         >,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -14651,6 +14941,8 @@ pub mod trellis {
         pub idempotency_key: crate::__types::trellis::AuthPortalsRemoveRequestIdempotencyKey,
         #[serde(rename = "portalId")]
         pub portal_id: crate::__types::trellis::AuthPortalsRemoveRequestPortalId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -14723,6 +15015,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthPortalsRemoveResponse {
         pub removed: bool,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthPortalsRoutesPutRequest {
@@ -14742,6 +15036,8 @@ pub mod trellis {
         pub priority: crate::__types::Uint64,
         #[serde(rename = "routeId")]
         pub route_id: crate::__types::Nullable<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -14814,6 +15110,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthPortalsRoutesPutResponse {
         pub route: crate::__types::trellis::AuthPortalsRoutesPutResponseroute,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthPortalsRoutesPutResponseroute {
@@ -14832,6 +15130,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: crate::__types::trellis::AuthPortalsRoutesPutResponserouteUpdatedAt,
         pub version: crate::__types::trellis::AuthPortalsRoutesPutResponserouteVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -14958,6 +15258,8 @@ pub mod trellis {
         pub idempotency_key: crate::__types::trellis::AuthPortalsRoutesRemoveRequestIdempotencyKey,
         #[serde(rename = "routeId")]
         pub route_id: crate::__types::trellis::AuthPortalsRoutesRemoveRequestRouteId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -15030,6 +15332,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthPortalsRoutesRemoveResponse {
         pub removed: bool,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthResourceBinding {
@@ -15047,6 +15351,8 @@ pub mod trellis {
         #[serde(rename = "resourceKind")]
         pub resource_kind: crate::__types::trellis::AuthResourceBindingResourceKind,
         pub state: crate::__types::trellis::AuthResourceBindingState,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -15219,6 +15525,8 @@ pub mod trellis {
             Vec<crate::__types::trellis::AuthResourceEventConsumerProviderFilterSubjectsItem>,
         pub kind: crate::__types::trellis::AuthResourceEventConsumerProviderKind,
         pub stream: crate::__types::trellis::AuthResourceEventConsumerProviderStream,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -15350,6 +15658,8 @@ pub mod trellis {
         pub work_stream: crate::__types::trellis::AuthResourceJobQueueProviderWorkStream,
         #[serde(rename = "workSubject")]
         pub work_subject: crate::__types::trellis::AuthResourceJobQueueProviderWorkSubject,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -15548,6 +15858,8 @@ pub mod trellis {
     pub struct AuthResourceKvProvider {
         pub bucket: crate::__types::trellis::AuthResourceKvProviderBucket,
         pub kind: crate::__types::trellis::AuthResourceKvProviderKind,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -15616,6 +15928,8 @@ pub mod trellis {
     pub struct AuthResourceStateProvider {
         pub bucket: crate::__types::trellis::AuthResourceStateProviderBucket,
         pub kind: crate::__types::trellis::AuthResourceStateProviderKind,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -15684,6 +15998,8 @@ pub mod trellis {
     pub struct AuthResourceStoreProvider {
         pub bucket: crate::__types::trellis::AuthResourceStoreProviderBucket,
         pub kind: crate::__types::trellis::AuthResourceStoreProviderKind,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -15779,6 +16095,8 @@ pub mod trellis {
         pub principal_kind: crate::__types::trellis::AuthRuntimeConnectionPrincipalKind,
         #[serde(rename = "sessionKey")]
         pub session_key: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -16088,6 +16406,8 @@ pub mod trellis {
         #[serde(rename = "instanceId")]
         pub instance_id: crate::__types::trellis::AuthServiceInstancesDisableRequestInstanceId,
         pub reason: crate::__types::Nullable<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -16161,6 +16481,8 @@ pub mod trellis {
     pub struct AuthServiceInstancesDisableResponse {
         pub instance: crate::__types::trellis::AuthServiceInstancesDisableResponseinstance,
         pub mutation: crate::__types::trellis::AuthServiceInstancesDisableResponsemutation,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthServiceInstancesDisableResponseinstance {
@@ -16188,6 +16510,8 @@ pub mod trellis {
         pub updated_at:
             crate::__types::trellis::AuthServiceInstancesDisableResponseinstanceUpdatedAt,
         pub version: crate::__types::trellis::AuthServiceInstancesDisableResponseinstanceVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -16395,6 +16719,8 @@ pub mod trellis {
             crate::__types::trellis::AuthServiceInstancesDisableResponsemutationResourceId,
         pub state: crate::__types::trellis::AuthServiceInstancesDisableResponsemutationState,
         pub version: crate::__types::trellis::AuthServiceInstancesDisableResponsemutationVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -16475,6 +16801,8 @@ pub mod trellis {
         #[serde(rename = "instanceId")]
         pub instance_id: crate::__types::trellis::AuthServiceInstancesEnableRequestInstanceId,
         pub reason: crate::__types::Nullable<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -16548,6 +16876,8 @@ pub mod trellis {
     pub struct AuthServiceInstancesEnableResponse {
         pub instance: crate::__types::trellis::AuthServiceInstancesEnableResponseinstance,
         pub mutation: crate::__types::trellis::AuthServiceInstancesEnableResponsemutation,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthServiceInstancesEnableResponseinstance {
@@ -16575,6 +16905,8 @@ pub mod trellis {
         pub updated_at:
             crate::__types::trellis::AuthServiceInstancesEnableResponseinstanceUpdatedAt,
         pub version: crate::__types::trellis::AuthServiceInstancesEnableResponseinstanceVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -16782,6 +17114,8 @@ pub mod trellis {
             crate::__types::trellis::AuthServiceInstancesEnableResponsemutationResourceId,
         pub state: crate::__types::trellis::AuthServiceInstancesEnableResponsemutationState,
         pub version: crate::__types::trellis::AuthServiceInstancesEnableResponsemutationVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -16861,6 +17195,8 @@ pub mod trellis {
         pub page: Option<crate::__types::CursorQuery>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub state: Option<crate::__types::trellis::AuthServiceInstancesListRequestState>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -17005,6 +17341,8 @@ pub mod trellis {
         pub updated_at:
             crate::__types::trellis::AuthServiceInstancesListResponseentriesItemUpdatedAt,
         pub version: crate::__types::trellis::AuthServiceInstancesListResponseentriesItemVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -17219,6 +17557,8 @@ pub mod trellis {
         pub instance_id: crate::__types::Nullable<String>,
         #[serde(rename = "participantId")]
         pub participant_id: crate::__types::Nullable<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -17301,6 +17641,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthServiceInstancesProvisionResponse {
         pub instance: crate::__types::trellis::AuthServiceInstancesProvisionResponseinstance,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthServiceInstancesProvisionResponseinstance {
@@ -17328,6 +17670,8 @@ pub mod trellis {
         pub updated_at:
             crate::__types::trellis::AuthServiceInstancesProvisionResponseinstanceUpdatedAt,
         pub version: crate::__types::trellis::AuthServiceInstancesProvisionResponseinstanceVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -17538,6 +17882,8 @@ pub mod trellis {
         #[serde(rename = "instanceId")]
         pub instance_id: crate::__types::trellis::AuthServiceInstancesRemoveRequestInstanceId,
         pub reason: crate::__types::Nullable<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -17611,6 +17957,8 @@ pub mod trellis {
     pub struct AuthServiceInstancesRemoveResponse {
         pub instance: crate::__types::trellis::AuthServiceInstancesRemoveResponseinstance,
         pub mutation: crate::__types::trellis::AuthServiceInstancesRemoveResponsemutation,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthServiceInstancesRemoveResponseinstance {
@@ -17638,6 +17986,8 @@ pub mod trellis {
         pub updated_at:
             crate::__types::trellis::AuthServiceInstancesRemoveResponseinstanceUpdatedAt,
         pub version: crate::__types::trellis::AuthServiceInstancesRemoveResponseinstanceVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -17845,6 +18195,8 @@ pub mod trellis {
             crate::__types::trellis::AuthServiceInstancesRemoveResponsemutationResourceId,
         pub state: crate::__types::trellis::AuthServiceInstancesRemoveResponsemutationState,
         pub version: crate::__types::trellis::AuthServiceInstancesRemoveResponsemutationVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -17926,6 +18278,8 @@ pub mod trellis {
         pub principal_id: Option<crate::__types::trellis::AuthSessionsListRequestPrincipalId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub state: Option<crate::__types::trellis::AuthSessionsListRequestState>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -18067,20 +18421,30 @@ pub mod trellis {
     pub type AuthSessionsListResponse =
         crate::__types::CursorPage<crate::__types::trellis::AuthLoginSession>;
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct AuthSessionsLogoutRequest {}
+    pub struct AuthSessionsLogoutRequest {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthSessionsLogoutResponse {
         #[serde(rename = "kickedConnections")]
         pub kicked_connections: crate::__types::Uint64,
         pub session: crate::__types::trellis::AuthLoginSession,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct AuthSessionsMeRequest {}
+    pub struct AuthSessionsMeRequest {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthSessionsMeResponse {
         pub connection: crate::__types::trellis::AuthRuntimeConnection,
         pub session: crate::__types::Nullable<crate::__types::trellis::AuthLoginSession>,
         pub user: crate::__types::Nullable<crate::__types::trellis::AuthUsersGetResponseuser>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthSessionsRevokeRequest {
@@ -18093,6 +18457,8 @@ pub mod trellis {
         pub reason: crate::__types::Nullable<String>,
         #[serde(rename = "sessionId")]
         pub session_id: crate::__types::trellis::AuthSessionsRevokeRequestSessionId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -18167,6 +18533,8 @@ pub mod trellis {
         #[serde(rename = "kickedConnections")]
         pub kicked_connections: crate::__types::Uint64,
         pub session: crate::__types::trellis::AuthLoginSession,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthSessionsRevokedEvent {
@@ -18183,6 +18551,8 @@ pub mod trellis {
         pub revoked_by: crate::__types::Nullable<String>,
         #[serde(rename = "sessionId")]
         pub session_id: crate::__types::trellis::AuthSessionsRevokedEventSessionId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -18311,6 +18681,8 @@ pub mod trellis {
         #[serde(rename = "providerId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub provider_id: Option<crate::__types::trellis::AuthUserIdentitiesListRequestProviderId>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -18402,6 +18774,8 @@ pub mod trellis {
             crate::__types::trellis::AuthUserIdentitiesListResponseentriesItemProviderId,
         pub subject: crate::__types::trellis::AuthUserIdentitiesListResponseentriesItemSubject,
         pub username: crate::__types::Nullable<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -18520,6 +18894,8 @@ pub mod trellis {
         #[serde(rename = "providerId")]
         pub provider_id: crate::__types::trellis::AuthUserIdentitiesUnlinkRequestProviderId,
         pub subject: crate::__types::trellis::AuthUserIdentitiesUnlinkRequestSubject,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -18602,6 +18978,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthUserIdentitiesUnlinkResponse {
         pub unlinked: bool,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthUsersCreateRequest {
@@ -18611,6 +18989,8 @@ pub mod trellis {
         pub image: crate::__types::Nullable<String>,
         pub name: crate::__types::Nullable<String>,
         pub username: crate::__types::Nullable<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -18641,6 +19021,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthUsersCreateResponse {
         pub user: crate::__types::trellis::AuthUsersCreateResponseuser,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthUsersCreateResponseuser {
@@ -18664,6 +19046,8 @@ pub mod trellis {
         #[serde(rename = "userId")]
         pub user_id: crate::__types::trellis::AuthUsersCreateResponseuserUserId,
         pub version: crate::__types::trellis::AuthUsersCreateResponseuserVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -18844,6 +19228,8 @@ pub mod trellis {
     pub struct AuthUsersGetRequest {
         #[serde(rename = "userId")]
         pub user_id: crate::__types::trellis::AuthUsersGetRequestUserId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -18874,6 +19260,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthUsersGetResponse {
         pub user: crate::__types::trellis::AuthUsersGetResponseuser,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthUsersGetResponseuser {
@@ -18896,6 +19284,8 @@ pub mod trellis {
         #[serde(rename = "userId")]
         pub user_id: crate::__types::trellis::AuthUsersGetResponseuserUserId,
         pub version: crate::__types::trellis::AuthUsersGetResponseuserVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -19082,6 +19472,8 @@ pub mod trellis {
             crate::__types::trellis::AuthUsersIdentityLinkCreateRequestIdempotencyKey,
         #[serde(rename = "returnTarget")]
         pub return_target: crate::__types::Nullable<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -19138,6 +19530,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthUsersIdentityLinkCreateResponse {
         pub flow: crate::__types::trellis::AuthUsersIdentityLinkCreateResponseflow,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthUsersIdentityLinkCreateResponseflow {
@@ -19165,6 +19559,8 @@ pub mod trellis {
         pub target_principal_id:
             crate::__types::trellis::AuthUsersIdentityLinkCreateResponseflowTargetPrincipalId,
         pub version: crate::__types::trellis::AuthUsersIdentityLinkCreateResponseflowVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -19379,6 +19775,8 @@ pub mod trellis {
         pub search: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub state: Option<crate::__types::trellis::AuthUsersListRequestState>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -19490,6 +19888,8 @@ pub mod trellis {
         #[serde(rename = "userId")]
         pub user_id: crate::__types::trellis::AuthUsersListResponseentriesItemUserId,
         pub version: crate::__types::trellis::AuthUsersListResponseentriesItemVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -19675,6 +20075,8 @@ pub mod trellis {
         pub idempotency_key: crate::__types::trellis::AuthUsersPasswordChangeRequestIdempotencyKey,
         #[serde(rename = "newPassword")]
         pub new_password: crate::__types::trellis::AuthUsersPasswordChangeRequestNewPassword,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -19760,6 +20162,8 @@ pub mod trellis {
         pub changed_at: crate::__types::trellis::AuthUsersPasswordChangeResponseChangedAt,
         #[serde(rename = "revokedSessionCount")]
         pub revoked_session_count: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -19786,6 +20190,8 @@ pub mod trellis {
         pub return_target: crate::__types::Nullable<String>,
         #[serde(rename = "userId")]
         pub user_id: crate::__types::trellis::AuthUsersPasswordResetCreateRequestUserId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -19842,6 +20248,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthUsersPasswordResetCreateResponse {
         pub flow: crate::__types::trellis::AuthUsersPasswordResetCreateResponseflow,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthUsersPasswordResetCreateResponseflow {
@@ -19869,6 +20277,8 @@ pub mod trellis {
         pub target_principal_id:
             crate::__types::trellis::AuthUsersPasswordResetCreateResponseflowTargetPrincipalId,
         pub version: crate::__types::trellis::AuthUsersPasswordResetCreateResponseflowVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -20078,12 +20488,16 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthUsersResolveRequest {
         pub selector: crate::__types::Bytes,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthUsersResolveRequestselector1 {
         pub kind: crate::__types::trellis::AuthUsersResolveRequestselector1Kind,
         #[serde(rename = "userId")]
         pub user_id: crate::__types::trellis::AuthUsersResolveRequestselector1UserId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum AuthUsersResolveRequestselector1Kind {
@@ -20156,6 +20570,8 @@ pub mod trellis {
         #[serde(rename = "providerSubject")]
         pub provider_subject:
             crate::__types::trellis::AuthUsersResolveRequestselector2ProviderSubject,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum AuthUsersResolveRequestselector2Kind {
@@ -20249,6 +20665,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthUsersResolveResponse {
         pub user: crate::__types::Nullable<crate::__types::trellis::AuthUsersResolveResponseuser1>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthUsersResolveResponseuser1 {
@@ -20273,6 +20691,8 @@ pub mod trellis {
         #[serde(rename = "userId")]
         pub user_id: crate::__types::trellis::AuthUsersResolveResponseuser1UserId,
         pub version: crate::__types::trellis::AuthUsersResolveResponseuser1Version,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -20461,6 +20881,8 @@ pub mod trellis {
         pub state: crate::__types::trellis::AuthUsersUpdateRequestState,
         #[serde(rename = "userId")]
         pub user_id: crate::__types::trellis::AuthUsersUpdateRequestUserId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -20573,6 +20995,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthUsersUpdateResponse {
         pub user: crate::__types::trellis::AuthUsersUpdateResponseuser,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthUsersUpdateResponseuser {
@@ -20596,6 +21020,8 @@ pub mod trellis {
         #[serde(rename = "userId")]
         pub user_id: crate::__types::trellis::AuthUsersUpdateResponseuserUserId,
         pub version: crate::__types::trellis::AuthUsersUpdateResponseuserVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -20784,6 +21210,8 @@ pub mod trellis {
         pub id: String,
         pub required: bool,
         pub title: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct ConsentCompanion {
@@ -20793,6 +21221,8 @@ pub mod trellis {
         pub participant_id: String,
         pub required: bool,
         pub resources: Vec<crate::__types::trellis::ConsentResource>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct ConsentDecision {
@@ -20801,6 +21231,8 @@ pub mod trellis {
         pub decision: crate::__types::trellis::ConsentDecisionKind,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub reason: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum ConsentDecisionKind {
@@ -20858,6 +21290,8 @@ pub mod trellis {
         #[serde(rename = "participantId")]
         pub participant_id: String,
         pub resources: Vec<crate::__types::trellis::ConsentResource>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct ConsentResource {
@@ -20874,6 +21308,8 @@ pub mod trellis {
         pub requested_commitment: crate::__types::trellis::ResourceCommitment,
         pub required: bool,
         pub title: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum ConsentResourceChange {
@@ -20933,9 +21369,14 @@ pub mod trellis {
         #[serde(rename = "exactRestrictions")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub exact_restrictions: Option<crate::__types::trellis::AuthGrantSet>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct Empty {}
+    pub struct Empty {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventConsumerStatusRow {
         #[serde(rename = "ackPending")]
@@ -20976,6 +21417,8 @@ pub mod trellis {
         pub stream: String,
         #[serde(rename = "waitingPulls")]
         pub waiting_pulls: crate::__types::Int64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum EventConsumerStatusRowManagedBy {
@@ -21082,10 +21525,14 @@ pub mod trellis {
     pub struct EventsConsumersInspectRequest {
         #[serde(rename = "resourceId")]
         pub resource_id: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsConsumersInspectResponse {
         pub consumer: crate::__types::trellis::EventConsumerStatusRow,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsConsumersQueryRequest {
@@ -21107,6 +21554,8 @@ pub mod trellis {
         pub status: Option<Vec<crate::__types::trellis::EventsConsumersQueryRequestStatus>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub subject: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -21202,6 +21651,8 @@ pub mod trellis {
         pub source_sequence: crate::__types::Uint64,
         #[serde(rename = "sourceStream")]
         pub source_stream: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsConsumersReportDeliveryResponse {
@@ -21209,6 +21660,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub dead_letter: Option<crate::__types::trellis::EventsDeadLetter>,
         pub stale: bool,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsDeadLetter {
@@ -21229,6 +21682,8 @@ pub mod trellis {
         pub state: crate::__types::trellis::EventsDeadLetterState,
         #[serde(rename = "updatedAt")]
         pub updated_at: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsDeadLetterCounts {
@@ -21238,6 +21693,8 @@ pub mod trellis {
         pub replay_pending: crate::__types::Uint64,
         pub replaying: crate::__types::Uint64,
         pub resolved: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsDeadLetterDetail {
@@ -21253,6 +21710,8 @@ pub mod trellis {
         pub transition_references: Vec<crate::__types::Uint64>,
         #[serde(rename = "verificationStatus")]
         pub verification_status: crate::__types::trellis::EventsDeadLetterVerificationStatus,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum EventsDeadLetterState {
@@ -21359,11 +21818,15 @@ pub mod trellis {
         pub request_id: String,
         #[serde(rename = "resourceId")]
         pub resource_id: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsDeadLettersDismissResponse {
         #[serde(rename = "deadLetter")]
         pub dead_letter: crate::__types::trellis::EventsDeadLetter,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsDeadLettersInspectRequest {
@@ -21371,11 +21834,15 @@ pub mod trellis {
         pub dead_letter_id: String,
         #[serde(rename = "resourceId")]
         pub resource_id: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsDeadLettersInspectResponse {
         #[serde(rename = "deadLetter")]
         pub dead_letter: crate::__types::trellis::EventsDeadLetterDetail,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsDeadLettersQueryRequest {
@@ -21386,6 +21853,8 @@ pub mod trellis {
         pub resource_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub state: Option<Vec<crate::__types::trellis::EventsDeadLetterState>>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     pub type EventsDeadLettersQueryResponse =
         crate::__types::CursorPage<crate::__types::trellis::EventsDeadLetter>;
@@ -21399,11 +21868,15 @@ pub mod trellis {
         pub request_id: String,
         #[serde(rename = "resourceId")]
         pub resource_id: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsDeadLettersReplayResponse {
         #[serde(rename = "deadLetter")]
         pub dead_letter: crate::__types::trellis::EventsDeadLetter,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum EventsDeliveryOutcome {
@@ -21449,7 +21922,10 @@ pub mod trellis {
         }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct EventsDiagnosticsRequest {}
+    pub struct EventsDiagnosticsRequest {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsDiagnosticsResponse {
         #[serde(rename = "asOf")]
@@ -21465,6 +21941,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub retained_from: Option<String>,
         pub revision: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsErrorData {
@@ -21478,12 +21956,16 @@ pub mod trellis {
         #[serde(rename = "resourceId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub resource_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsEventDetail {
         pub headers: std::collections::BTreeMap<String, String>,
         pub payload: crate::__types::Bytes,
         pub row: crate::__types::trellis::EventsRow,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsInspectRequest {
@@ -21493,10 +21975,14 @@ pub mod trellis {
         #[serde(rename = "streamSequence")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub stream_sequence: Option<crate::__types::Int64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsInspectResponse {
         pub event: crate::__types::trellis::EventsEventDetail,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsMetricsRequest {
@@ -21505,11 +21991,15 @@ pub mod trellis {
         pub resource_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub window: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsMetricsResponse {
         pub buckets: Vec<crate::__types::trellis::EventsMetricsResponsebucketsItem>,
         pub summary: crate::__types::trellis::EventsMetricsResponsesummary,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsMetricsResponsebucketsItem {
@@ -21524,6 +22014,8 @@ pub mod trellis {
         pub payload_size_bytes: crate::__types::Int64,
         pub start: String,
         pub total: crate::__types::Int64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsMetricsResponsebucketsItembyResolution {
@@ -21533,6 +22025,8 @@ pub mod trellis {
         pub resolved: Option<crate::__types::Int64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub unresolved: Option<crate::__types::Int64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsMetricsResponsebucketsItembyVerificationStatus {
@@ -21556,6 +22050,8 @@ pub mod trellis {
         pub subject_denied: Option<crate::__types::Int64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub verified: Option<crate::__types::Int64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsMetricsResponsesummary {
@@ -21575,6 +22071,8 @@ pub mod trellis {
         pub total: crate::__types::Int64,
         #[serde(rename = "uniqueSubjects")]
         pub unique_subjects: crate::__types::Int64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsMetricsResponsesummarybyResolution {
@@ -21584,6 +22082,8 @@ pub mod trellis {
         pub resolved: Option<crate::__types::Int64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub unresolved: Option<crate::__types::Int64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsMetricsResponsesummarybyVerificationStatus {
@@ -21607,6 +22107,8 @@ pub mod trellis {
         pub subject_denied: Option<crate::__types::Int64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub verified: Option<crate::__types::Int64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsMetricsResponsesummaryeventTypesItem {
@@ -21615,6 +22117,8 @@ pub mod trellis {
         pub owner_contract_id: String,
         #[serde(rename = "ownerEventName")]
         pub owner_event_name: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsNotFoundErrorData {
@@ -21623,6 +22127,8 @@ pub mod trellis {
         pub id: String,
         pub message: String,
         pub r#type: crate::__types::trellis::EventsNotFoundErrorDataType,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum EventsNotFoundErrorDataType {
@@ -21672,6 +22178,8 @@ pub mod trellis {
         #[serde(rename = "streamSequence")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub stream_sequence: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsQueryRequest {
@@ -21720,6 +22228,8 @@ pub mod trellis {
             Option<Vec<crate::__types::trellis::EventsQueryRequestVerificationStatus>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub window: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -21823,6 +22333,8 @@ pub mod trellis {
         pub owner_contract_id: String,
         #[serde(rename = "ownerEventName")]
         pub owner_event_name: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsQueryRequestincludeEventTypesItem {
@@ -21830,11 +22342,15 @@ pub mod trellis {
         pub owner_contract_id: String,
         #[serde(rename = "ownerEventName")]
         pub owner_event_name: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsQueryRequestsort {
         pub direction: crate::__types::trellis::EventsSortDirection,
         pub field: crate::__types::trellis::EventsSortField,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     pub type EventsQueryResponse = crate::__types::CursorPage<crate::__types::trellis::EventsRow>;
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -21877,6 +22393,8 @@ pub mod trellis {
         pub trace_id: Option<String>,
         #[serde(rename = "verificationStatus")]
         pub verification_status: crate::__types::trellis::EventsRowVerificationStatus,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum EventsRowPublisherKind {
@@ -22089,6 +22607,8 @@ pub mod trellis {
         pub events: Vec<crate::__types::trellis::EventsEventDetail>,
         #[serde(rename = "lastStreamSequence")]
         pub last_stream_sequence: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct EventsWatchRequest {
@@ -22123,6 +22643,8 @@ pub mod trellis {
         pub resource_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub subject: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct HealthHeartbeatSample {
@@ -22133,6 +22655,8 @@ pub mod trellis {
         pub sample: crate::__types::trellis::HealthHeartbeatSamplesample,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub summary: Option<crate::__types::trellis::HealthHeartbeatSampleSummary>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum HealthHeartbeatSampleReportedStatus {
@@ -22215,6 +22739,8 @@ pub mod trellis {
         pub status: crate::__types::trellis::HealthHeartbeatSamplechecksItemStatus,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub summary: Option<crate::__types::trellis::HealthHeartbeatSamplechecksItemSummary>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -22349,7 +22875,10 @@ pub mod trellis {
         }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct HealthHeartbeatSamplechecksIteminfo {}
+    pub struct HealthHeartbeatSamplechecksIteminfo {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct HealthHeartbeatSampleparticipant {
         #[serde(rename = "contractDigest")]
@@ -22375,6 +22904,8 @@ pub mod trellis {
         pub started_at: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub version: Option<crate::__types::trellis::HealthHeartbeatSampleparticipantVersion>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -22632,11 +23163,16 @@ pub mod trellis {
         }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct HealthHeartbeatSampleparticipantinfo {}
+    pub struct HealthHeartbeatSampleparticipantinfo {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct HealthHeartbeatSamplesample {
         pub id: String,
         pub time: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct HealthInspectRequest {
@@ -22653,6 +23189,8 @@ pub mod trellis {
         pub instance_id: Option<crate::__types::trellis::HealthInspectRequestInstanceId>,
         #[serde(rename = "participantKind")]
         pub participant_kind: crate::__types::trellis::HealthInspectRequestParticipantKind,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -22770,6 +23308,8 @@ pub mod trellis {
         pub instances: Vec<crate::__types::trellis::HealthInspectResponseinstancesItem>,
         pub participant: crate::__types::trellis::HealthInspectResponseparticipant,
         pub projection: crate::__types::trellis::HealthInspectResponseprojection,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct HealthInspectResponsehistoryItem {
@@ -22790,6 +23330,8 @@ pub mod trellis {
             crate::__types::trellis::HealthInspectResponsehistoryItemReportedStatus,
         #[serde(rename = "startedAt")]
         pub started_at: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum HealthInspectResponsehistoryItemEffectiveStatus {
@@ -22900,6 +23442,8 @@ pub mod trellis {
     pub struct HealthInspectResponsehistoryItemchecksItem {
         pub name: String,
         pub status: crate::__types::trellis::HealthInspectResponsehistoryItemchecksItemStatus,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum HealthInspectResponsehistoryItemchecksItemStatus {
@@ -22965,6 +23509,8 @@ pub mod trellis {
             crate::__types::trellis::HealthInspectResponseinstancesItemReportedStatus,
         #[serde(rename = "startedAt")]
         pub started_at: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum HealthInspectResponseinstancesItemEffectiveStatus {
@@ -23068,6 +23614,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub summary:
             Option<crate::__types::trellis::HealthInspectResponseinstancesItemlatestSampleSummary>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum HealthInspectResponseinstancesItemlatestSampleReportedStatus {
@@ -23156,6 +23704,8 @@ pub mod trellis {
         pub summary: Option<
             crate::__types::trellis::HealthInspectResponseinstancesItemlatestSamplechecksItemSummary,
         >,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -23296,7 +23846,10 @@ pub mod trellis {
         }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct HealthInspectResponseinstancesItemlatestSamplechecksIteminfo {}
+    pub struct HealthInspectResponseinstancesItemlatestSamplechecksIteminfo {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct HealthInspectResponseinstancesItemlatestSampleparticipant {
         #[serde(rename = "contractDigest")]
@@ -23325,6 +23878,8 @@ pub mod trellis {
         pub version: Option<
             crate::__types::trellis::HealthInspectResponseinstancesItemlatestSampleparticipantVersion,
         >,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -23592,11 +24147,16 @@ pub mod trellis {
         }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct HealthInspectResponseinstancesItemlatestSampleparticipantinfo {}
+    pub struct HealthInspectResponseinstancesItemlatestSampleparticipantinfo {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct HealthInspectResponseinstancesItemlatestSamplesample {
         pub id: String,
         pub time: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct HealthInspectResponseparticipant {
@@ -23614,6 +24174,8 @@ pub mod trellis {
             crate::__types::trellis::HealthInspectResponseparticipantParticipantKind,
         #[serde(rename = "participantName")]
         pub participant_name: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum HealthInspectResponseparticipantEffectiveStatus {
@@ -23714,6 +24276,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub retained_from: Option<String>,
         pub revision: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct HealthMetricsRequest {
@@ -23731,6 +24295,8 @@ pub mod trellis {
         pub start: String,
         #[serde(rename = "stepMs")]
         pub step_ms: crate::__types::trellis::HealthMetricsRequestStepMs,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -23873,6 +24439,8 @@ pub mod trellis {
         pub projection: crate::__types::trellis::HealthMetricsResponseprojection,
         pub series: Vec<crate::__types::trellis::HealthMetricsResponseseriesItem>,
         pub summary: crate::__types::trellis::HealthMetricsResponsesummary,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct HealthMetricsResponseprojection {
@@ -23887,6 +24455,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub retained_from: Option<String>,
         pub revision: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct HealthMetricsResponseseriesItem {
@@ -23898,6 +24468,8 @@ pub mod trellis {
         #[serde(rename = "participantKind")]
         pub participant_kind:
             crate::__types::trellis::HealthMetricsResponseseriesItemParticipantKind,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum HealthMetricsResponseseriesItemParticipantKind {
@@ -23957,6 +24529,8 @@ pub mod trellis {
         pub start: String,
         #[serde(rename = "unhealthyMs")]
         pub unhealthy_ms: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct HealthMetricsResponseseriesItembucketsItemchecksItem {
@@ -23971,6 +24545,8 @@ pub mod trellis {
         pub ok_count: crate::__types::Uint64,
         #[serde(rename = "sampleCount")]
         pub sample_count: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
     #[serde(transparent)]
@@ -24019,6 +24595,8 @@ pub mod trellis {
         #[serde(rename = "sampleCount")]
         pub sample_count: crate::__types::Uint64,
         pub transitions: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
     #[serde(transparent)]
@@ -24045,6 +24623,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub trace_id: Option<String>,
         pub r#type: crate::__types::trellis::HealthNotFoundErrorDataType,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -24136,7 +24716,10 @@ pub mod trellis {
         }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct HealthNotFoundErrorDatacontext {}
+    pub struct HealthNotFoundErrorDatacontext {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct HealthProjectionDiagnostics {
         #[serde(rename = "completeSince")]
@@ -24150,6 +24733,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub retained_from: Option<String>,
         pub revision: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct HealthQueryRequest {
@@ -24170,6 +24755,8 @@ pub mod trellis {
         pub search: Option<crate::__types::trellis::HealthQueryRequestSearch>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub statuses: Option<Vec<crate::__types::trellis::HealthQueryRequestStatuses>>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -24395,6 +24982,8 @@ pub mod trellis {
         pub participant_name: String,
         pub runtimes: Vec<String>,
         pub versions: Vec<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -24547,6 +25136,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub retained_from: Option<String>,
         pub revision: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct HealthStatusChangedEvent {
@@ -24564,6 +25155,8 @@ pub mod trellis {
         pub status: crate::__types::trellis::HealthStatusChangedEventStatus,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub summary: Option<crate::__types::trellis::HealthStatusChangedEventSummary>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum HealthStatusChangedEventPreviousStatus {
@@ -24730,6 +25323,8 @@ pub mod trellis {
     pub struct HealthStatusChangedEventheader {
         pub id: crate::__types::trellis::HealthStatusChangedEventheaderId,
         pub time: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -24767,6 +25362,8 @@ pub mod trellis {
         pub instance_id: String,
         pub kind: crate::__types::trellis::HealthStatusChangedEventparticipantKind,
         pub name: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum HealthStatusChangedEventparticipantKind {
@@ -24825,6 +25422,8 @@ pub mod trellis {
         pub search: Option<crate::__types::trellis::HealthQueryRequestSearch>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub statuses: Option<Vec<crate::__types::trellis::HealthQueryRequestStatuses>>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct HealthSummaryResponse {
@@ -24832,6 +25431,8 @@ pub mod trellis {
         pub as_of: String,
         pub count: crate::__types::Uint64,
         pub projection: crate::__types::trellis::HealthQueryResponseprojection,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
     #[serde(transparent)]
@@ -24852,6 +25453,8 @@ pub mod trellis {
         #[serde(rename = "projectionRevision")]
         pub projection_revision: crate::__types::Uint64,
         pub r#type: crate::__types::trellis::HealthWatchFrameValue1Type,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum HealthWatchFrameValue1Type {
@@ -24897,6 +25500,8 @@ pub mod trellis {
         #[serde(rename = "projectionRevision")]
         pub projection_revision: crate::__types::Uint64,
         pub r#type: crate::__types::trellis::HealthWatchFrameValue2Type,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum HealthWatchFrameValue2Type {
@@ -24946,6 +25551,8 @@ pub mod trellis {
         #[serde(rename = "participantKind")]
         pub participant_kind:
             crate::__types::trellis::HealthWatchFrameValue2changesItemParticipantKind,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum HealthWatchFrameValue2changesItemParticipantKind {
@@ -25003,6 +25610,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub participant_kinds:
             Option<Vec<crate::__types::trellis::HealthWatchRequestParticipantKinds>>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -25148,6 +25757,8 @@ pub mod trellis {
         #[serde(rename = "requiredGrants")]
         pub required_grants: crate::__types::trellis::AuthGrantSet,
         pub revision: crate::__types::trellis::InstalledParticipantDetailRevision,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -25273,6 +25884,8 @@ pub mod trellis {
         #[serde(rename = "participantPath")]
         pub participant_path: String,
         pub revision: crate::__types::trellis::InstalledParticipantSummaryRevision,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -25425,6 +26038,8 @@ pub mod trellis {
         #[serde(rename = "waitingOn")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub waiting_on: Option<Vec<crate::__types::trellis::JobwaitingOnItem>>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobConcurrencyMetadata {
@@ -25440,6 +26055,8 @@ pub mod trellis {
         #[serde(rename = "staleTakeoverCount")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub stale_takeover_count: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -25502,6 +26119,8 @@ pub mod trellis {
         pub traceparent: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub tracestate: Option<crate::__types::trellis::JobContextTracestate>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -25573,6 +26192,8 @@ pub mod trellis {
         pub r#type: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub worker: Option<crate::__types::trellis::JobErrorDetailworker>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -25601,7 +26222,10 @@ pub mod trellis {
         }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct JobErrorDetailcausesItem {}
+    pub struct JobErrorDetailcausesItem {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobErrorDetailworker {
         #[serde(rename = "instanceId")]
@@ -25613,6 +26237,8 @@ pub mod trellis {
         pub service: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub version: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -25654,12 +26280,16 @@ pub mod trellis {
         #[serde(rename = "rootJobId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub root_job_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobLogEntry {
         pub level: crate::__types::trellis::JobLogEntryLevel,
         pub message: String,
         pub timestamp: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobLogEntryLevel {
@@ -25730,6 +26360,8 @@ pub mod trellis {
         pub step: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub total: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobQueuePolicyMetadata {
@@ -25742,6 +26374,8 @@ pub mod trellis {
         #[serde(rename = "replacedJobId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub replaced_job_id: Option<crate::__types::trellis::JobQueuePolicyMetadataReplacedJobId>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -25975,6 +26609,8 @@ pub mod trellis {
         #[serde(rename = "workerInstanceId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub worker_instance_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobTimelineEventPreviousState {
@@ -26154,6 +26790,8 @@ pub mod trellis {
         pub r#type: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub worker: Option<crate::__types::trellis::JobTimelineEventerrorDetailworker>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -26182,7 +26820,10 @@ pub mod trellis {
         }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct JobTimelineEventerrorDetailcausesItem {}
+    pub struct JobTimelineEventerrorDetailcausesItem {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobTimelineEventerrorDetailworker {
         #[serde(rename = "instanceId")]
@@ -26194,12 +26835,16 @@ pub mod trellis {
         pub service: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub version: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobTimelineEventlogsItem {
         pub level: crate::__types::trellis::JobTimelineEventlogsItemLevel,
         pub message: String,
         pub timestamp: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobTimelineEventlogsItemLevel {
@@ -26254,6 +26899,8 @@ pub mod trellis {
         pub step: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub total: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobTimelineEventwaitEdge {
@@ -26263,6 +26910,8 @@ pub mod trellis {
         #[serde(rename = "startedAt")]
         pub started_at: String,
         pub target: crate::__types::trellis::JobTimelineEventwaitEdgetarget,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -26337,6 +26986,8 @@ pub mod trellis {
         pub system: Option<crate::__types::trellis::JobTimelineEventwaitEdgetargetSystem>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub r#type: Option<crate::__types::trellis::JobTimelineEventwaitEdgetargetType>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -26608,6 +27259,8 @@ pub mod trellis {
         #[serde(rename = "traceId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub trace_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobTriggerKind {
@@ -26698,6 +27351,8 @@ pub mod trellis {
         #[serde(rename = "startedAt")]
         pub started_at: String,
         pub target: crate::__types::trellis::JobWaitEdgetarget,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -26771,6 +27426,8 @@ pub mod trellis {
         pub system: Option<crate::__types::trellis::JobWaitEdgetargetSystem>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub r#type: Option<crate::__types::trellis::JobWaitEdgetargetType>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -27043,6 +27700,8 @@ pub mod trellis {
         pub system: Option<crate::__types::trellis::JobWaitTargetSystem>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub r#type: Option<crate::__types::trellis::JobWaitTargetType>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -27309,6 +27968,8 @@ pub mod trellis {
         #[serde(rename = "staleTakeoverCount")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub stale_takeover_count: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -27371,6 +28032,8 @@ pub mod trellis {
         pub traceparent: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub tracestate: Option<crate::__types::trellis::JobcontextTracestate>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -27442,6 +28105,8 @@ pub mod trellis {
         pub r#type: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub worker: Option<crate::__types::trellis::JoberrorDetailworker>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -27470,7 +28135,10 @@ pub mod trellis {
         }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct JoberrorDetailcausesItem {}
+    pub struct JoberrorDetailcausesItem {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JoberrorDetailworker {
         #[serde(rename = "instanceId")]
@@ -27482,6 +28150,8 @@ pub mod trellis {
         pub service: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub version: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct Joblineage {
@@ -27497,12 +28167,16 @@ pub mod trellis {
         #[serde(rename = "rootJobId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub root_job_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JoblogsItem {
         pub level: crate::__types::trellis::JoblogsItemLevel,
         pub message: String,
         pub timestamp: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JoblogsItemLevel {
@@ -27557,6 +28231,8 @@ pub mod trellis {
         pub step: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub total: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobqueuePolicy {
@@ -27569,6 +28245,8 @@ pub mod trellis {
         #[serde(rename = "replacedJobId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub replaced_job_id: Option<crate::__types::trellis::JobqueuePolicyReplacedJobId>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -27679,6 +28357,8 @@ pub mod trellis {
         pub id: crate::__types::trellis::JobsCancelRequestId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub reason: Option<crate::__types::trellis::JobsCancelRequestReason>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -27735,6 +28415,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsCancelResponse {
         pub job: crate::__types::trellis::JobsCancelResponsejob,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsCancelResponsejob {
@@ -27783,6 +28465,8 @@ pub mod trellis {
         #[serde(rename = "waitingOn")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub waiting_on: Option<Vec<crate::__types::trellis::JobsCancelResponsejobwaitingOnItem>>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -27959,6 +28643,8 @@ pub mod trellis {
         #[serde(rename = "staleTakeoverCount")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub stale_takeover_count: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -28021,6 +28707,8 @@ pub mod trellis {
         pub traceparent: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub tracestate: Option<crate::__types::trellis::JobsCancelResponsejobcontextTracestate>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -28093,6 +28781,8 @@ pub mod trellis {
         pub r#type: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub worker: Option<crate::__types::trellis::JobsCancelResponsejoberrorDetailworker>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -28121,7 +28811,10 @@ pub mod trellis {
         }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct JobsCancelResponsejoberrorDetailcausesItem {}
+    pub struct JobsCancelResponsejoberrorDetailcausesItem {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsCancelResponsejoberrorDetailworker {
         #[serde(rename = "instanceId")]
@@ -28133,6 +28826,8 @@ pub mod trellis {
         pub service: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub version: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsCancelResponsejoblineage {
@@ -28148,12 +28843,16 @@ pub mod trellis {
         #[serde(rename = "rootJobId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub root_job_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsCancelResponsejoblogsItem {
         pub level: crate::__types::trellis::JobsCancelResponsejoblogsItemLevel,
         pub message: String,
         pub timestamp: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsCancelResponsejoblogsItemLevel {
@@ -28208,6 +28907,8 @@ pub mod trellis {
         pub step: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub total: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsCancelResponsejobqueuePolicy {
@@ -28222,6 +28923,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub replaced_job_id:
             Option<crate::__types::trellis::JobsCancelResponsejobqueuePolicyReplacedJobId>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -28346,6 +29049,8 @@ pub mod trellis {
         #[serde(rename = "traceId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub trace_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsCancelResponsejobtriggerKind {
@@ -28410,6 +29115,8 @@ pub mod trellis {
         #[serde(rename = "startedAt")]
         pub started_at: String,
         pub target: crate::__types::trellis::JobsCancelResponsejobwaitingOnItemtarget,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -28486,6 +29193,8 @@ pub mod trellis {
         pub system: Option<crate::__types::trellis::JobsCancelResponsejobwaitingOnItemtargetSystem>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub r#type: Option<crate::__types::trellis::JobsCancelResponsejobwaitingOnItemtargetType>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -28743,6 +29452,8 @@ pub mod trellis {
         pub id: crate::__types::trellis::JobsDismissDLQRequestId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub reason: Option<crate::__types::trellis::JobsDismissDLQRequestReason>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -28799,6 +29510,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsDismissDLQResponse {
         pub job: crate::__types::trellis::JobsDismissDLQResponsejob,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsDismissDLQResponsejob {
@@ -28848,6 +29561,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub waiting_on:
             Option<Vec<crate::__types::trellis::JobsDismissDLQResponsejobwaitingOnItem>>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -29024,6 +29739,8 @@ pub mod trellis {
         #[serde(rename = "staleTakeoverCount")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub stale_takeover_count: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -29086,6 +29803,8 @@ pub mod trellis {
         pub traceparent: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub tracestate: Option<crate::__types::trellis::JobsDismissDLQResponsejobcontextTracestate>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -29158,6 +29877,8 @@ pub mod trellis {
         pub r#type: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub worker: Option<crate::__types::trellis::JobsDismissDLQResponsejoberrorDetailworker>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -29186,7 +29907,10 @@ pub mod trellis {
         }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct JobsDismissDLQResponsejoberrorDetailcausesItem {}
+    pub struct JobsDismissDLQResponsejoberrorDetailcausesItem {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsDismissDLQResponsejoberrorDetailworker {
         #[serde(rename = "instanceId")]
@@ -29198,6 +29922,8 @@ pub mod trellis {
         pub service: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub version: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsDismissDLQResponsejoblineage {
@@ -29213,12 +29939,16 @@ pub mod trellis {
         #[serde(rename = "rootJobId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub root_job_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsDismissDLQResponsejoblogsItem {
         pub level: crate::__types::trellis::JobsDismissDLQResponsejoblogsItemLevel,
         pub message: String,
         pub timestamp: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsDismissDLQResponsejoblogsItemLevel {
@@ -29273,6 +30003,8 @@ pub mod trellis {
         pub step: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub total: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsDismissDLQResponsejobqueuePolicy {
@@ -29287,6 +30019,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub replaced_job_id:
             Option<crate::__types::trellis::JobsDismissDLQResponsejobqueuePolicyReplacedJobId>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -29411,6 +30145,8 @@ pub mod trellis {
         #[serde(rename = "traceId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub trace_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsDismissDLQResponsejobtriggerKind {
@@ -29475,6 +30211,8 @@ pub mod trellis {
         #[serde(rename = "startedAt")]
         pub started_at: String,
         pub target: crate::__types::trellis::JobsDismissDLQResponsejobwaitingOnItemtarget,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -29555,6 +30293,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub r#type:
             Option<crate::__types::trellis::JobsDismissDLQResponsejobwaitingOnItemtargetType>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -29812,6 +30552,8 @@ pub mod trellis {
         pub key: crate::__types::trellis::JobsGetKeyRequestKey,
         pub service: crate::__types::trellis::JobsGetKeyRequestService,
         pub r#type: crate::__types::trellis::JobsGetKeyRequestType,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -29908,6 +30650,8 @@ pub mod trellis {
         #[serde(rename = "staleTakeoverCount")]
         pub stale_takeover_count: crate::__types::Uint64,
         pub r#type: crate::__types::trellis::JobsGetKeyResponseType,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -30053,6 +30797,8 @@ pub mod trellis {
         pub lease_expires_at: String,
         #[serde(rename = "startedAt")]
         pub started_at: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -30086,6 +30832,8 @@ pub mod trellis {
         pub created_at: String,
         #[serde(rename = "jobId")]
         pub job_id: crate::__types::trellis::JobsGetKeyResponsequeuedItemJobId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -30116,6 +30864,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsInspectRequest {
         pub id: crate::__types::trellis::JobsInspectRequestId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -30154,6 +30904,8 @@ pub mod trellis {
         pub timeline: Vec<crate::__types::trellis::JobsInspectResponsetimelineItem>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub trigger: Option<crate::__types::trellis::JobsInspectResponsetrigger>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsInspectResponseattemptsItem {
@@ -30167,6 +30919,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub state: Option<crate::__types::trellis::JobsInspectResponseattemptsItemState>,
         pub r#try: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsInspectResponseattemptsItemState {
@@ -30254,6 +31008,8 @@ pub mod trellis {
         pub r#type: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub worker: Option<crate::__types::trellis::JobsInspectResponseattemptsItemerrorworker>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -30282,7 +31038,10 @@ pub mod trellis {
         }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct JobsInspectResponseattemptsItemerrorcausesItem {}
+    pub struct JobsInspectResponseattemptsItemerrorcausesItem {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsInspectResponseattemptsItemerrorworker {
         #[serde(rename = "instanceId")]
@@ -30294,6 +31053,8 @@ pub mod trellis {
         pub service: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub version: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsInspectResponseerrorsItem {
@@ -30313,6 +31074,8 @@ pub mod trellis {
         pub r#type: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub worker: Option<crate::__types::trellis::JobsInspectResponseerrorsItemworker>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -30341,7 +31104,10 @@ pub mod trellis {
         }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct JobsInspectResponseerrorsItemcausesItem {}
+    pub struct JobsInspectResponseerrorsItemcausesItem {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsInspectResponseerrorsItemworker {
         #[serde(rename = "instanceId")]
@@ -30353,6 +31119,8 @@ pub mod trellis {
         pub service: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub version: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsInspectResponsejob {
@@ -30401,6 +31169,8 @@ pub mod trellis {
         #[serde(rename = "waitingOn")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub waiting_on: Option<Vec<crate::__types::trellis::JobsInspectResponsejobwaitingOnItem>>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -30577,6 +31347,8 @@ pub mod trellis {
         #[serde(rename = "staleTakeoverCount")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub stale_takeover_count: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -30639,6 +31411,8 @@ pub mod trellis {
         pub traceparent: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub tracestate: Option<crate::__types::trellis::JobsInspectResponsejobcontextTracestate>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -30711,6 +31485,8 @@ pub mod trellis {
         pub r#type: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub worker: Option<crate::__types::trellis::JobsInspectResponsejoberrorDetailworker>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -30739,7 +31515,10 @@ pub mod trellis {
         }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct JobsInspectResponsejoberrorDetailcausesItem {}
+    pub struct JobsInspectResponsejoberrorDetailcausesItem {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsInspectResponsejoberrorDetailworker {
         #[serde(rename = "instanceId")]
@@ -30751,6 +31530,8 @@ pub mod trellis {
         pub service: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub version: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsInspectResponsejoblineage {
@@ -30766,12 +31547,16 @@ pub mod trellis {
         #[serde(rename = "rootJobId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub root_job_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsInspectResponsejoblogsItem {
         pub level: crate::__types::trellis::JobsInspectResponsejoblogsItemLevel,
         pub message: String,
         pub timestamp: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsInspectResponsejoblogsItemLevel {
@@ -30826,6 +31611,8 @@ pub mod trellis {
         pub step: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub total: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsInspectResponsejobqueuePolicy {
@@ -30840,6 +31627,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub replaced_job_id:
             Option<crate::__types::trellis::JobsInspectResponsejobqueuePolicyReplacedJobId>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -30964,6 +31753,8 @@ pub mod trellis {
         #[serde(rename = "traceId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub trace_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsInspectResponsejobtriggerKind {
@@ -31028,6 +31819,8 @@ pub mod trellis {
         #[serde(rename = "startedAt")]
         pub started_at: String,
         pub target: crate::__types::trellis::JobsInspectResponsejobwaitingOnItemtarget,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -31105,6 +31898,8 @@ pub mod trellis {
             Option<crate::__types::trellis::JobsInspectResponsejobwaitingOnItemtargetSystem>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub r#type: Option<crate::__types::trellis::JobsInspectResponsejobwaitingOnItemtargetType>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -31371,6 +32166,8 @@ pub mod trellis {
         #[serde(rename = "rootJobId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub root_job_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsInspectResponserelatedItem {
@@ -31424,6 +32221,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub waiting_on:
             Option<Vec<crate::__types::trellis::JobsInspectResponserelatedItemwaitingOnItem>>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -31648,6 +32447,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub tracestate:
             Option<crate::__types::trellis::JobsInspectResponserelatedItemcontextTracestate>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -31715,6 +32516,8 @@ pub mod trellis {
         #[serde(rename = "rootJobId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub root_job_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsInspectResponserelatedItemprogress {
@@ -31726,6 +32529,8 @@ pub mod trellis {
         pub step: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub total: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsInspectResponserelatedItemtrigger {
@@ -31746,6 +32551,8 @@ pub mod trellis {
         #[serde(rename = "traceId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub trace_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsInspectResponserelatedItemtriggerKind {
@@ -31811,6 +32618,8 @@ pub mod trellis {
         #[serde(rename = "startedAt")]
         pub started_at: String,
         pub target: crate::__types::trellis::JobsInspectResponserelatedItemwaitingOnItemtarget,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -31896,6 +32705,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub r#type:
             Option<crate::__types::trellis::JobsInspectResponserelatedItemwaitingOnItemtargetType>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -32185,6 +32996,8 @@ pub mod trellis {
         #[serde(rename = "workerInstanceId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub worker_instance_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsInspectResponsetimelineItemPreviousState {
@@ -32368,6 +33181,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub worker:
             Option<crate::__types::trellis::JobsInspectResponsetimelineItemerrorDetailworker>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -32396,7 +33211,10 @@ pub mod trellis {
         }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct JobsInspectResponsetimelineItemerrorDetailcausesItem {}
+    pub struct JobsInspectResponsetimelineItemerrorDetailcausesItem {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsInspectResponsetimelineItemerrorDetailworker {
         #[serde(rename = "instanceId")]
@@ -32408,12 +33226,16 @@ pub mod trellis {
         pub service: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub version: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsInspectResponsetimelineItemlogsItem {
         pub level: crate::__types::trellis::JobsInspectResponsetimelineItemlogsItemLevel,
         pub message: String,
         pub timestamp: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsInspectResponsetimelineItemlogsItemLevel {
@@ -32468,6 +33290,8 @@ pub mod trellis {
         pub step: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub total: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsInspectResponsetimelineItemwaitEdge {
@@ -32477,6 +33301,8 @@ pub mod trellis {
         #[serde(rename = "startedAt")]
         pub started_at: String,
         pub target: crate::__types::trellis::JobsInspectResponsetimelineItemwaitEdgetarget,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -32557,6 +33383,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub r#type:
             Option<crate::__types::trellis::JobsInspectResponsetimelineItemwaitEdgetargetType>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -32828,6 +33656,8 @@ pub mod trellis {
         #[serde(rename = "traceId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub trace_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsInspectResponsetriggerKind {
@@ -32894,6 +33724,8 @@ pub mod trellis {
         pub since: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub r#type: Option<crate::__types::trellis::JobsListDLQRequestType>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -33031,6 +33863,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub waiting_on:
             Option<Vec<crate::__types::trellis::JobsListDLQResponseentriesItemwaitingOnItem>>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -33207,6 +34041,8 @@ pub mod trellis {
         #[serde(rename = "staleTakeoverCount")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub stale_takeover_count: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -33270,6 +34106,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub tracestate:
             Option<crate::__types::trellis::JobsListDLQResponseentriesItemcontextTracestate>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -33345,6 +34183,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub worker:
             Option<crate::__types::trellis::JobsListDLQResponseentriesItemerrorDetailworker>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -33373,7 +34213,10 @@ pub mod trellis {
         }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct JobsListDLQResponseentriesItemerrorDetailcausesItem {}
+    pub struct JobsListDLQResponseentriesItemerrorDetailcausesItem {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsListDLQResponseentriesItemerrorDetailworker {
         #[serde(rename = "instanceId")]
@@ -33385,6 +34228,8 @@ pub mod trellis {
         pub service: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub version: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsListDLQResponseentriesItemlineage {
@@ -33400,12 +34245,16 @@ pub mod trellis {
         #[serde(rename = "rootJobId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub root_job_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsListDLQResponseentriesItemlogsItem {
         pub level: crate::__types::trellis::JobsListDLQResponseentriesItemlogsItemLevel,
         pub message: String,
         pub timestamp: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsListDLQResponseentriesItemlogsItemLevel {
@@ -33460,6 +34309,8 @@ pub mod trellis {
         pub step: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub total: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsListDLQResponseentriesItemqueuePolicy {
@@ -33475,6 +34326,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub replaced_job_id:
             Option<crate::__types::trellis::JobsListDLQResponseentriesItemqueuePolicyReplacedJobId>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -33599,6 +34452,8 @@ pub mod trellis {
         #[serde(rename = "traceId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub trace_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsListDLQResponseentriesItemtriggerKind {
@@ -33664,6 +34519,8 @@ pub mod trellis {
         #[serde(rename = "startedAt")]
         pub started_at: String,
         pub target: crate::__types::trellis::JobsListDLQResponseentriesItemwaitingOnItemtarget,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -33749,6 +34606,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub r#type:
             Option<crate::__types::trellis::JobsListDLQResponseentriesItemwaitingOnItemtargetType>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -34005,6 +34864,8 @@ pub mod trellis {
     pub struct JobsListServicesRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub page: Option<crate::__types::CursorQuery>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -34045,6 +34906,8 @@ pub mod trellis {
         pub healthy: bool,
         pub name: crate::__types::trellis::JobsListServicesResponseentriesItemName,
         pub workers: Vec<crate::__types::trellis::JobsListServicesResponseentriesItemworkersItem>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -34089,6 +34952,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub version:
             Option<crate::__types::trellis::JobsListServicesResponseentriesItemworkersItemVersion>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -34215,6 +35080,8 @@ pub mod trellis {
         pub end: String,
         pub groups: Vec<crate::__types::trellis::JobsMetricsBucketgroupsItem>,
         pub start: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsMetricsBucketGroup {
@@ -34231,6 +35098,8 @@ pub mod trellis {
         pub runtime: crate::__types::trellis::JobsMetricsBucketGroupruntime,
         pub started: crate::__types::Uint64,
         pub submitted: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsMetricsBucketGroupqueueWait {
@@ -34244,6 +35113,8 @@ pub mod trellis {
         #[serde(rename = "p95Ms")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub p95_ms: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsMetricsBucketGroupruntime {
@@ -34257,6 +35128,8 @@ pub mod trellis {
         #[serde(rename = "p95Ms")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub p95_ms: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsMetricsBucketgroupsItem {
@@ -34273,6 +35146,8 @@ pub mod trellis {
         pub runtime: crate::__types::trellis::JobsMetricsBucketgroupsItemruntime,
         pub started: crate::__types::Uint64,
         pub submitted: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsMetricsBucketgroupsItemqueueWait {
@@ -34286,6 +35161,8 @@ pub mod trellis {
         #[serde(rename = "p95Ms")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub p95_ms: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsMetricsBucketgroupsItemruntime {
@@ -34299,6 +35176,8 @@ pub mod trellis {
         #[serde(rename = "p95Ms")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub p95_ms: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsMetricsLatency {
@@ -34312,6 +35191,8 @@ pub mod trellis {
         #[serde(rename = "p95Ms")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub p95_ms: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsMetricsRequest {
@@ -34330,6 +35211,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub r#type: Option<crate::__types::trellis::JobsMetricsRequestType>,
         pub window: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsMetricsRequestGroupBy {
@@ -34509,12 +35392,16 @@ pub mod trellis {
         pub step: String,
         pub summary: Vec<crate::__types::trellis::JobsMetricsResponsesummaryItem>,
         pub window: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsMetricsResponsebucketsItem {
         pub end: String,
         pub groups: Vec<crate::__types::trellis::JobsMetricsResponsebucketsItemgroupsItem>,
         pub start: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsMetricsResponsebucketsItemgroupsItem {
@@ -34531,6 +35418,8 @@ pub mod trellis {
         pub runtime: crate::__types::trellis::JobsMetricsResponsebucketsItemgroupsItemruntime,
         pub started: crate::__types::Uint64,
         pub submitted: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsMetricsResponsebucketsItemgroupsItemqueueWait {
@@ -34544,6 +35433,8 @@ pub mod trellis {
         #[serde(rename = "p95Ms")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub p95_ms: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsMetricsResponsebucketsItemgroupsItemruntime {
@@ -34557,6 +35448,8 @@ pub mod trellis {
         #[serde(rename = "p95Ms")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub p95_ms: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsMetricsResponsesummaryItem {
@@ -34588,6 +35481,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub slow: Option<crate::__types::Uint64>,
         pub total: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
     #[serde(transparent)]
@@ -34615,6 +35510,8 @@ pub mod trellis {
         #[serde(rename = "p95Ms")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub p95_ms: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsMetricsResponsesummaryItemruntime {
@@ -34628,6 +35525,8 @@ pub mod trellis {
         #[serde(rename = "p95Ms")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub p95_ms: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsMetricsSummaryGroup {
@@ -34658,6 +35557,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub slow: Option<crate::__types::Uint64>,
         pub total: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
     #[serde(transparent)]
@@ -34685,6 +35586,8 @@ pub mod trellis {
         #[serde(rename = "p95Ms")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub p95_ms: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsMetricsSummaryGroupruntime {
@@ -34698,6 +35601,8 @@ pub mod trellis {
         #[serde(rename = "p95Ms")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub p95_ms: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsNotFoundErrorData {
@@ -34713,6 +35618,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub trace_id: Option<String>,
         pub r#type: crate::__types::trellis::JobsNotFoundErrorDataType,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -34830,7 +35737,10 @@ pub mod trellis {
         }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct JobsNotFoundErrorDatacontext {}
+    pub struct JobsNotFoundErrorDatacontext {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsQueryRequest {
         #[serde(rename = "groupBy")]
@@ -34858,6 +35768,8 @@ pub mod trellis {
         pub r#type: Option<crate::__types::trellis::JobsQueryRequestType>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub window: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsQueryRequestGroupBy {
@@ -35097,6 +36009,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub direction: Option<crate::__types::trellis::JobsQueryRequestsortDirection>,
         pub field: crate::__types::trellis::JobsQueryRequestsortField,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsQueryRequestsortDirection {
@@ -35257,6 +36171,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub waiting_on:
             Option<Vec<crate::__types::trellis::JobsQueryResponseentriesItemwaitingOnItem>>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -35429,6 +36345,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub tracestate:
             Option<crate::__types::trellis::JobsQueryResponseentriesItemcontextTracestate>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -35496,6 +36414,8 @@ pub mod trellis {
         #[serde(rename = "rootJobId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub root_job_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsQueryResponseentriesItemprogress {
@@ -35507,6 +36427,8 @@ pub mod trellis {
         pub step: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub total: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsQueryResponseentriesItemtrigger {
@@ -35527,6 +36449,8 @@ pub mod trellis {
         #[serde(rename = "traceId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub trace_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsQueryResponseentriesItemtriggerKind {
@@ -35591,6 +36515,8 @@ pub mod trellis {
         #[serde(rename = "startedAt")]
         pub started_at: String,
         pub target: crate::__types::trellis::JobsQueryResponseentriesItemwaitingOnItemtarget,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -35673,6 +36599,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub r#type:
             Option<crate::__types::trellis::JobsQueryResponseentriesItemwaitingOnItemtargetType>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -35943,6 +36871,8 @@ pub mod trellis {
         pub oldest_created_at: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub state: Option<crate::__types::trellis::JobsQueryResponsegroupsItemState>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
     #[serde(transparent)]
@@ -36040,12 +36970,16 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub slow: Option<crate::__types::Uint64>,
         pub total: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsReplayDLQRequest {
         pub id: crate::__types::trellis::JobsReplayDLQRequestId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub reason: Option<crate::__types::trellis::JobsReplayDLQRequestReason>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -36102,6 +37036,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsReplayDLQResponse {
         pub job: crate::__types::trellis::JobsReplayDLQResponsejob,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsReplayDLQResponsejob {
@@ -36150,6 +37086,8 @@ pub mod trellis {
         #[serde(rename = "waitingOn")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub waiting_on: Option<Vec<crate::__types::trellis::JobsReplayDLQResponsejobwaitingOnItem>>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -36326,6 +37264,8 @@ pub mod trellis {
         #[serde(rename = "staleTakeoverCount")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub stale_takeover_count: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -36388,6 +37328,8 @@ pub mod trellis {
         pub traceparent: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub tracestate: Option<crate::__types::trellis::JobsReplayDLQResponsejobcontextTracestate>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -36460,6 +37402,8 @@ pub mod trellis {
         pub r#type: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub worker: Option<crate::__types::trellis::JobsReplayDLQResponsejoberrorDetailworker>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -36488,7 +37432,10 @@ pub mod trellis {
         }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct JobsReplayDLQResponsejoberrorDetailcausesItem {}
+    pub struct JobsReplayDLQResponsejoberrorDetailcausesItem {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsReplayDLQResponsejoberrorDetailworker {
         #[serde(rename = "instanceId")]
@@ -36500,6 +37447,8 @@ pub mod trellis {
         pub service: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub version: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsReplayDLQResponsejoblineage {
@@ -36515,12 +37464,16 @@ pub mod trellis {
         #[serde(rename = "rootJobId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub root_job_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsReplayDLQResponsejoblogsItem {
         pub level: crate::__types::trellis::JobsReplayDLQResponsejoblogsItemLevel,
         pub message: String,
         pub timestamp: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsReplayDLQResponsejoblogsItemLevel {
@@ -36575,6 +37528,8 @@ pub mod trellis {
         pub step: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub total: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsReplayDLQResponsejobqueuePolicy {
@@ -36589,6 +37544,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub replaced_job_id:
             Option<crate::__types::trellis::JobsReplayDLQResponsejobqueuePolicyReplacedJobId>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -36713,6 +37670,8 @@ pub mod trellis {
         #[serde(rename = "traceId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub trace_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsReplayDLQResponsejobtriggerKind {
@@ -36777,6 +37736,8 @@ pub mod trellis {
         #[serde(rename = "startedAt")]
         pub started_at: String,
         pub target: crate::__types::trellis::JobsReplayDLQResponsejobwaitingOnItemtarget,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -36856,6 +37817,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub r#type:
             Option<crate::__types::trellis::JobsReplayDLQResponsejobwaitingOnItemtargetType>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -37113,6 +38076,8 @@ pub mod trellis {
         pub id: crate::__types::trellis::JobsRetryRequestId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub reason: Option<crate::__types::trellis::JobsRetryRequestReason>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -37169,6 +38134,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsRetryResponse {
         pub job: crate::__types::trellis::JobsRetryResponsejob,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsRetryResponsejob {
@@ -37217,6 +38184,8 @@ pub mod trellis {
         #[serde(rename = "waitingOn")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub waiting_on: Option<Vec<crate::__types::trellis::JobsRetryResponsejobwaitingOnItem>>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -37393,6 +38362,8 @@ pub mod trellis {
         #[serde(rename = "staleTakeoverCount")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub stale_takeover_count: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -37455,6 +38426,8 @@ pub mod trellis {
         pub traceparent: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub tracestate: Option<crate::__types::trellis::JobsRetryResponsejobcontextTracestate>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -37526,6 +38499,8 @@ pub mod trellis {
         pub r#type: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub worker: Option<crate::__types::trellis::JobsRetryResponsejoberrorDetailworker>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -37554,7 +38529,10 @@ pub mod trellis {
         }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct JobsRetryResponsejoberrorDetailcausesItem {}
+    pub struct JobsRetryResponsejoberrorDetailcausesItem {
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsRetryResponsejoberrorDetailworker {
         #[serde(rename = "instanceId")]
@@ -37566,6 +38544,8 @@ pub mod trellis {
         pub service: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub version: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsRetryResponsejoblineage {
@@ -37581,12 +38561,16 @@ pub mod trellis {
         #[serde(rename = "rootJobId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub root_job_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsRetryResponsejoblogsItem {
         pub level: crate::__types::trellis::JobsRetryResponsejoblogsItemLevel,
         pub message: String,
         pub timestamp: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsRetryResponsejoblogsItemLevel {
@@ -37641,6 +38625,8 @@ pub mod trellis {
         pub step: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub total: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsRetryResponsejobqueuePolicy {
@@ -37655,6 +38641,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub replaced_job_id:
             Option<crate::__types::trellis::JobsRetryResponsejobqueuePolicyReplacedJobId>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -37779,6 +38767,8 @@ pub mod trellis {
         #[serde(rename = "traceId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub trace_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsRetryResponsejobtriggerKind {
@@ -37843,6 +38833,8 @@ pub mod trellis {
         #[serde(rename = "startedAt")]
         pub started_at: String,
         pub target: crate::__types::trellis::JobsRetryResponsejobwaitingOnItemtarget,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -37919,6 +38911,8 @@ pub mod trellis {
         pub system: Option<crate::__types::trellis::JobsRetryResponsejobwaitingOnItemtargetSystem>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub r#type: Option<crate::__types::trellis::JobsRetryResponsejobwaitingOnItemtargetType>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -38194,12 +39188,16 @@ pub mod trellis {
         pub r#type: Option<crate::__types::trellis::JobsQueryRequestType>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub window: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsSummaryResponse {
         pub count: crate::__types::Uint64,
         pub groups: Vec<crate::__types::trellis::JobsQueryResponsegroupsItem>,
         pub stats: crate::__types::trellis::JobsQueryResponsestats,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
     #[serde(transparent)]
@@ -38219,6 +39217,8 @@ pub mod trellis {
     pub struct JobsWatchFrameValue1 {
         pub kind: crate::__types::trellis::JobsWatchFrameValue1Kind,
         pub timestamp: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsWatchFrameValue1Kind {
@@ -38266,6 +39266,8 @@ pub mod trellis {
         pub r#type: crate::__types::trellis::JobsWatchFrameValue2Type,
         #[serde(rename = "updatedAt")]
         pub updated_at: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -38454,6 +39456,8 @@ pub mod trellis {
         pub kind: crate::__types::trellis::JobsWatchFrameValue3Kind,
         pub reason: String,
         pub timestamp: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsWatchFrameValue3Kind {
@@ -38497,6 +39501,8 @@ pub mod trellis {
         pub id: crate::__types::trellis::JobsWatchFrameValue4Id,
         pub kind: crate::__types::trellis::JobsWatchFrameValue4Kind,
         pub timestamp: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -38571,6 +39577,8 @@ pub mod trellis {
         pub job_id: Option<crate::__types::trellis::JobsWatchRequestJobId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub query: Option<crate::__types::trellis::JobsWatchRequestquery>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -38623,6 +39631,8 @@ pub mod trellis {
         pub r#type: Option<crate::__types::trellis::JobsWatchRequestqueryType>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub window: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsWatchRequestqueryGroupBy {
@@ -38846,6 +39856,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub direction: Option<crate::__types::trellis::JobsWatchRequestquerysortDirection>,
         pub field: crate::__types::trellis::JobsWatchRequestquerysortField,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsWatchRequestquerysortDirection {
@@ -38957,6 +39969,8 @@ pub mod trellis {
         pub oldest_created_at: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub state: Option<crate::__types::trellis::JobsWorkbenchGroupState>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
     #[serde(transparent)]
@@ -39087,6 +40101,8 @@ pub mod trellis {
         #[serde(rename = "waitingOn")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub waiting_on: Option<Vec<crate::__types::trellis::JobsWorkbenchJobRowwaitingOnItem>>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -39258,6 +40274,8 @@ pub mod trellis {
         pub traceparent: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub tracestate: Option<crate::__types::trellis::JobsWorkbenchJobRowcontextTracestate>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -39325,6 +40343,8 @@ pub mod trellis {
         #[serde(rename = "rootJobId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub root_job_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsWorkbenchJobRowprogress {
@@ -39336,6 +40356,8 @@ pub mod trellis {
         pub step: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub total: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsWorkbenchJobRowtrigger {
@@ -39356,6 +40378,8 @@ pub mod trellis {
         #[serde(rename = "traceId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub trace_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobsWorkbenchJobRowtriggerKind {
@@ -39420,6 +40444,8 @@ pub mod trellis {
         #[serde(rename = "startedAt")]
         pub started_at: String,
         pub target: crate::__types::trellis::JobsWorkbenchJobRowwaitingOnItemtarget,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -39495,6 +40521,8 @@ pub mod trellis {
         pub system: Option<crate::__types::trellis::JobsWorkbenchJobRowwaitingOnItemtargetSystem>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub r#type: Option<crate::__types::trellis::JobsWorkbenchJobRowwaitingOnItemtargetType>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -39762,6 +40790,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub slow: Option<crate::__types::Uint64>,
         pub total: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct Jobtrigger {
@@ -39782,6 +40812,8 @@ pub mod trellis {
         #[serde(rename = "traceId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub trace_id: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum JobtriggerKind {
@@ -39846,6 +40878,8 @@ pub mod trellis {
         #[serde(rename = "startedAt")]
         pub started_at: String,
         pub target: crate::__types::trellis::JobwaitingOnItemtarget,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -39919,6 +40953,8 @@ pub mod trellis {
         pub system: Option<crate::__types::trellis::JobwaitingOnItemtargetSystem>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub r#type: Option<crate::__types::trellis::JobwaitingOnItemtargetType>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -40180,6 +41216,8 @@ pub mod trellis {
         #[serde(rename = "providerId")]
         pub provider_id: crate::__types::trellis::PortalGrantProvenanceProviderId,
         pub roles: Vec<crate::__types::trellis::PortalGrantProvenanceRolesItem>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -40278,6 +41316,8 @@ pub mod trellis {
         #[serde(rename = "ttlMs")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub ttl_ms: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -40327,6 +41367,8 @@ pub mod trellis {
         #[serde(rename = "ttlMs")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub ttl_ms: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct ResourceDesired {
@@ -40334,6 +41376,8 @@ pub mod trellis {
         #[serde(rename = "representationVersion")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub representation_version: Option<crate::__types::trellis::StateRepresentationVersion>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -40360,6 +41404,8 @@ pub mod trellis {
         pub desired: crate::__types::trellis::ResourceDesired,
         pub state: crate::__types::trellis::ResourceLifecycleState,
         pub version: crate::__types::trellis::ResourceVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -40417,6 +41463,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: String,
         pub version: crate::__types::trellis::ResourceVersion,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum ResourceKind {
@@ -40671,6 +41719,8 @@ pub mod trellis {
         pub ready: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub reason: Option<String>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -40696,19 +41746,27 @@ pub mod trellis {
         pub expected_revision: crate::__types::trellis::ResourceBindingRevision,
         #[serde(rename = "resourceId")]
         pub resource_id: crate::__types::trellis::ResourceId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct ResourcesDestroyResponse {
         pub destroyed: bool,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct ResourcesInspectRequest {
         #[serde(rename = "resourceId")]
         pub resource_id: crate::__types::trellis::ResourceId,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct ResourcesInspectResponse {
         pub resource: crate::__types::trellis::ResourceInspection,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct ResourcesQueryRequest {
@@ -40727,6 +41785,8 @@ pub mod trellis {
         pub participant_id: Option<crate::__types::trellis::ResourceParticipantId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub state: Option<crate::__types::trellis::ResourceLifecycleState>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     pub type ResourcesQueryResponse =
         crate::__types::CursorPage<crate::__types::trellis::ResourceInspection>;
@@ -40734,6 +41794,8 @@ pub mod trellis {
     pub struct StateConflict {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub current: Option<crate::__types::trellis::StoredState>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct StateDeleteRequest {
@@ -40741,20 +41803,28 @@ pub mod trellis {
         pub resource_name: crate::__types::trellis::StateResourceName,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub revision: Option<crate::__types::trellis::StateRevision>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct StateDeleteResponse {
         pub deleted: bool,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct StateGetRequest {
         #[serde(rename = "resourceName")]
         pub resource_name: crate::__types::trellis::StateResourceName,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct StateGetResponse {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub entry: Option<crate::__types::trellis::StoredState>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum StatePutMode {
@@ -40809,10 +41879,14 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub revision: Option<crate::__types::trellis::StateRevision>,
         pub value: crate::__types::Bytes,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct StatePutResponse {
         pub entry: crate::__types::trellis::StoredState,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct StateRepresentationError {
@@ -40820,6 +41894,8 @@ pub mod trellis {
         pub representation_version: crate::__types::trellis::StateRepresentationVersion,
         #[serde(rename = "resourceName")]
         pub resource_name: crate::__types::trellis::StateResourceName,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -40899,6 +41975,8 @@ pub mod trellis {
         #[serde(rename = "updatedAt")]
         pub updated_at: trellis_rs::generated::Timestamp,
         pub value: crate::__types::Bytes,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct TrellisSurfaceStatusRequest {
@@ -40908,6 +41986,8 @@ pub mod trellis {
         pub contract_id: crate::__types::trellis::TrellisSurfaceStatusRequestContractId,
         pub kind: crate::__types::trellis::TrellisSurfaceStatusRequestKind,
         pub surface: crate::__types::trellis::TrellisSurfaceStatusRequestSurface,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum TrellisSurfaceStatusRequestAction {
@@ -41056,6 +42136,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct TrellisSurfaceStatusResponse {
         pub status: crate::__types::Bytes,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct TrellisSurfaceStatusResponsestatus1 {
@@ -41063,6 +42145,8 @@ pub mod trellis {
         pub live_implementer: bool,
         pub runtime: crate::__types::trellis::TrellisSurfaceStatusResponsestatus1Runtime,
         pub state: crate::__types::trellis::TrellisSurfaceStatusResponsestatus1State,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum TrellisSurfaceStatusResponsestatus1Runtime {
@@ -41148,6 +42232,8 @@ pub mod trellis {
     pub struct TrellisSurfaceStatusResponsestatus2 {
         pub reason: crate::__types::trellis::TrellisSurfaceStatusResponsestatus2Reason,
         pub state: crate::__types::trellis::TrellisSurfaceStatusResponsestatus2State,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum TrellisSurfaceStatusResponsestatus2Reason {
@@ -41228,6 +42314,8 @@ pub mod trellis {
         #[serde(rename = "missingCapabilities")]
         pub missing_capabilities: Vec<String>,
         pub state: crate::__types::trellis::TrellisSurfaceStatusResponsestatus3State,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum TrellisSurfaceStatusResponsestatus3State {
@@ -41271,6 +42359,8 @@ pub mod trellis {
         #[serde(rename = "contractId")]
         pub contract_id: crate::__types::trellis::TrellisSurfaceStatusResponsestatus4ContractId,
         pub state: crate::__types::trellis::TrellisSurfaceStatusResponsestatus4State,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -41342,6 +42432,8 @@ pub mod trellis {
         pub kind: crate::__types::trellis::TrellisSurfaceStatusResponsestatus5Kind,
         pub state: crate::__types::trellis::TrellisSurfaceStatusResponsestatus5State,
         pub surface: crate::__types::trellis::TrellisSurfaceStatusResponsestatus5Surface,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,

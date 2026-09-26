@@ -280,7 +280,10 @@ impl StateRuntime {
                         .delete(&declaration.resource_id)
                         .await
                         .map_err(kv_error)?;
-                    return Ok(StateDeleteResponse { deleted });
+                    return Ok(StateDeleteResponse {
+                        deleted,
+                        extra: Default::default(),
+                    });
                 }
                 let Some(current) = state.authoritative_entry(&declaration).await? else {
                     return Err(conflict(None, &declaration)?);
@@ -293,7 +296,10 @@ impl StateRuntime {
                     .delete_expect_revision(&declaration.resource_id, expected)
                     .await
                 {
-                    Ok(()) => Ok(StateDeleteResponse { deleted: true }),
+                    Ok(()) => Ok(StateDeleteResponse {
+                        deleted: true,
+                        extra: Default::default(),
+                    }),
                     Err(error) => {
                         let latest = state.authoritative_entry(&declaration).await?;
                         if latest.as_ref().map(|entry| entry.revision) != Some(current.revision) {

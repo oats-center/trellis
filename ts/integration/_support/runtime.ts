@@ -1,9 +1,6 @@
 import { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import type { TrellisTestRuntimeStartOptions } from "@oatscenter/trellis-testkit";
-import { fromFileUrl, join } from "@std/path";
-
-const repoJsRoot = fromFileUrl(new URL("../../", import.meta.url));
-const repoRoot = fromFileUrl(new URL("../../../", import.meta.url));
+import { join } from "@std/path";
 
 const DEFAULT_TIMEOUTS = {
   startupMs: 60_000,
@@ -31,57 +28,29 @@ export function trellisRepoRuntimeOptions(
 
 function repoTrellisCommand() {
   const server = Deno.env.get("TRELLIS_TEST_SERVER_BIN");
-  if (server !== undefined) {
-    return { cmd: server, args: ["--config", "{config}", "all"] };
+  if (server === undefined) {
+    throw new Error(
+      "TRELLIS_TEST_SERVER_BIN must point at the prebuilt trellis-server; run `deno task test:integration`",
+    );
   }
-  return {
-    cmd: "cargo",
-    args: [
-      "run",
-      "--manifest-path",
-      "../Cargo.toml",
-      "-p",
-      "trellis-server",
-      "--",
-      "--config",
-      "{config}",
-      "all",
-    ],
-    cwd: repoJsRoot,
-  };
+  return { cmd: server, args: ["--config", "{config}", "all"] };
 }
 
 /**
  * Resolves a Rust helper/provider executable under `integration/fixtures/runtime`.
  *
- * CI sets `TRELLIS_TEST_FIXTURE_BIN_DIR` to the directory of executables produced
- * by the build job; those are launched directly. CI with the variable unset is a
- * failed setup rather than permission to compile inside a test. Local development
- * falls back to `cargo run`.
+ * The single integration entrypoint (`deno task test:integration`) builds these
+ * once and points `TRELLIS_TEST_FIXTURE_BIN_DIR` at them, so tests never compile
+ * Rust themselves and local and CI launch the same binaries.
  */
 export function rustFixtureArgv(bin: string, extra: string[] = []): string[] {
   const dir = Deno.env.get("TRELLIS_TEST_FIXTURE_BIN_DIR");
-  if (dir !== undefined) {
-    return [join(dir, bin), ...extra];
-  }
-  if (Deno.env.get("CI")) {
+  if (dir === undefined) {
     throw new Error(
-      `TRELLIS_TEST_FIXTURE_BIN_DIR must point at the prebuilt fixtures in CI (missing ${bin})`,
+      `TRELLIS_TEST_FIXTURE_BIN_DIR must point at the prebuilt fixtures (missing ${bin}); run \`deno task test:integration\``,
     );
   }
-  return [
-    "cargo",
-    "run",
-    "--config",
-    `patch.crates-io.trellis-rs.path=${
-      JSON.stringify(join(repoRoot, "crates/trellis"))
-    }`,
-    "--bin",
-    bin,
-    "--manifest-path",
-    join(repoRoot, "integration/fixtures/runtime/Cargo.toml"),
-    ...extra,
-  ];
+  return [join(dir, bin), ...extra];
 }
 
 /** Starts the repo-local Trellis runtime for TypeScript integration tests. */

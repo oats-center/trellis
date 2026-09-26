@@ -181,9 +181,11 @@ pub fn compile_participant_input(
                         id,
                         CanonicalMode::Presentation,
                     )?,
+                    extra: Default::default(),
                 })
             })
             .collect::<miette::Result<_>>()?,
+        extra: Default::default(),
     };
     Ok(CompiledParticipantInput {
         participant_id,
@@ -204,6 +206,7 @@ async fn list_services(format: OutputFormat, args: &SvcListArgs) -> miette::Resu
                 cursor: None,
                 limit: Some(100),
             }),
+            extra: Default::default(),
         })
         .try_collect::<Vec<_>>()
         .await
@@ -229,6 +232,7 @@ async fn list_devices(format: OutputFormat, args: &DevListArgs) -> miette::Resul
                 cursor: None,
                 limit: Some(100),
             }),
+            extra: Default::default(),
         })
         .try_collect::<Vec<_>>()
         .await
@@ -268,6 +272,7 @@ async fn create_service(format: OutputFormat, id: &str) -> miette::Result<()> {
             review_mode: wire(None::<String>)?,
             portal_id: wire(None::<String>)?,
             idempotency_key: wire(cli_idempotency_key())?,
+            extra: Default::default(),
         })
         .await
         .into_diagnostic()?
@@ -287,6 +292,7 @@ async fn create_device(format: OutputFormat, id: &str, args: &DevCreateArgs) -> 
             review_mode: wire(Some(args.review_mode.as_wire_value()))?,
             portal_id: wire(None::<String>)?,
             idempotency_key: wire(cli_idempotency_key())?,
+            extra: Default::default(),
         })
         .await
         .into_diagnostic()?
@@ -317,6 +323,7 @@ async fn apply_contract(
     let current = AuthClient::from_generated(connected.clone())
         .deployments_get(&auth_types::AuthDeploymentsGetRequest {
             deployment_id: wire(resolved_id.clone())?,
+            extra: Default::default(),
         })
         .await
         .into_diagnostic()?;
@@ -356,6 +363,7 @@ async fn apply_contract(
         package_evidence: participant.package_evidence,
         participant_path: participant.participant_path,
         package_digest: participant.package_digest,
+        extra: Default::default(),
     };
     let client = AuthClient::from_generated(connected.clone());
     let consent = match client.deployments_apply(&request).await {
@@ -439,6 +447,7 @@ fn approval_from_consent(
         .map(|capability| auth_types::ApprovedCapability {
             id: capability.id.clone(),
             consent_digest: capability.consent_digest.clone(),
+            extra: Default::default(),
         })
         .collect();
     let approved_resources = consent
@@ -454,6 +463,7 @@ fn approval_from_consent(
             kind: resource.kind.clone(),
             name: resource.name.clone(),
             commitment: resource.requested_commitment.clone(),
+            extra: Default::default(),
         })
         .collect();
     auth_types::Approval {
@@ -465,6 +475,7 @@ fn approval_from_consent(
         expected_grant_revision: consent.expected_grant_revision,
         installed_revision: consent.installed_revision,
         mode: auth_types::ApprovalMode::Capabilities,
+        extra: Default::default(),
     }
 }
 
@@ -525,6 +536,7 @@ async fn toggle_deployment(
                     expected_version: wire(expected_version.to_string())?,
                     reason: wire(None::<String>)?,
                     idempotency_key: wire(cli_idempotency_key())?,
+                    extra: Default::default(),
                 })
                 .await
                 .into_diagnostic()?
@@ -539,6 +551,7 @@ async fn toggle_deployment(
                     expected_version: wire(expected_version.to_string())?,
                     reason: wire(None::<String>)?,
                     idempotency_key: wire(cli_idempotency_key())?,
+                    extra: Default::default(),
                 })
                 .await
                 .into_diagnostic()?
@@ -580,6 +593,7 @@ async fn remove_deployment(
             expected_version: wire(expected_version.to_string())?,
             reason: wire(None::<String>)?,
             idempotency_key: wire(cli_idempotency_key())?,
+            extra: Default::default(),
         })
         .await
         .into_diagnostic()?;
@@ -601,6 +615,7 @@ async fn service_instances(
                 cursor: None,
                 limit: Some(100),
             }),
+            extra: Default::default(),
         })
         .await
         .into_diagnostic()?
@@ -627,6 +642,7 @@ async fn device_instances(
                 cursor: None,
                 limit: Some(100),
             }),
+            extra: Default::default(),
         })
         .await
         .into_diagnostic()?
@@ -655,6 +671,7 @@ async fn provision_service(
             identity_public_key: wire(instance_key)?,
             participant_id: wire(None::<String>)?,
             idempotency_key: wire(cli_idempotency_key())?,
+            extra: Default::default(),
         })
         .await
         .into_diagnostic()?
@@ -680,6 +697,7 @@ async fn provision_device(
             identity_public_key: wire(Some(identity.public_identity_key))?,
             participant_id: wire(None::<String>)?,
             idempotency_key: wire(cli_idempotency_key())?,
+            extra: Default::default(),
         })
         .await
         .into_diagnostic()?;
@@ -709,6 +727,7 @@ async fn dev_activations(
                         cursor: None,
                         limit: Some(100),
                     }),
+                    extra: Default::default(),
                 })
                 .await
                 .into_diagnostic()?
@@ -733,6 +752,7 @@ async fn dev_activations(
                         cursor: None,
                         limit: Some(100),
                     }),
+                    extra: Default::default(),
                 })
                 .await
                 .into_diagnostic()?
@@ -747,6 +767,7 @@ async fn dev_activations(
                     expected_version: wire(device.version)?,
                     reason: wire(Some("device activation revoked by CLI"))?,
                     idempotency_key: wire(cli_idempotency_key())?,
+                    extra: Default::default(),
                 })
                 .await
                 .into_diagnostic()?;
@@ -773,7 +794,8 @@ async fn dev_reviews(
                         DeviceReviewState::Approved => auth_types::AuthDeviceUserAuthoritiesReviewsListRequestState::Approved,
                         DeviceReviewState::Rejected => auth_types::AuthDeviceUserAuthoritiesReviewsListRequestState::Rejected,
                     }),
-                    page: Some(trellis_runtime_apis::CursorQuery { cursor: None, limit: Some(100) }), },
+                    page: Some(trellis_runtime_apis::CursorQuery { cursor: None, limit: Some(100) }),     extra: Default::default(),
+                    },
                 )
                 .await
                 .into_diagnostic()?.items;
@@ -811,6 +833,7 @@ async fn review_decide(
                     cursor: None,
                     limit: Some(100),
                 }),
+                extra: Default::default(),
             },
         )
         .await
@@ -832,6 +855,7 @@ async fn review_decide(
                 expected_version: wire(response.version)?,
                 reason: wire(&args.reason)?,
                 idempotency_key: wire(cli_idempotency_key())?,
+                extra: Default::default(),
             },
         )
         .await
@@ -1186,6 +1210,7 @@ async fn find_deployment(
                 cursor: None,
                 limit: Some(100),
             }),
+            extra: Default::default(),
         })
         .try_collect::<Vec<_>>()
         .await
@@ -1316,6 +1341,7 @@ mod tests {
                     participant_id: "acme.device@v1".to_string(),
                     required: false,
                     resources: Vec::new(),
+                    extra: Default::default(),
                 }),
                 ..consent
             },

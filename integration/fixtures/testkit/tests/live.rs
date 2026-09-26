@@ -65,6 +65,7 @@ async fn start_provider(runtime: &mut TrellisTestRuntime, name: &str) -> Provide
 fn value(text: &str) -> Value {
     Value {
         value: text.to_owned(),
+        extra: Default::default(),
     }
 }
 

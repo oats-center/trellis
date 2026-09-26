@@ -203,7 +203,9 @@ impl AdminSession {
 
     /// Confirms the administrator boundary with a generated `Sessions.Me` call.
     pub(crate) async fn verify(&self) -> Result<(), TrellisTestError> {
-        let request = crate::types::AuthSessionsMeRequest {};
+        let request = crate::types::AuthSessionsMeRequest {
+            extra: Default::default(),
+        };
         let response = self.auth.sessions_me(&request).await.map_err(|error| {
             TrellisTestError::new(
                 TrellisTestErrorKind::Authentication,
@@ -258,6 +260,7 @@ impl AdminSession {
                 package_evidence: wire(evidence)?,
                 participant_path: P::PATH.to_owned(),
                 platform_trust: Some(false),
+                extra: Default::default(),
             })
             .await
             .map_err(|error| {
@@ -306,6 +309,7 @@ impl AdminSession {
                 review_mode: wire(None::<String>)?,
                 portal_id: wire(None::<String>)?,
                 idempotency_key: wire(idempotency_key())?,
+                extra: Default::default(),
             })
             .await
             .map_err(|error| {
@@ -332,6 +336,7 @@ impl AdminSession {
             package_digest: evidence.root_digest().to_owned(),
             package_evidence: wire(evidence)?,
             participant_path: P::PATH.to_owned(),
+            extra: Default::default(),
         };
         match self.auth.deployments_apply(&request).await {
             Ok(_) => Ok(()),
@@ -377,6 +382,7 @@ impl AdminSession {
                 identity_public_key: wire(key)?,
                 participant_id: wire(Some(participant_id.to_owned()))?,
                 idempotency_key: wire(idempotency_key())?,
+                extra: Default::default(),
             })
             .await
             .map_err(|error| {
@@ -550,6 +556,7 @@ fn approve_required(consent: &ConsentRequest) -> Result<Approval, TrellisTestErr
             .map(|capability| ApprovedCapability {
                 id: capability.id.clone(),
                 consent_digest: capability.consent_digest.clone(),
+                extra: Default::default(),
             })
             .collect(),
         approved_resources: consent
@@ -560,6 +567,7 @@ fn approve_required(consent: &ConsentRequest) -> Result<Approval, TrellisTestErr
                 kind: resource.kind.clone(),
                 name: resource.name.clone(),
                 commitment: resource.requested_commitment.clone(),
+                extra: Default::default(),
             })
             .collect(),
         companion_approved: consent.companion.is_some(),
@@ -568,5 +576,6 @@ fn approve_required(consent: &ConsentRequest) -> Result<Approval, TrellisTestErr
         expected_grant_revision: consent.expected_grant_revision,
         installed_revision: consent.installed_revision,
         mode: ApprovalMode::Capabilities,
+        extra: Default::default(),
     })
 }

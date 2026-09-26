@@ -8,30 +8,6 @@ import { fromFileUrl, join } from "@std/path";
 import { startTrellisRuntime } from "./_support/runtime.ts";
 
 const repoRoot = fromFileUrl(new URL("../../", import.meta.url));
-const fixtureManifest = join(
-  repoRoot,
-  "integration/fixtures/testkit/Cargo.toml",
-);
-
-function cargoArgs(extra: string[]): string[] {
-  const patch = (crate: string, path: string) => [
-    "--config",
-    `patch.crates-io.${crate}.path=${
-      JSON.stringify(join(repoRoot, "crates", path))
-    }`,
-  ];
-  return [
-    "test",
-    "--manifest-path",
-    fixtureManifest,
-    ...patch("trellis-protocol", "protocol"),
-    ...patch("trellis-rs", "trellis"),
-    ...patch("trellis-testkit", "trellis-test"),
-    "--test",
-    "live",
-    ...extra,
-  ];
-}
 
 async function waitForFile(path: string, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -51,35 +27,19 @@ Deno.test(
   "mixed Rust processes and a TypeScript runtime overlap on one host",
   async () => {
     const dir = await Deno.makeTempDir({ prefix: "trellis-mixed-" });
+    const prebuiltLive = Deno.env.get("TRELLIS_TESTKIT_LIVE_BIN");
+    if (prebuiltLive === undefined) {
+      throw new Error(
+        "TRELLIS_TESTKIT_LIVE_BIN must point at the prebuilt testkit live binary; run `deno task test:integration`",
+      );
+    }
     const baseEnv = {
       ...Deno.env.toObject(),
-      CARGO_TARGET_DIR: join(repoRoot, "target"),
       TRELLIS_TEST_CLI_BIN: Deno.env.get("TRELLIS_TEST_CLI_BIN") ??
         join(repoRoot, "target/debug/trellis"),
       TRELLIS_TEST_SERVER_BIN: Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
         join(repoRoot, "target/debug/trellis-server"),
     };
-    // The build job exports the prebuilt test binary; only local development
-    // compiles it here.
-    const prebuiltLive = Deno.env.get("TRELLIS_TESTKIT_LIVE_BIN");
-    if (prebuiltLive === undefined) {
-      if (Deno.env.get("CI")) {
-        throw new Error(
-          "TRELLIS_TESTKIT_LIVE_BIN must point at the prebuilt testkit live binary in CI",
-        );
-      }
-      const build = await new Deno.Command("cargo", {
-        args: cargoArgs(["--no-run"]),
-        env: baseEnv,
-        stdout: "inherit",
-        stderr: "inherit",
-      }).output();
-      assertEquals(
-        build.success,
-        true,
-        "failed to build the Rust child test binary",
-      );
-    }
 
     const runtime = await startTrellisRuntime();
     const children: Deno.ChildProcess[] = [];
@@ -90,17 +50,12 @@ Deno.test(
         const endpoints = join(dir, `endpoints-${index}.txt`);
         const release = join(dir, `release-${index}`);
         releases.push(release);
-        const childArgv = prebuiltLive === undefined
-          ? [
-            "cargo",
-            ...cargoArgs([
-              "--",
-              "--ignored",
-              "--exact",
-              "runtime_endpoints_child",
-            ]),
-          ]
-          : [prebuiltLive, "--ignored", "--exact", "runtime_endpoints_child"];
+        const childArgv = [
+          prebuiltLive,
+          "--ignored",
+          "--exact",
+          "runtime_endpoints_child",
+        ];
         children.push(
           new Deno.Command("setsid", {
             args: childArgv,

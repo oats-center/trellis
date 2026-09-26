@@ -677,6 +677,7 @@ fn current_revision(store: &HealthStore) -> Result<i64, RuntimeError> {
                 participant_kinds: None,
                 search: None,
                 statuses: None,
+                extra: Default::default(),
             },
             now_ns(),
         )

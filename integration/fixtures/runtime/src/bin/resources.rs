@@ -25,6 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "record",
             &ResourceValue {
                 value: "one".into(),
+                extra: Default::default(),
             },
         )
         .await?;
@@ -34,6 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         created.revision,
         &ResourceValue {
             value: "two".into(),
+            extra: Default::default(),
         },
     )
     .await?;
@@ -42,7 +44,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "record",
             created.revision,
             &ResourceValue {
-                value: "stale".into()
+                value: "stale".into(),
+                extra: Default::default(),
             },
         )
         .await
@@ -51,6 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "record",
         &ResourceValue {
             value: "three".into(),
+            extra: Default::default(),
         },
     )
     .await?;
@@ -201,6 +205,7 @@ async fn state_acceptance() -> Result<(), Box<dyn std::error::Error>> {
     let created = state
         .create(&ResourceValue {
             value: "one".into(),
+            extra: Default::default(),
         })
         .await?;
     assert_eq!(state.get().await?.expect("State value").value.value, "one");
@@ -208,6 +213,7 @@ async fn state_acceptance() -> Result<(), Box<dyn std::error::Error>> {
         state
             .create(&ResourceValue {
                 value: "duplicate".into(),
+                extra: Default::default(),
             })
             .await,
         Err(StateWriteError::Conflict { .. })
@@ -215,6 +221,7 @@ async fn state_acceptance() -> Result<(), Box<dyn std::error::Error>> {
     let set = state
         .set(&ResourceValue {
             value: "two".into(),
+            extra: Default::default(),
         })
         .await?;
     assert!(matches!(
@@ -223,6 +230,7 @@ async fn state_acceptance() -> Result<(), Box<dyn std::error::Error>> {
                 created.revision,
                 &ResourceValue {
                     value: "stale".into(),
+                    extra: Default::default(),
                 },
             )
             .await,
@@ -233,6 +241,7 @@ async fn state_acceptance() -> Result<(), Box<dyn std::error::Error>> {
             set.revision,
             &ResourceValue {
                 value: "three".into(),
+                extra: Default::default(),
             },
         )
         .await?;

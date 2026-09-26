@@ -185,7 +185,10 @@ async fn list_sites(client: Option<&ConnectedClient>) -> anyhow::Result<()> {
     let sites = if let Some(client) = client {
         client
             .demo_service_fieldops_v1()
-            .sites_list(&SitesListRequest { page: None })
+            .sites_list(&SitesListRequest {
+                page: None,
+                extra: Default::default(),
+            })
             .await?
             .items
     } else {
@@ -227,6 +230,7 @@ async fn save_selected_site(
         site_id: site.site_id.to_string(),
         site_name: site.site_name.to_string(),
         selected_at: DEMO_TIMESTAMP.to_string(),
+        extra: Default::default(),
     };
 
     let Some(client) = client else {
@@ -247,7 +251,10 @@ async fn list_assignments(client: Option<&ConnectedClient>) -> anyhow::Result<()
     if let Some(client) = client {
         let response = client
             .demo_service_fieldops_v1()
-            .assignments_list(&AssignmentsListRequest { page: None })
+            .assignments_list(&AssignmentsListRequest {
+                page: None,
+                extra: Default::default(),
+            })
             .await?;
         for assignment in response.items {
             println!(
@@ -271,6 +278,7 @@ async fn list_evidence(client: Option<&ConnectedClient>) -> anyhow::Result<()> {
             .evidence_list(&EvidenceListRequest {
                 page: None,
                 prefix: None,
+                extra: Default::default(),
             })
             .await?;
         for evidence in response.items {
@@ -291,12 +299,14 @@ async fn download_evidence(client: Option<&ConnectedClient>) -> anyhow::Result<(
 
     let service = client.demo_service_fieldops_v1();
     let response = service
-        .evidence_download(&EvidenceDownloadRequest { key: key.into() })
+        .evidence_download(&EvidenceDownloadRequest {
+            key: key.into(),
+            extra: Default::default(),
+        })
         .await?;
     println!(
         "Evidence {} is {} bytes",
-        response.response.key,
-        *response.response.size
+        response.response.key, *response.response.size
     );
     Ok(())
 }
@@ -309,6 +319,7 @@ async fn upload_evidence(client: Option<&ConnectedClient>) -> anyhow::Result<()>
         evidence_type: "photo".to_string().into(),
         key: key.clone().into(),
         metadata: None,
+        extra: Default::default(),
     };
 
     let Some(client) = client else {
@@ -353,6 +364,7 @@ async fn generate_report(client: Option<&ConnectedClient>) -> anyhow::Result<()>
             checklist_name,
             notes: comment.clone(),
             updated_at: DEMO_TIMESTAMP.to_string(),
+            extra: Default::default(),
         },
     )
     .await?;
@@ -368,6 +380,7 @@ async fn generate_report(client: Option<&ConnectedClient>) -> anyhow::Result<()>
         .start(&ReportsGenerateRequest {
             inspection_id: inspection_id.into(),
             report_comment: comment.into(),
+            extra: Default::default(),
         })
         .await?;
     let snapshot = operation.wait().await?;
@@ -413,5 +426,6 @@ fn offline_sites() -> Vec<SiteSummary> {
         overdue_inspections: 1,
         latest_status: "attention".to_string().into(),
         last_report_at: DEMO_TIMESTAMP.to_string().into(),
+        extra: Default::default(),
     }]
 }

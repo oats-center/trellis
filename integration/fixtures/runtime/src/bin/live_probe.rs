@@ -100,6 +100,7 @@ impl KeyState {
             active: Int64(counters.active),
             cleanups: Int64(counters.cleanups),
             emitted: Int64(counters.emitted),
+            extra: Default::default(),
         }
     }
 
@@ -172,6 +173,7 @@ fn source_stream(
                     index: Int64(cursor.next_index),
                     payload: vec![0_u8; payload_bytes as usize].into(),
                     padding: "p".repeat(padding_bytes as usize),
+                    extra: Default::default(),
                 };
                 cursor.state.record_emitted();
                 cursor.next_index += 1;
@@ -245,6 +247,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 active: Int64(0),
                                 cleanups: Int64(0),
                                 emitted: Int64(0),
+                                extra: Default::default(),
                             },
                             |state| state.status(),
                         );

@@ -70,12 +70,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .watch(&lives::WatchInput {
             run_id: run_id.clone(),
             stream_id: "busy".to_owned(),
+            extra: Default::default(),
         })
         .await?;
     let quiet_stream = api
         .watch(&lives::WatchInput {
             run_id: run_id.clone(),
             stream_id: "quiet".to_owned(),
+            extra: Default::default(),
         })
         .await?;
     // Activate the quiet Feed immediately; an unpolled prepared handle expires
@@ -97,6 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         fail: false,
         payload_bytes: None,
         padding_bytes: None,
+        extra: Default::default(),
     })
     .await?;
     for expected in 1..=1_025 {
@@ -115,6 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         fail: false,
         payload_bytes: None,
         padding_bytes: None,
+        extra: Default::default(),
     })
     .await?;
     let quiet_indexes = quiet_task.await??;
@@ -130,6 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         fail: false,
         payload_bytes: None,
         padding_bytes: None,
+        extra: Default::default(),
     })
     .await?;
     next_frame(&mut busy, BUSY_TOTAL, "busy").await?;
@@ -141,12 +146,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .inspect(&rpc::InspectInput {
             run_id: run_id.clone(),
             stream_id: "busy".to_owned(),
+            extra: Default::default(),
         })
         .await?;
     let quiet_status = api
         .inspect(&rpc::InspectInput {
             run_id: run_id.clone(),
             stream_id: "quiet".to_owned(),
+            extra: Default::default(),
         })
         .await?;
     println!(

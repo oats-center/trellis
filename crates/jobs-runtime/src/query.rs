@@ -690,6 +690,7 @@ impl JobsQuery {
 
         Ok(JobsCancelResponse {
             job: job_to_cancel_item(&job, &self.job_metadata(&job).await?)?,
+            extra: Default::default(),
         })
     }
 
@@ -730,6 +731,7 @@ impl JobsQuery {
 
         Ok(JobsRetryResponse {
             job: job_to_retry_item(&job, &self.job_metadata(&job).await?)?,
+            extra: Default::default(),
         })
     }
 
@@ -851,6 +853,7 @@ impl JobsQuery {
 
         Ok(JobsReplayDLQResponse {
             job: job_to_replay_item(&job, &self.job_metadata(&job).await?)?,
+            extra: Default::default(),
         })
     }
 
@@ -899,6 +902,7 @@ impl JobsQuery {
 
         Ok(JobsDismissDLQResponse {
             job: job_to_dismiss_item(&job, &self.job_metadata(&job).await?)?,
+            extra: Default::default(),
         })
     }
 

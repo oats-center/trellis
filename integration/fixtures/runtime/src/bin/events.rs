@@ -40,6 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Beta::publish_subject(&Sample {
             site: "rust".to_owned(),
             value: "payload".to_owned(),
+            extra: Default::default(),
         })?,
         "events.v1.cnVudGltZS10cmVsbGlzLmV2ZW50c0B2MQ.Beta"
     );
@@ -127,7 +128,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .runtime_trellis_events_v1()
         .register_drop_alpha(move |_, _| {
             alpha.lock().unwrap().take();
-            async { Ok(Empty {}) }
+            async {
+                Ok(Empty {
+                    extra: Default::default(),
+                })
+            }
         });
     let stats_response = Arc::clone(&stats);
     provider
@@ -139,6 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 active: stats.active.into(),
                 max_active: stats.max_active.into(),
                 successes: stats.successes.clone(),
+                extra: Default::default(),
             };
             async move { Ok(output) }
         });
@@ -146,7 +152,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .runtime_trellis_events_v1()
         .register_observed(move |_, _| {
             let values = seen.lock().unwrap().iter().cloned().collect();
-            async { Ok(ObservedOutput { values }) }
+            async {
+                Ok(ObservedOutput {
+                    values,
+                    extra: Default::default(),
+                })
+            }
         });
     service.run().await?;
     telemetry.shutdown().await;

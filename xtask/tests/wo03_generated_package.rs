@@ -198,7 +198,7 @@ fn codecs_errors_and_generated_surfaces_compile() {
     assert_eq!(encoded["count"], "18446744073709551615");
     assert_eq!(encoded["signed"], "-9223372036854775808");
     assert_eq!(encoded["blob"], "AQID");
-    assert!(encoded.get("ignored").is_none());
+    assert_eq!(encoded.get("ignored"), Some(&serde_json::json!(true)));
     assert!(Number::from(f64::NAN).encode().is_err());
 
     type Fetch = fixture_primary_v1::rpc::Fetch;
@@ -243,7 +243,7 @@ fn codecs_errors_and_generated_surfaces_compile() {
         let _: Option<&trellis_rs::service::StoreHandle> = provider.blobs();
     }
     let _ = providers;
-    let migrations = fixture_worker::Migrations::new(|Historic { label }| async move {
+    let migrations = fixture_worker::Migrations::new(|Historic { label, .. }| async move {
         Ok::<_, std::convert::Infallible>(Current {
             root: serde_json::from_value(serde_json::json!({
                 "label": label,
@@ -255,6 +255,7 @@ fn codecs_errors_and_generated_surfaces_compile() {
                 "nullable": null,
                 "status": "ready"
             })).unwrap(),
+            extra: Default::default(),
         })
     });
     let _ = migrations;
@@ -387,8 +388,9 @@ Deno.test("generated TypeScript package exercises WO-03 B2-B4", () => {
   assert(node.blob instanceof Uint8Array && node.blob.join() === "1,2,3", "bytes decode");
   assert(node.nullable === null && node.status === "future", "nullable/open enum decode");
   assert(node.parent?.label === "parent", "recursive model decode");
-  assert(!("ignored" in node), "open model ignores unknown output fields");
+  assert("ignored" in node, "open model preserves unknown output fields");
   const encoded = fetch.input.encode(node) as Record<string, unknown>;
+  assert(encoded.ignored === true, "unknown output fields round-trip");
   assert(encoded.count === wire.count && encoded.signed === wire.signed, "bigint encode");
   assert(encoded.blob === wire.blob, "bytes encode");
   let rejectedNonFinite = false;

@@ -167,6 +167,7 @@ impl HealthStore {
                     last_seen_at: rfc3339(group.last_seen_at_ns)?,
                     versions: group.versions.into_iter().collect(),
                     runtimes: group.runtimes.into_iter().collect(),
+                    extra: Default::default(),
                 })
             })
             .collect::<Result<Vec<_>, HealthStoreError>>()?;
@@ -252,7 +253,9 @@ impl HealthStore {
                 gap_detected: projection.gap_detected,
                 retained_from: projection.retained_from,
                 complete_since: projection.complete_since,
+                extra: Default::default(),
             },
+            extra: Default::default(),
         })
     }
 
@@ -323,6 +326,7 @@ impl HealthStore {
                 ),
                 started_at: row.started_at.clone(),
                 latest_sample,
+                extra: Default::default(),
             });
         }
         let effective_status = if online_instances == 0 {
@@ -393,10 +397,12 @@ impl HealthStore {
                                 Ok(HealthInspectResponseHistoryItemChecksItem {
                                     name: check.name.to_string(),
                                     status: wire_from_sql(check.status.as_str().to_string())?,
+                                    extra: Default::default(),
                                 })
                             })
                             .collect::<Result<Vec<_>, rusqlite::Error>>()?,
                         reason: wire_from_sql(row.get(7)?)?,
+                        extra: Default::default(),
                     })
                 },
             )?
@@ -412,6 +418,7 @@ impl HealthStore {
                 effective_status: wire(effective_status)?,
                 online_instances: Uint64(online_instances),
                 offline_instances: Uint64(offline_instances),
+                extra: Default::default(),
             },
             instances,
             history,
@@ -427,7 +434,9 @@ impl HealthStore {
                 gap_detected: projection.gap_detected,
                 retained_from: projection.retained_from,
                 complete_since: projection.complete_since,
+                extra: Default::default(),
             },
+            extra: Default::default(),
         }))
     }
 
@@ -625,9 +634,11 @@ impl HealthStore {
                                             .into()
                                     },
                                     latency_max_ms: Number(check.latency_max_ms).into(),
+                                    extra: Default::default(),
                                 }
                             })
                             .collect(),
+                        extra: Default::default(),
                     })
                 })
                 .collect::<Result<Vec<_>, HealthStoreError>>()?;
@@ -636,6 +647,7 @@ impl HealthStore {
                 contract_id: request.contract_id.to_string(),
                 instance_id,
                 buckets: response_buckets,
+                extra: Default::default(),
             });
         }
 
@@ -649,6 +661,7 @@ impl HealthStore {
                 online_ms: Uint64(summary_online_ms.try_into().unwrap_or_default()),
                 sample_count: Uint64(summary_samples.try_into().unwrap_or_default()),
                 transitions: Uint64(summary_transitions.try_into().unwrap_or_default()),
+                extra: Default::default(),
             },
             as_of: rfc3339(now_ns)?,
             projection: HealthMetricsResponseProjection {
@@ -662,7 +675,9 @@ impl HealthStore {
                 gap_detected: projection.gap_detected,
                 retained_from: projection.retained_from,
                 complete_since: projection.complete_since,
+                extra: Default::default(),
             },
+            extra: Default::default(),
         })
     }
 }

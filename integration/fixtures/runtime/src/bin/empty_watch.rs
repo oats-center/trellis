@@ -31,7 +31,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
     let mut frames = client
         .runtime_trellis_runtime_v1()
-        .watch(&lives::WatchInput {})
+        .watch(&lives::WatchInput {
+            extra: Default::default(),
+        })
         .await?;
     if frames.next().await.is_some() {
         return Err("empty Watch emitted an application frame".into());

@@ -264,14 +264,13 @@ Deno.test("NX02 rust console client receives Health Watch", async () => {
     await completeRustLogin(
       runtime,
       [
-        "cargo",
-        "run",
-        "--manifest-path",
-        fromFileUrl(new URL("../../Cargo.toml", import.meta.url)),
-        "-p",
-        "trellis-runtime",
-        "--example",
-        "health_watch",
+        Deno.env.get("TRELLIS_TEST_HEALTH_WATCH_BIN") ??
+          fromFileUrl(
+            new URL(
+              "../../target/debug/examples/health_watch",
+              import.meta.url,
+            ),
+          ),
       ],
       "health-caller-config",
       "health login ",
