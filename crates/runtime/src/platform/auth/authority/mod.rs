@@ -7,7 +7,7 @@ use super::domain::{require_nonempty, require_positive, require_protocol_timesta
 use super::{
     AuthorizationStateError, DeploymentRecord, DeviceDelegationRecord, DeviceRecord,
     ParticipantBindingRecord, PrincipalRecord, ProviderIdentityLink, ResourceBindingEvidence,
-    RuntimeInstanceRecord, SessionRecord, SessionRuntimeBinding,
+    RuntimeInstanceRecord, SessionRecord,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -96,10 +96,6 @@ pub(crate) trait AuthorityEvidenceRepository: Send + Sync {
         principal_id: &str,
         deployment_id: &str,
     ) -> Result<Option<DeviceDelegationRecord>, AuthorizationStateError>;
-    async fn get_session_runtime_binding(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<SessionRuntimeBinding>, AuthorizationStateError>;
 }
 
 #[async_trait]
@@ -228,15 +224,7 @@ pub(super) fn validate_device_delegation(
     Ok(())
 }
 
-pub(super) fn validate_session_runtime_binding(
-    binding: &SessionRuntimeBinding,
-) -> Result<(), AuthorizationStateError> {
-    require_nonempty("sessionId", &binding.session_id)?;
-    require_nonempty("deploymentId", &binding.deployment_id)?;
-    require_nonempty("instanceId", &binding.instance_id)
-}
-
-pub(crate) fn validate_deployment_evidence(
+pub(super) fn validate_deployment_evidence(
     deployment: &DeploymentRecord,
 ) -> Result<(), AuthorizationStateError> {
     require_nonempty("deploymentId", &deployment.deployment_id)?;

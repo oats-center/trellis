@@ -24,6 +24,17 @@ and this project adheres to
   fractional-second `serverNow`, and live credit/pulse/end-ack controls are no
   longer bounded by the 15-second opening reservation, so retained Live sessions
   keep flowing instead of stalling on their credit window.
+- Applying a changed contract to an active deployment no longer requires a
+  disable/apply/enable cycle. A deployment remaining active is not a conflict,
+  and the installed participant revision changing is no longer by itself a
+  revocation condition: every retained authorization context is compared against
+  the participant revision it was issued under and is revoked only when the
+  replacement no longer covers its exact effective authority, including
+  provider-derived transport ability. Additive changes therefore leave live
+  connections attached, only connections that actually lose authority are
+  disconnected, and deployment-wide disable/remove terminates native connections
+  from authoritative live presence rather than the removed session-runtime
+  binding lookup.
 
 ### Changed
 

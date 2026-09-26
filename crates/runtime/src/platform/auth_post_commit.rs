@@ -10,9 +10,9 @@ use trellis_rs::client::SessionAuth;
 use super::auth::resources::{DestroyResourcePayload, ReconcileResourcePayload};
 use super::auth::{
     validate_connection_kick_response, AuthConnectionPresence, AuthEphemeralRepository,
-    AuthorityEvidenceRepository, AuthorizationContextService, AuthorizationStateError,
-    NatsAuthEphemeralRepository, OutboxRepository, PostCommitActionKind, PostCommitActionRecord,
-    SessionRepository, SqliteAuthorizationStore,
+    AuthorizationContextService, AuthorizationStateError, NatsAuthEphemeralRepository,
+    OutboxRepository, PostCommitActionKind, PostCommitActionRecord, SessionRepository,
+    SqliteAuthorizationStore,
 };
 use crate::shutdown::StopHandle;
 use crate::supervisor::RuntimeError;
@@ -493,22 +493,16 @@ impl AuthPostCommitRuntime {
             }
             connections
         } else if let Some(deployment_id) = payload.get("deploymentId").and_then(Value::as_str) {
-            let mut connections = Vec::new();
-            for session in self.repository.list_sessions().await? {
-                if self
-                    .repository
-                    .get_session_runtime_binding(&session.session_id)
-                    .await?
-                    .is_some_and(|binding| binding.deployment_id == deployment_id)
-                {
-                    connections.extend(
-                        self.ephemeral
-                            .list_connection_presence(Some(&session.session_id))
-                            .await?,
-                    );
-                }
-            }
-            connections
+            // A deployment-wide kick applies only to lifecycle invalidation
+            // (disable/remove). Native service and device connections have no
+            // login session, so live presence is the authoritative source of
+            // the instances that belong to this deployment.
+            self.ephemeral
+                .list_connection_presence(None)
+                .await?
+                .into_iter()
+                .filter(|connection| connection.deployment_id.as_deref() == Some(deployment_id))
+                .collect()
         } else {
             return Err(AuthorizationStateError::InvalidRecord(
                 "post-commit kick target is required".to_owned(),

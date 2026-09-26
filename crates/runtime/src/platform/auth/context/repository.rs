@@ -575,12 +575,34 @@ fn decode_sql_context(row: &Row<'_>) -> rusqlite::Result<AuthorizationContextRec
 }
 
 /// Revoke using Unix seconds; the queued outbox records use Unix milliseconds.
+///
+/// This is the broad form: every non-revoked context in the selector scope is
+/// invalidated. Lifecycle operations that invalidate an entire scope use it.
 pub(crate) fn revoke_sql_contexts(
     connection: &rusqlite::Connection,
     selector: &AuthorizationContextSelector,
     reason: AuthorizationContextRevocationReason,
     revoked_at: i64,
 ) -> Result<Vec<AuthorizationContextRecord>, AuthorizationStateError> {
+    revoke_sql_contexts_matching(connection, selector, reason, revoked_at, |_| Ok(true))
+}
+
+/// Revoke only the selected contexts a predicate still considers invalid.
+///
+/// The predicate sees each retained context and returns whether it must be
+/// revoked. It lets grant replacement evaluate every live context against the
+/// replacement authority without duplicating the durable revocation machinery.
+/// A predicate error aborts the whole transaction.
+pub(crate) fn revoke_sql_contexts_matching<F>(
+    connection: &rusqlite::Connection,
+    selector: &AuthorizationContextSelector,
+    reason: AuthorizationContextRevocationReason,
+    revoked_at: i64,
+    mut should_revoke: F,
+) -> Result<Vec<AuthorizationContextRecord>, AuthorizationStateError>
+where
+    F: FnMut(&AuthorizationContextRecord) -> Result<bool, AuthorizationStateError>,
+{
     require_protocol_timestamp("revokedAt", revoked_at)?;
     let contexts = match selector {
         AuthorizationContextSelector::Login(id) => query_sql_contexts(
@@ -621,6 +643,9 @@ pub(crate) fn revoke_sql_contexts(
     };
     let mut revoked = Vec::with_capacity(contexts.len());
     for mut context in contexts {
+        if !should_revoke(&context)? {
+            continue;
+        }
         context.state = AuthorizationContextState::Revoked;
         context.revoked_at = Some(revoked_at);
         context.revocation_reason = Some(reason);

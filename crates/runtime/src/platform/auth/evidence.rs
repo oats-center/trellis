@@ -6,7 +6,8 @@ use trellis_idl::{
     selected_permission_atoms, ActionDefinition, ActionKind, PackageEvidence, ResourceDefinition,
 };
 use trellis_protocol::{
-    GrantSet, ParticipantKind, ParticipantResourceKind, PermissionAction, PermissionAtom,
+    ApiSurfaceKind, GrantSet, ParticipantKind, ParticipantResourceKind, PermissionAction,
+    PermissionAtom, PermissionTarget,
 };
 
 use super::AuthorizationStateError;
@@ -119,6 +120,143 @@ impl ParticipantRuntimeProjection {
             permissions.extend_from_slice(grant.permissions());
         }
         Ok(GrantSet::new(permissions))
+    }
+
+    /// Event-publish grants Trellis derives from a provider's implemented APIs.
+    ///
+    /// Services publish the events their implemented APIs declare without those
+    /// atoms appearing in the installed participant's grant needs, so issuance
+    /// adds them to the signed context. The same derivation must be used when
+    /// deciding whether a replacement still covers an existing context.
+    pub(crate) fn provider_event_grants(
+        &self,
+    ) -> Result<Vec<PermissionAtom>, AuthorizationStateError> {
+        let mut grants = Vec::new();
+        for (api_id, api) in &self.implemented_apis {
+            for (key, action) in &api.actions {
+                if action.kind != RuntimeActionKind::Event {
+                    continue;
+                }
+                let name = key.split_once(':').map_or(key.as_str(), |(_, name)| name);
+                grants.push(
+                    PermissionAtom::new(
+                        PermissionTarget::api_surface(api_id, ApiSurfaceKind::Event, name)
+                            .map_err(|error| {
+                                AuthorizationStateError::InvalidRecord(error.to_string())
+                            })?,
+                        PermissionAction::Publish,
+                    )
+                    .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?,
+                );
+            }
+        }
+        Ok(grants)
+    }
+}
+
+/// Whether the replacement installation and held grants still cover every
+/// transport ability the previous participant could exercise.
+///
+/// Connection authority has two sources. Every action of every implemented API
+/// grants provider-side subjects directly, regardless of the signed grant set.
+/// Every permission atom in `held_grants` grants caller-side subjects. A live
+/// connection may stay attached only while the replacement covers both the
+/// provider surface it served and the exact grants it held. New APIs, new
+/// actions, and added upload/download support are additive and never invalidate
+/// an existing context. Revision and digest identity are provenance, not
+/// authority.
+pub(crate) fn participant_connection_surface_is_covered(
+    previous: &ParticipantRuntimeProjection,
+    replacement: &ParticipantRuntimeProjection,
+    held_grants: &GrantSet,
+) -> Result<bool, AuthorizationStateError> {
+    for (api_id, previous_api) in &previous.implemented_apis {
+        let Some(replacement_api) = replacement.implemented_apis.get(api_id) else {
+            return Ok(false);
+        };
+        for (action_key, previous_action) in &previous_api.actions {
+            let Some(replacement_action) = replacement_api.actions.get(action_key) else {
+                return Ok(false);
+            };
+            if !action_surface_is_covered(previous_action, replacement_action) {
+                return Ok(false);
+            }
+        }
+    }
+    for atom in held_grants.permissions() {
+        match atom.target() {
+            PermissionTarget::ApiSurface { api, surface, name } => {
+                let action_key = format!("{}:{name}", surface_name(*surface));
+                if !referenced_action_is_covered(previous, replacement, api, &action_key)? {
+                    return Ok(false);
+                }
+            }
+            PermissionTarget::OperationSignal {
+                api,
+                operation,
+                signal: _,
+            } => {
+                let action_key = format!("operation:{operation}");
+                if !referenced_action_is_covered(previous, replacement, api, &action_key)? {
+                    return Ok(false);
+                }
+            }
+            // Participant-resource authority is carried by the exact grant
+            // subset: if the resource or its kind no longer exists, the atom
+            // will be absent from the replacement grant set.
+            PermissionTarget::ParticipantResource { .. } => {}
+        }
+    }
+    Ok(true)
+}
+
+fn referenced_action_is_covered(
+    previous: &ParticipantRuntimeProjection,
+    replacement: &ParticipantRuntimeProjection,
+    api_id: &str,
+    action_key: &str,
+) -> Result<bool, AuthorizationStateError> {
+    let previous_action = previous
+        .referenced_apis
+        .get(api_id)
+        .and_then(|api| api.actions.get(action_key));
+    let replacement_action = replacement
+        .referenced_apis
+        .get(api_id)
+        .and_then(|api| api.actions.get(action_key));
+    match (previous_action, replacement_action) {
+        (Some(previous_action), Some(replacement_action)) => Ok(action_surface_is_covered(
+            previous_action,
+            replacement_action,
+        )),
+        // A held grant whose action disappeared from either projection can no
+        // longer be proven safe, so the context must be revoked.
+        _ => Ok(false),
+    }
+}
+
+/// Whether the replacement still permits everything the previous action did.
+///
+/// Adding upload/download support or new actions is additive. Only removing an
+/// action, changing its transport kind, withdrawing upload/download, or changing
+/// an event's parameter count narrows what the old connection could do.
+fn action_surface_is_covered(
+    previous: &ActionRuntimeProjection,
+    replacement: &ActionRuntimeProjection,
+) -> bool {
+    previous.kind == replacement.kind
+        && (!previous.upload || replacement.upload)
+        && (!previous.download || replacement.download)
+        && previous.event_parameter_count == replacement.event_parameter_count
+}
+
+fn surface_name(surface: ApiSurfaceKind) -> &'static str {
+    match surface {
+        ApiSurfaceKind::Rpc => "rpc",
+        ApiSurfaceKind::Operation => "operation",
+        ApiSurfaceKind::Event => "event",
+        ApiSurfaceKind::Live => "live",
+        ApiSurfaceKind::State => "state",
     }
 }
 
@@ -797,5 +935,190 @@ service Worker {
         assert_eq!(job.deadline_ms, Some(45_000));
         assert_eq!(job.retry_attempts, Some(3));
         assert_eq!(job.retry_backoff_ms, [5_000, 30_000]);
+    }
+
+    fn surface_action(
+        kind: RuntimeActionKind,
+        upload: bool,
+        download: bool,
+        event_parameter_count: usize,
+    ) -> ActionRuntimeProjection {
+        ActionRuntimeProjection {
+            kind,
+            upload,
+            download,
+            event_parameter_count,
+        }
+    }
+
+    fn surface_api(actions: &[(&str, ActionRuntimeProjection)]) -> ApiRuntimeProjection {
+        ApiRuntimeProjection {
+            digest: "digest".into(),
+            major: 1,
+            actions: actions
+                .iter()
+                .map(|(name, action)| ((*name).to_owned(), action.clone()))
+                .collect(),
+            capabilities: BTreeMap::new(),
+        }
+    }
+
+    fn surface_projection(
+        implemented: &[(&str, ApiRuntimeProjection)],
+        referenced: &[(&str, ApiRuntimeProjection)],
+    ) -> ParticipantRuntimeProjection {
+        ParticipantRuntimeProjection {
+            participant_id: "pkg.Provider".into(),
+            participant_kind: ParticipantKind::Service,
+            display_name: "Provider".into(),
+            implemented_apis: implemented
+                .iter()
+                .map(|(id, api)| ((*id).to_owned(), api.clone()))
+                .collect(),
+            referenced_apis: referenced
+                .iter()
+                .map(|(id, api)| ((*id).to_owned(), api.clone()))
+                .collect(),
+            resources: BTreeMap::new(),
+            required_grants: GrantSet::new(Vec::new()),
+            optional_grant_bundles: BTreeMap::new(),
+            required_capabilities: Vec::new(),
+            optional_capability_definitions: BTreeMap::new(),
+            companion_participant_id: None,
+            companion_participant_kind: None,
+            companion_required: false,
+        }
+    }
+
+    fn call_atom(action: PermissionAction, name: &str) -> PermissionAtom {
+        PermissionAtom::new(
+            PermissionTarget::api_surface("runtime@v1", ApiSurfaceKind::Rpc, name).expect("atom"),
+            action,
+        )
+        .expect("atom")
+    }
+
+    #[test]
+    fn provider_surface_growth_and_added_actions_are_covered() {
+        let previous = surface_projection(
+            &[(
+                "runtime@v1",
+                surface_api(&[(
+                    "rpc:Echo",
+                    surface_action(RuntimeActionKind::Rpc, false, false, 0),
+                )]),
+            )],
+            &[],
+        );
+        let replacement = surface_projection(
+            &[(
+                "runtime@v1",
+                surface_api(&[
+                    (
+                        "rpc:Echo",
+                        surface_action(RuntimeActionKind::Rpc, false, true, 0),
+                    ),
+                    (
+                        "rpc:Ping",
+                        surface_action(RuntimeActionKind::Rpc, false, false, 0),
+                    ),
+                ]),
+            )],
+            &[],
+        );
+        assert!(participant_connection_surface_is_covered(
+            &previous,
+            &replacement,
+            &GrantSet::new(Vec::new()),
+        )
+        .expect("compare"));
+    }
+
+    #[test]
+    fn provider_action_removal_or_withdrawal_is_not_covered() {
+        let previous = surface_projection(
+            &[(
+                "runtime@v1",
+                surface_api(&[
+                    (
+                        "rpc:Echo",
+                        surface_action(RuntimeActionKind::Rpc, false, true, 0),
+                    ),
+                    (
+                        "event:Changed",
+                        surface_action(RuntimeActionKind::Event, false, false, 1),
+                    ),
+                ]),
+            )],
+            &[],
+        );
+        let withdrawn_download = surface_projection(
+            &[(
+                "runtime@v1",
+                surface_api(&[(
+                    "rpc:Echo",
+                    surface_action(RuntimeActionKind::Rpc, false, false, 0),
+                )]),
+            )],
+            &[],
+        );
+        let removed_event = surface_projection(
+            &[(
+                "runtime@v1",
+                surface_api(&[(
+                    "rpc:Echo",
+                    surface_action(RuntimeActionKind::Rpc, false, true, 0),
+                )]),
+            )],
+            &[],
+        );
+        for replacement in [withdrawn_download, removed_event] {
+            assert!(!participant_connection_surface_is_covered(
+                &previous,
+                &replacement,
+                &GrantSet::new(Vec::new()),
+            )
+            .expect("compare"));
+        }
+    }
+
+    #[test]
+    fn consumer_surface_only_examines_held_grants() {
+        let previous = surface_projection(
+            &[],
+            &[(
+                "runtime@v1",
+                surface_api(&[
+                    (
+                        "rpc:Echo",
+                        surface_action(RuntimeActionKind::Rpc, false, false, 0),
+                    ),
+                    (
+                        "rpc:Other",
+                        surface_action(RuntimeActionKind::Rpc, false, false, 0),
+                    ),
+                ]),
+            )],
+        );
+        let replacement = surface_projection(
+            &[],
+            &[(
+                "runtime@v1",
+                surface_api(&[(
+                    "rpc:Echo",
+                    surface_action(RuntimeActionKind::Rpc, false, false, 0),
+                )]),
+            )],
+        );
+        let held = GrantSet::new(vec![call_atom(PermissionAction::Call, "Echo")]);
+        assert!(
+            participant_connection_surface_is_covered(&previous, &replacement, &held)
+                .expect("compare")
+        );
+        let removed = GrantSet::new(vec![call_atom(PermissionAction::Call, "Other")]);
+        assert!(
+            !participant_connection_surface_is_covered(&previous, &replacement, &removed)
+                .expect("compare")
+        );
     }
 }

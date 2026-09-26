@@ -809,18 +809,6 @@ pub struct RuntimeInstanceRecord {
     pub version: u64,
 }
 
-/// Session selection of deployment-owned runtime evidence.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionRuntimeBinding {
-    /// Session selecting the runtime evidence.
-    pub session_id: String,
-    /// Selected deployment ID.
-    pub deployment_id: String,
-    /// Selected runtime instance ID, required by current service and device policy.
-    pub instance_id: String,
-}
-
 /// Durable lifecycle state for one device in one deployment.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]

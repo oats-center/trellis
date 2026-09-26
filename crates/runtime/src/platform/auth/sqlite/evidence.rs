@@ -3,12 +3,11 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use super::super::authority::{
     validate_deployment_evidence, validate_device, validate_device_delegation,
-    validate_runtime_instance, validate_session_runtime_binding, AuthorityEvidenceRepository,
+    validate_runtime_instance, AuthorityEvidenceRepository,
 };
 use super::super::{
     AuthorizationStateError, DeploymentRecord, DeviceDelegationRecord, DeviceRecord,
     GrantOwnerKind, PrincipalKind, ResourceBindingEvidence, RuntimeInstanceRecord,
-    SessionRuntimeBinding,
 };
 use super::common::{
     decode_enum, encode_enum, encode_json, from_sql_version, map_write_error, sql_error,
@@ -186,15 +185,6 @@ impl AuthorityEvidenceRepository for SqliteAuthorizationStore {
         })
         .await
     }
-
-    async fn get_session_runtime_binding(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<SessionRuntimeBinding>, AuthorizationStateError> {
-        let session_id = session_id.to_owned();
-        self.run_read(move |connection| load_session_runtime_binding(connection, &session_id))
-            .await
-    }
 }
 
 pub(in crate::platform::auth) fn put_sql_deployment_evidence(
@@ -329,33 +319,6 @@ pub(in crate::platform::auth) fn load_device_delegation(
             delegation.map_or(Ok(None), |delegation| {
                 validate_device_delegation(&delegation)?;
                 Ok(Some(delegation))
-            })
-        })
-}
-
-pub(in crate::platform::auth) fn load_session_runtime_binding(
-    connection: &Connection,
-    session_id: &str,
-) -> Result<Option<SessionRuntimeBinding>, AuthorizationStateError> {
-    connection
-        .query_row(
-            "SELECT session_id, deployment_id, instance_id
-         FROM auth_session_runtime_bindings WHERE session_id = ?1",
-            [session_id],
-            |row| {
-                Ok(SessionRuntimeBinding {
-                    session_id: row.get(0)?,
-                    deployment_id: row.get(1)?,
-                    instance_id: row.get(2)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(sql_error)
-        .and_then(|binding| {
-            binding.map_or(Ok(None), |binding| {
-                validate_session_runtime_binding(&binding)?;
-                Ok(Some(binding))
             })
         })
 }

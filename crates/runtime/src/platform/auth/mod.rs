@@ -106,7 +106,7 @@ pub use domain::{
     ParticipantBindingState, PortalGrantProvenance, PrincipalKind, PrincipalRecord, PrincipalState,
     ProviderIdentityLink, ResourceBindingEvidence, ResourceBindingState, ResourceCommitment,
     ResourceProviderIdentity, RuntimeInstanceRecord, RuntimeInstanceState, SessionRecord,
-    SessionRuntimeBinding, SessionState, MAX_PROTOCOL_INTEGER,
+    SessionState, MAX_PROTOCOL_INTEGER,
 };
 pub(crate) use model::PortalPolicySnapshot;
 pub(crate) use model::{activation_review_event, activation_review_event_action_id};

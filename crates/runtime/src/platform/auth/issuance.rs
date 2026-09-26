@@ -1,6 +1,6 @@
 use trellis_protocol::{
-    ApiSurfaceKind, AuthorizationPrincipalKind, GrantSet, ParticipantKind, ParticipantResourceKind,
-    PermissionAction, PermissionAtom, PermissionTarget,
+    AuthorizationPrincipalKind, GrantSet, ParticipantKind, ParticipantResourceKind,
+    PermissionTarget,
 };
 
 use super::authority::{IssuanceCredentialRecord, IssuanceSnapshot};
@@ -305,25 +305,7 @@ pub(super) fn resolve_snapshot(
     let inbox_prefix = format!("_INBOX.{}", connection.connection_id);
     let mut grants = authority.exact_grants.permissions().to_vec();
     if principal_kind == AuthorizationPrincipalKind::Service {
-        for (api_id, api) in &participant_projection.implemented_apis {
-            for (key, action) in &api.actions {
-                if action.kind == super::evidence::RuntimeActionKind::Event {
-                    let name = key.split_once(':').map_or(key.as_str(), |(_, name)| name);
-                    grants.push(
-                        PermissionAtom::new(
-                            PermissionTarget::api_surface(api_id, ApiSurfaceKind::Event, name)
-                                .map_err(|error| {
-                                    AuthorizationStateError::InvalidRecord(error.to_string())
-                                })?,
-                            PermissionAction::Publish,
-                        )
-                        .map_err(|error| {
-                            AuthorizationStateError::InvalidRecord(error.to_string())
-                        })?,
-                    );
-                }
-            }
-        }
+        grants.extend(participant_projection.provider_event_grants()?);
     }
     Ok(IssuableAuthorizationState {
         principal_id: principal.principal_id,

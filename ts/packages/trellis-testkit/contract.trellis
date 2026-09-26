@@ -6,6 +6,7 @@ app cli {
     rpc CapabilityGroups.Put;
     rpc Connections.List;
     rpc Deployments.Apply;
+    rpc Deployments.Disable;
     rpc Deployments.Get;
     rpc Deployments.Create;
     rpc Devices.Provision;
