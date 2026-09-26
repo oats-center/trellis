@@ -1452,7 +1452,7 @@
           "npm:drizzle-orm@0.44.7"
         ]
       },
-      "packages/trellis-test": {
+      "packages/trellis-testkit": {
         "dependencies": [
           "jsr:@nats-io/transport-deno@^3.3.1",
           "jsr:@oatscenter/trellis@0.19",
