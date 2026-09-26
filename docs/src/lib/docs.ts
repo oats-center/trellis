@@ -349,10 +349,10 @@ export const apiReferenceDocs: DocEntry[] = [
     section: "API Reference",
   },
   {
-    title: "@oatscenter/trellis-test",
+    title: "@oatscenter/trellis-testkit",
     description:
       "Deno-first integration test helpers for Trellis service repositories.",
-    href: "/api/typescript/trellis-test/index.ts/index.html",
+    href: "/api/typescript/trellis-testkit/index.ts/index.html",
     section: "API Reference",
   },
   {
@@ -376,7 +376,7 @@ export const apiReferenceDocs: DocEntry[] = [
     section: "Rustdoc",
   },
   {
-    title: "trellis-test",
+    title: "trellis-testkit",
     description:
       "External out-of-process live-test harness for Rust service and app integration tests.",
     href: "/api/rust/trellis_test/index.html",
@@ -630,7 +630,7 @@ export const guideDocs: DocEntry[] = [
   {
     title: "Testing Trellis services",
     description:
-      "Run out-of-tree TypeScript service integration tests with @oatscenter/trellis-test, case-scoped fixtures, and the generic runner.",
+      "Run out-of-tree TypeScript service integration tests with @oatscenter/trellis-testkit, case-scoped fixtures, and the generic runner.",
     href: "/guides/testing-trellis-services",
     section: "Libraries",
   },

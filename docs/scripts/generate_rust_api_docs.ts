@@ -24,7 +24,7 @@ const command = new Deno.Command("cargo", {
     "-p",
     "trellis-protocol",
     "-p",
-    "trellis-test",
+    "trellis-testkit",
   ],
 });
 
@@ -50,5 +50,5 @@ async function copyTree(from: URL, to: URL) {
 await copyTree(new URL("target/doc/", repoRoot), output);
 
 console.log(
-  "Generated Rustdoc for trellis-rs, trellis-protocol, and trellis-test",
+  "Generated Rustdoc for trellis-rs, trellis-protocol, and trellis-testkit",
 );

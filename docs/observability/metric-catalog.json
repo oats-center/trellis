@@ -86,7 +86,7 @@
       "unit": "s",
       "attributes": { "existing_contract": "retain existing static operation/phase/outcome keys; source ledger S02" },
       "owner": "TypeScript test-utility instrumentation",
-      "observation": "Emitted only by trellis-test administration automation; production administrative requests use their actual request/CLI observation boundaries. Retained as helper coverage, not a production SLI.",
+      "observation": "Emitted only by trellis-testkit administration automation; production administrative requests use their actual request/CLI observation boundaries. Retained as helper coverage, not a production SLI.",
       "boundaries": [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
     },
     {

@@ -270,7 +270,7 @@ Declare these dependencies only when the application uses them:
 
 Choose application testing tools independently. For a test that needs real
 Trellis transport, authority, or restart behavior, the Deno package
-`@oatscenter/trellis-test` provides `TrellisTestRuntime`. The published Rust
+`@oatscenter/trellis-testkit` provides `TrellisTestRuntime`. The published Rust
 crate `trellis-testkit` provides the equivalent `TrellisTestRuntime` for Rust test
 crates: it starts the released `trellis` and `trellis-server` executables out of
 process, selects its loopback ports automatically, and returns the normal SDK

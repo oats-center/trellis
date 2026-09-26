@@ -8,7 +8,7 @@ import { ulid } from "ulid";
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
-import type { TrellisTestRuntime } from "@oatscenter/trellis-test";
+import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import { encodeEventSubjectParameterToken } from "../packages/trellis/helpers.ts";
 import { API as eventsApi } from "../packages/trellis/internal_sdk/generated/apis/events/mod.js";
 import { participant as consoleParticipant } from "../packages/trellis/internal_sdk/generated/participants/console/mod.js";

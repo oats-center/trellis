@@ -1,4 +1,4 @@
-# Publishable Rust `trellis-test`: implementation and review contract
+# Publishable Rust `trellis-testkit`: implementation and review contract
 
 **Repository:** `oats-center/trellis`  
 **Integration branch:** `main`  
@@ -9,7 +9,7 @@
 **Status:** implementation specification; no implementation, build, publication, or merge has been performed as part of preparing this document.
 
 > This file is a verbatim copy of the coordinator-supplied implementation contract
-> (`trellis-test-public-implementation-plan-current-main.md`) placed in the feature
+> (`trellis-testkit-public-implementation-plan-current-main.md`) placed in the feature
 > worktree per section 3 so reviewers can associate requirements and evidence with
 > the implementation. Requirements are owned by the coordinator; this copy is not
 > itself an authority.
@@ -48,14 +48,14 @@ Therefore this plan **must not re-add three separate NATS port flags, must not r
 
 ## 1. Problem and desired outcome
 
-An outside Rust service or application repository must be able to put `trellis-test` in its Cargo development dependencies, start an isolated real Trellis deployment, provision generated participants, connect its normal generated service/caller APIs, perform live tests, and shut everything down. It must not need a Trellis source checkout or private workspace dependencies.
+An outside Rust service or application repository must be able to put `trellis-testkit` in its Cargo development dependencies, start an isolated real Trellis deployment, provision generated participants, connect its normal generated service/caller APIs, perform live tests, and shut everything down. It must not need a Trellis source checkout or private workspace dependencies.
 
 At the baseline:
 
-- `crates/trellis-test` is unpublished **and now contains a substantial embedded Rust runtime harness**: `runtime.rs`, `admin.rs`, `config.rs`, `error.rs`, and `ports.rs`, plus live crate-local tests for boot, admin login, and apply/provision. Its public entrypoint is `TrellisTestRuntime::start(TrellisTestRuntimeOptions)`. This implementation landed after the previous plan baseline and supersedes the old "parent-exit helper only" premise. [S1]
+- `crates/trellis-testkit` is unpublished **and now contains a substantial embedded Rust runtime harness**: `runtime.rs`, `admin.rs`, `config.rs`, `error.rs`, and `ports.rs`, plus live crate-local tests for boot, admin login, and apply/provision. Its public entrypoint is `TrellisTestRuntime::start(TrellisTestRuntimeOptions)`. This implementation landed after the previous plan baseline and supersedes the old "parent-exit helper only" premise. [S1]
 - That embedded implementation is intentionally **not** the public architecture specified here. Its normal dependency closure includes private workspace crates such as `trellis-bootstrap`, `trellis-cli`, `trellis-local-nats`, `trellis-runtime`, and `trellis-runtime-apis`, and it starts Trellis in-process through runtime internals. It therefore cannot satisfy A02/A03/A04/A05/A06 and must be replaced rather than published as-is. [S1, S3]
 - The embedded harness is useful as a behavioral oracle only. Preserve or improve its externally meaningful coverage (real runtime boot/readiness/cleanup, real administrator login, real participant apply/provision, automatic four-port isolation), but re-express those behaviors through the out-of-process public design and external consumer fixture in this plan. Do not preserve its private dependency or in-process startup mechanisms for compatibility; there are no shipped external consumers to protect. [S1, S2]
-- Rust CLI live-test infrastructure remains repository-local in `crates/trellis/tests/integration/cli.rs`; its only dependency on the Rust `trellis-test` crate is the small Linux parent-exit helper. Inline that helper locally as already prescribed so the public facade does not depend back on its dev testkit. [S2]
+- Rust CLI live-test infrastructure remains repository-local in `crates/trellis/tests/integration/cli.rs`; its only dependency on the Rust `trellis-testkit` crate is the small Linux parent-exit helper. Inline that helper locally as already prescribed so the public facade does not depend back on its dev testkit. [S2]
 - `trellis init config` already generates real bootstrap material; released archives already contain both `trellis` and `trellis-server`. [S4, S5]
 - `trellis-server` now exposes the ordinary combined option `--local-nats-ports=<nats>,<monitor>,<websocket>`, validates three distinct nonzero values, preserves 4222/8222/8080 when omitted, and forwards the resolved values to the existing `LocalNatsPorts`. The repository Rust integration test already selects four ephemeral loopback ports for HTTP/NATS/monitor/WebSocket before running managed mode. The runtime HTTP listener still binds an unspecified IPv4 address. [S2, S6, S7]
 - The TypeScript test harness now obtains ports directly from kernel-assigned loopback listeners and retries a fresh startup up to three times only when startup reports an address-in-use race; the prior shared advisory-lock-file convention is no longer current behavior. [S17, S19]
@@ -71,9 +71,9 @@ At the baseline:
 The implementation agent is explicitly authorized and required to supersede the current private embedded harness as follows:
 
 1. Create the feature worktree from the current `origin/main` commit recorded above (or a later current `origin/main` if it advances before worktree creation). Do not reset, cherry-pick back to, or otherwise base the feature on the old plan commit. Preserve every unrelated change now present on `main`.
-2. Treat the current `crates/trellis-test/src/runtime.rs`, `admin.rs`, `config.rs`, `ports.rs`, `error.rs`, and the three crate-local live tests as **transitional source**, not as a compatibility surface. No compatibility shim for `TrellisTestRuntime::start(TrellisTestRuntimeOptions)` is required. This crate has not been published as the public Rust testkit.
+2. Treat the current `crates/trellis-testkit/src/runtime.rs`, `admin.rs`, `config.rs`, `ports.rs`, `error.rs`, and the three crate-local live tests as **transitional source**, not as a compatibility surface. No compatibility shim for `TrellisTestRuntime::start(TrellisTestRuntimeOptions)` is required. This crate has not been published as the public Rust testkit.
 3. Replace `runtime.rs` with the required builder/out-of-process orchestration. Replace `admin.rs` with the generated-projection/public-boundary implementation. Replace `error.rs` with the stable public error model. Add `process.rs`, `sandbox.rs`, and `identity.rs` exactly as specified below. Remove the old embedded-only `config.rs` and `ports.rs` once their needed behavior has moved into `sandbox.rs`/process orchestration; do not leave dead private-runtime code in the publishable crate.
-4. Remove all normal/build/optional/target-specific dependencies from `trellis-test` on `trellis-bootstrap`, `trellis-cli`, `trellis-local-nats`, `trellis-runtime`, `trellis-runtime-apis`, and direct `async-nats`. The only Trellis Cargo dependency remains published `trellis-rs` as fixed by A03; administration types come from the generated source projection fixed by A06.
+4. Remove all normal/build/optional/target-specific dependencies from `trellis-testkit` on `trellis-bootstrap`, `trellis-cli`, `trellis-local-nats`, `trellis-runtime`, `trellis-runtime-apis`, and direct `async-nats`. The only Trellis Cargo dependency remains published `trellis-rs` as fixed by A03; administration types come from the generated source projection fixed by A06.
 5. Do not copy the embedded runtime's in-process `run_with_stop`, direct `seed_admin_credentials`, direct `LocalNats` ownership, or source-compilation path into the replacement. Bootstrap goes through the real `trellis` executable; runtime/NATS lifecycle goes through the real `trellis-server` executable; administrator operations use the generated projected API.
 6. Preserve the useful **behavioral intent** of the current tests, but rewrite/move it to the prescribed external live fixture. The replacement must still prove: real server boot/readiness/shutdown; real local administrator bootstrap/login; real generated participant install/apply/provision; and automatic parallel-safe port selection. The current tests are not retained merely to exercise a deleted embedded implementation.
 7. Inline the small Linux parent-death helper into `crates/trellis/tests/integration/cli.rs` and remove the facade crate's dev-dependency cycle exactly as already specified.
@@ -87,7 +87,7 @@ After publication, an ordinary application manifest can contain the following, w
 
 ```toml
 [dev-dependencies]
-trellis-test = "<released-version>"
+trellis-testkit = "<released-version>"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -101,12 +101,12 @@ The application continues to author contracts in Trellis IDL and use generated p
 
 | ID | Required decision |
 |---|---|
-| A01 | Publish `trellis-test` from the existing `crates/trellis-test` directory. Keep the workspace. |
+| A01 | Publish `trellis-testkit` from the existing `crates/trellis-testkit` directory. Keep the workspace. |
 | A02 | The harness is an out-of-process orchestrator of normal production executables, not an embedded Trellis server. |
 | A03 | Its only direct Trellis Cargo dependency is the published `trellis-rs` facade. A transitive `trellis-protocol` dependency through that facade is expected. |
 | A04 | No normal, optional, target-specific, or build dependency on private Trellis packages. No source inclusion of handwritten runtime/bootstrap implementation. |
 | A05 | Reuse bootstrap by executing `trellis init config`; reuse NATS management by executing `trellis-server` in managed-NATS mode. |
-| A06 | Distribute generated administration API source inside `trellis-test`. Do not add a Cargo dependency on `trellis-runtime-apis`. Section 6 fixes the generation/projection mechanism. |
+| A06 | Distribute generated administration API source inside `trellis-testkit`. Do not add a Cargo dependency on `trellis-runtime-apis`. Section 6 fixes the generation/projection mechanism. |
 | A07 | Use real bootstrap, login, participant installation, deployment consent, provisioning, authorization, NATS, and storage. No bypasses or test-only server feature. |
 | A08 | Reuse the existing combined `trellis-server --local-nats-ports=<nats>,<monitor>,<websocket>` surface exactly as it exists on the refreshed baseline; do not add alternate/separate NATS port flags. Add only the ordinary HTTP bind-address configuration field described in section 8.2. |
 | A09 | Port assignment is fully automatic and private to the harness. Reserve HTTP/native-NATS/monitor/WebSocket ports with four real loopback `TcpListener` sockets using port `0`, hold all four until immediately before server spawn, and perform a bounded fresh pre-auth retry only for a proven bind race. Expose no public/manual port-selection builder in this release. Never mutate the caller process's environment. |
@@ -129,7 +129,7 @@ The application continues to author contracts in Trellis IDL and use generated p
 ```text
 Outside application/service repository
   |-- trellis-rs + its generated application package
-  `-- [dev-dependency] trellis-test
+  `-- [dev-dependency] trellis-testkit
        |-- trellis-rs + ordinary crates.io libraries
        |-- package-local generated administration API source
        `-- executable boundary
@@ -138,7 +138,7 @@ Outside application/service repository
                  `-- nats-server
 ```
 
-The following **normal/build/optional dependency closure is forbidden** for `trellis-test`:
+The following **normal/build/optional dependency closure is forbidden** for `trellis-testkit`:
 
 ```text
 trellis-bootstrap, trellis-local-bootstrap, trellis-local-nats,
@@ -165,7 +165,7 @@ git remote -v
 git status --short
 git fetch origin
 BASE_SHA="$(git rev-parse origin/main)"
-git worktree add -b feat/public-rust-trellis-test \
+git worktree add -b feat/public-rust-trellis-testkit \
   ../trellis-public-rust-test origin/main
 cd ../trellis-public-rust-test
 printf '%s\n' "$BASE_SHA"
@@ -173,7 +173,7 @@ printf '%s\n' "$BASE_SHA"
 
 If that branch or path exists, choose a non-colliding numeric suffix. Do not repurpose an existing worktree. That naming adjustment is not an architectural decision.
 
-Copy this plan to `trellis-test-public-implementation-plan.md` at the worktree root. Create `trellis-test-public-evidence.md` with the template in section 21. Commit both, so reviewers can associate requirements and evidence with the implementation. Do not commit credentials or sandbox data.
+Copy this plan to `trellis-testkit-public-implementation-plan.md` at the worktree root. Create `trellis-testkit-public-evidence.md` with the template in section 21. Commit both, so reviewers can associate requirements and evidence with the implementation. Do not commit credentials or sandbox data.
 
 Use a small sequence of meaningful commits corresponding to section 17. Follow repository commit-signing policy; never use someone else's signing identity. Push only the feature branch, and only when repository access permits it. Open a PR against `main`; do not enable auto-merge.
 
@@ -185,17 +185,17 @@ Existing paths are source anchors, not an instruction to rewrite every file. New
 
 | Path | Required work |
 |---|---|
-| `crates/trellis-test/Cargo.toml` | Publishable metadata, dependency boundary, and package include list; no checkout-dependent test target. |
-| `crates/trellis-test/README.md` **new** | External-user installation, binaries, runnable service/caller example, lifecycle and troubleshooting. |
-| `crates/trellis-test/src/lib.rs` | Public exports and Rustdoc; private generated projection mount. |
-| `crates/trellis-test/src/runtime.rs` **replace current embedded implementation** | Builder/startup orchestration, runtime state, public getters and shutdown. No `trellis-runtime` linkage or in-process server. |
-| `crates/trellis-test/src/process.rs` **new** | Executable validation, child ownership/supervision, bounded logs and termination. |
-| `crates/trellis-test/src/sandbox.rs` **new** | Directories, child environment, port leases, retention and safe cleanup. |
-| `crates/trellis-test/src/config.rs`, `crates/trellis-test/src/ports.rs` **current transitional files** | Remove after the required behavior is migrated into out-of-process bootstrap orchestration and `sandbox.rs`; neither file may retain private-runtime dependencies or an alternate public port API. |
-| `crates/trellis-test/src/admin.rs` **replace current embedded implementation** | Real bootstrap/login automation and typed participant/deployment/provisioning calls through the projected generated API; no `trellis-runtime-apis`/`trellis-cli` dependency. |
-| `crates/trellis-test/src/identity.rs` **new** | Service/client identity wrappers and existing-SDK connection options. |
-| `crates/trellis-test/src/error.rs` **replace current embedded error surface** | Stable error categories and redacted diagnostic data. |
-| `crates/trellis-test/src/runtime_api/**` **new, generated** | Exact generated Rust source projection from `crates/runtime-apis/src/**`. |
+| `crates/trellis-testkit/Cargo.toml` | Publishable metadata, dependency boundary, and package include list; no checkout-dependent test target. |
+| `crates/trellis-testkit/README.md` **new** | External-user installation, binaries, runnable service/caller example, lifecycle and troubleshooting. |
+| `crates/trellis-testkit/src/lib.rs` | Public exports and Rustdoc; private generated projection mount. |
+| `crates/trellis-testkit/src/runtime.rs` **replace current embedded implementation** | Builder/startup orchestration, runtime state, public getters and shutdown. No `trellis-runtime` linkage or in-process server. |
+| `crates/trellis-testkit/src/process.rs` **new** | Executable validation, child ownership/supervision, bounded logs and termination. |
+| `crates/trellis-testkit/src/sandbox.rs` **new** | Directories, child environment, port leases, retention and safe cleanup. |
+| `crates/trellis-testkit/src/config.rs`, `crates/trellis-testkit/src/ports.rs` **current transitional files** | Remove after the required behavior is migrated into out-of-process bootstrap orchestration and `sandbox.rs`; neither file may retain private-runtime dependencies or an alternate public port API. |
+| `crates/trellis-testkit/src/admin.rs` **replace current embedded implementation** | Real bootstrap/login automation and typed participant/deployment/provisioning calls through the projected generated API; no `trellis-runtime-apis`/`trellis-cli` dependency. |
+| `crates/trellis-testkit/src/identity.rs` **new** | Service/client identity wrappers and existing-SDK connection options. |
+| `crates/trellis-testkit/src/error.rs` **replace current embedded error surface** | Stable error categories and redacted diagnostic data. |
+| `crates/trellis-testkit/src/runtime_api/**` **new, generated** | Exact generated Rust source projection from `crates/runtime-apis/src/**`. |
 | `integration/fixtures/testkit/tests/live.rs` **new** | Single explicitly selected Cargo live-test target; cases may use sibling modules. |
 | `integration/fixtures/testkit/**` **new** | Small external-consumer fixture, its IDL, generated application package and live smoke tests. |
 | `crates/server/src/main.rs` | **No new NATS port API.** Reuse and preserve the refreshed baseline's combined `--local-nats-ports` parsing/validation/forwarding. Touch only if a narrow test or diagnostic adjustment is required by this plan. |
@@ -205,13 +205,13 @@ Existing paths are source anchors, not an instruction to rewrite every file. New
 | `crates/bootstrap/src/nats_config.rs` | Quote/escape host-local NATS path values safely, with config-validation tests. |
 | `crates/trellis/src/auth/browser_login.rs` | New storage-free session completion method; refactor the existing persistence path without bypassing checks. |
 | `crates/trellis/src/lib.rs` | Expand the intentional public-package allowlist; retain private-package protection. |
-| `crates/trellis/Cargo.toml`, `crates/trellis/tests/integration/cli.rs` | Remove the old process-helper-only dependency on `trellis-test`; keep that existing CLI test's tiny Linux guard local. Preserve its refreshed-baseline automatic ephemeral port selection and parallel-safe behavior. Avoid a facade/testkit development cycle. |
+| `crates/trellis/Cargo.toml`, `crates/trellis/tests/integration/cli.rs` | Remove the old process-helper-only dependency on `trellis-testkit`; keep that existing CLI test's tiny Linux guard local. Preserve its refreshed-baseline automatic ephemeral port selection and parallel-safe behavior. Avoid a facade/testkit development cycle. |
 | `xtask/src/main.rs`, relevant generation/install implementation | Project generated admin source after runtime SDK generation; register the new fixture for generation. |
 | `xtask/src/release/versioning.rs` and associated tests | Cover any new version-bearing fixture manifests and release preparation order. |
 | `scripts/verify-rust-test-package.sh` **new** | Artifact-only package/consumer validation entrypoint; portable Bash for Linux/macOS. |
 | `.github/workflows/check.yml` | Live harness coverage, generated-current coverage, package-consumer producer/isolated consumer and macOS smoke. |
 | `.github/workflows/release.yml` | Package third public crate, archive consumer gate, ordered publish entry and artifact transfer. Preserve unrelated release changes. |
-| `.github/workflows/pages.yml`, `docs/src/lib/docs.ts` | Include/discover `trellis-test` Rustdoc using the existing docs mechanism. |
+| `.github/workflows/pages.yml`, `docs/src/lib/docs.ts` | Include/discover `trellis-testkit` Rustdoc using the existing docs mechanism. |
 | `RUST.md`, existing testing/release/library guides and `docs/static/llms*.txt` | Exact documentation updates in section 16. |
 | `CHANGELOG.md` | State the new external Rust test capability and intentional new server/auth APIs. |
 
@@ -227,7 +227,7 @@ Keep workspace-inherited version, edition, license, repository, and lints. Set:
 
 ```toml
 [package]
-name = "trellis-test"
+name = "trellis-testkit"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -274,7 +274,7 @@ Do not fix publication by using `--no-verify`, wildcard versions, a consumer-sid
 
 Do **not** create a new administration contract or duplicate the TypeScript test contract. Use the existing generated output `crates/runtime-apis/src/**`, whose canonical inputs are the runtime's Trellis package and IDL. [S9]
 
-Extend the existing `cargo xtask install` implementation so that, **after** regenerating `crates/runtime-apis`, it deterministically projects its Rust source tree into `crates/trellis-test/src/runtime_api/`:
+Extend the existing `cargo xtask install` implementation so that, **after** regenerating `crates/runtime-apis`, it deterministically projects its Rust source tree into `crates/trellis-testkit/src/runtime_api/`:
 
 1. Copy the complete source tree byte-for-byte, including `lib.rs`, API modules, participant modules, wire types, and any generation-owned relative source assets.
 2. Do not copy its `Cargo.toml`, lockfile, target directory, or any runtime implementation source. This is a generated-source projection, not a nested Cargo dependency.
@@ -286,7 +286,7 @@ Extend the existing `cargo xtask install` implementation so that, **after** rege
 
 ### 6.2 Compile it as private modules, not as a crate
 
-Mount the generated root inside `trellis-test`:
+Mount the generated root inside `trellis-testkit`:
 
 ```rust
 #[path = "runtime_api/lib.rs"]
@@ -554,7 +554,7 @@ Apply a maximum ten-second deadline to each version command, additionally bounde
 
 ### 9.2 Sandbox and environment
 
-Always create a new random `trellis-test-<id>` child directory, mode 0700 on Unix, with an ownership marker containing a format version and a random ownership ID. It is not a shared runtime and not an adopted directory. Create private `home`, `config`, `data`, `state`, `cache`, `runtime`, and `logs` subdirectories. Secrets/log files must not be group/world readable.
+Always create a new random `trellis-testkit-<id>` child directory, mode 0700 on Unix, with an ownership marker containing a format version and a random ownership ID. It is not a shared runtime and not an adopted directory. Create private `home`, `config`, `data`, `state`, `cache`, `runtime`, and `logs` subdirectories. Secrets/log files must not be group/world readable.
 
 Build child environments without mutating the parent. Use `env_clear()` and explicitly supply:
 
@@ -626,7 +626,7 @@ Refactor existing `complete` to call `complete_session`, then preserve its exist
 
 ### 10.2 First administrator
 
-Generate a unique password using a fresh random 32-byte value encoded base64url, independent from every signing seed actually used by a session or service. Use the fixed local username `trellis-test-admin` inside each isolated runtime.
+Generate a unique password using a fresh random 32-byte value encoded base64url, independent from every signing seed actually used by a session or service. Use the fixed local username `trellis-testkit-admin` inside each isolated runtime.
 
 POST to `/auth/account-flow/<encoded-adminAccountToken>/local-password` with that username/password and require the existing successful `status: "created"` response. Use the production HTTP behavior as the contract. Do not insert database rows, issue your own administrator context, or disable first-admin checks. [S20]
 
@@ -751,9 +751,9 @@ Local raw subprocess logs may contain sensitive production startup output. Keep 
 
 Create an independent, unpublished Cargo project at `integration/fixtures/testkit` with its own `[workspace]` root, `publish = false`, a checked-in manifest/lockfile, native IDL inputs, generated Rust application package, and `tests/live.rs`. Keep it out of root workspace membership/default tests. Register its generation inputs with `cargo xtask install` in the same way existing integration fixtures are generated.
 
-The fixture is a service-repository example, not another harness implementation. Its handwritten Rust uses only `trellis-rs`, `trellis-test`, its own generated package, and ordinary registry development dependencies. Its manifest declares registry versions for Trellis packages; repository-development overrides are supplied by verification commands, never embedded as private package dependencies.
+The fixture is a service-repository example, not another harness implementation. Its handwritten Rust uses only `trellis-rs`, `trellis-testkit`, its own generated package, and ordinary registry development dependencies. Its manifest declares registry versions for Trellis packages; repository-development overrides are supplied by verification commands, never embedded as private package dependencies.
 
-Use package name `trellis-test-fixture`, with the release-managed version, and an IDL API named `Echo` at version 1. Declare one string-valued request/response shape, one RPC action `Echo`, and one event `Observed`, both carrying a `value` string. Declare these participants:
+Use package name `trellis-testkit-fixture`, with the release-managed version, and an IDL API named `Echo` at version 1. Declare one string-valued request/response shape, one RPC action `Echo`, and one event `Observed`, both carrying a `value` string. Declare these participants:
 
 - `Provider`: service implementing the complete Echo API.
 - `Caller`: app allowed to call Echo and subscribe to Observed.
@@ -823,7 +823,7 @@ After generation and normal executable builds, package the public dependency set
 
 ```sh
 cargo package --manifest-path Cargo.toml \
-  -p trellis-protocol -p trellis-rs -p trellis-test
+  -p trellis-protocol -p trellis-rs -p trellis-testkit
 ```
 
 Use `--allow-dirty` only in the prepared-release job where release tooling deliberately rewrites versions, following the existing workflow. Do not use it to hide uncommitted implementation work in final review evidence. Multi-package packaging is the prepublication verification mechanism; do not require unpublished versions already to exist on crates.io. [S13]
@@ -839,7 +839,7 @@ verify-rust-test-package.sh
 artifact-manifest.json    source SHA, versions, target, file SHA-256 hashes
 ```
 
-No Trellis checkout, private crate source tree, Cargo workspace configuration, browser source, node_modules, or target build cache enters this bundle. Generated fixture/application source is allowed because it is exactly what an outside repository normally owns. Package-local generated admin source is already inside `trellis-test.crate`.
+No Trellis checkout, private crate source tree, Cargo workspace configuration, browser source, node_modules, or target build cache enters this bundle. Generated fixture/application source is allowed because it is exactly what an outside repository normally owns. Package-local generated admin source is already inside `trellis-testkit.crate`.
 
 Validate archive paths during extraction: reject traversal, absolute member paths, and unsafe link targets. Never use a bundle to overwrite a user-selected directory. Generate staging directories atomically under a new temporary root.
 
@@ -898,7 +898,7 @@ Check needs the full consumer target plus the other standard correctness jobs. R
 
 In `.github/workflows/release.yml`:
 
-1. Extend `package-rust`'s existing verified Cargo package command to include `trellis-test`, and upload the three `.crate` artifacts for consumer verification.
+1. Extend `package-rust`'s existing verified Cargo package command to include `trellis-testkit`, and upload the three `.crate` artifacts for consumer verification.
 2. Ensure prepared-release artifacts contain the freshly generated administration projection and new fixture generation output.
 3. For a tagged release, build the verification bundle from the **same CLI/server archive produced by the release build job**, not a separately rebuilt debug binary. On Linux smoke, select the matching Linux archive. Check its recorded hash and versions against the prepared release.
 4. For a tagless release-verification run where cross-platform archive jobs are intentionally skipped, have the producer build matching native CLI/server executables from the prepared workspace and bundle those. The smoke itself still runs; do not silently drop the package-consumer gate because no release tag exists.
@@ -909,19 +909,19 @@ Full behavioral tests belong to Check; the release smoke proves packaged artifac
 
 ### 15.4 Publication order and policy
 
-Update the facade's package-publication policy test to intentionally exempt exactly these directories: `trellis`, `protocol`, and `trellis-test`. Every other internal crate remains non-publishable. Keep the test rather than deleting it. [S10]
+Update the facade's package-publication policy test to intentionally exempt exactly these directories: `trellis`, `protocol`, and `trellis-testkit`. Every other internal crate remains non-publishable. Keep the test rather than deleting it. [S10]
 
 Extend the existing release upload sequence to:
 
 ```text
 publish trellis-protocol -> wait for index availability
 publish trellis-rs       -> wait for index availability
-publish trellis-test    -> wait for index availability
+publish trellis-testkit    -> wait for index availability
 ```
 
 Reuse the existing token/OIDC mechanism, already-published checks, dry-run behavior, and registry-index wait helper. Do not invent a credentials workflow, store tokens in the repository, publish private dependencies, or alter unrelated JavaScript publication jobs.
 
-Before the first upload, a maintainer must confirm that the `trellis-test` name is available/owned by the intended publisher and that the release identity may publish it. Record that as publication preflight. If the name is unavailable or rights are missing, mark publication blocked; **do not select a new package name, publish an empty name-reservation crate, or obtain unrelated credentials** without a coordinator/maintainer decision. Code-review completion and publication authorization are distinct.
+Before the first upload, a maintainer must confirm that the `trellis-testkit` name is available/owned by the intended publisher and that the release identity may publish it. Record that as publication preflight. If the name is unavailable or rights are missing, mark publication blocked; **do not select a new package name, publish an empty name-reservation crate, or obtain unrelated credentials** without a coordinator/maintainer decision. Code-review completion and publication authorization are distinct.
 
 ### 15.5 Version discipline
 
@@ -939,9 +939,9 @@ The following exact documentation changes are part of the selected design. Treat
 
 | Location | Required delta |
 |---|---|
-| `crates/trellis-test/README.md` | Purpose, public API example, exact binary requirements, NATS selection, ordinary Cargo test use, lifecycle/retention, supported platforms, security/isolation limits, no source-checkout requirement. |
+| `crates/trellis-testkit/README.md` | Purpose, public API example, exact binary requirements, NATS selection, ordinary Cargo test use, lifecycle/retention, supported platforms, security/isolation limits, no source-checkout requirement. |
 | Public Rustdoc | Document every exported type, method, error kind, default, ownership rule, and possible failure. Examples compile without launching infrastructure during documentation generation. |
-| `RUST.md` | List `trellis-test` as the intentional public test package; identify the actual facade package as `trellis-rs`; replace the implication that all other directories must be private with the exact public package set. No broad unrelated historical cleanup. |
+| `RUST.md` | List `trellis-testkit` as the intentional public test package; identify the actual facade package as `trellis-rs`; replace the implication that all other directories must be private with the exact public package set. No broad unrelated historical cleanup. |
 | `docs/src/routes/guides/testing-trellis-services/+page.svx` | Add a Rust section with the concrete fixture-based test, setup of matching binaries, explicit shutdown, and no private dependency patches for released usage. Preserve the TypeScript guide. |
 | `docs/src/routes/guides/libraries/rust/+page.svx` | Link to Rust live-testing guidance and generated Rustdoc. Do not document internal bootstrap APIs as the normal authoring surface. |
 | `docs/src/routes/guides/releasing-trellis/+page.svx` | Add third-package ordering, generated projection, artifact consumer gate, name/ownership preflight, and postpublication registry smoke. |
@@ -999,7 +999,7 @@ cargo xtask install
 cargo fmt --manifest-path Cargo.toml --all --check
 cargo clippy --manifest-path Cargo.toml --workspace --all-targets -- -D warnings
 cargo test --manifest-path Cargo.toml --workspace
-cargo doc --manifest-path Cargo.toml -p trellis-test --no-deps
+cargo doc --manifest-path Cargo.toml -p trellis-testkit --no-deps
 cargo run --manifest-path xtask/Cargo.toml -- release check-versions
 ```
 
@@ -1025,7 +1025,7 @@ For the new independent fixture during repository development, use the following
 cargo test --manifest-path integration/fixtures/testkit/Cargo.toml \
   --config "patch.crates-io.trellis-protocol.path=\"$PWD/crates/protocol\"" \
   --config "patch.crates-io.trellis-rs.path=\"$PWD/crates/trellis\"" \
-  --config "patch.crates-io.trellis-test.path=\"$PWD/crates/trellis-test\"" \
+  --config "patch.crates-io.trellis-testkit.path=\"$PWD/crates/trellis-testkit\"" \
   --test live -- --nocapture
 ```
 
@@ -1048,7 +1048,7 @@ The refreshed baseline intentionally runs the existing Rust live integration wit
 
 ```sh
 cargo package --manifest-path Cargo.toml \
-  -p trellis-protocol -p trellis-rs -p trellis-test
+  -p trellis-protocol -p trellis-rs -p trellis-testkit
 
 bash scripts/verify-rust-test-package.sh --bundle "$BUNDLE" --mode full
 ```
@@ -1110,10 +1110,10 @@ Examples that are ordinary implementation work: a moved source symbol with uncha
 
 ## 21. Evidence ledger and agent handoff format
 
-Create and maintain `trellis-test-public-evidence.md`. Fill the following template with actual values; the placeholders below are a template, not permission to hand over missing evidence as a completed implementation.
+Create and maintain `trellis-testkit-public-evidence.md`. Fill the following template with actual values; the placeholders below are a template, not permission to hand over missing evidence as a completed implementation.
 
 ```markdown
-# Public Rust trellis-test evidence
+# Public Rust trellis-testkit evidence
 
 ## Identity
 - Repository:
@@ -1242,7 +1242,7 @@ After the authorized merge, record the actual merge/integrated commit and verify
 
 Repository sources below are pinned to the reviewed baseline. These links establish the as-built starting point; they are not claims that the prescribed new APIs already exist. Read the narrow relevant portions and follow current symbols when preparing the implementation. Do not load unrelated design subtrees by default.
 
-**[S1] Current private embedded Rust testkit to be replaced by this plan.** [crates/trellis-test/Cargo.toml](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/crates/trellis-test/Cargo.toml); [crates/trellis-test/src/lib.rs](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/crates/trellis-test/src/lib.rs).
+**[S1] Current private embedded Rust testkit to be replaced by this plan.** [crates/trellis-testkit/Cargo.toml](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/crates/trellis-testkit/Cargo.toml); [crates/trellis-testkit/src/lib.rs](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/crates/trellis-testkit/src/lib.rs).
 
 **[S2] Repository-local Rust test infrastructure and refreshed dynamic-port managed-NATS coverage.** [crates/trellis/tests/integration/cli.rs](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/crates/trellis/tests/integration/cli.rs); [crates/trellis/Cargo.toml](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/crates/trellis/Cargo.toml).
 
@@ -1274,19 +1274,19 @@ Repository sources below are pinned to the reviewed baseline. These links establ
 
 **[S16] Generated runtime config, local identity, rate defaults, and refreshed lease defaults.** [crates/bootstrap/src/runtime_config.rs](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/crates/bootstrap/src/runtime_config.rs).
 
-**[S17] TypeScript kernel-assigned loopback reservation and bounded bind-race retry pattern.** [ts/packages/trellis-test/src/control_plane_config.ts](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/ts/packages/trellis-test/src/control_plane_config.ts).
+**[S17] TypeScript kernel-assigned loopback reservation and bounded bind-race retry pattern.** [ts/packages/trellis-testkit/src/control_plane_config.ts](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/ts/packages/trellis-testkit/src/control_plane_config.ts).
 
 **[S18] CLI JSON version implementation.** [crates/cli/src/app/runtime.rs](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/crates/cli/src/app/runtime.rs).
 
-**[S19] Existing process output/bootstrap parsing.** [ts/packages/trellis-test/src/trellis_process.ts](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/ts/packages/trellis-test/src/trellis_process.ts).
+**[S19] Existing process output/bootstrap parsing.** [ts/packages/trellis-testkit/src/trellis_process.ts](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/ts/packages/trellis-testkit/src/trellis_process.ts).
 
-**[S20] Real first-admin and portal-consent automation.** [ts/packages/trellis-test/src/admin_client.ts](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/ts/packages/trellis-test/src/admin_client.ts).
+**[S20] Real first-admin and portal-consent automation.** [ts/packages/trellis-testkit/src/admin_client.ts](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/ts/packages/trellis-testkit/src/admin_client.ts).
 
-**[S21] Existing local login, portal binding, and consent HTTP protocol.** [ts/packages/trellis-test/src/admin/auth_flow.ts](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/ts/packages/trellis-test/src/admin/auth_flow.ts); [ts/packages/trellis/auth/browser/portal.ts](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/ts/packages/trellis/auth/browser/portal.ts).
+**[S21] Existing local login, portal binding, and consent HTTP protocol.** [ts/packages/trellis-testkit/src/admin/auth_flow.ts](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/ts/packages/trellis-testkit/src/admin/auth_flow.ts); [ts/packages/trellis/auth/browser/portal.ts](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/ts/packages/trellis/auth/browser/portal.ts).
 
 **[S22] Generated participant descriptor/evidence ABI.** [crates/trellis/src/generated.rs](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/crates/trellis/src/generated.rs).
 
-**[S23] TypeScript service installation, deployment consent, and provisioning.** [ts/packages/trellis-test/src/admin/deployment.ts](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/ts/packages/trellis-test/src/admin/deployment.ts).
+**[S23] TypeScript service installation, deployment consent, and provisioning.** [ts/packages/trellis-testkit/src/admin/deployment.ts](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/ts/packages/trellis-testkit/src/admin/deployment.ts).
 
 **[S24] Release-managed versions and preparation.** [xtask/src/release/versioning.rs](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/xtask/src/release/versioning.rs); [xtask/src/release/mod.rs](https://github.com/oats-center/trellis/blob/27f79d192204de9de78645b1006ceeccb59bf932/xtask/src/release/mod.rs).
 

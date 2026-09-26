@@ -10,7 +10,7 @@ import { participants as webParticipants } from "trellis-web-generated";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { participants as removedParticipants } from "../../integration/fixtures/runtime-removed/packages/runtime-trellis/index.js";
-import { adminParticipant } from "../packages/trellis-test/src/admin/methods.ts";
+import { adminParticipant } from "../packages/trellis-testkit/src/admin/methods.ts";
 import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
 
 const persistedProgress = {

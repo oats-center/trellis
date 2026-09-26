@@ -35,7 +35,7 @@ try {
   for (
     const [source, destination] of [
       ["docs/examples/orders", project],
-      ["ts/packages/trellis-test", testkit],
+      ["ts/packages/trellis-testkit", testkit],
     ]
   ) {
     const files = await new Deno.Command("git", {
@@ -107,12 +107,12 @@ try {
         `npm:@oatscenter/trellis@${trellisVersion}`,
       );
     }
-    if (name === "@oatscenter/trellis-test") {
+    if (name === "@oatscenter/trellis-testkit") {
       const testkitVersion = JSON.parse(
         await Deno.readTextFile(join(testkit, "deno.json")),
       ).version as string;
       config.imports[name] = specifier.replace(
-        /^(jsr:@oatscenter\/trellis-test@)[^/]+/,
+        /^(jsr:@oatscenter\/trellis-testkit@)[^/]+/,
         `$1${testkitVersion}`,
       );
     }

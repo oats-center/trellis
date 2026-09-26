@@ -3,7 +3,7 @@
 
 import { assert, assertEquals, assertExists } from "@std/assert";
 import { ulid } from "ulid";
-import { apis } from "../packages/trellis-test/trellis/index.js";
+import { apis } from "../packages/trellis-testkit/trellis/index.js";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { TrellisService } from "@oatscenter/trellis/service";

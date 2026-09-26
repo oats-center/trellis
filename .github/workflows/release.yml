@@ -681,7 +681,7 @@ jobs:
 
           publish_or_skip ts/packages/result
           publish_or_skip ts/packages/trellis
-          publish_or_skip ts/packages/trellis-test
+          publish_or_skip ts/packages/trellis-testkit
 
           TRELLIS_SVELTE_JSR_RUNTIME_DEPENDENCY_VERSION="${RELEASE_VERSION}" \
             deno task -c ts/packages/trellis-svelte/deno.json build:npm

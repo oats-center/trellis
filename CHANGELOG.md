@@ -12,7 +12,7 @@ and this project adheres to
 
 ### Added
 
-- Added the publishable `trellis-test` Rust crate: an out-of-process harness
+- Added the publishable `trellis-testkit` Rust crate: an out-of-process harness
   that starts the released `trellis`/`trellis-server` executables in a private
   sandbox, selects its loopback ports automatically, and exposes real
   bootstrap/login/consent/provisioning helpers for external service and
@@ -46,7 +46,7 @@ and this project adheres to
 ### Documentation
 
 - Documented the external Rust live-testing workflow and the intentional set of
-  publishable Trellis crates (`trellis-rs`, `trellis-protocol`, `trellis-test`).
+  publishable Trellis crates (`trellis-rs`, `trellis-protocol`, `trellis-testkit`).
 
 ## [0.100.0-rc.1] - 2026-09-23
 
@@ -567,7 +567,7 @@ and this project adheres to
   bodies stopped carrying runtime headers.
 - Added the TypeScript `@oatscenter/trellis/service/drizzle` helper for Drizzle
   SQL-backed outbox/inbox tables.
-- Added the Deno-first `@oatscenter/trellis-test` JSR package for service
+- Added the Deno-first `@oatscenter/trellis-testkit` JSR package for service
   boundary integration tests that need an isolated NATS/JetStream environment
   and a spawned Trellis control-plane process.
 - Added the internal `@oatscenter/trellis/host/control-plane` export used by the
@@ -595,11 +595,11 @@ and this project adheres to
   storage migrations, and subsystem scaffolds.
 - Added generated Jobs admin service registration plus live projection RPC
   handlers for listing, reading, and cancelling jobs.
-- Added live decoded event capture to `@oatscenter/trellis-test` through
+- Added live decoded event capture to `@oatscenter/trellis-testkit` through
   `TrellisTestRuntime.captureEvents(...)` and `TrellisTestEventCapture`, so
   integration tests can subscribe to selected contract events with normal
   Trellis authority and generated event facades.
-- Added `@oatscenter/trellis-test` assertion helpers for RPC results, eventual
+- Added `@oatscenter/trellis-testkit` assertion helpers for RPC results, eventual
   RPC success, captured event presence and context, no-event windows, and
   terminal job and operation completion.
 - Added expanded JS and Rust integration coverage for granular matrix cases,
@@ -611,7 +611,7 @@ and this project adheres to
   branches, generated Auth session RPCs, request validation, session and
   connection metadata, and revoke/logout cleanup paths, replacing fake runtime
   unit coverage.
-- Added narrow `trellis-test` live-runtime helpers for one-shot logout kick
+- Added narrow `trellis-testkit` live-runtime helpers for one-shot logout kick
   failures and raw auth connection-presence seeding.
 
 ### Changed
@@ -623,7 +623,7 @@ and this project adheres to
   `defineError(...)` instances are accepted when their serialized data matches
   the declared generated error data.
 - Changed release verification and publishing so the Trellis control-plane
-  service, `@oatscenter/trellis-test`, and direct JSR packages run through the
+  service, `@oatscenter/trellis-testkit`, and direct JSR packages run through the
   normal release package set.
 - Changed release retry and publish workflows so manual existing-tag retries can
   publish after successful release gates, publish jobs still run when unrelated
@@ -671,11 +671,11 @@ and this project adheres to
   while preserving structured `BootstrapError` diagnostics.
 - Fixed `Auth.Sessions.Logout` cleanup ordering so durable session and
   connection records are removed before runtime access is kicked.
-- Fixed `@oatscenter/trellis-test` assertion helpers so generated event captures
+- Fixed `@oatscenter/trellis-testkit` assertion helpers so generated event captures
   from `TrellisTestRuntime.captureEvents(...)` and generated service job refs
   can be passed directly to `assertEventCaptured`, `assertEventsCaptured`, and
   `assertJobCompleted` without downstream casts, wrappers, or local adapters.
-- Fixed `@oatscenter/trellis-test` live integration helpers so service approval
+- Fixed `@oatscenter/trellis-testkit` live integration helpers so service approval
   and generated-client connection flows can run against the release candidate.
 
 ### Removed

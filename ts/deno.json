@@ -4,7 +4,7 @@
     "./integration",
     "./packages/result",
     "./packages/trellis-svelte",
-    "./packages/trellis-test",
+    "./packages/trellis-testkit",
     "./packages/trellis"
   ],
   "tasks": {
@@ -16,7 +16,7 @@
     "packages:build:npm:installed": "deno task -c packages/result/deno.json build:npm && deno task -c packages/trellis/deno.json build:npm:installed && deno task -c packages/trellis-svelte/deno.json build:npm",
     "test:packaging:built": "deno test -A tools/package_build && deno run -A tools/package_build/demo_consumers.ts",
     "build:npm": "deno task install && deno task packages:build:npm",
-    "check": "deno task install && deno task protocol:wasm && deno check packages/trellis/index.ts packages/trellis-svelte/src/index.ts packages/trellis-svelte/src/context.svelte.ts packages/trellis-test/index.ts",
+    "check": "deno task install && deno task protocol:wasm && deno check packages/trellis/index.ts packages/trellis-svelte/src/index.ts packages/trellis-svelte/src/context.svelte.ts packages/trellis-testkit/index.ts",
     "check:integration": "deno task install && deno task protocol:wasm && deno task --config integration/deno.json check",
     "fmt:integration": "deno fmt -c deno.json integration",
     "test:integration": "deno test --parallel -A -c integration/deno.json integration",
@@ -24,13 +24,13 @@
     "test:result": "deno test -A packages/result",
     "test:trellis": "deno test -A packages/trellis",
     "test:trellis-svelte": "deno test -A packages/trellis-svelte",
-    "test:trellis-test": "deno test -A packages/trellis-test",
+    "test:trellis-testkit": "deno test -A packages/trellis-testkit",
     "test:packages": {
       "dependencies": [
         "test:result",
         "test:trellis",
         "test:trellis-svelte",
-        "test:trellis-test"
+        "test:trellis-testkit"
       ]
     },
     "test:ui-tools": "deno test -A ../web tools",
@@ -158,8 +158,8 @@
   },
   "fmt": {
     "exclude": [
-      "packages/trellis-test/trellis",
-      "packages/trellis-test/fixtures/authorization-trust",
+      "packages/trellis-testkit/trellis",
+      "packages/trellis-testkit/fixtures/authorization-trust",
       "packages/trellis/auth/protocol_wasm"
     ]
   },

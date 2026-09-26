@@ -26,7 +26,7 @@ function cargoArgs(extra: string[]): string[] {
     fixtureManifest,
     ...patch("trellis-protocol", "protocol"),
     ...patch("trellis-rs", "trellis"),
-    ...patch("trellis-test", "trellis-test"),
+    ...patch("trellis-testkit", "trellis-testkit"),
     "--test",
     "live",
     ...extra,

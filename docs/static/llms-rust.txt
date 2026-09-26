@@ -163,7 +163,7 @@ layouts; applications own migration of any retained older database.
 ## Test And Verify
 
 Run generation and the consuming project's own Cargo checks. A real-runtime test
-can launch a Rust service from a Deno test using `@oatscenter/trellis-test` and
+can launch a Rust service from a Deno test using `@oatscenter/trellis-testkit` and
 its `TrellisTestRuntime`. A Rust test uses the published `trellis-testkit` crate,
 which starts the released `trellis` and `trellis-server` executables out of
 process, chooses its loopback ports automatically, and returns the existing SDK

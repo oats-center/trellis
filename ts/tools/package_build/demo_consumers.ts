@@ -2,12 +2,12 @@ import { copy, ensureDir } from "@std/fs";
 import { dirname, fromFileUrl, join } from "@std/path";
 import { z } from "zod";
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { TrellisTestRuntime } from "@oatscenter/trellis-test";
+import { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import { ulid } from "ulid";
 import { participants as serviceParticipants } from "../../../demos/ts/service/trellis/index.js";
 import { participants as deviceParticipants } from "../../../demos/ts/device/trellis/index.js";
 import { participants as appParticipants } from "../../../demos/app/trellis/index.js";
-import { participants as testParticipants } from "../../packages/trellis-test/trellis/index.js";
+import { participants as testParticipants } from "../../packages/trellis-testkit/trellis/index.js";
 
 const repository = fromFileUrl(new URL("../../../", import.meta.url));
 const isolated = await Deno.makeTempDir({ prefix: "trellis-demos-" });

@@ -17,7 +17,7 @@ test -s ts/packages/trellis/auth/protocol_wasm/trellis_protocol_wasm_bg.wasm
 for package in \
   ts/packages/result \
   ts/packages/trellis \
-  ts/packages/trellis-test
+  ts/packages/trellis-testkit
 do
   (cd "$package" && deno publish --dry-run --allow-slow-types --allow-dirty)
 done

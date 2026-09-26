@@ -1,6 +1,6 @@
 import { assert, assertEquals } from "@std/assert";
 
-import type { TrellisTestRuntime } from "@oatscenter/trellis-test";
+import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {

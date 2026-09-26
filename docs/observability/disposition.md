@@ -33,7 +33,7 @@ the source-pinned `collected-*.json` manifests. The historical
 | `trellis.connect.duration`                  | Rust `trellis/src/client/connection.rs` connect wrappers                                                    | collected metric                                              |
 | `trellis.connect.duration`                  | TS `client_connect.ts`, `service/runtime/service.ts`                                                        | collected metric                                              |
 | `trellis.auth.approval_resolution.duration` | TS helper/reserved declaration: no production emitting call exists and no approval lifecycle is implemented | helper/reserved, not production coverage                      |
-| `trellis.admin.workflow.duration`           | TS `trellis-test/src/admin/{deployment,admin_client}.ts` (test automation only)                             | test-utility/helper coverage, not a production SLI            |
+| `trellis.admin.workflow.duration`           | TS `trellis-testkit/src/admin/{deployment,admin_client}.ts` (test automation only)                             | test-utility/helper coverage, not a production SLI            |
 | `trellis.errors`                            | Rust `trellis/src/client/connection.rs`                                                                     | source inspected                                              |
 | `trellis.errors`                            | TS `recordTrellisError`/`recordRuntimeError`                                                                | source inspected                                              |
 | `trellis.rpc.client.duration`               | Rust `trellis/src/client/connection.rs`                                                                     | collected metric                                              |
@@ -123,7 +123,7 @@ bounded M1a–M1c implementations:
 - `trellis.auth.approval_resolution.duration` has no production emitting call;
   it remains a reserved helper declaration with no approval lifecycle to
   observe, and no fabricated samples.
-- `trellis.admin.workflow.duration` emits only from `trellis-test`
+- `trellis.admin.workflow.duration` emits only from `trellis-testkit`
   administration automation; production administrative work is observed through
   the actual request and CLI boundaries instead.
 - Rust `trellis.delivery.dispositions` remains a source-inspected owner; this

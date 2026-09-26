@@ -4,7 +4,7 @@
 import { assertEquals } from "@std/assert";
 import type { Page } from "playwright";
 import { TrellisService } from "@oatscenter/trellis/service";
-import type { TrellisTestRuntime } from "@oatscenter/trellis-test";
+import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import { ulid } from "ulid";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";

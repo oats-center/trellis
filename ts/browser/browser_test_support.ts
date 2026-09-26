@@ -2,8 +2,8 @@ import { assertEquals } from "@std/assert";
 import { ulid } from "ulid";
 import { type BrowserContext, chromium, type Page } from "playwright";
 import { join } from "@std/path";
-import type { TrellisTestRuntime } from "@oatscenter/trellis-test";
-import type { TrellisTestRuntimeStartOptions } from "@oatscenter/trellis-test";
+import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
+import type { TrellisTestRuntimeStartOptions } from "@oatscenter/trellis-testkit";
 
 /** Local administrator credentials created through the browser bootstrap page. */
 export const BROWSER_ADMIN = {

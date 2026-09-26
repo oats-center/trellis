@@ -1,8 +1,8 @@
-# trellis-test
+# trellis-testkit
 
 Isolated, live Trellis runtimes for Rust integration tests.
 
-`trellis-test` starts normal production Trellis executables — the released
+`trellis-testkit` starts normal production Trellis executables — the released
 `trellis` CLI and `trellis-server` — out of process, in a private sandbox, and
 gives your test the URLs and identities it needs to exercise your generated
 service/app facades against a real server.
@@ -11,7 +11,7 @@ It is a **development dependency**. Add it to your test crate:
 
 ```toml
 [dev-dependencies]
-trellis-test = "0.100.0"
+trellis-testkit = "0.100.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -20,7 +20,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 - A matching `trellis` CLI and `trellis-server` executable. Provide them with
   `TrellisTestRuntime::builder().cli_binary(...).server_binary(...)`, or through
   the `TRELLIS_TEST_CLI_BIN` / `TRELLIS_TEST_SERVER_BIN` environment variables.
-  Versions must match the `trellis-test` version exactly (build metadata is
+  Versions must match the `trellis-testkit` version exactly (build metadata is
   ignored).
 - A NATS executable. By default it is resolved from `PATH`; set
   `TRELLIS_TEST_NATS_BIN`, choose `NatsSource::Path`, or explicitly request the
@@ -80,7 +80,7 @@ You can also pin them so the test knows them up front:
 # use trellis_test::TrellisTestRuntime;
 # async fn example() -> Result<(), trellis_test::TrellisTestError> {
 let mut runtime = TrellisTestRuntime::builder()
-    .admin_username("trellis-test-admin")
+    .admin_username("trellis-testkit-admin")
     .admin_password("a-known-test-password")
     .start()
     .await?;
@@ -119,7 +119,7 @@ descriptor or its package evidence.
 
 ## Isolation and retention
 
-Each runtime creates a fresh `trellis-test-<id>` sandbox with its own home,
+Each runtime creates a fresh `trellis-testkit-<id>` sandbox with its own home,
 config, data, cache, and logs, and binds only loopback addresses. It never
 mutates the calling process's environment. Retention is `OnFailure` by default
 (keep the sandbox after a failure); `Always` and `Never` are available through

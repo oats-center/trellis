@@ -82,7 +82,7 @@ jobs:
           path: |
             crates/runtime/trellis
             web/trellis
-            ts/packages/trellis-test/trellis
+            ts/packages/trellis-testkit/trellis
             integration/fixtures/runtime/crates/runtime-trellis
             integration/fixtures/runtime/packages/runtime-trellis
             demos/rust/service/trellis
@@ -250,7 +250,7 @@ jobs:
             --manifest-path integration/fixtures/testkit/Cargo.toml \
             --config "patch.crates-io.trellis-protocol.path=\"$GITHUB_WORKSPACE/crates/protocol\"" \
             --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\"" \
-            --config "patch.crates-io.trellis-testkit.path=\"$GITHUB_WORKSPACE/crates/trellis-test\"" \
+            --config "patch.crates-io.trellis-testkit.path=\"$GITHUB_WORKSPACE/crates/trellis-testkit\"" \
             --test live \
             --message-format=json > "$RUNNER_TEMP/testkit-live.json"
           executable="$(jq -r 'select(.executable != null) | .executable' "$RUNNER_TEMP/testkit-live.json" | tail -n1)"
@@ -339,10 +339,10 @@ jobs:
         # outlast their 30s delivery bound on a loaded runner.
         run: |
           set -euo pipefail
-          bash scripts/acquire-test-nats.sh --dest /tmp/trellis-test-nats
+          bash scripts/acquire-test-nats.sh --dest /tmp/trellis-testkit-nats
           version="$(jq -r '.["nats-server"].version' crates/local-nats/nats-binaries.json)"
           mkdir -p /tmp/trellis-nats-cache
-          cp /tmp/trellis-test-nats/nats-server "/tmp/trellis-nats-cache/nats-server-v${version}"
+          cp /tmp/trellis-testkit-nats/nats-server "/tmp/trellis-nats-cache/nats-server-v${version}"
 
       - name: Check formatting
         run: |
@@ -390,7 +390,7 @@ jobs:
           ts/packages/trellis/index.ts
           ts/packages/trellis-svelte/src/index.ts
           ts/packages/trellis-svelte/src/context.svelte.ts
-          ts/packages/trellis-test/index.ts
+          ts/packages/trellis-testkit/index.ts
 
       - name: Check TypeScript integration
         run: deno task -c ts/integration/deno.json check
@@ -588,13 +588,13 @@ jobs:
         # Stage under /tmp: the server rejects a --local-nats binary whose parent
         # directory is group/world writable without the sticky bit, and the
         # self-hosted runner's $RUNNER_TEMP and $HOME are world writable.
-        run: bash scripts/acquire-test-nats.sh --dest /tmp/trellis-test-nats
+        run: bash scripts/acquire-test-nats.sh --dest /tmp/trellis-testkit-nats
 
       - name: Run the prebuilt testkit live binary with a host probe
         env:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
-          TRELLIS_TEST_NATS_BIN: /tmp/trellis-test-nats/nats-server
+          TRELLIS_TEST_NATS_BIN: /tmp/trellis-testkit-nats/nats-server
           RUST_BACKTRACE: "1"
         run: |
           set +e
@@ -673,13 +673,13 @@ jobs:
           tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
 
       - name: Acquire the pinned NATS executable
-        run: bash scripts/acquire-test-nats.sh --dest /tmp/trellis-test-nats
+        run: bash scripts/acquire-test-nats.sh --dest /tmp/trellis-testkit-nats
 
       - name: Run TypeScript live integration
         env:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
-          TRELLIS_TEST_NATS_BIN: /tmp/trellis-test-nats/nats-server
+          TRELLIS_TEST_NATS_BIN: /tmp/trellis-testkit-nats/nats-server
           TRELLIS_TEST_FIXTURE_BIN_DIR: ${{ github.workspace }}/target/debug/fixtures
           TRELLIS_TESTKIT_LIVE_BIN: ${{ github.workspace }}/target/debug/trellis-testkit-live
         run: deno task -c ts/deno.json test:integration

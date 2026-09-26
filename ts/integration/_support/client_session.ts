@@ -7,7 +7,7 @@ import {
 import type {
   TrellisTestClientKey,
   TrellisTestRuntime,
-} from "@oatscenter/trellis-test";
+} from "@oatscenter/trellis-testkit";
 
 /** Ordinary issued NATS material for a registered client. */
 export type ClientSession = {

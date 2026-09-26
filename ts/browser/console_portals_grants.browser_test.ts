@@ -1,6 +1,6 @@
 // Console portal and grant journeys. Real runtime, real generated client.
 
-import { waitFor } from "@oatscenter/trellis-test";
+import { waitFor } from "@oatscenter/trellis-testkit";
 import { assertEquals } from "@std/assert";
 import { ulid } from "ulid";
 

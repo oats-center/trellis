@@ -11,7 +11,7 @@ Scope:
   their tests and Svelte imports.
 - B: every Trellis runtime import the current native TS renderer can emit,
   including participant metadata branches, not just the Orders/app subset.
-- C: `ts/packages/trellis-test/` and `ts/tools/`. Generated test-kit modules
+- C: `ts/packages/trellis-testkit/` and `ts/tools/`. Generated test-kit modules
   belong to B; handwritten test-kit imports belong to C.
 - D: `ts/packages/trellis/service/`, `device.ts`, and `device/`, excluding their
   tests. Internal relative Trellis imports are listed separately from public
@@ -120,7 +120,7 @@ The test kit also uses inline generated-package type imports:
 
 Evidence:
 
-- `ts/packages/trellis-test/src/types.ts:1-8`
+- `ts/packages/trellis-testkit/src/types.ts:1-8`
 - `src/runtime.ts:1-8`, `src/admin_client.ts:1-5`
 - `src/admin/auth_flow.ts:1-6`, `src/admin/metrics.ts:1`
 - `src/admin/deployment.ts:1-5`
