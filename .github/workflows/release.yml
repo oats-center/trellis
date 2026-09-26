@@ -493,7 +493,10 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: npm-packages
-          path: .
+          # The Check uploads the npm directories with 'ts/packages' as the
+          # artifact root (their least common ancestor), so extract there and
+          # the publish step's 'ts/packages/<package>/npm' paths resolve.
+          path: ts/packages
           run-id: ${{ needs.prepare-release.outputs.check-run-id }}
           github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
 
@@ -630,6 +633,44 @@ jobs:
           set -euo pipefail
           published=()
           skipped=()
+
+          # JSR cannot follow the workspace's local package paths. Rewrite every
+          # '@oatscenter/*' mapping to its published JSR specifier, using each
+          # package's own exports map so subpaths stay exact; trellis-svelte
+          # generates the equivalent manifest for itself.
+          deno eval '
+            const version = Deno.env.get("RELEASE_VERSION");
+            const read = (path) => JSON.parse(Deno.readTextFileSync(path));
+            const manifests = {
+              "trellis": "ts/packages/trellis/deno.json",
+              "result": "ts/packages/result/deno.json",
+              "trellis-svelte": "ts/packages/trellis-svelte/deno.json",
+            };
+            const exportsByFile = (dir) => {
+              const raw = read(manifests[dir]).exports;
+              const map = typeof raw === "string" ? { ".": raw } : raw;
+              return Object.fromEntries(
+                Object.entries(map).map(([key, value]) => [
+                  value.startsWith("./") ? value.slice(2) : value,
+                  key,
+                ]),
+              );
+            };
+            const tables = Object.fromEntries(
+              Object.keys(manifests).map((dir) => [dir, exportsByFile(dir)]),
+            );
+            const root = read("ts/deno.json");
+            for (const [name, spec] of Object.entries(root.imports ?? {})) {
+              if (!spec.startsWith("./packages/")) continue;
+              const [dir, ...rest] = spec.slice("./packages/".length).split("/");
+              const key = tables[dir]?.[rest.join("/")];
+              if (key === undefined) continue;
+              root.imports[name] = `jsr:@oatscenter/${dir}@^${version}${
+                key === "." ? "" : key.slice(1)
+              }`;
+            }
+            Deno.writeTextFileSync("ts/deno.json", JSON.stringify(root, null, 2) + "\n");
+          '
 
           package_field() {
             local manifest="$1"

@@ -12,7 +12,7 @@ use service_trellis::types::{
     SitesRefreshProgress, SitesRefreshResponse, SitesRefreshedEvent,
 };
 use trellis_rs::jobs::JobProcessError;
-use trellis_rs::service::{ServerError, ServiceConnectOptions, StoreListOptions};
+use trellis_rs::service::{FileTransferInfo, ServerError, ServiceConnectOptions, StoreListOptions};
 
 const REQUEST_TIMEOUT_MS: u64 = 5_000;
 
@@ -176,29 +176,65 @@ async fn main() -> anyhow::Result<()> {
             }
         });
         api.register_evidence_download({
-            let uploads = uploads.clone();
-            move |_, input| {
-                let uploads = uploads.clone();
-                async move {
-                    let info = uploads
-                        .metadata(input.key.as_ref())
-                        .await?
-                        .ok_or_else(|| ServerError::Nats("evidence not found".into()))?;
-                    Ok(EvidenceDownloadOutput {
-                        response: EvidenceDownloadResponse {
-                            key: info.key.into(),
-                            size: info.size.into(),
-                            digest: info.digest.unwrap_or_else(|| "unknown".into()).into(),
-                            updated_at: info
-                                .modified_at
-                                .map_or_else(|| "unknown".to_owned(), |value| value.to_string())
-                                .into(),
-                            content_type: None,
-                            metadata: Default::default(),
-                        },
-                        transfer: None,
+            move |context, input| async move {
+                const TRANSFER_TTL_SECONDS: i64 = 60;
+                const TRANSFER_CHUNK_BYTES: u64 = 64 * 1024;
+
+                let store = context.handle().store_client("uploads").await?;
+                let metadata = store
+                    .metadata(input.key.as_ref())
+                    .await?
+                    .ok_or_else(|| ServerError::Nats("evidence not found".into()))?;
+                let digest = metadata
+                    .digest
+                    .ok_or_else(|| ServerError::Nats("evidence digest is missing".into()))?;
+                let updated_at = metadata
+                    .modified_at
+                    .and_then(|value| {
+                        value
+                            .format(&time::format_description::well_known::Rfc3339)
+                            .ok()
                     })
-                }
+                    .unwrap_or_else(|| "unknown".to_owned());
+                let transfer_id = format!(
+                    "{:x}",
+                    time::OffsetDateTime::now_utc().unix_timestamp_nanos()
+                );
+                let expires_at = (time::OffsetDateTime::now_utc()
+                    + time::Duration::seconds(TRANSFER_TTL_SECONDS))
+                .format(&time::format_description::well_known::Rfc3339)
+                .map_err(|error| ServerError::Nats(error.to_string()))?;
+                let plan = context.plan_download_transfer(
+                    "uploads",
+                    &transfer_id,
+                    &expires_at,
+                    TRANSFER_CHUNK_BYTES,
+                    FileTransferInfo {
+                        key: metadata.key.clone(),
+                        size: metadata.size,
+                        updated_at: updated_at.clone(),
+                        digest,
+                        content_type: None,
+                        metadata: Default::default(),
+                    },
+                )?;
+                let grant = plan.grant.clone();
+                context
+                    .handle()
+                    .spawn_download_transfer_endpoint(plan, store)
+                    .await?;
+
+                Ok(EvidenceDownloadOutput {
+                    response: EvidenceDownloadResponse {
+                        key: metadata.key.into(),
+                        size: metadata.size.into(),
+                        digest: grant.info.digest.clone().into(),
+                        updated_at: updated_at.into(),
+                        content_type: None,
+                        metadata: Default::default(),
+                    },
+                    transfer: Some(grant.into()),
+                })
             }
         });
         api.register_evidence_delete({

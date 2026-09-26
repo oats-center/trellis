@@ -179,6 +179,29 @@ pub struct DownloadTransferGrant {
     pub info: FileTransferInfo,
 }
 
+impl From<DownloadTransferGrant> for crate::client::DownloadTransferGrant {
+    fn from(value: DownloadTransferGrant) -> Self {
+        Self {
+            type_name: crate::client::TransferGrantType::TransferGrant,
+            direction: crate::client::DownloadTransferDirection::Receive,
+            service: value.service,
+            session_key: value.session_key,
+            transfer_id: value.transfer_id,
+            subject: value.subject,
+            expires_at: value.expires_at,
+            chunk_bytes: value.chunk_bytes,
+            info: crate::client::FileInfo {
+                key: value.info.key,
+                size: value.info.size,
+                updated_at: value.info.updated_at,
+                digest: value.info.digest,
+                content_type: value.info.content_type,
+                metadata: value.info.metadata,
+            },
+        }
+    }
+}
+
 /// Download grant plus the private binding data needed by its endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DownloadTransferGrantPlan {

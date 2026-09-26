@@ -899,6 +899,21 @@ fn render_participant_facades(graph: &PackageGraph, participant: &ParticipantDef
         .collect::<Vec<_>>()
         .join(",");
     let mut out = format!("const OPTIONAL_ACTIONS: &[trellis_rs::generated::OptionalAction] = &[{optional_actions}];\n#[derive(Clone)]\npub struct Client {{ inner: trellis_rs::generated::Client }}\nimpl Client {{\npub fn from_generated(inner: trellis_rs::generated::Client) -> Self {{ Self {{ inner: inner.with_optional_actions(OPTIONAL_ACTIONS) }} }}\npub fn availability(&self) -> Availability {{ Availability::from_runtime(&self.inner.availability()) }}\npub fn watch_availability(&self) -> futures_util::stream::BoxStream<'static, Availability> {{ futures_util::StreamExt::boxed(futures_util::stream::unfold(self.inner.watch_availability(), |mut receiver| async move {{ receiver.changed().await.ok()?; let availability = Availability::from_runtime(&receiver.borrow()); Some((availability, receiver)) }})) }}\n");
+    let has_download = participant
+        .uses()
+        .keys()
+        .chain(participant.implements())
+        .filter_map(|api| {
+            graph
+                .packages()
+                .values()
+                .find_map(|package| package.apis().get(api))
+        })
+        .flat_map(|api| api.actions().values())
+        .any(|action| matches!(action, ActionDefinition::Rpc { download: true, .. }));
+    if has_download {
+        out.push_str("pub async fn download_transfer(&self, grant: &trellis_rs::client::DownloadTransferGrant) -> Result<Vec<u8>, trellis_rs::client::TrellisClientError> { self.inner.download_transfer(grant).await }\n");
+    }
     match participant.kind() {
         ParticipantKind::App | ParticipantKind::Agent => out.push_str(
             "pub async fn connect(options: trellis_rs::client::UserConnectOptions<'_>) -> Result<Self, trellis_rs::client::TrellisClientError> { trellis_rs::generated::Client::connect_user(options).await.map(Self::from_generated) }\n",
@@ -1898,6 +1913,14 @@ fn accepts_operation_handler(provider: &mut fixture_backend::Provider<'_>) {
     });
 }
 
+#[allow(dead_code)]
+async fn accepts_download_transfer(
+    client: &fixture_caller::Client,
+    grant: &trellis_rs::client::DownloadTransferGrant,
+) -> Result<Vec<u8>, trellis_rs::client::TrellisClientError> {
+    client.download_transfer(grant).await
+}
+
 fn accepts_typed_kv<'a>(
     provider: &'a fixture_backend::Provider<'_>,
     migrations: &'a fixture_backend::Migrations,
@@ -1919,6 +1942,7 @@ fn descriptors_and_facades_use_generated_support() {
     accepts_signal::<WorkResumeSignal>();
     let _ = accepts_multi_api_provider;
     let _ = accepts_operation_handler;
+    let _ = accepts_download_transfer;
     let _: fn(trellis_rs::generated::Client) -> MainClient = MainClient::from_generated;
     fn accepts_operation_client(client: &MainClient) {
         let _: trellis_rs::generated::Operation<'_, Work> = client.work();
