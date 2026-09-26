@@ -388,14 +388,15 @@ Deno.test("a diagnostic transport error keeps the logical phase and reaches raw 
   assertEquals((events[0]?.event as { error?: unknown })?.error, error);
 });
 
-Deno.test("installAuthorizationRefresh rotates a prepared replacement regardless of diagnostic status", async () => {
+Deno.test("installAuthorizationRefresh keeps a healthy rotation out of the logical lifecycle", async () => {
   const stream = new FakeStatusStream();
   const connection = observeTrellisConnection({
     kind: "client",
     transport: stream,
   });
+  const phases: string[] = [];
+  connection.subscribe((status) => phases.push(status.phase));
   const calls: string[] = [];
-  let abandoned = false;
   const provider = {
     waitReady: () => {
       calls.push("waitReady");
@@ -413,18 +414,83 @@ Deno.test("installAuthorizationRefresh rotates a prepared replacement regardless
       calls.push(`promote:${digest}:${generation}`);
     },
     abandonRotation: () => {
+      calls.push("abandon");
+    },
+  };
+  try {
+    // A healthy attachment rotates as planned maintenance: the physical
+    // disconnect/reconnect must never reach the logical lifecycle.
+    await installAuthorizationRefresh({
+      connection,
+      provider,
+      contextDigest: "candidate-digest",
+      reconnect: () => {
+        calls.push("reconnect");
+        stream.push({ type: "disconnect" });
+        stream.push({ type: "reconnecting" });
+        stream.push({ type: "reconnect" });
+        return Promise.resolve();
+      },
+    });
+
+    assertEquals(connection.status.phase, "connected");
+    assertEquals(phases, ["connected"]);
+    assertEquals(connection.live.isAvailable(), true);
+    assertEquals(calls, [
+      "reconnect",
+      "waitReady",
+      "generation",
+      "retain:candidate-digest:7",
+      "promote:candidate-digest:7",
+    ]);
+  } finally {
+    await connection.close();
+  }
+});
+
+Deno.test("installAuthorizationRefresh recovers an already-disconnected connection instead of suppressing its reconnect", async () => {
+  const stream = new FakeStatusStream();
+  const connection = observeTrellisConnection({
+    kind: "client",
+    transport: stream,
+  });
+  const phases: string[] = [];
+  connection.subscribe((status) => phases.push(status.phase));
+  const calls: string[] = [];
+  let abandoned = false;
+  const provider = {
+    waitReady: async () => {
+      const deadline = Date.now() + 2_000;
+      while (
+        connection.status.phase !== "connected" && Date.now() < deadline
+      ) {
+        await delay();
+      }
+      calls.push("waitReady");
+    },
+    connectionGeneration: () => {
+      calls.push("generation");
+      return 9;
+    },
+    retainOwnCandidate: (digest: string, generation: number) => {
+      calls.push(`retain:${digest}:${generation}`);
+      return Promise.resolve();
+    },
+    promoteOwnCandidate: (digest: string, generation: number) => {
+      calls.push(`promote:${digest}:${generation}`);
+    },
+    abandonRotation: () => {
       abandoned = true;
     },
   };
   try {
-    // A prepared replacement belongs to the physical attachment: even when an
-    // observer is left in a non-connected diagnostic phase, installation must
-    // still rotate the physical credential and promote the candidate.
-    connection.setStatus({
-      kind: "client",
-      phase: "error",
-      observedAt: new Date(),
-    });
+    // A genuine transport outage: the logical connection is disconnected and
+    // Live is suspended before the scheduled refresh fires.
+    stream.push({ type: "disconnect" });
+    await delay();
+    assertEquals(connection.status.phase, "disconnected");
+    assertEquals(connection.live.isAvailable(), false);
+    assertEquals(connection.live.unavailableReason(), "epoch_changed");
 
     await installAuthorizationRefresh({
       connection,
@@ -432,18 +498,31 @@ Deno.test("installAuthorizationRefresh rotates a prepared replacement regardless
       contextDigest: "candidate-digest",
       reconnect: () => {
         calls.push("reconnect");
+        stream.push({ type: "reconnecting" });
         stream.push({ type: "reconnect" });
         return Promise.resolve();
       },
     });
 
+    // Ordinary recovery: the reconnect stays a real logical transition, so the
+    // connection is connected again and Live accepts new sessions.
+    assertEquals(connection.status.phase, "connected");
+    assertEquals(connection.live.isAvailable(), true);
+    assertEquals(connection.live.unavailableReason(), undefined);
+    assertEquals(phases, [
+      "connected",
+      "disconnected",
+      "reconnecting",
+      "connected",
+    ]);
+    connection.live.admitConsumer()[Symbol.dispose]();
     assertEquals(abandoned, false);
     assertEquals(calls, [
       "reconnect",
       "waitReady",
       "generation",
-      "retain:candidate-digest:7",
-      "promote:candidate-digest:7",
+      "retain:candidate-digest:9",
+      "promote:candidate-digest:9",
     ]);
   } finally {
     await connection.close();

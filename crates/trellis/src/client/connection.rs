@@ -980,11 +980,19 @@ pub(crate) async fn apply_native_authorization_refresh(
     rotation: &AuthorizationTransportRotation,
     contexts: &AuthorizationContextCache,
     live: Option<&crate::live::manager::LiveSessionManager>,
+    planned: bool,
 ) -> Result<(), TrellisClientError> {
     let credentials_changed = applied.context_digest != refreshed.context_digest
         || applied.routing_jwt != refreshed.routing_jwt;
     let rotates = applied.rotates_to(&refreshed);
-    if rotates && !rotation.begin() {
+    // A planned rotation means the attachment was healthy and Trellis itself is
+    // replacing it solely to install new credentials. When the transport is
+    // already down, this is ordinary recovery: the refreshed credential is
+    // still applied and a reconnect forced, but the reconnect must stay a real
+    // logical transition so the connection returns to connected and Live
+    // resumes rather than being captured as maintenance.
+    let planned = rotates && planned;
+    if planned && !rotation.begin() {
         return Err(TrellisClientError::Bootstrap(
             "authorization transport rotation is already active".into(),
         ));
@@ -997,12 +1005,12 @@ pub(crate) async fn apply_native_authorization_refresh(
         timeout_ms,
     )
     .await;
-    if rotates && !rotation.is_active() {
+    if planned && !rotation.is_active() {
         // A broker rejection already cancelled the planned rotation and took
         // the fail-closed authorization path.
         return applied.record(refreshed, result);
     }
-    if rotates {
+    if planned {
         let reconnected = match &result {
             Ok(()) => {
                 rotation

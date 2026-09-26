@@ -229,11 +229,16 @@ pub(crate) async fn install_prepared_authorization(
     let (candidate_digest, _) = contexts.prepare_refresh(auth).await?;
     let refreshed = super::super::connection::AppliedNativeAuthorization::from_cache(contexts)?;
     let rotates = applied.rotates_to(&refreshed);
-    if rotates {
+    // Planned-rotation maintenance only applies while the physical attachment is
+    // healthy. During an already-real outage the refreshed credential is still
+    // installed, but the reconnect must take the ordinary recovery branch so the
+    // connection and its Live manager are resumed.
+    let planned = rotates && nats.connection_state() == async_nats::connection::State::Connected;
+    if planned {
         provider.begin_planned_rotation();
     }
     if let Err(error) = super::super::connection::apply_native_authorization_refresh(
-        nats, applied, refreshed, timeout_ms, rotation, contexts, live,
+        nats, applied, refreshed, timeout_ms, rotation, contexts, live, planned,
     )
     .await
     {

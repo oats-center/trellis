@@ -58,11 +58,12 @@ export type AuthorizationRefreshInstallation = {
  * transport-loss path so a dead physical attachment never stays logically
  * "connected".
  *
- * Installation never consults the public diagnostic status: a prepared
- * replacement belongs to the physical attachment the connection owns, and the
- * logical phase can lag behind it or report a nonterminal transport error. The
- * planned-rotation classifier suppresses the physical loss events this rotation
- * produces, and escalation republishes a real outage if it cannot complete.
+ * Installation never suppresses a genuine recovery: a planned rotation is only
+ * begun while the logical connection is healthy. If the scheduled refresh fires
+ * during an already-real transport outage, the replacement credential is still
+ * installed and the reconnect requested, but the resulting physical reconnect
+ * stays a real logical transition so the connection returns to connected and
+ * Live resumes instead of being captured as maintenance.
  *
  * @internal
  */
@@ -70,24 +71,37 @@ export async function installAuthorizationRefresh(
   args: AuthorizationRefreshInstallation,
 ): Promise<void> {
   const timeoutMs = args.timeoutMs ?? 30_000;
-  const rotation = beginAuthorizationTransportRotation(args.connection);
+  // A planned rotation means "Trellis is replacing a healthy attachment solely
+  // to install new credentials". It must not mean "credentials are being
+  // installed while an already-lost attachment recovers". With raw transport
+  // diagnostics no longer mutating the logical phase, the phase is the
+  // authoritative distinction: connected rotates as maintenance, anything else
+  // is ordinary recovery.
+  const planned = args.connection.status.phase === "connected";
+  const rotation = planned
+    ? beginAuthorizationTransportRotation(args.connection)
+    : undefined;
   try {
     await args.updateTransport?.();
     await args.reconnect();
-    await bounded(rotation.reconnected, timeoutMs);
+    if (rotation) {
+      await bounded(rotation.reconnected, timeoutMs);
+    }
     await args.provider.waitReady({ timeoutMs });
     const generation = args.provider.connectionGeneration();
     await args.provider.retainOwnCandidate(args.contextDigest, generation);
     args.provider.promoteOwnCandidate(args.contextDigest, generation);
-    rotation.complete();
+    rotation?.complete();
   } catch (error) {
-    // Fail closed: the rotation will not be promoted, so retained Live guards
-    // must stop waiting and report the real authority loss. Escalating also
-    // clears the planned-rotation classification; when a physical loss was
-    // suppressed and the expected reconnect never happened, it is published as a
-    // genuine logical disconnect rather than left hidden.
     args.provider.abandonRotation();
-    escalateAuthorizationTransportRotation(args.connection);
+    if (rotation) {
+      // Fail closed: the rotation will not be promoted, so retained Live guards
+      // must stop waiting and report the real authority loss. Escalating also
+      // clears the planned-rotation classification; when a physical loss was
+      // suppressed and the expected reconnect never happened, it is published as a
+      // genuine logical disconnect rather than left hidden.
+      escalateAuthorizationTransportRotation(args.connection);
+    }
     throw error;
   }
 }
