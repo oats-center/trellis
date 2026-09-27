@@ -55,7 +55,7 @@ impl ContextRepository for SqliteAuthorizationStore {
         let request = request.clone();
         self.run_read(move |connection| {
             let transaction = connection.transaction().map_err(sql_error)?;
-            let snapshot = sqlite_issuance_snapshot(&transaction, &request)?;
+            let snapshot = sqlite_issuance_snapshot(&transaction, &request, None)?;
             transaction.commit().map_err(sql_error)?;
             Ok(snapshot)
         })
@@ -66,6 +66,7 @@ impl ContextRepository for SqliteAuthorizationStore {
 pub(in crate::platform::auth) fn sqlite_issuance_snapshot(
     connection: &Connection,
     request: &IssuanceConnection,
+    pinned_revision: Option<u64>,
 ) -> Result<IssuanceSnapshot, AuthorizationStateError> {
     let connection_id = request.connection_id.parse::<ulid::Ulid>().map_err(|_| {
         AuthorizationStateError::InvalidRecord("connectionId must be a ULID".to_owned())
@@ -76,100 +77,125 @@ pub(in crate::platform::auth) fn sqlite_issuance_snapshot(
         ));
     }
     super::super::domain::validate_ed25519_public_key("sessionKey", &request.session_public_key)?;
-    let (credential, principal_id, owner_kind, owner_id, participant_id) = match &request.credential
-    {
-        IssuanceCredential::Login(id) => {
-            let login =
-                load_session(connection, id)?.ok_or(AuthorizationStateError::SessionMissing)?;
-            (
-                IssuanceCredentialRecord::Login(login.clone()),
-                login.principal_id.clone(),
-                super::super::GrantOwnerKind::User,
-                login.principal_id,
-                login.participant_id,
-            )
-        }
-        IssuanceCredential::Native(id) => {
-            let identity = super::provisioning::load_provisioned_identity(connection, id)?
-                .ok_or(AuthorizationStateError::IdentityMissing)?;
-            let instance =
-                super::evidence::load_runtime_instance(connection, &identity.instance_id)?
-                    .ok_or(AuthorizationStateError::InstanceInactive)?;
-            let deployment = load_deployment(connection, &identity.deployment_id)?
-                .ok_or(AuthorizationStateError::DeploymentInactive)?;
-            let device = super::evidence::load_device(
-                connection,
-                &identity.principal_id,
-                &identity.deployment_id,
-            )?;
-            let delegation = super::evidence::load_device_delegation(
-                connection,
-                &identity.principal_id,
-                &identity.deployment_id,
-            )?;
-            let delegation_session = delegation
-                .as_ref()
-                .and_then(|delegation| delegation.user_login_session_id.as_deref())
-                .map(|session_id| load_session(connection, session_id))
-                .transpose()?
-                .flatten();
-            let delegation_binding = delegation_session
-                .as_ref()
-                .map(|session| {
-                    super::grants::load_grant_binding(
-                        connection,
-                        GrantOwnerKind::User,
-                        &session.principal_id,
-                        &session.participant_id,
-                    )
-                })
-                .transpose()?
-                .flatten();
-            let delegation_principal = delegation_session
-                .as_ref()
-                .map(|session| load_principal(connection, &session.principal_id))
-                .transpose()?
-                .flatten();
-            let principal_id = identity.principal_id.clone();
-            let owner_id = deployment.deployment_id.clone();
-            let participant_id = deployment.participant_id.clone();
-            (
-                IssuanceCredentialRecord::Native(Box::new(
-                    super::super::authority::NativeIssuanceCredentialRecord {
-                        identity: Box::new(identity),
-                        instance,
-                        deployment,
-                        device,
-                        delegation,
-                        delegation_session,
-                        delegation_principal,
-                        delegation_binding,
-                    },
-                )),
-                principal_id,
-                super::super::GrantOwnerKind::Deployment,
-                owner_id,
-                participant_id,
-            )
-        }
-    };
+    let (credential, principal_id, owner_kind, owner_id, participant_id, participant_revision) =
+        match &request.credential {
+            IssuanceCredential::Login(id) => {
+                let login =
+                    load_session(connection, id)?.ok_or(AuthorizationStateError::SessionMissing)?;
+                // A user login is immutable session identity: a caller-supplied pin
+                // that disagrees with the login's own revision fails closed rather
+                // than silently adopting another vocabulary.
+                if pinned_revision.is_some_and(|revision| revision != login.installed_revision) {
+                    return Err(AuthorizationStateError::InvalidRecord(
+                        "login participant revision does not match its session".to_owned(),
+                    ));
+                }
+                // An immutable user login selects the participant revision whose
+                // consent created it; a later binding change moves present
+                // authority, not the vocabulary this login runs.
+                (
+                    IssuanceCredentialRecord::Login(login.clone()),
+                    login.principal_id.clone(),
+                    super::super::GrantOwnerKind::User,
+                    login.principal_id,
+                    login.participant_id,
+                    Some(login.installed_revision),
+                )
+            }
+            IssuanceCredential::Native(id) => {
+                let identity = super::provisioning::load_provisioned_identity(connection, id)?
+                    .ok_or(AuthorizationStateError::IdentityMissing)?;
+                let instance =
+                    super::evidence::load_runtime_instance(connection, &identity.instance_id)?
+                        .ok_or(AuthorizationStateError::InstanceInactive)?;
+                let deployment = load_deployment(connection, &identity.deployment_id)?
+                    .ok_or(AuthorizationStateError::DeploymentInactive)?;
+                let device = super::evidence::load_device(
+                    connection,
+                    &identity.principal_id,
+                    &identity.deployment_id,
+                )?;
+                let delegation = super::evidence::load_device_delegation(
+                    connection,
+                    &identity.principal_id,
+                    &identity.deployment_id,
+                )?;
+                let delegation_session = delegation
+                    .as_ref()
+                    .and_then(|delegation| delegation.user_login_session_id.as_deref())
+                    .map(|session_id| load_session(connection, session_id))
+                    .transpose()?
+                    .flatten();
+                let delegation_binding = delegation_session
+                    .as_ref()
+                    .map(|session| {
+                        super::grants::load_grant_binding(
+                            connection,
+                            GrantOwnerKind::User,
+                            &session.principal_id,
+                            &session.participant_id,
+                        )
+                    })
+                    .transpose()?
+                    .flatten();
+                let delegation_principal = delegation_session
+                    .as_ref()
+                    .map(|session| load_principal(connection, &session.principal_id))
+                    .transpose()?
+                    .flatten();
+                let principal_id = identity.principal_id.clone();
+                let owner_id = deployment.deployment_id.clone();
+                let participant_id = deployment.participant_id.clone();
+                // A native instance is evaluated against the participant revision it
+                // is actually running, not the deployment's current desired revision.
+                // An explicit pinned revision comes from the durable context being
+                // reevaluated, whose scope must not drift with later adoptions.
+                let participant_revision = pinned_revision.unwrap_or(instance.installed_revision);
+                (
+                    IssuanceCredentialRecord::Native(Box::new(
+                        super::super::authority::NativeIssuanceCredentialRecord {
+                            identity: Box::new(identity),
+                            instance,
+                            deployment,
+                            device,
+                            delegation,
+                            delegation_session,
+                            delegation_principal,
+                            delegation_binding,
+                        },
+                    )),
+                    principal_id,
+                    super::super::GrantOwnerKind::Deployment,
+                    owner_id,
+                    participant_id,
+                    Some(participant_revision),
+                )
+            }
+        };
     let principal = load_principal(connection, &principal_id)?
         .ok_or(AuthorizationStateError::PrincipalMissing)?;
     let binding =
         super::grants::load_grant_binding(connection, owner_kind, &owner_id, &participant_id)?
             .ok_or(AuthorizationStateError::NotAuthorized)?;
+    let participant_revision = participant_revision.unwrap_or(binding.installed_revision);
     let (_, participant) = super::grants::load_installed_participant(
         connection,
         &participant_id,
-        Some(binding.installed_revision),
+        Some(participant_revision),
     )?
     .ok_or(AuthorizationStateError::ParticipantMissing)?;
+    // Resource evidence is keyed by the participant revision whose vocabulary
+    // interprets the single current physical resource: it proves that the
+    // physical resource that exists now is usable as that revision expects. The
+    // pin therefore selects how present materialization is interpreted; it never
+    // selects an old physical resource. The current binding remains the
+    // authority ceiling that decides which of those declarations survive.
     let resources = load_resource_bindings(
         connection,
         owner_kind,
         &owner_id,
         &participant_id,
-        binding.installed_revision,
+        participant_revision,
     )?;
     // Include the mutable selected API provider bindings in the snapshot so
     // the issuance concurrency token covers the exact policy inputs.
@@ -209,6 +235,7 @@ pub(in crate::platform::auth) fn sqlite_issuance_snapshot(
         principal,
         binding,
         participant,
+        participant_revision,
         resources,
         api_bindings,
         issuer,

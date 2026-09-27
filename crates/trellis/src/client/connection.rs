@@ -801,7 +801,7 @@ async fn connect_authorized_nats(
         let session_nkey = session_nkey.clone();
         async move {
             let (routing_jwt, context_digest) = contexts
-                .transport_credentials()
+                .next_connect_credentials()
                 .map_err(async_nats::AuthError::new)?;
             let mut credentials = async_nats::Auth::new();
             credentials.nkey = Some(session_nkey);

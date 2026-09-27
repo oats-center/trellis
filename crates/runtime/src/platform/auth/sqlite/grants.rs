@@ -67,6 +67,7 @@ pub(super) fn require_current_actor(
             connection_id: context.connection_id.clone(),
             session_public_key: context.session_public_key.clone(),
         },
+        Some(context.installed_revision),
     )?;
     snapshot.issuer = super::contexts::load_eligible_authorization_issuer(
         connection,
@@ -2612,7 +2613,7 @@ mod package_evidence_tests {
                     .map_err(sql_error)?;
                 connection
                     .execute(
-                        "INSERT INTO auth_instances (instance_id, deployment_id, principal_id, state, created_at, updated_at, version) VALUES ('instance-stale', 'deployment-stale', 'device-stale', 'active', ?1, ?1, 1)",
+                        "INSERT INTO auth_instances (instance_id, deployment_id, principal_id, installed_revision, state, created_at, updated_at, version) VALUES ('instance-stale', 'deployment-stale', 'device-stale', 1, 'active', ?1, ?1, 1)",
                         [NOW],
                     )
                     .map_err(sql_error)?;
@@ -3751,7 +3752,7 @@ app Companion {
                     .map_err(sql_error)?;
                 connection
                     .execute(
-                        "INSERT INTO auth_instances (instance_id, deployment_id, principal_id, state, created_at, updated_at, version) VALUES ('instance-resource', 'deployment-resource', 'device-resource', 'active', ?1, ?1, 1)",
+                        "INSERT INTO auth_instances (instance_id, deployment_id, principal_id, installed_revision, state, created_at, updated_at, version) VALUES ('instance-resource', 'deployment-resource', 'device-resource', 1, 'active', ?1, ?1, 1)",
                         [NOW],
                     )
                     .map_err(sql_error)?;
@@ -3796,6 +3797,7 @@ app Companion {
                 principal_id: portal_binding.owner_id.clone(),
                 participant_id: portal_binding.participant_id.clone(),
                 participant_kind: ParticipantKind::App,
+                installed_revision: portal_binding.installed_revision,
                 session_key_id: crate::platform::auth::validate_ed25519_public_key(
                     "installationPublicKey",
                     &installation_public_key,
@@ -4312,7 +4314,7 @@ service Missing { implements orders; }
                     "INSERT INTO auth_principals VALUES ('deployment', 'service', 'active', 1, 1, 1, NULL, NULL);
                      INSERT INTO auth_deployments VALUES ('deployment', 'example.Service', 'service', 'active', NULL);
                      INSERT INTO auth_deployment_profiles VALUES ('deployment', 'service', 'Service', 'example.Service', NULL, 0, NULL, 'active', 1, 1, 1, NULL);
-                     INSERT INTO auth_instances VALUES ('instance', 'deployment', 'deployment', 'active', 1, 1, 1);",
+                     INSERT INTO auth_instances VALUES ('instance', 'deployment', 'deployment', 1, 'active', 1, 1, 1);",
                 ).map_err(sql_error)?;
                 super::super::provisioning::insert_sql_provisioned_identity(
                     connection,

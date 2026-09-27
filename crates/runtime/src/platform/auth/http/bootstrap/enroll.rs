@@ -1,4 +1,5 @@
 use super::*;
+use crate::platform::auth::application::repository::InstanceParticipantAdoption;
 use crate::platform::auth::{
     DeviceActivationReviewState, DeviceReviewMode, DeviceState, EnrollDeviceIdentityInput,
     ProvisioningSecretState, RuntimeInstanceState,
@@ -239,12 +240,36 @@ where
         .get_deployment_evidence(&identity.deployment_id)
         .await?
         .ok_or_else(|| HttpError::unauthorized("deployment_not_found"))?;
-    let (_, installed) = state
-        .service
-        .repository()
-        .get_installed_participant_record(request.participant_id.clone(), None)
-        .await?
-        .ok_or_else(|| HttpError::unauthorized("participant_not_installed"))?;
+    let (_, installed) = {
+        // Resolve against the instance's pinned participant revision, advancing
+        // the pin when the presented evidence adopts the deployment's current
+        // desired revision.
+        let revision = match state
+            .service
+            .repository()
+            .adopt_instance_participant_revision(InstanceParticipantAdoption {
+                instance_id: identity.instance_id.clone(),
+                participant_id: request.participant_id.clone(),
+                package_digest: request.package_digest.clone(),
+                participant_path: request.participant_path.clone(),
+                participant_digest: None,
+                now: now_ms()?,
+            })
+            .await
+        {
+            Ok(revision) => revision,
+            Err(AuthorizationStateError::InvalidRecord(_)) => {
+                return Err(HttpError::unauthorized("participant_evidence_mismatch"));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        state
+            .service
+            .repository()
+            .get_installed_participant_record(request.participant_id.clone(), Some(revision))
+            .await?
+            .ok_or_else(|| HttpError::unauthorized("participant_not_installed"))?
+    };
     let expected_companion = installed.resolve()?;
     if installed.participant_path != request.participant_path
         || installed.package_digest != request.package_digest

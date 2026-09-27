@@ -177,6 +177,23 @@ export class AuthorizationContextCache {
     return routing.bootstrapJwt;
   }
 
+  /**
+   * Next-connect routing credential for the NATS authenticator.
+   *
+   * When the cached material is missing or already expired, this asks the
+   * shared refresh owner to prepare a replacement and still fails the current
+   * authentication attempt, so the ordinary bounded reconnect retries with the
+   * next verified snapshot instead of waiting out the scheduled refresh.
+   */
+  nextConnectRoutingJwt(): string {
+    try {
+      return this.transportRoutingJwt();
+    } catch (error) {
+      this.requestRefresh();
+      throw error;
+    }
+  }
+
   /** Returns the number of successfully installed authorization contexts. */
   generation(): number {
     return this.#generation;

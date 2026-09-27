@@ -88,7 +88,11 @@ impl AuthorizationContextService {
             .run_read(move |connection| {
                 let transaction = connection.unchecked_transaction().map_err(sql_error)?;
                 let scope = issuance_connection(&durable)?;
-                let snapshot = sqlite_issuance_snapshot(&transaction, &scope)?;
+                let snapshot = sqlite_issuance_snapshot(
+                    &transaction,
+                    &scope,
+                    Some(durable.installed_revision),
+                )?;
                 let current = crate::platform::auth::issuance::resolve_snapshot(snapshot, now_ms)?;
                 transaction.commit().map_err(sql_error)?;
                 Ok(current)
@@ -503,7 +507,7 @@ impl AuthorizationContextService {
             owner_id: authorization.binding.owner_id.clone(),
             participant_id: authorization.participant.participant_id.clone(),
             grant_revision: authorization.binding.revision,
-            installed_revision: authorization.binding.installed_revision,
+            installed_revision: authorization.participant_revision,
             identity_key_id: authorization.identity_key_id.clone(),
             login_session_id: authorization.login_session_id.clone(),
             connection_id: authorization.connection_id.clone(),

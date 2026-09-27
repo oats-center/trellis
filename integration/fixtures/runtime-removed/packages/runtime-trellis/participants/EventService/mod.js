@@ -11,6 +11,7 @@ const __participant = participantDescriptor({
 	path: "EventService",
 	implements: [Api0.API],
 	uses: [],
+	optionalGrants: {},
 	actionNames: {
 		"runtime-trellis.events@v1:rpc:DropAlpha": "DropAlpha",
 		"runtime-trellis.events@v1:rpc:Observed": "Observed",

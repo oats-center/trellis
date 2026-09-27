@@ -1,4 +1,4 @@
-use crate::platform::auth::sqlite::common::{encode_enum, sql_error};
+use crate::platform::auth::sqlite::common::{encode_enum, sql_error, to_sql_version};
 use crate::platform::auth::{
     builtins, GrantOwnerKind, MutationActor, NewSession, SessionRecord, SqliteAuthorizationStore,
     UserProfileRecord,
@@ -57,6 +57,7 @@ pub(crate) async fn install_login_mutation_actor(
         principal_id: principal_id.clone(),
         participant_id: participant_id.clone(),
         participant_kind: ParticipantKind::App,
+        installed_revision,
         session_public_key: public_key.clone(),
         created_at: now,
         expires_at: None,
@@ -152,9 +153,9 @@ pub(crate) async fn install_login_mutation_actor(
                 .map_err(sql_error)?;
             connection
                 .execute(
-                    "INSERT INTO auth_sessions (session_id, principal_id, participant_id, participant_kind, session_public_key, session_key_id, state, created_at, last_authenticated_at, expires_at, revoked_at, version)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?7, NULL, NULL, 1)",
-                    params![session.session_id, session.principal_id, session.participant_id, encode_enum(session.participant_kind)?, session.session_public_key, session.session_key_id, now],
+                    "INSERT INTO auth_sessions (session_id, principal_id, participant_id, participant_kind, installed_revision, session_public_key, session_key_id, state, created_at, last_authenticated_at, expires_at, revoked_at, version)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'active', ?8, ?8, NULL, NULL, 1)",
+                    params![session.session_id, session.principal_id, session.participant_id, encode_enum(session.participant_kind)?, to_sql_version(session.installed_revision)?, session.session_public_key, session.session_key_id, now],
                 )
                 .map_err(sql_error)?;
             connection.execute(

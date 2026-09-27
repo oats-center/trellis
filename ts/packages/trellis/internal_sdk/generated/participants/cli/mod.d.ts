@@ -133,186 +133,247 @@ declare const __participant: {
 		readonly actions: readonly [{
 			readonly descriptorName: "rpc:Capabilities.List";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:CapabilityGroups.Delete";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:CapabilityGroups.Get";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:CapabilityGroups.List";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:CapabilityGroups.Put";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Connections.Kick";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Connections.List";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Deployments.Apply";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Deployments.Create";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Deployments.Disable";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Deployments.Enable";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Deployments.Get";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Deployments.List";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Deployments.Remove";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:DeviceUserAuthorities.List";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:DeviceUserAuthorities.Reviews.Decide";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:DeviceUserAuthorities.Reviews.List";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:DeviceUserAuthorities.Revoke";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Devices.Disable";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Devices.Enable";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Devices.List";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Devices.Provision";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Devices.Remove";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Grants.Get";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Grants.List";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Grants.Revoke";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Grants.Set";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Issuers.Revoke";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Participants.Get";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Participants.Install";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Participants.List";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Portals.Get";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Portals.GrantOverrides.List";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Portals.GrantOverrides.Put";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Portals.GrantOverrides.Remove";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Portals.List";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Portals.LoginSettings.Get";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Portals.LoginSettings.Update";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Portals.Put";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Portals.Remove";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Portals.Routes.Put";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Portals.Routes.Remove";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:ServiceInstances.Disable";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:ServiceInstances.Enable";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:ServiceInstances.List";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:ServiceInstances.Provision";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:ServiceInstances.Remove";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Sessions.List";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Sessions.Logout";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Sessions.Me";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Sessions.Revoke";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:UserIdentities.List";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:UserIdentities.Unlink";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Users.Create";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Users.Get";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Users.IdentityLink.Create";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Users.List";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Users.Password.Change";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Users.PasswordReset.Create";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Users.Resolve";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Users.Update";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}];
 		readonly optionalCapabilities: readonly [];
 	}, {
@@ -320,12 +381,15 @@ declare const __participant: {
 		readonly actions: readonly [{
 			readonly descriptorName: "rpc:Resources.Destroy";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Resources.Inspect";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Resources.Query";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}];
 		readonly optionalCapabilities: readonly [];
 	}, {
@@ -333,24 +397,31 @@ declare const __participant: {
 		readonly actions: readonly [{
 			readonly descriptorName: "rpc:Consumers.Inspect";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Consumers.Query";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:DeadLetters.Dismiss";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:DeadLetters.Inspect";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:DeadLetters.Query";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:DeadLetters.Replay";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}, {
 			readonly descriptorName: "rpc:Query";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}];
 		readonly optionalCapabilities: readonly [];
 	}, {
@@ -358,6 +429,7 @@ declare const __participant: {
 		readonly actions: readonly [{
 			readonly descriptorName: "rpc:Query";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}];
 		readonly optionalCapabilities: readonly [];
 	}, {
@@ -365,6 +437,7 @@ declare const __participant: {
 		readonly actions: readonly [{
 			readonly descriptorName: "rpc:Query";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}];
 		readonly optionalCapabilities: readonly [];
 	}, {
@@ -372,9 +445,14 @@ declare const __participant: {
 		readonly actions: readonly [{
 			readonly descriptorName: "rpc:Delete";
 			readonly direction: "call";
+			readonly optionalCapabilities: readonly [];
 		}];
 		readonly optionalCapabilities: readonly [];
 	}];
+	readonly optionalGrants: Readonly<Record<string, readonly Readonly<{
+		action: string;
+		target: Readonly<Record<string, unknown>>;
+	}>[]>>;
 	readonly actionNames: __ActionNames;
 	readonly resources: __Resources;
 	readonly __runtimeTypes?: {
@@ -392,6 +470,7 @@ export declare const participant: {
 	readonly path: typeof __participant.path;
 	readonly implements: typeof __participant.implements;
 	readonly uses: typeof __participant.uses;
+	readonly optionalGrants: typeof __participant.optionalGrants;
 	readonly actionNames: typeof __participant.actionNames;
 	readonly resources: typeof __participant.resources;
 	readonly __runtimeTypes?: typeof __participant.__runtimeTypes;

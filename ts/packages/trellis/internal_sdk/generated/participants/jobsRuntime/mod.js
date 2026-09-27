@@ -11,6 +11,7 @@ const __participant = participantDescriptor({
 	path: "jobsRuntime",
 	implements: [Api0.API],
 	uses: [],
+	optionalGrants: {},
 	actionNames: {
 		"trellis.jobs@v1:rpc:Cancel": "Cancel",
 		"trellis.jobs@v1:rpc:DismissDLQ": "DismissDLQ",

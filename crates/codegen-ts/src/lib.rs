@@ -1122,6 +1122,7 @@ fn render_participant(
             .collect::<Vec<_>>()
             .join(", ")
     ));
+    let needs = graph.participant_needs(participant.identity());
     lines.push("  readonly uses: readonly [".into());
     for (api, selection) in participant.uses() {
         lines.push(format!(
@@ -1129,10 +1130,25 @@ fn render_participant(
             aliases[api.as_str()]
         ));
         for action in &selection.actions {
+            let alternatives = needs
+                .and_then(|needs| {
+                    needs
+                        .optional_action_capabilities()
+                        .get(&(api.clone(), action.clone()))
+                })
+                .map(|capabilities| {
+                    capabilities
+                        .iter()
+                        .map(|value| js_string(value.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
             lines.push(format!(
-                "      {{ readonly descriptorName: {}; readonly direction: {}; }},",
+                "      {{ readonly descriptorName: {}; readonly direction: {}; readonly optionalCapabilities: readonly [{}]; }},",
                 js_string(&descriptor_name(&action.action)),
-                js_string(direction(action.direction))
+                js_string(direction(action.direction)),
+                alternatives
             ));
         }
         lines.push(format!(
@@ -1146,6 +1162,9 @@ fn render_participant(
         ));
     }
     lines.push("  ];".into());
+    lines.push(
+        "  readonly optionalGrants: Readonly<Record<string, readonly Readonly<{ action: string; target: Readonly<Record<string, unknown>> }>[]>>;".into(),
+    );
     lines.push("  readonly actionNames: __ActionNames;".into());
     lines.push("  readonly resources: __Resources;".into());
     lines.push("  readonly __runtimeTypes?: {".into());
@@ -1201,6 +1220,7 @@ fn render_participant(
             .collect::<Vec<_>>()
             .join(", ")
     ));
+    let needs = graph.participant_needs(participant.identity());
     lines.push("  uses: [".into());
     for (api, selection) in participant.uses() {
         lines.push(format!(
@@ -1208,10 +1228,29 @@ fn render_participant(
             aliases[api.as_str()]
         ));
         for action in &selection.actions {
+            // Optional capability alternatives are per action, derived from the
+            // same needs semantics the server compiles: an action covered by any
+            // non-optional path is never gated, and otherwise only the optional
+            // capabilities that actually cover it are alternatives.
+            let alternatives = needs
+                .and_then(|needs| {
+                    needs
+                        .optional_action_capabilities()
+                        .get(&(api.clone(), action.clone()))
+                })
+                .map(|capabilities| {
+                    capabilities
+                        .iter()
+                        .map(|value| js_string(value.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
             lines.push(format!(
-                "      {{ descriptorName: {}, direction: {} }},",
+                "      {{ descriptorName: {}, direction: {}, optionalCapabilities: [{}] }},",
                 js_string(&descriptor_name(&action.action)),
-                js_string(direction(action.direction))
+                js_string(direction(action.direction)),
+                alternatives
             ));
         }
         lines.push(format!(
@@ -1225,6 +1264,19 @@ fn render_participant(
         ));
     }
     lines.push("  ],".into());
+    lines.push("  optionalGrants: {".into());
+    if let Some(needs) = needs {
+        for (capability, grants) in needs.optional_grants() {
+            let atoms = grants
+                .permissions()
+                .iter()
+                .map(|atom| serde_json::to_string(atom).expect("permission atoms serialize"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(format!("    {}: [{}],", js_string(capability), atoms));
+        }
+    }
+    lines.push("  },".into());
     lines.push("  actionNames: {".into());
     for (key, name) in &action_names {
         lines.push(format!("    {}: {},", js_string(key), js_string(name)));
@@ -1254,6 +1306,7 @@ fn render_participant(
     lines.push("  readonly path: typeof __participant.path;".into());
     lines.push("  readonly implements: typeof __participant.implements;".into());
     lines.push("  readonly uses: typeof __participant.uses;".into());
+    lines.push("  readonly optionalGrants: typeof __participant.optionalGrants;".into());
     lines.push("  readonly actionNames: typeof __participant.actionNames;".into());
     lines.push("  readonly resources: typeof __participant.resources;".into());
     lines.push("  readonly __runtimeTypes?: typeof __participant.__runtimeTypes;".into());

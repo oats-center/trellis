@@ -160,6 +160,7 @@ CREATE TABLE auth_sessions (
     principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id),
     participant_id TEXT NOT NULL CHECK (length(participant_id) > 0),
     participant_kind TEXT NOT NULL CHECK (participant_kind IN ('app', 'agent')),
+    installed_revision INTEGER NOT NULL CHECK (installed_revision BETWEEN 1 AND 9007199254740991),
     session_public_key TEXT NOT NULL CHECK (length(session_public_key) = 43),
     session_key_id TEXT NOT NULL CHECK (length(session_key_id) = 43),
     state TEXT NOT NULL CHECK (state IN ('active', 'expired', 'revoked')),
@@ -202,6 +203,8 @@ CREATE TABLE auth_instances (
     instance_id TEXT PRIMARY KEY CHECK (length(instance_id) > 0),
     deployment_id TEXT NOT NULL REFERENCES auth_deployments(deployment_id) ON DELETE CASCADE,
     principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id) ON DELETE CASCADE,
+    -- Exact participant revision this instance's software is actually running.
+    installed_revision INTEGER NOT NULL CHECK (installed_revision >= 1),
     state TEXT NOT NULL CHECK (state IN ('active', 'disabled', 'revoked', 'stale')),
     created_at INTEGER NOT NULL CHECK (created_at BETWEEN 0 AND 9007199254740991),
     updated_at INTEGER NOT NULL CHECK (updated_at BETWEEN 0 AND 9007199254740991),

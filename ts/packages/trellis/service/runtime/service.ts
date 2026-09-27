@@ -15,6 +15,9 @@ import {
 } from "../../connection.ts";
 import {
   readOwnAdmission,
+  type ResourceTransportCheck,
+  resourceTransportCheck,
+  type TransportAuthorizationGate,
   TransportAuthorizationState,
   transportUpgradeRequiredError,
 } from "../../auth/authorization/transport_state.ts";
@@ -448,46 +451,52 @@ class InternalStoreHandle extends StoreHandle {
   }
 }
 
-async function openServiceKvBindings<TKv extends ParticipantKvMetadata>(args: {
+function openServiceKvBindings<TKv extends ParticipantKvMetadata>(args: {
   nc: NatsConnection;
-  bindings: Record<string, ResourceBindingKV>;
+  /**
+   * Current resource bindings, re-read on every access so a resource that
+   * materializes after connect becomes usable on the same attachment.
+   */
+  bindings: () => Readonly<Record<string, ResourceBindingKV>>;
   contractKv: TKv;
-}): Promise<ServiceKvFacade<TKv>> {
-  for (const alias of Object.keys(args.bindings)) {
-    if (!args.contractKv[alias]) {
-      throw new Error(
-        `KV binding '${alias}' is missing contract schema metadata`,
-      );
-    }
-  }
-
-  const entries = await Promise.all(
-    Object.entries(args.contractKv).map(async ([alias, metadata]) => {
-      const binding = args.bindings[alias];
-      if (!binding) {
-        if (!metadata.required) {
-          return [alias, undefined] as const;
+  /** Per-bucket transport-admission check for operations on that bucket. */
+  transport?: (bucket: string) => ResourceTransportCheck | undefined;
+}): ServiceKvFacade<TKv> {
+  const handles = new Map<
+    string,
+    { bucket: string; handle: TypedKV<unknown> }
+  >();
+  const facade: Record<string, unknown> = {};
+  for (const [alias, metadata] of Object.entries(args.contractKv)) {
+    Object.defineProperty(facade, alias, {
+      enumerable: true,
+      get: () => {
+        const binding = args.bindings()[alias];
+        if (!binding) {
+          if (!metadata.required) return undefined;
+          throw new Error(`Required KV binding '${alias}' is unavailable`);
         }
-        throw new Error(`Required KV binding '${alias}' is unavailable`);
-      }
-
-      const store = await TypedKV.open(
-        args.nc,
-        binding.bucket,
-        metadata.schema,
-        {
-          history: binding.history,
-          ttl: binding.ttlMs,
-          maxValueBytes: binding.maxValueBytes,
-          bindOnly: true,
-        },
-      ).orThrow();
-
-      return [alias, store] as const;
-    }),
-  );
-
-  return Object.fromEntries(entries) as ServiceKvFacade<TKv>;
+        const cached = handles.get(alias);
+        if (cached && cached.bucket === binding.bucket) return cached.handle;
+        const handle = TypedKV.bind(
+          args.nc,
+          binding.bucket,
+          metadata.schema,
+          {
+            history: binding.history,
+            ttl: binding.ttlMs,
+            maxValueBytes: binding.maxValueBytes,
+            bindOnly: true,
+            isCurrent: () => args.bindings()[alias]?.bucket === binding.bucket,
+            transport: args.transport?.(binding.bucket),
+          },
+        ) as TypedKV<unknown>;
+        handles.set(alias, { bucket: binding.bucket, handle });
+        return handle;
+      },
+    });
+  }
+  return facade as ServiceKvFacade<TKv>;
 }
 
 export type TrellisServiceConnectOpts<
@@ -1211,6 +1220,16 @@ export async function createConnectedService<
   ephemeralEventNeeds?: ReadonlySet<string>;
   runtime: TrellisServiceRuntimeCreateOpts<TOwnedApi, TTrellisApi>;
   bindings: ResourceBindings;
+  /**
+   * Live resource bindings, re-read so a resource that materializes after
+   * connect is reachable through the service resource facade. @internal
+   */
+  liveBindings?: () => ResourceBindings;
+  /** Transport-admission check for one bound resource. @internal */
+  resourceTransportCheck?: (
+    kind: "kv" | "store",
+    name: string,
+  ) => ResourceTransportCheck | undefined;
   availability: TrellisAvailability;
   healthIdentity?: {
     instanceId: string;
@@ -1225,6 +1244,7 @@ export async function createConnectedService<
   telemetry?: ReturnType<typeof startConnectionTelemetry>;
 }): Promise<TrellisServiceSession<TOwnedApi, TTrellisApi, TJobs, TKv>> {
   const resolvedLog = resolveServiceLogger(args.runtime.log);
+  const liveBindings = args.liveBindings ?? (() => args.bindings);
   const connection = observeNatsTrellisConnection({
     kind: "service",
     nc: args.nc,
@@ -1398,10 +1418,13 @@ export async function createConnectedService<
     return Promise.resolve();
   };
 
-  const kv = await openServiceKvBindings({
+  const kv = openServiceKvBindings({
     nc: args.nc,
-    bindings: args.bindings.kv ?? {},
+    bindings: () => liveBindings().kv ?? {},
     contractKv: args.contractKv,
+    transport: args.resourceTransportCheck
+      ? (bucket) => args.resourceTransportCheck!("kv", bucket)
+      : undefined,
   });
 
   const operationTransfer = new ServiceTransfer({
@@ -2760,7 +2783,7 @@ export function connectTrellisServiceWithRuntimeDeps<
           sessionId: bootstrap.connectInfo.connectionId,
           contextDigest: () =>
             authorizationContexts.transportCurrent().contextDigest,
-          jwt: () => authorizationContexts.transportRoutingJwt(),
+          jwt: () => authorizationContexts.nextConnectRoutingJwt(),
           authorizationUsable: () =>
             authorizationProviderCache?.transportUsable() ?? true,
         });
@@ -2841,6 +2864,13 @@ export function connectTrellisServiceWithRuntimeDeps<
         authorizationProviderCache,
       };
       const transportState = new TransportAuthorizationState();
+      const serviceTransportGate: TransportAuthorizationGate = {
+        status: () => transportState.status(),
+        admittedPolicy: () => transportState.admittedPolicy(),
+        allowedPolicy: () => transportState.allowedPolicy(),
+        nowSeconds: () => authorizationContexts.correctedNowSeconds(),
+      };
+      let liveResourceBindings: ResourceBindings = bootstrap.binding.resources;
       const applyServiceAdmission = async (): Promise<void> => {
         const digest = authorizationContexts.storedContextDigest();
         if (digest === undefined) return;
@@ -2935,6 +2965,9 @@ export function connectTrellisServiceWithRuntimeDeps<
           },
           runtime,
           bindings: bootstrap.binding.resources,
+          liveBindings: () => liveResourceBindings,
+          resourceTransportCheck: (kind, name) =>
+            resourceTransportCheck(serviceTransportGate, kind, name),
           availability: participantAvailability(
             args.participant,
             bootstrap.binding.apiBindings,
@@ -3030,6 +3063,7 @@ export function connectTrellisServiceWithRuntimeDeps<
                   transports: next.connectInfo.transports,
                 },
                 () => () => {
+                  liveResourceBindings = next.binding.resources;
                   installedAvailability = participantAvailability(
                     args.participant,
                     next.binding.apiBindings,

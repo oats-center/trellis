@@ -71,6 +71,7 @@ Deno.test("optional State availability follows exact resource grants", () => {
     id: "example.Console",
     identity: "example.Console",
     path: "Console",
+    optionalGrants: {},
     actionNames: {},
     implements: [],
     uses: [],
@@ -149,11 +150,20 @@ Deno.test("generated participant descriptors project into the runtime", () => {
     uses: [{
       api,
       actions: [
-        { descriptorName: "rpc:Get", direction: "call" },
-        { descriptorName: "event:Changed", direction: "subscribe" },
+        {
+          descriptorName: "rpc:Get",
+          direction: "call",
+          optionalCapabilities: [],
+        },
+        {
+          descriptorName: "event:Changed",
+          direction: "subscribe",
+          optionalCapabilities: [],
+        },
       ],
       optionalCapabilities: [],
     }],
+    optionalGrants: {},
     resources: {},
     packageEvidence,
   });

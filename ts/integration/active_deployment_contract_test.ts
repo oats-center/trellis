@@ -141,15 +141,16 @@ Deno.test("active contract replacement keeps covered connections and drops uncov
         (await caller.echo({ value: "after-reduction" }).orThrow()).value,
         "after-reduction",
       );
-      // The stale physical attachment carrying excess authority must be gone.
-      // The logical runtime connection may legitimately return under the
-      // reduced authority with a new physical connection, so assert on the
-      // physical identity, not the logical one.
+      // Instance B is pinned to the broad revision whose required
+      // `eventConsumer:changes` resource no longer exists under present
+      // deployment policy. A broad binary is never downgraded into an
+      // incomplete narrow authority, so its attachment is retired and it stays
+      // unissuable until it actually becomes the narrow revision.
       await runtime.waitFor(
         async () =>
-          (await liveConnections(runtime, instanceB.deploymentId)).every(
-            (item) => item.connectionId !== bBefore.connectionId,
-          ),
+          (
+            await liveConnections(runtime, instanceB.deploymentId)
+          ).every((item) => item.instanceId !== instanceB.instanceId),
         { timeoutMs: 30_000 },
       );
 

@@ -382,6 +382,81 @@ pub(crate) struct ResolvedAuthority {
     pub missing_required: Vec<String>,
 }
 
+/// Project present deployment authority onto a pinned older participant revision.
+///
+/// A native instance is evaluated against the participant revision it actually
+/// runs. Approvals, delegation ceiling entries, and exact restrictions that the
+/// pinned revision does not define are outside its vocabulary and are dropped,
+/// so the effective authority is a reduction of the present ceiling. The strict
+/// resolver remains in force when the instance runs the current revision.
+///
+/// # Errors
+///
+/// Returns the same validation errors as [`resolve_authority`] for the projected
+/// inputs.
+pub(crate) fn resolve_projected_authority(
+    participant: &ParticipantBindingRecord,
+    approval_mode: ApprovalMode,
+    approved_capabilities: &[ApprovedCapability],
+    approved_resources: &[ApprovedResource],
+    approved_platform_privileges: &[PlatformPrivilege],
+    ceiling: &DelegationCeiling,
+    availability: (&[ResourceBindingEvidence], bool),
+) -> Result<ResolvedAuthority, AuthorizationStateError> {
+    let resolved = participant.resolve()?;
+    let capabilities = resolved
+        .referenced_apis
+        .values()
+        .flat_map(|api| api.capabilities.iter())
+        .collect::<BTreeMap<_, _>>();
+    let selected = selected_permissions(resolved).cloned().collect::<Vec<_>>();
+    let projected_capabilities = approved_capabilities
+        .iter()
+        .filter(|approved| {
+            capabilities
+                .get(&approved.id)
+                .is_some_and(|capability| capability.consent_digest == approved.consent_digest)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let projected_resources = approved_resources
+        .iter()
+        .filter(|approved| {
+            resolved
+                .resources
+                .get(&approved.name)
+                .is_some_and(|resource| {
+                    AuthorizationResourceKind::from(resource.kind) == approved.kind
+                        && resource_commitment(resource) == approved.commitment
+                })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut projected_ceiling = ceiling.clone();
+    projected_ceiling
+        .capabilities
+        .retain(|capability| capabilities.contains_key(&capability.id));
+    if let Some(restrictions) = &ceiling.exact_restrictions {
+        projected_ceiling.exact_restrictions = Some(GrantSet::new(
+            restrictions
+                .permissions()
+                .iter()
+                .filter(|atom| selected.contains(atom))
+                .cloned()
+                .collect(),
+        ));
+    }
+    resolve_authority(
+        participant,
+        approval_mode,
+        &projected_capabilities,
+        &projected_resources,
+        approved_platform_privileges,
+        &projected_ceiling,
+        availability,
+    )
+}
+
 pub(crate) fn resolve_authority(
     participant: &ParticipantBindingRecord,
     approval_mode: ApprovalMode,

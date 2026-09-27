@@ -657,6 +657,14 @@ pub struct ParticipantNeeds {
     pub(crate) required_grants: trellis_protocol::GrantSet,
     pub(crate) optional_grants: BTreeMap<String, trellis_protocol::GrantSet>,
     pub(crate) required_capabilities: BTreeSet<CapabilityId>,
+    /// Optional capability alternatives per selected action.
+    ///
+    /// An action that any non-optional path covers has no entry, because it is
+    /// required. Otherwise the action is reachable only through the listed
+    /// optional capabilities, which are alternatives: any one of them being
+    /// granted makes the action callable.
+    pub(crate) optional_action_capabilities:
+        BTreeMap<(ApiId, ActionSelection), BTreeSet<CapabilityId>>,
 }
 
 impl ParticipantNeeds {
@@ -675,6 +683,15 @@ impl ParticipantNeeds {
     /// Return implicated named capabilities required for readiness.
     pub fn required_capabilities(&self) -> &BTreeSet<CapabilityId> {
         &self.required_capabilities
+    }
+
+    /// Return optional capability alternatives keyed by selected action.
+    ///
+    /// Actions absent from this map are not gated on optional capabilities.
+    pub fn optional_action_capabilities(
+        &self,
+    ) -> &BTreeMap<(ApiId, ActionSelection), BTreeSet<CapabilityId>> {
+        &self.optional_action_capabilities
     }
 }
 

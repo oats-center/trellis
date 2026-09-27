@@ -11,6 +11,7 @@ const __participant = participantDescriptor({
 	path: "healthRuntime",
 	implements: [Api0.API],
 	uses: [],
+	optionalGrants: {},
 	actionNames: {
 		"trellis.health@v1:rpc:Inspect": "Inspect",
 		"trellis.health@v1:rpc:Metrics": "Metrics",

@@ -14,10 +14,12 @@ const __participant = participantDescriptor({
 		api: Api0.API,
 		actions: [{
 			descriptorName: "rpc:Create",
-			direction: "call"
+			direction: "call",
+			optionalCapabilities: []
 		}],
 		optionalCapabilities: []
 	}],
+	optionalGrants: {},
 	actionNames: { "acme-orders.orders@v1:rpc:Create": "Create" },
 	resources: {},
 	packageEvidence: {

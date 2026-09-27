@@ -21,251 +21,313 @@ const __participant = participantDescriptor({
 			actions: [
 				{
 					descriptorName: "rpc:Capabilities.List",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:CapabilityGroups.Delete",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:CapabilityGroups.Get",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:CapabilityGroups.List",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:CapabilityGroups.Put",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Connections.Kick",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Connections.List",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Deployments.Apply",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Deployments.Create",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Deployments.Disable",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Deployments.Enable",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Deployments.Get",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Deployments.List",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Deployments.Remove",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:DeviceUserAuthorities.List",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:DeviceUserAuthorities.Reviews.Decide",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:DeviceUserAuthorities.Reviews.List",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:DeviceUserAuthorities.Revoke",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Devices.Disable",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Devices.Enable",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Devices.List",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Devices.Provision",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Devices.Remove",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Grants.Get",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Grants.List",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Grants.Revoke",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Grants.Set",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Issuers.Revoke",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Participants.Get",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Participants.Install",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Participants.List",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Portals.Get",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Portals.GrantOverrides.List",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Portals.GrantOverrides.Put",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Portals.GrantOverrides.Remove",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Portals.List",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Portals.LoginSettings.Get",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Portals.LoginSettings.Update",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Portals.Put",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Portals.Remove",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Portals.Routes.Put",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Portals.Routes.Remove",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:ServiceInstances.Disable",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:ServiceInstances.Enable",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:ServiceInstances.List",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:ServiceInstances.Provision",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:ServiceInstances.Remove",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Sessions.List",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Sessions.Logout",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Sessions.Me",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Sessions.Revoke",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:UserIdentities.List",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:UserIdentities.Unlink",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Users.Create",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Users.Get",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Users.IdentityLink.Create",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Users.List",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Users.Password.Change",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Users.PasswordReset.Create",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Users.Resolve",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Users.Update",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "operation:DeviceUserAuthorities.Resolve",
-					direction: "invoke"
+					direction: "invoke",
+					optionalCapabilities: []
 				}
 			],
 			optionalCapabilities: []
@@ -275,15 +337,18 @@ const __participant = participantDescriptor({
 			actions: [
 				{
 					descriptorName: "rpc:Resources.Destroy",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Resources.Inspect",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Resources.Query",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				}
 			],
 			optionalCapabilities: []
@@ -293,51 +358,63 @@ const __participant = participantDescriptor({
 			actions: [
 				{
 					descriptorName: "rpc:Consumers.Inspect",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Consumers.Query",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Consumers.ReportDelivery",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:DeadLetters.Dismiss",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:DeadLetters.Inspect",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:DeadLetters.Query",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:DeadLetters.Replay",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Diagnostics",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Inspect",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Metrics",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Query",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "live:Watch",
-					direction: "subscribe"
+					direction: "subscribe",
+					optionalCapabilities: []
 				}
 			],
 			optionalCapabilities: []
@@ -347,23 +424,28 @@ const __participant = participantDescriptor({
 			actions: [
 				{
 					descriptorName: "rpc:Inspect",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Metrics",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Query",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Summary",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "live:Watch",
-					direction: "subscribe"
+					direction: "subscribe",
+					optionalCapabilities: []
 				}
 			],
 			optionalCapabilities: []
@@ -373,51 +455,63 @@ const __participant = participantDescriptor({
 			actions: [
 				{
 					descriptorName: "rpc:Cancel",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:DismissDLQ",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:GetKey",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Inspect",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:ListDLQ",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:ListServices",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Metrics",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Query",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:ReplayDLQ",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Retry",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Summary",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "live:Watch",
-					direction: "subscribe"
+					direction: "subscribe",
+					optionalCapabilities: []
 				}
 			],
 			optionalCapabilities: []
@@ -427,28 +521,34 @@ const __participant = participantDescriptor({
 			actions: [
 				{
 					descriptorName: "rpc:Delete",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Get",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Put",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Resources.Inspect",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				},
 				{
 					descriptorName: "rpc:Resources.Query",
-					direction: "call"
+					direction: "call",
+					optionalCapabilities: []
 				}
 			],
 			optionalCapabilities: []
 		}
 	],
+	optionalGrants: {},
 	actionNames: {
 		"trellis.auth@v1:rpc:Capabilities.List": "Capabilities.List",
 		"trellis.auth@v1:rpc:CapabilityGroups.Delete": "CapabilityGroups.Delete",

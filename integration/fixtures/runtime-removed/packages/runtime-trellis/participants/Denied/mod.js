@@ -15,6 +15,7 @@ const __participant = participantDescriptor({
 		actions: [],
 		optionalCapabilities: []
 	}],
+	optionalGrants: {},
 	actionNames: {
 		"runtime-trellis.runtime@v1:rpc:Echo": "Echo",
 		"runtime-trellis.runtime@v1:operation:Upload": "Upload",

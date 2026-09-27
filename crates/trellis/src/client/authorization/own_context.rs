@@ -629,6 +629,23 @@ impl AuthorizationContextCache {
         self.request_reconciliation(true);
     }
 
+    /// Next-connect routing credential for the NATS authenticator.
+    ///
+    /// Missing or expired material asks the shared refresh owner to prepare a
+    /// replacement and still fails the attempt, so the bounded reconnect loop
+    /// retries with the next verified snapshot. It never waits for refresh
+    /// completion or for the explicit transport-refresh owner, which would be
+    /// waiting on the very admission this attempt is authenticating.
+    pub(crate) fn next_connect_credentials(&self) -> Result<(String, String), TrellisClientError> {
+        match self.transport_credentials() {
+            Ok(credentials) => Ok(credentials),
+            Err(error) => {
+                self.request_refresh();
+                Err(error)
+            }
+        }
+    }
+
     pub(crate) fn request_coverage_reconciliation(&self) {
         self.request_reconciliation(false);
     }

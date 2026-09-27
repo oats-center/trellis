@@ -14,10 +14,12 @@ const __participant = participantDescriptor({
 		api: Api0.API,
 		actions: [{
 			descriptorName: "operation:DeviceUserAuthorities.Resolve",
-			direction: "invoke"
+			direction: "invoke",
+			optionalCapabilities: []
 		}],
 		optionalCapabilities: []
 	}],
+	optionalGrants: {},
 	actionNames: {
 		"trellis.auth@v1:rpc:Capabilities.List": "Capabilities.List",
 		"trellis.auth@v1:rpc:CapabilityGroups.Delete": "CapabilityGroups.Delete",

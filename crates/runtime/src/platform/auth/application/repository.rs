@@ -225,6 +225,23 @@ pub(crate) struct ServiceIdentityProvisioning {
     pub actions: Vec<PostCommitActionRecord>,
 }
 
+/// Presented native package evidence resolved against one instance's pin.
+#[derive(Clone, Debug)]
+pub(crate) struct InstanceParticipantAdoption {
+    /// Instance whose participant-revision pin is being validated.
+    pub instance_id: String,
+    /// Participant the presented package claims to be.
+    pub participant_id: String,
+    /// Presented package digest.
+    pub package_digest: String,
+    /// Presented participant path within the package.
+    pub participant_path: String,
+    /// Presented participant digest, when the caller supplies one.
+    pub participant_digest: Option<String>,
+    /// Observation time in Unix milliseconds.
+    pub now: i64,
+}
+
 /// Atomic device and one-time secret provisioning.
 #[derive(Clone, Debug)]
 pub(crate) struct DeviceProvisioning {
@@ -729,6 +746,28 @@ pub(crate) trait ProvisioningRepository: Send + Sync {
         &self,
         command: DeviceProvisioning,
     ) -> Result<IdempotentOutcome<DeviceProvisioningSecretRecord>, AuthorizationStateError>;
+
+    /// Resolve the deployment's current desired participant revision.
+    ///
+    /// New instances pin this revision; deployment-wide policy changes never
+    /// mutate an existing instance's pin.
+    async fn deployment_installed_revision(
+        &self,
+        deployment_id: &str,
+    ) -> Result<u64, AuthorizationStateError>;
+
+    /// Validate presented native package evidence against one instance's pin.
+    ///
+    /// Returns the participant revision the instance must now be evaluated
+    /// against. Evidence that exactly matches the pin is accepted unchanged.
+    /// Evidence that instead matches the deployment's current desired revision
+    /// advances the pin, bumps the instance version, and retires predecessor
+    /// contexts atomically. Evidence matching neither is rejected, so an
+    /// instance can never select an arbitrary historical revision.
+    async fn adopt_instance_participant_revision(
+        &self,
+        command: InstanceParticipantAdoption,
+    ) -> Result<u64, AuthorizationStateError>;
 
     /// Mutate one provisioned service/device lifecycle atomically.
     async fn mutate_provisioned_instance(

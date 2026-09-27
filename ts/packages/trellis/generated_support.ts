@@ -322,6 +322,7 @@ type ParticipantDescriptorInput = Readonly<{
   path: string;
   implements: readonly ApiDescriptorInput[];
   uses: readonly Readonly<Record<string, unknown>>[];
+  optionalGrants: Readonly<Record<string, readonly unknown[]>>;
   actionNames: Readonly<Record<string, string>>;
   resources: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
   companion?: Readonly<{
@@ -502,6 +503,7 @@ export function participantDescriptor<
     descriptor.identity !==
       `${descriptor.packageEvidence.rootPackage}.${descriptor.path}` ||
     !Array.isArray(descriptor.implements) || !Array.isArray(descriptor.uses) ||
+    !isRecord(descriptor.optionalGrants) ||
     !isRecord(descriptor.actionNames) ||
     !isRecord(descriptor.resources)
   ) {
@@ -519,7 +521,9 @@ export function participantDescriptor<
     for (const selected of selection.actions) {
       if (
         !isRecord(selected) || typeof selected.descriptorName !== "string" ||
-        !(selected.descriptorName in api.actions)
+        !(selected.descriptorName in api.actions) ||
+        !Array.isArray(selected.optionalCapabilities) ||
+        selected.optionalCapabilities.some((value) => typeof value !== "string")
       ) fail("generated action selection");
       const kind = api.actions[selected.descriptorName].kind;
       if (

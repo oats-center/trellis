@@ -1427,6 +1427,7 @@ where
             principal_id,
             participant_id: flow.participant_id.clone(),
             participant_kind: binding.participant_kind,
+            installed_revision: flow.installed_revision,
             session_public_key: flow.session_public_key.clone(),
             created_at: now,
             idempotency: idempotency(

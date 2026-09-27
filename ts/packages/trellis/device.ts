@@ -256,7 +256,6 @@ const DeviceBootstrapReadySchema = Type.Object({
     participantId: Type.String({ minLength: 1 }),
     loginSessionId: Type.String({ minLength: 1 }),
     required: Type.Boolean(),
-    installation: DeviceBootstrapInstallationSchema,
   })),
 });
 
@@ -281,8 +280,6 @@ type DeviceBootstrapReady = {
     loginSessionId: string;
     required: boolean;
     installationSeedBase64url: string;
-    sessionSeedBase64url: string;
-    bootstrap: StaticDecode<typeof DeviceBootstrapInstallationSchema>;
   };
 };
 type DeviceBootstrapResponse = DeviceBootstrapReady;
@@ -534,46 +531,13 @@ async function fetchDeviceBootstrap(args: {
     ...participantEvidence(args.participant),
   };
   const descriptor = args.participant.companion;
-  let companionInstallationSeedBase64url: string | undefined;
-  let companionSessionSeedBase64url: string | undefined;
-  if (descriptor) {
-    const installation = await deriveDeviceUserCompanion(
+  const companionInstallationSeedBase64url = descriptor
+    ? (await deriveDeviceUserCompanion(
       args.rootSecret,
       args.trellisUrl,
       descriptor.participant.identity,
-    );
-    companionInstallationSeedBase64url = installation.installationSeedBase64url;
-    const companionAuth = await createAuth({
-      sessionKeySeed: installation.installationSeedBase64url,
-    });
-    companionSessionSeedBase64url = base64urlEncode(
-      crypto.getRandomValues(new Uint8Array(32)),
-    );
-    const companionSessionAuth = await createAuth({
-      sessionKeySeed: companionSessionSeedBase64url,
-    });
-    const companionRequest = {
-      connectionId: ulid(),
-      requestId: ulid(),
-      issuedAt,
-      sessionKey: companionSessionAuth.sessionKey,
-    };
-    const digest = base64urlEncode(
-      await sha256(utf8(canonicalizeJsonValue({
-        format: "trellis.device.user-companion.v1",
-        origin: new URL(args.trellisUrl).origin,
-        identityKeyId: deviceIdentityKeyId,
-        participantId: descriptor.participant.identity,
-        ...companionRequest,
-      }))),
-    );
-    unsigned.companion = {
-      ...companionRequest,
-      proof: base64urlEncode(
-        await companionAuth.sign(base64urlDecode(digest)),
-      ),
-    };
-  }
+    )).installationSeedBase64url
+    : undefined;
   const body = JSON.stringify({
     ...unsigned,
     proof: await identityAuth.signSessionProof({
@@ -649,14 +613,11 @@ async function fetchDeviceBootstrap(args: {
       apiBindings: ready.apiBindings,
       resourceBindings: ready.authorization.resourceRuntime,
     },
-    ...(ready.companion && companionInstallationSeedBase64url &&
-        companionSessionSeedBase64url
+    ...(ready.companion && companionInstallationSeedBase64url
       ? {
         companion: {
           ...ready.companion,
           installationSeedBase64url: companionInstallationSeedBase64url,
-          sessionSeedBase64url: companionSessionSeedBase64url,
-          bootstrap: ready.companion.installation,
         },
       }
       : {}),
@@ -872,7 +833,7 @@ export async function connectDeviceWithDeps<
   const sessionOptions = await bootstrap.sessionAuth.natsConnectOptions({
     sessionId: connectInfo.connectionId,
     contextDigest: () => authorizationContexts.transportCurrent().contextDigest,
-    jwt: () => authorizationContexts.transportRoutingJwt(),
+    jwt: () => authorizationContexts.nextConnectRoutingJwt(),
     authorizationUsable: () =>
       authorizationProviderCache?.transportUsable() ?? true,
   });
@@ -1179,7 +1140,9 @@ export async function connectDeviceWithDeps<
       );
     }
     try {
-      const installation = bootstrap.companion.bootstrap;
+      // The companion is an ordinary App/Agent user login. Device bootstrap only
+      // yields its durable assignment; the user-connect path derives the runtime
+      // session key and obtains the companion's own authorization context.
       companionConnection = await connectClientWithDeps({
         trellisUrl: args.trellisUrl,
         participant: companion.participant,
@@ -1189,30 +1152,7 @@ export async function connectDeviceWithDeps<
           sessionId: bootstrap.companion.loginSessionId,
           redirectTo: new URL(args.trellisUrl).origin,
         },
-      }, {
-        ...deps,
-        runtimeSessionKeySeed: bootstrap.companion.sessionSeedBase64url,
-        initialBootstrap: {
-          status: "ready",
-          serverNow: Math.floor(installation.serverNow / 1_000),
-          serverClockOffsetMs: installation.serverNow - deps.now(),
-          connectInfo: {
-            connectionId: installation.runtime.connectionId,
-            sessionId: bootstrap.companion.loginSessionId,
-            participantId: installation.runtime.participantId,
-            participantDigest: installation.authorization.participantDigest,
-            transports: installation.transports,
-            transport: {
-              jwt: installation.routing.bootstrapJwt,
-              jwtExpiresAt: installation.routing.bootstrapJwtExpiresAt,
-              inboxPrefix: installation.runtime.inboxPrefix,
-            },
-            authorizationContext: installation.authorizationContext,
-          },
-          apiBindings: installation.apiBindings,
-          resourceBindings: installation.authorization.resourceRuntime,
-        },
-      });
+      }, deps);
     } catch (error) {
       if (bootstrap.companion.required) throw error;
       log.warn({ error }, "Optional device companion could not connect");

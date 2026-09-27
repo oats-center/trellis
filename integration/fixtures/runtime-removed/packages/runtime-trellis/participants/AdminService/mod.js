@@ -15,19 +15,23 @@ const __participant = participantDescriptor({
 		actions: [
 			{
 				descriptorName: "rpc:Grants.Get",
-				direction: "call"
+				direction: "call",
+				optionalCapabilities: []
 			},
 			{
 				descriptorName: "rpc:Grants.Revoke",
-				direction: "call"
+				direction: "call",
+				optionalCapabilities: []
 			},
 			{
 				descriptorName: "rpc:Sessions.List",
-				direction: "call"
+				direction: "call",
+				optionalCapabilities: []
 			}
 		],
 		optionalCapabilities: []
 	}],
+	optionalGrants: {},
 	actionNames: {
 		"trellis.auth@v1:rpc:Capabilities.List": "Capabilities.List",
 		"trellis.auth@v1:rpc:CapabilityGroups.Delete": "CapabilityGroups.Delete",

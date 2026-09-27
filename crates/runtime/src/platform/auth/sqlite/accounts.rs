@@ -1847,11 +1847,18 @@ mod password_reset_action_tests {
     ) -> String {
         let (_, public_key) = trellis_rs::auth::generate_session_keypair();
         let session_id = ulid::Ulid::new().to_string();
+        let installed_revision = store
+            .get_installed_participant_record(participant_id.to_owned(), None)
+            .await
+            .unwrap()
+            .map(|(revision, _)| revision)
+            .unwrap_or(1);
         let session = SessionRecord::from_new(NewSession {
             session_id: session_id.clone(),
             principal_id: principal_id.to_owned(),
             participant_id: participant_id.to_owned(),
             participant_kind,
+            installed_revision,
             session_public_key: public_key,
             created_at: NOW,
             expires_at: Some(NOW + 3_600_000),

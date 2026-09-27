@@ -11,6 +11,7 @@ const __participant = participantDescriptor({
 	path: "OrdersService",
 	implements: [Api0.API],
 	uses: [],
+	optionalGrants: {},
 	actionNames: { "acme-orders.orders@v1:rpc:Create": "Create" },
 	resources: {},
 	packageEvidence: {

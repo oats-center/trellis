@@ -229,7 +229,7 @@ pub(in crate::platform::auth) fn load_runtime_instance(
 ) -> Result<Option<RuntimeInstanceRecord>, AuthorizationStateError> {
     connection
     .query_row(
-        "SELECT instance_id, deployment_id, principal_id, state, created_at, updated_at, version
+        "SELECT instance_id, deployment_id, principal_id, installed_revision, state, created_at, updated_at, version
          FROM auth_instances WHERE instance_id = ?1",
         [instance_id],
         |row| {
@@ -237,10 +237,11 @@ pub(in crate::platform::auth) fn load_runtime_instance(
                 instance_id: row.get(0)?,
                 deployment_id: row.get(1)?,
                 principal_id: row.get(2)?,
-                state: decode_enum(row.get(3)?)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
-                version: from_sql_version(row.get(6)?)?,
+                installed_revision: from_sql_version(row.get(3)?)?,
+                state: decode_enum(row.get(4)?)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                version: from_sql_version(row.get(7)?)?,
             })
         },
     )

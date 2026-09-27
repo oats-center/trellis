@@ -213,7 +213,10 @@ export class TrellisTestRuntime implements AsyncDisposable {
     requestApply(
       args: { deployment?: string; contract: TrellisTestParticipantLike },
     ): Promise<TrellisTestParticipantApplyResult>;
-    approveApply(pendingId: string): Promise<TrellisTestParticipantApproval>;
+    approveApply(
+      pendingId: string,
+      opts?: { excludeResources?: readonly string[] },
+    ): Promise<TrellisTestParticipantApproval>;
   };
   readonly services: {
     createInstance(args: {
@@ -355,8 +358,8 @@ export class TrellisTestRuntime implements AsyncDisposable {
           deployment: deployment ?? this.#deployment,
           contract,
         }),
-      approveApply: (pendingId) =>
-        this.#admin.approveParticipantApply(pendingId),
+      approveApply: (pendingId, opts) =>
+        this.#admin.approveParticipantApply(pendingId, opts),
     };
     this.services = {
       createInstance: ({ deployment, contract }) =>

@@ -518,6 +518,12 @@ pub struct NewSession {
     pub participant_id: String,
     /// Participant class.
     pub participant_kind: ParticipantKind,
+    /// Exact installed participant revision this login belongs to.
+    ///
+    /// Session identity is immutable: the login stays on the participant
+    /// vocabulary whose consent created it, while later consent may move the
+    /// owner's current desired authority to a different revision.
+    pub installed_revision: u64,
     /// Canonical unpadded base64url Ed25519 public key.
     pub session_public_key: String,
     /// Creation time in Unix milliseconds.
@@ -538,6 +544,8 @@ pub struct SessionRecord {
     pub participant_id: String,
     /// Participant class.
     pub participant_kind: ParticipantKind,
+    /// Exact installed participant revision this login belongs to.
+    pub installed_revision: u64,
     /// Canonical unpadded base64url Ed25519 public key.
     pub session_public_key: String,
     /// SHA-256 key ID derived from the raw public key.
@@ -576,6 +584,7 @@ impl SessionRecord {
         }
         require_nonempty("principalId", &value.principal_id)?;
         require_nonempty("participantId", &value.participant_id)?;
+        require_positive("installedRevision", value.installed_revision)?;
         require_protocol_timestamp("createdAt", value.created_at)?;
         if let Some(expires_at) = value.expires_at {
             require_protocol_timestamp("expiresAt", expires_at)?;
@@ -596,6 +605,7 @@ impl SessionRecord {
             principal_id: value.principal_id,
             participant_id: value.participant_id,
             participant_kind: value.participant_kind,
+            installed_revision: value.installed_revision,
             session_public_key: value.session_public_key,
             session_key_id,
             state: SessionState::Active,
@@ -799,6 +809,12 @@ pub struct RuntimeInstanceRecord {
     pub deployment_id: String,
     /// Service or device principal that owns the instance.
     pub principal_id: String,
+    /// Exact participant revision this instance's software is actually running.
+    ///
+    /// Deployment-wide policy changes select a new desired revision; they never
+    /// mutate this pin, so an instance continues to be evaluated against the
+    /// participant vocabulary it actually runs.
+    pub installed_revision: u64,
     /// Current instance lifecycle state.
     pub state: RuntimeInstanceState,
     /// Creation time in Unix milliseconds.
@@ -985,6 +1001,11 @@ pub struct IssuableAuthorizationState {
     pub participant: ParticipantBindingRecord,
     /// Current participant-scoped grant record.
     pub binding: GrantBinding,
+    /// Participant revision this credential is pinned to.
+    ///
+    /// It selects the vocabulary that interprets present authority and the one
+    /// current physical resource; it never selects historical authority.
+    pub participant_revision: u64,
     /// Deployment ID for service/device principals.
     pub deployment_id: Option<String>,
     /// Runtime instance ID when required.
@@ -1002,7 +1023,7 @@ impl IssuableAuthorizationState {
     pub(crate) fn matches_context(
         &self,
         context: &trellis_protocol::UnsignedAuthorizationContext,
-        installed_revision: u64,
+        recorded_revision: u64,
     ) -> bool {
         context.principal_id == self.principal_id
             && context.principal_kind == self.principal_kind
@@ -1010,7 +1031,7 @@ impl IssuableAuthorizationState {
             && context.owner_kind == self.binding.owner_kind
             && context.owner_id == self.binding.owner_id
             && context.grant_revision == self.binding.revision
-            && installed_revision == self.binding.installed_revision
+            && recorded_revision == self.participant_revision
             && context.connection_id == self.connection_id
             && context.login_session_id == self.login_session_id
             && context.identity_key_id == self.identity_key_id

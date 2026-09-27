@@ -18,6 +18,7 @@ const __participant = participantDescriptor({
 		Api2.API
 	],
 	uses: [],
+	optionalGrants: {},
 	actionNames: {
 		"trellis.auth@v1:rpc:Capabilities.List": "Capabilities.List",
 		"trellis.auth@v1:rpc:CapabilityGroups.Delete": "CapabilityGroups.Delete",

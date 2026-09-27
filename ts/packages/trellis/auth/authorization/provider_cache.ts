@@ -340,19 +340,26 @@ export class AuthorizationProviderCache {
 
   /** Retain exact revocation coverage for the currently installed own context. */
   async retainOwnContext(): Promise<void> {
-    const digest = this.#cache.storedContextDigest();
-    if (digest === undefined) {
-      throw new Error("authorization context is unavailable");
-    }
-    const generation = this.#generation;
-    await this.#retainOwnContext(digest, generation);
-    if (!this.#finalizeOwnInstallation("resume", digest, generation)) {
+    // A renewal can install a newer own context while coverage retention is in
+    // flight. Coverage must follow the newest installed context, so re-read the
+    // digest and generation and retry a bounded number of times instead of
+    // treating a routine in-place renewal as a fatal resumption failure.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const digest = this.#cache.storedContextDigest();
+      if (digest === undefined) {
+        throw new Error("authorization context is unavailable");
+      }
+      const generation = this.#generation;
+      await this.#retainOwnContext(digest, generation);
+      if (this.#finalizeOwnInstallation("resume", digest, generation)) {
+        this.#notifyLiveChanges();
+        return;
+      }
       this.#cache.requestRefresh();
-      throw new Error(
-        "authorization context coverage changed during resumption",
-      );
     }
-    this.#notifyLiveChanges();
+    throw new Error(
+      "authorization context coverage changed during resumption",
+    );
   }
 
   /** Retain candidate coverage on the exact admitted connection generation. */

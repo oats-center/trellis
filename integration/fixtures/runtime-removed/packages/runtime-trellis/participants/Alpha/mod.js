@@ -15,19 +15,23 @@ const __participant = participantDescriptor({
 		actions: [
 			{
 				descriptorName: "rpc:DropAlpha",
-				direction: "call"
+				direction: "call",
+				optionalCapabilities: []
 			},
 			{
 				descriptorName: "rpc:Observed",
-				direction: "call"
+				direction: "call",
+				optionalCapabilities: []
 			},
 			{
 				descriptorName: "event:Alpha",
-				direction: "publish"
+				direction: "publish",
+				optionalCapabilities: []
 			}
 		],
 		optionalCapabilities: []
 	}],
+	optionalGrants: {},
 	actionNames: {
 		"runtime-trellis.events@v1:rpc:DropAlpha": "DropAlpha",
 		"runtime-trellis.events@v1:rpc:Observed": "Observed",

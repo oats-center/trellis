@@ -15,31 +15,38 @@ const __participant = participantDescriptor({
 		actions: [
 			{
 				descriptorName: "rpc:Echo",
-				direction: "call"
+				direction: "call",
+				optionalCapabilities: []
 			},
 			{
 				descriptorName: "operation:Upload",
-				direction: "invoke"
+				direction: "invoke",
+				optionalCapabilities: []
 			},
 			{
 				descriptorName: "operation:Work",
-				direction: "invoke"
+				direction: "invoke",
+				optionalCapabilities: []
 			},
 			{
 				descriptorName: "event:Changed",
-				direction: "publish"
+				direction: "publish",
+				optionalCapabilities: []
 			},
 			{
 				descriptorName: "event:Changed",
-				direction: "subscribe"
+				direction: "subscribe",
+				optionalCapabilities: []
 			},
 			{
 				descriptorName: "live:Watch",
-				direction: "subscribe"
+				direction: "subscribe",
+				optionalCapabilities: []
 			}
 		],
 		optionalCapabilities: []
 	}],
+	optionalGrants: {},
 	actionNames: {
 		"runtime-trellis.runtime@v1:rpc:Echo": "Echo",
 		"runtime-trellis.runtime@v1:operation:Upload": "Upload",

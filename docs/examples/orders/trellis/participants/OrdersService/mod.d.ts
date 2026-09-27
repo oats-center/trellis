@@ -14,6 +14,10 @@ declare const __participant: {
 	readonly path: "OrdersService";
 	readonly implements: readonly [typeof Api0.API];
 	readonly uses: readonly [];
+	readonly optionalGrants: Readonly<Record<string, readonly Readonly<{
+		action: string;
+		target: Readonly<Record<string, unknown>>;
+	}>[]>>;
 	readonly actionNames: __ActionNames;
 	readonly resources: __Resources;
 	readonly __runtimeTypes?: {
@@ -31,6 +35,7 @@ export declare const participant: {
 	readonly path: typeof __participant.path;
 	readonly implements: typeof __participant.implements;
 	readonly uses: typeof __participant.uses;
+	readonly optionalGrants: typeof __participant.optionalGrants;
 	readonly actionNames: typeof __participant.actionNames;
 	readonly resources: typeof __participant.resources;
 	readonly __runtimeTypes?: typeof __participant.__runtimeTypes;

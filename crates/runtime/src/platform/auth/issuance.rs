@@ -21,6 +21,7 @@ pub(super) fn resolve_snapshot(
         principal,
         binding,
         participant,
+        participant_revision,
         resources,
         api_bindings: _,
         issuer,
@@ -40,6 +41,13 @@ pub(super) fn resolve_snapshot(
         return Err(AuthorizationStateError::ParticipantMissing);
     }
     let participant_projection = participant.resolve()?;
+    // The participant revision is the credential's pin: it resolves the vocabulary
+    // that interprets present authority and the one current physical resource.
+    // A credential pinned to a non-current revision is evaluated against present
+    // owner authority projected onto its own vocabulary, so its effective grant is
+    // a reduction of that ceiling; the exact ceiling applies only when the
+    // credential runs the owner's current revision.
+    let pinned_older_revision = participant_revision != binding.installed_revision;
     let mut expiries = vec![binding.expires_at];
     let (
         principal_kind,
@@ -235,19 +243,45 @@ pub(super) fn resolve_snapshot(
             )
         }
     };
-    let authority = super::policy::resolve_authority(
-        &participant,
-        binding.approval_mode,
-        &binding.approved_capabilities,
-        &binding.approved_resources,
-        &binding.platform_privileges,
-        &binding.delegation_ceiling,
-        (
-            &resources,
-            companion_available && binding.companion_approved,
-        ),
-    )?;
-    if authority.exact_grants != binding.grants {
+    let authority = if pinned_older_revision {
+        super::policy::resolve_projected_authority(
+            &participant,
+            binding.approval_mode,
+            &binding.approved_capabilities,
+            &binding.approved_resources,
+            &binding.platform_privileges,
+            &binding.delegation_ceiling,
+            (
+                &resources,
+                companion_available && binding.companion_approved,
+            ),
+        )?
+    } else {
+        super::policy::resolve_authority(
+            &participant,
+            binding.approval_mode,
+            &binding.approved_capabilities,
+            &binding.approved_resources,
+            &binding.platform_privileges,
+            &binding.delegation_ceiling,
+            (
+                &resources,
+                companion_available && binding.companion_approved,
+            ),
+        )?
+    };
+    // An instance pinned to an older participant revision is evaluated against
+    // present deployment authority, so its effective grant is a projection of
+    // that ceiling. The exact ceiling only applies when the instance runs the
+    // deployment's current revision.
+    if authority.exact_grants != binding.grants
+        && !(pinned_older_revision
+            && authority
+                .exact_grants
+                .permissions()
+                .iter()
+                .all(|atom| binding.grants.permissions().contains(atom)))
+    {
         return Err(AuthorizationStateError::NotAuthorized);
     }
     if !authority.readiness {
@@ -319,6 +353,7 @@ pub(super) fn resolve_snapshot(
         inbox_prefix,
         participant,
         binding,
+        participant_revision,
         deployment_id,
         instance_id,
         grant_set: GrantSet::new(grants),
@@ -378,6 +413,7 @@ mod tests {
                         instance_id: "instance_1".to_owned(),
                         deployment_id: deployment_id.clone(),
                         principal_id: device_id.clone(),
+                        installed_revision: 1,
                         state: RuntimeInstanceState::Active,
                         created_at: now,
                         updated_at: now,
@@ -450,6 +486,7 @@ mod tests {
                 created_at: now,
                 updated_at: now,
             },
+            participant_revision: 1,
             participant: super::super::ParticipantBindingRecord {
                 participant_id: participant_id.clone(),
                 participant_kind: ParticipantKind::Device,
@@ -507,6 +544,7 @@ mod tests {
             principal_id: "user_1".to_owned(),
             participant_id: "package.app".to_owned(),
             participant_kind: ParticipantKind::App,
+            installed_revision: 1,
             session_key_id: "key_1".to_owned(),
             session_public_key: "installation-key".to_owned(),
             state: SessionState::Active,

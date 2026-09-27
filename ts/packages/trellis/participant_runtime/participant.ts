@@ -49,8 +49,19 @@ export type GeneratedActionSelection = Readonly<{
   actions: readonly Readonly<{
     descriptorName: string;
     direction: "call" | "invoke" | "publish" | "subscribe";
+    /**
+     * Optional capabilities that can each independently make this action
+     * callable. Empty when any non-optional path covers the action.
+     */
+    optionalCapabilities: readonly string[];
   }>[];
   optionalCapabilities: readonly string[];
+}>;
+
+/** One exact permission atom as emitted by the IDL compiler. */
+export type GeneratedPermissionAtom = Readonly<{
+  action: string;
+  target: Readonly<Record<string, unknown>>;
 }>;
 
 export type GeneratedResourceDescriptor =
@@ -74,6 +85,12 @@ export type GeneratedParticipant = Readonly<{
   path: string;
   implements: readonly GeneratedApiDescriptor[];
   uses: readonly GeneratedActionSelection[];
+  /**
+   * Exact optional grant bundles keyed by capability or resource identity.
+   * Availability derives from the current signed application grant matching
+   * these atoms, never from provider-binding presence alone.
+   */
+  optionalGrants: Readonly<Record<string, readonly GeneratedPermissionAtom[]>>;
   actionNames: Readonly<Record<string, string>>;
   resources: Readonly<Record<string, GeneratedResourceDescriptor>>;
   companion?: Readonly<{
@@ -520,8 +537,8 @@ export function getParticipantRuntime(
             pascalSurfaceName(name)
           }`
           : lowerCamelSurfaceName(name),
-        optional: selection.optionalCapabilities.length > 0,
-        optionalCapabilities: selection.optionalCapabilities,
+        optional: selected.optionalCapabilities.length > 0,
+        optionalCapabilities: selected.optionalCapabilities,
       });
     }
   }
@@ -605,9 +622,22 @@ export function participantAvailability(
 ): TrellisAvailability {
   const capabilities: Record<string, boolean> = {};
   for (const selection of participant.uses) {
-    const available = selection.api.identity in apiBindings;
+    // A capability is available when its route is bound and the current signed
+    // application grant actually contains its exact bundle. Provider-binding
+    // presence alone answers a different question, and admitted transport
+    // authority is deliberately not consulted here: a granted capability that
+    // the current attachment has not adopted is still available at the
+    // application level and fails on use with transport_upgrade_required.
+    const routeBound = selection.api.identity in apiBindings;
     for (const capability of selection.optionalCapabilities) {
-      capabilities[capability] = available;
+      const bundle = participant.optionalGrants[capability];
+      capabilities[capability] = routeBound &&
+        bundle !== undefined &&
+        bundle.every((atom) =>
+          permissions?.some((permission) =>
+            JSON.stringify(permission) === JSON.stringify(atom)
+          ) ?? false
+        );
     }
   }
 

@@ -249,9 +249,7 @@ export function createCallerRuntime<TContract extends GeneratedParticipant>(
     const unavailable = () => {
       const current = runtime.connection.availability().capabilities;
       return action.optionalCapabilities.length > 0 &&
-          !action.optionalCapabilities.every((capability) =>
-            current[capability]
-          )
+          !action.optionalCapabilities.some((capability) => current[capability])
         ? createActionUnavailableError(action.name, action.optionalCapabilities)
         : undefined;
     };

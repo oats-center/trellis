@@ -1030,6 +1030,11 @@ async fn ensure_auth_event_session(
         auth::validate_ed25519_public_key("identityPublicKey", &event_auth.session_key)
             .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     let instance_id = ulid::Ulid::new().to_string();
+    let installed_revision = service
+        .repository()
+        .deployment_installed_revision(DEPLOYMENT_ID)
+        .await
+        .map_err(|error| RuntimeError::Platform(format!("resolve deployment revision: {error}")))?;
     service
         .repository()
         .install_runtime_identity(
@@ -1037,6 +1042,7 @@ async fn ensure_auth_event_session(
                 instance_id: instance_id.clone(),
                 deployment_id: DEPLOYMENT_ID.to_owned(),
                 principal_id: DEPLOYMENT_ID.to_owned(),
+                installed_revision,
                 state: RuntimeInstanceState::Active,
                 created_at: now,
                 updated_at: now,

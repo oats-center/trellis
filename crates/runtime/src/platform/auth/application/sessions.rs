@@ -12,6 +12,8 @@ pub struct CreateSessionInput {
     pub participant_id: String,
     /// App or agent participant class.
     pub participant_kind: ParticipantKind,
+    /// Exact installed participant revision whose consent created this login.
+    pub installed_revision: u64,
     /// Canonical Ed25519 installation public key.
     pub session_public_key: String,
     /// Interactive authentication time in Unix milliseconds.
@@ -41,6 +43,7 @@ impl<R: SessionRepository + Clone> AuthService<R> {
             principal_id: input.principal_id,
             participant_id: input.participant_id,
             participant_kind: input.participant_kind,
+            installed_revision: input.installed_revision,
             session_public_key: input.session_public_key,
             created_at: input.created_at,
             expires_at: Some(expires_at),

@@ -53,6 +53,12 @@ pub(crate) struct IssuanceSnapshot {
     pub principal: PrincipalRecord,
     pub binding: super::GrantBinding,
     pub participant: ParticipantBindingRecord,
+    /// Participant revision this credential is evaluated against.
+    ///
+    /// A pinned credential selects the vocabulary that interprets present
+    /// authority and the one current physical resource; it never selects
+    /// historical authority or a historical resource.
+    pub participant_revision: u64,
     pub resources: Vec<ResourceBindingEvidence>,
     pub api_bindings: BTreeMap<String, String>,
     pub issuer: trellis_protocol::AuthorizationIssuerKey,
@@ -157,6 +163,7 @@ pub(crate) fn validate_session(session: &SessionRecord) -> Result<(), Authorizat
     require_nonempty("sessionId", &session.session_id)?;
     require_nonempty("principalId", &session.principal_id)?;
     require_nonempty("participantId", &session.participant_id)?;
+    require_positive("installedRevision", session.installed_revision)?;
     require_nonempty("sessionPublicKey", &session.session_public_key)?;
     super::validate_ed25519_public_key("sessionPublicKey", &session.session_public_key)?;
     require_protocol_timestamp("createdAt", session.created_at)?;

@@ -3,12 +3,13 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use super::super::application::repository::{
     ActivationReviewClaim, ActivationReviewCreation, ActivationReviewDecision, DeviceProvisioning,
-    DeviceProvisioningSecretConsumption, IdempotentOutcome, ProvisionedInstanceMutation,
-    ProvisioningRepository, ServiceIdentityProvisioning,
+    DeviceProvisioningSecretConsumption, IdempotentOutcome, InstanceParticipantAdoption,
+    ProvisionedInstanceMutation, ProvisioningRepository, ServiceIdentityProvisioning,
 };
 use super::super::context::{
     revoke_sql_contexts, AuthorizationContextRevocationReason, AuthorizationContextSelector,
 };
+use super::super::GrantOwnerKind;
 use super::super::{
     activation_review_event, activation_review_event_action_id, AuthorizationStateError,
     DeviceActivationReviewRecord, DeviceActivationReviewState, DeviceDelegationState,
@@ -25,12 +26,23 @@ use super::evidence::{
     load_deployment, load_device, load_device_delegation, load_runtime_instance,
     validate_sql_device_relationships,
 };
+use super::grants::load_grant_binding;
 use super::outbox::{insert_sql_idempotency_and_actions, sqlite_idempotency_replay};
 use super::principals::load_principal;
 use super::validation::next_version;
 use super::SqliteAuthorizationStore;
 
 impl SqliteAuthorizationStore {
+    /// Resolve the deployment's current desired participant revision.
+    pub(crate) async fn deployment_installed_revision(
+        &self,
+        deployment_id: &str,
+    ) -> Result<u64, AuthorizationStateError> {
+        let deployment_id = deployment_id.to_owned();
+        self.run_read(move |connection| deployment_installed_revision(connection, &deployment_id))
+            .await
+    }
+
     pub(crate) async fn install_runtime_identity(
         &self,
         instance: RuntimeInstanceRecord,
@@ -674,6 +686,12 @@ impl ProvisioningRepository for SqliteAuthorizationStore {
                         instance_id: instance_id.clone(),
                         deployment_id: command.deployment_id.clone(),
                         principal_id: principal_id.clone(),
+                        // A newly provisioned instance starts pinned to the
+                        // deployment's current desired participant revision.
+                        installed_revision: deployment_installed_revision(
+                            &transaction,
+                            &command.deployment_id,
+                        )?,
                         state: RuntimeInstanceState::Active,
                         created_at: command.created_at,
                         updated_at: command.created_at,
@@ -782,6 +800,83 @@ impl ProvisioningRepository for SqliteAuthorizationStore {
             )?;
             transaction.commit().map_err(sql_error)?;
             Ok(IdempotentOutcome::Applied(command.secret))
+        })
+        .await
+    }
+
+    async fn deployment_installed_revision(
+        &self,
+        deployment_id: &str,
+    ) -> Result<u64, AuthorizationStateError> {
+        SqliteAuthorizationStore::deployment_installed_revision(self, deployment_id).await
+    }
+
+    async fn adopt_instance_participant_revision(
+        &self,
+        command: InstanceParticipantAdoption,
+    ) -> Result<u64, AuthorizationStateError> {
+        self.run(move |connection| {
+            let transaction = connection.transaction().map_err(sql_error)?;
+            let instance = load_runtime_instance(&transaction, &command.instance_id)?
+                .ok_or(AuthorizationStateError::InstanceInactive)?;
+            let deployment = load_deployment(&transaction, &instance.deployment_id)?
+                .ok_or(AuthorizationStateError::DeploymentInactive)?;
+            if deployment.participant_id != command.participant_id {
+                return Err(AuthorizationStateError::InvalidRecord(
+                    "presented participant does not match the instance deployment".to_owned(),
+                ));
+            }
+            let matches_revision = |revision: u64| -> Result<bool, AuthorizationStateError> {
+                Ok(
+                    super::grants::load_installed_participant(
+                        &transaction,
+                        &command.participant_id,
+                        Some(revision),
+                    )?
+                    .is_some_and(|(_, binding)| {
+                        binding.package_digest == command.package_digest
+                            && binding.participant_path == command.participant_path
+                            && command
+                                .participant_digest
+                                .as_ref()
+                                .is_none_or(|digest| &binding.participant_digest == digest)
+                    }),
+                )
+            };
+            if matches_revision(instance.installed_revision)? {
+                return Ok(instance.installed_revision);
+            }
+            let desired = deployment_installed_revision(&transaction, &instance.deployment_id)?;
+            if desired == instance.installed_revision || !matches_revision(desired)? {
+                return Err(AuthorizationStateError::InvalidRecord(
+                    "presented package evidence matches no admissible participant revision"
+                        .to_owned(),
+                ));
+            }
+            let changed = transaction
+                .execute(
+                    "UPDATE auth_instances SET installed_revision = ?1, updated_at = ?2, version = ?3
+                     WHERE instance_id = ?4 AND version = ?5",
+                    params![
+                        to_sql_version(desired)?,
+                        command.now,
+                        to_sql_version(next_version(instance.version)?)?,
+                        instance.instance_id,
+                        to_sql_version(instance.version)?
+                    ],
+                )
+                .map_err(map_write_error)?;
+            if changed != 1 {
+                return Err(AuthorizationStateError::StorageConflict);
+            }
+            revoke_sql_contexts(
+                &transaction,
+                &AuthorizationContextSelector::Instance(instance.instance_id.clone()),
+                AuthorizationContextRevocationReason::InstanceChanged,
+                command.now.div_euclid(1_000),
+            )?;
+            transaction.commit().map_err(sql_error)?;
+            Ok(desired)
         })
         .await
     }
@@ -1141,17 +1236,47 @@ pub(in crate::platform::auth) fn insert_sql_principal(
     Ok(())
 }
 
+/// Resolve the deployment's current desired participant revision.
+///
+/// Provisioning pins a new instance to this revision; it is not a mutable
+/// property of already-running instances.
+pub(in crate::platform::auth) fn deployment_installed_revision(
+    connection: &Connection,
+    deployment_id: &str,
+) -> Result<u64, AuthorizationStateError> {
+    let deployment = load_deployment(connection, deployment_id)?
+        .ok_or(AuthorizationStateError::PrincipalMissing)?;
+    load_grant_binding(
+        connection,
+        GrantOwnerKind::Deployment,
+        deployment_id,
+        &deployment.participant_id,
+    )?
+    .map(|binding| binding.installed_revision)
+    .or_else(|| {
+        // A deployment that has been installed but not yet applied has no
+        // authority ceiling; its desired revision is the latest installed
+        // participant revision, which is what an apply would select.
+        super::grants::load_installed_participant(connection, &deployment.participant_id, None)
+            .ok()
+            .flatten()
+            .map(|(revision, _)| revision)
+    })
+    .ok_or(AuthorizationStateError::AuthorityMissing)
+}
+
 pub(in crate::platform::auth) fn insert_sql_runtime_instance(
     connection: &Connection,
     instance: &RuntimeInstanceRecord,
 ) -> Result<(), AuthorizationStateError> {
     connection
     .execute(
-        "INSERT INTO auth_instances (instance_id, deployment_id, principal_id, state, created_at, updated_at, version) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO auth_instances (instance_id, deployment_id, principal_id, installed_revision, state, created_at, updated_at, version) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             instance.instance_id,
             instance.deployment_id,
             instance.principal_id,
+            to_sql_version(instance.installed_revision)?,
             encode_enum(instance.state)?,
             instance.created_at,
             instance.updated_at,
@@ -1394,6 +1519,7 @@ mod tests {
             instance_id: first_instance_id.clone(),
             deployment_id: deployment_id.clone(),
             principal_id: first_principal_id.clone(),
+            installed_revision: 1,
             state: RuntimeInstanceState::Active,
             created_at: NOW,
             updated_at: NOW,
@@ -1738,6 +1864,7 @@ mod tests {
                 instance_id,
                 deployment_id: deployment_id.clone(),
                 principal_id: principal_id.clone(),
+                installed_revision: 1,
                 state: RuntimeInstanceState::Active,
                 created_at: NOW,
                 updated_at: NOW,

@@ -479,6 +479,11 @@ pub async fn provision_live_provider(
     }
 
     let instance_id = ulid::Ulid::new().to_string();
+    let installed_revision = service
+        .repository()
+        .deployment_installed_revision(deployment_id)
+        .await
+        .map_err(|error| RuntimeError::Platform(format!("resolve deployment revision: {error}")))?;
     service
         .repository()
         .install_runtime_identity(
@@ -486,6 +491,7 @@ pub async fn provision_live_provider(
                 instance_id: instance_id.clone(),
                 deployment_id: deployment_id.to_owned(),
                 principal_id: deployment_id.to_owned(),
+                installed_revision,
                 state: RuntimeInstanceState::Active,
                 created_at: now,
                 updated_at: now,

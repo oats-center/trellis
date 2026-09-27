@@ -11,6 +11,7 @@ const __participant = participantDescriptor({
 	path: "eventsRuntime",
 	implements: [Api0.API],
 	uses: [],
+	optionalGrants: {},
 	actionNames: {
 		"trellis.events@v1:rpc:Consumers.Inspect": "Consumers.Inspect",
 		"trellis.events@v1:rpc:Consumers.Query": "Consumers.Query",

@@ -241,6 +241,10 @@ where
             instance_id: instance_id.clone(),
             deployment_id: input.deployment_id.clone(),
             principal_id: principal_id.clone(),
+            installed_revision: self
+                .repository
+                .deployment_installed_revision(&input.deployment_id)
+                .await?,
             state: RuntimeInstanceState::Active,
             created_at: input.created_at,
             updated_at: input.created_at,

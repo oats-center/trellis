@@ -14,10 +14,12 @@ const __participant = participantDescriptor({
 		api: Api0.API,
 		actions: [{
 			descriptorName: "event:Beta",
-			direction: "publish"
+			direction: "publish",
+			optionalCapabilities: []
 		}],
 		optionalCapabilities: []
 	}],
+	optionalGrants: {},
 	actionNames: {
 		"runtime-trellis.events@v1:rpc:DropAlpha": "DropAlpha",
 		"runtime-trellis.events@v1:rpc:Observed": "Observed",

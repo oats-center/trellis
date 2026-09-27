@@ -19,9 +19,9 @@ use super::validation::next_version;
 use super::SqliteAuthorizationStore;
 
 const SESSION_SELECT: &str = "SELECT
-    session_id, principal_id, participant_id, participant_kind, session_public_key,
-    session_key_id, state, created_at, last_authenticated_at, expires_at,
-    revoked_at, version
+    session_id, principal_id, participant_id, participant_kind, installed_revision,
+    session_public_key, session_key_id, state, created_at, last_authenticated_at,
+    expires_at, revoked_at, version
     FROM auth_sessions";
 
 #[async_trait]
@@ -189,15 +189,16 @@ pub(in crate::platform::auth) fn insert_sql_session(
     connection
         .execute(
             "INSERT INTO auth_sessions (
-            session_id, principal_id, participant_id, participant_kind,
+            session_id, principal_id, participant_id, participant_kind, installed_revision,
             session_public_key, session_key_id, state, created_at, last_authenticated_at, expires_at,
             revoked_at, version
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 session.session_id,
                 session.principal_id,
                 session.participant_id,
                 encode_enum(session.participant_kind)?,
+                to_sql_version(session.installed_revision)?,
                 session.session_public_key,
                 session.session_key_id,
                 encode_enum(session.state)?,
@@ -238,13 +239,14 @@ pub(in crate::platform::auth) fn decode_session(row: &Row<'_>) -> rusqlite::Resu
         principal_id: row.get(1)?,
         participant_id: row.get(2)?,
         participant_kind: decode_enum(row.get::<_, String>(3)?)?,
-        session_public_key: row.get(4)?,
-        session_key_id: row.get(5)?,
-        state: decode_enum(row.get::<_, String>(6)?)?,
-        created_at: row.get(7)?,
-        last_authenticated_at: row.get(8)?,
-        expires_at: row.get(9)?,
-        revoked_at: row.get(10)?,
-        version: from_sql_version(row.get(11)?)?,
+        installed_revision: from_sql_version(row.get(4)?)?,
+        session_public_key: row.get(5)?,
+        session_key_id: row.get(6)?,
+        state: decode_enum(row.get::<_, String>(7)?)?,
+        created_at: row.get(8)?,
+        last_authenticated_at: row.get(9)?,
+        expires_at: row.get(10)?,
+        revoked_at: row.get(11)?,
+        version: from_sql_version(row.get(12)?)?,
     })
 }

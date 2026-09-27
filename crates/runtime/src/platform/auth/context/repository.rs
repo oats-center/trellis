@@ -291,7 +291,7 @@ impl AuthorizationContextRepository for SqliteAuthorizationStore {
                 connection_id: commit.context.connection_id.clone(),
                 session_public_key: commit.context.session_public_key.clone(),
             };
-            let snapshot = sqlite_issuance_snapshot(&transaction, &request)?;
+            let snapshot = sqlite_issuance_snapshot(&transaction, &request, None)?;
             if issuance_snapshot_token(&snapshot)? != commit.expected_snapshot_token {
                 return Err(AuthorizationStateError::StorageConflict);
             }

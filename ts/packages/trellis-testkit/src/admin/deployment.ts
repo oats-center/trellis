@@ -94,7 +94,9 @@ async function awaitDeploymentResources(
     if (performance.now() >= deadline) {
       throw new Error(
         `Trellis deployment ${deploymentId} did not materialize required resources within ${context.resourceReadyTimeoutMs}ms: ${
-          missing.map((item) => `${item.resourceKind}:${item.localName}`).join(", ")
+          missing.map((item) => `${item.resourceKind}:${item.localName}`).join(
+            ", ",
+          )
         }`,
       );
     }
@@ -208,11 +210,14 @@ export type PendingDeploymentApply = {
 
 function consentApproval(
   consent: NonNullable<ReturnType<typeof deploymentConsentRequest>>,
+  excludeResources: readonly string[] = [],
 ): AdminRpcInput<"authDeploymentsApply">["approval"] {
   return {
     approvedCapabilities: consent.capabilities.filter((item) => item.eligible)
       .map((item) => ({ id: item.id, consentDigest: item.consentDigest })),
-    approvedResources: consent.resources.filter((item) => item.eligible)
+    approvedResources: consent.resources.filter((item) =>
+      item.eligible && !excludeResources.includes(item.name)
+    )
       .map((item) => ({
         kind: item.kind,
         name: item.name,
@@ -338,6 +343,7 @@ export async function requestParticipantApply(
 export async function approveParticipantApply(
   context: AdminDeploymentContext,
   pendingId: string,
+  opts: { excludeResources?: readonly string[] } = {},
 ): Promise<TrellisTestParticipantApproval> {
   const pending = context.pendingApprovals.get(pendingId);
   if (!pending) {
@@ -352,7 +358,7 @@ export async function approveParticipantApply(
   const applied = await context.rpc("authDeploymentsApply", {
     ...pending.request,
     idempotencyKey: ulid(),
-    approval: consentApproval(pending.consent),
+    approval: consentApproval(pending.consent, opts.excludeResources ?? []),
   });
   context.pendingApprovals.delete(pendingId);
   return finalizeParticipantApply(context, pending, deploymentId, applied);

@@ -718,6 +718,7 @@ async fn companion_activation_with_replacement(
         principal_id: user_principal_id.to_owned(),
         participant_id: claim.participant_id.clone(),
         participant_kind: claim.kind,
+        installed_revision: child_installed_revision,
         session_key_id: crate::platform::auth::validate_ed25519_public_key(
             "installationPublicKey",
             &claim.installation_public_key,

@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use super::super::{AuthorizationContextBundle, AuthorizationContextIssueRequest};
 use super::*;
+use crate::platform::auth::application::repository::InstanceParticipantAdoption;
 use crate::platform::auth::{
     IssuanceConnection, IssuanceCredential, ProvisionedIdentityKind, ProvisionedIdentityState,
 };
@@ -22,18 +23,7 @@ struct NativeBootstrapRequest {
     #[serde(rename = "iat")]
     _iat: i64,
     name: Option<String>,
-    companion: Option<CompanionBootstrapRequest>,
     proof: Value,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CompanionBootstrapRequest {
-    connection_id: String,
-    request_id: String,
-    issued_at: i64,
-    session_key: String,
-    proof: String,
 }
 
 #[derive(Serialize)]
@@ -56,7 +46,6 @@ struct CompanionBootstrapResponse {
     participant_id: String,
     login_session_id: String,
     required: bool,
-    installation: Box<BootstrapResponse>,
 }
 
 #[derive(Serialize)]
@@ -260,18 +249,35 @@ where
         .repository()
         .accept_presented_package(evidence, now)
         .await?;
+    // A native instance is evaluated against the participant revision it is
+    // actually running. Evidence that exactly adopts the deployment's current
+    // desired revision advances the pin; evidence matching neither the pin nor
+    // the desired revision is rejected.
+    let revision = match state
+        .service
+        .repository()
+        .adopt_instance_participant_revision(InstanceParticipantAdoption {
+            instance_id: identity.instance_id.clone(),
+            participant_id: presented.participant_id.clone(),
+            package_digest: presented.package_digest.clone(),
+            participant_path: presented.participant_path.clone(),
+            participant_digest: Some(presented.participant_digest.clone()),
+            now,
+        })
+        .await
+    {
+        Ok(revision) => revision,
+        Err(AuthorizationStateError::InvalidRecord(_)) => {
+            return Err(HttpError::conflict("participant_evidence_mismatch"));
+        }
+        Err(error) => return Err(error.into()),
+    };
     let (_, installed) = state
         .service
         .repository()
-        .get_installed_participant_record(presented.participant_id.clone(), None)
+        .get_installed_participant_record(presented.participant_id.clone(), Some(revision))
         .await?
         .ok_or(AuthorizationStateError::ParticipantMissing)?;
-    if presented.package_digest != installed.package_digest
-        || presented.participant_path != installed.participant_path
-        || presented.participant_digest != installed.participant_digest
-    {
-        return Err(HttpError::conflict("participant_evidence_mismatch"));
-    }
     let installed_projection = installed.resolve()?;
     let companion_response = if expected_kind == ProvisionedIdentityKind::Device {
         let delegation = state
@@ -282,68 +288,28 @@ where
         match (
             installed_projection.companion_participant_id.as_deref(),
             delegation,
-            request.companion,
         ) {
-            (None, None, None) => None,
-            (Some(_), None, _) if !installed_projection.companion_required => None,
-            (Some(_), Some(_), None) if !installed_projection.companion_required => None,
-            (Some(_), Some(delegation), _)
+            (None, _) => None,
+            (Some(_), None) if !installed_projection.companion_required => None,
+            (Some(_), Some(delegation))
                 if !installed_projection.companion_required
                     && delegation.state != crate::platform::auth::DeviceDelegationState::Active =>
             {
                 None
             }
-            (Some(_), None, _) => return Err(HttpError::conflict("companion_delegation_missing")),
-            (Some(expected), Some(delegation), Some(companion))
+            (Some(_), None) => return Err(HttpError::conflict("companion_delegation_missing")),
+            (Some(expected), Some(delegation))
                 if delegation.state == crate::platform::auth::DeviceDelegationState::Active
                     && delegation.companion_participant_id.as_deref() == Some(expected) =>
             {
-                let installation_public_key = delegation
-                    .installation_public_key
-                    .ok_or_else(|| HttpError::conflict("companion_delegation_incomplete"))?;
                 let login_session_id = delegation
                     .user_login_session_id
                     .ok_or_else(|| HttpError::conflict("companion_delegation_incomplete"))?;
-                ulid::Ulid::from_string(&companion.connection_id)
-                    .map_err(|_| HttpError::bad_request("invalid_companion_connection_id"))?;
-                let digest = trellis_protocol::digest_json(&serde_json::json!({
-                    "format": "trellis.device.user-companion.v1",
-                    "origin": state.public_origin,
-                    "identityKeyId": request.identity_key_id,
-                    "participantId": expected,
-                    "connectionId": companion.connection_id,
-                    "requestId": companion.request_id,
-                    "issuedAt": companion.issued_at,
-                    "sessionKey": companion.session_key,
-                }))
-                .map_err(|_| HttpError::bad_request("invalid_companion_bootstrap"))?;
-                verify_detached_companion_proof(
-                    &installation_public_key,
-                    &digest,
-                    &companion.proof,
-                )?;
-                let installation = issue_bootstrap(
-                    state,
-                    IssuanceConnection {
-                        credential: IssuanceCredential::Login(login_session_id.clone()),
-                        connection_id: companion.connection_id,
-                        session_public_key: companion.session_key,
-                    },
-                    companion.request_id,
-                    digest,
-                    now,
-                )
-                .await;
-                match installation {
-                    Ok(installation) => Some(CompanionBootstrapResponse {
-                        participant_id: expected.to_owned(),
-                        login_session_id,
-                        required: delegation.required,
-                        installation: Box::new(installation),
-                    }),
-                    Err(error) if delegation.required => return Err(error),
-                    Err(_) => None,
-                }
+                Some(CompanionBootstrapResponse {
+                    participant_id: expected.to_owned(),
+                    login_session_id,
+                    required: delegation.required,
+                })
             }
             _ => return Err(HttpError::conflict("companion_bootstrap_mismatch")),
         }
@@ -366,15 +332,6 @@ where
     .await?;
     response.companion = companion_response;
     Ok(response)
-}
-
-fn verify_detached_companion_proof(
-    public_key: &str,
-    digest: &str,
-    signature: &str,
-) -> Result<(), HttpError> {
-    crate::platform::auth::verify_detached_ed25519_proof(public_key, digest, signature)
-        .map_err(|_| HttpError::unauthorized("invalid_companion_proof"))
 }
 
 #[tracing::instrument(
@@ -546,39 +503,4 @@ where
         },
     );
     result
-}
-
-#[cfg(test)]
-mod tests {
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-    use ed25519_dalek::{Signer as _, SigningKey};
-
-    use super::verify_detached_companion_proof;
-
-    #[test]
-    fn companion_proof_covers_the_domain_separated_digest() {
-        let key = SigningKey::from_bytes(&[11; 32]);
-        let digest = [17; 32];
-        let public_key = URL_SAFE_NO_PAD.encode(key.verifying_key().to_bytes());
-        let signature = URL_SAFE_NO_PAD.encode(key.sign(&digest).to_bytes());
-        assert!(verify_detached_companion_proof(
-            &public_key,
-            &URL_SAFE_NO_PAD.encode(digest),
-            &signature,
-        )
-        .is_ok());
-        assert!(verify_detached_companion_proof(
-            &public_key,
-            &URL_SAFE_NO_PAD.encode([18; 32]),
-            &signature,
-        )
-        .is_err());
-        let substituted_key = SigningKey::from_bytes(&[12; 32]);
-        assert!(verify_detached_companion_proof(
-            &URL_SAFE_NO_PAD.encode(substituted_key.verifying_key().to_bytes()),
-            &URL_SAFE_NO_PAD.encode(digest),
-            &signature,
-        )
-        .is_err());
-    }
 }

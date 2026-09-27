@@ -473,7 +473,6 @@ type ClientConnectDeps = {
   loadTransport(): Promise<RuntimeTransport>;
   now(): number;
   initialBootstrap?: ClientBootstrapReady;
-  runtimeSessionKeySeed?: string;
 };
 
 const ClientBootstrapReadySchema = Type.Object({
@@ -669,25 +668,19 @@ async function createSessionKeyRuntimeIdentity(
   sessionId?: string,
   mode: "browser" | "session_key" = "session_key",
   browserCredential?: BrowserSessionCredential,
-  runtimeSessionKeySeed?: string,
 ): Promise<ClientRuntimeIdentity> {
   const seed = base64urlDecode(sessionKeySeed);
-  const runtimeSeed = runtimeSessionKeySeed
-    ? base64urlDecode(runtimeSessionKeySeed)
-    : seed;
-  const runtimeAuth = await createAuth({
-    sessionKeySeed: base64urlEncode(runtimeSeed),
-  });
-  const sessionKey = runtimeAuth.sessionKey;
+  const auth = await createAuth({ sessionKeySeed });
+  const sessionKey = auth.sessionKey;
   const sign = async (data: Uint8Array): Promise<Uint8Array> =>
-    await runtimeAuth.sign(data);
+    await auth.sign(data);
 
   const identity: ClientRuntimeIdentity = {
     mode,
     sessionKey,
-    sessionNkey: runtimeAuth.sessionNkey,
+    sessionNkey: auth.sessionNkey,
     seed,
-    auth: runtimeAuth,
+    auth,
     sessionId,
     ...(browserCredential === undefined ? {} : { browserCredential }),
     sign,
@@ -1131,15 +1124,7 @@ export async function connectClientWithDeps<
       trustScope,
       args.auth?.persistence ?? "remembered",
     );
-  let identity = deps.runtimeSessionKeySeed && args.auth?.mode === "session_key"
-    ? await createSessionKeyRuntimeIdentity(
-      args.auth.sessionKeySeed,
-      args.auth.sessionId,
-      "session_key",
-      undefined,
-      deps.runtimeSessionKeySeed,
-    )
-    : await resolveClientIdentity(args.auth, browserInstallation);
+  let identity = await resolveClientIdentity(args.auth, browserInstallation);
   const currentUrl = resolveCurrentUrl(args.auth);
   const browserAuth = args.auth?.mode === "session_key" ? undefined : args.auth;
   const callbackFlowId = args.auth?.mode === "session_key"
@@ -1342,7 +1327,7 @@ export async function connectClientWithDeps<
   const runtimeState = {
     participantDigest: bootstrap.connectInfo.participantDigest,
     sessionId: bootstrap.connectInfo.sessionId,
-    jwt: () => authorizationContexts.transportRoutingJwt(),
+    jwt: () => authorizationContexts.nextConnectRoutingJwt(),
     contextDigest: () => authorizationContexts.transportCurrent().contextDigest,
   };
   let endingSession = false;

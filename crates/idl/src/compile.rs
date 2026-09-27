@@ -2092,6 +2092,8 @@ fn derive_participant_needs(
     let mut required = Vec::new();
     let mut optional = BTreeMap::<String, Vec<PermissionAtom>>::new();
     let mut required_capabilities = BTreeSet::new();
+    let mut optional_action_capabilities =
+        BTreeMap::<(ApiId, ActionSelection), BTreeSet<CapabilityId>>::new();
     for (api_id, selection) in &participant.uses {
         let api = graph
             .api(api_id)
@@ -2105,12 +2107,14 @@ fn derive_participant_needs(
                 .filter(|(_, capability)| capability.allows.contains(selected))
                 .collect::<Vec<_>>();
             let mut required_action = covering.is_empty();
+            let mut optional_alternatives = BTreeSet::new();
             for (capability_id, capability) in covering {
                 if selection.optional_capabilities.contains(capability_id) {
                     optional
                         .entry(capability_id.as_str().to_owned())
                         .or_default()
                         .extend(atoms.iter().cloned());
+                    optional_alternatives.insert(capability_id.clone());
                 } else {
                     required_action = true;
                     if !capability.public {
@@ -2120,6 +2124,9 @@ fn derive_participant_needs(
             }
             if required_action {
                 required.extend(atoms);
+            } else if !optional_alternatives.is_empty() {
+                optional_action_capabilities
+                    .insert((api_id.clone(), selected.clone()), optional_alternatives);
             }
         }
     }
@@ -2190,6 +2197,7 @@ fn derive_participant_needs(
         required_grants,
         optional_grants,
         required_capabilities,
+        optional_action_capabilities,
     })
 }
 
