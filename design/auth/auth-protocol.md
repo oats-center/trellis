@@ -179,19 +179,30 @@ context bytes by digest.
 
 ## NATS Auth Callout
 
-The connect token contains context digest, route-JWT identity, canonical origin,
-logical connection ID, session key, and proof over the server nonce. Auth
-Callout:
+A Trellis NATS connection presents the session NKey signature and a Trellis
+connect token; it presents no client JWT. The connect token is wire format
+`trellis.nats-connect-token.v2` and carries the selected context digest plus the
+short-lived `routingJwt` that authorizes this admission. In operator mode the
+broker routes a JWT-less CONNECT to the external Auth Callout through a
+server-generated, non-expiring, server-only Auth-account `default_sentinel` that
+denies every publish and subscribe; the sentinel confers no Trellis application
+authority. A CONNECT that supplies any other client JWT is rejected, with no
+dual-protocol fallback. Auth Callout:
 
-1. verifies the route JWT and expiry;
-2. loads and verifies the context by digest;
-3. requires every redundant token field to equal the context;
-4. rechecks current credential/principal/grant/participant/resource/issuer
+1. parses the v2 connect token and requires the session NKey and the
+   server-routed `default_sentinel`;
+2. validates the token's `routingJwt` — issuer and issuer account, subject equal
+   to the session NKey, a present short expiry after the current time, and exact
+   deny-all routing permissions — against that session NKey;
+3. verifies the standard NATS nonce signature with the session NKey;
+4. resolves and verifies the signed context by the token's digest and requires
+   the session NKey to match the context;
+5. rechecks current credential/principal/grant/participant/resource/issuer
    evidence against the immutable issuance snapshot and confirms the signed
    transport policy is still covered by current authoritative state;
-5. installs the exact publish/subscribe policy signed into that context and
+6. installs the exact publish/subscribe policy signed into that context and
    records physical connection presence; and
-6. returns a user claim whose authenticated name identifies the admitted context
+7. returns a user claim whose authenticated name identifies the admitted context
    and physical attachment.
 
 Auth Callout verifies initial/reconnect credentials and installs the exact

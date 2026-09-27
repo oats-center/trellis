@@ -139,6 +139,11 @@ where
     /// An optional generated action is not present in the installed availability snapshot.
     #[error("optional action unavailable: {0}")]
     AuthorizationUnavailable(String),
+    /// A generated action is granted by current authority but not yet admitted
+    /// on the current transport attachment. Distinct from permission denial and
+    /// from [`Self::AuthorizationUnavailable`].
+    #[error("transport upgrade required: {0}")]
+    TransportUpgradeRequired(String),
 }
 
 impl<E> CallError<E>
@@ -165,8 +170,14 @@ where
                 Self::Protocol(ProtocolError::new(error.to_string()))
             }
             TrellisClientError::Codec(error) => Self::Protocol(ProtocolError::new(error)),
+            TrellisClientError::Protocol(error) => {
+                Self::Protocol(ProtocolError::new(error.to_string()))
+            }
             TrellisClientError::AuthorizationUnavailable(message) => {
                 Self::AuthorizationUnavailable(message)
+            }
+            TrellisClientError::TransportUpgradeRequired(message) => {
+                Self::TransportUpgradeRequired(message)
             }
             error => Self::Transport(TransportError::new(error.to_string())),
         }
@@ -284,6 +295,13 @@ pub enum TrellisClientError {
     #[error("authorization evidence unavailable: {0}")]
     AuthorizationUnavailable(String),
 
+    /// A granted capability's broker subjects are not yet admitted on the
+    /// current physical attachment. This is a transport condition, not a
+    /// permission denial: the application may adopt it with an explicit
+    /// transport refresh.
+    #[error("transport upgrade required: {0}")]
+    TransportUpgradeRequired(String),
+
     #[error("service bootstrap error: {0}")]
     Bootstrap(String),
 
@@ -296,6 +314,10 @@ pub enum TrellisClientError {
     /// A generated wire codec rejected a value.
     #[error("generated codec error: {0}")]
     Codec(String),
+
+    /// A protocol value was malformed or violated its schema.
+    #[error("protocol error: {0}")]
+    Protocol(#[from] trellis_protocol::ProtocolError),
 
     #[error(transparent)]
     Subject(#[from] super::subject::SubjectError),

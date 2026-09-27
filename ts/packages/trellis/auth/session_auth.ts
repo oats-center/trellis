@@ -1,4 +1,4 @@
-import { type Authenticator, jwtAuthenticator } from "@nats-io/nats-core";
+import { type Authenticator, nkeyAuthenticator } from "@nats-io/nats-core";
 import { fromSeed, Prefix } from "@nats-io/nkeys";
 import { Codec } from "@nats-io/nkeys/lib/codec.js";
 import { ulid } from "ulid";
@@ -102,7 +102,7 @@ export async function createAuth(
     natsConnectOptions: (options) => {
       return Promise.resolve({
         authenticator: [
-          jwtAuthenticator(options.jwt, encodedSeed),
+          nkeyAuthenticator(encodedSeed),
           (nonce) => {
             if (options.authorizationUsable?.() === false) {
               throw new Error("authorization context is suspended");
@@ -116,8 +116,11 @@ export async function createAuth(
             }
             return {
               auth_token: JSON.stringify({
-                format: "trellis.nats-connect-token.v1",
+                format: "trellis.nats-connect-token.v2",
                 contextDigest,
+                routingJwt: typeof options.jwt === "function"
+                  ? options.jwt()
+                  : options.jwt,
               }),
             };
           },

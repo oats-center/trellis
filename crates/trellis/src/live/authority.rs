@@ -185,55 +185,32 @@ impl LiveAuthorityGuard {
             .map_or(0, |lease| lease.signed_context().unsigned.expires_at)
     }
 
-    /// Return whether this guard is inside a planned credential rotation whose
-    /// replacement coverage is not yet established.
-    ///
-    /// The logical connection and its session remain alive; the guard pauses new
-    /// decisions until it rebinds onto the replacement physical attachment.
-    #[must_use]
-    pub(crate) fn maintenance(&self) -> bool {
-        if self.lease.read().is_err() {
-            return false;
-        }
-        let Ok(epoch) = self.expected_epoch.read() else {
-            return false;
-        };
-        self.cache.maintenance_for(*epoch)
-    }
-
-    /// Reconcile this guard across a planned physical credential rotation.
-    ///
-    /// Returns `Ok(())` when the guard is usable (including after a successful
-    /// rebind) and the precise terminal loss otherwise. A rebind waits, within a
-    /// bounded budget, for the rotation's coverage to settle, then re-resolves
-    /// the guard's exact digest on the replacement attachment, re-validates the
-    /// pinned identity and role requirement, and only then releases the
-    /// predecessor lease.
+    /// Adopt a newer local context on the same physical attachment; peer
+    /// replacements are accepted only through the signed Live evidence path.
     pub(crate) async fn reconcile(&self) -> Result<(), LiveAuthorityLost> {
-        if !self.maintenance() {
-            return self.check_now();
-        }
-        let settled = self
-            .cache
-            .wait_rotation_settled(std::time::Duration::from_secs(30))
-            .await;
         let expected = *self
             .expected_epoch
             .read()
             .map_err(|_| LiveAuthorityLost::CoverageUnknown)?;
-        if !self.cache.maintenance_for(expected) {
-            return self.check_now();
+        if self.tracks_local && expected == self.cache.epoch() {
+            let current = self.cache.current_local_context_digest();
+            let changed = {
+                let retained = self
+                    .digest
+                    .read()
+                    .map_err(|_| LiveAuthorityLost::CoverageUnknown)?;
+                current.as_deref() != Some(retained.as_str())
+            };
+            if changed {
+                return self.rebind(expected).await;
+            }
         }
-        if !settled {
-            return Err(LiveAuthorityLost::CoverageLost);
-        }
-        self.rebind(self.cache.epoch()).await
+        self.check_now()
     }
 
     /// Rebind onto the current transport epoch after an ordinary reconnect.
     ///
-    /// Unlike [`Self::reconcile`], this is not gated on a planned rotation: a
-    /// long-lived provider guard must adopt the replacement physical attachment
+    /// A long-lived provider guard must adopt the replacement physical attachment
     /// before it can admit new sessions. The predecessor lease is released only
     /// after the replacement evidence is retained and validated.
     ///
@@ -248,7 +225,7 @@ impl LiveAuthorityGuard {
             .read()
             .map_err(|_| LiveAuthorityLost::CoverageUnknown)?;
         if generation == expected {
-            return self.check_now();
+            return self.reconcile().await;
         }
         self.rebind(generation).await
     }
@@ -310,9 +287,6 @@ impl LiveAuthorityGuard {
     ///
     /// Returns the precise [`LiveAuthorityLost`] reason, never a lossy boolean.
     pub(crate) fn check_now(&self) -> Result<(), LiveAuthorityLost> {
-        if self.maintenance() {
-            return Ok(());
-        }
         let expected_epoch = *self
             .expected_epoch
             .read()
@@ -469,9 +443,8 @@ impl LiveAuthorityGuard {
         payload: &[u8],
         headers: &async_nats::HeaderMap,
     ) -> Result<(), LiveErrorCode> {
-        // Reconcile rather than a synchronous check: a planned credential
-        // rotation pauses control decisions until exact coverage is rebound on
-        // the replacement attachment instead of applying them from a stale lease.
+        // Reconcile before signing a control so an in-place local renewal is
+        // adopted first; a stale lease must never authorize a decision.
         self.reconcile()
             .await
             .map_err(|_| LiveErrorCode::PermissionDenied)?;

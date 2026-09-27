@@ -21,6 +21,7 @@ system_creds_path = "/run/trellis/creds/system.creds"
 issuer_signing_seed_file = "/etc/trellis/secrets/auth-issuer-signing.seed"
 target_signing_seed_file = "/etc/trellis/secrets/auth-target-signing.seed"
 xkey_seed_file = "/etc/trellis/secrets/auth-xkey.seed"
+sentinel_public_key_file = "/etc/trellis/secrets/auth-sentinel.pub"
 
 [auth.authorization]
 issuer_signing_seed_file = "/etc/trellis/secrets/authorization-issuer.seed"

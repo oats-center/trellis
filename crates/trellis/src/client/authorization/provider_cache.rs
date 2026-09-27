@@ -170,10 +170,6 @@ pub struct AuthorizationProviderCache {
     coverage_probe: Arc<CoverageProbe>,
     /// Wakes retained live guards when coverage, revocation or epoch state moves.
     live_changes: Arc<tokio::sync::broadcast::Sender<()>>,
-    /// Set while a planned physical credential rotation is in progress.
-    rotation_open: Arc<AtomicBool>,
-    /// Generation retained guards must rebind onto after a planned rotation.
-    planned_epoch: Arc<AtomicU64>,
 }
 
 impl AuthorizationProviderCache {
@@ -350,8 +346,6 @@ impl AuthorizationProviderCache {
             access_clock: Arc::new(AtomicU64::new(0)),
             coverage_probe,
             live_changes: Arc::new(tokio::sync::broadcast::channel(64).0),
-            rotation_open: Arc::new(AtomicBool::new(false)),
-            planned_epoch: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -388,9 +382,6 @@ impl AuthorizationProviderCache {
         *self.own_lease.lock().map_err(|_| {
             TrellisClientError::AuthorizationUnavailable("own context lease lock poisoned".into())
         })? = Some(lease);
-        if self.rotation_open() {
-            self.planned_epoch.store(expected_epoch, Ordering::Release);
-        }
         self.notify_live_changes();
         tracing::info!(
             context_digest = digest,
@@ -428,8 +419,6 @@ impl AuthorizationProviderCache {
             }
         }
         self.closed.store(true, Ordering::Release);
-        self.rotation_open.store(false, Ordering::Release);
-        self.planned_epoch.store(0, Ordering::Release);
         self.coverage_probe.observe(true, self.epoch(), false);
         Ok(())
     }
@@ -497,59 +486,11 @@ impl AuthorizationProviderCache {
         self.nats.statistics().connects.load(Ordering::Acquire)
     }
 
-    /// Mark the start of a planned physical credential rotation.
-    pub(crate) fn begin_planned_rotation(&self) {
-        self.rotation_open.store(true, Ordering::Release);
-    }
-
-    /// Return whether a planned rotation is currently in progress.
-    pub(crate) fn rotation_open(&self) -> bool {
-        self.rotation_open.load(Ordering::Acquire)
-    }
-
-    /// Return whether one retained generation is inside or awaiting a planned
-    /// rotation and can still be rebound onto the replacement attachment.
-    pub(crate) fn maintenance_for(&self, epoch: u64) -> bool {
-        if self.rotation_open() {
-            return true;
-        }
-        let planned = self.planned_epoch.load(Ordering::Acquire);
-        planned != 0 && epoch < planned
-    }
-
     /// Return the connection's installed own-context digest, if any.
     pub(crate) fn current_local_context_digest(&self) -> Option<String> {
         self.own
             .as_ref()
             .and_then(|own| own.stored_context_digest().ok())
-    }
-
-    /// Abandon an unfinished planned rotation so retained guards fail closed.
-    pub(crate) fn abandon_rotation(&self) {
-        self.rotation_open.store(false, Ordering::Release);
-        self.planned_epoch.store(0, Ordering::Release);
-        self.notify_live_changes();
-    }
-
-    /// Wait, bounded by `timeout`, for a planned rotation to settle: either its
-    /// coverage is promoted onto the replacement attachment or it is abandoned.
-    pub(crate) async fn wait_rotation_settled(&self, timeout: Duration) -> bool {
-        if !self.rotation_open() {
-            return true;
-        }
-        let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            let mut changes = self.subscribe_live_changes();
-            if !self.rotation_open() {
-                return true;
-            }
-            if tokio::time::timeout_at(deadline, changes.recv())
-                .await
-                .is_err()
-            {
-                return !self.rotation_open();
-            }
-        }
     }
 
     /// Subscribe to local coverage/revocation changes that can invalidate a
@@ -709,7 +650,6 @@ impl AuthorizationProviderCache {
         } else {
             own.resume_availability_locked(&transition, expected_digest)?;
         }
-        self.rotation_open.store(false, Ordering::Release);
         self.notify_live_changes();
         Ok(())
     }
@@ -1112,9 +1052,9 @@ impl AuthorizationProviderCache {
     /// Reaching here means [`Self::lease_cached_context`] rejected the entry as
     /// stale-epoch, uncovered or expired. A stale-epoch entry is always detached
     /// from the digest index, even while existing live guards still hold leases:
-    /// their leases keep the retired `Arc` and its revocation watch alive, so a
-    /// planned physical rotation can install the successor coverage for the same
-    /// digest on the replacement attachment before the old guard releases its
+    /// their leases keep the retired `Arc` and its revocation watch alive, so
+    /// successor coverage for the same digest can be installed on the current
+    /// attachment before the old guard releases its
     /// predecessor. Refusing to detach a leased stale entry is what prevented an
     /// unchanged peer context from rebinding across a new transport epoch.
     ///

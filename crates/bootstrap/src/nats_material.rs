@@ -16,6 +16,7 @@ pub(crate) struct NatsMaterial {
     pub(crate) operator_jwt: String,
     pub(crate) system_account_jwt: String,
     pub(crate) auth_account_jwt: String,
+    pub(crate) auth_sentinel_jwt: String,
     pub(crate) trellis_account_jwt: String,
     pub(crate) system_user_jwt: String,
     pub(crate) auth_user_jwt: String,
@@ -39,6 +40,7 @@ pub(crate) fn generate_nats_material(
     let trellis_signing_key = KeyPair::new_account();
     let system_user_key = KeyPair::new_user();
     let auth_user_key = KeyPair::new_user();
+    let auth_sentinel_key = KeyPair::new_user();
     let trellis_user_key = KeyPair::new_user();
     let auth_callout_xkey = XKey::new();
 
@@ -79,6 +81,24 @@ pub(crate) fn generate_nats_material(
         ),
         &operator_key,
     )?;
+    let mut sentinel = user_claim(
+        "trellis-auth-sentinel",
+        auth_sentinel_key.public_key(),
+        auth_acct_pk.clone(),
+        Permissions {
+            publish: Permission {
+                allow: Vec::new(),
+                deny: vec![">".to_string()],
+            },
+            subscribe: Permission {
+                allow: Vec::new(),
+                deny: vec![">".to_string()],
+            },
+            resp: None,
+        },
+    );
+    sentinel.payload_mut().permissions.bearer_token = Some(true);
+    let auth_sentinel_jwt = encode_claims(&sentinel, &auth_signing_key)?;
     let trellis_account_jwt = encode_claims(
         &account_claim(
             names.trellis_account.clone(),
@@ -126,11 +146,13 @@ pub(crate) fn generate_nats_material(
             trellis_account_name: names.trellis_account.clone(),
             trellis_account_public_key: trellis_acct_pk,
             auth_user_public_key: auth_user_pk,
+            auth_sentinel_public_key: auth_sentinel_key.public_key(),
             trellis_user_public_key: trellis_user_pk,
         },
         operator_jwt,
         system_account_jwt,
         auth_account_jwt,
+        auth_sentinel_jwt,
         trellis_account_jwt,
         system_user_jwt,
         auth_user_jwt,
@@ -207,6 +229,7 @@ resolver_preload: {{
   {auth_account}: {auth_jwt}
   {trellis_account}: {trellis_jwt}
 }}
+default_sentinel: {sentinel_jwt}
 "#,
         operator_jwt = material.operator_jwt,
         system_account = material.metadata.system_account_public_key,
@@ -215,6 +238,7 @@ resolver_preload: {{
         auth_jwt = material.auth_account_jwt,
         trellis_account = material.metadata.trellis_account_public_key,
         trellis_jwt = material.trellis_account_jwt,
+        sentinel_jwt = material.auth_sentinel_jwt,
     )
 }
 

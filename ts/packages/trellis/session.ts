@@ -3343,6 +3343,25 @@ export class Trellis<
           });
           return subject;
         }
+        const gate = this.#transportGate;
+        if (gate) {
+          // A Live observation opens with a bound publish route and receives on
+          // this caller's own inbox family. A capability granted by renewed
+          // authority but not yet admitted must report the pending transport
+          // condition instead of opening an unauthorized exchange.
+          const upgradeRequired = await requiresTransportUpgrade(gate, {
+            publish: [subject],
+            subscribe: [`${this.#inboxPrefix}.>`],
+          });
+          if (upgradeRequired) {
+            return err(
+              transportUpgradeRequiredError({
+                method: String(live),
+                subject,
+              }),
+            );
+          }
+        }
         if (opts?.signal?.aborted) {
           const error = createTransportError({
             code: "trellis.live.subscribe_aborted",

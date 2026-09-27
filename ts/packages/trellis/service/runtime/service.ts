@@ -10,6 +10,7 @@ import {
   installConnectionAvailability,
   installConnectionTransportUpgrade,
   replaceTransportAttachment,
+  sameTransportServers,
   type TrellisAvailability,
 } from "../../connection.ts";
 import {
@@ -2765,15 +2766,17 @@ export function connectTrellisServiceWithRuntimeDeps<
         });
 
       let nc: NatsConnection | undefined;
+      let appliedTransportServers: string[] | undefined;
       let authorizationProviderCache: AuthorizationProviderCache | undefined;
       let stopContextRefresh: (() => void) | undefined;
       const connectionTelemetry = startConnectionTelemetry("service");
       try {
         const natsStartedAt = performance.now();
+        appliedTransportServers = selectRuntimeTransportServers(
+          bootstrap.connectInfo.transports,
+        );
         nc = await runtimeDeps.connect({
-          servers: selectRuntimeTransportServers(
-            bootstrap.connectInfo.transports,
-          ),
+          servers: appliedTransportServers,
           maxReconnectAttempts: DEFAULT_RUNTIME_MAX_RECONNECT_ATTEMPTS,
           ignoreAuthErrorAbort: true,
           waitOnFirstConnect: DEFAULT_SERVICE_RUNTIME_WAIT_ON_FIRST_CONNECT,
@@ -3055,16 +3058,20 @@ export function connectTrellisServiceWithRuntimeDeps<
             }
           },
           onRefresh: async (context) => {
+            // Routine renewal must not disturb the live attachment: only
+            // reconfigure the retained connect pool when it actually changed.
+            const refreshedServers = selectRuntimeTransportServers(
+              authorizationContexts.transportRuntimeBinding().transports,
+            );
+            if (
+              !sameTransportServers(refreshedServers, appliedTransportServers)
+            ) {
+              appliedTransportServers = refreshedServers;
+              nc.setServers(refreshedServers);
+            }
             await installAuthorizationRefresh({
               provider: authorizationProviderCache,
               contextDigest: context.contextDigest,
-              updateTransport: () => {
-                nc.setServers(
-                  selectRuntimeTransportServers(
-                    authorizationContexts.transportRuntimeBinding().transports,
-                  ),
-                );
-              },
             });
             await transportState.recompute(
               context.context.transportAuthorization,

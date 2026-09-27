@@ -440,6 +440,7 @@ impl RuntimeConfig {
                 resolve_path(base_dir, &mut runtime.system_creds_path);
             }
             if let Some(auth_callout) = &mut nats.auth_callout {
+                resolve_path(base_dir, &mut auth_callout.sentinel_public_key_file);
                 resolve_path(base_dir, &mut auth_callout.issuer_signing_seed_file);
                 resolve_path(base_dir, &mut auth_callout.target_signing_seed_file);
                 resolve_path(base_dir, &mut auth_callout.xkey_seed_file);
@@ -715,6 +716,8 @@ pub struct NatsRuntimeConfig {
 /// NATS auth-callout signing and encryption material paths.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NatsAuthCalloutConfig {
+    /// Server-only identity of the non-expiring default sentinel.
+    pub sentinel_public_key_file: Option<PathBuf>,
     /// Auth issuer signing seed file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issuer_signing_seed_file: Option<PathBuf>,
@@ -765,6 +768,11 @@ impl NatsConfig {
             })?;
 
         Ok(ResolvedNatsAuthCalloutConfig {
+            sentinel_public_key_file: require_path(
+                "nats.auth_callout",
+                "sentinel_public_key_file",
+                auth_callout.sentinel_public_key_file.as_ref(),
+            )?,
             issuer_signing_seed_file: require_path(
                 "nats.auth_callout",
                 "issuer_signing_seed_file",
@@ -800,6 +808,8 @@ pub struct ResolvedRuntimeNatsConfig {
 /// Resolved NATS auth-callout signing and encryption material paths.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedNatsAuthCalloutConfig {
+    /// Server-only sentinel public key file.
+    pub sentinel_public_key_file: PathBuf,
     /// Auth issuer signing seed file.
     pub issuer_signing_seed_file: PathBuf,
     /// Trellis target signing seed file.

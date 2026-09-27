@@ -206,8 +206,8 @@ impl AuthorizationContextCache {
             bundle,
         };
         if !promote {
-            // A planned refresh keeps the active installation usable until the
-            // candidate is promoted after transport reauthorization.
+            // A prepared refresh keeps the active installation usable until the
+            // candidate is promoted in place on the current attachment.
             let mut candidate = self.candidate.write().map_err(|_| {
                 TrellisClientError::Bootstrap("context candidate lock poisoned".into())
             })?;
@@ -593,6 +593,18 @@ impl AuthorizationContextCache {
             .ok_or_else(|| {
                 TrellisClientError::Bootstrap("authorization context unavailable".into())
             })
+    }
+
+    /// Return the signed transport policy of the installed application context.
+    ///
+    /// This is the newest valid application policy `D`; it is not a claim about
+    /// what the broker admitted on the current physical attachment.
+    pub(crate) fn current_transport_policy(
+        &self,
+    ) -> Result<trellis_protocol::TransportAuthorizationV1, TrellisClientError> {
+        let context = trellis_protocol::parse_authorization_context(&self.bundle()?.context)
+            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
+        Ok(context.unsigned.transport_authorization)
     }
 
     /// Renew through the credential's proof-bound native bootstrap or user refresh route.

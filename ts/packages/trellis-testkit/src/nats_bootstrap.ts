@@ -20,6 +20,7 @@ export type LocalNatsBootstrapManifest = {
   users: {
     system: { name: string; publicKey: string };
     authService: { name: string; publicKey: string };
+    authSentinel: { name: string; publicKey: string };
     trellisService: { name: string; publicKey: string };
   };
   paths: {
@@ -54,6 +55,7 @@ type GeneratedMetadata = {
   trellisAccountPublicKey: string;
   systemUserPublicKey: string;
   authUserPublicKey: string;
+  authSentinelPublicKey: string;
   trellisUserPublicKey: string;
 };
 
@@ -108,8 +110,11 @@ nsc edit account --name "$TRELLIS_ACCOUNT_NAME" --sk generate
 nsc edit account --name "$AUTH_ACCOUNT_NAME" --js-mem-storage -1 --js-disk-storage -1 --js-streams -1 --js-consumer 4096
 nsc edit account --name "$TRELLIS_ACCOUNT_NAME" --js-mem-storage -1 --js-disk-storage -1 --js-streams -1 --js-consumer 4096
 nsc add user --account "$AUTH_ACCOUNT_NAME" --name auth --allow-pubsub ">"
+nsc add user --account "$AUTH_ACCOUNT_NAME" --name trellis-auth-sentinel --bearer --deny-pubsub ">" --expiry 0
+nsc describe user --account "$AUTH_ACCOUNT_NAME" --name trellis-auth-sentinel --raw > "$WORK_DIR/generated/sentinel.jwt"
 nsc add user --account "$TRELLIS_ACCOUNT_NAME" --name auth --allow-pubsub ">"
 AUTH_USER=$(nsc describe user --account "$AUTH_ACCOUNT_NAME" --name auth --field sub | tr -d '"')
+AUTH_SENTINEL=$(nsc describe user --account "$AUTH_ACCOUNT_NAME" --name trellis-auth-sentinel --field sub | tr -d '"')
 TRELLIS_USER=$(nsc describe user --account "$TRELLIS_ACCOUNT_NAME" --name auth --field sub | tr -d '"')
 TRELLIS_ACCOUNT=$(nsc describe account --name "$TRELLIS_ACCOUNT_NAME" --field sub | tr -d '"')
 nsc edit authcallout --account "$AUTH_ACCOUNT_NAME" --auth-user "$AUTH_USER" --allowed-account "$TRELLIS_ACCOUNT" --curve generate
@@ -131,6 +136,7 @@ cat > "$WORK_DIR/generated/metadata.json" <<EOF
   "trellisAccountPublicKey": "\${TRELLIS_ACCOUNT}",
   "systemUserPublicKey": "\${SYSTEM_USER}",
   "authUserPublicKey": "\${AUTH_USER}",
+  "authSentinelPublicKey": "\${AUTH_SENTINEL}",
   "trellisUserPublicKey": "\${TRELLIS_USER}"
 }
 EOF`;
@@ -326,6 +332,10 @@ export async function generateLocalNatsBootstrap(args: {
     users: {
       system: { name: "system", publicKey: metadata.systemUserPublicKey },
       authService: { name: "auth", publicKey: metadata.authUserPublicKey },
+      authSentinel: {
+        name: "trellis-auth-sentinel",
+        publicKey: metadata.authSentinelPublicKey,
+      },
       trellisService: {
         name: "auth",
         publicKey: metadata.trellisUserPublicKey,
@@ -351,7 +361,12 @@ export async function generateLocalNatsBootstrap(args: {
     normalizeJwtConfig(
       await Deno.readTextFile(join(args.outDir, "generated", "jwt.conf")),
       args.outDir,
-    ),
+    ) +
+      `\ndefault_sentinel: ${
+        (await Deno.readTextFile(
+          join(args.outDir, "generated", "sentinel.jwt"),
+        )).trim()
+      }\n`,
   );
 
   await Deno.remove(join(args.outDir, "generated"), { recursive: true });

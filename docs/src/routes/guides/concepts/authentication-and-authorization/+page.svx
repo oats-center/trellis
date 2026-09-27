@@ -78,10 +78,13 @@ package/participant evidence, exact grants, resources, route JWT, inbox, and NAT
 endpoints server-side. The runtime verifies that complete response before its
 first CONNECT.
 
-NATS Auth Callout verifies the route token, nonce-bound connect proof, signed
-context, redundant fields, and current issuable state. It derives short-lived
-publish/subscribe permissions from structured grants and exact evidence.
-Subjects never create authority.
+A client CONNECTs with its session NKey signature and a
+`trellis.nats-connect-token.v2` carrying the selected context digest and a
+short-lived admission routing JWT; it presents no client JWT. Auth Callout
+validates that routing JWT, the nonce-bound connect proof, and the signed
+context, rechecks current issuable state, and installs the exact transport
+policy signed into the selected context. It never derives authority from
+subject strings or the redundant session key.
 
 ## Browser login and the portal
 

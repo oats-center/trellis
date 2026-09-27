@@ -17,6 +17,7 @@ function testManifest(): LocalNatsBootstrapManifest {
     users: {
       system: { name: "system", publicKey: "SYSTEM_USER_PUBLIC" },
       authService: { name: "auth", publicKey: "AUTH_USER_PUBLIC" },
+      authSentinel: { name: "sentinel", publicKey: "SENTINEL_USER_PUBLIC" },
       trellisService: { name: "auth", publicKey: "TRELLIS_USER_PUBLIC" },
     },
     paths: {
@@ -76,6 +77,10 @@ Deno.test("writeTrellisConfig stages credentials without embedding their values"
     });
     const configPath = await writeTrellisConfig({ workdir, config });
     const text = await Deno.readTextFile(configPath);
+    assertEquals(
+      await Deno.readTextFile(join(workdir, "trellis", "auth-sentinel.pub")),
+      "SENTINEL_USER_PUBLIC\n",
+    );
 
     for (const [name, seed] of Object.entries(seeds)) {
       assertEquals(

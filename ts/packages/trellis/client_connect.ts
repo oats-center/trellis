@@ -50,6 +50,7 @@ import {
   installConnectionTransportUpgrade,
   observeNatsTrellisConnection,
   replaceTransportAttachment,
+  sameTransportServers,
   startConnectionTelemetry,
   transitionConnectionAvailability,
   type TrellisConnection,
@@ -1385,14 +1386,16 @@ export async function connectClientWithDeps<
       authorizationProviderCache?.transportUsable() ?? true,
   });
   let nc: NatsConnection | undefined;
+  let appliedTransportServers: string[] | undefined;
   let authorizationProviderCache: AuthorizationProviderCache | undefined;
   const connectionTelemetry = startConnectionTelemetry("client");
   try {
     const natsStartedAt = performance.now();
+    appliedTransportServers = selectClientRuntimeTransportServers(
+      bootstrap.connectInfo.transports,
+    );
     nc = await transport.connect({
-      servers: selectClientRuntimeTransportServers(
-        bootstrap.connectInfo.transports,
-      ),
+      servers: appliedTransportServers,
       maxReconnectAttempts: DEFAULT_RUNTIME_MAX_RECONNECT_ATTEMPTS,
       ignoreAuthErrorAbort: true,
       timeout: args.timeout ?? 30_000,
@@ -1623,16 +1626,20 @@ export async function connectClientWithDeps<
       return result.context;
     },
     onRefresh: async (context) => {
+      // Routine renewal must not disturb the live attachment: only reconfigure
+      // the retained connect pool when the refreshed transport set actually
+      // differs. Re-applying an identical server list still makes the NATS
+      // client tear the connection down and re-establish it.
+      const refreshedServers = selectClientRuntimeTransportServers(
+        authorizationContexts.transportRuntimeBinding().transports,
+      );
+      if (!sameTransportServers(refreshedServers, appliedTransportServers)) {
+        appliedTransportServers = refreshedServers;
+        nc.setServers(refreshedServers);
+      }
       await installAuthorizationRefresh({
         provider: authorizationProviderCache,
         contextDigest: context.contextDigest,
-        updateTransport: () => {
-          nc.setServers(
-            selectClientRuntimeTransportServers(
-              authorizationContexts.transportRuntimeBinding().transports,
-            ),
-          );
-        },
       });
       await transportState.recompute(
         context.context.transportAuthorization,

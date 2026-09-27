@@ -149,6 +149,10 @@ pub enum KvResourceReadError {
     /// The backend operation failed.
     #[error("KV backend error: {0}")]
     Backend(String),
+    /// This operation's granted transport is not yet admitted on the current
+    /// physical attachment. Adopt it with an explicit transport refresh.
+    #[error("the KV resource's granted transport is not admitted on the current connection")]
+    TransportUpgradeRequired,
 }
 
 /// Typed KV write failure with the authoritative current entry on CAS conflict.
@@ -169,6 +173,10 @@ pub enum KvResourceWriteError<T> {
     /// The backend operation failed.
     #[error("KV backend error: {0}")]
     Backend(String),
+    /// This operation's granted transport is not yet admitted on the current
+    /// physical attachment. Adopt it with an explicit transport refresh.
+    #[error("the KV resource's granted transport is not admitted on the current connection")]
+    TransportUpgradeRequired,
 }
 
 /// Typed handle for one generated service-owned KV resource.
@@ -179,6 +187,7 @@ pub struct KvResourceHandle<T, C> {
     client: C,
     availability: tokio::sync::watch::Receiver<crate::generated::AvailabilitySnapshot>,
     generation: u64,
+    transport: Option<crate::client::ResourceTransportGate>,
 }
 
 impl<T, C: Clone> Clone for KvResourceHandle<T, C> {
@@ -190,6 +199,7 @@ impl<T, C: Clone> Clone for KvResourceHandle<T, C> {
             client: self.client.clone(),
             availability: self.availability.clone(),
             generation: self.generation,
+            transport: self.transport.clone(),
         }
     }
 }
@@ -222,6 +232,7 @@ where
         codec: crate::client::ResourceCodec<T>,
         client: C,
         availability: tokio::sync::watch::Receiver<crate::generated::AvailabilitySnapshot>,
+        transport: Option<crate::client::ResourceTransportGate>,
     ) -> Self {
         let resource_name = resource_name.into();
         let generation = availability
@@ -235,7 +246,19 @@ where
             client,
             availability,
             generation,
+            transport,
         }
+    }
+
+    /// Reject one operation whose granted transport is not yet admitted.
+    ///
+    /// A handle opened without a gate (a test-constructed backend) degrades to
+    /// broker enforcement, which remains authoritative.
+    fn ensure_transport(&self, action: crate::client::ResourceTransportAction) -> bool {
+        self.transport
+            .as_ref()
+            .and_then(|gate| gate.missing(action).ok())
+            .unwrap_or(false)
     }
 
     /// Contract-local resource alias used to open this handle.
@@ -258,7 +281,7 @@ where
         &self,
         key: &str,
     ) -> Result<Option<KvResourceEntry<T>>, KvResourceReadError> {
-        self.ensure_current()?;
+        self.ensure_read()?;
         match self.client.get_entry(key).await.map_err(backend_read)? {
             Some(entry) => self.project(entry).await.map(Some).map_err(Into::into),
             None => Ok(None),
@@ -299,8 +322,7 @@ where
         key: &str,
         revision: Option<crate::client::ResourceRevision>,
     ) -> Result<(), KvResourceWriteError<T>> {
-        self.ensure_current()
-            .map_err(|_| KvResourceWriteError::Unavailable)?;
+        self.ensure_write()?;
         let result = match revision {
             Some(revision) => {
                 self.client
@@ -320,7 +342,7 @@ where
 
     /// Return retained revisions in backend order, including tombstones.
     pub async fn history(&self, key: &str) -> Result<Vec<KvResourceEntry<T>>, KvResourceReadError> {
-        self.ensure_current()?;
+        self.ensure_read()?;
         let mut projected = Vec::new();
         for entry in self.client.history(key).await.map_err(backend_read)? {
             projected.push(self.project(entry).await?);
@@ -336,7 +358,7 @@ where
         Pin<Box<dyn Stream<Item = Result<KvResourceEntry<T>, KvResourceReadError>> + Send>>,
         KvResourceReadError,
     > {
-        self.ensure_current()?;
+        self.ensure_read()?;
         let stream = self.client.watch(key).await.map_err(backend_read)?;
         let handle = self.clone();
         Ok(Box::pin(stream.then(move |entry| {
@@ -357,8 +379,7 @@ where
         value: &T,
         mode: Option<Option<crate::client::ResourceRevision>>,
     ) -> Result<KvResourceEntry<T>, KvResourceWriteError<T>> {
-        self.ensure_current()
-            .map_err(|_| KvResourceWriteError::Unavailable)?;
+        self.ensure_write()?;
         let value = self.codec.encode(value)?;
         let result = match mode {
             None => self.client.create(key, value).await,
@@ -428,6 +449,25 @@ where
         } else {
             Err(KvResourceReadError::Unavailable)
         }
+    }
+
+    /// Gate one read on both the current binding and admitted transport.
+    fn ensure_read(&self) -> Result<(), KvResourceReadError> {
+        self.ensure_current()?;
+        if self.ensure_transport(crate::client::ResourceTransportAction::Read) {
+            return Err(KvResourceReadError::TransportUpgradeRequired);
+        }
+        Ok(())
+    }
+
+    /// Gate one write on both the current binding and admitted transport.
+    fn ensure_write(&self) -> Result<(), KvResourceWriteError<T>> {
+        self.ensure_current()
+            .map_err(|_| KvResourceWriteError::Unavailable)?;
+        if self.ensure_transport(crate::client::ResourceTransportAction::Write) {
+            return Err(KvResourceWriteError::TransportUpgradeRequired);
+        }
+        Ok(())
     }
 }
 
@@ -557,6 +597,7 @@ pub struct StoreResourceHandle<C> {
     client: C,
     availability: tokio::sync::watch::Receiver<crate::generated::AvailabilitySnapshot>,
     generation: u64,
+    transport: Option<crate::client::ResourceTransportGate>,
 }
 
 /// Options for waiting until an object appears in a bound object store.
@@ -588,6 +629,7 @@ where
         binding: StoreResourceBinding,
         client: C,
         availability: tokio::sync::watch::Receiver<crate::generated::AvailabilitySnapshot>,
+        transport: Option<crate::client::ResourceTransportGate>,
     ) -> Self {
         let resource_name = resource_name.into();
         let generation = availability
@@ -601,6 +643,7 @@ where
             client,
             availability,
             generation,
+            transport,
         }
     }
 
@@ -643,7 +686,7 @@ where
         R: AsyncRead + Unpin + Send,
         F: Future<Output = ()> + Send,
     {
-        self.ensure_current()?;
+        self.ensure_current(crate::client::ResourceTransportAction::Write)?;
         let max_size = self
             .binding
             .max_object_bytes
@@ -723,7 +766,7 @@ where
         W: AsyncWrite + Unpin + Send,
         F: Future<Output = ()> + Send,
     {
-        self.ensure_current()?;
+        self.ensure_current(crate::client::ResourceTransportAction::Read)?;
         tokio::pin!(cancel);
         tokio::select! {
             biased;
@@ -857,19 +900,19 @@ where
 
     /// List active object names in this store.
     pub async fn list(&self) -> Result<Vec<String>, ServerError> {
-        self.ensure_current()?;
+        self.ensure_current(crate::client::ResourceTransportAction::Read)?;
         self.client.list().await
     }
 
     /// Return metadata for an active object without retaining its payload.
     pub async fn metadata(&self, key: &str) -> Result<Option<StoreObjectInfo>, ServerError> {
-        self.ensure_current()?;
+        self.ensure_current(crate::client::ResourceTransportAction::Read)?;
         self.client.metadata(key).await
     }
 
     /// List a bounded, key-sorted page of object metadata.
     pub async fn list_page(&self, options: StoreListOptions) -> Result<StoreListPage, ServerError> {
-        self.ensure_current()?;
+        self.ensure_current(crate::client::ResourceTransportAction::Read)?;
         let limit = options.limit.unwrap_or(100);
         if limit == 0 || limit > 500 {
             return Err(ServerError::Nats(
@@ -914,11 +957,14 @@ where
 
     /// Delete `key` from this store.
     pub async fn delete(&self, key: &str) -> Result<(), ServerError> {
-        self.ensure_current()?;
+        self.ensure_current(crate::client::ResourceTransportAction::Write)?;
         self.client.delete(key).await
     }
 
-    fn ensure_current(&self) -> Result<(), ServerError> {
+    fn ensure_current(
+        &self,
+        action: crate::client::ResourceTransportAction,
+    ) -> Result<(), ServerError> {
         if self
             .availability
             .borrow()
@@ -929,6 +975,17 @@ where
                 .borrow()
                 .has_store_binding(&self.resource_name, &self.binding)
         {
+            if self
+                .transport
+                .as_ref()
+                .and_then(|gate| gate.missing(action).ok())
+                .unwrap_or(false)
+            {
+                return Err(ServerError::TransportUpgradeRequired(format!(
+                    "store resource '{}' is granted but its transport is not admitted on the current connection",
+                    self.resource_name
+                )));
+            }
             Ok(())
         } else {
             Err(ServerError::ResourceUnavailable {
@@ -991,6 +1048,7 @@ pub(crate) async fn open_generated_kv<T>(
     binding: KvResourceBinding,
     codec: crate::client::ResourceCodec<T>,
     availability: tokio::sync::watch::Receiver<crate::generated::AvailabilitySnapshot>,
+    transport: crate::client::ResourceTransportGate,
 ) -> Result<KvHandle<T>, ServerError>
 where
     T: crate::generated::Codec + Send + 'static,
@@ -1003,6 +1061,7 @@ where
         codec,
         backend,
         availability,
+        Some(transport),
     ))
 }
 
@@ -1012,6 +1071,7 @@ pub(crate) async fn open_generated_store(
     name: &str,
     binding: StoreResourceBinding,
     availability: tokio::sync::watch::Receiver<crate::generated::AvailabilitySnapshot>,
+    transport: crate::client::ResourceTransportGate,
 ) -> Result<StoreHandle, ServerError> {
     validate_store_binding(participant_id, name, &binding)?;
     let backend = client.open_store(&binding).await?;
@@ -1021,6 +1081,7 @@ pub(crate) async fn open_generated_store(
         binding,
         backend,
         availability,
+        Some(transport),
     ))
 }
 
@@ -1432,6 +1493,7 @@ mod tests {
             binding.clone(),
             RecordingStore::default(),
             store_availability("objects", binding),
+            None,
         )
     }
 
@@ -1601,6 +1663,7 @@ mod tests {
             binding.clone(),
             store,
             store_availability("uploads", binding),
+            None,
         );
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let task = tokio::spawn(async move {
@@ -1639,6 +1702,7 @@ mod tests {
             binding.clone(),
             store,
             store_availability("uploads", binding),
+            None,
         );
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let mut task = tokio::spawn(async move {

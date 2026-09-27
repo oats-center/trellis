@@ -38,11 +38,14 @@ default request timeout, event stream selection, no-responder retry, and health
 heartbeat interval. Deployment/instance assignment, installed
 package/participant evidence, exact grants, resources, signed context, route
 JWT, and transport endpoints are resolved server-side. Authorization state is
-process-memory-only and is refreshed proactively as SDK-owned maintenance; a
-refreshed route credential may rotate the physical NATS attachment without
-ending the logical connection. No authorization-context store or client-supplied
-deployment/digest fields exist. The complete example is in
-`/guides/write-a-service/service-entrypoint`.
+process-memory-only and is refreshed proactively as SDK-owned maintenance. An
+identity-preserving refresh promotes the refreshed context in place without
+reconnecting a healthy socket; when refreshed authority offers transport
+capability the admitted attachment lacks, the client reports a retained
+`transportUpgradeAvailable` upgrade and the application adopts it explicitly
+with `refreshTransport()` rather than reconnecting on every refresh. No
+authorization-context store or client-supplied deployment/digest fields exist.
+The complete example is in `/guides/write-a-service/service-entrypoint`.
 
 For a participant declaring RPC `Orders.Create`, with matching generated input
 and output models:

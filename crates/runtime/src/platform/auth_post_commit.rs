@@ -534,22 +534,38 @@ impl AuthPostCommitRuntime {
             ));
         };
         for connection in connections {
-            let mut event = super::auth::connection_event_action::<
-                trellis_runtime_apis::apis::trellis_auth_v1::events::ConnectionsKicked,
-            >(
+            self.kick_with_event(
                 &connection,
-                "Auth.Connections.Kicked",
-                "kicked",
+                Some(action.action_id.clone()),
                 payload.get("reason").and_then(Value::as_str),
-                now_millis()?,
-            )?;
-            event.predecessor_action_id = Some(action.action_id.clone());
-            self.repository
-                .enqueue_post_commit_actions(vec![event])
-                .await?;
-            self.kick_connection(&connection).await?;
+            )
+            .await?;
         }
         Ok(())
+    }
+
+    /// Record the authenticated connection lifecycle event for one attachment
+    /// and terminate it.
+    async fn kick_with_event(
+        &self,
+        connection: &super::auth::AuthConnectionPresence,
+        predecessor_action_id: Option<String>,
+        reason: Option<&str>,
+    ) -> Result<(), AuthorizationStateError> {
+        let mut event = super::auth::connection_event_action::<
+            trellis_runtime_apis::apis::trellis_auth_v1::events::ConnectionsKicked,
+        >(
+            connection,
+            "Auth.Connections.Kicked",
+            "kicked",
+            reason,
+            now_millis()?,
+        )?;
+        event.predecessor_action_id = predecessor_action_id;
+        self.repository
+            .enqueue_post_commit_actions(vec![event])
+            .await?;
+        self.kick_connection(connection).await
     }
 
     /// Re-evaluates present transport policy for the exact physical attachments
@@ -602,6 +618,17 @@ impl AuthPostCommitRuntime {
         let mut kicked: Vec<AuthConnectionPresence> = Vec::new();
         for context in contexts {
             if !seen.insert(context.context_digest.clone()) {
+                continue;
+            }
+            if context.state == super::auth::context::AuthorizationContextState::Revoked
+                && context
+                    .revocation_reason
+                    .is_some_and(|reason| reason.requires_immediate_physical_kick())
+            {
+                // A hard-security revocation terminates this attachment itself
+                // and a caller-supplied kick records the operator's reason, so
+                // an unrelated scope reevaluation must not race them under an
+                // internal name.
                 continue;
             }
             let attachments = self

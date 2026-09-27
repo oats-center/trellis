@@ -214,6 +214,10 @@ pub trait OperationTransport {
         body: Value,
     ) -> impl Future<Output = Result<Value, TrellisClientError>> + Send + 'a;
 
+    /// Reject an operation whose granted transport subjects are not admitted on
+    /// the current physical attachment.
+    fn ensure_operation_transport(&self, subject: &str) -> Result<(), TrellisClientError>;
+
     fn put_upload_transfer<'a>(
         &'a self,
         grant: UploadTransferGrant,
@@ -414,14 +418,11 @@ where
         &self,
         body: Value,
     ) -> Result<OperationRef<'a, T, D>, TrellisClientError> {
-        let response = self
+        let subject = self
             .transport
-            .request_json_value(
-                self.transport
-                    .operation_subject(D::API_ID, D::KEY, D::SUBJECT)?,
-                body,
-            )
-            .await?;
+            .operation_subject(D::API_ID, D::KEY, D::SUBJECT)?;
+        self.transport.ensure_operation_transport(&subject)?;
+        let response = self.transport.request_json_value(subject, body).await?;
         validate_snapshot_at::<D>(&response, "/snapshot")?;
         let accepted: AcceptedEnvelope<D::Progress, D::Output> = serde_json::from_value(response)?;
         if accepted.kind != "accepted" {
@@ -1244,6 +1245,10 @@ mod tests {
     }
 
     impl OperationTransport for RecordingTransport {
+        fn ensure_operation_transport(&self, _subject: &str) -> Result<(), TrellisClientError> {
+            Ok(())
+        }
+
         async fn request_json_value(
             &self,
             subject: String,

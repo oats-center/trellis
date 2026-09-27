@@ -673,7 +673,11 @@ where
         )?;
         revoked.push(context);
     }
-    if !revoked.is_empty() {
+    if !revoked.is_empty() && !reason.requires_immediate_physical_kick() {
+        // A hard-security revocation already terminates every attachment
+        // admitted by the revoked contexts with the precise reason. A scope-wide
+        // reevaluation would only duplicate that kick under an internal name, so
+        // it is reserved for ordinary revocations and authority reductions.
         insert_context_action(
             connection,
             &crate::platform::auth::transport_attachments::transport_reevaluate_action(

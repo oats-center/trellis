@@ -1702,6 +1702,55 @@ mod nats_reply_permission_tests {
         );
     }
 
+    #[test]
+    fn the_own_user_info_read_is_the_only_system_grant() {
+        let policy = consumer_policy(live_subscribe_permission());
+        let system_publish: Vec<&String> = policy
+            .publish_allow
+            .iter()
+            .filter(|subject| subject.starts_with("$SYS."))
+            .collect();
+        assert_eq!(
+            system_publish,
+            vec![&"$SYS.REQ.USER.INFO".to_string()],
+            "the admission read must be the only granted broker system subject"
+        );
+        assert!(
+            policy
+                .subscribe_allow
+                .iter()
+                .all(|subject| !subject.starts_with("$SYS.")),
+            "a client must not subscribe to broker system subjects"
+        );
+    }
+
+    #[tokio::test]
+    async fn bt05_the_own_user_info_read_confers_no_system_administration() {
+        let _broker = BROKER_LOCK.lock().await;
+        let broker = TestBroker::start("{ max: 65535, expires: \"60s\" }");
+        let (consumer, consumer_errors) = connect(&broker.url, "consumer").await;
+
+        // The admission read is a narrow own-connection query, not system
+        // access: broker system subjects stay refused.
+        consumer
+            .publish(
+                "$SYS.ACCOUNT.ATESTACCOUNT.>".to_owned(),
+                b"x".to_vec().into(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            error_mentioning(&consumer_errors, "Permissions Violation").await,
+            "publishing to a broker system subject must be refused"
+        );
+
+        let _denied = consumer.subscribe("$SYS.>".to_owned()).await.unwrap();
+        assert!(
+            error_mentioning(&consumer_errors, "Permissions Violation").await,
+            "subscribing to broker system subjects must be refused"
+        );
+    }
+
     #[tokio::test]
     async fn bt04_only_operation_observe_receives_live_delivery() {
         let _broker = BROKER_LOCK.lock().await;

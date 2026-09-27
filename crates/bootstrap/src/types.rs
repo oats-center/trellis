@@ -174,6 +174,8 @@ pub struct GeneratedMetadata {
     pub(crate) trellis_account_public_key: String,
     /// Public key for the auth service user.
     pub(crate) auth_user_public_key: String,
+    /// Public key of the server-substituted auth-callout sentinel.
+    pub(crate) auth_sentinel_public_key: String,
     /// Public key for the Trellis service user.
     pub(crate) trellis_user_public_key: String,
 }

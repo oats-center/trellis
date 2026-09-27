@@ -600,6 +600,21 @@ export function observeTrellisConnection(
 }
 
 /** Observes a NATS connection without exposing the raw NATS handle publicly. */
+/**
+ * Compare two retained connect-server pools by value.
+ *
+ * Re-applying an identical pool still makes the NATS client tear the live
+ * attachment down, so routine renewal must skip it. @internal
+ */
+export function sameTransportServers(
+  a: readonly string[] | undefined,
+  b: readonly string[] | undefined,
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return a.length === b.length &&
+    a.every((server, index) => server === b[index]);
+}
+
 export function observeNatsTrellisConnection(
   options: ObserveNatsTrellisConnectionOptions,
 ): TrellisConnection {

@@ -64,6 +64,7 @@ fn runtime_config() -> RuntimeConfig {
                 system_creds_path: Some(PathBuf::from("system.creds")),
             }),
             auth_callout: Some(crate::NatsAuthCalloutConfig {
+                sentinel_public_key_file: Some("sentinel.pub".into()),
                 issuer_signing_seed_file: Some(PathBuf::from("issuer.seed")),
                 target_signing_seed_file: Some(PathBuf::from("target.seed")),
                 xkey_seed_file: Some(PathBuf::from("xkey.seed")),

@@ -186,6 +186,18 @@ export class LiveDeadlines {
     this.#nextCreditAt = undefined;
   }
 
+  /** Wake the existing cumulative control after a local context replacement. */
+  promptCredit(nowMs: number): void {
+    if (this.#phase === "active") this.#nextCreditAt = nowMs;
+  }
+
+  /** Wake the existing challenge (or its retry) after provider renewal. */
+  promptChallenge(nowMs: number): void {
+    if (this.#phase !== "active") return;
+    if (this.#outstandingChallenge === undefined) this.#nextChallengeAt = nowMs;
+    else this.#challengeRetryAt = nowMs;
+  }
+
   /** Consume the cleanup-grace deadline once it fired. */
   markCleanupGraceElapsed(): void {
     this.#cleanupUntil = undefined;

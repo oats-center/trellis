@@ -701,6 +701,39 @@ Deno.test("online issuer context verification rejects signed-content tampering",
   );
 });
 
+Deno.test("tampering with the signed transport policy fails verification", async () => {
+  // The transport policy is signature-bound: widening it in the received bytes
+  // must be rejected before any operation relies on the widened authority.
+  const admitted = bundle();
+  const installed = await cache().install(
+    admitted,
+    { bootstrapJwt: "route", bootstrapJwtExpiresAt: 2_000 },
+    policy.nowUnixSeconds,
+  );
+  const granted = installed.context.transportAuthorization.publishAllow;
+  assert(granted.length > 0, "fixture must grant at least one publish subject");
+
+  const widened = bundle();
+  const widenedContext = widened.context as {
+    transportAuthorization: { publishAllow: string[] };
+  };
+  widenedContext.transportAuthorization = {
+    ...widenedContext.transportAuthorization,
+    publishAllow: [...granted, "$SYS.>"].sort(),
+  };
+  await assertRejects(
+    () =>
+      cache().install(
+        widened,
+        { bootstrapJwt: "route", bootstrapJwtExpiresAt: 2_000 },
+        policy.nowUnixSeconds,
+      ),
+    Error,
+    undefined,
+    "a widened transport policy must not install",
+  );
+});
+
 Deno.test("authorization context cache installs, binds runtime, and clears in memory", async () => {
   const value = await installedCache();
   assertEquals(

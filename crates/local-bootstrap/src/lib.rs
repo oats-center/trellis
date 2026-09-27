@@ -466,12 +466,13 @@ pub fn render_nats_config(server_name: &str) -> String {
 #[must_use]
 pub fn render_auth_callout_env(generated: &GeneratedMetadata) -> String {
     format!(
-        "AUTH_ACCOUNT={auth_account}\nAUTH_ACCOUNT_PUBLIC_KEY={auth_public}\nTRELLIS_ACCOUNT={trellis_account}\nTRELLIS_ACCOUNT_PUBLIC_KEY={trellis_public}\nAUTH_USER_PUBLIC_KEY={auth_user}\nTRELLIS_USER_PUBLIC_KEY={trellis_user}\nAUTH_ISSUER_SIGNING_SEED_FILE=./secrets/auth-issuer-signing.seed\nAUTH_TARGET_SIGNING_SEED_FILE=./secrets/auth-target-signing.seed\nAUTH_CALLOUT_XKEY_SEED_FILE=./secrets/auth-sx.seed\nAUTH_SERVICE_CREDS_FILE=./creds/auth-auth.creds\nTRELLIS_SERVICE_CREDS_FILE=./creds/trellis-auth.creds\n",
+        "AUTH_ACCOUNT={auth_account}\nAUTH_ACCOUNT_PUBLIC_KEY={auth_public}\nTRELLIS_ACCOUNT={trellis_account}\nTRELLIS_ACCOUNT_PUBLIC_KEY={trellis_public}\nAUTH_USER_PUBLIC_KEY={auth_user}\nAUTH_SENTINEL_PUBLIC_KEY={auth_sentinel}\nTRELLIS_USER_PUBLIC_KEY={trellis_user}\nAUTH_ISSUER_SIGNING_SEED_FILE=./secrets/auth-issuer-signing.seed\nAUTH_TARGET_SIGNING_SEED_FILE=./secrets/auth-target-signing.seed\nAUTH_CALLOUT_XKEY_SEED_FILE=./secrets/auth-sx.seed\nAUTH_SERVICE_CREDS_FILE=./creds/auth-auth.creds\nTRELLIS_SERVICE_CREDS_FILE=./creds/trellis-auth.creds\n",
         auth_account = generated.auth_account_name,
         auth_public = generated.auth_account_public_key,
         trellis_account = generated.trellis_account_name,
         trellis_public = generated.trellis_account_public_key,
         auth_user = generated.auth_user_public_key,
+        auth_sentinel = generated.auth_sentinel_public_key,
         trellis_user = generated.trellis_user_public_key,
     )
 }
@@ -508,6 +509,7 @@ system_creds_path = "../nats/creds/system.creds"
 issuer_signing_seed_file = "../nats/secrets/auth-issuer-signing.seed"
 target_signing_seed_file = "../nats/secrets/auth-target-signing.seed"
 xkey_seed_file = "../nats/secrets/auth-sx.seed"
+sentinel_public_key_file = "../nats/secrets/auth-sentinel.pub"
 
 [auth.authorization]
 issuer_signing_seed_file = "./auth/authorization-issuer.seed"
@@ -517,7 +519,7 @@ refresh_jitter_seconds = 15
 minimum_context_lifetime_seconds = 76
 maximum_bootstrap_jwt_lifetime_seconds = 3600
 allowed_clock_skew_seconds = 30
-maximum_context_bytes = 16384
+maximum_context_bytes = 65536
 maximum_permissions = 4096
 context_bucket = "trellis_authorization_contexts"
 registry_replicas = 1
@@ -600,6 +602,7 @@ pub struct GeneratedMetadata {
     trellis_account_name: String,
     trellis_account_public_key: String,
     auth_user_public_key: String,
+    auth_sentinel_public_key: String,
     trellis_user_public_key: String,
 }
 
@@ -711,9 +714,12 @@ nsc edit account --name "$TRELLIS_ACCOUNT_NAME" --js-mem-storage -1 --js-disk-st
 
 nsc add user --account "$SYSTEM_ACCOUNT_NAME" --name system --allow-pubsub ">"
 nsc add user --account "$AUTH_ACCOUNT_NAME" --name auth --allow-pubsub ">"
+nsc add user --account "$AUTH_ACCOUNT_NAME" --name trellis-auth-sentinel --bearer --deny-pubsub ">" --expiry 0
+nsc describe user --account "$AUTH_ACCOUNT_NAME" --name trellis-auth-sentinel --raw > /work/generated/sentinel.jwt
 nsc add user --account "$TRELLIS_ACCOUNT_NAME" --name auth --allow-pubsub ">"
 
 AUTH_USER=$(nsc describe user --account "$AUTH_ACCOUNT_NAME" --name auth --field sub | tr -d '"')
+AUTH_SENTINEL=$(nsc describe user --account "$AUTH_ACCOUNT_NAME" --name trellis-auth-sentinel --field sub | tr -d '"')
 TRELLIS_ACCOUNT=$(nsc describe account --name "$TRELLIS_ACCOUNT_NAME" --field sub | tr -d '"')
 nsc edit authcallout --account "$AUTH_ACCOUNT_NAME" --auth-user "$AUTH_USER" --allowed-account "$TRELLIS_ACCOUNT" --curve generate
 
@@ -747,6 +753,7 @@ cat > /work/generated/metadata.json <<EOF
   "trellisAccountName": "${{TRELLIS_ACCOUNT_NAME}}",
   "trellisAccountPublicKey": "${{TRELLIS_ACCOUNT}}",
   "authUserPublicKey": "${{AUTH_USER}}",
+  "authSentinelPublicKey": "${{AUTH_SENTINEL}}",
   "trellisUserPublicKey": "${{TRELLIS_USER}}"
 }}
 EOF
@@ -767,6 +774,10 @@ fn read_generated_metadata(out: &Path) -> Result<GeneratedMetadata, LocalBootstr
         render_auth_callout_env(&metadata),
     )?;
     write_generated_seeds(out)?;
+    fs::write(
+        out.join("secrets/auth-sentinel.pub"),
+        &metadata.auth_sentinel_public_key,
+    )?;
     normalize_jwt_config(out)?;
     Ok(metadata)
 }
@@ -811,6 +822,10 @@ fn normalize_jwt_config(out: &Path) -> Result<(), LocalBootstrapError> {
     let generated = fs::read_to_string(out.join("generated/jwt.conf"))?;
     let mut normalized = generated.replace(WORK_DIR, "/data");
     normalized = replace_resolver_dir(&normalized);
+    normalized.push_str(&format!(
+        "\ndefault_sentinel: {}\n",
+        fs::read_to_string(out.join("generated/sentinel.jwt"))?.trim()
+    ));
     fs::write(out.join("jwt.conf"), normalized)?;
     Ok(())
 }
@@ -1426,6 +1441,7 @@ mod tests {
             trellis_account_name: "TRELLIS".to_string(),
             trellis_account_public_key: "ADYTRELLIS".to_string(),
             auth_user_public_key: "UDYAUTH".to_string(),
+            auth_sentinel_public_key: "UDYSENTINEL".to_string(),
             trellis_user_public_key: "UDYTRELLIS".to_string(),
         }
     }

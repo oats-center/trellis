@@ -67,6 +67,7 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
                 system_creds_path: Some(PathBuf::from("./nats/creds/system.creds")),
             }),
             auth_callout: Some(NatsAuthCalloutConfig {
+                sentinel_public_key_file: Some(PathBuf::from("./nats/secrets/auth-sentinel.pub")),
                 issuer_signing_seed_file: Some(PathBuf::from(
                     "./nats/secrets/auth-issuer-signing.seed",
                 )),
@@ -99,7 +100,7 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
                 minimum_context_lifetime_seconds: 76,
                 maximum_bootstrap_jwt_lifetime_seconds: 3_600,
                 allowed_clock_skew_seconds: 30,
-                maximum_context_bytes: 16_384,
+                maximum_context_bytes: 65_536,
                 maximum_permissions: 4_096,
                 context_bucket: "trellis_authorization_contexts".to_owned(),
                 registry_replicas: 1,

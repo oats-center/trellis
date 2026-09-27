@@ -179,8 +179,8 @@ impl ProviderSessionRecord {
         subject: &str,
         body: &[u8],
     ) -> Result<async_nats::HeaderMap, LiveErrorCode> {
-        // Pause signed handoffs until any planned credential rotation has
-        // re-established exact coverage for both retained guards.
+        // Re-establish exact coverage for both retained guards before signing
+        // a handoff, so a just-renewed local context is adopted in place.
         self.own_guard
             .reconcile()
             .await
@@ -696,8 +696,7 @@ impl ProviderSessionRecord {
         earliest
     }
 
-    /// Reconcile both retained guards across a planned rotation, returning the
-    /// first terminal authority loss, if any.
+    /// Reconcile both retained guards against current authorization.
     pub(crate) async fn reconcile_authority(&self) -> Option<LiveAuthorityLost> {
         if let Err(lost) = self.reconcile_own_epoch().await {
             return Some(lost);
@@ -705,14 +704,11 @@ impl ProviderSessionRecord {
         self.caller_guard.reconcile().await.err()
     }
 
-    /// Reconcile the long-lived own guard across either a planned rotation or an
-    /// ordinary reconnect, rebinding it onto the replacement epoch so new
+    /// Reconcile the long-lived own guard after renewal or an ordinary
+    /// reconnect, rebinding it onto the replacement epoch so new
     /// sessions can still be admitted after a real transport outage.
     async fn reconcile_own_epoch(&self) -> Result<(), LiveAuthorityLost> {
-        if self.own_guard.maintenance() {
-            return self.own_guard.reconcile().await;
-        }
-        match self.own_guard.check_now() {
+        match self.own_guard.reconcile().await {
             Ok(()) => Ok(()),
             Err(LiveAuthorityLost::EpochChanged) => self.own_guard.rebind_current_epoch().await,
             Err(lost) => Err(lost),

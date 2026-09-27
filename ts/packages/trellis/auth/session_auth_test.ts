@@ -12,21 +12,6 @@ import {
   verifyProof,
 } from "./mod.ts";
 
-function authTokenFromAuthenticatorResult(value: unknown): string {
-  if (!value || typeof value !== "object") {
-    throw new Error(
-      "Expected NATS authenticator to return an auth token payload",
-    );
-  }
-
-  const record = value as { auth_token?: unknown };
-  if (typeof record.auth_token !== "string") {
-    throw new Error("Expected NATS authenticator to return auth_token");
-  }
-
-  return record.auth_token;
-}
-
 Deno.test("createAuth derives sessionKey from 32-byte seed", async () => {
   const seed = base64urlEncode(crypto.getRandomValues(new Uint8Array(32)));
   const auth = await createAuth({ sessionKeySeed: seed });
@@ -157,30 +142,6 @@ Deno.test("trellisIdFromOriginId is stable and 22 chars", async () => {
   assertEquals(id1.length, 22);
   assertEquals(id1, id2);
   assert(id1 !== id3);
-});
-
-Deno.test("natsConnectOptions returns context-bound reconnect tokens", async () => {
-  const seed = base64urlEncode(crypto.getRandomValues(new Uint8Array(32)));
-  const auth = await createAuth({ sessionKeySeed: seed });
-  const contextDigest = base64urlEncode(await sha256(utf8("context")));
-  const options = await auth.natsConnectOptions({
-    sessionId: "ses_test",
-    contextDigest,
-    jwt: "deny-all-jwt",
-  });
-  const authenticators = Array.isArray(options.authenticator)
-    ? options.authenticator
-    : [options.authenticator];
-  const jwt = authenticators[0]("nonce-a") as { jwt: string };
-  const token = JSON.parse(
-    authTokenFromAuthenticatorResult(authenticators[1]("nonce-a")),
-  ) as { format: string; contextDigest: string };
-
-  assertEquals(options.inboxPrefix, "_INBOX.ses_test");
-  assertEquals(jwt.jwt, "deny-all-jwt");
-  assertEquals(token.format, "trellis.nats-connect-token.v1");
-  assertEquals(token.contextDigest, contextDigest);
-  assertEquals(Object.keys(token).sort(), ["contextDigest", "format"]);
 });
 
 Deno.test("createAuth applies server clock offsets to current iat", async () => {

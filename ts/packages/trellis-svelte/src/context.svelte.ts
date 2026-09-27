@@ -64,10 +64,36 @@ export class SvelteTrellisConnection {
     });
   }
 
-  /** Latest connection status, reactive when read by Svelte effects or markup. */
+  /**
+   * Latest connection status, reactive when read by Svelte effects or markup.
+   */
   get status(): TrellisConnectionStatus {
     this.#subscribe();
     return this.#connection.status;
+  }
+
+  /**
+   * Whether renewed authorization offers transport capability the current
+   * physical attachment has not adopted yet.
+   *
+   * Reactive when read by Svelte effects or markup. It is a retained
+   * notification, not an instruction: adopt it with `refreshTransport()` only
+   * where the application chooses to accept a real reconnect.
+   */
+  get transportUpgradeAvailable(): boolean {
+    this.#subscribe();
+    return this.#connection.status.transportUpgradeAvailable;
+  }
+
+  /**
+   * Adopt the wider transport policy through one explicit reconnect.
+   *
+   * Concurrent calls coalesce onto a single reconnect. Because this replaces
+   * the physical attachment it can interrupt in-flight RPCs and ephemeral
+   * observations.
+   */
+  refreshTransport(): ReturnType<TrellisConnection["refreshTransport"]> {
+    return this.#connection.refreshTransport();
   }
 
   /** Closes the underlying Trellis runtime connection. */

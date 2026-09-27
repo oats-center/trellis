@@ -482,6 +482,7 @@ AUTH_ACCOUNT_PUBLIC_KEY={auth_public}
 TRELLIS_ACCOUNT={trellis_account}
 TRELLIS_ACCOUNT_PUBLIC_KEY={trellis_public}
 AUTH_USER_PUBLIC_KEY={auth_user}
+AUTH_SENTINEL_PUBLIC_KEY={auth_sentinel}
 TRELLIS_USER_PUBLIC_KEY={trellis_user}
 AUTH_ISSUER_SIGNING_SEED_FILE=./secrets/auth-issuer-signing.seed
 AUTH_TARGET_SIGNING_SEED_FILE=./secrets/auth-target-signing.seed
@@ -494,6 +495,7 @@ TRELLIS_SERVICE_CREDS_FILE=./creds/trellis-auth.creds
         trellis_account = generated.trellis_account_name,
         trellis_public = generated.trellis_account_public_key,
         auth_user = generated.auth_user_public_key,
+        auth_sentinel = generated.auth_sentinel_public_key,
         trellis_user = generated.trellis_user_public_key,
     )
 }

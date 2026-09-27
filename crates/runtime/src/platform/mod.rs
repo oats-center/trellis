@@ -172,6 +172,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         &callout.issuer_signing_seed_file,
         &callout.target_signing_seed_file,
         &callout.xkey_seed_file,
+        &callout.sentinel_public_key_file,
         &nats.auth_creds_path,
         &nats.trellis_creds_path,
     )

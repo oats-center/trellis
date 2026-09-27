@@ -116,14 +116,19 @@ unless the operator lists it in `[http] allow_insecure_origins`; browser
 applications never opt into insecure transport and use the same client code for
 both deployments.
 
-Auth Callout validates the short-lived route JWT, reconstructs and verifies the
-connect proof, reloads the immutable context by digest, rechecks current
-issuable state, and installs the exact transport policy signed into that
-context. It never infers authority from subject strings or trusts the redundant
-session key independently. The returned user claim is bounded only by genuine
-underlying authorization deadlines, not renewable context or route-token
-lifetimes, and the admitted identity and policy are retained until the broker
-confirms the attachment is gone.
+Auth Callout validates the short-lived route JWT carried in the Trellis connect
+token, reconstructs and verifies the connect proof, reloads the immutable
+context by digest, rechecks current issuable state, and installs the exact
+transport policy signed into that context. Clients CONNECT with the session NKey
+signature and no client JWT: in operator mode the broker routes a JWT-less
+CONNECT to the external Auth Callout through a server-generated, non-expiring,
+server-only Auth-account `default_sentinel` that denies every publish and
+subscribe and confers no Trellis application authority. It never infers
+authority from subject strings or trusts the redundant session key
+independently. The returned user claim is bounded only by genuine underlying
+authorization deadlines, not renewable context or route-token lifetimes, and the
+admitted identity and policy are retained until the broker confirms the
+attachment is gone.
 
 ## Bootstrap
 

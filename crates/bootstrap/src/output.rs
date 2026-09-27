@@ -73,6 +73,10 @@ pub(crate) fn write_nats_material(
         &material.auth_callout_xkey_seed,
     )?;
     fs::write(
+        out.join("secrets/auth-sentinel.pub"),
+        &material.metadata.auth_sentinel_public_key,
+    )?;
+    fs::write(
         out.join("auth-callout.env"),
         render_auth_callout_env(&material.metadata),
     )?;

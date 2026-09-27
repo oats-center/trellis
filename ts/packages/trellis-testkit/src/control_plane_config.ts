@@ -62,6 +62,7 @@ export type TrellisControlPlaneConfig = {
       issuer: { nkey: string; signing: string };
       target: { nkey: string; signing: string };
       sxSeed: string;
+      sentinelPublicKey: string;
     };
   };
   sessionKeySeed: string;
@@ -233,6 +234,7 @@ export function buildControlPlaneConfig(args: {
         sxSeed: Deno.readTextFileSync(
           join(natsDir, args.manifest.paths.secrets.authCalloutXKey),
         ).trim(),
+        sentinelPublicKey: args.manifest.users.authSentinel.publicKey,
       },
     },
     sessionKeySeed: generateSessionSeed(),
@@ -277,6 +279,10 @@ export async function writeTrellisConfig(args: {
     Deno.writeTextFile(
       join(configDir, "auth-sx.seed"),
       `${args.config.nats.authCallout.sxSeed}\n`,
+    ),
+    Deno.writeTextFile(
+      join(configDir, "auth-sentinel.pub"),
+      `${args.config.nats.authCallout.sentinelPublicKey}\n`,
     ),
     Deno.copyFile(
       join(trustFixture, "authorization-root.json"),
@@ -362,6 +368,7 @@ system_creds_path = ${quote(args.config.nats.system.credsPath)}
 issuer_signing_seed_file = "./auth-issuer-signing.seed"
 target_signing_seed_file = "./auth-target-signing.seed"
 xkey_seed_file = "./auth-sx.seed"
+sentinel_public_key_file = "./auth-sentinel.pub"
 
 [auth.authorization]
 issuer_signing_seed_file = "./authorization-issuer.seed"
@@ -371,7 +378,7 @@ refresh_jitter_seconds = ${args.config.authorization.refreshJitterSeconds}
 minimum_context_lifetime_seconds = ${args.config.authorization.minimumContextLifetimeSeconds}
 maximum_bootstrap_jwt_lifetime_seconds = 3600
 allowed_clock_skew_seconds = 30
-maximum_context_bytes = 16384
+maximum_context_bytes = 65536
 maximum_permissions = 4096
 context_bucket = "trellis_authorization_contexts"
 registry_replicas = 1

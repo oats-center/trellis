@@ -7,16 +7,12 @@ use trellis_protocol::{
     NativeBootstrapSessionProofInput, SessionProofInput,
 };
 
-use super::super::connection::{
-    apply_native_authorization_refresh, AppliedNativeAuthorization,
-    NativeAuthorizationRefreshContext,
-};
+use super::super::connection::{apply_native_runtime_refresh, AppliedNativeAuthorization};
 use super::super::{proof::new_request_id, SessionAuth, TrellisClientError};
 use super::own_context::{
     system_now_millis, AuthorizationContextCache, AuthorizationRefreshRequest,
 };
 use super::provider_cache::AuthorizationProviderCache;
-use super::rotation::AuthorizationTransportRotation;
 use super::types::{AuthorizationCredential, AuthorizationInstallation};
 
 /// Authorization codes that report in-flight materialization rather than denial.
@@ -71,9 +67,10 @@ pub(crate) struct AuthorizationRefreshRuntime {
     pub(crate) nats: async_nats::Client,
     pub(crate) applied_native_authorization: Arc<tokio::sync::Mutex<AppliedNativeAuthorization>>,
     pub(crate) provider: AuthorizationProviderCache,
-    pub(crate) rotation: Arc<AuthorizationTransportRotation>,
-    pub(crate) live: Option<Arc<crate::live::manager::LiveSessionManager>>,
-    pub(crate) timeout_ms: u64,
+    /// Retained admitted-versus-renewed transport authorization, recomputed
+    /// after every in-place promotion so an upgrade notice reflects the newest
+    /// application policy without a new broker read.
+    pub(crate) transport: super::transport::TransportAuthorizationState,
 }
 
 /// Obtain or renew connection authority using only the owner credential and proof.
@@ -273,62 +270,36 @@ pub(crate) async fn refresh_until_materialized(
     Ok(())
 }
 
-/// Install one prepared authorization candidate as transparent maintenance.
-///
-/// The physical NATS attachment may rotate to admit refreshed routing
-/// credentials, but the logical connection is preserved. The predecessor
-/// stays application-current until the candidate is admitted, its exact
-/// revocation coverage is retained on the replacement attachment, and the
-/// candidate is promoted. The planned-rotation marker is held across the whole
-/// transaction so a failure never leaves a logically connected attachment that
-/// is not actually usable.
+/// Promote a verified authorization candidate on the existing physical attachment.
 pub(crate) async fn install_prepared_authorization(
     runtime: &AuthorizationRefreshRuntime,
 ) -> Result<String, TrellisClientError> {
     let (candidate_digest, _) = runtime.contexts.prepare_refresh(&runtime.auth).await?;
     let refreshed = AppliedNativeAuthorization::from_cache(&runtime.contexts)?;
     let mut applied = runtime.applied_native_authorization.lock().await;
-    let rotates = applied.rotates_to(&refreshed);
-    // Planned-rotation maintenance only applies while the physical attachment is
-    // healthy. During an already-real outage the refreshed credential is still
-    // installed, but the reconnect must take the ordinary recovery branch so the
-    // connection and its Live manager are resumed.
-    let planned =
-        rotates && runtime.nats.connection_state() == async_nats::connection::State::Connected;
-    if planned {
-        runtime.provider.begin_planned_rotation();
-    }
-    let mut context = NativeAuthorizationRefreshContext {
-        nats: &runtime.nats,
-        applied: &mut applied,
-        contexts: &runtime.contexts,
-        rotation: &runtime.rotation,
-        live: runtime.live.as_deref(),
-        timeout_ms: runtime.timeout_ms,
-    };
-    if let Err(error) = apply_native_authorization_refresh(&mut context, refreshed, planned).await {
-        runtime.provider.abandon_rotation();
-        return Err(error);
-    }
-    if let Err(error) = runtime
+    apply_native_runtime_refresh(&runtime.nats, &applied.runtime, &refreshed.runtime).await?;
+    *applied = refreshed;
+    runtime
         .provider
         .retain_own_context(&candidate_digest, runtime.provider.epoch())
-        .await
-    {
-        runtime.provider.abandon_rotation();
-        runtime.rotation.cancel();
-        return Err(error);
-    }
-    if let Err(error) = runtime
+        .await?;
+    runtime
         .provider
-        .finalize_own_installation(&candidate_digest, true)
-    {
-        runtime.provider.abandon_rotation();
-        runtime.rotation.cancel();
-        return Err(error);
-    }
-    runtime.rotation.complete();
+        .finalize_own_installation(&candidate_digest, true)?;
+    runtime.recompute_transport_notice();
     Ok(candidate_digest)
+}
+
+impl AuthorizationRefreshRuntime {
+    /// Recompute the retained transport notice against the newest application
+    /// policy without a new broker admission read.
+    fn recompute_transport_notice(&self) {
+        let now = self.contexts.corrected_now_seconds().unwrap_or(0);
+        let allowed = self.contexts.current_transport_policy().ok();
+        if let Err(error) = self.transport.recompute(allowed, now) {
+            tracing::warn!(%error, "transport authorization notice recompute failed");
+        }
+    }
 }
 
 /// Background own-context refresh on the retained NATS connection.
@@ -363,7 +334,10 @@ pub(crate) fn spawn_authorization_context_refresh_task(
                         Ok(()) => {
                             let promote = runtime.contexts.candidate_digest().is_ok();
                             match runtime.provider.finalize_own_installation(&digest, promote) {
-                                Ok(()) => continue,
+                                Ok(()) => {
+                                    runtime.recompute_transport_notice();
+                                    continue;
+                                }
                                 Err(error) => {
                                     tracing::warn!(%error, "authorization coverage publication failed")
                                 }

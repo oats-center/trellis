@@ -8,6 +8,19 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- Connections now expose a retained transport-upgrade notification and an
+  explicit transport refresh instead of adopting wider authority silently. When
+  renewable authority safely covers the admitted policy but offers additional
+  transport capability, TypeScript reports `transportUpgradeAvailable` and the
+  application decides when to call `refreshTransport()`; the Rust client exposes
+  the equivalent retained status and refresh method. Because the explicit call
+  replaces the physical attachment, it can interrupt in-flight RPCs and
+  ephemeral Live and Operation observations, so automatic adoption on every
+  upgrade is not the default integration pattern. A listener added later
+  immediately receives the current retained status.
+
 ### Fixed
 
 - Proactive service/device authorization refresh no longer fails silently on a
@@ -28,6 +41,16 @@ and this project adheres to
 
 ### Changed
 
+- Trellis NATS connections no longer present a client JWT in CONNECT. A client
+  authenticates with its session NKey signature and a connect token of wire
+  format `trellis.nats-connect-token.v2`, which carries the selected context
+  digest and the short-lived admission routing JWT. In operator mode a JWT-less
+  CONNECT is routed to the external Auth Callout through a server-generated,
+  non-expiring, server-only deny-all Auth-account `default_sentinel` that
+  confers no Trellis application authority; a CONNECT that supplies any other
+  client JWT is rejected, with no dual-protocol fallback. Clients keep the
+  routing JWT current for the next CONNECT independently of the policy already
+  admitted on the current socket.
 - Refreshing renewable Trellis authorization no longer restarts a healthy NATS
   connection. An identity-preserving refresh retains the new context in place
   and keeps the physical attachment; additional transport authority is adopted

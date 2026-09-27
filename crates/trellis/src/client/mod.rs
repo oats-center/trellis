@@ -6,7 +6,7 @@
 //! small local wrappers.
 
 mod auth;
-mod authorization;
+pub(crate) mod authorization;
 mod connection;
 mod error;
 mod events;
@@ -27,9 +27,11 @@ pub use authorization::{
     AuthorizationContextPolicy, AuthorizationInstallation, AuthorizationNativeTransport,
     AuthorizationRoutingMaterial, AuthorizationRuntimeBinding, AuthorizationRuntimeTransports,
     AuthorizationVerificationCore, AuthorizationVerificationError, EventVerificationInput,
-    RequestVerificationInput, VerifiedAuthorizationEvent, VerifiedAuthorizationRequest,
+    RequestVerificationInput, ResourceTransportGate, TransportAuthorizationState,
+    TransportAuthorizationStatus, VerifiedAuthorizationEvent, VerifiedAuthorizationRequest,
     VerifiedCaller,
 };
+pub(crate) use authorization::{ResourceTransportAction, ResourceTransportKind};
 #[cfg(feature = "runtime-internals")]
 pub use authorization::{RuntimeAuthorizationIoCounters, RuntimeAuthorizationTrust};
 

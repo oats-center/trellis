@@ -184,6 +184,8 @@ export class TrellisTestRuntime implements AsyncDisposable {
   /** Public browser origin; loopback unless a non-loopback browser host was requested. */
   readonly publicOrigin: string;
   readonly natsUrl: string;
+  /** NATS WebSocket endpoint for exercising the same broker with browser clients. */
+  readonly natsWebsocketUrl: string;
   readonly workdir: string;
   /** Local test-admin username used by the harness bootstrap. */
   readonly adminUsername = ADMIN_USERNAME;
@@ -317,6 +319,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
     this.trellisUrl = args.trellisUrl;
     this.publicOrigin = args.publicOrigin;
     this.natsUrl = args.nats.natsUrl;
+    this.natsWebsocketUrl = args.websocketProxy?.url ?? args.nats.websocketUrl;
     this.workdir = args.workdir;
     this.#deployment = args.deployment;
     this.#keepWorkdir = args.keepWorkdir;

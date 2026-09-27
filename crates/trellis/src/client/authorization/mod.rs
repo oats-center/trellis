@@ -7,7 +7,7 @@ mod own_context;
 mod provider_cache;
 mod refresh;
 mod registry;
-mod rotation;
+mod transport;
 mod types;
 
 pub use bootstrap_http::canonical_trellis_origin;
@@ -26,7 +26,11 @@ pub(crate) use refresh::install_prepared_authorization;
 pub(crate) use refresh::refresh_until_materialized;
 pub(crate) use refresh::spawn_authorization_context_refresh_task;
 pub(crate) use refresh::AuthorizationRefreshRuntime;
-pub(crate) use rotation::{AuthorizationTransportRotation, TransportRotationDisposition};
+pub use transport::{
+    read_own_admission, TransportAuthorizationState, TransportAuthorizationStatus,
+};
+pub use transport::{resource_action_marker, ResourceTransportGate};
+pub(crate) use transport::{ResourceTransportAction, ResourceTransportKind};
 #[cfg(feature = "runtime-internals")]
 pub use types::AuthorizationRegistryBinding;
 pub use types::{

@@ -637,6 +637,7 @@ async function runPump<T>(
   await Promise.race([core.waitStart(), cancellation.cancelled()]);
   if (cancellation.aborted) return;
   let changeResolvers = Promise.withResolvers<void>();
+  let controlContextDigest = localGuard.contextDigest;
   const unsubscribeLocal = localGuard.subscribeChanges(() =>
     changeResolvers.resolve()
   );
@@ -847,6 +848,17 @@ async function runPump<T>(
       if (winner === "change") {
         changeResolvers = Promise.withResolvers();
         if (await authorityFence()) return;
+        if (localGuard.contextDigest !== controlContextDigest) {
+          controlContextDigest = localGuard.contextDigest;
+          if (!pendingCredit) {
+            pendingCredit = {
+              seq: nextSeq(session).toString(),
+              received: core.receivedSeq().toString(),
+              consumed: core.consumedSeq().toString(),
+            };
+          }
+          deadlines.promptCredit(clock.nowMs());
+        }
         continue;
       }
       if (winner === "timer") {

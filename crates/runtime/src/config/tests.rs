@@ -28,6 +28,7 @@ system_creds_path = "./nats/system-runtime.creds"
 issuer_signing_seed_file = "./nats/auth-issuer-signing.seed"
 target_signing_seed_file = "./nats/trellis-target-signing.seed"
 xkey_seed_file = "./nats/auth-callout-xkey.seed"
+sentinel_public_key_file = "./nats/auth-sentinel.pub"
 
 [auth.authorization]
 issuer_signing_seed_file = "./auth/authorization-issuer.seed"
@@ -380,6 +381,7 @@ system_creds_path = "./nats/system-runtime.creds"
 issuer_signing_seed_file = "./nats/auth-issuer-signing.seed"
 target_signing_seed_file = "./nats/trellis-target-signing.seed"
 xkey_seed_file = "./nats/auth-callout-xkey.seed"
+sentinel_public_key_file = "./nats/auth-sentinel.pub"
 
 [client]
 ws_nats_servers = ["ws://localhost:8080"]
@@ -505,6 +507,7 @@ system_creds_path = "./nats/system-runtime.creds"
 issuer_signing_seed_file = "./nats/auth-issuer-signing.seed"
 target_signing_seed_file = "./nats/trellis-target-signing.seed"
 xkey_seed_file = "./nats/auth-callout-xkey.seed"
+sentinel_public_key_file = "./nats/auth-sentinel.pub"
 
 [leases]
 replicas = 1
@@ -694,6 +697,7 @@ system_creds_path = "./nats/system-runtime.creds"
 issuer_signing_seed_file = "./nats/auth-issuer-signing.seed"
 target_signing_seed_file = "./nats/trellis-target-signing.seed"
 xkey_seed_file = "./nats/auth-callout-xkey.seed"
+sentinel_public_key_file = "./nats/auth-sentinel.pub"
 
 [auth.authorization]
 issuer_signing_seed_file = "./auth/issuer.seed"
@@ -751,6 +755,7 @@ system_creds_path = "./nats/system-runtime.creds"
 issuer_signing_seed_file = "./nats/auth-issuer-signing.seed"
 target_signing_seed_file = "./nats/trellis-target-signing.seed"
 xkey_seed_file = "./nats/auth-callout-xkey.seed"
+sentinel_public_key_file = "./nats/auth-sentinel.pub"
 
 [platform.storage]
 kind = "sqlite"
@@ -904,6 +909,7 @@ system_creds_path = "./nats/system-runtime.creds"
 [nats.auth_callout]
 issuer_signing_seed_file = "./nats/auth-issuer-signing.seed"
 target_signing_seed_file = "./nats/trellis-target-signing.seed"
+sentinel_public_key_file = "./nats/auth-sentinel.pub"
 
 [platform.storage]
 kind = "sqlite"

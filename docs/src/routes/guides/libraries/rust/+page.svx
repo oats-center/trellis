@@ -48,10 +48,13 @@ Bootstrap proves the provisioned identity and a fresh session key. Trellis
 returns the server-owned assignment, exact installed participant/API evidence,
 current `GrantBinding`, resources, signed context, route JWT, and transports.
 The runtime verifies them before NATS CONNECT. Authorization state remains in
-process memory and is refreshed proactively as SDK-owned maintenance; a
-refreshed route credential may rotate the physical NATS attachment without
-ending the logical connection. There is no authorization-context file or
-pending-authority wait.
+process memory and is refreshed proactively as SDK-owned maintenance. An
+identity-preserving refresh promotes the refreshed context in place on the
+existing physical attachment; it does not reconnect a healthy socket. Where the
+refreshed authority offers transport capability the admitted attachment lacks,
+the client reports a retained upgrade status and exposes an explicit refresh
+rather than adopting it automatically. There is no authorization-context file
+or pending-authority wait.
 
 ## Connect an app or agent
 

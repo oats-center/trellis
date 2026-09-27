@@ -30,7 +30,7 @@ const AUTH_CALLOUT_SUBJECT: &str = "$SYS.REQ.USER.AUTH";
 const AUTH_CALLOUT_QUEUE: &str = "trellis";
 const DISCONNECT_SUBJECT: &str = "$SYS.ACCOUNT.*.DISCONNECT";
 const SERVER_XKEY_HEADER: &str = "Nats-Server-Xkey";
-const CONNECT_TOKEN_FORMAT: &str = "trellis.nats-connect-token.v1";
+const CONNECT_TOKEN_FORMAT: &str = "trellis.nats-connect-token.v2";
 const MAX_CONCURRENT_REQUESTS: usize = 32;
 const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 /// Bounded window in which a written attachment record is considered a pending
@@ -45,6 +45,7 @@ const RECONCILE_INTERVAL_MS: i64 = 30_000;
 struct NatsConnectToken {
     format: String,
     context_digest: String,
+    routing_jwt: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -72,6 +73,7 @@ pub(crate) struct CalloutKeys {
     xkey: XKey,
     auth_account: String,
     target_account: String,
+    sentinel_public_key: String,
 }
 
 impl CalloutKeys {
@@ -79,6 +81,7 @@ impl CalloutKeys {
         auth_signing_seed_file: &Path,
         target_signing_seed_file: &Path,
         xkey_seed_file: &Path,
+        sentinel_public_key_file: &Path,
         auth_user_creds_file: &Path,
         target_user_creds_file: &Path,
     ) -> Result<Self, AuthorizationStateError> {
@@ -87,6 +90,17 @@ impl CalloutKeys {
         let auth_user = user_claims(auth_user_creds_file, "auth user")?;
         let target_user = user_claims(target_user_creds_file, "target user")?;
         let auth_account = issuer_account(&auth_user);
+        let sentinel_public_key = std::fs::read_to_string(sentinel_public_key_file)
+            .map_err(|error| {
+                AuthorizationStateError::InvalidRecord(format!(
+                    "cannot read auth sentinel identity: {error}"
+                ))
+            })?
+            .trim()
+            .to_owned();
+        if !is_nkey(&sentinel_public_key, KeyPairType::User) {
+            return Err(denied("auth sentinel identity is not a user NKey"));
+        }
         let target_account = issuer_account(&target_user);
         let xkey_seed = read_secret(xkey_seed_file, "auth-callout xkey")?;
         let xkey = XKey::from_seed(&xkey_seed).map_err(|error| {
@@ -100,6 +114,7 @@ impl CalloutKeys {
             xkey,
             auth_account,
             target_account,
+            sentinel_public_key,
         })
     }
 
@@ -120,7 +135,8 @@ impl CalloutKeys {
             || claims.payload().issuer_account.as_deref() != Some(self.auth_account.as_str())
             || claims
                 .exp
-                .is_some_and(|expires_at| expires_at <= now_seconds)
+                .is_none_or(|expires_at| expires_at <= now_seconds)
+            || claims.payload().permissions.bearer_token == Some(true)
         {
             return invalid_denial();
         }
@@ -135,6 +151,28 @@ impl CalloutKeys {
         } else {
             invalid_denial()
         }
+    }
+
+    fn validate_sentinel(&self, jwt: &str) -> Result<(), AuthorizationStateError> {
+        let claims = Claims::<User>::decode(jwt).map_err(|_| denied("NATS sentinel is invalid"))?;
+        let permissions = &claims.payload().permissions.permissions;
+        let issued_by_auth_account =
+            claims.iss == self.auth_account && claims.payload().issuer_account.is_none();
+        let issued_by_auth_signer = claims.iss == self.auth_signing_key.public_key()
+            && claims.payload().issuer_account.as_deref() == Some(self.auth_account.as_str());
+        if !(issued_by_auth_account || issued_by_auth_signer)
+            || claims.sub != self.sentinel_public_key
+            || claims.exp.is_some()
+            || claims.payload().permissions.bearer_token != Some(true)
+            || !permissions.publish.allow.is_empty()
+            || permissions.publish.deny != [">"]
+            || !permissions.subscribe.allow.is_empty()
+            || permissions.subscribe.deny != [">"]
+            || permissions.resp.is_some()
+        {
+            return Err(denied("NATS sentinel is not an exact deny-all credential"));
+        }
+        Ok(())
     }
 
     fn authorized_user_jwt(
@@ -683,14 +721,14 @@ impl CalloutProcessor {
                 .nkey
                 .as_deref()
                 .ok_or_else(|| denied("session NKey is missing"))?;
-            self.keys.validate_bootstrap_jwt(
+            self.keys.validate_sentinel(
                 connect
                     .jwt
                     .as_deref()
-                    .ok_or_else(|| denied("session bootstrap JWT is missing"))?,
-                session_nkey,
-                now_seconds,
+                    .ok_or_else(|| denied("NATS sentinel is missing"))?,
             )?;
+            self.keys
+                .validate_bootstrap_jwt(&token.routing_jwt, session_nkey, now_seconds)?;
             verify_nats_nonce_signature(
                 session_nkey,
                 &request.client_info.nonce,
@@ -1186,6 +1224,7 @@ mod tests {
             xkey: XKey::new(),
             auth_account: auth_account.clone(),
             target_account: target_account.clone(),
+            sentinel_public_key: KeyPair::new_user().public_key(),
         };
         let session = KeyPair::new_user();
         let session_nkey = session.public_key();
@@ -1200,8 +1239,12 @@ mod tests {
             subscribe: deny,
             resp: None,
         };
+        bootstrap.exp = Some(100);
         let bootstrap = bootstrap.encode(&auth_signing_key)?;
         keys.validate_bootstrap_jwt(&bootstrap, &session_nkey, 1)?;
+        assert!(keys
+            .validate_bootstrap_jwt(&bootstrap, &session_nkey, 100)
+            .is_err());
         let mut mismatched_bootstrap = Claims::<User>::decode(&bootstrap)?;
         mismatched_bootstrap.sub = KeyPair::new_user().public_key();
         let mismatched_bootstrap = mismatched_bootstrap.encode(&auth_signing_key)?;
@@ -1322,24 +1365,6 @@ mod tests {
         assert_eq!(response["aud"], request.server.id);
         assert_eq!(response["nats"]["issuer_account"], auth_account);
         Ok(())
-    }
-
-    #[test]
-    fn connect_token_accepts_only_format_and_context_digest() {
-        let source = serde_json::json!({
-            "format": CONNECT_TOKEN_FORMAT,
-            "contextDigest": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        });
-        let token: NatsConnectToken = serde_json::from_value(source.clone()).unwrap();
-        assert_eq!(token.format, CONNECT_TOKEN_FORMAT);
-        assert_eq!(
-            token.context_digest,
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-        );
-
-        let mut extra = source;
-        extra["sessionId"] = serde_json::json!("session");
-        assert!(serde_json::from_value::<NatsConnectToken>(extra).is_err());
     }
 
     #[test]

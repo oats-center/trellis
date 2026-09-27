@@ -165,6 +165,7 @@ class ProviderSessionRecord {
   readonly deadlines: LiveDeadlines;
   readonly timer: LiveTimer;
   challenge: Challenge | undefined;
+  lastChallengeContextDigest = "";
   readonly outstanding: Outstanding[] = [];
   outstandingBytes = 0;
   highestSent = 0n;
@@ -403,6 +404,7 @@ export class LiveProvider {
       throw cause;
     }
     record.permit = permit;
+    record.lastChallengeContextDigest = this.#ownDigest();
     record.maxDataBodyBytes = maxDataBodyBytes;
     record.startSource = () => {
       if (record.sourceStarted || record.phase === "closed") return;
@@ -418,6 +420,16 @@ export class LiveProvider {
         await this.#terminate(record, new LiveEnd("local_shutdown"));
       },
     });
+    const deregister = record.deregister;
+    const unsubscribeOwn = this.#host.ownGuard.subscribeChanges(() => {
+      if (!record.closed && record.phase === "active") {
+        record.timer.arm(this.#clock.nowMs());
+      }
+    });
+    record.deregister = () => {
+      unsubscribeOwn();
+      deregister();
+    };
     // Arm the reservation deadline before any externally interruptible handoff
     // so a stalled or failed offer still enters owned teardown.
     this.#armTimer(record);
@@ -943,6 +955,13 @@ export class LiveProvider {
       return;
     }
     const now = this.#clock.nowMs();
+    if (
+      record.phase === "active" &&
+      this.#ownDigest() !== record.lastChallengeContextDigest
+    ) {
+      record.deadlines.promptChallenge(now);
+      record.lastChallengeContextDigest = this.#ownDigest();
+    }
     const action = record.deadlines.evaluate(now);
     switch (action) {
       case "reservation_expired":

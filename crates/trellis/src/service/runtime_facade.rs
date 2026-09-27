@@ -529,6 +529,12 @@ impl ServiceHandle {
     {
         let binding = self.kv_binding(name)?;
         validate_kv_binding(self.service_name(), name, binding)?;
+        ensure_resource_transport_admitted(
+            self.client(),
+            crate::client::ResourceTransportKind::Kv,
+            name,
+            &binding.bucket,
+        )?;
         let client = self.client().nats().open_kv(binding).await?;
         Ok(KvResourceHandle::from_generated(
             name,
@@ -536,6 +542,11 @@ impl ServiceHandle {
             codec,
             client,
             self.client.watch_availability(),
+            Some(crate::client::ResourceTransportGate::new(
+                self.client().transport_state(),
+                crate::client::ResourceTransportKind::Kv,
+                binding.bucket.clone(),
+            )),
         ))
     }
 
@@ -658,6 +669,12 @@ impl ServiceHandle {
     pub async fn store_client(&self, name: &str) -> Result<StoreHandle, ServerError> {
         let binding = self.store_binding(name)?;
         validate_store_binding(self.service_name(), name, binding)?;
+        ensure_resource_transport_admitted(
+            self.client(),
+            crate::client::ResourceTransportKind::Store,
+            name,
+            &binding.name,
+        )?;
         let client = self.client().nats().open_store(binding).await?;
         Ok(StoreResourceHandle::new(
             self.service_name(),
@@ -665,6 +682,11 @@ impl ServiceHandle {
             binding.clone(),
             client,
             self.client.watch_availability(),
+            Some(crate::client::ResourceTransportGate::new(
+                self.client().transport_state(),
+                crate::client::ResourceTransportKind::Store,
+                binding.name.clone(),
+            )),
         ))
     }
 
@@ -966,6 +988,12 @@ impl<C> ConnectedServiceRuntime<C> {
     {
         let binding = self.kv_binding(name)?;
         validate_kv_binding(self.service_name(), name, binding)?;
+        ensure_resource_transport_admitted(
+            self.client(),
+            crate::client::ResourceTransportKind::Kv,
+            name,
+            &binding.bucket,
+        )?;
         let client = self.client().nats().open_kv(binding).await?;
         Ok(KvResourceHandle::from_generated(
             name,
@@ -973,6 +1001,11 @@ impl<C> ConnectedServiceRuntime<C> {
             codec,
             client,
             self.client.watch_availability(),
+            Some(crate::client::ResourceTransportGate::new(
+                self.client().transport_state(),
+                crate::client::ResourceTransportKind::Kv,
+                binding.bucket.clone(),
+            )),
         ))
     }
 
@@ -1137,6 +1170,12 @@ impl<C> ConnectedServiceRuntime<C> {
     pub async fn store_client(&self, name: &str) -> Result<StoreHandle, ServerError> {
         let binding = self.store_binding(name)?;
         validate_store_binding(self.service_name(), name, binding)?;
+        ensure_resource_transport_admitted(
+            self.client(),
+            crate::client::ResourceTransportKind::Store,
+            name,
+            &binding.name,
+        )?;
         let client = self.client().nats().open_store(binding).await?;
         Ok(StoreResourceHandle::new(
             self.service_name(),
@@ -1144,6 +1183,11 @@ impl<C> ConnectedServiceRuntime<C> {
             binding.clone(),
             client,
             self.client.watch_availability(),
+            Some(crate::client::ResourceTransportGate::new(
+                self.client().transport_state(),
+                crate::client::ResourceTransportKind::Store,
+                binding.name.clone(),
+            )),
         ))
     }
 
@@ -1386,6 +1430,30 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
         }
         Ok(runtime)
     }
+}
+
+/// Reject a resource open whose granted transport family is not admitted on
+/// the current physical attachment.
+///
+/// A granted-but-unadopted resource must never be opened against NATS: that
+/// would turn a pending transport adoption into a broker permission violation.
+/// The caller reports the pending condition and retries after an explicit
+/// transport refresh.
+fn ensure_resource_transport_admitted(
+    client: &TrellisClient,
+    kind: crate::client::ResourceTransportKind,
+    name: &str,
+    bucket: &str,
+) -> Result<(), ServerError> {
+    if client
+        .resource_transport_missing(kind, bucket, crate::client::ResourceTransportAction::Read)
+        .map_err(|error| ServerError::Nats(error.to_string()))?
+    {
+        return Err(ServerError::TransportUpgradeRequired(format!(
+            "resource '{name}' is granted but not admitted on the current connection"
+        )));
+    }
+    Ok(())
 }
 
 fn parse_bootstrap_binding(

@@ -1,23 +1,19 @@
 /**
  * Real-boundary authorization-refresh continuity acceptance.
  *
- * A planned authorization-credential rotation may replace the physical NATS
- * attachment, but it is maintenance of the existing logical Trellis connection:
- * ordinary RPCs continue to succeed, the public connection status never becomes
- * disconnected/reconnecting, and retained Live sessions keep their handler and
- * protocol state instead of terminating and reopening.
+ * Short-lived CONNECT credentials renew without replacing the physical NATS
+ * attachment: RPCs continue, the connection remains connected, and retained
+ * Live sessions keep their handler and protocol state.
  *
- * Each case runs one process-local target past the signed context's full
- * lifetime. A connection that failed to refresh would lose its authority and
- * fail the in-flight requests, so a successful run proves the refresh actually
- * happened rather than passing vacuously. The short lifetime is a test fixture;
- * it is not a production default and does not lengthen any lease.
+ * Each case runs beyond multiple signed context and routing-JWT lifetimes.
+ * The short lifetime is a test fixture, not a production default.
  */
 
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
+import { createClient } from "@libsql/client";
 import { assert, assertEquals } from "@std/assert";
-import { fromFileUrl } from "@std/path";
+import { fromFileUrl, join } from "@std/path";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
@@ -35,9 +31,9 @@ function serverBinary(): string {
  * clock skew, so the post-issuance validity is `lifetime - skew` (46s) and the
  * proactive refresh fires at `lifetime - refreshLead - skew` (31s) after
  * issuance. Every process-local connection refreshes on that cadence, so a
- * case that runs 60s crosses a real rotation and passes the point where a
- * missed refresh would have fully expired the signed context. This is a test
- * fixture, not a production default.
+ * case that runs 92s crosses two routing-credential expirations. A successful
+ * RPC alone does not prove context renewal, since an admitted socket may keep
+ * working after the context expires; observe persisted issuance separately.
  */
 const shortAuthorizationLifetimes = {
   contextLifetimeSeconds: 76,
@@ -56,14 +52,15 @@ const runtimeOptions = {
   },
 };
 
-/** Past the 31s refresh and the 46s expiry, so a missed refresh is observable. */
-const OBSERVATION_MS = 60_000;
+/** Past two 31s refresh cycles and their corresponding 46s expirations. */
+const OBSERVATION_MS = 92_000;
 
 /** Connects one provider service whose Watch source emits continuously. */
 async function startContinuousProvider(
   runtime: Parameters<Parameters<typeof withTrellisRuntime>[0]>[0],
   onStart: () => void,
   onCleanup: () => void,
+  mayEmit: () => boolean = () => true,
 ) {
   const identity = await runtime.registerService({
     name: `refresh-live-${crypto.randomUUID()}`,
@@ -79,7 +76,7 @@ async function startContinuousProvider(
   await service.handleWatch(async ({ emit, signal }) => {
     onStart();
     while (!signal.aborted) {
-      await emit({ value: `frame-${Date.now()}` }).orThrow();
+      if (mayEmit()) await emit({ value: `frame-${Date.now()}` }).orThrow();
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
     onCleanup();
@@ -109,15 +106,19 @@ Deno.test("authorization refresh keeps a live RPC client connected and unsuspend
     const unsubscribe = client.connection.subscribe((status) =>
       phases.push(status.phase)
     );
+    const database = createClient({
+      url: `file:${
+        join(runtime.workdir, "trellis", "trellis.sqlite.platform")
+      }`,
+    });
     try {
       assertEquals(
         (await client.echo({ value: "before" }).orThrow()).value,
         "before",
       );
 
-      // Issue real RPCs across every scheduled refresh in the window. A
-      // suspended installation or a logical reconnect would surface as a
-      // failed request or a public phase transition.
+      // Issue real RPCs across scheduled refreshes and the expiration of
+      // multiple routing credentials without replacing the attachment.
       const failures: unknown[] = [];
       const startedAt = Date.now();
       let requests = 0;
@@ -135,14 +136,24 @@ Deno.test("authorization refresh keeps a live RPC client connected and unsuspend
         "after",
       );
       assertEquals(client.connection.status.phase, "connected");
+      const contexts = await database.execute({
+        sql:
+          "SELECT COUNT(DISTINCT context_digest) AS count FROM auth_authorization_contexts WHERE participant_id = ?",
+        args: [participants.Caller.participant.id],
+      });
+      assert(
+        Number(contexts.rows[0].count) >= 3,
+        "the connected caller must issue refreshed contexts across two credential lifetimes",
+      );
       for (const phase of phases) {
         assertEquals(
           phase,
           "connected",
-          "a planned credential rotation must not publish a logical connection transition",
+          "renewing admission credentials must not transition the connection",
         );
       }
     } finally {
+      database.close();
       unsubscribe();
       await client.connection.close();
       await service.stop();
@@ -155,6 +166,7 @@ Deno.test("an active live observation continues across consumer and provider aut
   await withTrellisRuntime(async (runtime) => {
     let starts = 0;
     let cleanups = 0;
+    let mayEmit = true;
     // The consumer and the provider share the same proactive refresh schedule,
     // so this window rotates both endpoints of the session. There is no
     // independent public trigger for one endpoint alone.
@@ -162,6 +174,7 @@ Deno.test("an active live observation continues across consumer and provider aut
       runtime,
       () => starts += 1,
       () => cleanups += 1,
+      () => mayEmit,
     );
     const client = await runtime.connectClient({
       name: "refresh-live-caller",
@@ -184,14 +197,21 @@ Deno.test("an active live observation continues across consumer and provider aut
       await runtime.waitFor(() => frames.length >= 2, { timeoutMs: 20_000 });
       const established = frames.length;
 
-      // Continue past a full context lifetime. A session that lost authority or
-      // was fenced by a physical rotation would stop delivering frames.
-      await new Promise((resolve) => setTimeout(resolve, OBSERVATION_MS));
-      if (sessionError) throw sessionError;
-      assert(
-        frames.length > established,
-        "a retained live session must continue across credential rotation",
+      // First observe DATA across a refresh, then leave the same session quiet
+      // across the next credential expiry before resuming its source.
+      await new Promise((resolve) => setTimeout(resolve, 36_000));
+      assert(frames.length > established, "DATA must continue after renewal");
+      mayEmit = false;
+      await new Promise((resolve) =>
+        setTimeout(resolve, OBSERVATION_MS - 36_000)
       );
+      if (sessionError) throw sessionError;
+      assertEquals(ended, false, "the quiet session must remain active");
+      const beforeResume = frames.length;
+      mayEmit = true;
+      await runtime.waitFor(() => frames.length > beforeResume, {
+        timeoutMs: 15_000,
+      });
       assertEquals(
         starts,
         1,
@@ -215,20 +235,20 @@ Deno.test("an active live observation continues across consumer and provider aut
 
 /**
  * Issue the caller context later than the provider's so the provider's own
- * scheduled rotation lands while the retained caller digest is unchanged.
+ * scheduled renewal lands while the retained caller digest is unchanged.
  */
 const CALLER_CONTEXT_OFFSET_MS = 20_000;
 
 /**
- * Observe across the provider's scheduled rotation (31s after issuance) and
+ * Observe across the provider's scheduled renewal (31s after issuance) and
  * past its original context expiry (46s after issuance), while stopping before
  * the offset caller context would refresh (51s after issuance). Crossing the
- * provider expiry is what proves the rotation happened: a provider that failed
- * to refresh would lose its own guard and terminate the session there.
+ * provider expiry is what proves the renewal happened: a provider that failed
+ * to renew in place would lose its own guard and terminate the session there.
  */
-const RUST_ROTATION_OBSERVATION_MS = 26_000;
+const RUST_RENEWAL_OBSERVATION_MS = 26_000;
 
-Deno.test("a Rust provider live session rebinds an unchanged caller context across its own credential rotation", async () => {
+Deno.test("a Rust provider live session renews its authorization in place without interrupting an unchanged caller context", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: `refresh-live-rust-${crypto.randomUUID()}`,
@@ -257,7 +277,7 @@ Deno.test("a Rust provider live session rebinds an unchanged caller context acro
     });
     try {
       // The Rust provider serves no RPC until it is connected, so a successful
-      // Inspect is the readiness signal the rotation window is measured from.
+      // Inspect is the readiness signal the renewal window is measured from.
       await runtime.waitFor(async () => {
         if (exited) {
           throw new Error(
@@ -298,14 +318,14 @@ Deno.test("a Rust provider live session rebinds an unchanged caller context acro
           }
         })();
 
-        // Drive one released frame at a time across the provider's rotation. A
+        // Drive one released frame at a time across the provider's renewal. A
         // guard that cannot rebind the unchanged caller context on the new
         // epoch stops delivering and terminates the session in this window.
         let next = 1n;
         const startedAt = Date.now();
         let loopError: unknown;
         try {
-          while (Date.now() - startedAt < RUST_ROTATION_OBSERVATION_MS) {
+          while (Date.now() - startedAt < RUST_RENEWAL_OBSERVATION_MS) {
             await caller.release({
               runId,
               streamId: "quiet",
@@ -327,7 +347,7 @@ Deno.test("a Rust provider live session rebinds an unchanged caller context acro
         if (loopError) throw loopError;
         assert(
           frames.length >= 2,
-          "the Rust provider session must deliver frames across its rotation",
+          "the Rust provider session must deliver frames across its renewal",
         );
         assertEquals(ended, false, "the session must not report terminal");
 

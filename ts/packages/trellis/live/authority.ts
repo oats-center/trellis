@@ -258,9 +258,9 @@ export class LiveAuthorityGuard {
 
   /**
    * Rebind onto the current transport generation after an ordinary reconnect
-   * changed it without a planned rotation.
+   * changed it.
    *
-   * Unlike {@link reconcile}, this is not gated on a planned rotation: a
+   * Unlike {@link reconcile}, this is not gated on a local renewal: a
    * long-lived provider guard must adopt the replacement attachment before it
    * can admit new sessions. The predecessor lease is released only after the
    * replacement evidence is retained and validated, so a failed rebind leaves

@@ -152,6 +152,15 @@ pub enum ServerError {
     #[doc(hidden)]
     Nats(String),
 
+    /// A granted resource capability's broker subjects are not yet admitted on
+    /// the current physical attachment.
+    ///
+    /// This is a transport condition, not a permission denial: the application
+    /// may adopt it with an explicit transport refresh and retry.
+    #[error("transport upgrade required: {0}")]
+    #[doc(hidden)]
+    TransportUpgradeRequired(String),
+
     /// A KV revision check failed because the key is no longer at the expected revision.
     #[error("kv key '{key}' revision mismatch: expected {expected}, actual {actual:?}")]
     #[doc(hidden)]
