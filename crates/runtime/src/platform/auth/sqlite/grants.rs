@@ -816,7 +816,7 @@ pub(in crate::platform::auth) fn replace_grant_binding(
     // issued under, and is revoked only when the replacement no longer covers
     // its exact effective authority. Increasing authority keeps every narrower
     // context attached and is picked up at the next ordinary refresh.
-    let _revoked_contexts = if binding.state == GrantBindingState::Active {
+    let revoked_contexts = if binding.state == GrantBindingState::Active {
         let now_seconds = now.div_euclid(1_000);
         let replacement = &participant.projection;
         let mut previous_projections: BTreeMap<u64, Option<ParticipantRuntimeProjection>> =
@@ -898,6 +898,23 @@ pub(in crate::platform::auth) fn replace_grant_binding(
         last_error: None,
     };
     let mut actions = vec![event];
+    if revoked_contexts.is_empty() {
+        // Pure growth revokes nothing, so no other path enqueues reevaluation.
+        // Enqueue it here so the passive change hint still reaches live
+        // recipients; a wider authority covers every admitted policy, so this
+        // neither kicks nor narrows any socket.
+        actions.push(
+            crate::platform::auth::transport_attachments::transport_reevaluate_action(
+                &crate::platform::auth::transport_attachments::TransportReevaluateScope::Grant {
+                    owner_kind: binding.owner_kind,
+                    owner_id: binding.owner_id.clone(),
+                    participant_id: binding.participant_id.clone(),
+                },
+                now,
+                &binding.revision.to_string(),
+            )?,
+        );
+    }
     actions.extend(super::resources::reconcile_sql_resource_catalog(
         connection, &binding, now,
     )?);
@@ -1070,6 +1087,11 @@ impl SqliteAuthorizationStore {
         reevaluate: crate::platform::auth::transport_attachments::TransportReevaluateScope,
     ) -> Result<(), AuthorizationStateError> {
         let binding_scope = binding_scope.to_owned();
+        let token = updates
+            .iter()
+            .map(|(api_id, provider_deployment_id)| format!("{api_id}={provider_deployment_id}"))
+            .collect::<Vec<_>>()
+            .join(",");
         self.run(move |connection| {
             let transaction = connection.transaction().map_err(sql_error)?;
             for (api_id, provider_deployment_id) in &updates {
@@ -1092,6 +1114,7 @@ impl SqliteAuthorizationStore {
                 &[crate::platform::auth::transport_attachments::transport_reevaluate_action(
                     &reevaluate,
                     now,
+                    &token,
                 )?],
             )?;
             transaction.commit().map_err(sql_error)
@@ -2960,11 +2983,20 @@ device Device { app Companion { use access { rpc B; optional capability b; } } }
                 .any(|action| action.kind == PostCommitActionKind::Kick),
             "adding authority must not kick live connections"
         );
-        assert_eq!(transport_reevaluate_count(&store).await, 0);
-
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|action| action.kind == PostCommitActionKind::TransportReevaluate)
+                .count(),
+            1,
+            "growth enqueues one passive reevaluation so the change hint still reaches live recipients"
+        );
         let mut reduction = binding_replacement_from(&additive_binding);
         reduction.grants = GrantSet::new(Vec::new());
         reduction.delegation_ceiling.exact_restrictions = Some(GrantSet::new(Vec::new()));
+        // Revoked contexts enqueue their reevaluation directly, so measure the
+        // durable outbox rather than the returned action list.
+        let reevaluations_before = transport_reevaluate_count(&store).await;
         let (_, actions) = store
             .run(move |connection| replace_grant_binding(connection, reduction, now + 2))
             .await
@@ -2975,9 +3007,8 @@ device Device { app Companion { use access { rpc B; optional capability b; } } }
                 .all(|action| action.kind != PostCommitActionKind::Kick),
             "removing authority must not use the ambiguous logical kick target"
         );
-        assert_eq!(
-            transport_reevaluate_count(&store).await,
-            1,
+        assert!(
+            transport_reevaluate_count(&store).await > reevaluations_before,
             "removing authority must enqueue scope-correct transport reevaluation"
         );
     }

@@ -576,6 +576,28 @@ impl AuthPostCommitRuntime {
         let selector = request.scope.to_context_selector();
         let contexts = self.repository.list_contexts_by_selector(selector).await?;
         let now = now_millis()?;
+        // Best-effort prompt to every distinct recipient in scope. A hint only
+        // schedules a normal signed refresh, so failures are logged and never
+        // fail the durable action; enforcement does not depend on delivery.
+        let mut hinted = std::collections::BTreeSet::new();
+        for context in &contexts {
+            if context.inbox_prefix.is_empty() || !hinted.insert(context.inbox_prefix.clone()) {
+                continue;
+            }
+            if let Err(error) =
+                crate::platform::auth::transport_attachments::publish_authorization_hint(
+                    &self.auth_client,
+                    &context.inbox_prefix,
+                )
+                .await
+            {
+                tracing::debug!(
+                    context_digest = %context.context_digest,
+                    %error,
+                    "authorization-change hint publish failed"
+                );
+            }
+        }
         let mut seen = std::collections::BTreeSet::new();
         let mut kicked: Vec<AuthConnectionPresence> = Vec::new();
         for context in contexts {

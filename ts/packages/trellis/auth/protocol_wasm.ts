@@ -440,6 +440,29 @@ export async function classifyTransportAuthorizationWasm(
   ) as TransportPolicyClass;
 }
 
+/**
+ * Encode a permission target as the canonical bytes an `AuthPermissionAtom`
+ * carries.
+ *
+ * The protocol crate owns validation and the canonical (RFC 8785) encoding, so
+ * TypeScript authors the logical target and never reconstructs the byte form.
+ */
+export async function encodePermissionTargetWasm(
+  target: PermissionTarget,
+): Promise<Uint8Array> {
+  await initializeProtocolWasm();
+  return protocolWasm.encode_permission_target(JSON.stringify(target));
+}
+
+/** Build a participant-resource permission target. */
+export function participantResourceTarget(args: {
+  participant: string;
+  resource: "kv" | "store" | "jobQueue" | "eventConsumer" | "state";
+  name: string;
+}): PermissionTarget {
+  return { kind: "participantResource", ...args };
+}
+
 /** Verify one context-bound request proof using actual received request bytes. */
 export async function verifyAuthorizationRequestWasm(
   args: VerifyAuthorizationRequestArgs,

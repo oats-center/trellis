@@ -388,6 +388,20 @@ pub fn classify_transport_authorization(
     serde_json::to_string(&class).map_err(|error| JsError::new(&error.to_string()))
 }
 
+/// Encode a protocol permission target as its canonical wire bytes.
+///
+/// Takes the target as JSON, validates it, and returns the canonical (RFC 8785)
+/// UTF-8 bytes that `AuthPermissionAtom.target` carries in grant authoring, so
+/// callers never reconstruct the encoding themselves.
+#[wasm_bindgen]
+pub fn encode_permission_target(target_json: &str) -> Result<Vec<u8>, JsError> {
+    let target: trellis_protocol::PermissionTarget =
+        serde_json::from_str(target_json).map_err(|error| JsError::new(&error.to_string()))?;
+    target
+        .encode()
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
 /// Generate one canonical live-session nonce from the operating system RNG.
 #[wasm_bindgen]
 pub fn live_generate_nonce() -> Result<String, JsError> {

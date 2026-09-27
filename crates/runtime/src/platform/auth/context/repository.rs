@@ -679,6 +679,11 @@ where
             &crate::platform::auth::transport_attachments::transport_reevaluate_action(
                 &crate::platform::auth::transport_attachments::TransportReevaluateScope::from_context_selector(selector),
                 revoked_at.saturating_mul(1_000),
+                &revoked
+                    .iter()
+                    .map(|context| context.context_digest.clone())
+                    .collect::<Vec<_>>()
+                    .join(","),
             )?,
         )?;
     }

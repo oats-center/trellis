@@ -168,10 +168,13 @@ pub(crate) struct TransportReevaluatePayload {
 /// Builds one deterministic reevaluation action for a scope.
 ///
 /// The action carries no frozen allowlist: the worker resolves present state
-/// when it runs, so coalescing equal scopes within one change is safe.
+/// when it runs, so coalescing equal scopes within one change is safe. `token`
+/// disambiguates distinct mutations of the same scope so a later change is not
+/// mistaken for a replay of an earlier one.
 pub(crate) fn transport_reevaluate_action(
     scope: &TransportReevaluateScope,
     at_ms: i64,
+    token: &str,
 ) -> Result<PostCommitActionRecord, AuthorizationStateError> {
     let payload = serde_json::to_value(TransportReevaluatePayload {
         format: TRANSPORT_REEVALUATE_FORMAT_V1.to_owned(),
@@ -181,6 +184,7 @@ pub(crate) fn transport_reevaluate_action(
     let action_id = trellis_protocol::digest_json(&serde_json::json!({
         "transportReevaluate": scope,
         "at": at_ms,
+        "token": token,
     }))
     .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
     Ok(PostCommitActionRecord {
@@ -346,6 +350,34 @@ pub(crate) async fn request_kick(
         .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
     let response = request(client, format!("$SYS.REQ.SERVER.{server_id}.KICK"), payload).await?;
     validate_connection_kick_response(&response, server_id)
+}
+
+/// Subject suffix of the best-effort authorization-change hint, appended to the
+/// server-issued recipient inbox prefix.
+pub(crate) const AUTHORIZATION_CHANGE_SUBJECT_SUFFIX: &str = "._trellis.authorization";
+
+/// Payload format tag of the best-effort authorization-change hint.
+pub(crate) const AUTHORIZATION_CHANGE_FORMAT_V1: &str = "trellis.authorization-change.v1";
+
+/// Publish the best-effort authorization-change hint to one recipient inbox.
+///
+/// A hint only prompts the recipient to schedule a normal signed refresh and
+/// cannot install grants, change admitted transport, or suppress revocation.
+/// Callers therefore treat any failure as non-fatal: a lost hint delays
+/// notification and never weakens enforcement.
+pub(crate) async fn publish_authorization_hint(
+    client: &Client,
+    inbox_prefix: &str,
+) -> Result<(), AuthorizationStateError> {
+    let subject = format!("{inbox_prefix}{AUTHORIZATION_CHANGE_SUBJECT_SUFFIX}");
+    let payload = Bytes::from(
+        serde_json::to_vec(&serde_json::json!({ "format": AUTHORIZATION_CHANGE_FORMAT_V1 }))
+            .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?,
+    );
+    client
+        .publish(subject, payload)
+        .await
+        .map_err(|error| storage(format!("authorization-change hint publish failed: {error}")))
 }
 
 async fn request(

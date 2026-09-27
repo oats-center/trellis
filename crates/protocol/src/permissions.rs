@@ -290,6 +290,38 @@ impl PermissionTarget {
         }
     }
 
+    /// Encode this target as its canonical wire bytes.
+    ///
+    /// The opaque `target` field of `Auth.Grants.Set` and received grant sets
+    /// carries a permission target as canonical (RFC 8785) UTF-8 JSON. This
+    /// method is the protocol owner for that encoding: it validates the target,
+    /// then serializes the protocol representation canonically. Consumers that
+    /// author grants must use it rather than reconstruct the bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProtocolError`] when the target is invalid or cannot be
+    /// canonicalized.
+    pub fn encode(&self) -> Result<Vec<u8>, ProtocolError> {
+        self.validate()?;
+        let value = serde_json::to_value(self)?;
+        Ok(canonicalize_json(&value)?.into_bytes())
+    }
+
+    /// Decode a permission target from its canonical wire bytes.
+    ///
+    /// Forgiving of member order and insignificant whitespace, then validated
+    /// identically to a constructed target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProtocolError`] when the bytes are not a valid encoded target.
+    pub fn decode(bytes: &[u8]) -> Result<Self, ProtocolError> {
+        let target: Self = serde_json::from_slice(bytes)?;
+        target.validate()?;
+        Ok(target)
+    }
+
     fn validate(&self) -> Result<(), ProtocolError> {
         match self {
             Self::ApiSurface { api, name, .. } => {

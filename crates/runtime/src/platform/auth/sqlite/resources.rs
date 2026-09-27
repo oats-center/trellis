@@ -610,6 +610,7 @@ impl SqliteAuthorizationStore {
                     &[crate::platform::auth::transport_attachments::transport_reevaluate_action(
                         &failure_scope,
                         now,
+                        &binding.installed_revision.to_string(),
                     )?],
                 )?;
             }

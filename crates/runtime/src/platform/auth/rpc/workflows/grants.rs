@@ -452,4 +452,34 @@ mod tests {
             ))
         );
     }
+
+    #[test]
+    fn encoded_participant_resource_target_forms_a_valid_grant_permission() {
+        use trellis_protocol::{ParticipantResourceKind, PermissionTarget};
+
+        let bytes = PermissionTarget::participant_resource(
+            "runtime-trellis.Caller",
+            ParticipantResourceKind::Kv,
+            "records",
+        )
+        .expect("resource target")
+        .encode()
+        .expect("canonical target bytes");
+        let target: Value = serde_json::from_slice(&bytes).expect("target json");
+
+        let grants: GrantSet = serde_json::from_value(json!({
+            "format": "trellis.grant-set.v1",
+            "permissions": [{ "action": "read", "target": target }],
+        }))
+        .expect("protocol grant set");
+
+        assert_eq!(
+            grants.permissions()[0].target().as_participant_resource(),
+            Some((
+                "runtime-trellis.Caller",
+                ParticipantResourceKind::Kv,
+                "records"
+            ))
+        );
+    }
 }

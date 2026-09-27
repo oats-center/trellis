@@ -67,6 +67,8 @@ export {
 } from "./session_proof.ts";
 export {
   classifyTransportAuthorizationWasm,
+  encodePermissionTargetWasm,
+  participantResourceTarget,
   TRANSPORT_AUTHORIZATION_FORMAT_V1,
   transportAuthorizationDigestWasm,
   type TransportAuthorizationV1,
