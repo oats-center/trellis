@@ -1,0 +1,44 @@
+{
+  "kv": {
+    "bucket": "orders",
+    "readPublish": [
+      "$JS.API.STREAM.INFO.KV_orders",
+      "$JS.API.STREAM.MSG.GET.KV_orders",
+      "$JS.API.DIRECT.GET.KV_orders",
+      "$JS.API.DIRECT.GET.KV_orders.>",
+      "$JS.API.CONSUMER.CREATE.KV_orders",
+      "$JS.API.CONSUMER.CREATE.KV_orders.>",
+      "$JS.API.CONSUMER.INFO.KV_orders.>",
+      "$JS.API.CONSUMER.MSG.NEXT.KV_orders.>",
+      "$JS.ACK.KV_orders.>"
+    ],
+    "writePublish": [
+      "$KV.orders.>",
+      "$JS.API.STREAM.INFO.KV_orders"
+    ],
+    "readMarker": "$JS.API.DIRECT.GET.KV_orders",
+    "writeMarker": "$KV.orders.>"
+  },
+  "store": {
+    "bucket": "files",
+    "readPublish": [
+      "$JS.API.INFO",
+      "$JS.API.STREAM.INFO.OBJ_files",
+      "$JS.API.STREAM.MSG.GET.OBJ_files",
+      "$JS.API.CONSUMER.CREATE.OBJ_files",
+      "$JS.API.CONSUMER.CREATE.OBJ_files.>",
+      "$JS.API.CONSUMER.INFO.OBJ_files.>",
+      "$JS.API.CONSUMER.MSG.NEXT.OBJ_files.>",
+      "$JS.API.CONSUMER.DELETE.OBJ_files.>",
+      "$JS.FC.OBJ_files.>",
+      "$JS.ACK.OBJ_files.>"
+    ],
+    "writePublish": [
+      "$O.files.C.>",
+      "$O.files.M.>",
+      "$JS.API.STREAM.PURGE.OBJ_files"
+    ],
+    "readMarker": "$JS.API.STREAM.INFO.OBJ_files",
+    "writeMarker": "$O.files.C.>"
+  }
+}

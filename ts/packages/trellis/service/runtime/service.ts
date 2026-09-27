@@ -15,10 +15,12 @@ import {
 import {
   readOwnAdmission,
   TransportAuthorizationState,
+  transportUpgradeRequiredError,
 } from "../../auth/authorization/transport_state.ts";
 import { TransportRefreshError } from "../../errors/TransportRefreshError.ts";
 import { TypedKV } from "../../kv.ts";
 import {
+  type StoreOperationError,
   type StoreWaitOptions,
   TypedStore,
   type TypedStoreEntry,
@@ -403,7 +405,7 @@ export abstract class StoreHandle {
   abstract waitFor(
     key: string,
     options?: StoreWaitOptions,
-  ): AsyncResult<TypedStoreEntry, StoreError>;
+  ): AsyncResult<TypedStoreEntry, StoreOperationError>;
 }
 
 class InternalStoreHandle extends StoreHandle {
@@ -440,7 +442,7 @@ class InternalStoreHandle extends StoreHandle {
   waitFor(
     key: string,
     options: StoreWaitOptions = {},
-  ): AsyncResult<TypedStoreEntry, StoreError> {
+  ): AsyncResult<TypedStoreEntry, StoreOperationError> {
     return this.open().andThen((store) => store.waitFor(key, options));
   }
 }
@@ -2242,6 +2244,19 @@ function createJobsFacade<
               ));
             }
 
+            if (
+              await args.client.transportUpgradeRequired?.({
+                publish: [`${queueBinding.publishPrefix}.>`],
+              })
+            ) {
+              return Result.err(
+                transportUpgradeRequiredError({
+                  queue: queueType,
+                  subject: queueBinding.publishPrefix,
+                }),
+              );
+            }
+
             const created = await manager.create(queueType, payload);
             return Result.ok(createJobRef({
               nc: args.nc,
@@ -2274,6 +2289,19 @@ function createJobsFacade<
                   `Jobs binding for queue '${queueType}' is unavailable`,
                 ),
               ));
+            }
+
+            if (
+              await args.client.transportUpgradeRequired?.({
+                publish: [`${queueBinding.publishPrefix}.>`],
+              })
+            ) {
+              return Result.err(
+                transportUpgradeRequiredError({
+                  queue: queueType,
+                  subject: queueBinding.publishPrefix,
+                }),
+              );
             }
 
             const outcome = await manager.submit(queueType, payload);
@@ -3207,7 +3235,7 @@ export class TrellisServiceSession<
   /** Publishes a prepared event through the service runtime connection. */
   publishPrepared(
     event: PreparedTrellisEvent,
-  ): AsyncResult<void, UnexpectedError> {
+  ): AsyncResult<void, TransportError | UnexpectedError> {
     return this.#handlerTrellis.publishPrepared(event);
   }
 

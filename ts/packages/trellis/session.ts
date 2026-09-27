@@ -146,6 +146,7 @@ import {
   type SendTransferHandle,
   type TransferBody,
   type TransferGrant,
+  type TransferOperationError,
 } from "./transfer.ts";
 import { TrellisTasks } from "./tasks.ts";
 import { TrellisConnection } from "./connection.ts";
@@ -1067,9 +1068,9 @@ export type AcceptedOperation<
   };
 export type OperationTransferHandle = {
   updates(): AsyncIterable<RuntimeOperationTransferProgress>;
-  completed(): AsyncResult<FileInfo, TransferError>;
+  completed(): AsyncResult<FileInfo, TransferOperationError>;
   /** Waits for successful staging, then opens the staged upload object. */
-  stream(): AsyncResult<ReadableStream<Uint8Array>, TransferError>;
+  stream(): AsyncResult<ReadableStream<Uint8Array>, TransferOperationError>;
   /** Waits for successful staging, then reads the staged upload bytes. */
   bytes(): AsyncResult<Uint8Array, TransferError>;
 };
@@ -1988,14 +1989,22 @@ export type HandlerTrellis<
   publish(
     event: string,
     data: Record<string, unknown>,
-  ): AsyncResult<void, ValidationError | UnexpectedError>;
+  ): AsyncResult<void, ValidationError | TransportError | UnexpectedError>;
   prepare(
     event: string,
     data: Record<string, unknown>,
   ): Result<PreparedTrellisEvent, ValidationError | UnexpectedError>;
   publishPrepared(
     event: PreparedTrellisEvent,
-  ): AsyncResult<void, UnexpectedError>;
+  ): AsyncResult<void, TransportError | UnexpectedError>;
+  /**
+   * Whether an operation's transport requirement is granted by the newest
+   * authorization but absent from the admitted attachment.
+   * @internal
+   */
+  transportUpgradeRequired?(
+    required: { publish?: readonly string[]; subscribe?: readonly string[] },
+  ): Promise<boolean>;
   /** Stops durable event listener loops owned by this handler runtime. */
   stopEventListeners(): void;
 };
@@ -3728,7 +3737,7 @@ export class Trellis<
       putTransfer: (
         grant: SendTransferGrant,
         body: TransferBody,
-      ): AsyncResult<FileInfo, TransferError> =>
+      ): AsyncResult<FileInfo, TransferOperationError> =>
         AsyncResult.from((async () => {
           const handle = createTransferHandle(
             this.#nats,
@@ -3736,6 +3745,7 @@ export class Trellis<
             this.timeout,
             grant,
             this.#inboxPrefix,
+            this.#transportGate,
           );
           if (!(handle instanceof Object) || !("send" in handle)) {
             return err(
@@ -3767,6 +3777,7 @@ export class Trellis<
       this.timeout,
       grant,
       this.#inboxPrefix,
+      this.#transportGate,
     );
   }
 
@@ -4347,7 +4358,7 @@ export class Trellis<
    */
   publishPrepared(
     event: PreparedTrellisEvent,
-  ): AsyncResult<void, UnexpectedError> {
+  ): AsyncResult<void, TransportError | UnexpectedError> {
     return AsyncResult.from((async () => {
       const startedAt = performance.now();
       const route = trellisRoute("event", event.descriptorIdentity);
@@ -4363,6 +4374,20 @@ export class Trellis<
         );
       };
       try {
+        const gate = this.#transportGate;
+        if (gate) {
+          const upgradeRequired = await requiresTransportUpgrade(gate, {
+            publish: [event.subject],
+          });
+          if (upgradeRequired) {
+            return err(
+              transportUpgradeRequiredError({
+                event: event.event,
+                subject: event.subject,
+              }),
+            );
+          }
+        }
         const headers = natsHeaders();
         for (const [key, value] of Object.entries(event.headers)) {
           headers.set(key, value);
@@ -4404,12 +4429,27 @@ export class Trellis<
   publish(
     event: string,
     data: Record<string, unknown>,
-  ): AsyncResult<void, ValidationError | UnexpectedError> {
-    return AsyncResult.from((async () => {
-      const prepared = this.prepare(event, data).take();
-      if (isErr(prepared)) return prepared;
-      return await this.publishPrepared(prepared);
-    })());
+  ): AsyncResult<void, ValidationError | TransportError | UnexpectedError> {
+    const prepared = this.prepare(event, data).take();
+    if (isErr(prepared)) {
+      return AsyncResult.from<
+        never,
+        ValidationError | TransportError | UnexpectedError
+      >(Promise.resolve(prepared));
+    }
+    return this.publishPrepared(prepared);
+  }
+
+  /**
+   * Whether an operation's transport requirement is granted by the newest
+   * authorization but absent from the admitted attachment.
+   * @internal
+   */
+  async transportUpgradeRequired(
+    required: { publish?: readonly string[]; subscribe?: readonly string[] },
+  ): Promise<boolean> {
+    const gate = this.#transportGate;
+    return gate ? await requiresTransportUpgrade(gate, required) : false;
   }
 
   listenEvent<E extends EventsOf<TA>>(
@@ -4417,7 +4457,10 @@ export class Trellis<
     subjectData: Record<string, unknown>,
     fn: EventCallback<EventOf<TA, E>>,
     opts?: EventOpts,
-  ): AsyncResult<void, AuthError | ValidationError | UnexpectedError> {
+  ): AsyncResult<
+    void,
+    AuthError | ValidationError | TransportError | UnexpectedError
+  > {
     return AsyncResult.from((async () => {
       try {
         const eventName = event as EventsOf<TA>;
@@ -4435,6 +4478,21 @@ export class Trellis<
         }
         const subject = this.template(ctx.subject, subjectData, true).take();
         if (isErr(subject)) return subject;
+
+        const gate = this.#transportGate;
+        if (gate) {
+          const upgradeRequired = await requiresTransportUpgrade(gate, {
+            subscribe: [subject],
+          });
+          if (upgradeRequired) {
+            return err(
+              transportUpgradeRequiredError({
+                event: String(eventName),
+                subject,
+              }),
+            );
+          }
+        }
 
         if (opts?.mode === "ephemeral") {
           // A declared durable consumer grants Consume authority only. Raw

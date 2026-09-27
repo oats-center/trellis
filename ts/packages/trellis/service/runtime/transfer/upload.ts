@@ -2,6 +2,7 @@ import type { Subscription } from "@nats-io/nats-core";
 import type { PermissionAtom } from "../../../participant_runtime/api.ts";
 import type { RuntimeOperationTransferProgress } from "../../../session.ts";
 import type { StoreError } from "../../../errors/StoreError.ts";
+import type { StoreOperationError } from "../../../store.ts";
 import type { TransferError } from "../../../errors/TransferError.ts";
 import type { TypedStore } from "../../../store.ts";
 import type { FileInfo } from "../../../transfer.ts";
@@ -32,7 +33,7 @@ export type UploadSession = {
   subscription: Subscription;
   timeoutId: ReturnType<typeof setTimeout>;
   queue: AsyncChunkQueue;
-  putPromise: AsyncResult<void, StoreError>;
+  putPromise: AsyncResult<void, StoreOperationError>;
   cancellation: AbortController;
   committing: boolean;
   nextSeq: number;

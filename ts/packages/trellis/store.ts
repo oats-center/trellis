@@ -10,7 +10,8 @@ import {
   Result,
   type Result as ResultType,
 } from "@oatscenter/result";
-import { StoreError } from "./errors/index.ts";
+import { StoreError, TransportError } from "./errors/index.ts";
+import type { ResourceTransportCheck } from "./auth/authorization/transport_state.ts";
 import {
   decodePaginationCursor,
   encodePaginationCursor,
@@ -42,7 +43,12 @@ export type StoreOpenOptions = {
   maxTotalBytes?: number;
   bindOnly?: boolean;
   isCurrent?: () => boolean;
+  /** Transport-admission check for operations on this bucket. @internal */
+  transport?: ResourceTransportCheck;
 };
+
+/** Failures a Store operation can report. */
+export type StoreOperationError = StoreError | TransportError;
 
 export type StorePutOptions = {
   contentType?: string;
@@ -247,8 +253,54 @@ async function bytesFromStream(
   return merged;
 }
 
-function isNotFoundStoreError(error: StoreError): boolean {
+function isNotFoundStoreError(error: StoreError | TransportError): boolean {
+  if (!(error instanceof StoreError)) return false;
   return error.getContext().reason === "not_found";
+}
+
+/** Whether a Store operation failed because transport has not adopted it yet. */
+function isTransportError(
+  error: StoreError | TransportError,
+): error is TransportError {
+  return error instanceof TransportError;
+}
+
+/** Opens or creates a physical object store with the requested options. */
+async function openStore(
+  nats: NatsConnection,
+  name: string,
+  options: StoreOpenOptions,
+): Promise<ObjectStore> {
+  const objm = new Objm(nats);
+  const store = options.bindOnly
+    ? await objm.open(name)
+    : await objm.create(name, {
+      ...(options.ttlMs && options.ttlMs > 0
+        ? { ttl: options.ttlMs * 1_000_000 }
+        : {}),
+      ...(options.maxTotalBytes !== undefined
+        ? { max_bytes: options.maxTotalBytes }
+        : {}),
+    });
+  await ensureExistingStoreOptions(store, name, options);
+  return store;
+}
+
+/** Build the open failure for a Store binding. */
+function storeOpenError(name: string, cause: unknown): StoreError {
+  return new StoreError({
+    operation: "open",
+    cause,
+    context: {
+      name,
+      ...(cause instanceof Error && "code" in cause
+        ? { code: cause.code }
+        : {}),
+      ...(cause instanceof Error && "subject" in cause
+        ? { subject: cause.subject }
+        : {}),
+    },
+  });
 }
 
 function abortedStoreError(key: string, cause: unknown): StoreError {
@@ -337,13 +389,21 @@ export async function ensureExistingStoreOptions(
 }
 
 export class TypedStore {
-  readonly #store: ObjectStore;
+  #store?: ObjectStore;
+  #opener?: () => Promise<ObjectStore>;
+  readonly #transport?: ResourceTransportCheck;
   readonly #options:
     & Required<Pick<StoreOpenOptions, "ttlMs">>
     & Omit<StoreOpenOptions, "ttlMs">;
 
-  private constructor(store: ObjectStore, options: StoreOpenOptions) {
+  private constructor(
+    options: StoreOpenOptions,
+    store?: ObjectStore,
+    opener?: () => Promise<ObjectStore>,
+  ) {
     this.#store = store;
+    this.#opener = opener;
+    this.#transport = options.transport;
     this.#options = {
       ttlMs: options.ttlMs ?? 0,
       ...(options.maxObjectBytes !== undefined
@@ -363,44 +423,55 @@ export class TypedStore {
   ): AsyncResult<TypedStore, StoreError> {
     return AsyncResult.from((async () => {
       try {
-        const objm = new Objm(nats);
-        const store = options.bindOnly
-          ? await objm.open(name)
-          : await objm.create(name, {
-            ...(options.ttlMs && options.ttlMs > 0
-              ? { ttl: options.ttlMs * 1_000_000 }
-              : {}),
-            ...(options.maxTotalBytes !== undefined
-              ? { max_bytes: options.maxTotalBytes }
-              : {}),
-          });
-        await ensureExistingStoreOptions(store, name, options);
-        return Result.ok(new TypedStore(store, options));
+        const store = await openStore(nats, name, options);
+        return Result.ok(new TypedStore(options, store));
       } catch (cause) {
-        return Result.err(
-          new StoreError({
-            operation: "open",
-            cause,
-            context: {
-              name,
-              ...(cause instanceof Error && "code" in cause
-                ? { code: cause.code }
-                : {}),
-              ...(cause instanceof Error && "subject" in cause
-                ? { subject: cause.subject }
-                : {}),
-            },
-          }),
-        );
+        return Result.err(storeOpenError(name, cause));
       }
     })());
+  }
+
+  /**
+   * Binds a typed object store without opening it.
+   *
+   * The backing store is opened lazily on first operation, after the transport
+   * check admits that operation, so a resource whose broker subjects are not yet
+   * adopted never performs an unauthorized NATS request during refresh.
+   * @internal
+   */
+  static bind(
+    nats: NatsConnection,
+    name: string,
+    options: StoreOpenOptions = {},
+  ): TypedStore {
+    return new TypedStore(
+      options,
+      undefined,
+      () => openStore(nats, name, options),
+    );
+  }
+
+  async #backing(): Promise<ObjectStore> {
+    let store = this.#store;
+    if (!store) {
+      store = await this.#opener!();
+      this.#store = store;
+    }
+    return store;
+  }
+
+  /** Return the transport failure when `action` is not yet admitted. */
+  async #admission(
+    action: "read" | "write",
+  ): Promise<TransportError | undefined> {
+    return await this.#transport?.(action);
   }
 
   create(
     key: string,
     body: StoreBody,
     options?: StorePutOptions,
-  ): AsyncResult<void, StoreError> {
+  ): AsyncResult<void, StoreOperationError> {
     return AsyncResult.from(this.#putInternal("create", key, body, options, 0));
   }
 
@@ -408,16 +479,21 @@ export class TypedStore {
     key: string,
     body: StoreBody,
     options?: StorePutOptions,
-  ): AsyncResult<void, StoreError> {
+  ): AsyncResult<void, StoreOperationError> {
     return AsyncResult.from(this.#putInternal("put", key, body, options));
   }
 
-  get(key: string): AsyncResult<TypedStoreEntry, StoreError> {
-    return AsyncResult.from((async () => {
+  get(key: string): AsyncResult<TypedStoreEntry, StoreOperationError> {
+    return AsyncResult.from((async (): Promise<
+      ResultType<TypedStoreEntry, StoreOperationError>
+    > => {
       if (!this.#isCurrent()) return this.#stale("get", key);
-      const info = await unwrapObjectInfo(this.#store, key);
+      const blocked = await this.#admission("read");
+      if (blocked) return Result.err(blocked);
+      const store = await this.#backing();
+      const info = await unwrapObjectInfo(store, key);
       return info.map((objectInfo) =>
-        new TypedStoreEntry(this.#store, storeInfoFromObjectInfo(objectInfo))
+        new TypedStoreEntry(store, storeInfoFromObjectInfo(objectInfo))
       );
     })());
   }
@@ -428,8 +504,10 @@ export class TypedStore {
   waitFor(
     key: string,
     options: StoreWaitOptions = {},
-  ): AsyncResult<TypedStoreEntry, StoreError> {
-    return AsyncResult.from((async () => {
+  ): AsyncResult<TypedStoreEntry, StoreOperationError> {
+    return AsyncResult.from((async (): Promise<
+      ResultType<TypedStoreEntry, StoreOperationError>
+    > => {
       const startedAt = Date.now();
       const pollIntervalMs = options.pollIntervalMs ??
         DEFAULT_STORE_WAIT_POLL_INTERVAL_MS;
@@ -443,7 +521,9 @@ export class TypedStore {
         if (entry.isOk()) {
           return entry;
         }
-        if (!isNotFoundStoreError(entry.error)) {
+        if (
+          !isNotFoundStoreError(entry.error) || isTransportError(entry.error)
+        ) {
           return entry;
         }
 
@@ -473,11 +553,14 @@ export class TypedStore {
     })());
   }
 
-  delete(key: string): AsyncResult<void, StoreError> {
+  delete(key: string): AsyncResult<void, StoreOperationError> {
     return AsyncResult.from((async () => {
       if (!this.#isCurrent()) return this.#stale("delete", key);
+      const blocked = await this.#admission("write");
+      if (blocked) return Result.err(blocked);
+      const store = await this.#backing();
       try {
-        await this.#store.delete(key);
+        await store.delete(key);
         return Result.ok(undefined);
       } catch (cause) {
         return Result.err(
@@ -489,9 +572,11 @@ export class TypedStore {
 
   list(
     opts: StoreListOptions = {},
-  ): AsyncResult<StoreListPage, StoreError> {
+  ): AsyncResult<StoreListPage, StoreOperationError> {
     return AsyncResult.from((async () => {
       if (!this.#isCurrent()) return this.#stale("list");
+      const blocked = await this.#admission("read");
+      if (blocked) return Result.err(blocked);
       const query = validateStoreListOptions(opts);
       if (query.isErr()) return Result.err(query.error);
 
@@ -514,7 +599,8 @@ export class TypedStore {
           }
           after = decoded;
         }
-        const objects = await this.#store.list();
+        const store = await this.#backing();
+        const objects = await store.list();
         const filtered = objects
           .filter((info) => !info.deleted && info.name.startsWith(prefix))
           .map(storeInfoFromObjectInfo)
@@ -541,11 +627,13 @@ export class TypedStore {
     })());
   }
 
-  status(): AsyncResult<StoreStatus, StoreError> {
+  status(): AsyncResult<StoreStatus, StoreOperationError> {
     return AsyncResult.from((async () => {
       if (!this.#isCurrent()) return this.#stale("status");
+      const blocked = await this.#admission("read");
+      if (blocked) return Result.err(blocked);
       try {
-        const status = await this.#store.status();
+        const status = await (await this.#backing()).status();
         return Result.ok(
           storeStatusFromObjectStoreStatus(status, this.#options),
         );
@@ -561,9 +649,11 @@ export class TypedStore {
     body: StoreBody,
     options?: StorePutOptions,
     previousRevision?: number,
-  ): Promise<ResultType<void, StoreError>> {
+  ): Promise<ResultType<void, StoreOperationError>> {
     try {
       if (!this.#isCurrent()) return this.#stale(operation, key);
+      const blocked = await this.#admission("write");
+      if (blocked) return Result.err(blocked);
       const metadata = metadataWithContentType(options);
       if (body instanceof Uint8Array) {
         if (
@@ -583,7 +673,8 @@ export class TypedStore {
           );
         }
 
-        await this.#store.putBlob(
+        const store = await this.#backing();
+        await store.putBlob(
           { name: key, ...(metadata ? { metadata } : {}) },
           body,
           previousRevision === undefined ? undefined : { previousRevision },
@@ -596,7 +687,8 @@ export class TypedStore {
         this.#options.maxObjectBytes,
       );
 
-      await this.#store.put(
+      const store = await this.#backing();
+      await store.put(
         { name: key, ...(metadata ? { metadata } : {}) },
         limitedStream,
         previousRevision === undefined ? undefined : { previousRevision },

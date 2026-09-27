@@ -24,6 +24,8 @@ import {
 import { installAuthorizationRefresh } from "./auth/authorization/install_refresh.ts";
 import {
   readOwnAdmission,
+  resourceTransportCheck,
+  type TransportAuthorizationGate,
   TransportAuthorizationState,
 } from "./auth/authorization/transport_state.ts";
 import {
@@ -309,6 +311,7 @@ async function resolveClientResources(args: {
   participantDigest: string;
   bindings: ContractResourceBindings;
   previous?: InstalledClientResources;
+  transportGate?: TransportAuthorizationGate;
   migrations?: ClientResourceMigrations;
 }): Promise<InstalledClientResources> {
   const signature = JSON.stringify({
@@ -353,19 +356,25 @@ async function resolveClientResources(args: {
       }
       const handleActive = { value: true };
       handles[name] = handleActive;
-      kv[name] = await TypedKV.open(
-        args.nc,
-        binding.bucket,
-        descriptor,
-        {
-          bindOnly: true,
-          history: binding.history,
-          ttl: binding.ttlMs,
-          maxValueBytes: binding.maxValueBytes,
-          migrations: args.migrations?.kv?.[name],
-          isCurrent: () => handleActive.value && active.value,
-        },
-      ).orThrow();
+      // Bound but not opened: the backing bucket is materialized on first
+      // operation, after the transport check admits it.
+      kv[name] = TypedKV.bind(args.nc, binding.bucket, descriptor, {
+        bindOnly: true,
+        history: binding.history,
+        ttl: binding.ttlMs,
+        maxValueBytes: binding.maxValueBytes,
+        migrations: args.migrations?.kv?.[name],
+        isCurrent: () => handleActive.value && active.value,
+        ...(args.transportGate
+          ? {
+            transport: resourceTransportCheck(
+              args.transportGate,
+              "kv",
+              binding.bucket,
+            ),
+          }
+          : {}),
+      });
     } else if (descriptor.kind === "store") {
       const binding = args.bindings.store?.[name];
       if (!binding) {
@@ -383,13 +392,22 @@ async function resolveClientResources(args: {
       }
       const handleActive = { value: true };
       handles[name] = handleActive;
-      store[name] = await TypedStore.open(args.nc, binding.name, {
+      store[name] = TypedStore.bind(args.nc, binding.name, {
         bindOnly: true,
         ttlMs: binding.ttlMs,
         maxObjectBytes: binding.maxObjectBytes,
         maxTotalBytes: binding.maxTotalBytes,
         isCurrent: () => handleActive.value && active.value,
-      }).orThrow();
+        ...(args.transportGate
+          ? {
+            transport: resourceTransportCheck(
+              args.transportGate,
+              "store",
+              binding.name,
+            ),
+          }
+          : {}),
+      });
     }
   }
   // Invalidate only the handles this installation did not carry forward.
@@ -1433,6 +1451,12 @@ export async function connectClientWithDeps<
       : {}),
   };
   const transportState = new TransportAuthorizationState();
+  const transportGate: TransportAuthorizationGate = {
+    status: () => transportState.status(),
+    admittedPolicy: () => transportState.admittedPolicy(),
+    allowedPolicy: () => transportState.allowedPolicy(),
+    nowSeconds: () => authorizationContexts.correctedNowSeconds(),
+  };
   const currentTransportPolicy = () =>
     authorizationContexts.current().context.transportAuthorization;
   const applyClientAdmission = async (): Promise<void> => {
@@ -1520,6 +1544,7 @@ export async function connectClientWithDeps<
       participantDigest: runtimeState.participantDigest,
       bindings: bootstrap.resourceBindings,
       migrations: args.resourceMigrations,
+      transportGate,
     }),
   };
   const resourceFacades = clientResourceFacades(resourceState);
@@ -1573,6 +1598,7 @@ export async function connectClientWithDeps<
             bindings: response.authorization.resourceRuntime,
             previous: resourceState.current,
             migrations: args.resourceMigrations,
+            transportGate,
           });
           return (verified) => {
             if (nextResources !== resourceState.current) {
@@ -1655,12 +1681,7 @@ export async function connectClientWithDeps<
       resourceAvailability: (name) =>
         connection.availability().resources[name] ?? true,
       onSessionNotFound: handleSessionNotFound,
-      transportGate: {
-        status: () => transportState.status(),
-        admittedPolicy: () => transportState.admittedPolicy(),
-        allowedPolicy: () => transportState.allowedPolicy(),
-        nowSeconds: () => authorizationContexts.correctedNowSeconds(),
-      },
+      transportGate,
     },
   });
   recordTrellisDuration(

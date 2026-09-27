@@ -14,7 +14,12 @@ import {
 } from "./errors/index.ts";
 import type { LiveSubscription } from "./live/subscription.ts";
 import { LiveEnd, LiveStreamError } from "./live/types.ts";
-import type { FileInfo, SendTransferGrant, TransferBody } from "./transfer.ts";
+import type {
+  FileInfo,
+  SendTransferGrant,
+  TransferBody,
+  TransferOperationError,
+} from "./transfer.ts";
 
 type ActiveJobWaitTarget = {
   kind: "operation";
@@ -482,7 +487,7 @@ export interface OperationTransport {
   putTransfer(
     grant: SendTransferGrant,
     body: TransferBody,
-  ): AsyncResult<FileInfo, TransferError>;
+  ): AsyncResult<FileInfo, TransferOperationError>;
 }
 
 /**
@@ -1011,7 +1016,7 @@ class RuntimeOperationRef<
     })());
   }
 
-  startTransfer(body: TransferBody): AsyncResult<FileInfo, TransferError> {
+  startTransfer(body: TransferBody): AsyncResult<FileInfo, TransferOperationError> {
     const grant = this.#acceptedTransfer;
     if (!grant) {
       return AsyncResult.err(

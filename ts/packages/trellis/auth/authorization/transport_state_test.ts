@@ -5,6 +5,7 @@ import {
   admittedPolicyCovers,
   readOwnAdmission,
   requiresTransportUpgrade,
+  resourceTransportCheck,
   TransportAuthorizationState,
   type TransportAuthorizationStatus,
   transportUpgradeRequiredError,
@@ -166,4 +167,53 @@ Deno.test("boundary gate separates granted-but-unadopted from denied", async () 
     await requiresTransportUpgrade(gate, { publish: ["rpc.v1.Secret.Get"] }),
     false,
   );
+});
+
+Deno.test("resource transport markers match the server-compiled grants", async () => {
+  type Fixture = {
+    bucket: string;
+    readPublish: string[];
+    writePublish: string[];
+  };
+  const fixture = JSON.parse(
+    await Deno.readTextFile(
+      new URL(
+        "../../../../../integration/fixtures/protocol/resource-grants/vectors.json",
+        import.meta.url,
+      ),
+    ),
+  ) as Record<"kv" | "store", Fixture>;
+
+  for (const kind of ["kv", "store"] as const) {
+    const { bucket, readPublish, writePublish } = fixture[kind];
+    const canonical = (subjects: string[]) => [...new Set(subjects)].sort();
+    const state = new TransportAuthorizationState();
+    await state.recordAdmission({
+      contextDigest: "d1",
+      policy: policy({ publishAllow: canonical(readPublish) }),
+      allowed: policy({
+        publishAllow: canonical([...readPublish, ...writePublish]),
+      }),
+      nowUnixSeconds: 1_000,
+    });
+    assertEquals(state.status(), "upgrade_available");
+    const check = resourceTransportCheck(
+      {
+        status: () => state.status(),
+        admittedPolicy: () => state.admittedPolicy(),
+        allowedPolicy: () => state.allowedPolicy(),
+        nowSeconds: () => 1_000,
+      },
+      kind,
+      bucket,
+    );
+
+    assertEquals(await check("read"), undefined, `${kind} read is admitted`);
+    const write = await check("write");
+    assertEquals(
+      write?.code,
+      "transport_upgrade_required",
+      `${kind} write must await adoption`,
+    );
+  }
 });

@@ -4,7 +4,8 @@ import { AsyncResult, type BaseError, isErr, Result } from "@oatscenter/result";
 import { JetStreamApiCodes } from "@nats-io/jetstream";
 
 import type { Codec } from "./generated.ts";
-import { KVError, ValidationError } from "./errors/index.ts";
+import { KVError, TransportError, ValidationError } from "./errors/index.ts";
+import type { ResourceTransportCheck } from "./auth/authorization/transport_state.ts";
 import { decodeSubject, escapeKvKey } from "./helpers.ts";
 import { recordCatalogDuration } from "./telemetry/metrics.ts";
 
@@ -67,7 +68,33 @@ export type KvOpenOptions<T = unknown> = Readonly<{
   replicas?: number;
   migrations?: ResourceMigrations<T>;
   isCurrent?: () => boolean;
+  /** Transport-admission check for operations on this bucket. @internal */
+  transport?: ResourceTransportCheck;
 }>;
+
+/** Failures a KV read operation can report. */
+export type KVReadError = KVError | ValidationError | TransportError;
+/** Failures a KV mutating or listing operation can report. */
+export type KVOperationError = KVError | TransportError;
+
+/** Opens or creates a physical KV bucket with the requested options. */
+async function openKv(
+  nats: NatsConnection,
+  name: string,
+  options: KvOpenOptions,
+): Promise<KV> {
+  const kvm = new Kvm(nats);
+  const kv = options.bindOnly ? await kvm.open(name) : await kvm.create(name, {
+    history: options.history ?? 1,
+    ttl: options.ttl ?? 0,
+    ...(options.replicas === undefined ? {} : { replicas: options.replicas }),
+    ...(options.maxValueBytes === undefined
+      ? {}
+      : { maxValueSize: options.maxValueBytes }),
+  });
+  await ensureExistingBucketOptions(kv, name, options);
+  return kv;
+}
 
 type ExistingBucketStatus = Pick<
   Awaited<ReturnType<KV["status"]>>,
@@ -245,14 +272,22 @@ async function decodeEntry<T>(
   }
 }
 
-/** Typed access to a generated, versioned KV resource. */
 export class TypedKV<T> {
+  #kv?: KV;
+  #opener?: () => Promise<KV>;
+
   private constructor(
+    readonly name: string,
     readonly representation: KvRepresentation<T>,
-    readonly kv: KV,
     readonly migrations: ResourceMigrations<T>,
     readonly isCurrent: () => boolean,
-  ) {}
+    readonly transport?: ResourceTransportCheck,
+    opener?: () => Promise<KV>,
+    materialized?: KV,
+  ) {
+    this.#kv = materialized;
+    this.#opener = opener;
+  }
 
   /** Opens or creates a typed KV bucket. */
   static open<T>(
@@ -263,26 +298,16 @@ export class TypedKV<T> {
   ): AsyncResult<TypedKV<T>, KVError> {
     return AsyncResult.from((async () => {
       try {
-        const kvm = new Kvm(nats);
-        const kv = options.bindOnly
-          ? await kvm.open(name)
-          : await kvm.create(name, {
-            history: options.history ?? 1,
-            ttl: options.ttl ?? 0,
-            ...(options.replicas === undefined
-              ? {}
-              : { replicas: options.replicas }),
-            ...(options.maxValueBytes === undefined
-              ? {}
-              : { maxValueSize: options.maxValueBytes }),
-          });
-        await ensureExistingBucketOptions(kv, name, options);
+        const kv = await openKv(nats, name, options);
         return Result.ok(
           new TypedKV(
+            name,
             representation,
-            kv,
             options.migrations ?? {},
             options.isCurrent ?? (() => true),
+            options.transport,
+            undefined,
+            kv,
           ),
         );
       } catch (cause) {
@@ -291,8 +316,49 @@ export class TypedKV<T> {
     })());
   }
 
+  /**
+   * Binds a typed KV bucket without opening it.
+   *
+   * The backing bucket is opened lazily on first operation, after the transport
+   * check admits that operation, so a resource whose broker subjects are not yet
+   * adopted never performs an unauthorized NATS request during refresh.
+   * @internal
+   */
+  static bind<T>(
+    nats: NatsConnection,
+    name: string,
+    representation: KvRepresentation<T>,
+    options: KvOpenOptions<T> = {},
+  ): TypedKV<T> {
+    return new TypedKV(
+      name,
+      representation,
+      options.migrations ?? {},
+      options.isCurrent ?? (() => true),
+      options.transport,
+      () => openKv(nats, name, options),
+    );
+  }
+
+  /** The opened NATS KV handle; throws until first materialization. */
+  get kv(): KV {
+    if (!this.#kv) {
+      throw new Error("KV resource binding is not yet materialized");
+    }
+    return this.#kv;
+  }
+
+  async #backing(): Promise<KV> {
+    let kv = this.#kv;
+    if (!kv) {
+      kv = await this.#opener!();
+      this.#kv = kv;
+    }
+    return kv;
+  }
+
   /** Returns the current value, or `undefined` when absent or deleted. */
-  get(key: string): AsyncResult<T | undefined, KVError | ValidationError> {
+  get(key: string): AsyncResult<T | undefined, KVReadError> {
     return this.#observe("read", () => this.#readEntry(key)).map((entry) =>
       entry?.operation === "put" ? entry.value : undefined
     );
@@ -301,17 +367,19 @@ export class TypedKV<T> {
   /** Returns the latest value or tombstone with authoritative revision metadata. */
   getEntry(
     key: string,
-  ): AsyncResult<TypedKvEntry<T> | undefined, KVError | ValidationError> {
+  ): AsyncResult<TypedKvEntry<T> | undefined, KVReadError> {
     return this.#observe("read", () => this.#readEntry(key));
   }
 
   #readEntry(
     key: string,
-  ): AsyncResult<TypedKvEntry<T> | undefined, KVError | ValidationError> {
+  ): AsyncResult<TypedKvEntry<T> | undefined, KVReadError> {
     return AsyncResult.from((async () => {
       try {
         this.#assertCurrent();
-        const entry = await this.kv.get(escapeKvKey(key));
+        const blocked = await this.#admission("read");
+        if (blocked) return Result.err(blocked);
+        const entry = await (await this.#backing()).get(escapeKvKey(key));
         return entry
           ? await decodeEntry(this.representation, this.migrations, entry)
           : Result.ok(undefined);
@@ -322,12 +390,17 @@ export class TypedKV<T> {
   }
 
   /** Creates a value only when the key has no current value. */
-  create(key: string, value: T): AsyncResult<TypedKvEntry<T>, KVError> {
+  create(
+    key: string,
+    value: T,
+  ): AsyncResult<TypedKvEntry<T>, KVOperationError> {
     return this.#observe("cas", () =>
       AsyncResult.from((async () => {
         try {
           this.#assertCurrent();
-          const revision = await this.kv.create(
+          const blocked = await this.#admission("write");
+          if (blocked) return Result.err(blocked);
+          const revision = await (await this.#backing()).create(
             escapeKvKey(key),
             encodeResourceValue(this.representation, value),
           );
@@ -345,12 +418,14 @@ export class TypedKV<T> {
   }
 
   /** Writes a value without a revision precondition. */
-  put(key: string, value: T): AsyncResult<TypedKvEntry<T>, KVError> {
+  put(key: string, value: T): AsyncResult<TypedKvEntry<T>, KVOperationError> {
     return this.#observe("write", () =>
       AsyncResult.from((async () => {
         try {
           this.#assertCurrent();
-          const revision = await this.kv.put(
+          const blocked = await this.#admission("write");
+          if (blocked) return Result.err(blocked);
+          const revision = await (await this.#backing()).put(
             escapeKvKey(key),
             encodeResourceValue(this.representation, value),
           );
@@ -372,12 +447,14 @@ export class TypedKV<T> {
     key: string,
     revision: ResourceRevision,
     value: T,
-  ): AsyncResult<TypedKvEntry<T>, KVError> {
+  ): AsyncResult<TypedKvEntry<T>, KVOperationError> {
     return this.#observe("cas", () =>
       AsyncResult.from((async () => {
         try {
           this.#assertCurrent();
-          const nextRevision = await this.kv.update(
+          const blocked = await this.#admission("write");
+          if (blocked) return Result.err(blocked);
+          const nextRevision = await (await this.#backing()).update(
             escapeKvKey(key),
             encodeResourceValue(this.representation, value),
             revision,
@@ -396,12 +473,17 @@ export class TypedKV<T> {
   }
 
   /** Deletes a key, optionally requiring its current revision. */
-  delete(key: string, revision?: ResourceRevision): AsyncResult<void, KVError> {
+  delete(
+    key: string,
+    revision?: ResourceRevision,
+  ): AsyncResult<void, KVOperationError> {
     return this.#observe("delete", () =>
       AsyncResult.from((async () => {
         try {
           this.#assertCurrent();
-          await this.kv.delete(
+          const blocked = await this.#admission("write");
+          if (blocked) return Result.err(blocked);
+          await (await this.#backing()).delete(
             escapeKvKey(key),
             revision === undefined ? {} : { previousSeq: revision },
           );
@@ -415,12 +497,16 @@ export class TypedKV<T> {
   /** Returns all retained revisions for a key, including tombstones. */
   history(
     key: string,
-  ): AsyncResult<readonly TypedKvEntry<T>[], KVError | ValidationError> {
+  ): AsyncResult<readonly TypedKvEntry<T>[], KVReadError> {
     return this.#observe("list", () =>
       AsyncResult.from((async () => {
         try {
           this.#assertCurrent();
-          const history = await this.kv.history({ key: escapeKvKey(key) });
+          const blocked = await this.#admission("read");
+          if (blocked) return Result.err(blocked);
+          const history = await (await this.#backing()).history({
+            key: escapeKvKey(key),
+          });
           const entries: TypedKvEntry<T>[] = [];
           for await (const entry of history) {
             this.#assertCurrent();
@@ -445,12 +531,14 @@ export class TypedKV<T> {
   /** Watches retained initialization and subsequent revisions for one key. */
   watch(
     key: string,
-  ): AsyncResult<AsyncIterable<KvWatchItem<T>>, KVError> {
+  ): AsyncResult<AsyncIterable<KvWatchItem<T>>, KVOperationError> {
     return this.#observe("watch_setup", () =>
       AsyncResult.from((async () => {
         try {
           this.#assertCurrent();
-          const watcher = await this.kv.watch({
+          const blocked = await this.#admission("read");
+          if (blocked) return Result.err(blocked);
+          const watcher = await (await this.#backing()).watch({
             key: escapeKvKey(key),
             include: "history",
           });
@@ -480,12 +568,14 @@ export class TypedKV<T> {
   /** Lists live keys using the backend's bounded iterator. */
   keys(
     filter: string | string[] = ">",
-  ): AsyncResult<AsyncIterable<string>, KVError> {
+  ): AsyncResult<AsyncIterable<string>, KVOperationError> {
     return this.#observe("list", () =>
       AsyncResult.from((async () => {
         try {
           this.#assertCurrent();
-          const keys = await this.kv.keys(filter);
+          const blocked = await this.#admission("read");
+          if (blocked) return Result.err(blocked);
+          const keys = await (await this.#backing()).keys(filter);
           return Result.ok({
             async *[Symbol.asyncIterator]() {
               try {
@@ -502,12 +592,16 @@ export class TypedKV<T> {
   }
 
   /** Returns the backend live-value count. */
-  status(): AsyncResult<{ values: number }, KVError> {
+  status(): AsyncResult<{ values: number }, KVOperationError> {
     return this.#observe("read", () =>
       AsyncResult.from((async () => {
         try {
           this.#assertCurrent();
-          return Result.ok({ values: (await this.kv.status()).values });
+          const blocked = await this.#admission("read");
+          if (blocked) return Result.err(blocked);
+          return Result.ok({
+            values: (await (await this.#backing()).status()).values,
+          });
         } catch (cause) {
           return Result.err(kvError("status", undefined, cause));
         }
@@ -548,6 +642,13 @@ export class TypedKV<T> {
         );
       }
     })());
+  }
+
+  /** Return the transport failure when `action` is not yet admitted. */
+  async #admission(
+    action: "read" | "write",
+  ): Promise<TransportError | undefined> {
+    return await this.transport?.(action);
   }
 
   #assertCurrent(): void {

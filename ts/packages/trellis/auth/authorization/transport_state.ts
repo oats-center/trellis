@@ -278,3 +278,48 @@ export async function requiresTransportUpgrade(
   if (await admittedPolicyCovers(admitted, required, now)) return false;
   return await admittedPolicyCovers(allowed, required, now);
 }
+
+/**
+ * Bounded transport-admission check for one resource operation.
+ *
+ * Returns the transport failure when the operation is granted by the newest
+ * application policy but absent from the admitted attachment, and `undefined`
+ * when the operation may proceed (or is not a transport problem). @internal
+ */
+export type ResourceTransportCheck = (
+  action: "read" | "write",
+) => Promise<TransportError | undefined>;
+
+/**
+ * Build the transport check for one KV or Store bucket.
+ *
+ * Reads and writes are distinguished by the same subjects the runtime compiler
+ * grants per resource action: KV reads by the direct-get grant, KV writes by the
+ * bucket subject grant; Store reads by the stream-info grant, Store writes by
+ * the object put/subject grant. The mapping is pinned by the shared
+ * resource-grant fixture so it cannot drift from the compiler silently.
+ * @internal
+ */
+export function resourceTransportCheck(
+  gate: TransportAuthorizationGate,
+  kind: "kv" | "store",
+  bucket: string,
+): ResourceTransportCheck {
+  const subjects = kind === "kv"
+    ? {
+      read: [`$JS.API.DIRECT.GET.KV_${bucket}`],
+      write: [`$KV.${bucket}.>`],
+    }
+    : {
+      read: [`$JS.API.STREAM.INFO.OBJ_${bucket}`],
+      write: [`$O.${bucket}.C.>`],
+    };
+  return async (action) => {
+    const blocked = await requiresTransportUpgrade(gate, {
+      publish: subjects[action],
+    });
+    return blocked
+      ? transportUpgradeRequiredError({ resource: bucket, kind, action })
+      : undefined;
+  };
+}

@@ -7,6 +7,7 @@ import {
 import { type StaticDecode, Type } from "typebox";
 
 import type { TypedKV } from "../kv.ts";
+import type { TransportError } from "../errors/TransportError.ts";
 import { recordTrellisError } from "../telemetry/mod.ts";
 import type { PreparedTrellisEvent } from "../session.ts";
 
@@ -91,7 +92,7 @@ export type OutboxDispatchRuntime = {
   /** Dispatches an event-publish outbox record. Returns Void on success, err on transient failure. */
   publishPreparedEvent(
     event: PreparedTrellisEvent,
-  ): AsyncResult<void, UnexpectedError>;
+  ): AsyncResult<void, TransportError | UnexpectedError>;
   /** Dispatches a job create/submit outbox record and returns its queue-admission outcome. */
   dispatchJobSubmission?(
     message: OutboxMessage,

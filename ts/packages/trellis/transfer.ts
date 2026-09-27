@@ -17,6 +17,15 @@ import { sha256 as incrementalSha256 } from "@noble/hashes/sha256";
 import { buildProofInput } from "./auth/proof.ts";
 import { base64urlEncode, sha256 } from "./auth/utils.ts";
 import { TransferError } from "./errors/TransferError.ts";
+import type { TransportError } from "./errors/TransportError.ts";
+import {
+  requiresTransportUpgrade,
+  type TransportAuthorizationGate,
+  transportUpgradeRequiredError,
+} from "./auth/authorization/transport_state.ts";
+
+/** Failures a transfer handle operation can report. */
+export type TransferOperationError = TransferError | TransportError;
 import {
   recordCatalogCounter,
   recordCatalogDuration,
@@ -438,17 +447,20 @@ class BaseTransferHandle {
   readonly #auth: TrellisTransferAuth;
   readonly #timeoutMs: number;
   readonly #inboxPrefix: string;
+  readonly #transportGate?: TransportAuthorizationGate;
 
   protected constructor(
     nc: NatsConnection,
     auth: TrellisTransferAuth,
     timeoutMs: number,
     inboxPrefix = "_INBOX",
+    transportGate?: TransportAuthorizationGate,
   ) {
     this.#nc = nc;
     this.#auth = auth;
     this.#timeoutMs = timeoutMs;
     this.#inboxPrefix = inboxPrefix;
+    this.#transportGate = transportGate;
   }
 
   protected get nc(): NatsConnection {
@@ -465,6 +477,20 @@ class BaseTransferHandle {
 
   protected get timeoutMs(): number {
     return this.#timeoutMs;
+  }
+
+  /**
+   * Return the transport failure when the transfer's subject needs a capability
+   * the current attachment has not adopted yet.
+   */
+  protected async transportBlocked(
+    required: { publish?: readonly string[]; subscribe?: readonly string[] },
+    context: Record<string, unknown>,
+  ): Promise<TransportError | undefined> {
+    const gate = this.#transportGate;
+    if (!gate) return undefined;
+    const blocked = await requiresTransportUpgrade(gate, required);
+    return blocked ? transportUpgradeRequiredError(context) : undefined;
   }
 
   protected validateGrant(
@@ -562,17 +588,18 @@ export class SendTransferHandle extends BaseTransferHandle {
     timeoutMs: number,
     grant: SendTransferGrant,
     inboxPrefix = "_INBOX",
+    transportGate?: TransportAuthorizationGate,
   ) {
-    super(nc, auth, timeoutMs, inboxPrefix);
+    super(nc, auth, timeoutMs, inboxPrefix, transportGate);
     this.#grant = grant;
   }
 
-  send(body: TransferBody): AsyncResult<FileInfo, TransferError> {
+  send(body: TransferBody): AsyncResult<FileInfo, TransferOperationError> {
     const startedAt = performance.now();
     return AsyncResult.from(
-      (async (): Promise<ResultType<FileInfo, TransferError>> => {
+      (async (): Promise<ResultType<FileInfo, TransferOperationError>> => {
         const result = await (async (): Promise<
-          ResultType<FileInfo, TransferError>
+          ResultType<FileInfo, TransferOperationError>
         > => {
           const valid = this.validateGrant(this.#grant, "send").take();
           if (isErr(valid)) {
@@ -580,6 +607,11 @@ export class SendTransferHandle extends BaseTransferHandle {
               recordTransferError(valid.error, "send", "grant"),
             );
           }
+          const blocked = await this.transportBlocked({
+            publish: [this.#grant.subject],
+            subscribe: [`${this.inboxPrefix}.>`],
+          }, { direction: "send", subject: this.#grant.subject });
+          if (blocked) return Result.err(blocked);
 
           let sentBytes = 0;
           let seq = 0;
@@ -777,15 +809,16 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
     timeoutMs: number,
     grant: ReceiveTransferGrant,
     inboxPrefix = "_INBOX",
+    transportGate?: TransportAuthorizationGate,
   ) {
-    super(nc, auth, timeoutMs, inboxPrefix);
+    super(nc, auth, timeoutMs, inboxPrefix, transportGate);
     this.#grant = grant;
   }
 
-  stream(): AsyncResult<ReadableStream<Uint8Array>, TransferError> {
+  stream(): AsyncResult<ReadableStream<Uint8Array>, TransferOperationError> {
     return AsyncResult.from(
       (async (): Promise<
-        ResultType<ReadableStream<Uint8Array>, TransferError>
+        ResultType<ReadableStream<Uint8Array>, TransferOperationError>
       > => {
         const valid = this.validateGrant(this.#grant, "stream").take();
         if (isErr(valid)) {
@@ -793,6 +826,11 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
             recordTransferError(valid.error, "receive", "grant"),
           );
         }
+        const blocked = await this.transportBlocked({
+          subscribe: [this.#grant.subject],
+          publish: [`${this.inboxPrefix}.>`],
+        }, { direction: "receive", subject: this.#grant.subject });
+        if (blocked) return Result.err(blocked);
 
         return Result.ok(receiveStream(
           this.#grant,
@@ -821,9 +859,9 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
     );
   }
 
-  bytes(): AsyncResult<Uint8Array, TransferError> {
+  bytes(): AsyncResult<Uint8Array, TransferOperationError> {
     return AsyncResult.from(
-      (async (): Promise<ResultType<Uint8Array, TransferError>> => {
+      (async (): Promise<ResultType<Uint8Array, TransferOperationError>> => {
         const startedAt = performance.now();
         const streamResult = await this.stream().take();
         if (isErr(streamResult)) {
@@ -856,6 +894,7 @@ export function createTransferHandle(
   timeoutMs: number,
   grant: SendTransferGrant,
   inboxPrefix?: string,
+  transportGate?: TransportAuthorizationGate,
 ): SendTransferHandle;
 export function createTransferHandle(
   nc: NatsConnection,
@@ -863,6 +902,7 @@ export function createTransferHandle(
   timeoutMs: number,
   grant: ReceiveTransferGrant,
   inboxPrefix?: string,
+  transportGate?: TransportAuthorizationGate,
 ): ReceiveTransferHandle;
 export function createTransferHandle(
   nc: NatsConnection,
@@ -870,6 +910,7 @@ export function createTransferHandle(
   timeoutMs: number,
   grant: TransferGrant,
   inboxPrefix?: string,
+  transportGate?: TransportAuthorizationGate,
 ): TransferHandle;
 export function createTransferHandle(
   nc: NatsConnection,
@@ -877,10 +918,18 @@ export function createTransferHandle(
   timeoutMs: number,
   grant: TransferGrant,
   inboxPrefix = "_INBOX",
+  transportGate?: TransportAuthorizationGate,
 ): TransferHandle {
   return grant.direction === "send"
-    ? new SendTransferHandle(nc, auth, timeoutMs, grant, inboxPrefix)
-    : new ReceiveTransferHandle(nc, auth, timeoutMs, grant, inboxPrefix);
+    ? new SendTransferHandle(nc, auth, timeoutMs, grant, inboxPrefix, transportGate)
+    : new ReceiveTransferHandle(
+      nc,
+      auth,
+      timeoutMs,
+      grant,
+      inboxPrefix,
+      transportGate,
+    );
 }
 
 /** Records one logical transfer duration and, on success, its wire bytes. */

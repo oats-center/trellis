@@ -1748,4 +1748,85 @@ mod nats_reply_permission_tests {
             );
         }
     }
+
+    #[test]
+    fn resource_action_markers_match_the_shared_fixture() {
+        use crate::platform::auth::transport::compile_resource;
+        use crate::platform::auth::{
+            ResourceBindingEvidence, ResourceBindingState, ResourceProviderIdentity,
+        };
+        use serde_json::Value;
+        use std::collections::BTreeSet;
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../integration/fixtures/protocol/resource-grants/vectors.json");
+        let fixture: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("resource-grant fixture"))
+                .expect("resource-grant fixture json");
+
+        let compile = |kind: &str, bucket: &str, action: PermissionAction| -> BTreeSet<String> {
+            let provider_identity = if kind == "kv" {
+                ResourceProviderIdentity::Kv {
+                    bucket: bucket.to_owned(),
+                }
+            } else {
+                ResourceProviderIdentity::Store {
+                    bucket: bucket.to_owned(),
+                }
+            };
+            let resource = ResourceBindingEvidence {
+                resource_kind: kind.to_owned(),
+                local_name: "resource".to_owned(),
+                binding_id: "binding".to_owned(),
+                owner_participant_id: "example.Client@v1".to_owned(),
+                provider_identity,
+                actual: None,
+                state: ResourceBindingState::Available,
+                materialized_at: 0,
+                error: None,
+            };
+            let mut publish = BTreeSet::new();
+            compile_resource(&resource, action, &mut publish, &mut BTreeSet::new())
+                .expect("resource grant compiles");
+            publish
+        };
+
+        for kind in ["kv", "store"] {
+            let bucket = fixture[kind]["bucket"].as_str().expect("bucket");
+            let read = compile(kind, bucket, PermissionAction::Read);
+            let write = compile(kind, bucket, PermissionAction::Write);
+            for subject in fixture[kind]["readPublish"]
+                .as_array()
+                .expect("readPublish")
+            {
+                let subject = subject.as_str().expect("subject");
+                assert!(read.contains(subject), "{kind} read must grant {subject}");
+            }
+            for subject in fixture[kind]["writePublish"]
+                .as_array()
+                .expect("writePublish")
+            {
+                let subject = subject.as_str().expect("subject");
+                assert!(write.contains(subject), "{kind} write must grant {subject}");
+            }
+            let read_marker = fixture[kind]["readMarker"].as_str().expect("readMarker");
+            let write_marker = fixture[kind]["writeMarker"].as_str().expect("writeMarker");
+            assert!(
+                read.contains(read_marker),
+                "{kind} read must grant its marker {read_marker}"
+            );
+            assert!(
+                write.contains(write_marker),
+                "{kind} write must grant its marker {write_marker}"
+            );
+            assert!(
+                !read.contains(write_marker),
+                "{kind} read must not grant the write marker {write_marker}"
+            );
+            assert!(
+                !write.contains(read_marker),
+                "{kind} write must not grant the read marker {read_marker}"
+            );
+        }
+    }
 }
