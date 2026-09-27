@@ -79,6 +79,11 @@ observed provider limits; runtime handles use the observed binding limits.
 Trellis refuses to adopt or destroy a physical resource whose ownership marker
 does not match. Removal detaches access without deleting new-version data;
 compatible approved re-add reattaches the same resource identity.
+When running a local Trellis environment, keep the platform database and NATS
+JetStream data together. Trellis refuses to start the platform with a missing or
+different JetStream identity after binding: restore the matching store or use
+fresh platform and JetStream state and provision deployments again. Recreating
+consumers and buckets alone does not recover job keys or stored objects.
 
 State is one typed value without a key or TTL. KV is typed history and Store is
 raw bytes. State/KV migration is direct and in-memory, with no write-on-read.

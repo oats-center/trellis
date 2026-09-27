@@ -497,6 +497,18 @@ async fn verify_jetstream_identity(
                 RuntimeError::Platform(format!("cannot create JetStream identity bucket: {error}"))
             })?,
     };
+    let status = marker.status().await.map_err(|error| {
+        RuntimeError::Platform(format!(
+            "cannot inspect JetStream identity retention: {error}"
+        ))
+    })?;
+    if status.info.config.storage != async_nats::jetstream::stream::StorageType::File
+        || status.max_age() != std::time::Duration::ZERO
+    {
+        return Err(RuntimeError::Platform(
+            "JetStream identity bucket must use file storage without expiry".to_owned(),
+        ));
+    }
     let current = marker.get(KEY).await.map_err(|error| {
         RuntimeError::Platform(format!("cannot read JetStream identity: {error}"))
     })?;
@@ -534,6 +546,101 @@ async fn verify_jetstream_identity(
             .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod jetstream_identity_tests {
+    use std::process::{Child, Command, Stdio};
+
+    use super::{verify_jetstream_identity, SqliteAuthorizationStore};
+    use crate::storage::SqliteStore;
+    use crate::{SqliteStorageConfig, SubsystemName};
+
+    struct NatsServer(Child);
+
+    impl Drop for NatsServer {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[tokio::test]
+    async fn store_swap_cannot_reuse_persisted_platform_evidence() {
+        let directory = tempfile::tempdir().unwrap();
+        let binary = trellis_local_nats::NatsServerBinary::resolve(
+            &trellis_local_nats::NatsBinarySource::DownloadPinned,
+            Some(&directory.path().join("cache")),
+        )
+        .unwrap();
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let url = format!("nats://127.0.0.1:{port}");
+        let platform = SqliteStore::new(
+            SubsystemName::Platform,
+            SqliteStorageConfig {
+                path: directory.path().join("platform.sqlite"),
+                journal_mode: Some("wal".to_owned()),
+                busy_timeout_ms: Some(2_500),
+                single_writer: Some(true),
+            },
+        );
+        platform.migrate().unwrap();
+        let store = SqliteAuthorizationStore::open(&platform).unwrap();
+
+        let start = |data: &str| {
+            NatsServer(
+                Command::new(&binary)
+                    .args(["-a", "127.0.0.1", "-p", &port.to_string(), "-js"])
+                    .arg("-sd")
+                    .arg(directory.path().join(data))
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::inherit())
+                    .spawn()
+                    .unwrap(),
+            )
+        };
+        let connect = || async {
+            for _ in 0..100 {
+                if let Ok(client) = async_nats::connect(&url).await {
+                    return client;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            panic!("NATS did not become ready");
+        };
+
+        let first = start("original");
+        let client = connect().await;
+        verify_jetstream_identity(&store, &client).await.unwrap();
+        verify_jetstream_identity(&store, &client).await.unwrap();
+        drop(client);
+        drop(first);
+        drop(store);
+
+        let replacement = start("replacement");
+        let client = connect().await;
+        let store = SqliteAuthorizationStore::open(&platform).unwrap();
+        let error = verify_jetstream_identity(&store, &client)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("JetStream identity is missing"), "{error}");
+        drop(client);
+        drop(replacement);
+
+        let restored = start("original");
+        let client = connect().await;
+        verify_jetstream_identity(&store, &client).await.unwrap();
+        let other_database = SqliteAuthorizationStore::open_in_memory().unwrap();
+        let error = verify_jetstream_identity(&other_database, &client)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("different platform database"), "{error}");
+        drop(restored);
+    }
 }
 
 async fn connect_nats(

@@ -113,6 +113,15 @@ a bootstrap URL for the first admin; run
 `trellis-server check --dev --config "$HOME/trellis/config.toml"` before
 any run to see which stores the first run will create.
 
+Keep the platform database and NATS JetStream data together when backing up or
+moving an environment. Trellis binds them with a persistent identity: if the
+database points to a different or empty JetStream store, the platform refuses
+startup. Restore the matching NATS store, or start a genuinely fresh environment
+with a new platform database **and** JetStream store and provision the
+deployments again. Recreating consumers or buckets alone does not restore lost
+job keys or objects. Give each local environment its own ports, data directory,
+and XDG state rather than pointing an existing database at another NATS store.
+
 Runtime-owned paths use the selected profile as defaults. User mode follows XDG;
 `--system` uses `/var/lib/trellis`, `/var/cache/trellis`, `/run/trellis`, and
 `/var/log/trellis`. Override any root in `config.toml` when the deployment needs

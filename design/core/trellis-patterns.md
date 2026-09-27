@@ -43,6 +43,19 @@ These are example application roles, not Trellis participant kinds or required
 service boundaries. Any service may subscribe to events for cache invalidation
 or local state.
 
+### Runtime Storage Identity
+
+The platform database and its JetStream store form one durable environment. The
+database records resource evidence, while JetStream holds physical consumers,
+keys, objects, and other data that the evidence cannot reconstruct. Trellis
+binds the database to a persistent, non-expiring JetStream identity and verifies
+the pairing before starting the platform. A missing or different identity after
+binding is a startup error, not a reason to recreate resources or treat existing
+evidence as ready. Restoring the matching JetStream store restores the pairing;
+starting a new environment requires fresh platform and JetStream state followed
+by deployment provisioning. This check detects a store swap, not every isolated
+missing resource within the correct store.
+
 ### Platform Boundary
 
 Trellis platform code and cloud/domain code are intentionally separate.
