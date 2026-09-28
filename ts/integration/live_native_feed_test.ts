@@ -69,9 +69,22 @@ Deno.test("NX01 rust caller receives Watch frames from rust provider", async () 
           new URL("../../target", import.meta.url),
         ),
       },
-      stdout: "inherit",
-      stderr: "inherit",
+      stdout: "piped",
+      stderr: "piped",
     }).spawn();
+    let providerOutput = "";
+    const decoder = new TextDecoder();
+    const capture = async (stream: ReadableStream<Uint8Array>) => {
+      for await (const chunk of stream) {
+        providerOutput = (providerOutput + decoder.decode(chunk)).slice(
+          -16_384,
+        );
+      }
+    };
+    const drain = Promise.all([
+      capture(process.stdout),
+      capture(process.stderr),
+    ]);
     let exited = false;
     const status = process.status.then((value) => {
       exited = true;
@@ -85,7 +98,9 @@ Deno.test("NX01 rust caller receives Watch frames from rust provider", async () 
       await runtime.waitFor(async () => {
         if (exited) {
           throw new Error(
-            `Rust provider exited: ${JSON.stringify(await status)}`,
+            `Rust provider exited: ${JSON.stringify(await status)}\n${
+              providerOutput.trimEnd() || "<no provider output>"
+            }`,
           );
         }
         const result = await client.echo({ value: "from TypeScript" }, {
@@ -104,6 +119,7 @@ Deno.test("NX01 rust caller receives Watch frames from rust provider", async () 
     } finally {
       if (!exited) Deno.kill(-process.pid, "SIGTERM");
       await status;
+      await drain;
     }
   });
 });

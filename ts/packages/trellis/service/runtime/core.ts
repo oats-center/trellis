@@ -433,7 +433,14 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     }
   >();
   #operationUpdateSequences = new Map<string, number>();
-  #mountedOperationControls = new Set<string>();
+  // Mounted operation-control subscriptions, keyed by control subject, with the
+  // loop that serves them. Shutdown leaves this queue group and settles the
+  // loops and any detached cancel task before the connection drains.
+  #mountedOperationControls = new Map<
+    string,
+    { unsubscribe: () => void; loop: Promise<unknown> }
+  >();
+  #operationControlTasks = new Set<Promise<unknown>>();
   #stopPromise?: Promise<void>;
   #transferSupport?: RuntimeOperationTransferSupport;
   #operationOwnerId: string;
@@ -1584,7 +1591,6 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     if (this.#mountedOperationControls.has(controlSubject)) {
       return;
     }
-    this.#mountedOperationControls.add(controlSubject);
 
     const respondControlError = (msg: Msg, error: Error | BaseError) => {
       const trellisError = error instanceof BaseError
@@ -1603,7 +1609,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     const controlSub = this.#nats.subscribe(controlSubject, {
       queue: routeQueueGroup(controlSubject),
     });
-    void (async () => {
+    const controlLoop = (async () => {
       let liveProvider: LiveProvider | undefined;
       try {
         liveProvider = await this.#createOperationLiveProvider(ctx);
@@ -1786,7 +1792,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             );
             continue;
           }
-          void (async () => {
+          const cancelTask = (async () => {
             try {
               const snapshot = await this.#requestOperationCancellation(
                 runtime,
@@ -1799,6 +1805,10 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               respondControlError(msg, new UnexpectedError({ cause }));
             }
           })();
+          this.#operationControlTasks.add(cancelTask);
+          const forgetCancelTask = () =>
+            this.#operationControlTasks.delete(cancelTask);
+          void cancelTask.then(forgetCancelTask, forgetCancelTask);
           continue;
         }
 
@@ -1846,6 +1856,10 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         );
       }
     })();
+    this.#mountedOperationControls.set(controlSubject, {
+      unsubscribe: () => controlSub.unsubscribe(),
+      loop: controlLoop,
+    });
   }
 
   async #createOperationLiveProvider(
@@ -3359,6 +3373,21 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       }
       if (this.#nats.isClosed()) {
         return;
+      }
+
+      // Leave the replica control queue group and settle admitted control work
+      // before draining, so a stopping replica never answers a control request
+      // from a draining connection. Unsubscribe stops new intake but still
+      // delivers messages already queued locally, and awaiting the loops and
+      // detached cancel tasks lets their durable read/write and reply finish on
+      // the healthy connection. A running business handler is never awaited.
+      const controls = [...this.#mountedOperationControls.values()];
+      for (const control of controls) {
+        control.unsubscribe();
+      }
+      await Promise.allSettled(controls.map((control) => control.loop));
+      while (this.#operationControlTasks.size > 0) {
+        await Promise.allSettled([...this.#operationControlTasks]);
       }
 
       try {
