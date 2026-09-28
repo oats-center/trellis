@@ -533,7 +533,7 @@ type ServiceHandlerResources<
 > = {
   kv: ServiceKvFacade<TKv>;
   store: Record<string, StoreHandle>;
-  jobs: JobsFacadeOf<TJobs, TTrellisApi, TKv>;
+  jobs: ServiceJobsFacadeOf<TJobs, Trellis<TTrellisApi, TKv, TJobs>>;
 };
 
 export type Trellis<
@@ -762,14 +762,7 @@ export type HealthInfoHandler = ServiceHealthInfoFn;
 /** Typed health check function for an extracted service health handler. */
 export type HealthCheckHandler = ServiceHealthCheckFn;
 
-export type JobQueue<
-  TPayload,
-  TResult,
-  TTrellisApi extends RuntimeApi,
-  TKv extends ParticipantKvMetadata = ParticipantKvMetadata,
-  TJobs extends ParticipantJobsMetadata = ParticipantJobsMetadata,
-  TUpdate = never,
-> = {
+export type ServiceJobQueue<TPayload, TResult, TUpdate, TClient> = {
   create(
     payload: TPayload,
   ): AsyncResult<JobRef<TPayload, TResult, TUpdate>, BaseError>;
@@ -783,24 +776,21 @@ export type JobQueue<
   handle(
     handler: (args: {
       job: PublicActiveJob<TPayload, TResult, TUpdate>;
-      client: Trellis<TTrellisApi, TKv, TJobs>;
+      client: TClient;
     }) => Promise<Result<TResult, BaseError>>,
     options?: JobHandlerOptions,
   ): void;
 };
 
-export type JobsFacadeOf<
+export type ServiceJobsFacadeOf<
   TJobs extends ParticipantJobsMetadata,
-  TTrellisApi extends RuntimeApi,
-  TKv extends ParticipantKvMetadata = ParticipantKvMetadata,
+  TClient,
 > = {
-  [K in keyof TJobs]: JobQueue<
+  [K in keyof TJobs]: ServiceJobQueue<
     TJobs[K]["payload"],
     TJobs[K]["result"],
-    TTrellisApi,
-    TKv,
-    TJobs,
-    TJobs[K]["update"]
+    TJobs[K]["update"],
+    TClient
   >;
 };
 
@@ -928,9 +918,8 @@ type ManagedJobWorkers = {
 
 type ManagedJobsFacade<
   TJobs extends ParticipantJobsMetadata,
-  TTrellisApi extends RuntimeApi,
-  TKv extends ParticipantKvMetadata = ParticipantKvMetadata,
-> = JobsFacadeOf<TJobs, TTrellisApi, TKv> & {
+  TClient,
+> = ServiceJobsFacadeOf<TJobs, TClient> & {
   [MANAGED_JOB_WORKERS]: ManagedJobWorkers;
 };
 
@@ -2200,18 +2189,17 @@ function createNoopJobWorkerHost(): JobWorkerHostAdapter {
 
 function createJobsFacade<
   TJobs extends ParticipantJobsMetadata,
-  TTrellisApi extends RuntimeApi,
-  TKv extends ParticipantKvMetadata = ParticipantKvMetadata,
+  TClient extends Pick<HandlerTrellis<RuntimeApi>, "transportUpgradeRequired">,
 >(args: {
   serviceName: string;
   contractId?: string;
   contractDigest?: string;
   nc: NatsConnection;
   contractJobs: TJobs;
-  client: Trellis<TTrellisApi, TKv, TJobs>;
+  client: TClient;
   jobsBinding?: ResourceBindingJobs;
   workStream?: string;
-}): ManagedJobsFacade<TJobs, TTrellisApi, TKv> {
+}): ManagedJobsFacade<TJobs, TClient> {
   const handlers = new Map<string, {
     handler: RegisteredJobHandler<unknown, unknown>;
     concurrency: number;
@@ -2399,7 +2387,7 @@ function createJobsFacade<
             }),
         });
       },
-    } satisfies JobQueue<unknown, unknown, TTrellisApi, TKv, TJobs, unknown>;
+    } satisfies ServiceJobQueue<unknown, unknown, unknown, TClient>;
   }
 
   const managedWorkers: ManagedJobWorkers = {
@@ -2685,7 +2673,7 @@ function createJobsFacade<
     enumerable: false,
   });
 
-  return jobsFacade as ManagedJobsFacade<TJobs, TTrellisApi, TKv>;
+  return jobsFacade as ManagedJobsFacade<TJobs, TClient>;
 }
 
 /**
@@ -3198,7 +3186,10 @@ export class TrellisServiceSession<
   readonly event: ActiveEventFacade<TTrellisApi>;
   readonly kv: ServiceKvFacade<TKv>;
   readonly store: Record<string, StoreHandle>;
-  readonly jobs: JobsFacadeOf<TJobs, TTrellisApi, TKv>;
+  readonly jobs: ServiceJobsFacadeOf<
+    TJobs,
+    Trellis<TTrellisApi, TKv, TJobs>
+  >;
   readonly health: ServiceHealth;
   readonly handle: TypedServiceHandleFacade<TOwnedApi, TTrellisApi, TKv, TJobs>;
   /** Framework-neutral lifecycle handle for the service runtime connection. */
@@ -3252,7 +3243,10 @@ export class TrellisServiceSession<
       ]),
     );
     this.#operationTransfer = operationTransfer;
-    const jobs = createJobsFacade<TJobs, TTrellisApi, TKv>({
+    const jobs = createJobsFacade<
+      TJobs,
+      Trellis<TTrellisApi, TKv, TJobs>
+    >({
       serviceName: name,
       contractId: health.contractId,
       contractDigest: health.contractDigest,

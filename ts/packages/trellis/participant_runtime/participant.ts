@@ -187,10 +187,11 @@ export type ParticipantJobsFromResources<
   [
     K in keyof TResources as TResources[K] extends { kind: "job" } ? K
       : never
-  ]: TResources[K] extends {
-    payload: Codec<infer P>;
-    result?: Codec<infer R>;
-  } ? { payload: P; result: R }
+  ]: TResources[K] extends { payload: Codec<infer P> } ? {
+      payload: P;
+      result: TResources[K] extends { result: Codec<infer R> } ? R : undefined;
+      update: TResources[K] extends { update: Codec<infer U> } ? U : never;
+    }
     : never;
 };
 
