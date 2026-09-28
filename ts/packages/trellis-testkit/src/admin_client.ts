@@ -292,8 +292,8 @@ export class TrellisTestAdminAutomation {
   async approveParticipantApply(
     pendingId: string,
     opts: {
-      excludeResources?: readonly string[],
-      excludeCapabilities?: readonly string[],
+      excludeResources?: readonly string[];
+      excludeCapabilities?: readonly string[];
     } = {},
   ): Promise<TrellisTestParticipantApproval> {
     return await adminDeployment.approveParticipantApply(

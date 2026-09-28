@@ -118,7 +118,7 @@ impl TransportAuthorizationV1 {
             }
         }
         if let Some(deadline) = self.hard_expires_at {
-            if deadline < 1 || deadline > MAXIMUM_SAFE_JSON_INTEGER {
+            if !(1..=MAXIMUM_SAFE_JSON_INTEGER).contains(&deadline) {
                 return Err(authorization_error(
                     AuthorizationErrorCode::UnsafeJsonInteger,
                     ["hardExpiresAt"],
@@ -209,7 +209,7 @@ pub fn subject_union_covered_by(
         .iter()
         .map(|pattern| parse_pattern(pattern))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|reason| pattern_error(reason))?;
+        .map_err(pattern_error)?;
     let literals = source
         .iter()
         .chain(destination.iter())
@@ -225,7 +225,7 @@ pub fn subject_union_covered_by(
         .max()
         .unwrap_or(0);
     for pattern in source {
-        let tokens = parse_pattern(pattern).map_err(|reason| pattern_error(reason))?;
+        let tokens = parse_pattern(pattern).map_err(pattern_error)?;
         if !pattern_covered_by_union(&tokens, &destination_patterns, &witness, maximum_length) {
             return Ok(false);
         }

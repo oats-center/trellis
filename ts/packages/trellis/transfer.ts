@@ -921,7 +921,14 @@ export function createTransferHandle(
   transportGate?: TransportAuthorizationGate,
 ): TransferHandle {
   return grant.direction === "send"
-    ? new SendTransferHandle(nc, auth, timeoutMs, grant, inboxPrefix, transportGate)
+    ? new SendTransferHandle(
+      nc,
+      auth,
+      timeoutMs,
+      grant,
+      inboxPrefix,
+      transportGate,
+    )
     : new ReceiveTransferHandle(
       nc,
       auth,
