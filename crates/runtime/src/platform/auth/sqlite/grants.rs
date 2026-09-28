@@ -2081,13 +2081,22 @@ impl super::super::GrantRepository for SqliteAuthorizationStore {
         input: super::super::evidence::PackageEvidenceInput,
         now: i64,
     ) -> Result<ParticipantBindingRecord, AuthorizationStateError> {
+        // Verifying the presented source-package closure is pure CPU work over
+        // immutable input: it depends on no authorization state. Run it off the
+        // single writer connection so concurrent bootstraps compile in parallel
+        // instead of serializing behind the global SQLite writer lock. Only the
+        // state-dependent evidence acceptance and writes run under that lock.
+        let root_package = input.package_evidence.root_package.clone();
+        let (binding, evidence_json) = tokio::task::spawn_blocking(move || {
+            ParticipantBindingRecord::from_package_evidence(&input, now)
+        })
+        .await
+        .map_err(|error| AuthorizationStateError::Storage(error.to_string()))??;
         self.run(move |connection| {
-            let (binding, evidence_json) =
-                ParticipantBindingRecord::from_package_evidence(&input, now)?;
             let evidence_digest = accept_package_evidence(
                 connection,
                 &binding.package_digest,
-                &input.package_evidence.root_package,
+                &root_package,
                 &evidence_json,
                 false,
                 None,
