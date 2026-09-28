@@ -173,7 +173,15 @@
       if (!mounted || runId !== uploadRunId) return;
       const completed = await upload.wait().orThrow();
       if (!mounted || runId !== uploadRunId) return;
-      result = completed.terminal.output ?? null;
+      const uploaded = completed.terminal.output;
+      result = uploaded
+        ? {
+          evidenceId: uploaded.evidenceId,
+          key: uploaded.key,
+          size: Number(uploaded.size),
+          disposition: uploaded.disposition,
+        }
+        : null;
       clearSelectedFile();
       await refreshGallery(true);
     } catch (cause) {

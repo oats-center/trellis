@@ -271,7 +271,7 @@ async function refreshSiteById(device: Device, siteId: string): Promise<void> {
     .orThrow();
   console.info(`Accepted refresh operation ${operation.id}`);
 
-  const events = await operation.watch().orThrow();
+  const events = await operation.live({}).orThrow();
   for await (const event of events) {
     printOperationEvent(event);
     if (
@@ -317,7 +317,7 @@ async function generateReportForInspection(
     .orThrow();
   console.info(`Accepted report operation ${operation.id}`);
 
-  const events = await operation.watch().orThrow();
+  const events = await operation.live({}).orThrow();
   for await (const event of events) {
     printOperationEvent(event);
     if (

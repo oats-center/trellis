@@ -33,7 +33,7 @@
   type RefreshTerminal = { state: string; output?: SitesRefreshResponse };
   type RefreshOperationRef = {
     id: string;
-    watch(): { orThrow(): Promise<AsyncIterable<RefreshEvent>> };
+    live(): { orThrow(): Promise<AsyncIterable<RefreshEvent>> };
     wait(): { orThrow(): Promise<RefreshTerminal> };
   };
   type LocalOperationUpdate = {
@@ -163,7 +163,7 @@
   }
 
   async function watchRefresh(ref: RefreshOperationRef, runId: number, onTerminal: (terminal: RefreshTerminal) => void): Promise<void> {
-    const stream = await ref.watch().orThrow();
+    const stream = await ref.live().orThrow();
     for await (const event of stream) {
       if (!mounted || runId !== refreshRunId) {
         return;
