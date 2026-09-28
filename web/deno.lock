@@ -17,6 +17,7 @@
     "npm:@noble/curves@^2.0.1": "2.4.0",
     "npm:@noble/hashes@1.8.0": "1.8.0",
     "npm:@opentelemetry/api@^1.9.1": "1.9.1",
+    "npm:@opentelemetry/core@^2.7.0": "2.11.0_@opentelemetry+api@1.9.1",
     "npm:@opentelemetry/exporter-metrics-otlp-proto@0.215": "0.215.0_@opentelemetry+api@1.9.1",
     "npm:@opentelemetry/exporter-trace-otlp-proto@0.215": "0.215.0_@opentelemetry+api@1.9.1",
     "npm:@opentelemetry/resources@^2.7.0": "2.11.0_@opentelemetry+api@1.9.1",
