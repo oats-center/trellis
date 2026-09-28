@@ -925,6 +925,7 @@ export async function connectDeviceWithDeps<
       args.participant,
       connectInfo.apiBindings,
       connectInfo.resourceBindings,
+      verifiedContext.context.grants.permissions,
     ),
     onTransportEvent: (event) => {
       authorizationProviderCache.observeTransportEvent(event);
@@ -955,6 +956,7 @@ export async function connectDeviceWithDeps<
     args.participant,
     connectInfo.apiBindings,
     connectInfo.resourceBindings,
+    verifiedContext.context.grants.permissions,
   );
   authorizationProviderCache.onOwnInvalidated(() => {
     transitionConnectionAvailability(connection, false, "coverage_lost");
@@ -1011,11 +1013,12 @@ export async function connectDeviceWithDeps<
           undefined,
           shouldInstall,
           undefined,
-          () => () => {
+          (verified) => () => {
             installedAvailability = participantAvailability(
               args.participant,
               next.connectInfo.apiBindings,
               next.connectInfo.resourceBindings,
+              verified.context.grants.permissions,
             );
             installConnectionAvailability(connection, installedAvailability);
             refreshApiRoutes(runtimeApi, next.connectInfo.apiBindings);

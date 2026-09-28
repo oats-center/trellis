@@ -601,6 +601,28 @@ export function getParticipantRuntime(
   };
 }
 
+/** Compares one signed grant permission with one authored grant atom. */
+function sameGrantAtom(
+  permission: Readonly<
+    { action?: string; target: Readonly<Record<string, unknown>> }
+  >,
+  atom: Readonly<
+    { action?: string; target: Readonly<Record<string, unknown>> }
+  >,
+): boolean {
+  if (permission.action !== atom.action) return false;
+  const permissionTarget = permission.target as Record<string, unknown>;
+  const atomTarget = atom.target as Record<string, unknown>;
+  const fields = new Set([
+    ...Object.keys(permissionTarget),
+    ...Object.keys(atomTarget),
+  ]);
+  for (const field of fields) {
+    if (permissionTarget[field] !== atomTarget[field]) return false;
+  }
+  return true;
+}
+
 /** Projects installed API and resource bindings into one immutable participant snapshot. */
 export function participantAvailability(
   participant: GeneratedParticipant,
@@ -611,7 +633,7 @@ export function participantAvailability(
     jobs?: Readonly<{ queues: Readonly<Record<string, unknown>> }>;
     eventConsumers?: Readonly<Record<string, unknown>>;
   }>,
-  permissions?: readonly Readonly<{
+  permissions: readonly Readonly<{
     target: Readonly<{
       kind: string;
       participant?: string;
@@ -634,21 +656,19 @@ export function participantAvailability(
       capabilities[capability] = routeBound &&
         bundle !== undefined &&
         bundle.every((atom) =>
-          permissions?.some((permission) =>
-            JSON.stringify(permission) === JSON.stringify(atom)
-          ) ?? false
+          permissions.some((permission) => sameGrantAtom(permission, atom))
         );
     }
   }
 
   const resources: Record<string, boolean> = {};
   const granted = (name: string, kind: string) =>
-    permissions?.some((permission) =>
+    permissions.some((permission) =>
       permission.target.kind === "participantResource" &&
       permission.target.participant === participant.identity &&
       permission.target.resource === kind &&
       permission.target.name === name
-    ) ?? true;
+    );
   for (const [name, descriptor] of Object.entries(participant.resources)) {
     if (descriptor.availability !== "optional") continue;
     switch (descriptor.kind) {

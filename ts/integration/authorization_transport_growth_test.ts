@@ -286,7 +286,14 @@ Deno.test(
         assertEquals(renewed.connectionId, physical);
         assertEquals(subject.connection.status.transportUpgradeAvailable, true);
 
-        // 14. The grown capability is gated, not silently attempted.
+        // 14. The grown capability is gated, not silently attempted. The two
+        // layers are distinct: application authorization now makes B available
+        // while the current attachment has not adopted it.
+        assertEquals(
+          subject.connection.availability().capabilities[CAPABILITY_B],
+          true,
+          "the approved capability must be available at the application layer",
+        );
         const gated = await subject.extend({});
         assert(gated.isErr(), "the unadopted capability must not run");
         assertEquals(

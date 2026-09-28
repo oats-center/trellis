@@ -2972,6 +2972,7 @@ export function connectTrellisServiceWithRuntimeDeps<
             args.participant,
             bootstrap.binding.apiBindings,
             bootstrap.binding.resources,
+            verifiedContext.context.grants.permissions,
           ),
           healthIdentity: {
             instanceId: verifiedContext.context.instanceId,
@@ -2983,6 +2984,7 @@ export function connectTrellisServiceWithRuntimeDeps<
           args.participant,
           bootstrap.binding.apiBindings,
           bootstrap.binding.resources,
+          verifiedContext.context.grants.permissions,
         );
         transportState.onStatusChanged((status) =>
           installConnectionTransportUpgrade(
@@ -3065,12 +3067,13 @@ export function connectTrellisServiceWithRuntimeDeps<
                   inboxPrefix,
                   transports: next.connectInfo.transports,
                 },
-                () => () => {
+                (verified) => () => {
                   liveResourceBindings = next.binding.resources;
                   installedAvailability = participantAvailability(
                     args.participant,
                     next.binding.apiBindings,
                     next.binding.resources,
+                    verified.context.grants.permissions,
                   );
                   installConnectionAvailability(
                     service.connection,
