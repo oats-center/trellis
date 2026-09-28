@@ -852,7 +852,7 @@ impl TrellisTestRuntime {
         let session = crate::admin::login_client(
             &self.trellis_url,
             P::ID,
-            ADMIN_USERNAME,
+            &self.username,
             &self.password,
             admin,
         )
