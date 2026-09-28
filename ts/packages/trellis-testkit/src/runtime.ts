@@ -215,7 +215,10 @@ export class TrellisTestRuntime implements AsyncDisposable {
     ): Promise<TrellisTestParticipantApplyResult>;
     approveApply(
       pendingId: string,
-      opts?: { excludeResources?: readonly string[] },
+      opts?: {
+        excludeResources?: readonly string[];
+        excludeCapabilities?: readonly string[];
+      },
     ): Promise<TrellisTestParticipantApproval>;
   };
   readonly services: {

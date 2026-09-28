@@ -190,3 +190,30 @@ app LiveProbeCaller {
   use auth { rpc Sessions.Me; }
   use liveprobe { rpc Inspect; rpc Release; live Watch; }
 }
+
+api transport_growth@v1 {
+  title "Capability growth acceptance";
+  description "Optional-capability growth on one live service attachment.";
+  rpc Advance { input Empty; output Empty; }
+  rpc Extend { input Empty; output Empty; }
+  capabilities {
+    public { allows { rpc Advance; } }
+    capability extend {
+      title "Optional capability";
+      description "Optional growth operation.";
+      consequence "The subject can invoke its optional operation.";
+      allows { rpc Extend; }
+    }
+  }
+}
+
+service TransportGrowthSubject {
+  implements liveprobe;
+  use transport_growth {
+    rpc Advance;
+    rpc Extend;
+    optional capability extend;
+  }
+}
+
+service TransportGrowthTarget { implements transport_growth; }

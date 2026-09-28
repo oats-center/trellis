@@ -291,7 +291,10 @@ export class TrellisTestAdminAutomation {
   /** Completes a deployment apply with server-computed consent for a pending approval. */
   async approveParticipantApply(
     pendingId: string,
-    opts: { excludeResources?: readonly string[] } = {},
+    opts: {
+      excludeResources?: readonly string[],
+      excludeCapabilities?: readonly string[],
+    } = {},
   ): Promise<TrellisTestParticipantApproval> {
     return await adminDeployment.approveParticipantApply(
       this.#deployment,

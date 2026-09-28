@@ -211,9 +211,12 @@ export type PendingDeploymentApply = {
 function consentApproval(
   consent: NonNullable<ReturnType<typeof deploymentConsentRequest>>,
   excludeResources: readonly string[] = [],
+  excludeCapabilities: readonly string[] = [],
 ): AdminRpcInput<"authDeploymentsApply">["approval"] {
   return {
-    approvedCapabilities: consent.capabilities.filter((item) => item.eligible)
+    approvedCapabilities: consent.capabilities.filter((item) =>
+      item.eligible && !excludeCapabilities.includes(item.id)
+    )
       .map((item) => ({ id: item.id, consentDigest: item.consentDigest })),
     approvedResources: consent.resources.filter((item) =>
       item.eligible && !excludeResources.includes(item.name)
@@ -343,7 +346,10 @@ export async function requestParticipantApply(
 export async function approveParticipantApply(
   context: AdminDeploymentContext,
   pendingId: string,
-  opts: { excludeResources?: readonly string[] } = {},
+  opts: {
+    excludeResources?: readonly string[],
+    excludeCapabilities?: readonly string[],
+  } = {},
 ): Promise<TrellisTestParticipantApproval> {
   const pending = context.pendingApprovals.get(pendingId);
   if (!pending) {
@@ -358,7 +364,11 @@ export async function approveParticipantApply(
   const applied = await context.rpc("authDeploymentsApply", {
     ...pending.request,
     idempotencyKey: ulid(),
-    approval: consentApproval(pending.consent, opts.excludeResources ?? []),
+    approval: consentApproval(
+      pending.consent,
+      opts.excludeResources ?? [],
+      opts.excludeCapabilities ?? [],
+    ),
   });
   context.pendingApprovals.delete(pendingId);
   return finalizeParticipantApply(context, pending, deploymentId, applied);
