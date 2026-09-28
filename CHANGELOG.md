@@ -23,6 +23,11 @@ and this project adheres to
 
 ### Fixed
 
+- TypeScript service handlers now share the flat, contract-aware
+  `ServiceHandlerClient`, including Job and Live callbacks. Selected event
+  subscriptions and prepared publishers retain their generated types, and
+  handler clients expose availability and transfer utilities while preserving
+  live resource bindings and explicit transport adoption.
 - Proactive service/device authorization refresh no longer fails silently on a
   fractional-second `serverNow`, and live credit/pulse/end-ack controls are no
   longer bounded by the 15-second opening reservation, so retained Live sessions
