@@ -1225,6 +1225,12 @@ export async function createConnectedService<
    * connect is reachable through the service resource facade. @internal
    */
   liveBindings?: () => ResourceBindings;
+  /**
+   * Shared transport-admission gate for this service. Every outbound surface
+   * (RPC, Live, events, operations) and every resource check consults it.
+   * @internal
+   */
+  transportGate?: TransportAuthorizationGate;
   /** Transport-admission check for one bound resource. @internal */
   resourceTransportCheck?: (
     kind: "kv" | "store",
@@ -1292,6 +1298,7 @@ export async function createConnectedService<
       },
       operationDeploymentId: args.healthIdentity?.deploymentId,
       operationConnectionId: args.operationConnectionId,
+      ...(args.transportGate ? { transportGate: args.transportGate } : {}),
     },
   );
 
@@ -1319,6 +1326,7 @@ export async function createConnectedService<
       },
       apiBindings: args.apiBindings,
       ephemeralEventNeeds: args.ephemeralEventNeeds ?? new Set(),
+      ...(args.transportGate ? { transportGate: args.transportGate } : {}),
       connection,
     },
   );
@@ -2952,6 +2960,7 @@ export function connectTrellisServiceWithRuntimeDeps<
           apiBindings: bootstrap.binding.apiBindings,
           ephemeralEventNeeds: participantEphemeralEventNeeds(args.participant),
           refreshTransport: refreshServiceTransport,
+          transportGate: serviceTransportGate,
           onTransportEvent: (event) => {
             const type = (event as { type?: unknown } | null)?.type;
             if (

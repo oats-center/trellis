@@ -148,13 +148,14 @@ Deno.test(
         seed: targetInstance.seed,
       }).orThrow();
       const targetExit = target.wait().catch((error: unknown) => error);
-      let targetCalls = 0;
+      let advanceCalls = 0;
+      let extendCalls = 0;
       await target.handleAdvance(() => {
-        targetCalls += 1;
+        advanceCalls += 1;
         return Result.ok({});
       });
       await target.handleExtend(() => {
-        targetCalls += 1;
+        extendCalls += 1;
         return Result.ok({});
       });
 
@@ -223,9 +224,11 @@ Deno.test(
           streamId: "growth",
         }).orThrow();
         const frames: bigint[] = [];
+        // The observation is expected to end when the attachment is replaced;
+        // its rejection is consumed here so it is asserted, not unhandled.
         const feedTask = (async () => {
           for await (const frame of feed) frames.push(frame.index);
-        })();
+        })().catch(() => undefined);
         await runtime.waitFor(() => frames.length > 0, { timeoutMs: 30_000 });
 
         // 5. A succeeds on the admitted authority.
@@ -233,7 +236,7 @@ Deno.test(
           (await subject.advance({})).isOk(),
           true,
         );
-        assertEquals(targetCalls, 1);
+        assertEquals(advanceCalls, 1);
 
         // 6. The attachment under test.
         const [subjectAttachment] = await attachmentsFor(runtime, subjectId);
@@ -303,8 +306,8 @@ Deno.test(
         const [stillPending] = await attachmentsFor(runtime, subjectId);
         assertEquals(stillPending.connectionId, physical);
         assertEquals(
-          targetCalls,
-          1,
+          extendCalls,
+          0,
           "the gated call must not reach the target",
         );
 
@@ -322,7 +325,7 @@ Deno.test(
         );
 
         // 17. The old ephemeral observation experiences ordinary loss.
-        await feedTask.catch(() => undefined);
+        await feedTask;
 
         // 18. Both capabilities work on the adopted attachment.
         assertEquals(
@@ -333,7 +336,8 @@ Deno.test(
           (await subject.advance({})).isOk(),
           true,
         );
-        assertEquals(targetCalls, 3);
+        assertEquals(extendCalls, 1);
+        assertEquals(advanceCalls, 3);
 
         // 19. A newly opened observation works.
         const reopened = await caller.watch({
