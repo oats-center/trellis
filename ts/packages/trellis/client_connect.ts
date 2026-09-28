@@ -673,7 +673,9 @@ async function createSessionKeyRuntimeIdentity(
 ): Promise<ClientRuntimeIdentity> {
   const seed = base64urlDecode(sessionKeySeed);
   const installationAuth = await createAuth({ sessionKeySeed });
-  const runtimeAuth = installationAuth;
+  const runtimeAuth = await createAuth({
+    sessionKeySeed: base64urlEncode(crypto.getRandomValues(new Uint8Array(32))),
+  });
   const sign = async (data: Uint8Array): Promise<Uint8Array> =>
     await runtimeAuth.sign(data);
 

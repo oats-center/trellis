@@ -122,6 +122,36 @@ async function signedHeaders(
   return headers;
 }
 
+/**
+ * Reads the owner's live offer.
+ *
+ * A connection-scoped inbox prefix also carries the owner's own live traffic,
+ * so the observer scans until it sees the offer rather than assuming it is the
+ * first message.
+ */
+async function firstLiveOfferWithin(
+  iterator: AsyncIterator<Msg>,
+  timeoutMs: number,
+): Promise<{ sessionId?: string; controlSubject?: string } | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return undefined;
+    const next = await firstWithin(iterator, remaining);
+    if (!next) return undefined;
+    try {
+      const body = JSON.parse(new TextDecoder().decode(next.data)) as {
+        type?: string;
+        sessionId?: string;
+        controlSubject?: string;
+      };
+      if (body.type === "offer") return body;
+    } catch {
+      // Not a live protocol message; keep scanning.
+    }
+  }
+}
+
 /** Registers and connects one ordinary Console caller plus its issued session. */
 async function consoleCaller(runtime: Runtime, name: string) {
   const key = await runtime.registerClient({ name, contract: CONSOLE });
@@ -234,12 +264,8 @@ Deno.test("P08 a foreign principal's session control is denied and the owner con
     // The real owner opens the built-in Health feed; the observer captures the
     // offer to learn the session and control route.
     const feed = await owner.client.healthWatch({}).orThrow();
-    const offerMessage = await firstWithin(offerIterator, 10_000);
-    assert(offerMessage, "the owner offer must be observable");
-    const offer = JSON.parse(new TextDecoder().decode(offerMessage.data)) as {
-      sessionId?: string;
-      controlSubject?: string;
-    };
+    const offer = await firstLiveOfferWithin(offerIterator, 10_000);
+    assert(offer, "the owner offer must be observable");
     assert(
       offer.sessionId && offer.controlSubject,
       "the offer carries the session route",
