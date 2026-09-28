@@ -22,12 +22,22 @@ impl SqliteAuthorizationStore {
         installed_revision: u64,
     ) -> Result<Vec<ResourceBindingEvidence>, AuthorizationStateError> {
         self.run_read(move |connection| {
+            // Reading present evidence for one revision needs that revision's
+            // declaration to interpret the current physical resource.
+            let (_, participant) = super::grants::load_installed_participant(
+                connection,
+                &participant_id,
+                Some(installed_revision),
+            )?
+            .ok_or(AuthorizationStateError::ParticipantMissing)?;
             load_resource_bindings(
                 connection,
                 owner_kind,
                 &owner_id,
                 &participant_id,
                 installed_revision,
+                installed_revision,
+                &participant.projection,
             )
         })
         .await
@@ -196,6 +206,8 @@ pub(in crate::platform::auth) fn sqlite_issuance_snapshot(
         &owner_id,
         &participant_id,
         participant_revision,
+        binding.installed_revision,
+        &participant.projection,
     )?;
     // Include the mutable selected API provider bindings in the snapshot so
     // the issuance concurrency token covers the exact policy inputs.
@@ -283,6 +295,8 @@ pub(in crate::platform::auth) fn load_resource_bindings(
     owner_id: &str,
     participant_id: &str,
     installed_revision: u64,
+    binding_installed_revision: u64,
+    participant: &super::super::evidence::ParticipantRuntimeProjection,
 ) -> Result<Vec<ResourceBindingEvidence>, AuthorizationStateError> {
     let mut statement = connection
         .prepare(
@@ -292,7 +306,7 @@ pub(in crate::platform::auth) fn load_resource_bindings(
          ORDER BY resource_kind, local_name",
         )
         .map_err(sql_error)?;
-    let resources = statement
+    let mut resources = statement
         .query_map(
             params![
                 encode_enum(owner_kind)?,
@@ -305,6 +319,58 @@ pub(in crate::platform::auth) fn load_resource_bindings(
         .map_err(sql_error)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(sql_error)?;
+    // A credential pinned below the current binding interprets present
+    // materialization through its own vocabulary. Its evidence must therefore be
+    // re-derived from the current physical catalog rather than copied from
+    // another revision's row, and it must never claim historical
+    // materialization. The projection requires all of:
+    //   * the pinned participant still declares the resource;
+    //   * the one current physical resource for that identity is ready;
+    //   * it was reconciled at the present binding revision, i.e. present
+    //     authority still permits the pinned resource semantics.
+    // Anything else falls back to the stored pinned row, which cannot loosen
+    // authority because it was already scoped to this revision.
+    if installed_revision != binding_installed_revision {
+        for resource in &mut resources {
+            let declared = participant.resources.contains_key(&resource.local_name);
+            if !declared {
+                continue;
+            }
+            let current = connection
+                .query_row(
+                    "SELECT state, binding_revision, actual_json FROM auth_resources
+                     WHERE owner_kind = ?1 AND owner_id = ?2 AND participant_id = ?3
+                       AND kind = ?4 AND local_name = ?5",
+                    params![
+                        encode_enum(owner_kind)?,
+                        owner_id,
+                        participant_id,
+                        resource.resource_kind,
+                        resource.local_name
+                    ],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(sql_error)?;
+            let Some((state, reconciled_revision, actual)) = current else {
+                continue;
+            };
+            if state != "ready"
+                || reconciled_revision != to_sql_version(binding_installed_revision)?
+            {
+                continue;
+            }
+            resource.state = super::super::ResourceBindingState::Available;
+            resource.actual = actual.map(decode_json).transpose().map_err(sql_error)?;
+            resource.error = None;
+        }
+    }
     Ok(resources)
 }
 

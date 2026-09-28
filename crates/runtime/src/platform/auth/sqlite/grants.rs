@@ -670,6 +670,8 @@ pub(in crate::platform::auth) fn replace_grant_binding(
         &binding.owner_id,
         &binding.participant_id,
         binding.installed_revision,
+        binding.installed_revision,
+        &participant.projection,
     )?;
     let authority = super::super::policy::resolve_authority(
         &participant,

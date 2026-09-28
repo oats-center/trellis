@@ -331,12 +331,20 @@ impl SqliteAuthorizationStore {
         installed_revision: u64,
     ) -> Result<Vec<ResourceBindingEvidence>, AuthorizationStateError> {
         self.run_read(move |connection| {
+            let (_, participant) = super::grants::load_installed_participant(
+                connection,
+                &participant_id,
+                Some(installed_revision),
+            )?
+            .ok_or(AuthorizationStateError::ParticipantMissing)?;
             super::contexts::load_resource_bindings(
                 connection,
                 owner_kind,
                 &owner_id,
                 &participant_id,
                 installed_revision,
+                installed_revision,
+                &participant.projection,
             )
         })
         .await
@@ -568,12 +576,16 @@ impl SqliteAuthorizationStore {
                     encode_enum(evidence.state)?, evidence.materialized_at, evidence.error],
             ).map_err(map_write_error)?;
             if actual.is_some() {
+                // Reconciling at the binding's own revision interprets present
+                // materialization with the current declaration.
                 let resources = super::contexts::load_resource_bindings(
                     &transaction,
                     binding.owner_kind,
                     &binding.owner_id,
                     &binding.participant_id,
                     binding.installed_revision,
+                    binding.installed_revision,
+                    &participant.projection,
                 )?;
                 let authority = super::super::policy::resolve_authority(&participant, binding.approval_mode, &binding.approved_capabilities, &binding.approved_resources, &binding.platform_privileges, &binding.delegation_ceiling, (&resources, binding.companion_approved))?;
                 if authority.exact_grants != binding.grants {
