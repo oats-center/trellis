@@ -57,12 +57,16 @@ api device_child@v1 {
 
 service Provider {
   implements runtime;
-  use runtime { rpc Echo; }
+  use runtime {
+    rpc Echo;
+    operation Work;
+  }
   job work {
     title "Work";
     description "Runtime fixture work.";
     payload Value;
     result Value;
+    update Value;
     deadline 5s;
     retry { attempts 2; backoff [250ms]; }
   }
@@ -117,6 +121,12 @@ service EventServiceBoth {
 service EventSubscriberService {
   implements events;
   use events { subscribe event Alpha; subscribe event Beta; }
+}
+service EventClient {
+  use events {
+    publish event Alpha;
+    subscribe event Beta;
+  }
 }
 service ChildProvider { implements device_child; }
 app Alpha { use events { publish event Alpha; rpc Observed; rpc DropAlpha; rpc DeliveryStats; } }
