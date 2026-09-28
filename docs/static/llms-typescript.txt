@@ -81,13 +81,21 @@ calls.
 Inline handlers infer their types at registration. Extracted handlers can use
 `RpcHandler<typeof participant, "Orders.Create">` from
 `@oatscenter/trellis/service`. `OperationHandler`, `LiveHandler`, and
-`JobHandler` provide corresponding typed boundaries. Regenerate after an IDL
+`JobHandler` and `ServiceEventHandler` provide corresponding typed boundaries. Regenerate after an IDL
 change.
 
 Handlers receive Trellis-owned arguments such as `input`, `context`, and the
 scoped outbound `client`. Trellis does not inject application dependencies. A
 closure is one way to supply a database or domain function; an application can
 use its own DI system to construct that closure.
+
+Every public service handler receives the same flat, contract-selected
+`ServiceHandlerClient<typeof participant>` as its `client`. It exposes selected
+outbound RPC, Operation, Live, and Event-publish methods, owned Event publishers
+with `.prepare(...)`, bound `kv`, `store`, and `jobs` handles, `connection`/`name`,
+and `availability()`, `watchAvailability()`, `publishPrepared(...)`, and
+`transfer(...)`. Registration and lifecycle methods stay on the connected
+service; there is no generic `client.rpc`/`client.operation`/`client.event` tree.
 
 Declare wire models and expected errors in IDL. The generator owns the runtime
 schemas and generated error types. Handlers can return declared errors through

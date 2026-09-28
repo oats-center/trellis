@@ -17,6 +17,10 @@ connected `service.kv`, `service.store`, and `service.jobs` handles. Do not
 fetch bindings, derive physical subjects, construct raw handles, or
 generate/install packages during startup.
 
+Every public TypeScript handler callback receives the same flat,
+contract-selected `ServiceHandlerClient`; registration and lifecycle methods
+remain on the connected service.
+
 Native IDL `implements Api;` declares complete provider ownership.
 `use Api {
 ... }` selects exact outbound interactions. Capability approval and
