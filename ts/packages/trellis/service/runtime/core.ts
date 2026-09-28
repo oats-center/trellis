@@ -3375,32 +3375,85 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         return;
       }
 
-      // Leave the replica control queue group and settle admitted control work
-      // before draining, so a stopping replica never answers a control request
-      // from a draining connection. Unsubscribe stops new intake but still
-      // delivers messages already queued locally, and awaiting the loops and
-      // detached cancel tasks lets their durable read/write and reply finish on
-      // the healthy connection. A running business handler is never awaited.
-      const controls = [...this.#mountedOperationControls.values()];
-      for (const control of controls) {
-        control.unsubscribe();
-      }
-      await Promise.allSettled(controls.map((control) => control.loop));
-      while (this.#operationControlTasks.size > 0) {
-        await Promise.allSettled([...this.#operationControlTasks]);
-      }
+      // Watch the transport before reading any state or awaiting, so a loss
+      // cannot slip between the usability check and this watch. Any physical
+      // loss or terminal close releases the waits below: NATS never rejects a
+      // pending flush on close and reconnects are unbounded, so the transport
+      // status is the only signal that can settle them.
+      const statuses = this.#nats.status()[Symbol.asyncIterator]();
+      const released = Promise.withResolvers<void>();
+      void (async () => {
+        try {
+          for (;;) {
+            const next = await statuses.next();
+            if (next.done) break;
+            const { type } = next.value;
+            if (
+              type === "disconnect" || type === "reconnecting" ||
+              type === "forceReconnect" || type === "close"
+            ) {
+              break;
+            }
+          }
+        } catch {
+          // A status-stream failure is itself a terminal shutdown signal.
+        } finally {
+          released.resolve();
+        }
+      })();
+      const untilReleased = (work: Promise<unknown>): Promise<boolean> =>
+        Promise.race([
+          work.then(() => false),
+          released.promise.then(() => true),
+        ]);
 
       try {
-        await this.#nats.drain();
-      } catch (cause) {
-        if (
-          !(cause instanceof Error) ||
-          cause.name !== "DrainingConnectionError"
-        ) {
-          throw cause;
+        // An already-unusable transport cannot finish admitted control work or
+        // a graceful flush: close directly.
+        const cache = this.auth.authorizationProviderCache;
+        if (cache !== undefined && !cache.health().healthy) {
+          return;
         }
 
-        await this.#nats.closed().catch(() => undefined);
+        // Settle admitted control work before draining, so a stopping replica
+        // never answers a control request from a draining connection. Each
+        // wait is released if the transport is lost or closes.
+        const controls = [...this.#mountedOperationControls.values()];
+        for (const control of controls) {
+          control.unsubscribe();
+        }
+        if (
+          await untilReleased(
+            Promise.allSettled(controls.map((control) => control.loop)),
+          )
+        ) {
+          return;
+        }
+        while (this.#operationControlTasks.size > 0) {
+          if (
+            await untilReleased(
+              Promise.allSettled([...this.#operationControlTasks]),
+            )
+          ) {
+            return;
+          }
+        }
+
+        // A loss or terminal close releases the drain instead of waiting on a
+        // flush that never settles.
+        await untilReleased(
+          this.#nats.drain().catch((cause) => {
+            if (
+              !(cause instanceof Error) ||
+              cause.name !== "DrainingConnectionError"
+            ) {
+              throw cause;
+            }
+          }),
+        );
+      } finally {
+        void statuses.return?.().catch(() => undefined);
+        await this.#nats.close();
       }
     })();
 

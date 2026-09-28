@@ -2532,7 +2532,7 @@ export class Trellis<
   #ephemeralEventNeeds?: ReadonlySet<string>;
   #durableEventLoops = new Map<string, DurableEventConsumerLoop<TA>>();
   #durableEventListenersStopped = false;
-  #liveClosers = new Set<() => void>();
+  #liveClosers = new Set<(terminal: void | Error) => void>();
   #resourceGeneration: () => number;
   #resourceAvailability: (name: string) => boolean;
   #transportGate?: TransportAuthorizationGate;
@@ -2553,8 +2553,8 @@ export class Trellis<
     this.name = name;
     this.#nats = nats;
     const liveClosers = this.#liveClosers;
-    void nats.closed().then(() => {
-      for (const close of liveClosers) close();
+    void nats.closed().then((terminal) => {
+      for (const close of liveClosers) close(terminal);
       liveClosers.clear();
     });
     this.#js = jetstream(this.#nats);
@@ -5889,6 +5889,16 @@ export class Trellis<
             operationId: record.operationId,
             includeUpdates: record.includeUpdates === true,
           },
+        );
+        // Own the watch like a standalone live open, but fence only a clean
+        // local close: an involuntary transport error keeps its loss outcome.
+        const closeOnNats = (terminal: void | Error) => {
+          if (!(terminal instanceof Error)) subscription.close();
+          this.#liveClosers.delete(closeOnNats);
+        };
+        this.#liveClosers.add(closeOnNats);
+        void subscription.closed.then(() =>
+          this.#liveClosers.delete(closeOnNats)
         );
         return ok(subscription);
       } catch (cause) {

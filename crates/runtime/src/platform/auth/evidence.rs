@@ -332,18 +332,30 @@ pub(crate) struct ResourceRepresentationRuntimeProjection {
     pub accepts: BTreeMap<u32, serde_json::Value>,
 }
 
-pub(crate) fn verify_package_evidence(
+/// Canonicalize incoming typed evidence and verify its declared root identity.
+///
+/// Pure: depends on no authorization state. The canonical bytes are the exact
+/// immutable identity later reused for verified compilation.
+pub(crate) fn canonicalize_package_evidence(
     input: &PackageEvidenceInput,
-) -> Result<(String, String, ParticipantRuntimeProjection, String), AuthorizationStateError> {
+) -> Result<String, AuthorizationStateError> {
     if input.package_digest != input.package_evidence.root_digest {
         return invalid("packageDigest does not match packageEvidence.rootDigest");
     }
     let evidence_value = serde_json::to_value(&input.package_evidence)
         .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
-    let evidence_json = trellis_protocol::canonicalize_json(&evidence_value)
-        .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
-    let graph = compile_evidence(input.package_evidence.clone())
-        .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
+    trellis_protocol::canonicalize_json(&evidence_value)
+        .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))
+}
+
+/// Derive the participant projection from an already verified compiled graph.
+///
+/// `participantPath` is not part of the canonical evidence digest, so the
+/// projection stays per-accept even when the compiled graph is reused.
+pub(crate) fn project_package_evidence(
+    input: &PackageEvidenceInput,
+    graph: &trellis_idl::PackageGraph,
+) -> Result<(String, String, ParticipantRuntimeProjection), AuthorizationStateError> {
     if graph.root_digest() != input.package_digest {
         return invalid("packageDigest does not match recompiled package semantics");
     }
@@ -379,10 +391,7 @@ pub(crate) fn verify_package_evidence(
                     "participant references unavailable API {api_id}"
                 ))
             })?;
-        referenced_apis.insert(
-            api_id.as_str().to_owned(),
-            project_api(&graph, api_id, api)?,
-        );
+        referenced_apis.insert(api_id.as_str().to_owned(), project_api(graph, api_id, api)?);
     }
     let implemented_apis = participant
         .implements()
@@ -413,11 +422,11 @@ pub(crate) fn verify_package_evidence(
         .collect::<BTreeSet<_>>();
     let mut resources = BTreeMap::new();
     for (name, resource) in participant.resources() {
-        let (projection, _) = project_resource(&graph, resource)?;
+        let (projection, _) = project_resource(graph, resource)?;
         resources.insert(name.as_str().to_owned(), projection);
     }
     let optional_grant_bundles = needs.optional_grants().clone();
-    let participant_digest = participant_digest(&graph, participant.identity())
+    let participant_digest = participant_digest(graph, participant.identity())
         .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
     let companion = participant
         .companion()
@@ -465,8 +474,23 @@ pub(crate) fn verify_package_evidence(
             companion_participant_kind: companion.as_ref().map(|value| value.1),
             companion_required: companion.is_some_and(|value| value.2),
         },
-        evidence_json,
     ))
+}
+
+/// Verify source evidence and construct its read-only participant projection.
+///
+/// # Errors
+///
+/// Returns [`AuthorizationStateError`] when evidence is invalid or fails digest
+/// or semantic verification.
+pub(crate) fn verify_package_evidence(
+    input: &PackageEvidenceInput,
+) -> Result<(String, String, ParticipantRuntimeProjection, String), AuthorizationStateError> {
+    let evidence_json = canonicalize_package_evidence(input)?;
+    let graph = compile_evidence(input.package_evidence.clone())
+        .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
+    let (participant_digest, needs_digest, projection) = project_package_evidence(input, &graph)?;
+    Ok((participant_digest, needs_digest, projection, evidence_json))
 }
 
 fn project_api(

@@ -24,10 +24,12 @@ and this project adheres to
 ### Fixed
 
 - Service shutdown settles admitted Operation control requests before draining
-  NATS, preventing cancellation failures during graceful owner shutdown.
+  NATS and stops waiting when its transport is lost, preventing cancellation
+  failures and shutdown hangs. Operation observations close with their caller
+  connection.
 - Concurrent service bootstraps verify immutable package evidence outside the
-  authorization SQLite writer lock, avoiding serialized IDL compilation while
-  preserving transactional evidence acceptance.
+  authorization SQLite writer lock and reuse verified compilation, avoiding
+  redundant IDL work while preserving transactional evidence acceptance.
 - TypeScript service handlers now share the flat, contract-aware
   `ServiceHandlerClient`, including Job and Live callbacks. Selected event
   subscriptions and prepared publishers retain their generated types, and
@@ -109,10 +111,10 @@ and this project adheres to
   a Rust test harness (and vice versa). With no target configured, a single
   detected language still defaults to `trellis`, and multiple targets still
   require explicit outputs.
-- Added `trellis_testkit::remove_retained_workdirs` to reclaim stale harness-owned
-  sandboxes left by aborted or killed runs. It removes only directories carrying
-  this harness's ownership marker, and an age gate leaves currently running
-  sandboxes alone.
+- Added `trellis_testkit::remove_retained_workdirs` to reclaim stale
+  harness-owned sandboxes left by aborted or killed runs. It removes only
+  directories carrying this harness's ownership marker, and an age gate leaves
+  currently running sandboxes alone.
 
 ### Fixed
 
@@ -122,7 +124,8 @@ and this project adheres to
 ### Documentation
 
 - Documented the external Rust live-testing workflow and the intentional set of
-  publishable Trellis crates (`trellis-rs`, `trellis-protocol`, `trellis-testkit`).
+  publishable Trellis crates (`trellis-rs`, `trellis-protocol`,
+  `trellis-testkit`).
 
 ## [0.100.0-rc.1] - 2026-09-23
 
@@ -675,9 +678,9 @@ and this project adheres to
   `TrellisTestRuntime.captureEvents(...)` and `TrellisTestEventCapture`, so
   integration tests can subscribe to selected contract events with normal
   Trellis authority and generated event facades.
-- Added `@oatscenter/trellis-testkit` assertion helpers for RPC results, eventual
-  RPC success, captured event presence and context, no-event windows, and
-  terminal job and operation completion.
+- Added `@oatscenter/trellis-testkit` assertion helpers for RPC results,
+  eventual RPC success, captured event presence and context, no-event windows,
+  and terminal job and operation completion.
 - Added expanded JS and Rust integration coverage for granular matrix cases,
   operations cancellation/signalling, event consumers, control-plane jobs admin,
   prepared events, outbox flows, state admin, and authority planning.
@@ -699,8 +702,8 @@ and this project adheres to
   `defineError(...)` instances are accepted when their serialized data matches
   the declared generated error data.
 - Changed release verification and publishing so the Trellis control-plane
-  service, `@oatscenter/trellis-testkit`, and direct JSR packages run through the
-  normal release package set.
+  service, `@oatscenter/trellis-testkit`, and direct JSR packages run through
+  the normal release package set.
 - Changed release retry and publish workflows so manual existing-tag retries can
   publish after successful release gates, publish jobs still run when unrelated
   dependencies are skipped, and internal JSR dependencies are rewritten to the
@@ -747,12 +750,14 @@ and this project adheres to
   while preserving structured `BootstrapError` diagnostics.
 - Fixed `Auth.Sessions.Logout` cleanup ordering so durable session and
   connection records are removed before runtime access is kicked.
-- Fixed `@oatscenter/trellis-testkit` assertion helpers so generated event captures
-  from `TrellisTestRuntime.captureEvents(...)` and generated service job refs
-  can be passed directly to `assertEventCaptured`, `assertEventsCaptured`, and
-  `assertJobCompleted` without downstream casts, wrappers, or local adapters.
-- Fixed `@oatscenter/trellis-testkit` live integration helpers so service approval
-  and generated-client connection flows can run against the release candidate.
+- Fixed `@oatscenter/trellis-testkit` assertion helpers so generated event
+  captures from `TrellisTestRuntime.captureEvents(...)` and generated service
+  job refs can be passed directly to `assertEventCaptured`,
+  `assertEventsCaptured`, and `assertJobCompleted` without downstream casts,
+  wrappers, or local adapters.
+- Fixed `@oatscenter/trellis-testkit` live integration helpers so service
+  approval and generated-client connection flows can run against the release
+  candidate.
 
 ### Removed
 

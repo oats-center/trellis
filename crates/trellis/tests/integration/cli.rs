@@ -678,10 +678,13 @@ async fn cli_server_managed_nats() {
     let binary = NatsServerBinary::resolve(&NatsBinarySource::DownloadPinned, Some(&cache_dir))
         .expect("cached nats-server binary");
     let external_pid_file = workdir.0.join("external-nats-server.pid");
+    // The platform database is bound to the managed run's JetStream store, so
+    // the external server must own that same store directory to stay paired;
+    // a fresh store would be a different environment and must not start.
     let external = LocalNats::builder()
         .binary(NatsBinarySource::Path(binary))
         .source(bundle.join("nats"))
-        .state(workdir.0.join("external-nats-state"))
+        .state(effective_root.join("state/nats"))
         .ports(LocalNatsPorts {
             nats: nats_port,
             monitor: monitor_port,

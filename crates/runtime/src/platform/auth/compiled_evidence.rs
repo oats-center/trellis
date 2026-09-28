@@ -53,8 +53,6 @@ pub(crate) struct CompiledInstalledEvidence {
 /// Cloneable semantic-job failure shared with every waiter.
 #[derive(Clone, Debug)]
 pub(in crate::platform::auth) enum SemanticJobError {
-    /// The exact installed evidence document is absent.
-    MissingDocument,
     /// The stored document fails digest or semantic verification.
     InvalidEvidence(String),
     /// The authorization store failed.
@@ -67,7 +65,6 @@ impl SemanticJobError {
     /// Map the shared failure back to its existing authorization category.
     pub(in crate::platform::auth) fn into_state_error(self) -> AuthorizationStateError {
         match self {
-            Self::MissingDocument => AuthorizationStateError::ParticipantMissing,
             Self::InvalidEvidence(message) => AuthorizationStateError::InvalidRecord(message),
             Self::Storage(message) | Self::Worker(message) => {
                 AuthorizationStateError::Storage(message)

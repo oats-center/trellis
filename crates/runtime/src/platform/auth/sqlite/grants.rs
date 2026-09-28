@@ -21,7 +21,8 @@ use super::super::context::{
 };
 use super::super::domain::{require_protocol_timestamp, ApprovedResource, GrantBindingReplacement};
 use super::super::evidence::{
-    participant_connection_surface_is_covered, ParticipantRuntimeProjection,
+    canonicalize_package_evidence, participant_connection_surface_is_covered,
+    ParticipantRuntimeProjection,
 };
 use super::super::{
     auth_event_subject, AuthorizationStateError, DeviceActivationReviewState,
@@ -2082,16 +2083,48 @@ impl super::super::GrantRepository for SqliteAuthorizationStore {
         now: i64,
     ) -> Result<ParticipantBindingRecord, AuthorizationStateError> {
         // Verifying the presented source-package closure is pure CPU work over
-        // immutable input: it depends on no authorization state. Run it off the
-        // single writer connection so concurrent bootstraps compile in parallel
-        // instead of serializing behind the global SQLite writer lock. Only the
-        // state-dependent evidence acceptance and writes run under that lock.
-        let root_package = input.package_evidence.root_package.clone();
-        let (binding, evidence_json) = tokio::task::spawn_blocking(move || {
-            ParticipantBindingRecord::from_package_evidence(&input, now)
+        // immutable input: it depends on no authorization state. Canonicalize and
+        // identity the incoming bytes first, then reuse the store's bounded
+        // verified-compilation cache so identical accepted bytes are not
+        // recompiled on every bootstrap. The participant projection still runs per
+        // accept because `participantPath` is not part of the evidence digest.
+        let input = Arc::new(input);
+        let (evidence_json, evidence_digest) = tokio::task::spawn_blocking({
+            let input = Arc::clone(&input);
+            move || {
+                let evidence_json = canonicalize_package_evidence(&input)?;
+                let evidence_digest = base64::Engine::encode(
+                    &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                    sha2::Sha256::digest(evidence_json.as_bytes()),
+                );
+                Ok::<_, AuthorizationStateError>((evidence_json, evidence_digest))
+            }
         })
         .await
         .map_err(|error| AuthorizationStateError::Storage(error.to_string()))??;
+        let compiled = self
+            .compile_verified_evidence(
+                &evidence_digest,
+                &input.package_digest,
+                evidence_json.clone(),
+            )
+            .await?;
+        if compiled.package_digest != input.package_digest {
+            return Err(AuthorizationStateError::InvalidRecord(
+                "compiled evidence package digest does not match the presented package digest"
+                    .to_owned(),
+            ));
+        }
+        let (binding, evidence_json) = tokio::task::spawn_blocking({
+            let input = Arc::clone(&input);
+            let graph = Arc::clone(&compiled.graph);
+            move || {
+                ParticipantBindingRecord::from_verified_graph(&input, now, evidence_json, &graph)
+            }
+        })
+        .await
+        .map_err(|error| AuthorizationStateError::Storage(error.to_string()))??;
+        let root_package = input.package_evidence.root_package.clone();
         self.run(move |connection| {
             let evidence_digest = accept_package_evidence(
                 connection,

@@ -7,7 +7,8 @@ use thiserror::Error;
 use trellis_protocol::{GrantSet, ParticipantKind, ParticipantResourceKind, PlatformPrivilege};
 
 use super::evidence::{
-    verify_package_evidence, PackageEvidenceInput, ParticipantRuntimeProjection,
+    project_package_evidence, verify_package_evidence, PackageEvidenceInput,
+    ParticipantRuntimeProjection,
 };
 
 /// Largest integer exactly representable by interoperable JSON security objects.
@@ -703,23 +704,68 @@ impl ParticipantBindingRecord {
         require_protocol_timestamp("installedAt", now)?;
         let (participant_digest, needs_digest, projection, evidence_json) =
             verify_package_evidence(input)?;
+        let binding = Self::assembled(
+            input,
+            now,
+            participant_digest,
+            needs_digest,
+            projection,
+            &evidence_json,
+        );
+        Ok((binding, evidence_json))
+    }
+
+    /// Assemble a binding from an already verified compiled evidence graph.
+    ///
+    /// Reuses a verified compiled graph without recompiling it; participant
+    /// selection and identity checks still run via `project_package_evidence`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthorizationStateError`] when the projection disagrees with the
+    /// compiled graph's participant identity.
+    pub(crate) fn from_verified_graph(
+        input: &PackageEvidenceInput,
+        now: i64,
+        evidence_json: String,
+        graph: &trellis_idl::PackageGraph,
+    ) -> Result<(Self, String), AuthorizationStateError> {
+        require_protocol_timestamp("installedAt", now)?;
+        let (participant_digest, needs_digest, projection) =
+            project_package_evidence(input, graph)?;
+        let binding = Self::assembled(
+            input,
+            now,
+            participant_digest,
+            needs_digest,
+            projection,
+            &evidence_json,
+        );
+        Ok((binding, evidence_json))
+    }
+
+    fn assembled(
+        input: &PackageEvidenceInput,
+        now: i64,
+        participant_digest: String,
+        needs_digest: String,
+        projection: ParticipantRuntimeProjection,
+        evidence_json: &str,
+    ) -> Self {
         let evidence_digest = URL_SAFE_NO_PAD.encode(Sha256::digest(evidence_json.as_bytes()));
-        Ok((
-            Self {
-                participant_id: projection.participant_id.clone(),
-                participant_kind: projection.participant_kind,
-                participant_digest,
-                needs_digest,
-                package_digest: input.package_digest.clone(),
-                evidence_digest,
-                participant_path: input.participant_path.clone(),
-                projection,
-                resolved_at: now,
-                state: ParticipantBindingState::Resolved,
-                error: None,
-            },
-            evidence_json,
-        ))
+        Self {
+            participant_id: projection.participant_id.clone(),
+            participant_kind: projection.participant_kind,
+            participant_digest,
+            needs_digest,
+            package_digest: input.package_digest.clone(),
+            evidence_digest,
+            participant_path: input.participant_path.clone(),
+            projection,
+            resolved_at: now,
+            state: ParticipantBindingState::Resolved,
+            error: None,
+        }
     }
 
     /// Verify the retained participant projection against its semantic identity.

@@ -16,6 +16,11 @@ impl SqliteAuthorizationStore {
     /// Return the immutable compiled graph for an exact installed evidence
     /// document, reusing the store's bounded semantic cache.
     ///
+    /// The installed-evidence precondition is established before the cache is
+    /// consulted: a warm compiled entry never stands in for a document that is
+    /// not currently stored (such as presented bytes whose acceptance was
+    /// rejected).
+    ///
     /// # Errors
     ///
     /// Returns [`AuthorizationStateError`] when the document is missing from
@@ -30,27 +35,61 @@ impl SqliteAuthorizationStore {
         evidence_digest: &str,
     ) -> Result<Arc<CompiledInstalledEvidence>, AuthorizationStateError> {
         let total_started = Instant::now();
-        let store = self.clone();
+        let load_started = Instant::now();
+        let loaded = self.load_evidence_document(evidence_digest).await;
+        record_duration(
+            DurationMetric::ContractAnalysis,
+            load_started.elapsed(),
+            "contract",
+            "compile_evidence",
+            "evidence_load",
+            if loaded.is_ok() {
+                Outcome::Ok
+            } else {
+                Outcome::Error
+            },
+        );
+        let (package_digest, evidence_json) = loaded?;
+        let result = self
+            .compile_verified_evidence(evidence_digest, &package_digest, evidence_json)
+            .await;
+        record_duration(
+            DurationMetric::ContractAnalysis,
+            total_started.elapsed(),
+            "contract",
+            "compile_evidence",
+            "total",
+            if result.is_ok() {
+                Outcome::Ok
+            } else {
+                Outcome::Error
+            },
+        );
+        result
+    }
+
+    /// Verify and compile canonical presented evidence, reusing the store's
+    /// bounded semantic cache.
+    ///
+    /// Reuse keys on the digest of the actual canonical bytes; a cold input is
+    /// digest-, root-, and semantic-verified by `compile_loaded_evidence`, so a
+    /// warm hit never trusts a supplied digest alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthorizationStateError`] when the bytes disagree with the
+    /// digest or root identity, or the compile fails.
+    pub(in crate::platform::auth) async fn compile_verified_evidence(
+        &self,
+        evidence_digest: &str,
+        package_digest: &str,
+        evidence_json: String,
+    ) -> Result<Arc<CompiledInstalledEvidence>, AuthorizationStateError> {
         let cpu = self.compiled_evidence.cpu_semaphore();
         let digest = evidence_digest.to_owned();
-        let result = self
-            .compiled_evidence
+        let expected_package = package_digest.to_owned();
+        self.compiled_evidence
             .compiled_installed_evidence(evidence_digest, move || async move {
-                let load_started = Instant::now();
-                let loaded = store.load_evidence_document(&digest).await;
-                record_duration(
-                    DurationMetric::ContractAnalysis,
-                    load_started.elapsed(),
-                    "contract",
-                    "compile_evidence",
-                    "evidence_load",
-                    if loaded.is_ok() {
-                        Outcome::Ok
-                    } else {
-                        Outcome::Error
-                    },
-                );
-                let (package_digest, evidence_json) = loaded.map_err(semantic_error)?;
                 let cpu_started = Instant::now();
                 let cpu_permit = Arc::clone(&cpu).acquire_owned().await;
                 record_duration(
@@ -68,14 +107,13 @@ impl SqliteAuthorizationStore {
                 let permit = cpu_permit.map_err(|_| {
                     SemanticJobError::Storage("semantic CPU pool closed".to_owned())
                 })?;
-                let expected_digest = digest.clone();
                 let submitted = Instant::now();
                 let (compiled, blocking_queue, compile) = tokio::task::spawn_blocking(move || {
                     let _permit = permit;
                     let blocking_queue = submitted.elapsed();
                     let compute_started = Instant::now();
                     let result =
-                        compile_loaded_evidence(&expected_digest, &package_digest, &evidence_json);
+                        compile_loaded_evidence(&digest, &expected_package, &evidence_json);
                     (result, blocking_queue, compute_started.elapsed())
                 })
                 .await
@@ -103,20 +141,7 @@ impl SqliteAuthorizationStore {
                 compiled
             })
             .await
-            .map_err(SemanticJobError::into_state_error);
-        record_duration(
-            DurationMetric::ContractAnalysis,
-            total_started.elapsed(),
-            "contract",
-            "compile_evidence",
-            "total",
-            if result.is_ok() {
-                Outcome::Ok
-            } else {
-                Outcome::Error
-            },
-        );
-        result
+            .map_err(SemanticJobError::into_state_error)
     }
 
     /// Read the exact canonical evidence document and its claimed package
@@ -176,15 +201,4 @@ fn compile_loaded_evidence(
         package_digest: package_digest.to_owned(),
         graph: Arc::new(graph),
     })
-}
-
-fn semantic_error(error: AuthorizationStateError) -> SemanticJobError {
-    match error {
-        AuthorizationStateError::ParticipantMissing => SemanticJobError::MissingDocument,
-        AuthorizationStateError::InvalidRecord(message) => {
-            SemanticJobError::InvalidEvidence(message)
-        }
-        AuthorizationStateError::Storage(message) => SemanticJobError::Storage(message),
-        other => SemanticJobError::InvalidEvidence(other.to_string()),
-    }
 }

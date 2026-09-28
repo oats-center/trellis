@@ -31,7 +31,7 @@ use crate::platform::auth::evidence::{
 };
 use crate::platform::auth::{
     resolve_api_bindings, AuthorizationStateError, DeploymentProfileRecord, DeploymentProfileState,
-    ParticipantBindingRecord, ParticipantBindingState, PrincipalKind,
+    GrantRepository, ParticipantBindingRecord, ParticipantBindingState, PrincipalKind,
 };
 
 const TINY_SOURCE: &str = r#"
@@ -71,9 +71,13 @@ service Consumer { use orders { rpc Required; } }
 "#;
 
 fn package_evidence(source: &str, version: &str) -> PackageEvidence {
+    package_evidence_named("cache-test", source, version)
+}
+
+fn package_evidence_named(name: &str, source: &str, version: &str) -> PackageEvidence {
     let manifest = PackageManifest {
         package: PackageMetadata {
-            name: "cache-test".into(),
+            name: name.into(),
             version: version.parse().expect("version"),
         },
         sources: BTreeMap::from([("contract".into(), "contract.trellis".into())]),
@@ -93,10 +97,10 @@ fn package_evidence(source: &str, version: &str) -> PackageEvidence {
     )
     .expect("compile package");
     PackageEvidence {
-        root_package: "cache-test".into(),
+        root_package: name.into(),
         root_digest: graph.root_digest().into(),
         packages: vec![PackageSourceEvidence {
-            name: "cache-test".into(),
+            name: name.into(),
             version: version.parse().expect("version"),
             digest: graph.root_digest().into(),
             source: canonical_package(&graph, graph.root(), CanonicalMode::Presentation)
@@ -169,6 +173,149 @@ async fn install_custom_revision(
         })
         .await
         .expect("install custom revision");
+}
+
+fn payload(
+    evidence: &PackageEvidence,
+    participant_path: &str,
+    package_digest: &str,
+) -> PackageEvidenceInput {
+    PackageEvidenceInput {
+        package_evidence: evidence.clone(),
+        participant_path: participant_path.to_owned(),
+        package_digest: package_digest.to_owned(),
+    }
+}
+
+#[tokio::test]
+async fn repeated_accept_of_identical_evidence_is_stable_and_usable() {
+    let store = SqliteAuthorizationStore::open_in_memory().expect("store");
+    let evidence = package_evidence(TINY_SOURCE, "1.0.0");
+    let digest = evidence.root_digest.clone();
+
+    let first = store
+        .accept_presented_package(payload(&evidence, "Only", &digest), 1)
+        .await
+        .expect("first accept");
+    let second = store
+        .accept_presented_package(payload(&evidence, "Only", &digest), 1)
+        .await
+        .expect("second accept");
+
+    assert_eq!(first.evidence_digest, second.evidence_digest);
+    assert_eq!(first.participant_digest, second.participant_digest);
+    assert_eq!(first.needs_digest, second.needs_digest);
+    assert_eq!(first.projection, second.projection);
+    assert!(first.resolve().is_ok());
+
+    let compiled = store
+        .compiled_installed_evidence(&second.evidence_digest)
+        .await
+        .expect("stored evidence compiles");
+    assert_eq!(compiled.package_digest, second.package_digest);
+}
+
+#[tokio::test]
+async fn tampered_presented_evidence_cannot_reuse_warm_compilation() {
+    let store = SqliteAuthorizationStore::open_in_memory().expect("store");
+    let evidence = package_evidence(TINY_SOURCE, "1.0.0");
+    let digest = evidence.root_digest.clone();
+    store
+        .accept_presented_package(payload(&evidence, "Only", &digest), 1)
+        .await
+        .expect("warm accept");
+
+    let mut wrong_root = payload(&evidence, "Only", &digest);
+    wrong_root.package_digest = "A".repeat(43);
+    assert!(matches!(
+        store.accept_presented_package(wrong_root, 1).await,
+        Err(AuthorizationStateError::InvalidRecord(_))
+    ));
+
+    let mut tampered = package_evidence(TINY_SOURCE, "1.0.0");
+    let source = tampered.packages[0].source.clone();
+    tampered.packages[0].source = source.replacen("Only", "Renamed", 1);
+    assert_ne!(source, tampered.packages[0].source);
+    assert!(matches!(
+        store
+            .accept_presented_package(payload(&tampered, "Only", &digest), 1)
+            .await,
+        Err(AuthorizationStateError::InvalidRecord(_))
+    ));
+}
+
+#[tokio::test]
+async fn warm_compiled_but_rejected_evidence_is_not_installed() {
+    let store = SqliteAuthorizationStore::open_in_memory().expect("store");
+    // A reserved `trellis` package compiles, but untrusted presentation is
+    // rejected at acceptance time.
+    let evidence = package_evidence_named("trellis", TINY_SOURCE, "1.0.0");
+    let digest = evidence.root_digest.clone();
+    let evidence_digest = installed(evidence.clone(), "Only").0.evidence_digest;
+
+    assert!(matches!(
+        store
+            .accept_presented_package(payload(&evidence, "Only", &digest), 1)
+            .await,
+        Err(AuthorizationStateError::NotAuthorized)
+    ));
+    // Repeated presentation must still enforce the acceptance boundary.
+    assert!(matches!(
+        store
+            .accept_presented_package(payload(&evidence, "Only", &digest), 1)
+            .await,
+        Err(AuthorizationStateError::NotAuthorized)
+    ));
+    // Installed resolution must not treat the compiled-but-rejected bytes as an
+    // installed evidence document.
+    assert!(matches!(
+        store.compiled_installed_evidence(&evidence_digest).await,
+        Err(AuthorizationStateError::ParticipantMissing)
+    ));
+}
+
+#[tokio::test]
+async fn concurrent_identical_accepts_stay_correct() {
+    let store = Arc::new(SqliteAuthorizationStore::open_in_memory().expect("store"));
+    let evidence = package_evidence(TINY_SOURCE, "1.0.0");
+    let digest = evidence.root_digest.clone();
+    let expected = installed(evidence.clone(), "Only").0;
+
+    let mut tasks = Vec::new();
+    for _ in 0..8 {
+        let store = Arc::clone(&store);
+        let input = payload(&evidence, "Only", &digest);
+        tasks.push(tokio::spawn(async move {
+            store.accept_presented_package(input, 1).await
+        }));
+    }
+    for task in tasks {
+        let binding = task.await.expect("join").expect("accept");
+        assert_eq!(binding.evidence_digest, expected.evidence_digest);
+        assert_eq!(binding.participant_digest, expected.participant_digest);
+        assert!(binding.resolve().is_ok());
+    }
+}
+
+#[tokio::test]
+async fn warm_reuse_still_validates_selection_and_timestamp() {
+    let store = SqliteAuthorizationStore::open_in_memory().expect("store");
+    let evidence = package_evidence(TINY_SOURCE, "1.0.0");
+    let digest = evidence.root_digest.clone();
+    store
+        .accept_presented_package(payload(&evidence, "Only", &digest), 1)
+        .await
+        .expect("warm accept");
+
+    assert!(store
+        .accept_presented_package(payload(&evidence, "Missing", &digest), 1)
+        .await
+        .is_err());
+
+    assert!(store
+        .accept_presented_package(payload(&evidence, "Only", &digest), i64::MAX)
+        .await
+        .is_err());
 }
 
 fn compiled_fixture(evidence_digest: &str) -> CompiledInstalledEvidence {

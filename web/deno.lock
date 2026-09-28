@@ -24,6 +24,7 @@
     "npm:@opentelemetry/sdk-metrics@^2.7.0": "2.7.0_@opentelemetry+api@1.9.1",
     "npm:@opentelemetry/sdk-trace-base@^2.7.0": "2.11.0_@opentelemetry+api@1.9.1",
     "npm:@opentelemetry/sdk-trace-node@^2.7.0": "2.11.0_@opentelemetry+api@1.9.1",
+    "npm:@opentelemetry/sdk-trace-web@^2.7.0": "2.11.0_@opentelemetry+api@1.9.1",
     "npm:@opentelemetry/semantic-conventions@^1.40.0": "1.43.0",
     "npm:@standard-schema/spec@^1.1.0": "1.1.0",
     "npm:@sveltejs/acorn-typescript@^1.0.9": "1.0.13_acorn@8.18.0",
@@ -452,6 +453,14 @@
       "dependencies": [
         "@opentelemetry/api",
         "@opentelemetry/context-async-hooks",
+        "@opentelemetry/core@2.11.0_@opentelemetry+api@1.9.1",
+        "@opentelemetry/sdk-trace-base@2.11.0_@opentelemetry+api@1.9.1"
+      ]
+    },
+    "@opentelemetry/sdk-trace-web@2.11.0_@opentelemetry+api@1.9.1": {
+      "integrity": "sha512-8hgLI437x8VRKzgUr+WRcHFp9AeaHmveKRsPIMNele9tethgCKprakRRqZCWyt41ilALHATfspUMl1An0OTMUQ==",
+      "dependencies": [
+        "@opentelemetry/api",
         "@opentelemetry/core@2.11.0_@opentelemetry+api@1.9.1",
         "@opentelemetry/sdk-trace-base@2.11.0_@opentelemetry+api@1.9.1"
       ]

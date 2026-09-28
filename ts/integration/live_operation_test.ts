@@ -117,3 +117,58 @@ Deno.test("V3 Operation observation delivers typed updates then terminal", async
     }
   });
 });
+
+Deno.test("an operation watch is fenced by its connection close", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: "v3-operation-owner-provider",
+      contract: participants.Provider.participant,
+    });
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.Provider.participant,
+      seed: identity.seed,
+    }).orThrow();
+    await service.handleWork(async ({ op }) => {
+      await op.started().orThrow();
+      // Stay nonterminal until the owning caller stops.
+      for (;;) {
+        const accepted = await op.nextSignal("Continue").orThrow();
+        await op.acknowledgeSignal(accepted.sequence).orThrow();
+      }
+    });
+    const serviceExit = service.wait();
+    const caller = await runtime.connectClient({
+      name: "v3-operation-owner-caller",
+      contract: participants.Caller.participant,
+    });
+    try {
+      const handle = await caller.work({ value: "ownership" }).start()
+        .orThrow();
+      const subscription = await handle.live({ updates: true }).orThrow();
+      const iterator = subscription[Symbol.asyncIterator]();
+      await iterator.next();
+      // Attach the rejection handler before closing so the test never creates
+      // its own unhandled rejection; an unowned close still shows as `threw`.
+      const settled = iterator.next().then(
+        (result) => ({ kind: "ended" as const, done: result.done === true }),
+        (error: unknown) => ({ kind: "threw" as const, error }),
+      );
+      await caller.connection.close();
+      assertEquals(
+        await settled,
+        { kind: "ended", done: true },
+        "closing the transport must end an owned operation watch",
+      );
+      assertEquals(
+        (await subscription.closed).reason,
+        "cancelled",
+        "the terminal outcome is the bounded local cancellation",
+      );
+    } finally {
+      await caller.connection.close().catch(() => undefined);
+      await service.stop().catch(() => undefined);
+      await serviceExit.catch(() => undefined);
+    }
+  });
+});
