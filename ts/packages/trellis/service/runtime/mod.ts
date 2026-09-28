@@ -41,6 +41,7 @@ export {
   type OperationRegistration,
   type RpcHandler,
   type ServiceEventHandler,
+  type ServiceHandlerClient,
   type ServiceJobQueue,
   type ServiceJobsFacadeOf,
   StoreHandle,

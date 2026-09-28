@@ -602,7 +602,15 @@ type ParticipantKvOf<
   ? Extract<TKv, ParticipantKvMetadata>
   : Record<string, never>;
 
-type ServiceHandlerClient<
+/**
+ * Flat, contract-selected client supplied to every public service callback.
+ *
+ * It exposes only selected outbound actions plus owned publishers, the bound
+ * KV/Store resources, queues with the handler callback rebound to this client,
+ * and the connection/availability utilities. Registration and lifecycle
+ * methods live on the connected service instead.
+ */
+export type ServiceHandlerClient<
   TContract extends GeneratedServiceParticipant<
     RuntimeApi,
     RuntimeApi | undefined,
@@ -732,10 +740,12 @@ export type LiveHandler<
   >,
   F extends ContractLiveName<TContract>,
 > = (
-  context: LiveHandlerContext<
-    LiveInputOf<ParticipantOwnedApi<TContract>, F>,
-    LiveEventOf<ParticipantOwnedApi<TContract>, F>
-  >,
+  context:
+    & LiveHandlerContext<
+      LiveInputOf<ParticipantOwnedApi<TContract>, F>,
+      LiveEventOf<ParticipantOwnedApi<TContract>, F>
+    >
+    & { client: ServiceHandlerClient<TContract> },
 ) => unknown | Promise<unknown>;
 
 /** Typed job handler function for an extracted Trellis service job. */
@@ -762,6 +772,9 @@ export type HealthInfoHandler = ServiceHealthInfoFn;
 /** Typed health check function for an extracted service health handler. */
 export type HealthCheckHandler = ServiceHealthCheckFn;
 
+/**
+ * One service job queue whose worker callback receives `TClient`.
+ */
 export type ServiceJobQueue<TPayload, TResult, TUpdate, TClient> = {
   create(
     payload: TPayload,
@@ -782,6 +795,9 @@ export type ServiceJobQueue<TPayload, TResult, TUpdate, TClient> = {
   ): void;
 };
 
+/**
+ * Jobs facade that rebinds every queue's worker callback to `TClient`.
+ */
 export type ServiceJobsFacadeOf<
   TJobs extends ParticipantJobsMetadata,
   TClient,
@@ -1117,8 +1133,7 @@ export type OperationControlRegistration<
   "control" | "reconcile"
 >;
 
-/** Handler registration and owner-fenced control for a service operation. */
-export type OperationRegistration<
+type ServiceOperationRegistration<
   TOwnedApi extends RuntimeApi,
   TTrellisApi extends RuntimeApi,
   O extends keyof TOwnedApi["operations"] & string,
@@ -1140,6 +1155,22 @@ export type OperationRegistration<
     ) => unknown | Promise<unknown>,
   ): Promise<void>;
 };
+
+/**
+ * Public connected-provider operation registration: the callable `handleXxx`
+ * plus owner-fenced `control`/`reconcile`.
+ */
+export type OperationRegistration<
+  TContract extends GeneratedServiceParticipant<
+    RuntimeApi,
+    RuntimeApi | undefined,
+    ParticipantJobsMetadata,
+    ParticipantKvMetadata
+  >,
+  O extends ContractOperationName<TContract>,
+> =
+  & ((handler: OperationHandler<TContract, O>) => Promise<void>)
+  & OperationControlRegistration<ParticipantOwnedApi<TContract>, O>;
 
 export type LiveRegistration<
   TOwnedApi extends RuntimeApi,
@@ -3712,7 +3743,7 @@ export class TrellisServiceSession<
 
   #operation<O extends keyof TOwnedApi["operations"] & string>(
     operation: O,
-  ): OperationRegistration<TOwnedApi, TTrellisApi, O, TKv, TJobs> {
+  ): ServiceOperationRegistration<TOwnedApi, TTrellisApi, O, TKv, TJobs> {
     const registration = this.#runtime.operationHandle(
       operation,
     ) as RootOperationRegistration<
