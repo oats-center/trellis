@@ -134,10 +134,12 @@ Rules:
   services create it with `service.createSqlOutbox(...)`, and the returned
   object is a plain dependency that handlers close over at registration without
   importing low-level repository or dispatcher internals
-- extracted service RPC handler aliases that need service-only helpers belong on
-  `@oatscenter/trellis/service*`, not the browser-safe root package, so handler
-  types expose the canonical object argument shape and narrow injected `trellis`
-  facade for `kv`, `store`, and transfer-aware operation contexts
+- public service handler aliases belong on `@oatscenter/trellis/service`, not
+  the browser-safe root package. RPC, Operation, Live, Job, and Event callbacks
+  receive the same flat, contract-selected `ServiceHandlerClient`: selected
+  outbound actions, owned Event publishers, bound `kv`/`store`/`jobs`, and
+  availability, prepared-publish, and transfer utilities. The namespace-based
+  private session client is not the public handler surface
 
 ## Generated Packages
 
