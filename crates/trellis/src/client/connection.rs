@@ -1876,7 +1876,7 @@ impl TrellisClient {
         D: EventDescriptor,
     {
         let subject = self.descriptor_subject(D::SUBJECT);
-        self.ensure_transport_subjects(&[subject.clone()], &[])?;
+        self.ensure_transport_subjects(std::slice::from_ref(&subject), &[])?;
         let prepared = prepare_event::<D>(event)?.with_subject(subject);
         self.publish_prepared(&prepared).await
     }

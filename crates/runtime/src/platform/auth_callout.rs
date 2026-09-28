@@ -525,7 +525,7 @@ impl CalloutProcessor {
             }
         }
 
-        for ((server_id, cid), _) in &observed {
+        for (server_id, cid) in observed.keys() {
             if retained_physical.contains_key(&(server_id.clone(), cid.to_string())) {
                 continue;
             }
@@ -886,7 +886,7 @@ impl CalloutProcessor {
                 let jwt_started = std::time::Instant::now();
                 let jwt = self.keys.authorized_user_jwt(
                     &request.user_nkey,
-                    &admitted,
+                    admitted,
                     &authenticated_name,
                     expires_at_seconds,
                 );

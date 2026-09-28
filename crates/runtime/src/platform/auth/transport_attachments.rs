@@ -264,16 +264,11 @@ pub(crate) async fn discover_servers(
         .map_err(|error| storage(format!("failed to publish STATSZ request: {error}")))?;
     let mut servers = BTreeSet::new();
     let deadline = tokio::time::Instant::now() + STATSZ_WINDOW;
-    loop {
-        match tokio::time::timeout_at(deadline, subscription.next()).await {
-            Ok(Some(message)) => {
-                if let Ok(reply) = serde_json::from_slice::<StatszReply>(&message.payload) {
-                    if !reply.server.id.is_empty() {
-                        servers.insert(reply.server.id);
-                    }
-                }
+    while let Ok(Some(message)) = tokio::time::timeout_at(deadline, subscription.next()).await {
+        if let Ok(reply) = serde_json::from_slice::<StatszReply>(&message.payload) {
+            if !reply.server.id.is_empty() {
+                servers.insert(reply.server.id);
             }
-            _ => break,
         }
     }
     Ok(servers.into_iter().collect())
