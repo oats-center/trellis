@@ -23,6 +23,11 @@ and this project adheres to
 
 ### Fixed
 
+- Service shutdown settles admitted Operation control requests before draining
+  NATS, preventing cancellation failures during graceful owner shutdown.
+- Concurrent service bootstraps verify immutable package evidence outside the
+  authorization SQLite writer lock, avoiding serialized IDL compilation while
+  preserving transactional evidence acceptance.
 - TypeScript service handlers now share the flat, contract-aware
   `ServiceHandlerClient`, including Job and Live callbacks. Selected event
   subscriptions and prepared publishers retain their generated types, and
