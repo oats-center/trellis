@@ -1,6 +1,6 @@
 //! Generated API `trellis-test-fixture.echo@v1`.
 pub const API_ID: &str = "trellis-test-fixture.echo@v1";
-pub const API_DIGEST: &str = "FCaUPdkGVfSxGfAwGJdgOZJ9a-RM59m27NDtXFS-CQQ";
+pub const API_DIGEST: &str = "MqZ30Qrlp_inA3MTrwvQDynI6-braKV14fvrCHbRyf0";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;
@@ -40,7 +40,146 @@ pub mod rpc {
         }
     }
 }
-pub mod operations {}
+pub mod operations {
+    pub type SilentInput = crate::__types::trellis_test_fixture::Value;
+    pub type SilentOutput = crate::__types::trellis_test_fixture::Value;
+    pub struct Silent;
+    impl Silent {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "operation.Silent";
+        pub const KEY: &'static str = "echo.Silent";
+        pub const SUBJECT: &'static str = "operations.v1.echo.Silent";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis-test-fixture.echo@v1::public",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[];
+        pub const UPLOAD: bool = false;
+    }
+    impl trellis_rs::generated::OperationDescriptor for Silent {
+        type Input = SilentInput;
+        type Output = SilentOutput;
+        type Progress = serde_json::Value;
+        type Update = serde_json::Value;
+        type UpdateEvidence = trellis_rs::client::NoOperationUpdates;
+        type Error = std::convert::Infallible;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const ERRORS: &'static [&'static str] = &[];
+        const SIGNALS: &'static [&'static str] = &[];
+        const SIGNAL_INPUT_SCHEMAS_JSON: &'static str = "{}";
+        const UPLOAD: bool = Self::UPLOAD;
+        const HAS_PROGRESS: bool = false;
+        const UPDATE_SCHEMA_JSON: Option<&'static str> = None;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            let _ = value;
+            Ok(None)
+        }
+    }
+    pub type UpdateOnlyInput = crate::__types::trellis_test_fixture::Value;
+    pub type UpdateOnlyOutput = crate::__types::trellis_test_fixture::Value;
+    pub type UpdateOnlyUpdate = crate::__types::trellis_test_fixture::Preview;
+    pub type UpdateOnlyContinueSignalInput = crate::__types::trellis_test_fixture::Value;
+    pub struct UpdateOnly;
+    impl UpdateOnly {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "operation.UpdateOnly";
+        pub const KEY: &'static str = "echo.UpdateOnly";
+        pub const SUBJECT: &'static str = "operations.v1.echo.UpdateOnly";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis-test-fixture.echo@v1::public",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[];
+        pub const UPLOAD: bool = false;
+    }
+    impl trellis_rs::generated::OperationDescriptor for UpdateOnly {
+        type Input = UpdateOnlyInput;
+        type Output = UpdateOnlyOutput;
+        type Progress = serde_json::Value;
+        type Update = UpdateOnlyUpdate;
+        type UpdateEvidence = trellis_rs::client::DeclaredOperationUpdates;
+        type Error = std::convert::Infallible;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const ERRORS: &'static [&'static str] = &[];
+        const SIGNALS: &'static [&'static str] = &["Continue"];
+        const SIGNAL_INPUT_SCHEMAS_JSON: &'static str = "{\"Continue\":{\"$defs\":{\"trellis-test-fixture.Value\":{\"additionalProperties\":true,\"properties\":{\"value\":{\"type\":\"string\"}},\"required\":[\"value\"],\"type\":\"object\"}},\"$ref\":\"#/$defs/trellis-test-fixture.Value\",\"$schema\":\"https://json-schema.org/draft/2020-12/schema\"}}";
+        const UPLOAD: bool = Self::UPLOAD;
+        const HAS_PROGRESS: bool = false;
+        const UPDATE_SCHEMA_JSON: Option<&'static str> = Some(
+            "{\"$defs\":{\"trellis-test-fixture.Preview\":{\"additionalProperties\":true,\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"],\"type\":\"object\"}},\"$ref\":\"#/$defs/trellis-test-fixture.Preview\",\"$schema\":\"https://json-schema.org/draft/2020-12/schema\"}",
+        );
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            let _ = value;
+            Ok(None)
+        }
+    }
+    pub struct UpdateOnlyContinueSignal;
+    impl trellis_rs::generated::OperationSignal for UpdateOnlyContinueSignal {
+        type Operation = UpdateOnly;
+        type Input = UpdateOnlyContinueSignalInput;
+        const NAME: &'static str = "Continue";
+    }
+    pub type WorkInput = crate::__types::trellis_test_fixture::Value;
+    pub type WorkOutput = crate::__types::trellis_test_fixture::Value;
+    pub type WorkProgress = crate::__types::trellis_test_fixture::Status;
+    pub type WorkUpdate = crate::__types::trellis_test_fixture::Preview;
+    pub type WorkContinueSignalInput = crate::__types::trellis_test_fixture::Value;
+    pub struct Work;
+    impl Work {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "operation.Work";
+        pub const KEY: &'static str = "echo.Work";
+        pub const SUBJECT: &'static str = "operations.v1.echo.Work";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis-test-fixture.echo@v1::public",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[];
+        pub const UPLOAD: bool = false;
+    }
+    impl trellis_rs::generated::OperationDescriptor for Work {
+        type Input = WorkInput;
+        type Output = WorkOutput;
+        type Progress = WorkProgress;
+        type Update = WorkUpdate;
+        type UpdateEvidence = trellis_rs::client::DeclaredOperationUpdates;
+        type Error = std::convert::Infallible;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const ERRORS: &'static [&'static str] = &[];
+        const SIGNALS: &'static [&'static str] = &["Continue"];
+        const SIGNAL_INPUT_SCHEMAS_JSON: &'static str = "{\"Continue\":{\"$defs\":{\"trellis-test-fixture.Value\":{\"additionalProperties\":true,\"properties\":{\"value\":{\"type\":\"string\"}},\"required\":[\"value\"],\"type\":\"object\"}},\"$ref\":\"#/$defs/trellis-test-fixture.Value\",\"$schema\":\"https://json-schema.org/draft/2020-12/schema\"}}";
+        const UPLOAD: bool = Self::UPLOAD;
+        const HAS_PROGRESS: bool = true;
+        const UPDATE_SCHEMA_JSON: Option<&'static str> = Some(
+            "{\"$defs\":{\"trellis-test-fixture.Preview\":{\"additionalProperties\":true,\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"],\"type\":\"object\"}},\"$ref\":\"#/$defs/trellis-test-fixture.Preview\",\"$schema\":\"https://json-schema.org/draft/2020-12/schema\"}",
+        );
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            let _ = value;
+            Ok(None)
+        }
+    }
+    pub struct WorkContinueSignal;
+    impl trellis_rs::generated::OperationSignal for WorkContinueSignal {
+        type Operation = Work;
+        type Input = WorkContinueSignalInput;
+        const NAME: &'static str = "Continue";
+    }
+}
 pub mod events {
     pub type ObservedEvent = crate::__types::trellis_test_fixture::Value;
     pub struct Observed;
@@ -93,6 +232,17 @@ impl Client {
     > {
         self.inner.call::<rpc::Echo>(input).await
     }
+    pub fn silent(&self) -> trellis_rs::generated::Operation<'_, operations::Silent> {
+        self.inner.operation::<operations::Silent>()
+    }
+    pub fn update_only(
+        &self,
+    ) -> trellis_rs::generated::Operation<'_, operations::UpdateOnly> {
+        self.inner.operation::<operations::UpdateOnly>()
+    }
+    pub fn work(&self) -> trellis_rs::generated::Operation<'_, operations::Work> {
+        self.inner.operation::<operations::Work>()
+    }
     pub async fn publish_observed(
         &self,
         event: &events::ObservedEvent,
@@ -130,5 +280,62 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
             > + Send + 'static,
     {
         self.runtime.register_rpc::<rpc::Echo, _, _>(handler);
+    }
+    pub fn register_silent<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::RequestContext,
+                operations::SilentInput,
+                trellis_rs::service::OperationControl<
+                    trellis_rs::generated::OperationAdapter<operations::Silent>,
+                >,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<(), trellis_rs::service::ServerError>>
+            + Send + 'static,
+    {
+        self.runtime
+            .register_operation_handler::<
+                trellis_rs::generated::OperationAdapter<operations::Silent>,
+                F,
+                Fut,
+            >(handler);
+    }
+    pub fn register_update_only<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::RequestContext,
+                operations::UpdateOnlyInput,
+                trellis_rs::service::OperationControl<
+                    trellis_rs::generated::OperationAdapter<operations::UpdateOnly>,
+                >,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<(), trellis_rs::service::ServerError>>
+            + Send + 'static,
+    {
+        self.runtime
+            .register_operation_handler::<
+                trellis_rs::generated::OperationAdapter<operations::UpdateOnly>,
+                F,
+                Fut,
+            >(handler);
+    }
+    pub fn register_work<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::RequestContext,
+                operations::WorkInput,
+                trellis_rs::service::OperationControl<
+                    trellis_rs::generated::OperationAdapter<operations::Work>,
+                >,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<(), trellis_rs::service::ServerError>>
+            + Send + 'static,
+    {
+        self.runtime
+            .register_operation_handler::<
+                trellis_rs::generated::OperationAdapter<operations::Work>,
+                F,
+                Fut,
+            >(handler);
     }
 }

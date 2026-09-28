@@ -47,6 +47,30 @@ importing an API does not grant permission to call it. See the
 [service walkthrough](/guides/write-a-service) for handlers and a working
 [Orders example](https://github.com/OATS-Center/trellis/tree/main/docs/examples/orders).
 
+## Operations with progress and live updates
+
+An Operation declares a durable `progress` schema and, optionally, a distinct
+transient `update` schema:
+
+```trellis
+model Status { stage: string; }
+model Preview { text: string; }
+
+api orders@v1 {
+  title "Orders";
+  description "Reindex orders.";
+  operation Reindex { input Id; output Summary; progress Status; update Preview; }
+  capabilities { public { allows { operation Reindex; } } }
+}
+```
+
+`progress` is written to the durable snapshot; `update` is delivered only to
+live watchers and is never persisted. The generated `Progress` and `Update`
+types stay distinct. When an Operation declares only `progress`, the live
+channel reuses that schema, so existing progress-only contracts are unchanged.
+A handler writes durable status with `progress(...)` and transient previews with
+`emit_update(...)`.
+
 ## Install and generate
 
 ```sh

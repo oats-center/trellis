@@ -228,11 +228,16 @@ fn validate_names(
                         vec![format!("{alias}Input"), format!("{alias}Output")]
                     }
                     ActionDefinition::Operation {
-                        update, signals, ..
+                        progress,
+                        update,
+                        signals,
+                        ..
                     } => {
                         let mut names = vec![format!("{alias}Input"), format!("{alias}Output")];
-                        if update.is_some() {
+                        if progress.is_some() {
                             names.push(format!("{alias}Progress"));
+                        }
+                        if update.is_some() || progress.is_some() {
                             names.push(format!("{alias}Update"));
                         }
                         names.extend(
@@ -774,6 +779,7 @@ fn render_api(
             ActionDefinition::Operation {
                 input,
                 output,
+                progress,
                 update,
                 signals,
                 ..
@@ -786,14 +792,23 @@ fn render_api(
                     "export type {base}Output = {};",
                     type_ref(output, package, modules)
                 ));
-                if let Some(update) = update {
+                if let Some(progress) = progress {
                     lines.push(format!(
                         "export type {base}Progress = {};",
-                        type_ref(update, package, modules)
+                        type_ref(progress, package, modules)
                     ));
+                }
+                // The live update channel reuses the progress schema when no
+                // dedicated update schema is declared, preserving existing contracts.
+                if let Some(update) = update {
                     lines.push(format!(
                         "export type {base}Update = {};",
                         type_ref(update, package, modules)
+                    ));
+                } else if let Some(progress) = progress {
+                    lines.push(format!(
+                        "export type {base}Update = {};",
+                        type_ref(progress, package, modules)
                     ));
                 }
                 for (name, ty) in signals {
@@ -878,12 +893,12 @@ fn render_action(
             errors.iter().map(|error| error.to_owned()).collect::<Vec<_>>().join(", "),
             if pagination.is_some() { "\"cursor\"" } else { "undefined" }
         ),
-        ActionDefinition::Operation { input, output, update, errors, signals, upload } => format!(
+        ActionDefinition::Operation { input, output, progress, update, errors, signals, upload } => format!(
             "{{ kind: \"operation\", descriptorName: {descriptor}, input: {}, output: {}, progress: {}, update: {}, errors: [{}], signals: {{ {} }}, upload: {upload} }}",
             type_codec(input, package, modules),
             type_codec(output, package, modules),
-            update.as_ref().map(|value| type_codec(value, package, modules)).unwrap_or_else(|| "undefined".into()),
-            update.as_ref().map(|value| type_codec(value, package, modules)).unwrap_or_else(|| "undefined".into()),
+            progress.as_ref().map(|value| type_codec(value, package, modules)).unwrap_or_else(|| "undefined".into()),
+            update.as_ref().or(progress.as_ref()).map(|value| type_codec(value, package, modules)).unwrap_or_else(|| "undefined".into()),
             errors.iter().map(|error| error.to_owned()).collect::<Vec<_>>().join(", "),
             signals.iter().map(|(name, ty)| format!("{}: {}", property_name(name), type_codec(ty, package, modules))).collect::<Vec<_>>().join(", ")
         ),
@@ -924,12 +939,12 @@ fn render_action_type(
             errors.iter().map(|error| format!("typeof {error}")).collect::<Vec<_>>().join(", "),
             if pagination.is_some() { "\"cursor\"" } else { "undefined" }
         ),
-        ActionDefinition::Operation { input, output, update, errors, signals, upload } => format!(
+        ActionDefinition::Operation { input, output, progress, update, errors, signals, upload } => format!(
             "{{ {common}; readonly input: typeof {}; readonly output: typeof {}; readonly progress: {}; readonly update: {}; readonly errors: readonly [{}]; readonly signals: {{ {} }}; readonly upload: {upload} }}",
             type_codec(input, package, modules),
             type_codec(output, package, modules),
-            update.as_ref().map(|value| format!("typeof {}", type_codec(value, package, modules))).unwrap_or_else(|| "undefined".into()),
-            update.as_ref().map(|value| format!("typeof {}", type_codec(value, package, modules))).unwrap_or_else(|| "undefined".into()),
+            progress.as_ref().map(|value| format!("typeof {}", type_codec(value, package, modules))).unwrap_or_else(|| "undefined".into()),
+            update.as_ref().or(progress.as_ref()).map(|value| format!("typeof {}", type_codec(value, package, modules))).unwrap_or_else(|| "undefined".into()),
             errors.iter().map(|error| format!("typeof {error}")).collect::<Vec<_>>().join(", "),
             signals.iter().map(|(name, ty)| format!("readonly {}: typeof {}", property_name(name), type_codec(ty, package, modules))).collect::<Vec<_>>().join("; ")
         ),
@@ -1715,11 +1730,13 @@ fn action_references(action: &ActionDefinition) -> Vec<&TypeRef> {
         ActionDefinition::Operation {
             input,
             output,
+            progress,
             update,
             signals,
             ..
         } => std::iter::once(input)
             .chain(std::iter::once(output))
+            .chain(progress)
             .chain(update)
             .chain(signals.values())
             .collect(),
@@ -2121,6 +2138,58 @@ mod tests {
             .args(["check", "--no-lock", "-c"])
             .arg(repo.join("ts/deno.json"))
             .arg(root.join("index.d.ts"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn generated_types_split_progress_and_update_channels() {
+        let graph = graph(
+            r#"
+            model Status { stage: string; }
+            model Preview { text: string; }
+            model Empty {}
+            api work@v1 {
+              title "Work";
+              description "Work operations.";
+              operation Run { input Empty; output Empty; progress Status; update Preview; }
+              operation Step { input Empty; output Empty; progress Status; }
+              capabilities { public { allows { operation Run; operation Step; } } }
+            }
+            service Worker { implements work; }
+            "#,
+        );
+        let root = unique_temp_dir("channels");
+        generate_ts_package(&graph, &root, "@example/generated").unwrap();
+        fs::write(
+            root.join("consumer.ts"),
+            r#"
+import type { RunProgress, RunUpdate, StepProgress, StepUpdate } from "./apis/work/mod.js";
+
+const progress: RunProgress = { stage: "running" };
+const update: RunUpdate = { text: "partial" };
+const fallbackProgress: StepProgress = { stage: "running" };
+const fallbackUpdate: StepUpdate = { stage: "running" };
+// @ts-expect-error the update channel has its own schema, not the progress schema
+const wrongProgress: RunProgress = { text: "partial" };
+// @ts-expect-error the progress channel is not the update schema
+const wrongUpdate: RunUpdate = { stage: "running" };
+
+export { progress, update, fallbackProgress, fallbackUpdate, wrongProgress, wrongUpdate };
+"#,
+        )
+        .unwrap();
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let output = std::process::Command::new("deno")
+            .args(["check", "--no-lock", "-c"])
+            .arg(repo.join("ts/deno.json"))
+            .arg(root.join("consumer.ts"))
             .output()
             .unwrap();
         assert!(

@@ -1474,5 +1474,7 @@ pub use crate::__types::trellis::TrellisSurfaceStatusRequestContractId;
 pub use crate::__types::trellis::TrellisSurfaceStatusRequestKind;
 pub use crate::__types::trellis::TrellisSurfaceStatusRequestSurface;
 pub use crate::__types::trellis::TrellisSurfaceStatusResponse;
+pub use crate::__types::trellis_test_fixture::Preview;
+pub use crate::__types::trellis_test_fixture::Status;
 pub use crate::__types::trellis_test_fixture::Value;
 pub use crate::__types::{Bytes, Int64, Number, Uint64};

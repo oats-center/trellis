@@ -309,7 +309,8 @@ fn compare_action(
             ActionDefinition::Operation {
                 input: a,
                 output: b,
-                update: c,
+                progress: c,
+                update: d,
                 signals: e,
                 upload: f,
                 ..
@@ -317,7 +318,8 @@ fn compare_action(
             ActionDefinition::Operation {
                 input: x,
                 output: y,
-                update: z,
+                progress: z,
+                update: w,
                 signals: p,
                 upload: q,
                 ..
@@ -333,6 +335,19 @@ fn compare_action(
                 issues,
             );
             if !optional_subset(z.as_ref(), new_graph, c.as_ref(), old_graph) {
+                issue(
+                    issues,
+                    format!("{path}.progress"),
+                    "schema is directionally incompatible",
+                );
+            }
+            // Generated live updates use the explicit update schema, or the
+            // progress schema when none is declared. Compare the effective
+            // live schema so declaring (or removing) an identical fallback is
+            // not treated as an arbitrary absent-field change.
+            let old_live = d.as_ref().or(c.as_ref());
+            let new_live = w.as_ref().or(z.as_ref());
+            if !optional_subset(new_live, new_graph, old_live, old_graph) {
                 issue(
                     issues,
                     format!("{path}.update"),

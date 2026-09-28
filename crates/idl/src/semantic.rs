@@ -142,6 +142,7 @@ impl PackageGraph {
             ActionDefinition::Operation {
                 input,
                 output,
+                progress,
                 update,
                 errors: names,
                 signals,
@@ -149,7 +150,14 @@ impl PackageGraph {
             } => ActionCodecProjection {
                 input: Some(schema(input)?),
                 output: Some(schema(output)?),
-                update: update.as_ref().map(schema).transpose()?,
+                progress: progress.as_ref().map(schema).transpose()?,
+                // The live update channel falls back to the progress schema when
+                // no dedicated update schema is declared.
+                update: update
+                    .as_ref()
+                    .or(progress.as_ref())
+                    .map(schema)
+                    .transpose()?,
                 signals: signals
                     .iter()
                     .map(|(name, ty)| Ok((name.clone(), schema(ty)?)))
@@ -462,7 +470,9 @@ pub struct ActionCodecProjection {
     pub output: Option<Value>,
     /// Event/live item schema.
     pub payload: Option<Value>,
-    /// Operation progress schema.
+    /// Operation durable progress schema.
+    pub progress: Option<Value>,
+    /// Operation live-only update schema.
     pub update: Option<Value>,
     /// Operation signal schemas.
     pub signals: BTreeMap<String, Value>,
@@ -514,7 +524,9 @@ pub enum ActionDefinition {
         input: TypeRef,
         /// Completion schema.
         output: TypeRef,
-        /// Optional progress/update schema.
+        /// Optional durable progress schema.
+        progress: Option<TypeRef>,
+        /// Optional live-only update schema.
         update: Option<TypeRef>,
         /// Declared API-scoped domain errors.
         errors: BTreeSet<String>,

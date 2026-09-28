@@ -307,7 +307,7 @@ impl<'a> Parser<'a> {
         while !self.at(TokenKind::RBrace) {
             let member = self.word_text()?;
             let value = match member.as_str() {
-                "input" | "output" | "payload" | "event" | "progress" => {
+                "input" | "output" | "payload" | "event" | "progress" | "update" => {
                     MemberValue::Name(self.name_statement()?)
                 }
                 "errors" => MemberValue::Names(self.name_list_statement()?),

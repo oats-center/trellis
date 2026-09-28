@@ -1181,3 +1181,150 @@ fn state_declaration_adds_implicit_state_rpc_uses_and_grants() {
         .permissions()
         .is_empty());
 }
+
+const OPERATION_SOURCE: &str = r#"
+model Status { stage: string; }
+model Preview { text: string; }
+model Empty {}
+api work@v1 {
+  title "Work";
+  description "Work operations.";
+  operation Run { input Empty; output Empty; progress Status; update Preview; }
+  capabilities { public { allows { operation Run; } } }
+}
+service Worker { implements work; }
+"#;
+
+fn compile_operation(text: &str) -> trellis_idl::PackageGraph {
+    compile_project(
+        &manifest(&[("work", "work.trellis")]),
+        vec![source("work", "work.trellis", text)],
+        BTreeMap::new(),
+    )
+    .unwrap()
+}
+
+/// The parser accepts both members and each channel keeps its own schema.
+#[test]
+fn operation_declares_distinct_progress_and_update_schemas() {
+    let graph = compile_operation(OPERATION_SOURCE);
+    let api = graph.root_package().apis().values().next().unwrap();
+    let action = api.actions().keys().next().unwrap();
+    let codecs = graph.action_codecs(api.identity(), action).unwrap();
+    let progress = codecs.progress.expect("progress schema");
+    let update = codecs.update.expect("update schema");
+    assert_ne!(progress, update, "channels keep distinct schemas");
+    assert_eq!(
+        progress.get("$ref").and_then(serde_json::Value::as_str),
+        Some("#/$defs/orders.Status")
+    );
+    assert_eq!(
+        update.get("$ref").and_then(serde_json::Value::as_str),
+        Some("#/$defs/orders.Preview")
+    );
+
+    let canonical = canonical_package(&graph, graph.root(), CanonicalMode::Semantic).unwrap();
+    assert!(canonical.contains("progress Status;"));
+    assert!(canonical.contains("update Preview;"));
+    // Canonical output recompiles unchanged.
+    let recompiled = compile_operation(&canonical);
+    assert_eq!(
+        canonical_package(&recompiled, recompiled.root(), CanonicalMode::Semantic).unwrap(),
+        canonical
+    );
+}
+
+/// A progress-only operation keeps its previous shape, reuses the progress
+/// schema for live updates, and adding an explicit update schema is a change.
+#[test]
+fn operation_update_is_optional_and_extends_the_contract() {
+    let progress_only = OPERATION_SOURCE.replace(" update Preview;", "");
+    let graph = compile_operation(&progress_only);
+    let api = graph.root_package().apis().values().next().unwrap();
+    let action = api.actions().keys().next().unwrap();
+    let codecs = graph.action_codecs(api.identity(), action).unwrap();
+    let progress = codecs.progress.clone().expect("progress schema");
+    assert_eq!(
+        codecs.update.expect("live fallback schema"),
+        progress,
+        "no dedicated update schema reuses progress"
+    );
+    let canonical = canonical_package(&graph, graph.root(), CanonicalMode::Semantic).unwrap();
+    assert!(canonical.contains("progress Status;"));
+    assert!(!canonical.contains("update Preview;"));
+
+    let with_update = compile_operation(OPERATION_SOURCE);
+    let previous = graph.api(api.identity()).unwrap();
+    let replacement = with_update.api(api.identity()).unwrap();
+    let report = compare_implementation(previous, replacement);
+    assert!(
+        !report.compatible,
+        "an explicit update schema changes the live channel"
+    );
+    assert!(report
+        .issues
+        .iter()
+        .any(|issue| issue.path.contains(".update")));
+    let repeated = compile_operation(OPERATION_SOURCE);
+    let identical = repeated.api(api.identity()).unwrap();
+    let replacement = with_update.api(api.identity()).unwrap();
+    assert!(compare_implementation(identical, replacement).compatible);
+}
+
+/// The live update channel compares its effective schema (explicit update or
+/// progress fallback), not the raw presence of the `update` member.
+#[test]
+fn operation_live_channel_compares_effective_schema() {
+    let progress_only = compile_operation(&OPERATION_SOURCE.replace(" update Preview;", ""));
+    let explicit_same =
+        compile_operation(&OPERATION_SOURCE.replace("update Preview;", "update Status;"));
+    let explicit_preview = compile_operation(OPERATION_SOURCE);
+    let api = progress_only
+        .root_package()
+        .apis()
+        .values()
+        .next()
+        .unwrap()
+        .identity()
+        .clone();
+
+    // Declaring an explicit update identical to the progress fallback adds no
+    // effective live-schema change.
+    let report = compare_implementation(
+        progress_only.api(&api).unwrap(),
+        explicit_same.api(&api).unwrap(),
+    );
+    assert!(report.compatible, "{:?}", report.issues);
+
+    // Removing an explicit update that differed from progress changes the live schema.
+    let report = compare_implementation(
+        explicit_preview.api(&api).unwrap(),
+        progress_only.api(&api).unwrap(),
+    );
+    assert!(!report.compatible);
+    assert!(report
+        .issues
+        .iter()
+        .any(|issue| issue.path.contains(".update")));
+
+    // Replacing the explicit update schema changes the live schema.
+    let report = compare_implementation(
+        explicit_same.api(&api).unwrap(),
+        explicit_preview.api(&api).unwrap(),
+    );
+    assert!(!report.compatible);
+    assert!(report
+        .issues
+        .iter()
+        .any(|issue| issue.path.contains(".update")));
+
+    // An unchanged declaration stays compatible.
+    let repeated = compile_operation(OPERATION_SOURCE);
+    assert!(
+        compare_implementation(
+            explicit_preview.api(&api).unwrap(),
+            repeated.api(&api).unwrap(),
+        )
+        .compatible
+    );
+}

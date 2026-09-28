@@ -115,6 +115,7 @@ pub fn selected_surface_digest(
             ActionDefinition::Operation {
                 input,
                 output: result,
+                progress,
                 update,
                 errors,
                 signals,
@@ -122,10 +123,15 @@ pub fn selected_surface_digest(
             } => {
                 append_schema(&mut output, graph, input)?;
                 append_schema(&mut output, graph, result)?;
-                if let Some(update) = update {
-                    append_schema(&mut output, graph, update)?;
+                if let Some(progress) = progress {
+                    append_schema(&mut output, graph, progress)?;
                 } else {
                     append_digest_field(&mut output, "");
+                }
+                // A dedicated update schema extends the digest; progress-only
+                // declarations keep their previous digest byte stream.
+                if let Some(update) = update {
+                    append_schema(&mut output, graph, update)?;
                 }
                 for (name, signal) in signals {
                     append_digest_field(&mut output, name);
@@ -546,6 +552,7 @@ fn render_action(output: &mut String, id: &ActionId, value: &ActionDefinition, i
         ActionDefinition::Operation {
             input,
             output: result,
+            progress,
             update,
             errors,
             signals,
@@ -553,8 +560,11 @@ fn render_action(output: &mut String, id: &ActionId, value: &ActionDefinition, i
         } => {
             writeln!(output, "    input {};", imports.ty(input)).unwrap();
             writeln!(output, "    output {};", imports.ty(result)).unwrap();
+            if let Some(progress) = progress {
+                writeln!(output, "    progress {};", imports.ty(progress)).unwrap();
+            }
             if let Some(update) = update {
-                writeln!(output, "    progress {};", imports.ty(update)).unwrap();
+                writeln!(output, "    update {};", imports.ty(update)).unwrap();
             }
             render_errors(output, errors);
             if !signals.is_empty() {
@@ -920,12 +930,16 @@ fn collect_action(
         ActionDefinition::Operation {
             input,
             output,
+            progress,
             update,
             signals,
             ..
         } => {
             collect_ref(input, root, refs);
             collect_ref(output, root, refs);
+            if let Some(value) = progress {
+                collect_ref(value, root, refs);
+            }
             if let Some(value) = update {
                 collect_ref(value, root, refs);
             }
@@ -947,11 +961,13 @@ fn action_refs<'a>(value: &'a ActionDefinition, refs: &mut Vec<&'a TypeRef>) {
         ActionDefinition::Operation {
             input,
             output,
+            progress,
             update,
             signals,
             ..
         } => {
             refs.extend([input, output]);
+            refs.extend(progress);
             refs.extend(update);
             refs.extend(signals.values());
         }

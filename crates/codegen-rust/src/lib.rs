@@ -719,7 +719,7 @@ fn render_action(
             type_path(input), type_path(event), format!("live.{name}"), format!("live.{version}.{key}"),
             string_slice(capabilities(InteractionDirection::Subscribe)),
         )),
-        ActionDefinition::Operation { input, output, update, errors, signals, upload } => {
+        ActionDefinition::Operation { input, output, progress, update, errors, signals, upload } => {
             let signal_schemas = signals
                 .iter()
                 .map(|(name, ty)| {
@@ -739,8 +739,11 @@ fn render_action(
                 "pub type {rust_name}Input = {};\npub type {rust_name}Output = {};\n",
                 type_path(input), type_path(output)
             );
+            if let Some(progress) = progress {
+                out.push_str(&format!("pub type {rust_name}Progress = {};\n", type_path(progress)));
+            }
             if let Some(update) = update {
-                out.push_str(&format!("pub type {rust_name}Progress = {};\n", type_path(update)));
+                out.push_str(&format!("pub type {rust_name}Update = {};\n", type_path(update)));
             }
             for (signal, ty) in signals {
                 out.push_str(&format!("pub type {rust_name}{}SignalInput = {};\n", type_name(signal), type_path(ty)));
@@ -759,18 +762,23 @@ fn render_action(
                 out.push_str("} } }\n");
                 out.push_str(&format!("impl {rust_name}Error {{ pub fn into_provider_failure(self) -> trellis_rs::generated::DeclaredOperationFailure<Self> {{ trellis_rs::generated::DeclaredOperationFailure::new(self) }} }}\n"));
             }
-            let progress = update
+            let progress_type = progress
                 .as_ref()
                 .map_or_else(|| "serde_json::Value".to_owned(), |_| format!("{rust_name}Progress"));
-            let update_type = update
-                .as_ref()
-                .map_or_else(|| "serde_json::Value".to_owned(), |_| format!("{rust_name}Progress"));
-            let update_evidence = if update.is_some() {
+            // The live update channel reuses the progress schema when no dedicated
+            // update schema is declared, preserving existing contracts.
+            let live_schema = update.as_ref().or(progress.as_ref());
+            let update_type = match update {
+                Some(_) => format!("{rust_name}Update"),
+                None if progress.is_some() => format!("{rust_name}Progress"),
+                None => "serde_json::Value".to_owned(),
+            };
+            let update_evidence = if live_schema.is_some() {
                 "trellis_rs::client::DeclaredOperationUpdates"
             } else {
                 "trellis_rs::client::NoOperationUpdates"
             };
-            let update_schema = match update {
+            let update_schema = match live_schema {
                 Some(ty) => format!(
                     "Some({:?})",
                     serde_json::to_string(&trellis_idl::json_schema(graph, ty).map_err(
@@ -786,10 +794,10 @@ fn render_action(
                 format!("{rust_name}Error::decode(value)")
             };
             out.push_str(&format!(
-                "impl trellis_rs::generated::OperationDescriptor for {rust_name} {{ type Input = {rust_name}Input; type Output = {rust_name}Output; type Progress = {progress}; type Update = {update_type}; type UpdateEvidence = {update_evidence}; type Error = {error_type}; const API_ID: &'static str = super::API_ID; const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME; const SUBJECT: &'static str = Self::SUBJECT; const KEY: &'static str = Self::KEY; const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES; const ERRORS: &'static [&'static str] = &{}; const SIGNALS: &'static [&'static str] = &{}; const SIGNAL_INPUT_SCHEMAS_JSON: &'static str = {signal_schemas:?}; const UPLOAD: bool = Self::UPLOAD; const HAS_PROGRESS: bool = {}; const UPDATE_SCHEMA_JSON: Option<&'static str> = {update_schema}; fn decode_error(value: serde_json::Value) -> Result<Option<Self::Error>, serde_json::Error> {{ {decode_error} }} }}\n",
+                "impl trellis_rs::generated::OperationDescriptor for {rust_name} {{ type Input = {rust_name}Input; type Output = {rust_name}Output; type Progress = {progress_type}; type Update = {update_type}; type UpdateEvidence = {update_evidence}; type Error = {error_type}; const API_ID: &'static str = super::API_ID; const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME; const SUBJECT: &'static str = Self::SUBJECT; const KEY: &'static str = Self::KEY; const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES; const ERRORS: &'static [&'static str] = &{}; const SIGNALS: &'static [&'static str] = &{}; const SIGNAL_INPUT_SCHEMAS_JSON: &'static str = {signal_schemas:?}; const UPLOAD: bool = Self::UPLOAD; const HAS_PROGRESS: bool = {}; const UPDATE_SCHEMA_JSON: Option<&'static str> = {update_schema}; fn decode_error(value: serde_json::Value) -> Result<Option<Self::Error>, serde_json::Error> {{ {decode_error} }} }}\n",
                 qualified_errors(api, errors),
                 string_slice(signals.keys().map(String::as_str)),
-                update.is_some(),
+                progress.is_some(),
             ));
             for signal in signals.keys() {
                 let signal_name = type_name(signal);
@@ -1684,11 +1692,13 @@ fn action_references(action: &ActionDefinition) -> Vec<&TypeRef> {
         ActionDefinition::Operation {
             input,
             output,
+            progress,
             update,
             signals,
             ..
         } => std::iter::once(input)
             .chain(std::iter::once(output))
+            .chain(progress)
             .chain(update)
             .chain(signals.values())
             .collect(),
@@ -2001,6 +2011,87 @@ fn download_output_round_trips_transfer_grant() {
     assert_eq!(encoded.get("name").and_then(|value| value.as_str()), Some("value"));
     let decoded: GetOutput = Codec::decode(encoded).unwrap();
     assert_eq!(decoded.transfer, Some(grant));
+}
+"#,
+        )
+        .unwrap();
+        assert!(Command::new("cargo")
+            .arg("test")
+            .arg("--quiet")
+            .current_dir(output.path())
+            .status()
+            .unwrap()
+            .success());
+    }
+    #[test]
+    fn generated_crate_keeps_distinct_progress_and_update_channels() {
+        let graph = graph(
+            "type Name = string; model Status { stage: Name; } model Preview { text: Name; } model Values { name: Name; } api main@v1 { title \"Main\"; description \"Main API.\"; operation Work { input Values; output Values; progress Status; update Preview; } operation Step { input Values; output Values; progress Status; } capabilities { public { allows { operation Work; operation Step; } } } } service Backend { implements main; } app Caller { use main { operation Work; operation Step; } }",
+        );
+        let output = tempfile::tempdir().unwrap();
+        generate_rust_package(&graph, output.path(), "fixture-sdk").unwrap();
+        let runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../trellis")
+            .canonicalize()
+            .unwrap();
+        let cargo = fs::read_to_string(output.path().join("Cargo.toml"))
+            .unwrap()
+            .replace(
+                &format!("trellis-rs = \"{}\"", env!("CARGO_PKG_VERSION")),
+                &format!("trellis-rs = {{ path = {runtime:?} }}"),
+            );
+        fs::write(output.path().join("Cargo.toml"), cargo).unwrap();
+        fs::create_dir(output.path().join("tests")).unwrap();
+        fs::write(
+            output.path().join("tests/abi.rs"),
+            r#"
+use fixture_sdk::apis::fixture_main_v1::operations::{
+    Step, StepProgress, Work, WorkProgress, WorkUpdate,
+};
+use serde_json::json;
+use trellis_rs::client::DeclaredOperationUpdates;
+use trellis_rs::generated::OperationDescriptor;
+use trellis_rs::service::validate_input_schema;
+
+fn distinct_channels<T>()
+where
+    T: OperationDescriptor<
+        Progress = WorkProgress,
+        Update = WorkUpdate,
+        UpdateEvidence = DeclaredOperationUpdates,
+    >,
+{
+}
+
+fn fallback_channel<T>()
+where
+    T: OperationDescriptor<
+        Progress = StepProgress,
+        Update = StepProgress,
+        UpdateEvidence = DeclaredOperationUpdates,
+    >,
+{
+}
+
+#[test]
+fn generated_descriptors_validate_each_channel() {
+    distinct_channels::<Work>();
+    fallback_channel::<Step>();
+    let work = Work::UPDATE_SCHEMA_JSON.expect("declared update schema");
+    validate_input_schema(work, &json!({"text": "partial"}))
+        .expect("a preview validates against the update schema");
+    assert!(
+        validate_input_schema(work, &json!({"stage": "transcribing"})).is_err(),
+        "a progress payload is rejected by the update schema"
+    );
+    let step = Step::UPDATE_SCHEMA_JSON.expect("fallback update schema");
+    validate_input_schema(step, &json!({"stage": "transcribing"}))
+        .expect("the fallback reuses the progress schema");
+    assert!(
+        validate_input_schema(step, &json!({"text": "partial"})).is_err(),
+        "the fallback rejects the other schema"
+    );
+    assert_ne!(work, step);
 }
 "#,
         )

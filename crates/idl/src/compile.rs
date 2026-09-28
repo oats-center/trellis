@@ -991,7 +991,9 @@ fn resolve_action(
 ) -> miette::Result<ActionDefinition> {
     let allowed: &[&str] = match raw.kind.as_str() {
         "rpc" => &["input", "output", "errors", "download", "pagination"],
-        "operation" => &["input", "output", "progress", "errors", "signals", "upload"],
+        "operation" => &[
+            "input", "output", "progress", "update", "errors", "signals", "upload",
+        ],
         "event" => &["payload", "params"],
         "live" => &["input", "event"],
         _ => &[],
@@ -1060,7 +1062,8 @@ fn resolve_action(
             ActionDefinition::Operation {
                 input: type_member("input")?,
                 output: type_member("output")?,
-                update: optional_type("progress")?,
+                progress: optional_type("progress")?,
+                update: optional_type("update")?,
                 errors: domain_errors,
                 signals,
                 upload: raw.members.contains_key("upload"),
@@ -1842,12 +1845,16 @@ fn validate_cursor_usage(
                 ActionDefinition::Operation {
                     input,
                     output,
+                    progress,
                     update,
                     signals,
                     ..
                 } => {
                     check(input, (false, false))?;
                     check(output, (false, false))?;
+                    if let Some(progress) = progress {
+                        check(progress, (false, false))?;
+                    }
                     if let Some(update) = update {
                         check(update, (false, false))?;
                     }
@@ -2478,12 +2485,16 @@ fn exported_types(package: &SemanticPackage) -> BTreeSet<TypeId> {
                 ActionDefinition::Operation {
                     input,
                     output,
+                    progress,
                     update,
                     signals,
                     ..
                 } => {
                     add(input, package, &mut result);
                     add(output, package, &mut result);
+                    if let Some(value) = progress {
+                        add(value, package, &mut result);
+                    }
                     if let Some(value) = update {
                         add(value, package, &mut result);
                     }

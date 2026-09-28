@@ -957,3 +957,243 @@ async fn runtime_endpoints_child() {
     }
     runtime.shutdown().await.expect("shutdown child runtime");
 }
+
+/// T11: generated distinct `progress`/`update` schemas deliver a live preview
+/// while the durable snapshot keeps only the declared progress status.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn t20_operation_live_update_uses_declared_update_schema() {
+    use trellis_rs::client::OperationEvent;
+    use trellis_test_fixture::apis::trellis_test_fixture_echo_v1::operations::{
+        UpdateOnlyContinueSignal, WorkContinueSignal,
+    };
+    use trellis_test_fixture::types::{Preview, Status};
+
+    let mut runtime = TrellisTestRuntime::builder()
+        .start()
+        .await
+        .expect("start runtime");
+    let identity = runtime
+        .register_service::<ProviderParticipant>("provider")
+        .await
+        .expect("register provider");
+    let mut service = ProviderParticipant::connect(identity.connect_options())
+        .await
+        .expect("connect provider");
+    {
+        let mut provider = Provider::new(&mut service);
+        provider.trellis_test_fixture_echo_v1().register_work(
+            |_context, input, operation| async move {
+                operation
+                    .progress(Status {
+                        stage: "transcribing".to_owned(),
+                        extra: Default::default(),
+                    })
+                    .await?;
+                let mut signals = operation.signals().await?;
+                let release_preview = signals
+                    .next()
+                    .await
+                    .transpose()?
+                    .ok_or_else(|| ServerError::Nats("signal stream ended".to_owned()))?;
+                operation
+                    .emit_update(Preview {
+                        text: "partial preview".to_owned(),
+                        extra: Default::default(),
+                    })
+                    .await?;
+                operation
+                    .acknowledge_signal(release_preview.signal_sequence)
+                    .await?;
+                // Stay nonterminal until the observer has read the preview.
+                let release_completion = signals
+                    .next()
+                    .await
+                    .transpose()?
+                    .ok_or_else(|| ServerError::Nats("signal stream ended".to_owned()))?;
+                operation
+                    .acknowledge_signal(release_completion.signal_sequence)
+                    .await?;
+                operation.complete(input).await?;
+                Ok(())
+            },
+        );
+        provider
+            .trellis_test_fixture_echo_v1()
+            .register_update_only(|_context, input, operation| async move {
+                let mut signals = operation.signals().await?;
+                let release_preview = signals
+                    .next()
+                    .await
+                    .transpose()?
+                    .ok_or_else(|| ServerError::Nats("signal stream ended".to_owned()))?;
+                operation
+                    .emit_update(Preview {
+                        text: "update-only preview".to_owned(),
+                        extra: Default::default(),
+                    })
+                    .await?;
+                operation
+                    .acknowledge_signal(release_preview.signal_sequence)
+                    .await?;
+                let release_completion = signals
+                    .next()
+                    .await
+                    .transpose()?
+                    .ok_or_else(|| ServerError::Nats("signal stream ended".to_owned()))?;
+                operation
+                    .acknowledge_signal(release_completion.signal_sequence)
+                    .await?;
+                operation.complete(input).await?;
+                Ok(())
+            });
+        provider.trellis_test_fixture_echo_v1().register_silent(
+            |_context, input, operation| async move {
+                operation.complete(input).await?;
+                Ok(())
+            },
+        );
+    }
+    let task = tokio::spawn(async move { service.run().await });
+
+    let caller_identity = runtime
+        .register_client::<CallerParticipant>("caller")
+        .await
+        .expect("register caller");
+    let caller = CallerClient::connect(caller_identity.connect_options())
+        .await
+        .expect("connect caller");
+    let api = caller.trellis_test_fixture_echo_v1();
+
+    // Work: the preview is live-only; durable progress keeps the status schema.
+    let operation = api.work().start(&value("go")).await.expect("start Work");
+    let mut events = operation
+        .live_with_updates()
+        .await
+        .expect("watch Work updates");
+    // Consume the initial durable snapshot before releasing the preview.
+    let _ = tokio::time::timeout(Duration::from_secs(20), events.next())
+        .await
+        .expect("Work initial snapshot before timeout")
+        .expect("Work stream yields an item")
+        .expect("Work initial snapshot decodes");
+    operation
+        .signal::<WorkContinueSignal>(&value("preview"))
+        .await
+        .expect("release Work preview");
+    let mut previews = Vec::new();
+    let terminal = loop {
+        let event = tokio::time::timeout(Duration::from_secs(20), events.next())
+            .await
+            .expect("Work event before timeout")
+            .expect("Work stream yields an item")
+            .expect("Work event decodes");
+        match event {
+            OperationEvent::Update { update } => {
+                previews.push(update.update.text);
+                operation
+                    .signal::<WorkContinueSignal>(&value("complete"))
+                    .await
+                    .expect("release Work completion");
+            }
+            terminal @ (OperationEvent::Completed { .. }
+            | OperationEvent::Failed { .. }
+            | OperationEvent::Cancelled { .. }) => break terminal,
+            _ => {}
+        }
+    };
+    assert_eq!(previews, vec!["partial preview".to_owned()]);
+    let OperationEvent::Completed { snapshot } = terminal else {
+        panic!("Work must complete: {terminal:?}");
+    };
+    assert_eq!(
+        snapshot.output.as_ref().map(|output| output.value.as_str()),
+        Some("go")
+    );
+    assert_eq!(
+        snapshot
+            .progress
+            .as_ref()
+            .map(|progress| progress.stage.as_str()),
+        Some("transcribing")
+    );
+    let durable = operation.get().await.expect("durable Work snapshot");
+    assert_eq!(
+        durable
+            .progress
+            .as_ref()
+            .map(|progress| progress.stage.as_str()),
+        Some("transcribing"),
+        "the durable snapshot never carries the transient preview"
+    );
+
+    // UpdateOnly: an explicit update schema with no durable progress schema.
+    let only = api
+        .update_only()
+        .start(&value("only"))
+        .await
+        .expect("start UpdateOnly");
+    let mut events = only
+        .live_with_updates()
+        .await
+        .expect("watch UpdateOnly updates");
+    let _ = tokio::time::timeout(Duration::from_secs(20), events.next())
+        .await
+        .expect("UpdateOnly initial snapshot before timeout")
+        .expect("UpdateOnly stream yields an item")
+        .expect("UpdateOnly initial snapshot decodes");
+    only.signal::<UpdateOnlyContinueSignal>(&value("preview"))
+        .await
+        .expect("release UpdateOnly preview");
+    let mut only_previews = Vec::new();
+    let only_snapshot = loop {
+        let event = tokio::time::timeout(Duration::from_secs(20), events.next())
+            .await
+            .expect("UpdateOnly event before timeout")
+            .expect("UpdateOnly stream yields an item")
+            .expect("UpdateOnly event decodes");
+        match event {
+            OperationEvent::Update { update } => {
+                only_previews.push(update.update.text);
+                only.signal::<UpdateOnlyContinueSignal>(&value("complete"))
+                    .await
+                    .expect("release UpdateOnly completion");
+            }
+            OperationEvent::Completed { snapshot } => break snapshot,
+            OperationEvent::Failed { snapshot } | OperationEvent::Cancelled { snapshot } => {
+                panic!("UpdateOnly terminated: {snapshot:?}")
+            }
+            _ => {}
+        }
+    };
+    assert_eq!(only_previews, vec!["update-only preview".to_owned()]);
+    assert!(only_snapshot.progress.is_none());
+    assert_eq!(
+        only_snapshot
+            .output
+            .as_ref()
+            .map(|output| output.value.as_str()),
+        Some("only")
+    );
+
+    // Silent: neither schema, durable terminal result only.
+    let silent = api
+        .silent()
+        .start(&value("silent"))
+        .await
+        .expect("start Silent");
+    let silent_snapshot = silent.wait().await.expect("wait Silent");
+    assert!(silent_snapshot.progress.is_none());
+    assert_eq!(
+        silent_snapshot
+            .output
+            .as_ref()
+            .map(|output| output.value.as_str()),
+        Some("silent")
+    );
+
+    drop(api);
+    drop(caller);
+    task.abort();
+    let _ = task.await;
+    runtime.shutdown().await.expect("shutdown runtime");
+}

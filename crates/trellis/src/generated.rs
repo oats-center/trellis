@@ -1159,6 +1159,39 @@ where
         self.inner.live().await
     }
 
+    /// Observe durable lifecycle snapshots plus declared live-only updates.
+    pub async fn live_with_updates(
+        &self,
+    ) -> Result<
+        crate::live::subscription::LiveSubscription<
+            crate::client::OperationEvent<D::Progress, D::Output, D::Update>,
+        >,
+        crate::client::TrellisClientError,
+    >
+    where
+        D::UpdateEvidence: crate::client::HasOperationUpdates,
+    {
+        self.inner.live_with_updates().await
+    }
+
+    /// Subscribe to declared live-only updates until the operation is terminal.
+    pub async fn updates(
+        &self,
+    ) -> Result<
+        impl futures_util::Stream<
+                Item = Result<
+                    crate::client::OperationUpdateEvent<D::Update>,
+                    crate::client::TrellisClientError,
+                >,
+            > + Unpin,
+        crate::client::TrellisClientError,
+    >
+    where
+        D::UpdateEvidence: crate::client::HasOperationUpdates,
+    {
+        self.inner.updates().await
+    }
+
     /// Upload the declared Operation transfer body through the accepted grant.
     pub async fn upload(
         &self,
