@@ -32,6 +32,7 @@ export {
   type OperationRegistration,
   type RpcHandler,
   type ServiceEventHandler,
+  type ServiceHandlerClient,
   type SqlOutbox,
   type SqlOutboxEventEnqueueFacade,
   type SqlOutboxJobEnqueueFacade,
