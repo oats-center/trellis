@@ -551,6 +551,7 @@ where
         mutation_gate: Arc<Mutex<()>>,
         handler: Arc<F>,
         nats: async_nats::Client,
+        staging: BoundStoreResourceClient,
         publisher: Option<Arc<crate::client::TrellisClient>>,
         update_subject: String,
         next_update_sequence: Arc<AtomicU64>,
@@ -640,6 +641,7 @@ where
                     witness: Arc::clone(&witness),
                 },
                 nats,
+                staging,
                 publisher,
                 update_subject,
                 next_update_sequence,
@@ -1003,6 +1005,7 @@ where
                                     mutation_gate,
                                     handler,
                                     nats,
+                                    staging,
                                     publisher,
                                     update_subject,
                                     next_update_sequence,
@@ -1230,6 +1233,7 @@ where
                         mutation_gate,
                         handler,
                         nats.clone(),
+                        staging.clone(),
                         publisher.clone(),
                         update_subject.clone(),
                         Arc::clone(&next_update_sequence),
@@ -1456,6 +1460,7 @@ where
                                                 gate_for_completion,
                                                 handler,
                                                 nats.clone(),
+                                                staging.clone(),
                                                 publisher.clone(),
                                                 update_subject.clone(),
                                                 Arc::clone(&next_update_sequence),
@@ -1552,6 +1557,7 @@ where
                 mutation_gate,
                 handler,
                 nats,
+                staging,
                 publisher,
                 update_subject,
                 next_update_sequence,
@@ -2068,6 +2074,7 @@ where
     operation_ref: OperationRefData,
     durable: DurableOperationControl,
     nats: async_nats::Client,
+    staging: BoundStoreResourceClient,
     publisher: Option<Arc<crate::client::TrellisClient>>,
     update_subject: String,
     next_update_sequence: Arc<AtomicU64>,
@@ -2315,6 +2322,31 @@ where
             content_type: upload.content_type,
             metadata: Default::default(),
         }))
+    }
+
+    /// Open this operation's committed staged upload as a backpressured reader.
+    ///
+    /// Returns `None` for an operation without an upload. The reader is valid
+    /// only while staging retains the object; read errors surface as I/O errors.
+    pub async fn open_staged_upload(
+        &self,
+    ) -> Result<Option<impl tokio::io::AsyncRead + Unpin + Send>, ServerError> {
+        let Some(upload) = self.upload().await? else {
+            return Ok(None);
+        };
+        let object = self.staging.open(&upload.key).await?.ok_or_else(|| {
+            ServerError::Nats("committed operation upload is missing from staging".to_owned())
+        })?;
+        if object.info().size as u64 != upload.size
+            || !object.info().digest.as_deref().is_some_and(|digest| {
+                super::transfer::transfer_digests_match(digest, &upload.digest)
+            })
+        {
+            return Err(ServerError::Nats(
+                "committed operation upload metadata does not match staging".to_owned(),
+            ));
+        }
+        Ok(Some(object))
     }
     /// Mark the operation as started/running.
     #[doc = concat!("Asynchronous Trellis API operation `", stringify!(started), "`.")]
@@ -3021,6 +3053,7 @@ mod tests {
     async fn control(
         repository: KvOperationRepository,
         nats: async_nats::Client,
+        staging: BoundStoreResourceClient,
         executor_id: &str,
         id: &str,
     ) -> OperationControl<TestOperation> {
@@ -3046,6 +3079,7 @@ mod tests {
                 witness: Arc::new(TerminalWitness::default()),
             },
             nats,
+            staging,
             publisher: None,
             update_subject: operation_update_subject::<TestOperation>("deployment", id),
             next_update_sequence: Arc::new(AtomicU64::new(1)),
@@ -3665,7 +3699,14 @@ mod tests {
         );
         assert_eq!(signalled.record.signals.len(), 2);
 
-        let first_control = control(repository.clone(), client.clone(), "executor-a", &id).await;
+        let first_control = control(
+            repository.clone(),
+            client.clone(),
+            staging.clone(),
+            "executor-a",
+            &id,
+        )
+        .await;
         let mut signals = first_control.signals().await.unwrap();
         assert_eq!(signals.next().await.unwrap().unwrap().signal_sequence, 1);
         drop(signals);
@@ -3709,7 +3750,14 @@ mod tests {
             .claim(&id, "executor-b", now_ms(), now_ms() + 30_000)
             .await
             .unwrap();
-        let second_control = control(repository.clone(), client.clone(), "executor-b", &id).await;
+        let second_control = control(
+            repository.clone(),
+            client.clone(),
+            staging.clone(),
+            "executor-b",
+            &id,
+        )
+        .await;
         let mut redelivered = second_control.signals().await.unwrap();
         assert_eq!(
             redelivered.next().await.unwrap().unwrap().signal_sequence,
@@ -3876,6 +3924,7 @@ mod tests {
         let mut progress_control = control(
             repository.clone(),
             client.clone(),
+            staging.clone(),
             "executor-a",
             &progress_race_id,
         )
@@ -3915,6 +3964,7 @@ mod tests {
         let mut completion_control = control(
             repository.clone(),
             client.clone(),
+            staging.clone(),
             "executor-a",
             &completion_race_id,
         )
@@ -3956,6 +4006,7 @@ mod tests {
         let completed_control = control(
             repository.clone(),
             client.clone(),
+            staging.clone(),
             "executor-a",
             &completed_id,
         )

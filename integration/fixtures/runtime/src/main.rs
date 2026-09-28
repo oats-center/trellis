@@ -216,25 +216,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     provider
         .runtime_trellis_runtime_v1()
         .register_upload(|context, input, op| async move {
-            if context.resuming {
-                let upload = op.upload().await?.ok_or_else(|| {
-                    trellis_rs::service::ServerError::Nats("committed upload missing".to_owned())
+            if !context.resuming {
+                let mut signals = op.signals().await?;
+                let signal = signals.next().await.transpose()?.ok_or_else(|| {
+                    trellis_rs::service::ServerError::Nats("signal stream ended".to_owned())
                 })?;
-                op.complete(Value {
-                    value: format!("{}:{}:{}", input.value, upload.size, context.resuming),
-                    extra: Default::default(),
-                })
-                .await?;
-                return Ok(());
+                op.acknowledge_signal(signal.signal_sequence).await?;
             }
-            let mut signals = op.signals().await?;
-            let signal = signals.next().await.transpose()?.ok_or_else(|| {
-                trellis_rs::service::ServerError::Nats("signal stream ended".to_owned())
-            })?;
-            op.acknowledge_signal(signal.signal_sequence).await?;
             let upload = op.upload().await?.ok_or_else(|| {
                 trellis_rs::service::ServerError::Nats("committed upload missing".to_owned())
             })?;
+            let mut reader = op.open_staged_upload().await?.ok_or_else(|| {
+                trellis_rs::service::ServerError::Nats("staged upload missing".to_owned())
+            })?;
+            let mut chunk = [0u8; 8192];
+            let mut received = 0;
+            loop {
+                let count = tokio::io::AsyncReadExt::read(&mut reader, &mut chunk)
+                    .await
+                    .map_err(|error| trellis_rs::service::ServerError::Nats(error.to_string()))?;
+                if count == 0 {
+                    break;
+                }
+                if chunk[..count]
+                    .iter()
+                    .enumerate()
+                    .any(|(index, byte)| *byte != ((received + index) % 251) as u8)
+                {
+                    return Err(trellis_rs::service::ServerError::Nats(
+                        "staged upload bytes do not match caller input".to_owned(),
+                    ));
+                }
+                received += count;
+            }
+            if received as u64 != upload.size {
+                return Err(trellis_rs::service::ServerError::Nats(
+                    "staged upload bytes do not match caller input".to_owned(),
+                ));
+            }
             op.complete(Value {
                 value: format!("{}:{}:{}", input.value, upload.size, context.resuming),
                 extra: Default::default(),

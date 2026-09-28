@@ -179,6 +179,17 @@ impl BoundStoreResourceClient {
     pub fn new(store: async_nats::jetstream::object_store::ObjectStore) -> Self {
         Self { store }
     }
+
+    pub(crate) async fn open(
+        &self,
+        key: &str,
+    ) -> Result<Option<async_nats::jetstream::object_store::Object>, ServerError> {
+        match self.store.get(key).await {
+            Ok(object) => Ok(Some(object)),
+            Err(error) if error.kind() == GetErrorKind::NotFound => Ok(None),
+            Err(error) => Err(nats_error(error)),
+        }
+    }
 }
 
 impl fmt::Debug for BoundStoreResourceClient {
