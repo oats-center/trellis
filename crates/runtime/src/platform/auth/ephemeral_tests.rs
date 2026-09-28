@@ -310,7 +310,6 @@ async fn repository_conformance(repository: impl AuthEphemeralRepository + Clone
         deployment_id: None,
         instance_id: None,
         context_digest: DIGEST.to_owned(),
-        transport_authorization,
         transport_authorization_digest,
         attachment_state: AuthAttachmentState::Pending,
         pending_deadline: Some(now + 60_000),

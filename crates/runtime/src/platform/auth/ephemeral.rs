@@ -442,7 +442,12 @@ pub(crate) struct AuthConnectionPresence {
     pub deployment_id: Option<String>,
     pub instance_id: Option<String>,
     pub context_digest: String,
-    pub transport_authorization: trellis_protocol::TransportAuthorizationV1,
+    /// Digest of the admitted transport policy signed into the immutable context
+    /// identified by `context_digest`.
+    ///
+    /// The full policy is retained by that signed authorization context (Auth
+    /// SQL, mirrored in the context KV). The presence keeps only this binding so
+    /// its size does not scale with the participant's contract surface.
     pub transport_authorization_digest: String,
     pub attachment_state: AuthAttachmentState,
     pub pending_deadline: Option<i64>,
@@ -549,20 +554,10 @@ impl AuthConnectionPresence {
         }
         require_digest("contextDigest", &self.context_digest)?;
         super::domain::validate_ed25519_public_key("sessionKey", &self.session_key)?;
-        self.transport_authorization
-            .validate()
-            .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
         require_digest(
             "transportAuthorizationDigest",
             &self.transport_authorization_digest,
         )?;
-        let policy_digest = self
-            .transport_authorization
-            .digest()
-            .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
-        if self.transport_authorization_digest != policy_digest {
-            return invalid("transportAuthorizationDigest does not match the admitted policy");
-        }
         match self.attachment_state {
             AuthAttachmentState::Pending => {
                 let deadline = self.pending_deadline.ok_or_else(|| {

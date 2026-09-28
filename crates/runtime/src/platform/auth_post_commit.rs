@@ -638,6 +638,25 @@ impl AuthPostCommitRuntime {
             if attachments.is_empty() {
                 continue;
             }
+            // The admitted policy is immutable evidence held by the signed
+            // context, not a duplicate on the presence record. Resolve it here so
+            // every attachment is compared as the exact policy it was admitted
+            // with, independent of later renewal or present authority.
+            let admitted = match context.signed_context() {
+                Ok(signed) => signed.unsigned.transport_authorization,
+                Err(error) => {
+                    tracing::warn!(
+                        context_digest = %context.context_digest,
+                        %error,
+                        "transport reevaluation found an unreadable admitted context; kicking attachments"
+                    );
+                    kicked.extend(attachments);
+                    continue;
+                }
+            };
+            let admitted_digest = admitted
+                .digest()
+                .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
             match self
                 .contexts
                 .current_transport_policy(&context.context_digest, now)
@@ -645,12 +664,13 @@ impl AuthPostCommitRuntime {
             {
                 Ok(allowed) => {
                     for attachment in attachments {
-                        let covered = attachment
-                            .transport_authorization
-                            .is_covered_by(&allowed)
-                            .map_err(|error| {
-                                AuthorizationStateError::InvalidRecord(error.to_string())
-                            })?;
+                        if attachment.transport_authorization_digest != admitted_digest {
+                            kicked.push(attachment);
+                            continue;
+                        }
+                        let covered = admitted.is_covered_by(&allowed).map_err(|error| {
+                            AuthorizationStateError::InvalidRecord(error.to_string())
+                        })?;
                         if !covered {
                             kicked.push(attachment);
                         }

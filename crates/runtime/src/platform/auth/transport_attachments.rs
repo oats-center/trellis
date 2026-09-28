@@ -230,11 +230,15 @@ struct ServerIdentity {
 
 #[derive(Debug, serde::Deserialize)]
 struct ConnzReply {
-    #[serde(default)]
+    server: ServerIdentity,
+    data: ConnzData,
+}
+
+/// Broker `CONNZ` payload, nested under the system reply envelope's `data`.
+#[derive(Debug, serde::Deserialize)]
+struct ConnzData {
     server_id: String,
-    #[serde(default)]
     total: usize,
-    #[serde(default)]
     connections: Vec<ConnzConnection>,
 }
 
@@ -321,15 +325,18 @@ pub(crate) async fn connz(
     )
     .await?;
     let reply: ConnzReply = serde_json::from_slice(&response).map_err(|error| {
-        AuthorizationStateError::Storage(format!("CONNZ reply is not valid JSON: {error}"))
+        AuthorizationStateError::Storage(format!(
+            "CONNZ reply is not a valid server system envelope: {error}"
+        ))
     })?;
-    if reply.server_id != server_id {
+    if reply.server.id != server_id || reply.data.server_id != server_id {
         return Err(AuthorizationStateError::Storage(format!(
-            "CONNZ reply came from server {} but {} was requested",
-            reply.server_id, server_id
+            "CONNZ reply identified server {} (envelope {}) but {} was requested",
+            reply.data.server_id, reply.server.id, server_id
         )));
     }
     let connections = reply
+        .data
         .connections
         .into_iter()
         .map(|connection| BrokerConnection {
@@ -337,7 +344,7 @@ pub(crate) async fn connz(
             authorized_user: connection.authorized_user,
         })
         .collect();
-    Ok((connections, reply.total))
+    Ok((connections, reply.data.total))
 }
 
 /// Requests a connection kick and validates the broker's response.
@@ -404,35 +411,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn connz_inventory_decodes_the_authenticated_user() {
-        let reply: ConnzReply = serde_json::from_slice(
-            br#"{
-                "server_id": "N1",
-                "total": 1,
-                "offset": 0,
-                "limit": 256,
-                "connections": [
-                    {
-                        "cid": 7,
-                        "name": "client-chosen",
-                        "authorized_user": "trellis.auth.v1:digest:N1:7"
-                    }
-                ]
-            }"#,
-        )
-        .expect("decode captured CONNZ inventory");
-        assert_eq!(reply.server_id, "N1");
-        assert_eq!(reply.total, 1);
-        let connection = BrokerConnection {
-            cid: reply.connections[0].cid,
-            authorized_user: reply.connections[0].authorized_user.clone(),
-        };
-        assert_eq!(connection.cid, 7);
-        assert_eq!(
-            connection.authorized_user.as_deref(),
-            Some("trellis.auth.v1:digest:N1:7")
+    fn connz_payload_without_the_server_envelope_is_not_an_empty_inventory() {
+        // A broker reply that omits the `{server, data}` envelope (or its
+        // server identity) must fail closed rather than decode as an empty
+        // inventory, which would falsely prove a live attachment absent.
+        let legacy_top_level = br#"{
+            "server_id": "N1",
+            "total": 1,
+            "connections": [{ "cid": 7, "authorized_user": "trellis.auth.v1:digest:N1:7" }]
+        }"#;
+        assert!(
+            serde_json::from_slice::<ConnzReply>(legacy_top_level).is_err(),
+            "a reply without the system envelope must not decode"
         );
-        assert!(connection.is_callout_owned());
+        let missing_server_identity = br#"{
+            "server": { "name": "trellis" },
+            "data": { "server_id": "N1", "total": 0, "connections": [] }
+        }"#;
+        assert!(
+            serde_json::from_slice::<ConnzReply>(missing_server_identity).is_err(),
+            "a reply without a server identity must not decode"
+        );
+        let missing_connections = br#"{
+            "server": { "id": "N1" },
+            "data": { "server_id": "N1", "total": 0 }
+        }"#;
+        assert!(
+            serde_json::from_slice::<ConnzReply>(missing_connections).is_err(),
+            "a reply without a connection array must not decode as an empty inventory"
+        );
     }
 
     #[test]
@@ -485,5 +492,128 @@ mod tests {
                 serde_json::from_str(&encoded).expect("decode reevaluation payload");
             assert_eq!(decoded, payload);
         }
+    }
+
+    /// Resolve the pinned NATS binary, preferring the shared cache so a prepared
+    /// machine never needs a network fetch to run the live broker test.
+    #[cfg(feature = "nats-leases")]
+    fn pinned_nats_binary() -> std::path::PathBuf {
+        use trellis_local_nats::{NatsBinarySource, NatsServerBinary};
+        let name = format!(
+            "nats-server-v{}",
+            trellis_local_nats::pinned_version().expect("pinned nats version")
+        );
+        if let Some(home) = std::env::var_os("HOME") {
+            let candidate = std::path::PathBuf::from(home)
+                .join(".cache/trellis")
+                .join(&name);
+            if candidate.is_file() {
+                if let Ok(path) =
+                    NatsServerBinary::resolve(&NatsBinarySource::Path(candidate), None)
+                {
+                    return path;
+                }
+            }
+        }
+        let cache = std::env::temp_dir().join("trellis-connz-nats-cache");
+        std::fs::create_dir_all(&cache).expect("private nats cache dir");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o700))
+                .expect("private nats cache permissions");
+        }
+        NatsServerBinary::resolve(&NatsBinarySource::DownloadPinned, Some(&cache))
+            .expect("resolve pinned nats-server")
+    }
+
+    #[cfg(feature = "nats-leases")]
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("bind ephemeral port")
+            .local_addr()
+            .expect("local addr")
+            .port()
+    }
+
+    /// A real broker with a system account answers the production `CONNZ`
+    /// inventory path. The wrapped reply must identify the requested server and
+    /// expose a known authenticated socket, and unavailable evidence must fail
+    /// closed instead of reading as an empty inventory.
+    #[cfg(feature = "nats-leases")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connz_finds_a_known_socket_and_fails_closed_on_unavailable_evidence() {
+        use trellis_local_nats::{ManagedNatsServer, NatsOutput};
+
+        let binary = pinned_nats_binary();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config_path = dir.path().join("nats.conf");
+        let nats_port = free_port();
+        let http_port = free_port();
+        let ws_port = free_port();
+        let config = format!(
+            "port: {nats_port}\nhttp_port: {http_port}\n\
+             websocket {{ port: {ws_port}, no_tls: true }}\n\
+             accounts {{\n  SYS {{ users: [ {{ user: \"sys\", password: \"pw\" }} ] }}\n  APP {{ users: [ {{ user: \"app\", password: \"pw\" }} ] }}\n}}\n\
+             system_account: SYS\n"
+        );
+        std::fs::write(&config_path, config).expect("write broker config");
+        let mut server = ManagedNatsServer::start(
+            &binary,
+            &config_path,
+            nats_port,
+            http_port,
+            ws_port,
+            &dir.path().join("nats.pid"),
+            &NatsOutput::Log {
+                path: dir.path().join("nats.log"),
+                mirror: false,
+            },
+        )
+        .expect("start broker");
+        let url = format!("nats://127.0.0.1:{nats_port}");
+
+        let system =
+            async_nats::ConnectOptions::with_user_and_password("sys".to_owned(), "pw".to_owned())
+                .connect(&url)
+                .await
+                .expect("connect system account");
+        // Held open for the duration so the broker inventories a real socket.
+        let _app =
+            async_nats::ConnectOptions::with_user_and_password("app".to_owned(), "pw".to_owned())
+                .connect(&url)
+                .await
+                .expect("connect app account");
+
+        let servers = discover_servers(&system).await.expect("discover servers");
+        assert_eq!(servers.len(), 1, "exactly one broker answers STATSZ");
+        let server_id = servers.into_iter().next().expect("server identity");
+
+        let inventory = paginate_connz(&system, &server_id)
+            .await
+            .expect("read CONNZ inventory");
+        let app_connection = inventory
+            .iter()
+            .find(|connection| connection.authorized_user.as_deref() == Some("app"))
+            .expect("the authenticated app socket must be inventoried");
+        assert!(app_connection.cid > 0);
+
+        let (filtered, total) = connz(&system, &server_id, 0, Some(app_connection.cid))
+            .await
+            .expect("read one connection");
+        assert!(total >= 1);
+        assert_eq!(filtered.len(), 1, "a cid filter returns exactly one socket");
+        assert_eq!(filtered[0].cid, app_connection.cid);
+        assert_eq!(filtered[0].authorized_user.as_deref(), Some("app"));
+
+        // An unknown server has no responder. That must be an error, never a
+        // successful empty inventory that would prove a live attachment absent.
+        let unknown = connz(&system, "UNKNOWN_SERVER_IDENTITY", 0, None).await;
+        assert!(
+            unknown.is_err(),
+            "unavailable inventory evidence must fail closed: {unknown:?}"
+        );
+
+        server.stop().expect("stop broker");
     }
 }
