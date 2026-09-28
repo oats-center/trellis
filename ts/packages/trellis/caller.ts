@@ -8,12 +8,14 @@ import {
 import type { LiveSubscription } from "./live/subscription.ts";
 import type { Codec } from "./generated.ts";
 import type { TrellisConnection } from "./connection.ts";
+import type { TransportError } from "./errors/index.ts";
 import type { TypedKV } from "./kv.ts";
 import type { OperationInvoker } from "./operations.ts";
 import type { TypedStore } from "./store.ts";
 import {
   type GeneratedParticipant,
   getParticipantRuntime,
+  type RuntimeSelectedAction,
 } from "./participant_runtime/participant.ts";
 import { createActionUnavailableError } from "./session.ts";
 import type {
@@ -197,9 +199,52 @@ type StoreFacadeFor<TContract extends GeneratedParticipant> = {
 /** Minimum participant contract accepted by the public caller connector. */
 export type CallerParticipant = GeneratedParticipant;
 
+/** One selected caller action with its generated surface name resolved. */
+export type CallerSelectedAction<TContract extends GeneratedParticipant> =
+  SelectedAction<TContract>;
+
+/**
+ * Selected caller action methods, including selected event subscriptions.
+ */
+export type CallerSelectedActionSurface<
+  TContract extends GeneratedParticipant,
+> = UnionToIntersection<ActionRecord<CallerSelectedAction<TContract>>>;
+
+/**
+ * Selected caller invocation and publish methods, excluding event
+ * subscriptions.
+ */
+export type CallerHandlerActionSurface<
+  TContract extends GeneratedParticipant,
+> = UnionToIntersection<
+  ActionRecord<
+    Extract<
+      CallerSelectedAction<TContract>,
+      | { kind: "rpc" | "operation" | "live" }
+      | { kind: "event"; direction: "publish" }
+    >
+  >
+>;
+
+/**
+ * Returns the transport error for a selected action whose optional capability
+ * alternatives are all currently unavailable, or `undefined` when the action
+ * is available.
+ */
+export function selectedActionAvailabilityError(
+  connection: TrellisConnection,
+  action: RuntimeSelectedAction,
+): TransportError | undefined {
+  const current = connection.availability().capabilities;
+  return action.optionalCapabilities.length > 0 &&
+      !action.optionalCapabilities.some((capability) => current[capability])
+    ? createActionUnavailableError(action.name, action.optionalCapabilities)
+    : undefined;
+}
+
 /** Flat caller surface inferred from a generated participant's selected actions. */
 export type CallerRuntime<TContract extends GeneratedParticipant> =
-  & UnionToIntersection<ActionRecord<SelectedAction<TContract>>>
+  & CallerSelectedActionSurface<TContract>
   & {
     readonly connection: TrellisConnection;
     availability(): ParticipantAvailability<TContract>;
@@ -246,13 +291,8 @@ export function createCallerRuntime<TContract extends GeneratedParticipant>(
   };
 
   for (const action of getParticipantRuntime(contract).actions) {
-    const unavailable = () => {
-      const current = runtime.connection.availability().capabilities;
-      return action.optionalCapabilities.length > 0 &&
-          !action.optionalCapabilities.some((capability) => current[capability])
-        ? createActionUnavailableError(action.name, action.optionalCapabilities)
-        : undefined;
-    };
+    const unavailable = () =>
+      selectedActionAvailabilityError(runtime.connection, action);
     switch (action.descriptor.kind) {
       case "rpc":
         {
