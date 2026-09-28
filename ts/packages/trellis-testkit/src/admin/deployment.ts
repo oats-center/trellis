@@ -347,8 +347,8 @@ export async function approveParticipantApply(
   context: AdminDeploymentContext,
   pendingId: string,
   opts: {
-    excludeResources?: readonly string[],
-    excludeCapabilities?: readonly string[],
+    excludeResources?: readonly string[];
+    excludeCapabilities?: readonly string[];
   } = {},
 ): Promise<TrellisTestParticipantApproval> {
   const pending = context.pendingApprovals.get(pendingId);

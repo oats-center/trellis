@@ -5,8 +5,8 @@ import { TypedKV } from "../packages/trellis/kv.ts";
 import { TransportError } from "../packages/trellis/errors/index.ts";
 import {
   resourceTransportCheck,
-  TransportAuthorizationState,
   type TransportAuthorizationGate,
+  TransportAuthorizationState,
 } from "../packages/trellis/auth/authorization/transport_state.ts";
 import {
   TRANSPORT_AUTHORIZATION_FORMAT_V1,
@@ -46,7 +46,9 @@ const readSubjects = (bucket: string) => [
 ];
 const writeSubjects = (bucket: string) => [`$KV.${bucket}.>`];
 
-function gateFor(state: TransportAuthorizationState): TransportAuthorizationGate {
+function gateFor(
+  state: TransportAuthorizationState,
+): TransportAuthorizationGate {
   return {
     status: () => state.status(),
     admittedPolicy: () => state.admittedPolicy(),
@@ -103,7 +105,12 @@ Deno.test("a bound KV resource waits for transport adoption before it is used", 
           pendingBucket,
         ),
       });
-      for (const result of [await pending.get("missing"), await pending.put("k", 1)]) {
+      for (
+        const result of [
+          await pending.get("missing"),
+          await pending.put("k", 1),
+        ]
+      ) {
         assert(result.isErr());
         assertEquals(
           result.error instanceof TransportError && result.error.code,
@@ -111,9 +118,10 @@ Deno.test("a bound KV resource waits for transport adoption before it is used", 
         );
       }
       await assertRejects(
-        async () => await (await jetstreamManager(nats)).streams.info(
-          `KV_${pendingBucket}`,
-        ),
+        async () =>
+          await (await jetstreamManager(nats)).streams.info(
+            `KV_${pendingBucket}`,
+          ),
         Error,
         undefined,
         "a pending resource must not be opened against NATS",

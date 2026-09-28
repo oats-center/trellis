@@ -1016,7 +1016,9 @@ class RuntimeOperationRef<
     })());
   }
 
-  startTransfer(body: TransferBody): AsyncResult<FileInfo, TransferOperationError> {
+  startTransfer(
+    body: TransferBody,
+  ): AsyncResult<FileInfo, TransferOperationError> {
     const grant = this.#acceptedTransfer;
     if (!grant) {
       return AsyncResult.err(

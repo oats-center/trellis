@@ -634,14 +634,9 @@ export function participantAvailability(
     jobs?: Readonly<{ queues: Readonly<Record<string, unknown>> }>;
     eventConsumers?: Readonly<Record<string, unknown>>;
   }>,
-  permissions: readonly Readonly<{
-    target: Readonly<{
-      kind: string;
-      participant?: string;
-      resource?: string;
-      name?: string;
-    }>;
-  }>[],
+  permissions: readonly Readonly<
+    { action?: string; target: Readonly<Record<string, unknown>> }
+  >[],
 ): TrellisAvailability {
   const capabilities: Record<string, boolean> = {};
   for (const selection of participant.uses) {

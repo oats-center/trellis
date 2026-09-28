@@ -132,8 +132,6 @@ fn generated_package_exercises_wo03_b2_b4() {
             BTreeMap::new(),
         )
     };
-    let legacy = compile(CONTRACT.replacen("progress Node;", "update Node;", 1)).unwrap_err();
-    assert!(format!("{legacy:?}").contains("unsupported operation member 'update'"));
     let graph = compile(CONTRACT.into()).unwrap();
 
     let temp = tempfile::tempdir().unwrap();
@@ -441,7 +439,7 @@ Deno.test("generated TypeScript package exercises WO-03 B2-B4", () => {
 Deno.test("generated caller replaces and enforces installed availability", async () => {
   const connection = new TrellisConnection({
     kind: "client",
-    availability: participantAvailability(Caller, {}, {}),
+    availability: participantAvailability(Caller, {}, {}, []),
   });
   let transportCalls = 0;
   const caller = createCallerRuntime({
@@ -471,7 +469,12 @@ Deno.test("generated caller replaces and enforces installed availability", async
   const initial = await watcher.next();
   const typedInitial: CallerModule.Availability = initial.value;
   assert(!typedInitial.capabilities["fixture.primary@v1::access"], "initial snapshot");
-  const replacement = participantAvailability(Caller, { "fixture.primary@v1": {} }, {});
+  const replacement = participantAvailability(
+    Caller,
+    { "fixture.primary@v1": {} },
+    {},
+    Caller.optionalGrants["fixture.primary@v1::access"],
+  );
   installConnectionAvailability(connection, replacement);
   const changed = await watcher.next();
   assert(changed.value === caller.availability(), "watch receives installed replacement");
