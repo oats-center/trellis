@@ -99,7 +99,7 @@ async function main(): Promise<void> {
             });
           },
           {},
-          { mode: "ephemeral", replay: "new", signal: controller.signal },
+          { mode: "ephemeral", signal: controller.signal },
         ).orThrow();
         await service.onReportsPublished(
           ({ event }) => {
@@ -109,7 +109,7 @@ async function main(): Promise<void> {
             });
           },
           {},
-          { mode: "ephemeral", replay: "new", signal: controller.signal },
+          { mode: "ephemeral", signal: controller.signal },
         ).orThrow();
         await service.onEvidenceUploaded(
           ({ event }) => {
@@ -119,7 +119,7 @@ async function main(): Promise<void> {
             });
           },
           {},
-          { mode: "ephemeral", replay: "new", signal: controller.signal },
+          { mode: "ephemeral", signal: controller.signal },
         ).orThrow();
         await service.onSitesRefreshed(
           ({ event }) => {
@@ -129,7 +129,7 @@ async function main(): Promise<void> {
             });
           },
           {},
-          { mode: "ephemeral", replay: "new", signal: controller.signal },
+          { mode: "ephemeral", signal: controller.signal },
         ).orThrow();
 
         await new Promise<void>((resolve) => {

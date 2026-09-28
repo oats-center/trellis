@@ -12,7 +12,7 @@
   type ReportTerminal = { state: "completed" | "failed" | "cancelled"; output?: ReportsGenerateResponse };
   type ReportOperationRef = {
     id: string;
-    watch(): { orThrow(): Promise<AsyncIterable<ReportEvent>> };
+    live(): { orThrow(): Promise<AsyncIterable<ReportEvent>> };
     wait(): { orThrow(): Promise<ReportTerminal> };
   };
   type PublishState = "idle" | "running" | "completed" | "failed" | "cancelled";
@@ -107,7 +107,7 @@
   }
 
   async function watchOperation(ref: ReportOperationRef, runId: number): Promise<void> {
-    const stream = await ref.watch().orThrow();
+    const stream = await ref.live().orThrow();
     for await (const event of stream) {
       if (!mounted || runId !== operationRunId) return;
       const action = event.progress ? `${event.progress.stage}: ${event.progress.message}` : "Operation update received";
