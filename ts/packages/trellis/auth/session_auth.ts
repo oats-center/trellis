@@ -46,7 +46,7 @@ export type TrellisAuth = {
   signSessionProof: (input: SessionProofInput) => Promise<SessionProof>;
   natsConnectOptions: (
     opts: {
-      sessionId: string;
+      inboxPrefix: string;
       contextDigest: string | (() => string);
       jwt: string | (() => string);
       authorizationUsable?: () => boolean;
@@ -125,7 +125,7 @@ export async function createAuth(
             };
           },
         ],
-        inboxPrefix: `_INBOX.${options.sessionId}`,
+        inboxPrefix: options.inboxPrefix,
       });
     },
   };

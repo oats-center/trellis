@@ -450,12 +450,14 @@ export type TrellisClientConnectArgs<
 
 type ClientRuntimeIdentity = {
   mode: "browser" | "session_key";
-  sessionKey: string;
+  /** Durable credential that proves ownership of the login session over HTTP. */
+  installationAuth: TrellisAuth;
+  /** Credential that authenticates this runtime connection. */
+  runtimeAuth: TrellisAuth;
   sessionNkey: string;
   seed: Uint8Array;
   sessionId?: string;
   browserCredential?: BrowserSessionCredential;
-  auth: TrellisAuth;
   sign(data: Uint8Array): Promise<Uint8Array>;
 };
 
@@ -670,17 +672,17 @@ async function createSessionKeyRuntimeIdentity(
   browserCredential?: BrowserSessionCredential,
 ): Promise<ClientRuntimeIdentity> {
   const seed = base64urlDecode(sessionKeySeed);
-  const auth = await createAuth({ sessionKeySeed });
-  const sessionKey = auth.sessionKey;
+  const installationAuth = await createAuth({ sessionKeySeed });
+  const runtimeAuth = installationAuth;
   const sign = async (data: Uint8Array): Promise<Uint8Array> =>
-    await auth.sign(data);
+    await runtimeAuth.sign(data);
 
   const identity: ClientRuntimeIdentity = {
     mode,
-    sessionKey,
-    sessionNkey: auth.sessionNkey,
+    installationAuth,
+    runtimeAuth,
+    sessionNkey: runtimeAuth.sessionNkey,
     seed,
-    auth,
     sessionId,
     ...(browserCredential === undefined ? {} : { browserCredential }),
     sign,
@@ -752,11 +754,11 @@ async function bindClientFlow(args: {
     },
     body: JSON.stringify({
       ...unsigned,
-      proof: await args.identity.auth.signSessionProof({
+      proof: await args.identity.installationAuth.signSessionProof({
         purpose: "userAuthBind",
         origin: args.trellisUrl,
         flowId: args.flowId,
-        sessionPublicKey: args.identity.sessionKey,
+        sessionPublicKey: args.identity.installationAuth.sessionKey,
         unsignedRequest: unsigned,
       }),
     }),
@@ -801,7 +803,7 @@ async function bindClientFlow(args: {
     });
   }
   if (
-    parsed.session.sessionKey !== args.identity.sessionKey ||
+    parsed.session.sessionKey !== args.identity.installationAuth.sessionKey ||
     parsed.session.participantId !== args.participant.identity
   ) {
     throw new Error("Trellis returned a login for another installation");
@@ -866,9 +868,11 @@ async function recoverClientBootstrapWithRetry(args: {
     try {
       const result = await refreshAuthorizationContextWithMetadata({
         trellisUrl: args.trellisUrl,
-        sessionId: args.identity.sessionId,
-        auth: args.identity.auth,
-        sessionKey: args.identity.sessionKey,
+        credential: {
+          loginSessionId: args.identity.sessionId!,
+          proofAuth: args.identity.installationAuth,
+        },
+        runtime: { auth: args.identity.runtimeAuth },
         cache: args.cache,
         requiredTransport: "websocket",
       });
@@ -956,13 +960,13 @@ async function recoverClientBootstrapWithRetry(args: {
 
 async function createRuntimeUserAuthenticator(args: {
   identity: ClientRuntimeIdentity;
-  sessionId: string;
+  inboxPrefix: string;
   contextDigest: string | (() => string);
   jwt: string | (() => string);
   authorizationUsable?: () => boolean;
 }): Promise<{ authenticators: Authenticator[]; stop: () => void }> {
-  const options = await args.identity.auth.natsConnectOptions({
-    sessionId: args.sessionId,
+  const options = await args.identity.runtimeAuth.natsConnectOptions({
+    inboxPrefix: args.inboxPrefix,
     contextDigest: args.contextDigest,
     jwt: args.jwt,
     authorizationUsable: args.authorizationUsable,
@@ -1041,7 +1045,7 @@ async function buildSessionKeyLoginUrl(args: {
   const unsigned = {
     requestId,
     issuedAt,
-    sessionPublicKey: args.identity.sessionKey,
+    sessionPublicKey: args.identity.installationAuth.sessionKey,
     participantId: args.participant.identity,
     redirectTarget: args.redirectTo,
   };
@@ -1050,7 +1054,7 @@ async function buildSessionKeyLoginUrl(args: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       ...unsigned,
-      proof: await args.identity.auth.signSessionProof({
+      proof: await args.identity.installationAuth.signSessionProof({
         purpose: "userAuthRequest",
         origin: args.trellisUrl,
         unsignedRequest: unsigned,
@@ -1294,7 +1298,7 @@ export async function connectClientWithDeps<
   }
 
   const transport = await deps.loadTransport();
-  identity.auth.setServerClockOffsetMs(
+  identity.runtimeAuth.setServerClockOffsetMs(
     (bootstrap.serverClockOffsetMs ?? offsetState.serverClockOffsetMs) +
       deps.now() - Date.now(),
   );
@@ -1364,7 +1368,7 @@ export async function connectClientWithDeps<
     : undefined;
   const runtimeAuth = await createRuntimeUserAuthenticator({
     identity,
-    sessionId: runtimeState.sessionId,
+    inboxPrefix: bootstrap.connectInfo.transport.inboxPrefix,
     contextDigest: runtimeState.contextDigest,
     jwt: runtimeState.jwt,
     authorizationUsable: () =>
@@ -1565,16 +1569,20 @@ export async function connectClientWithDeps<
   }
   const stopContextRefresh = startAuthorizationContextRefresh({
     trellisUrl: args.trellisUrl,
-    sessionId: runtimeState.sessionId,
-    auth: identity.auth,
-    sessionKey: identity.sessionKey,
+    credential: {
+      loginSessionId: runtimeState.sessionId,
+      proofAuth: identity.installationAuth,
+    },
+    runtime: { auth: identity.runtimeAuth },
     cache: authorizationContexts,
     refresh: async (shouldInstall) => {
       const result = await refreshAuthorizationContextWithMetadata({
         trellisUrl: args.trellisUrl,
-        sessionId: runtimeState.sessionId,
-        auth: identity.auth,
-        sessionKey: identity.sessionKey,
+        credential: {
+          loginSessionId: runtimeState.sessionId,
+          proofAuth: identity.installationAuth,
+        },
+        runtime: { auth: identity.runtimeAuth },
         cache: authorizationContexts,
         shouldInstall,
         prepareOnly: true,
@@ -1657,7 +1665,7 @@ export async function connectClientWithDeps<
     nc,
     connection,
     inboxPrefix: bootstrap.connectInfo.transport.inboxPrefix,
-    sessionKey: identity.sessionKey,
+    sessionKey: identity.runtimeAuth.sessionKey,
     sign: identity.sign,
     contextDigest: () => authorizationContexts.current().contextDigest,
     authorizationProviderCache,
@@ -1708,8 +1716,11 @@ export async function connectClientWithDeps<
           try {
             await refreshAuthorizationContextWithMetadata({
               trellisUrl,
-              sessionId: identity.sessionId!,
-              auth: identity.auth,
+              credential: {
+                loginSessionId: identity.sessionId!,
+                proofAuth: identity.installationAuth,
+              },
+              runtime: { auth: identity.runtimeAuth },
               cache: authorizationContexts,
               requiredTransport: "websocket",
             });
@@ -1788,7 +1799,7 @@ async function resolveAuthRequired<
   const continuationStartedAt = performance.now();
   const continuation = await args.onAuthRequired?.({
     loginUrl,
-    sessionKey: identity.sessionKey,
+    sessionKey: identity.installationAuth.sessionKey,
     mode: identity.mode,
   });
   recordTrellisDuration(

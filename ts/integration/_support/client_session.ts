@@ -9,34 +9,49 @@ import type {
   TrellisTestRuntime,
 } from "@oatscenter/trellis-testkit";
 
-/** Ordinary issued NATS material for a registered client. */
-export type ClientSession = {
-  /** Signer whose session key is bound into the caller's admitted authority. */
-  auth: Awaited<ReturnType<typeof createAuth>>;
-  /** Normal issued NATS authenticator for the caller's connection. */
-  authenticator: Authenticator | Authenticator[];
-  /** Current admitted authorization-context digest. */
+/**
+ * Metadata of a registered client's existing admitted runtime connection.
+ *
+ * Reading this needs no private key: it is the connection the client already
+ * holds, discovered from public admin state.
+ */
+export type ObservedClientConnection = {
+  /** Durable login session the connection was admitted under. */
+  loginSessionId: string;
+  /** Server-assigned runtime connection identity. */
+  runtimeConnectionId: string;
+  /** Currently admitted authorization-context digest. */
   contextDigest: string;
-  /** Current login session identity. */
-  sessionId: string;
   /** Exact authenticated inbox prefix accepted for replies. */
   inboxPrefix: string;
 };
 
+/** A complete, independent raw user runtime connection. */
+export type RawClientConnection = {
+  /** Runtime credential whose key is bound into this connection's context. */
+  auth: Awaited<ReturnType<typeof createAuth>>;
+  /** Issued NATS authenticator for this connection. */
+  authenticator: Authenticator | Authenticator[];
+  /** Authorization-context digest issued for this connection. */
+  contextDigest: string;
+  /** Server-assigned runtime connection identity. */
+  connectionId: string;
+  /** Exact authenticated inbox prefix accepted for replies. */
+  inboxPrefix: string;
+  /** Durable login session this connection was issued under. */
+  loginSessionId: string;
+};
+
 /**
- * Reconstructs a registered client's normal issued NATS material from its
- * admitted connection presence and the production context-refresh endpoint.
- * This reads only public admin state and never exposes facade transport state.
+ * Observes an existing admitted runtime connection from public admin state.
+ *
+ * A runtime connection's ephemeral key is not recoverable, so an existing
+ * connection is observed through its metadata rather than reconstructed.
  */
-export async function clientSession(
+export async function observeClientConnection(
   runtime: TrellisTestRuntime,
   key: TrellisTestClientKey,
-): Promise<ClientSession> {
-  let contextDigest = "";
-  const auth = await createAuth({
-    sessionKeySeed: key.seed,
-    contextDigest: () => contextDigest,
-  });
+): Promise<ObservedClientConnection> {
   const connection = await runtime.waitFor(async () => {
     const page = await runtime.callAdminRpc("authConnectionsList", {}) as {
       items: {
@@ -58,25 +73,50 @@ export async function clientSession(
   if (!connection.loginSessionId) {
     throw new Error("test client has no admitted login session");
   }
-  contextDigest = connection.contextDigest;
-  const { response } = await refreshAuthorizationContextWithMetadata({
+  return {
+    loginSessionId: connection.loginSessionId,
+    runtimeConnectionId: connection.runtimeConnectionId,
+    contextDigest: connection.contextDigest,
+    inboxPrefix: `_INBOX.${connection.runtimeConnectionId}`,
+  };
+}
+
+/**
+ * Issues a complete raw user runtime connection for a registered client's
+ * durable login, through the production context-refresh endpoint.
+ *
+ * The connection is its own logical runtime connection: it carries the freshly
+ * issued context digest and inbox prefix, and never mixes metadata from the
+ * client's separate facade connection.
+ */
+export async function issueRawClientConnection(
+  runtime: TrellisTestRuntime,
+  key: TrellisTestClientKey,
+  loginSessionId: string,
+): Promise<RawClientConnection> {
+  let contextDigest = "";
+  const auth = await createAuth({
+    sessionKeySeed: key.seed,
+    contextDigest: () => contextDigest,
+  });
+  const { response, context } = await refreshAuthorizationContextWithMetadata({
     trellisUrl: runtime.trellisUrl,
-    sessionId: connection.loginSessionId,
-    auth,
+    credential: { loginSessionId, proofAuth: auth },
+    runtime: { auth },
     cache: new AuthorizationContextCache(runtime.trellisUrl),
   });
+  contextDigest = context.contextDigest;
   const { authenticator } = await auth.natsConnectOptions({
-    sessionId: connection.loginSessionId,
-    contextDigest: connection.contextDigest,
+    inboxPrefix: response.runtime.inboxPrefix,
+    contextDigest: context.contextDigest,
     jwt: response.routing.bootstrapJwt,
   });
   return {
     auth,
     authenticator,
-    contextDigest: connection.contextDigest,
-    sessionId: connection.loginSessionId,
-    // The provider authorizes replies under the connection-scoped inbox prefix,
-    // which is keyed by the runtime connection rather than the login session.
-    inboxPrefix: `_INBOX.${connection.runtimeConnectionId}`,
+    contextDigest: context.contextDigest,
+    connectionId: response.runtime.connectionId,
+    inboxPrefix: response.runtime.inboxPrefix,
+    loginSessionId,
   };
 }

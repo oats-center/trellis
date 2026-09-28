@@ -78,8 +78,8 @@ export class AuthorizationContextController {
     try {
       this.#context = await refreshAuthorizationContext({
         trellisUrl: this.#cache.trellisUrl,
-        sessionId,
-        auth,
+        credential: { loginSessionId: sessionId, proofAuth: auth },
+        runtime: { auth },
         cache: this.#cache,
         shouldInstall: () => epoch === this.#epoch,
       });
@@ -117,8 +117,8 @@ export class AuthorizationContextController {
     if (!this.#context) this.#status = "refreshing";
     this.#stop = startAuthorizationContextRefresh({
       trellisUrl: this.#cache.trellisUrl,
-      sessionId,
-      auth,
+      credential: { loginSessionId: sessionId, proofAuth: auth },
+      runtime: { auth },
       cache: this.#cache,
       onRefresh: (context) => {
         this.#context = context;

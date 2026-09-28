@@ -2780,7 +2780,7 @@ export function connectTrellisServiceWithRuntimeDeps<
       }
       const { authenticator, inboxPrefix } = await sessionAuth
         .natsConnectOptions({
-          sessionId: bootstrap.connectInfo.connectionId,
+          inboxPrefix: `_INBOX.${bootstrap.connectInfo.connectionId}`,
           contextDigest: () =>
             authorizationContexts.transportCurrent().contextDigest,
           jwt: () => authorizationContexts.nextConnectRoutingJwt(),
@@ -3027,8 +3027,11 @@ export function connectTrellisServiceWithRuntimeDeps<
         }
         stopContextRefresh = startAuthorizationContextRefresh({
           trellisUrl: args.trellisUrl,
-          sessionId: bootstrap.connectInfo.connectionId,
-          auth: sessionAuth,
+          credential: {
+            loginSessionId: bootstrap.connectInfo.connectionId,
+            proofAuth: sessionAuth,
+          },
+          runtime: { auth: sessionAuth },
           cache: authorizationContexts,
           refresh: async (shouldInstall) => {
             try {

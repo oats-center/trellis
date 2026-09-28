@@ -51,7 +51,7 @@ Deno.test("an expired routing credential cannot admit a fresh NATS attachment", 
         },
       );
       const options = await sessionAuth.natsConnectOptions({
-        sessionId: bootstrap.connectInfo.connectionId,
+        inboxPrefix: `_INBOX.${bootstrap.connectInfo.connectionId}`,
         contextDigest: verified.contextDigest,
         jwt: bootstrap.connectInfo.jwt,
       });
@@ -88,7 +88,7 @@ Deno.test("an expired routing credential cannot admit a fresh NATS attachment", 
         },
       );
       const currentOptions = await sessionAuth.natsConnectOptions({
-        sessionId: bootstrap.connectInfo.connectionId,
+        inboxPrefix: `_INBOX.${bootstrap.connectInfo.connectionId}`,
         contextDigest: current.contextDigest,
         jwt: refreshed.connectInfo.jwt,
       });
@@ -100,7 +100,7 @@ Deno.test("an expired routing credential cannot admit a fresh NATS attachment", 
       });
       await currentConnection.drain();
       const expiredOptions = await sessionAuth.natsConnectOptions({
-        sessionId: bootstrap.connectInfo.connectionId,
+        inboxPrefix: `_INBOX.${bootstrap.connectInfo.connectionId}`,
         contextDigest: current.contextDigest,
         jwt: bootstrap.connectInfo.jwt,
       });

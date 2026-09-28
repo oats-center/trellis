@@ -63,12 +63,20 @@ export class AuthorizationContextRefreshError extends TrellisHttpError {
   }
 }
 
+/** Durable credential that proves ownership of a login session over HTTP. */
+export type UserLoginCredential = {
+  loginSessionId: string;
+  proofAuth: TrellisAuth;
+};
+
+/** Credential that authenticates one runtime connection. */
+export type RuntimeCredential = { auth: TrellisAuth };
+
 /** Refresh a context after proving possession of its bound session key. */
 export async function refreshAuthorizationContextWithMetadata(args: {
   trellisUrl: string;
-  sessionId: string;
-  auth: TrellisAuth;
-  sessionKey?: string;
+  credential: UserLoginCredential;
+  runtime: RuntimeCredential;
   cache: AuthorizationContextCache;
   fetch?: typeof globalThis.fetch;
   shouldInstall?: () => boolean;
@@ -86,22 +94,25 @@ export async function refreshAuthorizationContextWithMetadata(args: {
   } catch {
     runtime = undefined;
   }
-  if (runtime?.loginSessionId && runtime.loginSessionId !== args.sessionId) {
+  if (
+    runtime?.loginSessionId &&
+    runtime.loginSessionId !== args.credential.loginSessionId
+  ) {
     throw new Error("authorization recovery session mismatch");
   }
   const requestStartedAt = args.cache.nowMilliseconds();
   const unsignedRequest = {
     requestId: ulid(),
-    issuedAt: Math.trunc(args.auth.currentIat() * 1_000),
-    loginSessionId: args.sessionId,
+    issuedAt: Math.trunc(args.runtime.auth.currentIat() * 1_000),
+    loginSessionId: args.credential.loginSessionId,
     connectionId: runtime?.connectionId ?? ulid(),
-    sessionKey: args.sessionKey ?? args.auth.sessionKey,
+    sessionKey: args.runtime.auth.sessionKey,
     currentContextDigest: currentDigest ?? null,
   };
-  const proof = await args.auth.signSessionProof({
+  const proof = await args.credential.proofAuth.signSessionProof({
     purpose: "authorizationContextRefresh",
     origin: new URL(args.trellisUrl).origin,
-    sessionPublicKey: args.auth.sessionKey,
+    sessionPublicKey: args.credential.proofAuth.sessionKey,
     unsignedRequest,
   });
   let outcome = "error";
@@ -158,7 +169,8 @@ export async function refreshAuthorizationContextWithMetadata(args: {
     (requestStartedAt + args.cache.nowMilliseconds()) / 2,
   );
   args.cache.setServerClockOffsetMs(serverClockOffsetMs);
-  args.auth.setServerClockOffsetMs(serverClockOffsetMs);
+  args.credential.proofAuth.setServerClockOffsetMs(serverClockOffsetMs);
+  args.runtime.auth.setServerClockOffsetMs(serverClockOffsetMs);
   if (args.shouldInstall?.() === false) {
     throw new Error("authorization context refresh stopped");
   }
@@ -183,9 +195,8 @@ export async function refreshAuthorizationContextWithMetadata(args: {
 /** Refresh a context and return only its verified projection. */
 export async function refreshAuthorizationContext(args: {
   trellisUrl: string;
-  sessionId: string;
-  auth: TrellisAuth;
-  sessionKey?: string;
+  credential: UserLoginCredential;
+  runtime: RuntimeCredential;
   cache: AuthorizationContextCache;
   fetch?: typeof globalThis.fetch;
   shouldInstall?: () => boolean;
@@ -197,9 +208,8 @@ export async function refreshAuthorizationContext(args: {
 /** Start proactive refresh using the context's distributed refresh time. */
 export function startAuthorizationContextRefresh(args: {
   trellisUrl: string;
-  sessionId: string;
-  auth: TrellisAuth;
-  sessionKey?: string;
+  credential: UserLoginCredential;
+  runtime: RuntimeCredential;
   cache: AuthorizationContextCache;
   fetch?: typeof globalThis.fetch;
   refresh?: (

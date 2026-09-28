@@ -57,9 +57,11 @@ Deno.test("user refresh binds a fresh runtime key under the installation proof",
   await assertRejects(() =>
     refreshAuthorizationContextWithMetadata({
       trellisUrl: "https://trellis.example",
-      sessionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-      auth: installation,
-      sessionKey: runtime.sessionKey,
+      credential: {
+        loginSessionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        proofAuth: installation,
+      },
+      runtime: { auth: runtime },
       cache,
       fetch: async (_input, init) => {
         body = JSON.parse(String(init?.body));
@@ -136,8 +138,11 @@ Deno.test("authorization refresh can use native bootstrap", async () => {
   const didRefresh = new Promise<void>((resolve) => refreshed = resolve);
   const stop = startAuthorizationContextRefresh({
     trellisUrl: "https://trellis.test",
-    sessionId: value.current().context.connectionId,
-    auth,
+    credential: {
+      loginSessionId: value.current().context.connectionId,
+      proofAuth: auth,
+    },
+    runtime: { auth },
     cache: value,
     refresh: async (shouldInstall) => {
       assert(shouldInstall());
@@ -165,8 +170,11 @@ Deno.test("changed authorization refresh reconnects once while connected", async
   const didReconnect = new Promise<void>((resolve) => reconnected = resolve);
   const stop = startAuthorizationContextRefresh({
     trellisUrl: "https://trellis.test",
-    sessionId: value.current().context.connectionId,
-    auth,
+    credential: {
+      loginSessionId: value.current().context.connectionId,
+      proofAuth: auth,
+    },
+    runtime: { auth },
     cache: value,
     refresh: () =>
       Promise.resolve({

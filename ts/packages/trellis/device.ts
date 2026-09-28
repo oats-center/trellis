@@ -831,7 +831,7 @@ export async function connectDeviceWithDeps<
     );
   }
   const sessionOptions = await bootstrap.sessionAuth.natsConnectOptions({
-    sessionId: connectInfo.connectionId,
+    inboxPrefix: connectInfo.transport.inboxPrefix,
     contextDigest: () => authorizationContexts.transportCurrent().contextDigest,
     jwt: () => authorizationContexts.nextConnectRoutingJwt(),
     authorizationUsable: () =>
@@ -981,8 +981,11 @@ export async function connectDeviceWithDeps<
   ) as RuntimeApi;
   const stopContextRefresh = startAuthorizationContextRefresh({
     trellisUrl: args.trellisUrl,
-    sessionId: connectInfo.connectionId,
-    auth: bootstrap.sessionAuth,
+    credential: {
+      loginSessionId: connectInfo.connectionId,
+      proofAuth: bootstrap.sessionAuth,
+    },
+    runtime: { auth: bootstrap.sessionAuth },
     cache: authorizationContexts,
     refresh: async (shouldInstall) => {
       try {

@@ -17,8 +17,9 @@ import { participants as webParticipants } from "trellis-web-generated";
 
 import { withTrellisRuntime } from "./_support/runtime.ts";
 import {
-  type ClientSession,
-  clientSession,
+  issueRawClientConnection,
+  observeClientConnection,
+  type RawClientConnection,
 } from "./_support/client_session.ts";
 
 const HEALTH_API = "trellis.health@v1";
@@ -95,7 +96,7 @@ function firstWithin(
 
 /** Signs one live request body with the caller's ordinary issued proof. */
 async function signedHeaders(
-  session: ClientSession,
+  session: RawClientConnection,
   subject: string,
   reply: string,
   body: Uint8Array,
@@ -130,8 +131,8 @@ async function consoleCaller(runtime: Runtime, name: string) {
     participant: CONSOLE,
     ...runtime.clientAuth(key),
   }).orThrow();
-  const session = await clientSession(runtime, key);
-  return { client, session };
+  const observed = await observeClientConnection(runtime, key);
+  return { client, key, observed };
 }
 
 /** Opens a privileged ordinary connection for observation and injection. */
@@ -148,7 +149,15 @@ async function platformConnection(runtime: Runtime): Promise<NatsConnection> {
 
 Deno.test("P07 a signed open with a foreign reply is dropped without reflection", async () => {
   await withTrellisRuntime(async (runtime) => {
-    const { client, session } = await consoleCaller(runtime, "p07-caller");
+    const { client, key, observed } = await consoleCaller(
+      runtime,
+      "p07-caller",
+    );
+    const session = await issueRawClientConnection(
+      runtime,
+      key,
+      observed.loginSessionId,
+    );
 
     // The caller's own issued connection injects the request, so it is
     // admitted as the caller. A privileged ordinary connection observes the
@@ -218,7 +227,7 @@ Deno.test("P08 a foreign principal's session control is denied and the owner con
     const owner = await consoleCaller(runtime, "p08-owner");
     const observer = await platformConnection(runtime);
     const offerIterator = observer.subscribe(
-      `${owner.session.inboxPrefix}.>`,
+      `${owner.observed.inboxPrefix}.>`,
     )[Symbol.asyncIterator]();
     await observer.flush();
 
@@ -247,16 +256,21 @@ Deno.test("P08 a foreign principal's session control is denied and the owner con
 
     // A different Console principal signs a close control for the owner session.
     const intruder = await consoleCaller(runtime, "p08-intruder");
+    const intruderSession = await issueRawClientConnection(
+      runtime,
+      intruder.key,
+      intruder.observed.loginSessionId,
+    );
     const intruderNats = await connect({
       servers: runtime.natsUrl,
-      authenticator: intruder.session.authenticator,
+      authenticator: intruderSession.authenticator,
     });
     try {
-      const intruderInbox = `${intruder.session.inboxPrefix}.p08`;
+      const intruderInbox = `${intruderSession.inboxPrefix}.p08`;
       const control = closeControlBody(offer.sessionId);
       intruderNats.publish(offer.controlSubject, control, {
         headers: await signedHeaders(
-          intruder.session,
+          intruderSession,
           offer.controlSubject,
           intruderInbox,
           control,
