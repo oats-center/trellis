@@ -340,6 +340,7 @@ async fn resolve_lock(root: &Path, manifest: &ProjectManifest) -> Result<Project
     let mut stack = BTreeSet::new();
     let resolution = resolve_package(
         root,
+        root,
         manifest,
         LockedSource::Path { path: ".".into() },
         &mut stack,
@@ -353,6 +354,7 @@ async fn resolve_lock(root: &Path, manifest: &ProjectManifest) -> Result<Project
 }
 
 fn resolve_package<'a>(
+    root: &'a Path,
     package_root: &'a Path,
     manifest: &'a ProjectManifest,
     source: LockedSource,
@@ -370,18 +372,24 @@ fn resolve_package<'a>(
         for (alias, dependency) in &manifest.dependencies {
             let (child_root, child_source, pulled) = if let Some(path) = &dependency.path {
                 let child = package_root.join(path).canonicalize().into_diagnostic()?;
-                let relative = match &source {
-                    LockedSource::Path { path: package_path } => Path::new(package_path)
-                        .join(path)
-                        .to_string_lossy()
-                        .into_owned(),
-                    LockedSource::Registry { .. } => {
-                        return Err(miette!(
-                            "registry package '{}' contains a path dependency",
-                            manifest.package.name
-                        ));
-                    }
-                };
+                if matches!(&source, LockedSource::Registry { .. }) {
+                    return Err(miette!(
+                        "registry package '{}' contains a path dependency",
+                        manifest.package.name
+                    ));
+                }
+                // Record the canonical dependency location relative to the
+                // project root, so the same local package reached through
+                // different dependency edges records one exact source.
+                let relative = pathdiff::diff_paths(&child, root)
+                    .ok_or_else(|| {
+                        miette!(
+                            "local dependency {} cannot be expressed relative to the project root",
+                            child.display()
+                        )
+                    })?
+                    .to_string_lossy()
+                    .into_owned();
                 (child, LockedSource::Path { path: relative }, None)
             } else {
                 let registry = dependency
@@ -437,7 +445,7 @@ fn resolve_package<'a>(
                         .collect(),
                 }
             } else {
-                resolve_package(&child_root, &child_manifest, child_source, stack).await?
+                resolve_package(root, &child_root, &child_manifest, child_source, stack).await?
             };
             direct.push(LockedDependency {
                 name: dependency.package.clone(),
