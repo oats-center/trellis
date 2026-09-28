@@ -47,6 +47,11 @@ Dependency commands:
 
 Dependencies reference local or OCI native source packages. Remote locks pin
 release and digests; credentials use the Docker credential configuration.
+If a participant declares a durable `consumer`, add a direct `trellis` source
+package dependency containing `trellis.events@v1` and choose its version in
+`trellis.toml`. Run `trellis update` to lock it. Compilation fails if the
+dependency or the Events API is missing; the platform does not choose a version
+for the contract owner.
 Installation validates exact remote APIs in the global content-addressed OCI
 cache, without a project-local installation tree. Direct local dependencies
 contribute only requested APIs compiled from their own IDL, without recursively

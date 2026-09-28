@@ -1323,6 +1323,26 @@ fn resolve_participant(
     let mut resources = BTreeMap::new();
     for resource in &raw.resources {
         let definition = resolve_resource(resource, kind, source, scope, root)?;
+        if matches!(definition, ResourceDefinition::Consumer { .. }) {
+            let trellis = PackageId::new("trellis");
+            if scope.package != &trellis && !root.dependencies.contains_key(&trellis) {
+                return Err(miette!(
+                    "consumer '{}' requires a direct dependency on the trellis package containing trellis.events@v1; add trellis to trellis.toml and update trellis.lock",
+                    resource.name
+                ));
+            }
+            let apis = if scope.package == &trellis {
+                &root.apis
+            } else {
+                &scope.dependencies[&trellis].apis
+            };
+            if !apis.contains_key(&ApiId::new("trellis.events@v1")) {
+                return Err(miette!(
+                    "consumer '{}' requires trellis.events@v1 in the selected trellis package",
+                    resource.name
+                ));
+            }
+        }
         if resources
             .insert(ResourceName::new(&resource.name), definition)
             .is_some()

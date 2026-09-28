@@ -16,6 +16,8 @@ runtimes, including Deno; JSR publication remains supported.
 Author native IDL, run `trellis update` after dependency changes, and run
 `trellis generate` after IDL changes. Set `[package]`, `[sources]`, and
 `[generate.typescript].output` in `trellis.toml`.
+For a durable `consumer`, declare a direct `trellis` source package dependency
+containing `trellis.events@v1`; select and lock its version before generation.
 
 Import `apis` and `participants` from that one ordinary local package, for
 example `import { participants } from "orders-trellis"` and the generated

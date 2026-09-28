@@ -100,6 +100,11 @@ authoring has events, concurrency, replay, and retry—never ordering, ack-wait,
 max-delivery, or DLQ switches. Job progress, logs, and dead lifecycle are always
 available rather than feature flags.
 
+A participant declaring a Consumer requires a direct dependency on the `trellis`
+source package containing `trellis.events@v1`. The author chooses and locks that
+package version; the compiler rejects a missing dependency or a selected package
+without the Events API before runtime binding resolution.
+
 Job resources may declare a positive creation-relative `deadline` and a `retry`
 block with positive total `attempts` and exactly `attempts - 1` positive,
 ordered `backoff` durations. `attempts 1` requires `backoff []`. Omitting retry

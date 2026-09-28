@@ -37,6 +37,8 @@ installed release.
 1. Author the `.trellis` files explicitly listed by `[sources]`.
 2. Set `[package]`, `[dependencies]`, and language outputs in `trellis.toml`;
    run `trellis update` to resolve changes into `trellis.lock`.
+   A durable `consumer` needs a direct `trellis` package dependency containing
+   `trellis.events@v1`; choose its version explicitly.
 3. Run `trellis install` to reproduce locked dependencies and `trellis generate`
    after IDL edits. `trellis generate --watch` supports the edit loop.
 4. Depend on the one ordinary generated package for your language. Import its

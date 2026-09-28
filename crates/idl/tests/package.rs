@@ -3,8 +3,8 @@
 use semver::Version;
 use std::{collections::BTreeMap, path::PathBuf};
 use trellis_idl::project::{
-    Dependency, GenerateConfig, LockedDependency, LockedPackage, LockedSource, PackageLock,
-    PackageManifest, PackageMetadata,
+    load_sources, read_manifest, Dependency, GenerateConfig, LockedDependency, LockedPackage,
+    LockedSource, PackageLock, PackageManifest, PackageMetadata,
 };
 use trellis_idl::{
     canonical_package, capability_consent_digest, compare_implementation, compare_resource,
@@ -415,18 +415,36 @@ fn marks_only_direct_recursive_model_edges() {
 
 #[test]
 fn resolves_kind_specific_resources_and_one_companion() {
+    let trellis_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime");
+    let trellis_manifest = read_manifest(&trellis_root.join("trellis.toml")).unwrap();
+    let trellis = compile_project(
+        &trellis_manifest,
+        load_sources(&trellis_root, &trellis_manifest).unwrap(),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let mut manifest = manifest(&[
+        ("types", "types.trellis"),
+        ("api", "api.trellis"),
+        ("resources", "resources.trellis"),
+    ]);
+    manifest.dependencies.insert(
+        "platform".into(),
+        Dependency {
+            package: "trellis".into(),
+            version: None,
+            path: Some("../runtime".into()),
+            registry: None,
+        },
+    );
     let graph = compile_project(
-        &manifest(&[
-            ("types", "types.trellis"),
-            ("api", "api.trellis"),
-            ("resources", "resources.trellis"),
-        ]),
+        &manifest,
         vec![
             source("types", "types.trellis", TYPES),
             source("api", "api.trellis", API),
             source("resources", "resources.trellis", RESOURCES),
         ],
-        BTreeMap::new(),
+        BTreeMap::from([("platform".into(), trellis.clone())]),
     )
     .unwrap();
 
@@ -449,12 +467,45 @@ fn resolves_kind_specific_resources_and_one_companion() {
     let presentation =
         canonical_package(&graph, graph.root(), CanonicalMode::Presentation).unwrap();
     let round_trip = compile_project(
-        &manifest(&[("canonical", "canonical.trellis")]),
+        &PackageManifest {
+            sources: BTreeMap::from([("canonical".into(), "canonical.trellis".into())]),
+            dependencies: BTreeMap::from([(
+                "d0".into(),
+                manifest.dependencies["platform"].clone(),
+            )]),
+            ..manifest
+        },
         vec![source("canonical", "canonical.trellis", &presentation)],
-        BTreeMap::new(),
+        BTreeMap::from([("d0".into(), trellis)]),
     )
     .unwrap();
     assert_eq!(round_trip.root_digest(), graph.root_digest());
+}
+
+#[test]
+fn consumer_requires_explicit_trellis_events_dependency() {
+    let error = compile_project(
+        &manifest(&[("api", "api.trellis")]),
+        vec![source(
+            "api",
+            "api.trellis",
+            r#"model Value {}
+api orders@v1 {
+  title "Orders"; description "Orders";
+  event Changed { payload Value; }
+  capabilities { public { allows { publish event Changed; subscribe event Changed; } } }
+}
+service Worker {
+  consumer changes {
+    title "Changes"; description "Processes changes";
+    events [orders.Changed]; concurrency 1; replay new;
+  }
+}"#,
+        )],
+        BTreeMap::new(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("trellis.events@v1"), "{error}");
 }
 
 #[test]

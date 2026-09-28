@@ -9,6 +9,8 @@ domain types, DI pattern, logging setup, or test framework.
 Author native IDL and set `[package]`, `[sources]`, and `[generate.rust].output`
 in `trellis.toml`. `trellis generate` is offline after dependencies are
 available in the global validated source-package cache.
+A durable `consumer` requires a direct `trellis` source package dependency
+containing `trellis.events@v1`; select and lock its version before generation.
 
 The output is one ordinary crate at the source package version, with
 `orders_trellis::apis::<api>` and `orders_trellis::participants::<participant>`
