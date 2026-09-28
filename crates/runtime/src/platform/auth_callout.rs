@@ -794,7 +794,6 @@ impl CalloutProcessor {
                     .instance_id
                     .clone(),
                 context_digest: verified_context.context_digest().to_owned(),
-                transport_authorization: admitted_policy.clone(),
                 transport_authorization_digest: admitted_policy_digest,
                 attachment_state: AuthAttachmentState::Pending,
                 pending_deadline: Some(
