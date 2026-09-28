@@ -676,8 +676,11 @@ impl Client {
             .client
             .bound_key_subject("rpc", D::API_ID, D::KEY)
             .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))?;
-        self.ensure_transport(&[route.clone()], &[self.response_inbox_pattern()])
-            .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))?;
+        self.ensure_transport(
+            std::slice::from_ref(&route),
+            &[self.response_inbox_pattern()],
+        )
+        .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))?;
         let input = input.encode().map_err(|error| {
             crate::client::CallError::Protocol(crate::client::ProtocolError::new(error.to_string()))
         })?;
