@@ -36,6 +36,7 @@
   import { getTrellis } from "$lib/trellis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { classifyMutationError } from "$lib/console/mutation.ts";
+  import { decodeKnownJsonBytes } from "$lib/console/display_value.ts";
 
   const trellis = getTrellis();
   const authority = getConsoleAuthority();
@@ -67,6 +68,10 @@
   let confirmationModal: ConfirmationModal | undefined = $state();
 
   const job = $derived(inspection?.job);
+  const decodedPayload = $derived(decodeKnownJsonBytes(job?.payload));
+  const payloadValue = $derived(decodedPayload.ok ? decodedPayload.value : job?.payload);
+  const decodedResult = $derived(decodeKnownJsonBytes(job?.result));
+  const resultValue = $derived(decodedResult.ok ? decodedResult.value : job?.result);
   const attempts = $derived(inspection?.attempts ?? []);
   const errors = $derived(inspection?.errors ?? []);
   const related = $derived(inspection?.related ?? []);
@@ -666,7 +671,7 @@
                     class="btn btn-ghost btn-xs"
                     aria-label="Copy result"
                     disabled={job.result === undefined || job.result === null}
-                    onclick={() => void copyText("job-result", job.result)}
+                    onclick={() => void copyText("job-result", resultValue)}
                   >
                     {copyFlash === "job-result" ? "Copied" : "Copy"}
                   </button>
@@ -728,7 +733,7 @@
                   {/each}
                 </ul>
               {:else if job.result !== undefined && job.result !== null}
-                <JsonTree value={job.result} initiallyExpanded={true} maxDepth={4} />
+                <JsonTree value={resultValue} initiallyExpanded={true} maxDepth={4} />
               {:else}
                 <p class="text-xs text-base-content/60">No result recorded.</p>
               {/if}
@@ -742,13 +747,13 @@
                 class="btn btn-ghost btn-xs"
                 aria-label="Copy payload"
                 disabled={job.payload === undefined || job.payload === null}
-                onclick={() => void copyText("job-payload", job.payload)}
+                onclick={() => void copyText("job-payload", payloadValue)}
               >
                 {copyFlash === "job-payload" ? "Copied" : "Copy"}
               </button>
             {/snippet}
             {#if job.payload !== undefined && job.payload !== null}
-              <JsonTree value={job.payload} initiallyExpanded={true} maxDepth={4} />
+              <JsonTree value={payloadValue} initiallyExpanded={true} maxDepth={4} />
             {:else}
               <p class="text-xs text-base-content/60">No payload recorded.</p>
             {/if}

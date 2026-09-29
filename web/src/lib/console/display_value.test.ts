@@ -100,6 +100,28 @@ Deno.test("U10 known JSON-byte decoder distinguishes malformed inputs", () => {
   equal(decodeKnownJsonBytes("not-bytes").ok, false);
 });
 
+Deno.test("JSON byte payloads retain nested values and JSON primitives for display and copy", () => {
+  for (
+    const value of [
+      { nested: ["日本語", false, null, 42] },
+      [1, 2],
+      null,
+      false,
+      0,
+      "",
+    ]
+  ) {
+    const decoded = decodeKnownJsonBytes(
+      new TextEncoder().encode(JSON.stringify(value)),
+    );
+    equal(decoded.ok, true);
+    if (decoded.ok) {
+      deepEqual(decoded.value, value);
+      deepEqual(JSON.parse(displayJson(decoded.value)), value);
+    }
+  }
+});
+
 Deno.test("U12 error projection keeps code and id without private details", () => {
   const generated = projectConsoleError({
     id: "err_123",
