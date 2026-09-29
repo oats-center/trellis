@@ -24,6 +24,19 @@ const OAUTH_STATE_BUCKET: &str = "trellis_auth_oauth_states";
 #[cfg(feature = "nats-leases")]
 const CONNECTIONS_BUCKET: &str = "trellis_auth_connections";
 
+/// Authoritative physical materialization of the Auth runtime's own KV buckets.
+///
+/// The bucket name, history, retention, and value ceiling are exactly the values
+/// used to open or create each store in [`NatsAuthEphemeralRepository::ensure`].
+/// Builtin initialization records these same facts as the present
+/// `auth_resources` materialization instead of inventing separate hard values.
+#[cfg(feature = "nats-leases")]
+pub(crate) const AUTH_KV_MATERIALIZATION: [(&str, &str, u64, u64, u32); 3] = [
+    ("browserFlows", BROWSER_FLOW_BUCKET, 1, 86_400_000, 65_536),
+    ("oauthStates", OAUTH_STATE_BUCKET, 1, 900_000, 16_384),
+    ("connections", CONNECTIONS_BUCKET, 1, 0, 16_384),
+];
+
 /// Browser authentication flow kind.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1100,28 +1113,27 @@ mod nats {
             client: async_nats::Client,
         ) -> Result<Self, AuthorizationStateError> {
             let jetstream = jetstream::new(client);
-            let browser_flows = open_or_create(
-                &jetstream,
-                BROWSER_FLOW_BUCKET,
-                Duration::from_millis(86_400_000),
-                65_536,
-            )
-            .await?;
-            let oauth_states = open_or_create(
-                &jetstream,
-                OAUTH_STATE_BUCKET,
-                Duration::from_millis(900_000),
-                16_384,
-            )
-            .await?;
-            // Active attachment records are retained until the broker confirms
-            // the attachment is gone; they must not be TTL-evicted.
-            let connections =
-                open_or_create(&jetstream, CONNECTIONS_BUCKET, Duration::ZERO, 16_384).await?;
+            // One loop over the authoritative materialization keeps the opened
+            // physical stores and the recorded builtin facts from drifting apart.
+            let mut stores = Vec::with_capacity(AUTH_KV_MATERIALIZATION.len());
+            for (_, bucket, history, ttl_ms, max_value_size) in AUTH_KV_MATERIALIZATION {
+                stores.push(
+                    open_or_create(
+                        &jetstream,
+                        bucket,
+                        history as i64,
+                        Duration::from_millis(ttl_ms),
+                        max_value_size as i32,
+                    )
+                    .await?,
+                );
+            }
+            // Active attachment records are retained until the broker confirms the
+            // attachment is gone, which is why `connections` carries a zero window.
             Ok(Self {
-                browser_flows,
-                oauth_states,
-                connections,
+                browser_flows: stores.remove(0),
+                oauth_states: stores.remove(0),
+                connections: stores.remove(0),
             })
         }
 
@@ -1130,21 +1142,14 @@ mod nats {
             client: async_nats::Client,
         ) -> Result<(), AuthorizationStateError> {
             let jetstream = jetstream::new(client);
-            for (bucket, max_age, max_value_size) in [
-                (
-                    BROWSER_FLOW_BUCKET,
-                    Duration::from_millis(86_400_000),
-                    65_536,
-                ),
-                (OAUTH_STATE_BUCKET, Duration::from_millis(900_000), 16_384),
-                (CONNECTIONS_BUCKET, Duration::ZERO, 16_384),
-            ] {
+            for (_, bucket, _, ttl_ms, max_value_size) in AUTH_KV_MATERIALIZATION {
                 let store = jetstream.get_key_value(bucket).await.map_err(|error| {
                     storage(format!(
                         "required auth KV bucket {bucket} is missing: {error}"
                     ))
                 })?;
-                validate_bucket(&store, max_age, max_value_size).await?;
+                validate_bucket(&store, Duration::from_millis(ttl_ms), max_value_size as i32)
+                    .await?;
             }
             Ok(())
         }
@@ -1342,12 +1347,13 @@ mod nats {
     async fn open_or_create(
         jetstream: &jetstream::Context,
         bucket: &str,
+        history: i64,
         max_age: Duration,
         max_value_size: i32,
     ) -> Result<kv::Store, AuthorizationStateError> {
         let config = kv::Config {
             bucket: bucket.to_owned(),
-            history: 1,
+            history,
             max_age,
             max_value_size,
             ..Default::default()

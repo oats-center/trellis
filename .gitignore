@@ -75,6 +75,7 @@ xtask/Cargo.lock
 /ts/packages/trellis-testkit/trellis/
 /integration/fixtures/runtime/crates/runtime-trellis/
 /integration/fixtures/runtime/packages/runtime-trellis/
+/integration/fixtures/runtime-pinned/packages/runtime-trellis/
 /demos/rust/service/trellis/
 /demos/rust/device/trellis/
 /demos/ts/service/trellis/

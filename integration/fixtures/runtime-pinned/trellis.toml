@@ -1,0 +1,12 @@
+[package]
+name = "runtime-trellis"
+version = "0.100.0"
+
+[sources]
+runtime = "contract.trellis"
+
+[generate.typescript]
+output = "packages/runtime-trellis"
+
+[dependencies]
+trellis = { package = "trellis", path = "../../../crates/runtime" }
