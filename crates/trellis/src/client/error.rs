@@ -295,6 +295,12 @@ pub enum TrellisClientError {
     #[error("authorization evidence unavailable: {0}")]
     AuthorizationUnavailable(String),
 
+    /// No admitted physical transport could serve the request: the logical
+    /// connection is closed, no generation is reachable, or automatic transport
+    /// adoption did not complete. Distinct from authorization unavailability.
+    #[error("transport unavailable: {0}")]
+    TransportUnavailable(String),
+
     /// A granted capability's broker subjects are not yet admitted on the
     /// current physical attachment. This is a transport condition, not a
     /// permission denial: the application may adopt it with an explicit

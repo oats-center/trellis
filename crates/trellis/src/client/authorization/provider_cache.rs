@@ -1792,7 +1792,7 @@ mod retired_watch_tests {
             "genuine revocation suspends the active own installation"
         );
         assert!(
-            own.transport_credentials().is_err(),
+            own.own_transport_snapshot().is_err(),
             "the revoked digest is not presented to the transport"
         );
     }

@@ -636,16 +636,6 @@ impl AuthorizationContextCache {
     /// retries with the next verified snapshot. It never waits for refresh
     /// completion or for the explicit transport-refresh owner, which would be
     /// waiting on the very admission this attempt is authenticating.
-    pub(crate) fn next_connect_credentials(&self) -> Result<(String, String), TrellisClientError> {
-        match self.transport_credentials() {
-            Ok(credentials) => Ok(credentials),
-            Err(error) => {
-                self.request_refresh();
-                Err(error)
-            }
-        }
-    }
-
     pub(crate) fn request_coverage_reconciliation(&self) {
         self.request_reconciliation(false);
     }
@@ -701,79 +691,41 @@ impl AuthorizationContextCache {
         ))
     }
 
-    pub(crate) fn transport_credentials(&self) -> Result<(String, String), TrellisClientError> {
-        let candidate = {
-            let candidate = self.candidate.read().map_err(|_| {
-                TrellisClientError::Bootstrap("context candidate lock poisoned".into())
-            })?;
-            candidate.as_ref().map(|candidate| {
-                (
-                    candidate.routing.bootstrap_jwt.clone(),
-                    candidate.routing.bootstrap_jwt_expires_at,
-                    candidate.current.context_digest.clone(),
-                    candidate.current.not_before,
-                    candidate.current.expires_at,
-                    candidate.server_clock_offset_ms,
-                )
-            })
-        };
-        if let Some((jwt, jwt_expires_at, digest, not_before, expires_at, offset)) = candidate {
-            let now = system_now_millis()?
-                .checked_add(offset)
-                .ok_or_else(|| TrellisClientError::Bootstrap("context time overflow".into()))?
-                .div_euclid(1000);
-            if jwt_expires_at <= now || not_before > now || expires_at <= now {
-                return Err(TrellisClientError::Bootstrap(
-                    "authorization candidate credential expired".into(),
-                ));
-            }
-            if self.is_revoked(&digest) {
-                return Err(TrellisClientError::AuthorizationUnavailable(
-                    "authorization candidate is revoked".into(),
-                ));
-            }
-            return Ok((jwt, digest));
-        }
-        let (routing_jwt, routing_expires_at, digest, not_before, expires_at, offset) = {
-            let state = self
-                .state
-                .read()
-                .map_err(|_| TrellisClientError::Bootstrap("context cache lock poisoned".into()))?;
-            let current = state.current.as_ref().ok_or_else(|| {
-                TrellisClientError::Bootstrap("authorization context is not installed".into())
-            })?;
-            let routing = state.routing.as_ref().ok_or_else(|| {
-                TrellisClientError::Bootstrap("authorization routing JWT unavailable".into())
-            })?;
-            (
-                routing.bootstrap_jwt.clone(),
-                routing.bootstrap_jwt_expires_at,
-                current.context_digest.clone(),
-                current.not_before,
-                current.expires_at,
-                state.server_clock_offset_ms,
-            )
-        };
+    /// Validate the promoted context's routing credential and return it with the
+    /// exact digest it belongs to.
+    fn validated_promoted_transport(
+        &self,
+        state: &CachedAuthorizationState,
+    ) -> Result<(String, String), TrellisClientError> {
+        let current = state.current.as_ref().ok_or_else(|| {
+            TrellisClientError::Bootstrap("authorization context is not installed".into())
+        })?;
+        let routing = state.routing.as_ref().ok_or_else(|| {
+            TrellisClientError::Bootstrap("authorization routing JWT unavailable".into())
+        })?;
         let now = system_now_millis()?
-            .checked_add(offset)
+            .checked_add(state.server_clock_offset_ms)
             .ok_or_else(|| TrellisClientError::Bootstrap("context time overflow".into()))?
             .div_euclid(1000);
-        if routing_expires_at <= now {
+        if routing.bootstrap_jwt_expires_at <= now {
             return Err(TrellisClientError::Bootstrap(
                 "authorization routing JWT expired".into(),
             ));
         }
-        if not_before > now || expires_at <= now {
+        if current.not_before > now || current.expires_at <= now {
             return Err(TrellisClientError::Bootstrap(
                 "authorization context expired".into(),
             ));
         }
-        if self.is_revoked(&digest) {
+        if self.is_revoked(&current.context_digest) {
             return Err(TrellisClientError::AuthorizationUnavailable(
                 "authorization context is revoked".into(),
             ));
         }
-        Ok((routing_jwt, digest))
+        Ok((
+            routing.bootstrap_jwt.clone(),
+            current.context_digest.clone(),
+        ))
     }
 
     pub(crate) fn runtime_binding(
@@ -840,6 +792,30 @@ impl AuthorizationContextCache {
             .read()
             .map(|state| state.clone())
             .map_err(|_| TrellisClientError::Bootstrap("context cache lock poisoned".into()))
+    }
+
+    /// Read the promoted context's digest, transport policy, runtime, and route
+    /// credential from one snapshot so a transport generation correlates its
+    /// CONNECT credential with the policy it records as admitted.
+    pub(crate) fn own_transport_snapshot(
+        &self,
+    ) -> Result<super::types::OwnTransportSnapshot, TrellisClientError> {
+        let state = self.state_snapshot()?;
+        let (routing_jwt, context_digest) = self.validated_promoted_transport(&state)?;
+        let current = state.current.ok_or_else(|| {
+            TrellisClientError::AuthorizationUnavailable("authorization context unavailable".into())
+        })?;
+        let context = trellis_protocol::parse_authorization_context(&current.bundle.context)
+            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
+        let runtime = state.runtime.ok_or_else(|| {
+            TrellisClientError::AuthorizationUnavailable("authorization runtime unavailable".into())
+        })?;
+        Ok(super::types::OwnTransportSnapshot {
+            context_digest,
+            policy: context.unsigned.transport_authorization,
+            runtime,
+            routing_jwt,
+        })
     }
 
     pub(crate) fn availability(&self) -> crate::generated::AvailabilitySnapshot {

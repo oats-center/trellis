@@ -676,11 +676,10 @@ impl Client {
             .client
             .bound_key_subject("rpc", D::API_ID, D::KEY)
             .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))?;
-        self.ensure_transport(
-            std::slice::from_ref(&route),
-            &[self.response_inbox_pattern()],
-        )
-        .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))?;
+        // The runtime transport layer acquires an admitted generation for this
+        // exact route and inbox, waiting for automatic adoption when the
+        // capability is granted but not yet admitted. A route current authority
+        // does not grant falls through to the ordinary broker decision.
         let input = input.encode().map_err(|error| {
             crate::client::CallError::Protocol(crate::client::ProtocolError::new(error.to_string()))
         })?;

@@ -16,6 +16,7 @@ mod proof;
 mod resources;
 mod subject;
 mod transfer;
+mod transport_generations;
 
 pub use auth::SessionAuth;
 pub(crate) use authorization::AuthorizationContextLease;
@@ -82,5 +83,6 @@ pub use transfer::{
     download_transfer_grant_from_value, DownloadTransferDirection, DownloadTransferGrant, FileInfo,
     TransferCancellation, TransferGrantType, UploadTransferDirection, UploadTransferGrant,
 };
+pub(crate) use transport_generations::{TransportGenerationManager, TransportLease};
 #[cfg(test)]
 mod tests;

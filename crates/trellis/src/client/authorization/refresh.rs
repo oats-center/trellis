@@ -71,6 +71,9 @@ pub(crate) struct AuthorizationRefreshRuntime {
     /// after every in-place promotion so an upgrade notice reflects the newest
     /// application policy without a new broker read.
     pub(crate) transport: super::transport::TransportAuthorizationState,
+    /// Connection-owned automatic transport generations, notified after every
+    /// promotion so an effective policy change can open the newest generation.
+    pub(crate) generations: crate::client::TransportGenerationManager,
 }
 
 /// Obtain or renew connection authority using only the owner credential and proof.
@@ -262,6 +265,9 @@ pub(crate) async fn install_prepared_authorization(
         .provider
         .finalize_own_installation(&candidate_digest, true)?;
     runtime.recompute_transport_notice();
+    // Wake the single adoption worker; it decides whether the new policy needs a
+    // wider generation or is a routine renewal with no physical change.
+    runtime.generations.authorization_promoted();
     Ok(candidate_digest)
 }
 
@@ -311,6 +317,9 @@ pub(crate) fn spawn_authorization_context_refresh_task(
                             match runtime.provider.finalize_own_installation(&digest, promote) {
                                 Ok(()) => {
                                     runtime.recompute_transport_notice();
+                                    if promote {
+                                        runtime.generations.authorization_promoted();
+                                    }
                                     continue;
                                 }
                                 Err(error) => {

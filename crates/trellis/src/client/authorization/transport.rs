@@ -242,15 +242,7 @@ impl TransportAuthorizationState {
         subscribe: &[String],
         now_unix_seconds: i64,
     ) -> Result<bool, TrellisClientError> {
-        let need = TransportAuthorizationV1 {
-            format: TRANSPORT_AUTHORIZATION_FORMAT_V1.to_owned(),
-            account: admitted.account.clone(),
-            publish_allow: canonical_patterns(publish),
-            subscribe_allow: canonical_patterns(subscribe),
-            response: admitted.response.clone(),
-            hard_expires_at: admitted.hard_expires_at,
-        };
-        Ok(need.classify(admitted, now_unix_seconds)? != TransportPolicyClass::ReductionRequired)
+        policy_covers(admitted, publish, subscribe, now_unix_seconds)
     }
 
     /// Whether `required` is a granted capability the current attachment has not
@@ -390,6 +382,32 @@ impl ResourceTransportGate {
             .unwrap_or(0);
         self.state.requires_upgrade(&[marker], &[], now)
     }
+}
+
+/// Whether admitted policy `A` covers the exact subjects a requirement needs.
+///
+/// The response allowance and hard deadline are copied from `A` so this answers
+/// a pure subject-coverage question about the same account; it never claims
+/// authority the attachment did not admit.
+///
+/// # Errors
+///
+/// Returns [`TrellisClientError::Protocol`] when a policy is malformed.
+pub(crate) fn policy_covers(
+    admitted: &TransportAuthorizationV1,
+    publish: &[String],
+    subscribe: &[String],
+    now_unix_seconds: i64,
+) -> Result<bool, TrellisClientError> {
+    let need = TransportAuthorizationV1 {
+        format: TRANSPORT_AUTHORIZATION_FORMAT_V1.to_owned(),
+        account: admitted.account.clone(),
+        publish_allow: canonical_patterns(publish),
+        subscribe_allow: canonical_patterns(subscribe),
+        response: admitted.response.clone(),
+        hard_expires_at: admitted.hard_expires_at,
+    };
+    Ok(need.classify(admitted, now_unix_seconds)? != TransportPolicyClass::ReductionRequired)
 }
 
 #[cfg(test)]
