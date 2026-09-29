@@ -58,7 +58,16 @@ type Attachment = {
   runtimeConnectionId: string;
   contextDigest: string;
   participantId: string;
+  connectedAt: bigint;
 };
+
+/**
+ * The server-side pending-admission window (the Auth Callout's
+ * `ADMISSION_PENDING_MS`) during which a written attachment record is not yet
+ * considered confirmed. A retained attachment must outlive this window before
+ * enforcement can rely on it.
+ */
+const PENDING_ADMISSION_MS = 60_000;
 
 /** Reads the admitted attachments for one participant. */
 async function attachmentsFor(
@@ -248,7 +257,9 @@ Deno.test("F3 an unadopted grant withdraws without touching the socket", async (
  *
  * The raw client is admitted through the production Auth Callout on a real
  * user login and never processes Trellis change hints, so only server-side
- * enforcement can remove it. After an administrative reduction the broker must
+ * enforcement can remove it. It must first survive broker inventory
+ * reconciliation and its pending-admission window while remaining represented
+ * in `Auth.Connections.List`; after an administrative reduction the broker must
  * drop the old attachment, and a fresh connection must not regain the removed
  * permission.
  */
@@ -307,12 +318,34 @@ Deno.test("F4 revocation removes an uncooperative raw user attachment", async ()
         raw.contextDigest !== observed.contextDigest,
         "the raw connection is its own logical connection",
       );
-      await runtime.waitFor(async () => {
+      const admitted = await runtime.waitFor(async () => {
         const items = await attachmentsFor(runtime, participantId);
-        return items.some((item) =>
+        return items.find((item) =>
           item.runtimeConnectionId === raw.connectionId
-        );
+        ) ?? false;
       }, { timeoutMs: 60_000 });
+
+      // Keep the raw attachment alive across broker inventory reconciliation
+      // and its pending-admission window: a record that confirmation could not
+      // yet settle must still be tracked so later enforcement can reach it.
+      // Every poll re-asserts that the socket is still open and still
+      // represented, so a spurious drop keeps failing until this bounded wait
+      // expires rather than surfacing silently at the reduction below.
+      const rawSocket = rawNats;
+      await runtime.waitFor(async () => {
+        assert(
+          !rawSocket.isClosed(),
+          "the raw socket must stay connected across reconciliation",
+        );
+        assert(
+          (await attachmentsFor(runtime, participantId)).some((item) =>
+            item.runtimeConnectionId === raw.connectionId
+          ),
+          "the raw attachment must stay represented across reconciliation",
+        );
+        return Date.now() - Number(admitted.connectedAt) >=
+          PENDING_ADMISSION_MS;
+      }, { timeoutMs: PENDING_ADMISSION_MS + 30_000, intervalMs: 5_000 });
 
       // Strip the caller's binding to a single retained atom.
       const binding = await grantBinding(runtime, participantId);
