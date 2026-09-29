@@ -31,6 +31,7 @@ pub use transport::{
 };
 pub use transport::{resource_action_marker, ResourceTransportGate};
 pub(crate) use transport::{ResourceTransportAction, ResourceTransportKind};
+pub(super) use types::AuthorizationCredential;
 #[cfg(feature = "runtime-internals")]
 pub use types::AuthorizationRegistryBinding;
 pub use types::{
@@ -38,4 +39,3 @@ pub use types::{
     AuthorizationInstallation, AuthorizationNativeTransport, AuthorizationRoutingMaterial,
     AuthorizationRuntimeBinding, AuthorizationRuntimeTransports,
 };
-pub(super) use types::{AuthorizationCredential, NativeCompanionCredential};

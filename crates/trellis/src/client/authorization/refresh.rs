@@ -102,7 +102,6 @@ pub(crate) async fn refresh(
             identity,
             package_evidence,
             participant_path,
-            companion,
         } => {
             request["identityKeyId"] = json!(identity.key_id());
             request["sessionKey"] = json!(auth.session_key);
@@ -110,30 +109,6 @@ pub(crate) async fn refresh(
             request["packageEvidence"] = serde_json::to_value(package_evidence)?;
             request["participantPath"] = json!(participant_path);
             request["packageDigest"] = json!(package_evidence.root_digest());
-            if let Some(companion) = companion {
-                let companion_connection_id = ulid::Ulid::new().to_string();
-                let companion_request_id = ulid::Ulid::new().to_string();
-                let (_, companion_session_key) = crate::auth::generate_session_keypair();
-                let digest = trellis_protocol::digest_json(&json!({
-                    "format": "trellis.device.user-companion.v1",
-                    "origin": cache.http().origin(),
-                    "identityKeyId": identity.key_id(),
-                    "participantId": companion.participant_id,
-                    "connectionId": companion_connection_id,
-                    "requestId": companion_request_id,
-                    "issuedAt": issued_at,
-                    "sessionKey": companion_session_key,
-                }))
-                .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
-                let digest = crate::client::proof::base64url_decode(&digest)?;
-                request["companion"] = json!({
-                    "connectionId": companion_connection_id,
-                    "requestId": companion_request_id,
-                    "issuedAt": issued_at,
-                    "sessionKey": companion_session_key,
-                    "proof": companion.installation.sign_bytes(&digest),
-                });
-            }
             let input = NativeBootstrapSessionProofInput {
                 origin: cache.http().origin(),
                 unsigned_request: request.clone(),

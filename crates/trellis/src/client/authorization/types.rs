@@ -42,17 +42,11 @@ pub(crate) enum AuthorizationCredential {
         identity: std::sync::Arc<super::super::SessionAuth>,
         package_evidence: crate::generated::PackageEvidence,
         participant_path: &'static str,
-        companion: Option<NativeCompanionCredential>,
     },
     User {
         login_session_id: String,
         installation: std::sync::Arc<super::super::SessionAuth>,
     },
-}
-
-pub(crate) struct NativeCompanionCredential {
-    pub(crate) participant_id: &'static str,
-    pub(crate) installation: std::sync::Arc<super::super::SessionAuth>,
 }
 
 /// NATS-backed context and revocation registry binding from the server.
