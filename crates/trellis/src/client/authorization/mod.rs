@@ -26,11 +26,11 @@ pub(crate) use refresh::install_prepared_authorization;
 pub(crate) use refresh::refresh_until_materialized;
 pub(crate) use refresh::spawn_authorization_context_refresh_task;
 pub(crate) use refresh::AuthorizationRefreshRuntime;
+pub use transport::resource_action_marker;
 pub(crate) use transport::{policy_covers, ResourceTransportAction, ResourceTransportKind};
 pub use transport::{
     read_own_admission, TransportAuthorizationState, TransportAuthorizationStatus,
 };
-pub use transport::{resource_action_marker, ResourceTransportGate};
 pub(super) use types::AuthorizationCredential;
 #[cfg(feature = "runtime-internals")]
 pub use types::AuthorizationRegistryBinding;

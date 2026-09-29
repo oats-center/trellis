@@ -351,6 +351,10 @@ pub struct LiveSubscription<T> {
     pub(crate) guard: Arc<super::authority::LiveAuthorityGuard>,
     /// One shared close result for repeated close calls.
     pub(crate) close_result: std::sync::Mutex<Option<LiveCloseReceipt>>,
+    /// Close-work lease slot. An explicit close or drop atomically takes it
+    /// into the exchange that owns it; the pump clears only a leftover slot on
+    /// natural terminal, so cleanup cannot steal an in-flight exchange's lease.
+    pub(crate) lease: Arc<std::sync::Mutex<Option<crate::client::TransportLease>>>,
 }
 
 impl<T> LiveSubscription<T> {
@@ -365,6 +369,7 @@ impl<T> LiveSubscription<T> {
         control: Arc<ConsumerControl>,
         cancellation: LiveCancellation,
         guard: Arc<super::authority::LiveAuthorityGuard>,
+        lease: Arc<std::sync::Mutex<Option<crate::client::TransportLease>>>,
     ) -> Self {
         Self {
             core,
@@ -374,6 +379,7 @@ impl<T> LiveSubscription<T> {
             activated: false,
             guard,
             close_result: std::sync::Mutex::new(None),
+            lease,
         }
     }
 
@@ -405,19 +411,28 @@ impl<T> LiveSubscription<T> {
     /// Repeated close calls share one exchange and receipt. The close keeps the
     /// session's actual cursors, not hard-coded zeros.
     pub async fn close(&mut self) -> Result<LiveCloseReceipt, TrellisClientError> {
-        self.cancellation.cancel();
         self.core.discard_queue();
         self.core.wake();
         if let Some(receipt) = self.close_result.lock().ok().and_then(|slot| slot.clone()) {
+            if let Ok(mut slot) = self.lease.lock() {
+                slot.take();
+            }
+            self.cancellation.cancel();
             return Ok(receipt);
         }
+        // Atomically take the close-work lease so the exchange owns it until it
+        // settles; the pump still holds its own independent lease, and its
+        // terminal cleanup only clears a leftover slot, never this local.
+        let lease = self.lease.lock().ok().and_then(|mut slot| slot.take());
         let receipt = self
             .control
             .begin_close(self.core.received_seq(), self.core.consumed_seq())
             .await;
+        drop(lease);
         if let Ok(mut slot) = self.close_result.lock() {
             *slot = Some(receipt.clone());
         }
+        self.cancellation.cancel();
         Ok(receipt)
     }
 
@@ -442,11 +457,19 @@ impl<T> Drop for LiveSubscription<T> {
         self.cancellation.cancel();
         self.core.discard_queue();
         self.core.wake();
+        // Take the close-work lease so the drop-triggered signed exchange owns
+        // it until it settles; the pump's independent lease is released when its
+        // aborted task ends, and its terminal cleanup only clears a leftover
+        // slot (already empty here).
+        let lease = self.lease.lock().ok().and_then(|mut slot| slot.take());
         // Remote cleanup is the ordinary signed bounded close exchange,
         // enqueued only when a runtime is already available. Dropping the pump
         // future immediately releases its admission and ingress.
-        self.control
-            .schedule_local_drop_cleanup(self.core.received_seq(), self.core.consumed_seq());
+        self.control.schedule_local_drop_cleanup(
+            self.core.received_seq(),
+            self.core.consumed_seq(),
+            lease,
+        );
         self._drain.abort();
     }
 }
@@ -635,7 +658,12 @@ impl ConsumerControl {
     ///
     /// Drop never creates a runtime and never blocks. When a runtime is already
     /// available the exact same signed close path used by `close()` runs on it.
-    pub(crate) fn schedule_local_drop_cleanup(&self, received: u64, consumed: u64) {
+    pub(crate) fn schedule_local_drop_cleanup(
+        &self,
+        received: u64,
+        consumed: u64,
+        lease: Option<crate::client::TransportLease>,
+    ) {
         if self.close_started.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -656,6 +684,8 @@ impl ConsumerControl {
             last_control_seq: AtomicU64::new(self.last_control_seq.load(Ordering::Acquire)),
         };
         handle.spawn(async move {
+            // Hold the observation's close lease for the whole bounded exchange.
+            let _lease = lease;
             let _ = control.begin_close(received, consumed).await;
         });
     }

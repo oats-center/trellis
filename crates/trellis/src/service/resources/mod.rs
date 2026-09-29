@@ -24,25 +24,6 @@ use super::{KvResourceBinding, ServerError, StoreResourceBinding};
 pub(crate) mod backend;
 use backend::{BoundKvResourceClient, BoundStoreResourceClient};
 
-pub(crate) trait ResourceRuntimeClient {
-    /// KV client type returned for a bound KV resource.
-    type Kv: KvResourceClient;
-    /// Object-store client type returned for a bound store resource.
-    type Store: StoreResourceClient;
-
-    /// Open the concrete KV bucket described by `binding`.
-    fn open_kv(
-        &self,
-        binding: &KvResourceBinding,
-    ) -> impl Future<Output = Result<Self::Kv, ServerError>> + Send;
-
-    /// Open the concrete object-store bucket described by `binding`.
-    fn open_store(
-        &self,
-        binding: &StoreResourceBinding,
-    ) -> impl Future<Output = Result<Self::Store, ServerError>> + Send;
-}
-
 /// Raw operations required by a typed bound KV resource handle.
 #[doc(hidden)]
 pub trait KvResourceClient: Clone + fmt::Debug + Send + Sync + 'static {
@@ -187,7 +168,6 @@ pub struct KvResourceHandle<T, C> {
     client: C,
     availability: tokio::sync::watch::Receiver<crate::generated::AvailabilitySnapshot>,
     generation: u64,
-    transport: Option<crate::client::ResourceTransportGate>,
 }
 
 impl<T, C: Clone> Clone for KvResourceHandle<T, C> {
@@ -199,7 +179,6 @@ impl<T, C: Clone> Clone for KvResourceHandle<T, C> {
             client: self.client.clone(),
             availability: self.availability.clone(),
             generation: self.generation,
-            transport: self.transport.clone(),
         }
     }
 }
@@ -232,7 +211,6 @@ where
         codec: crate::client::ResourceCodec<T>,
         client: C,
         availability: tokio::sync::watch::Receiver<crate::generated::AvailabilitySnapshot>,
-        transport: Option<crate::client::ResourceTransportGate>,
     ) -> Self {
         let resource_name = resource_name.into();
         let generation = availability
@@ -246,19 +224,7 @@ where
             client,
             availability,
             generation,
-            transport,
         }
-    }
-
-    /// Reject one operation whose granted transport is not yet admitted.
-    ///
-    /// A handle opened without a gate (a test-constructed backend) degrades to
-    /// broker enforcement, which remains authoritative.
-    fn ensure_transport(&self, action: crate::client::ResourceTransportAction) -> bool {
-        self.transport
-            .as_ref()
-            .and_then(|gate| gate.missing(action).ok())
-            .unwrap_or(false)
     }
 
     /// Contract-local resource alias used to open this handle.
@@ -451,23 +417,16 @@ where
         }
     }
 
-    /// Gate one read on both the current binding and admitted transport.
+    /// Gate one read on the current binding. Transport admission is acquired
+    /// per call by the bound backend, so no pre-flight transport gate remains.
     fn ensure_read(&self) -> Result<(), KvResourceReadError> {
-        self.ensure_current()?;
-        if self.ensure_transport(crate::client::ResourceTransportAction::Read) {
-            return Err(KvResourceReadError::TransportUpgradeRequired);
-        }
-        Ok(())
+        self.ensure_current()
     }
 
-    /// Gate one write on both the current binding and admitted transport.
+    /// Gate one write on the current binding.
     fn ensure_write(&self) -> Result<(), KvResourceWriteError<T>> {
         self.ensure_current()
-            .map_err(|_| KvResourceWriteError::Unavailable)?;
-        if self.ensure_transport(crate::client::ResourceTransportAction::Write) {
-            return Err(KvResourceWriteError::TransportUpgradeRequired);
-        }
-        Ok(())
+            .map_err(|_| KvResourceWriteError::Unavailable)
     }
 }
 
@@ -597,7 +556,6 @@ pub struct StoreResourceHandle<C> {
     client: C,
     availability: tokio::sync::watch::Receiver<crate::generated::AvailabilitySnapshot>,
     generation: u64,
-    transport: Option<crate::client::ResourceTransportGate>,
 }
 
 /// Options for waiting until an object appears in a bound object store.
@@ -629,7 +587,6 @@ where
         binding: StoreResourceBinding,
         client: C,
         availability: tokio::sync::watch::Receiver<crate::generated::AvailabilitySnapshot>,
-        transport: Option<crate::client::ResourceTransportGate>,
     ) -> Self {
         let resource_name = resource_name.into();
         let generation = availability
@@ -643,7 +600,6 @@ where
             client,
             availability,
             generation,
-            transport,
         }
     }
 
@@ -963,7 +919,7 @@ where
 
     fn ensure_current(
         &self,
-        action: crate::client::ResourceTransportAction,
+        _action: crate::client::ResourceTransportAction,
     ) -> Result<(), ServerError> {
         if self
             .availability
@@ -975,17 +931,6 @@ where
                 .borrow()
                 .has_store_binding(&self.resource_name, &self.binding)
         {
-            if self
-                .transport
-                .as_ref()
-                .and_then(|gate| gate.missing(action).ok())
-                .unwrap_or(false)
-            {
-                return Err(ServerError::TransportUpgradeRequired(format!(
-                    "store resource '{}' is granted but its transport is not admitted on the current connection",
-                    self.resource_name
-                )));
-            }
             Ok(())
         } else {
             Err(ServerError::ResourceUnavailable {
@@ -1041,76 +986,49 @@ pub type KvHandle<T> = KvResourceHandle<T, BoundKvResourceClient>;
 /// Connected handle for one contract-declared object-store resource.
 pub type StoreHandle = StoreResourceHandle<BoundStoreResourceClient>;
 
-pub(crate) async fn open_generated_kv<T>(
-    client: &async_nats::Client,
+pub(crate) fn open_generated_kv<T>(
+    manager: crate::client::TransportGenerationManager,
     participant_id: &str,
     name: &str,
     binding: KvResourceBinding,
     codec: crate::client::ResourceCodec<T>,
     availability: tokio::sync::watch::Receiver<crate::generated::AvailabilitySnapshot>,
-    transport: crate::client::ResourceTransportGate,
+    timeout_ms: u64,
 ) -> Result<KvHandle<T>, ServerError>
 where
     T: crate::generated::Codec + Send + 'static,
 {
     validate_kv_binding(participant_id, name, &binding)?;
-    let backend = client.open_kv(&binding).await?;
+    let backend = BoundKvResourceClient::managed(manager, binding.clone(), timeout_ms);
     Ok(KvResourceHandle::from_generated(
         name,
         binding,
         codec,
         backend,
         availability,
-        Some(transport),
     ))
 }
 
-pub(crate) async fn open_generated_store(
-    client: &async_nats::Client,
+pub(crate) fn open_generated_store(
+    manager: crate::client::TransportGenerationManager,
     participant_id: &str,
     name: &str,
     binding: StoreResourceBinding,
     availability: tokio::sync::watch::Receiver<crate::generated::AvailabilitySnapshot>,
-    transport: crate::client::ResourceTransportGate,
+    timeout_ms: u64,
 ) -> Result<StoreHandle, ServerError> {
     validate_store_binding(participant_id, name, &binding)?;
-    let backend = client.open_store(&binding).await?;
+    let backend = BoundStoreResourceClient::managed(manager, binding.clone(), timeout_ms);
     Ok(StoreResourceHandle::new(
         participant_id,
         name,
         binding,
         backend,
         availability,
-        Some(transport),
     ))
 }
 
-impl ResourceRuntimeClient for async_nats::Client {
-    type Kv = BoundKvResourceClient;
-    type Store = BoundStoreResourceClient;
-
-    async fn open_kv(&self, binding: &KvResourceBinding) -> Result<Self::Kv, ServerError> {
-        let context = async_nats::jetstream::new(self.clone());
-        let store = context
-            .get_key_value(binding.bucket.clone())
-            .await
-            .map_err(nats_error)?;
-        ensure_existing_kv_binding(&store, binding).await?;
-        Ok(BoundKvResourceClient { store })
-    }
-
-    async fn open_store(&self, binding: &StoreResourceBinding) -> Result<Self::Store, ServerError> {
-        let context = async_nats::jetstream::new(self.clone());
-        let store = context
-            .get_object_store(&binding.name)
-            .await
-            .map_err(nats_error)?;
-        ensure_existing_store_binding(&context, binding).await?;
-        Ok(BoundStoreResourceClient { store })
-    }
-}
-
-async fn ensure_existing_store_binding(
+pub(super) async fn ensure_existing_store_binding(
     context: &async_nats::jetstream::Context,
     binding: &StoreResourceBinding,
 ) -> Result<(), ServerError> {
@@ -1142,7 +1060,7 @@ async fn ensure_existing_store_binding(
     Ok(())
 }
 
-async fn ensure_existing_kv_binding(
+pub(super) async fn ensure_existing_kv_binding(
     store: &async_nats::jetstream::kv::Store,
     binding: &KvResourceBinding,
 ) -> Result<(), ServerError> {
@@ -1493,7 +1411,6 @@ mod tests {
             binding.clone(),
             RecordingStore::default(),
             store_availability("objects", binding),
-            None,
         )
     }
 
@@ -1663,7 +1580,6 @@ mod tests {
             binding.clone(),
             store,
             store_availability("uploads", binding),
-            None,
         );
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let task = tokio::spawn(async move {
@@ -1702,7 +1618,6 @@ mod tests {
             binding.clone(),
             store,
             store_availability("uploads", binding),
-            None,
         );
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let mut task = tokio::spawn(async move {
@@ -1789,12 +1704,14 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            let result = client
-                .open_kv(&KvResourceBinding {
+            let result = super::backend::open_kv_store(
+                &client,
+                &KvResourceBinding {
                     bucket,
                     ..binding.clone()
-                })
-                .await;
+                },
+            )
+            .await;
             assert_eq!(result.is_ok(), compatible, "{label}: {result:?}");
 
             if label == "exact" {
@@ -1818,15 +1735,17 @@ mod tests {
             })
             .await
             .unwrap();
-        client
-            .open_kv(&KvResourceBinding {
+        super::backend::open_kv_store(
+            &client,
+            &KvResourceBinding {
                 bucket: forever_bucket,
                 history: 2,
                 ttl_ms: 0,
                 max_value_bytes: None,
-            })
-            .await
-            .expect("forever and unlimited must match the binding");
+            },
+        )
+        .await
+        .expect("forever and unlimited must match the binding");
         nats.stop().unwrap();
     }
 }

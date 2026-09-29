@@ -858,27 +858,11 @@ impl Client {
         let Some(binding) = availability.kv_binding(name).cloned() else {
             return Ok(None);
         };
-        // A granted bucket whose transport family is not admitted on this
-        // attachment must not be opened against NATS; report the pending
-        // condition so the caller can adopt it explicitly.
-        if self
-            .client
-            .resource_transport_missing(
-                crate::client::ResourceTransportKind::Kv,
-                &binding.bucket,
-                crate::client::ResourceTransportAction::Read,
-            )
-            .map_err(|error| crate::service::ServerError::Nats(error.to_string()))?
-        {
-            return Err(crate::service::ServerError::TransportUpgradeRequired(
-                format!(
-                    "kv resource '{name}' is granted but not admitted on the current connection"
-                ),
-            ));
-        }
-        let bucket = binding.bucket.clone();
+        // The logical handle owns no generation: each call acquires a suitable
+        // generation, so a resource granted after connect becomes usable without
+        // recreating the handle or an explicit refresh.
         crate::service::open_generated_kv(
-            &self.client.nats(),
+            self.client.transport_generations(),
             &self
                 .client
                 .participant_id()
@@ -887,13 +871,8 @@ impl Client {
             binding,
             codec,
             self.client.watch_availability(),
-            crate::client::ResourceTransportGate::new(
-                self.client.transport_state(),
-                crate::client::ResourceTransportKind::Kv,
-                bucket,
-            ),
+            self.client.timeout_ms(),
         )
-        .await
         .map(Some)
     }
 
@@ -907,24 +886,8 @@ impl Client {
         let Some(binding) = availability.store_binding(name).cloned() else {
             return Ok(None);
         };
-        if self
-            .client
-            .resource_transport_missing(
-                crate::client::ResourceTransportKind::Store,
-                &binding.name,
-                crate::client::ResourceTransportAction::Read,
-            )
-            .map_err(|error| crate::service::ServerError::Nats(error.to_string()))?
-        {
-            return Err(crate::service::ServerError::TransportUpgradeRequired(
-                format!(
-                    "store resource '{name}' is granted but not admitted on the current connection"
-                ),
-            ));
-        }
-        let bucket = binding.name.clone();
         crate::service::open_generated_store(
-            &self.client.nats(),
+            self.client.transport_generations(),
             &self
                 .client
                 .participant_id()
@@ -932,13 +895,8 @@ impl Client {
             name,
             binding,
             self.client.watch_availability(),
-            crate::client::ResourceTransportGate::new(
-                self.client.transport_state(),
-                crate::client::ResourceTransportKind::Store,
-                bucket,
-            ),
+            self.client.timeout_ms(),
         )
-        .await
         .map(Some)
     }
 

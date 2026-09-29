@@ -206,8 +206,9 @@ api transport_growth@v1 {
   description "Optional-capability growth on one live service attachment.";
   rpc Advance { input Empty; output Empty; }
   rpc Extend { input Empty; output Empty; }
+  live Progress { input Empty; event Value; }
   capabilities {
-    public { allows { rpc Advance; } }
+    public { allows { rpc Advance; live Progress; } }
     capability extend {
       title "Optional capability";
       description "Optional growth operation.";
@@ -222,6 +223,7 @@ service TransportGrowthSubject {
   use transport_growth {
     rpc Advance;
     rpc Extend;
+    live Progress;
     optional capability extend;
   }
 }

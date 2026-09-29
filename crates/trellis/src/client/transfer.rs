@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_nats::header::HeaderMap;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -255,6 +255,25 @@ where
     validate_grant(&grant.session_key, client)?;
     let max_chunk = transfer_chunk_size(grant.chunk_bytes)?;
     let context_digest = client.authorization_context_digest()?;
+    // Pin one generation for the whole upload transfer; every chunk and the
+    // cancel path use this exact physical attachment.
+    let deadline = client.transport_deadline();
+    let subscribe = [format!("{}.>", client.inbox_prefix())];
+    let acquire =
+        client.acquire_transport(std::slice::from_ref(&grant.subject), &subscribe, deadline);
+    let lease = if let Some(cancellation) = cancellation {
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(TrellisClientError::TransferCancelled),
+            result = acquire => result?,
+        }
+    } else {
+        acquire.await?
+    };
+    let nats = lease.nats();
+    // Acquisition is charged against the first physical exchange; later chunks
+    // keep their ordinary per-exchange timeout.
+    let mut first_deadline = Some(deadline);
     let mut seq: u64 = 0;
     let mut transferred = 0_u64;
     let mut hasher = Sha256::new();
@@ -265,13 +284,13 @@ where
             tokio::select! {
                 biased;
                 () = cancellation.cancelled() => {
-                    send_transfer_cancel(client, &grant.subject, &context_digest, seq).await?;
+                    send_transfer_cancel(nats, client.auth(), client.timeout_ms(), &grant.subject, &context_digest, seq).await?;
                     return Err(TrellisClientError::TransferCancelled);
                 }
                 count = reader.read(&mut buffer) => match count {
                     Ok(count) => count,
                     Err(error) => {
-                        let _ = send_transfer_cancel(client, &grant.subject, &context_digest, seq).await;
+                        let _ = send_transfer_cancel(nats, client.auth(), client.timeout_ms(), &grant.subject, &context_digest, seq).await;
                         return Err(error.into());
                     }
                 },
@@ -280,8 +299,15 @@ where
             match reader.read(&mut buffer).await {
                 Ok(count) => count,
                 Err(error) => {
-                    let _ =
-                        send_transfer_cancel(client, &grant.subject, &context_digest, seq).await;
+                    let _ = send_transfer_cancel(
+                        nats,
+                        client.auth(),
+                        client.timeout_ms(),
+                        &grant.subject,
+                        &context_digest,
+                        seq,
+                    )
+                    .await;
                     return Err(error.into());
                 }
             }
@@ -295,13 +321,21 @@ where
         })?;
         if let Some(max_bytes) = grant.max_bytes {
             if next > max_bytes {
-                let _ = send_transfer_cancel(client, &grant.subject, &context_digest, seq).await;
+                let _ = send_transfer_cancel(
+                    nats,
+                    client.auth(),
+                    client.timeout_ms(),
+                    &grant.subject,
+                    &context_digest,
+                    seq,
+                )
+                .await;
                 return Err(TrellisClientError::TransferProtocol(format!(
                     "upload exceeds max bytes: attempted {next}, max {max_bytes}"
                 )));
             }
         }
-        let reply = client.nats().new_inbox();
+        let reply = nats.new_inbox();
         let headers = upload_headers(
             client.auth(),
             &context_digest,
@@ -315,10 +349,13 @@ where
             .inbox(reply)
             .headers(headers)
             .payload(Bytes::copy_from_slice(chunk));
-        let nats = client.nats();
+        let chunk_timeout = match first_deadline.take() {
+            Some(deadline) => deadline.saturating_duration_since(Instant::now()),
+            None => Duration::from_millis(client.timeout_ms()),
+        };
         let response = {
             let request = tokio::time::timeout(
-                Duration::from_millis(client.timeout_ms()),
+                chunk_timeout,
                 nats.send_request(grant.subject.clone(), request),
             );
             tokio::pin!(request);
@@ -333,17 +370,41 @@ where
             }
         };
         let Some(response) = response else {
-            send_transfer_cancel(client, &grant.subject, &context_digest, seq).await?;
+            send_transfer_cancel(
+                nats,
+                client.auth(),
+                client.timeout_ms(),
+                &grant.subject,
+                &context_digest,
+                seq,
+            )
+            .await?;
             return Err(TrellisClientError::TransferCancelled);
         };
         let response = match response {
             Ok(Ok(response)) => response,
             Ok(Err(error)) => {
-                let _ = send_transfer_cancel(client, &grant.subject, &context_digest, seq).await;
+                let _ = send_transfer_cancel(
+                    nats,
+                    client.auth(),
+                    client.timeout_ms(),
+                    &grant.subject,
+                    &context_digest,
+                    seq,
+                )
+                .await;
                 return Err(TrellisClientError::NatsRequest(error.to_string()));
             }
             Err(_) => {
-                let _ = send_transfer_cancel(client, &grant.subject, &context_digest, seq).await;
+                let _ = send_transfer_cancel(
+                    nats,
+                    client.auth(),
+                    client.timeout_ms(),
+                    &grant.subject,
+                    &context_digest,
+                    seq,
+                )
+                .await;
                 return Err(TrellisClientError::Timeout);
             }
         };
@@ -351,12 +412,28 @@ where
         let ack = match parse_upload_ack(response) {
             Ok(ack) => ack,
             Err(error) => {
-                let _ = send_transfer_cancel(client, &grant.subject, &context_digest, seq).await;
+                let _ = send_transfer_cancel(
+                    nats,
+                    client.auth(),
+                    client.timeout_ms(),
+                    &grant.subject,
+                    &context_digest,
+                    seq,
+                )
+                .await;
                 return Err(error);
             }
         };
         if !matches!(ack, UploadAck::Continue) {
-            let _ = send_transfer_cancel(client, &grant.subject, &context_digest, seq).await;
+            let _ = send_transfer_cancel(
+                nats,
+                client.auth(),
+                client.timeout_ms(),
+                &grant.subject,
+                &context_digest,
+                seq,
+            )
+            .await;
             return Err(TrellisClientError::TransferProtocol(
                 "upload completed before eof frame".into(),
             ));
@@ -374,7 +451,7 @@ where
         digest: &digest,
     })?;
 
-    let reply = client.nats().new_inbox();
+    let reply = nats.new_inbox();
     let headers = upload_headers(
         client.auth(),
         &context_digest,
@@ -390,7 +467,7 @@ where
         .payload(Bytes::from(completion));
     let response = tokio::time::timeout(
         Duration::from_millis(client.timeout_ms()),
-        client.nats().send_request(grant.subject.clone(), request),
+        nats.send_request(grant.subject.clone(), request),
     )
     .await
     .map_err(|_| TrellisClientError::Timeout)?
@@ -419,15 +496,17 @@ where
 }
 
 async fn send_transfer_cancel(
-    client: &TrellisClient,
+    nats: &async_nats::Client,
+    auth: &crate::client::SessionAuth,
+    timeout_ms: u64,
     subject: &str,
     context_digest: &str,
     seq: u64,
 ) -> Result<(), TrellisClientError> {
     let payload = Bytes::from(serde_json::to_vec(&UploadControl::Cancel)?);
-    let reply = client.nats().new_inbox();
+    let reply = nats.new_inbox();
     let headers = upload_headers(
-        client.auth(),
+        auth,
         context_digest,
         subject,
         &reply,
@@ -436,8 +515,8 @@ async fn send_transfer_cancel(
         Some("cancel"),
     )?;
     let response = tokio::time::timeout(
-        Duration::from_millis(client.timeout_ms()),
-        client.nats().send_request(
+        Duration::from_millis(timeout_ms),
+        nats.send_request(
             subject.to_string(),
             async_nats::Request::new()
                 .inbox(reply)
@@ -485,13 +564,38 @@ pub(crate) async fn get_download_grant_into_with_cancel<W>(
 where
     W: AsyncWrite + Unpin + Send + ?Sized,
 {
-    let result = get_download_grant_into_inner(client, grant, writer, cancellation).await;
+    // Pin one generation for the whole download transfer, cancelling promptly
+    // even while the generation is being acquired.
+    let deadline = client.transport_deadline();
+    let subscribe = [format!("{}.>", client.inbox_prefix())];
+    let acquire =
+        client.acquire_transport(std::slice::from_ref(&grant.subject), &subscribe, deadline);
+    let lease = if let Some(cancellation) = cancellation {
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(TrellisClientError::TransferCancelled),
+            result = acquire => result?,
+        }
+    } else {
+        acquire.await?
+    };
+    let nats = lease.nats();
+    let result =
+        get_download_grant_into_inner(client, nats, grant, writer, cancellation, deadline).await;
     if result.is_err()
         && !matches!(&result, Err(TrellisClientError::TransferCancelled))
         && grant.session_key == client.auth().session_key
     {
         if let Ok(context_digest) = client.authorization_context_digest() {
-            let _ = send_transfer_cancel(client, &grant.subject, &context_digest, 0).await;
+            let _ = send_transfer_cancel(
+                nats,
+                client.auth(),
+                client.timeout_ms(),
+                &grant.subject,
+                &context_digest,
+                0,
+            )
+            .await;
         }
     }
     result
@@ -499,9 +603,11 @@ where
 
 async fn get_download_grant_into_inner<W>(
     client: &TrellisClient,
+    nats: &async_nats::Client,
     grant: &DownloadTransferGrant,
     writer: &mut W,
     cancellation: Option<&TransferCancellation>,
+    first_deadline: Instant,
 ) -> Result<FileInfo, TrellisClientError>
 where
     W: AsyncWrite + Unpin + Send + ?Sized,
@@ -514,12 +620,21 @@ where
     let mut expected_seq = 0_u64;
     let mut transferred = 0_u64;
     let mut hasher = Sha256::new();
+    let mut next_first_deadline = Some(first_deadline);
     loop {
         if cancellation.is_some_and(TransferCancellation::is_cancelled) {
-            send_transfer_cancel(client, &grant.subject, &context_digest, expected_seq).await?;
+            send_transfer_cancel(
+                nats,
+                client.auth(),
+                client.timeout_ms(),
+                &grant.subject,
+                &context_digest,
+                expected_seq,
+            )
+            .await?;
             return Err(TrellisClientError::TransferCancelled);
         }
-        let reply = client.nats().new_inbox();
+        let reply = nats.new_inbox();
         let headers = upload_headers(
             client.auth(),
             &context_digest,
@@ -533,26 +648,33 @@ where
             .inbox(reply)
             .headers(headers)
             .payload(Bytes::new());
-        let nats = client.nats();
+        // Acquisition is charged against the first physical exchange; later
+        // exchanges keep their ordinary per-exchange timeout.
+        let exchange_timeout = match next_first_deadline.take() {
+            Some(deadline) => deadline.saturating_duration_since(Instant::now()),
+            None => Duration::from_millis(client.timeout_ms()),
+        };
         let response = nats.send_request(grant.subject.clone(), request);
         let message = if let Some(cancellation) = cancellation {
             tokio::select! {
                 biased;
                 () = cancellation.cancelled() => {
                     send_transfer_cancel(
-                        client,
+                        nats,
+                        client.auth(),
+                        client.timeout_ms(),
                         &grant.subject,
                         &context_digest,
                         expected_seq,
                     ).await?;
                     return Err(TrellisClientError::TransferCancelled);
                 }
-                response = tokio::time::timeout(Duration::from_millis(client.timeout_ms()), response) => {
+                response = tokio::time::timeout(exchange_timeout, response) => {
                     response.map_err(|_| TrellisClientError::Timeout)?
                 }
             }
         } else {
-            tokio::time::timeout(Duration::from_millis(client.timeout_ms()), response)
+            tokio::time::timeout(exchange_timeout, response)
                 .await
                 .map_err(|_| TrellisClientError::Timeout)?
         }
@@ -639,19 +761,26 @@ where
             tokio::select! {
                 biased;
                 () = cancellation.cancelled() => {
-                    send_transfer_cancel(client, &grant.subject, &context_digest, expected_seq).await?;
+                    send_transfer_cancel(nats, client.auth(), client.timeout_ms(), &grant.subject, &context_digest, expected_seq).await?;
                     return Err(TrellisClientError::TransferCancelled);
                 }
                 result = write => {
                     if let Err(error) = result {
-                        let _ = send_transfer_cancel(client, &grant.subject, &context_digest, expected_seq).await;
+                        let _ = send_transfer_cancel(nats, client.auth(), client.timeout_ms(), &grant.subject, &context_digest, expected_seq).await;
                         return Err(error.into());
                     }
                 }
             }
         } else if let Err(error) = write.await {
-            let _ =
-                send_transfer_cancel(client, &grant.subject, &context_digest, expected_seq).await;
+            let _ = send_transfer_cancel(
+                nats,
+                client.auth(),
+                client.timeout_ms(),
+                &grant.subject,
+                &context_digest,
+                expected_seq,
+            )
+            .await;
             return Err(error.into());
         }
         hasher.update(&message.payload);

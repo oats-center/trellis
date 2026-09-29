@@ -53,6 +53,7 @@ type Attachment = {
 type GrowthLeg = {
   waitFor(marker: string, count?: number): Promise<void>;
   send(command: string): Promise<void>;
+  latestObservedIndex(): number | undefined;
 };
 
 /**
@@ -123,6 +124,16 @@ async function withTransportGrowthLeg(
     async send(command: string): Promise<void> {
       await stdin.write(new TextEncoder().encode(`${command}\n`));
     },
+    latestObservedIndex(): number | undefined {
+      let latest: number | undefined;
+      for (const line of lines) {
+        if (line.startsWith("TRANSPORT_GROWTH_OBSERVED ")) {
+          const value = Number(line.slice("TRANSPORT_GROWTH_OBSERVED ".length));
+          if (Number.isFinite(value)) latest = value;
+        }
+      }
+      return latest;
+    },
   };
 
   try {
@@ -186,6 +197,17 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
     await target.handleExtend(() => {
       extendCalls += 1;
       return Result.ok({});
+    });
+    // A plain periodic Live source the subject observes across growth. The test
+    // can stop it to drive a natural, provider-initiated terminal.
+    let progressRunning = true;
+    let progressIndex = 0;
+    await target.handleProgress(async ({ emit, signal }) => {
+      while (!signal.aborted && progressRunning) {
+        progressIndex += 1;
+        await emit({ value: `${progressIndex}` });
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
     });
     const targetExit = target.wait().catch((error: unknown) => error);
 
@@ -259,6 +281,20 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
           );
           const logical = before[0].runtimeConnectionId;
 
+          // Open a Live observation on the initial generation. It must keep
+          // receiving frames across the automatic growth and pin its generation.
+          await leg.send("OBSERVE");
+          await leg.waitFor("TRANSPORT_GROWTH_OBSERVING");
+          await runtime.waitFor(
+            () => (leg.latestObservedIndex() ?? -1) >= 0 ? true : undefined,
+            { timeoutMs: 30_000, intervalMs: 50 },
+          );
+          const observedBefore = leg.latestObservedIndex();
+          assert(
+            observedBefore !== undefined,
+            "the Live observation must start delivering frames",
+          );
+
           // An ordinary renewal must not replace or add a physical attachment.
           await waitForRenewals(2);
           assertEquals(
@@ -309,6 +345,45 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
             logical,
             "the logical connection identity must be stable across growth",
           );
+
+          // The observation opened before growth keeps receiving frames: it is
+          // pinned to its generation and never moved mid-observation.
+          await runtime.waitFor(
+            () =>
+              (leg.latestObservedIndex() ?? -1) > (observedBefore ?? -1)
+                ? true
+                : undefined,
+            { timeoutMs: 30_000, intervalMs: 50 },
+          );
+          assert(
+            (leg.latestObservedIndex() ?? -1) > (observedBefore ?? -1),
+            "the Live observation must keep delivering after growth",
+          );
+          assert(
+            (await attachments()).some((item) =>
+              item.connectionId === before[0].connectionId
+            ),
+            "the observation's original attachment must remain while it is open",
+          );
+
+          // A retained closed handle settles its signed close exchange and then
+          // A retained closed handle settles its signed close exchange and then
+          // stops pinning its generation; the application keeps the handle.
+          await leg.send("OBSERVE_CLOSE");
+          await leg.waitFor("TRANSPORT_GROWTH_OBSERVED_CLOSED");
+
+          // A retained handle whose session ends on its own must also release
+          // its generation: open a fresh observation, then let the provider end
+          // its source so the observation reaches a natural terminal.
+          const beforeEnd = leg.latestObservedIndex() ?? -1;
+          await leg.send("OBSERVE");
+          await runtime.waitFor(
+            () =>
+              (leg.latestObservedIndex() ?? -1) > beforeEnd ? true : undefined,
+            { timeoutMs: 30_000, intervalMs: 50 },
+          );
+          progressRunning = false;
+          await leg.waitFor("TRANSPORT_GROWTH_OBSERVED_ENDED");
 
           // Existing covered work keeps working and a renewal still adds nothing.
           await leg.send("ADVANCE");

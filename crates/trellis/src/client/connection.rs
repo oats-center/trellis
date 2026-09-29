@@ -921,6 +921,34 @@ impl TrellisClient {
         self.nats.clone()
     }
 
+    /// The generation manager that owns this logical connection's physical
+    /// attachments. Bound resources acquire a suitable generation per call
+    /// through it instead of pinning the initial attachment.
+    pub(crate) fn transport_generations(&self) -> crate::client::TransportGenerationManager {
+        self.generations.clone()
+    }
+
+    /// The default per-call transport deadline shared by acquisition and the
+    /// exchange it guards.
+    pub(crate) fn transport_deadline(&self) -> Instant {
+        Instant::now() + Duration::from_millis(self.timeout_ms)
+    }
+
+    /// Acquire one admitted generation lease for physical work.
+    ///
+    /// Callers hold the lease through completion/error/drop; the deadline
+    /// covers generation acquisition and the exchange it guards.
+    pub(crate) async fn acquire_transport(
+        &self,
+        publish: &[String],
+        subscribe: &[String],
+        deadline: Instant,
+    ) -> Result<crate::client::TransportLease, TrellisClientError> {
+        self.generations
+            .acquire_for(publish, subscribe, deadline)
+            .await
+    }
+
     /// Return the cloneable session signer for owned live controls.
     pub(crate) fn auth_handle(&self) -> std::sync::Arc<crate::client::SessionAuth> {
         self.auth.clone()
@@ -1465,13 +1493,6 @@ impl TrellisClient {
         self.generations.ensure_adopted().await
     }
 
-    /// Return the retained transport-authorization state of this connection.
-    pub(crate) fn transport_state(
-        &self,
-    ) -> crate::client::authorization::TransportAuthorizationState {
-        self.transport.clone()
-    }
-
     /// Whether a granted capability is missing from the admitted policy.
     ///
     /// Returns `true` only when the requirement is granted by current authority
@@ -1488,21 +1509,6 @@ impl TrellisClient {
             .and_then(|contexts| contexts.corrected_now_seconds().ok())
             .unwrap_or(0);
         self.transport.requires_upgrade(publish, subscribe, now)
-    }
-
-    /// Whether a granted resource operation is not yet admitted on this socket.
-    ///
-    /// A granted-but-unadopted resource must never open or operate against NATS,
-    /// so a caller reports the pending transport condition instead of provoking
-    /// a broker permission violation.
-    pub(crate) fn resource_transport_missing(
-        &self,
-        kind: crate::client::ResourceTransportKind,
-        bucket: &str,
-        action: crate::client::ResourceTransportAction,
-    ) -> Result<bool, TrellisClientError> {
-        let marker = crate::client::authorization::resource_action_marker(kind, bucket, action);
-        self.transport_requirement_missing(&[marker], &[])
     }
 
     /// One request transport attempt with a caller span and catalog metrics.
@@ -1814,26 +1820,31 @@ impl TrellisClient {
         D: EventDescriptor,
         D::Event: Send + 'static,
     {
+        // Pin one generation for the whole subscription lifetime, charging the
+        // subscription setup against the same deadline as acquisition.
+        let deadline = self.transport_deadline();
+        let subscribe = [self.descriptor_subject(D::SUBSCRIBE_SUBJECT)];
+        let lease = self.acquire_transport(&[], &subscribe, deadline).await?;
         let subscriber = timeout(
-            std::time::Duration::from_millis(self.timeout_ms),
-            self.nats()
-                .subscribe(self.descriptor_subject(D::SUBSCRIBE_SUBJECT)),
+            deadline.saturating_duration_since(Instant::now()),
+            lease.nats().subscribe(subscribe[0].clone()),
         )
         .await
         .map_err(|_| TrellisClientError::Timeout)?
         .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
 
-        let stream = stream::try_unfold(subscriber, |mut subscriber| async move {
-            match subscriber.next().await {
-                Some(message) => {
-                    let value: Value = serde_json::from_slice(&message.payload)?;
-                    let event = D::Event::decode(value)
-                        .map_err(|error| TrellisClientError::Codec(error.to_string()))?;
-                    Ok(Some((event, subscriber)))
+        let stream =
+            stream::try_unfold((lease, subscriber), |(lease, mut subscriber)| async move {
+                match subscriber.next().await {
+                    Some(message) => {
+                        let value: Value = serde_json::from_slice(&message.payload)?;
+                        let event = D::Event::decode(value)
+                            .map_err(|error| TrellisClientError::Codec(error.to_string()))?;
+                        Ok(Some((event, (lease, subscriber))))
+                    }
+                    None => Ok(None),
                 }
-                None => Ok(None),
-            }
-        });
+            });
 
         Ok(Box::pin(stream) as BoxStream<'static, Result<D::Event, TrellisClientError>>)
     }
@@ -1966,13 +1977,24 @@ impl TrellisClient {
             .encode()
             .map_err(|error| TrellisClientError::Codec(error.to_string()))?;
         let base_subject = self.bound_key_subject("live", D::API_ID, D::KEY)?;
+        // Pin one generation for the whole observation: the opening exchange and
+        // the data/control pump all use this exact physical attachment.
+        let deadline = self.transport_deadline();
+        let lease = self
+            .acquire_transport(
+                std::slice::from_ref(&base_subject),
+                &[format!("{}.>", self.inbox_prefix)],
+                deadline,
+            )
+            .await?;
+        let receive_max_payload_bytes = lease.nats().max_payload() as u64;
         let open_id = trellis_protocol::generate_nonce()
             .map_err(|error| TrellisClientError::LiveProtocol(error.to_string()))?;
         let body = serde_json::json!({
             "format": trellis_protocol::LIVE_VERSION,
             "type": "open",
             "openId": open_id,
-            "receiveMaxPayloadBytes": self.nats.max_payload() as u64,
+            "receiveMaxPayloadBytes": receive_max_payload_bytes,
             "input": encoded,
         });
         let action_name = D::KEY.split_once('.').map_or(D::KEY, |(_, action)| action);
@@ -1993,12 +2015,17 @@ impl TrellisClient {
             publish_subject: &base_subject,
             body: Bytes::from(serde_json::to_vec(&body)?),
             open_id,
-            receive_max_payload_bytes: self.nats.max_payload() as u64,
+            receive_max_payload_bytes,
             permission,
         };
-        let prepared =
-            crate::live::client_open::open_client_session(self, &self.authorization_provider, open)
-                .await?;
+        let prepared = crate::live::client_open::open_client_session(
+            self,
+            &self.authorization_provider,
+            open,
+            lease,
+            deadline,
+        )
+        .await?;
         crate::live::client_open::install_live_handle::<D>(self, prepared).await
     }
 

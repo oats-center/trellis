@@ -843,7 +843,17 @@ where
         let publish_subject = control_subject(&base_subject);
         let open_id = trellis_protocol::generate_nonce()
             .map_err(|error| TrellisClientError::LiveProtocol(error.to_string()))?;
-        let receive_max_payload_bytes = self.transport.nats().max_payload() as u64;
+        // Pin one generation for the whole operation observation.
+        let deadline = self.transport.transport_deadline();
+        let lease = self
+            .transport
+            .acquire_transport(
+                std::slice::from_ref(&publish_subject),
+                &[format!("{}.>", self.transport.inbox_prefix())],
+                deadline,
+            )
+            .await?;
+        let receive_max_payload_bytes = lease.nats().max_payload() as u64;
         let body = operation_watch_open_value(
             self.id(),
             include_updates,
@@ -875,6 +885,8 @@ where
             self.transport,
             self.transport.authorization_provider(),
             open,
+            lease,
+            deadline,
         )
         .await?;
         let progress_schema = D::PROGRESS_SCHEMA_JSON;

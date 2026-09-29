@@ -23,16 +23,17 @@ pub(crate) use authorization::AuthorizationContextLease;
 #[cfg(any(test, feature = "runtime-internals"))]
 pub use authorization::AuthorizationRegistryBinding;
 pub use authorization::{canonical_trellis_origin, AuthorizationProviderCache};
+pub(crate) use authorization::{
+    resource_action_marker, ResourceTransportAction, ResourceTransportKind,
+};
 pub use authorization::{
     AuthorizationApiBinding, AuthorizationContextBundle, AuthorizationContextCache,
     AuthorizationContextPolicy, AuthorizationInstallation, AuthorizationNativeTransport,
     AuthorizationRoutingMaterial, AuthorizationRuntimeBinding, AuthorizationRuntimeTransports,
     AuthorizationVerificationCore, AuthorizationVerificationError, EventVerificationInput,
-    RequestVerificationInput, ResourceTransportGate, TransportAuthorizationState,
-    TransportAuthorizationStatus, VerifiedAuthorizationEvent, VerifiedAuthorizationRequest,
-    VerifiedCaller,
+    RequestVerificationInput, TransportAuthorizationState, TransportAuthorizationStatus,
+    VerifiedAuthorizationEvent, VerifiedAuthorizationRequest, VerifiedCaller,
 };
-pub(crate) use authorization::{ResourceTransportAction, ResourceTransportKind};
 #[cfg(feature = "runtime-internals")]
 pub use authorization::{RuntimeAuthorizationIoCounters, RuntimeAuthorizationTrust};
 

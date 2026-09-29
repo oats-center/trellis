@@ -18,7 +18,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use trellis_protocol::event_patterns_overlap;
 
 pub use super::core_bootstrap::CoreBootstrapBinding;
-use super::resources::{validate_kv_binding, validate_store_binding, ResourceRuntimeClient};
+use super::resources::{validate_kv_binding, validate_store_binding};
 use super::resources::{KvHandle, KvResourceHandle, StoreHandle, StoreResourceHandle};
 use super::runtime::run_multi_subject_service;
 use super::transfer::{
@@ -529,24 +529,19 @@ impl ServiceHandle {
     {
         let binding = self.kv_binding(name)?;
         validate_kv_binding(self.service_name(), name, binding)?;
-        ensure_resource_transport_admitted(
-            self.client(),
-            crate::client::ResourceTransportKind::Kv,
-            name,
-            &binding.bucket,
-        )?;
-        let client = self.client().nats().open_kv(binding).await?;
+        // The logical handle owns no generation: every KV call acquires a
+        // suitable generation for this resource's exact subject family.
+        let client = crate::service::resources::backend::BoundKvResourceClient::managed(
+            self.client().transport_generations(),
+            binding.clone(),
+            self.client().timeout_ms(),
+        );
         Ok(KvResourceHandle::from_generated(
             name,
             binding.clone(),
             codec,
             client,
             self.client.watch_availability(),
-            Some(crate::client::ResourceTransportGate::new(
-                self.client().transport_state(),
-                crate::client::ResourceTransportKind::Kv,
-                binding.bucket.clone(),
-            )),
         ))
     }
 
@@ -669,24 +664,19 @@ impl ServiceHandle {
     pub async fn store_client(&self, name: &str) -> Result<StoreHandle, ServerError> {
         let binding = self.store_binding(name)?;
         validate_store_binding(self.service_name(), name, binding)?;
-        ensure_resource_transport_admitted(
-            self.client(),
-            crate::client::ResourceTransportKind::Store,
-            name,
-            &binding.name,
-        )?;
-        let client = self.client().nats().open_store(binding).await?;
+        // The logical handle owns no generation: every store call acquires a
+        // suitable generation for this resource's exact subject family.
+        let client = crate::service::resources::backend::BoundStoreResourceClient::managed(
+            self.client().transport_generations(),
+            binding.clone(),
+            self.client().timeout_ms(),
+        );
         Ok(StoreResourceHandle::new(
             self.service_name(),
             name,
             binding.clone(),
             client,
             self.client.watch_availability(),
-            Some(crate::client::ResourceTransportGate::new(
-                self.client().transport_state(),
-                crate::client::ResourceTransportKind::Store,
-                binding.name.clone(),
-            )),
         ))
     }
 
@@ -988,24 +978,19 @@ impl<C> ConnectedServiceRuntime<C> {
     {
         let binding = self.kv_binding(name)?;
         validate_kv_binding(self.service_name(), name, binding)?;
-        ensure_resource_transport_admitted(
-            self.client(),
-            crate::client::ResourceTransportKind::Kv,
-            name,
-            &binding.bucket,
-        )?;
-        let client = self.client().nats().open_kv(binding).await?;
+        // The logical handle owns no generation: every KV call acquires a
+        // suitable generation for this resource's exact subject family.
+        let client = crate::service::resources::backend::BoundKvResourceClient::managed(
+            self.client().transport_generations(),
+            binding.clone(),
+            self.client().timeout_ms(),
+        );
         Ok(KvResourceHandle::from_generated(
             name,
             binding.clone(),
             codec,
             client,
             self.client.watch_availability(),
-            Some(crate::client::ResourceTransportGate::new(
-                self.client().transport_state(),
-                crate::client::ResourceTransportKind::Kv,
-                binding.bucket.clone(),
-            )),
         ))
     }
 
@@ -1170,24 +1155,19 @@ impl<C> ConnectedServiceRuntime<C> {
     pub async fn store_client(&self, name: &str) -> Result<StoreHandle, ServerError> {
         let binding = self.store_binding(name)?;
         validate_store_binding(self.service_name(), name, binding)?;
-        ensure_resource_transport_admitted(
-            self.client(),
-            crate::client::ResourceTransportKind::Store,
-            name,
-            &binding.name,
-        )?;
-        let client = self.client().nats().open_store(binding).await?;
+        // The logical handle owns no generation: every store call acquires a
+        // suitable generation for this resource's exact subject family.
+        let client = crate::service::resources::backend::BoundStoreResourceClient::managed(
+            self.client().transport_generations(),
+            binding.clone(),
+            self.client().timeout_ms(),
+        );
         Ok(StoreResourceHandle::new(
             self.service_name(),
             name,
             binding.clone(),
             client,
             self.client.watch_availability(),
-            Some(crate::client::ResourceTransportGate::new(
-                self.client().transport_state(),
-                crate::client::ResourceTransportKind::Store,
-                binding.name.clone(),
-            )),
         ))
     }
 
@@ -1430,30 +1410,6 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
         }
         Ok(runtime)
     }
-}
-
-/// Reject a resource open whose granted transport family is not admitted on
-/// the current physical attachment.
-///
-/// A granted-but-unadopted resource must never be opened against NATS: that
-/// would turn a pending transport adoption into a broker permission violation.
-/// The caller reports the pending condition and retries after an explicit
-/// transport refresh.
-fn ensure_resource_transport_admitted(
-    client: &TrellisClient,
-    kind: crate::client::ResourceTransportKind,
-    name: &str,
-    bucket: &str,
-) -> Result<(), ServerError> {
-    if client
-        .resource_transport_missing(kind, bucket, crate::client::ResourceTransportAction::Read)
-        .map_err(|error| ServerError::Nats(error.to_string()))?
-    {
-        return Err(ServerError::TransportUpgradeRequired(format!(
-            "resource '{name}' is granted but not admitted on the current connection"
-        )));
-    }
-    Ok(())
 }
 
 fn parse_bootstrap_binding(

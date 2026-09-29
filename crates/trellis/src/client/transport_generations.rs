@@ -164,6 +164,18 @@ impl TransportLease {
     }
 }
 
+impl Clone for TransportLease {
+    /// Retain one more independent owner of the same generation. Each owner
+    /// releases its own count on drop, so one owner can never release another
+    /// owner's only remaining lease.
+    fn clone(&self) -> Self {
+        self.generation.leases.fetch_add(1, Ordering::AcqRel);
+        Self {
+            generation: Arc::clone(&self.generation),
+        }
+    }
+}
+
 impl Drop for TransportLease {
     fn drop(&mut self) {
         let previous = self.generation.leases.fetch_sub(1, Ordering::AcqRel);

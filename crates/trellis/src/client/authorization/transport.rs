@@ -340,50 +340,6 @@ pub fn resource_action_marker(
     }
 }
 
-/// Client-side admission gate for one bound resource.
-///
-/// It answers, per operation, whether the granted transport family for that
-/// exact resource is already adopted by the current physical attachment.
-/// Enforcement stays with the broker; this only turns a pending transport
-/// adoption into the precise condition instead of a permission violation.
-#[derive(Clone, Debug)]
-pub struct ResourceTransportGate {
-    state: TransportAuthorizationState,
-    kind: ResourceTransportKind,
-    bucket: std::sync::Arc<str>,
-}
-
-impl ResourceTransportGate {
-    pub(crate) fn new(
-        state: TransportAuthorizationState,
-        kind: ResourceTransportKind,
-        bucket: impl Into<std::sync::Arc<str>>,
-    ) -> Self {
-        Self {
-            state,
-            kind,
-            bucket: bucket.into(),
-        }
-    }
-
-    /// Whether one operation's granted transport is not yet admitted.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TrellisClientError`] when a policy is malformed.
-    pub(crate) fn missing(
-        &self,
-        action: ResourceTransportAction,
-    ) -> Result<bool, TrellisClientError> {
-        let marker = resource_action_marker(self.kind, &self.bucket, action);
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX))
-            .unwrap_or(0);
-        self.state.requires_upgrade(&[marker], &[], now)
-    }
-}
-
 /// Whether admitted policy `A` covers the exact subjects a requirement needs.
 ///
 /// The response allowance and hard deadline are copied from `A` so this answers
