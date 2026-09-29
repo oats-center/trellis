@@ -17,12 +17,12 @@ import { sha256 as incrementalSha256 } from "@noble/hashes/sha256";
 import { buildProofInput } from "./auth/proof.ts";
 import { base64urlEncode, sha256 } from "./auth/utils.ts";
 import { TransferError } from "./errors/TransferError.ts";
-import type { TransportError } from "./errors/TransportError.ts";
-import {
-  requiresTransportUpgrade,
-  type TransportAuthorizationGate,
-  transportUpgradeRequiredError,
-} from "./auth/authorization/transport_state.ts";
+import { TransportError } from "./errors/TransportError.ts";
+import type {
+  TransportLease,
+  TransportRequirement,
+  TrellisTransportProvider,
+} from "./transport/generations.ts";
 
 /** Failures a transfer handle operation can report. */
 export type TransferOperationError = TransferError | TransportError;
@@ -310,10 +310,17 @@ function receiveStream(
   grant: ReceiveTransferGrant,
   requestFrame: (seq: number) => Promise<Msg>,
   cancelTransfer: () => Promise<void>,
+  release: () => void,
 ): ReadableStream<Uint8Array> {
   const hasher = incrementalSha256.create();
   let expectedSeq = 0;
   let receivedBytes = 0;
+  let released = false;
+  const finish = () => {
+    if (released) return;
+    released = true;
+    release();
+  };
 
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
@@ -393,6 +400,7 @@ function receiveStream(
               },
             });
           }
+          finish();
           controller.close();
         }
       } catch (cause) {
@@ -400,11 +408,16 @@ function receiveStream(
         const error = cause instanceof TransferError
           ? cause
           : new TransferError({ operation: "stream", cause });
+        finish();
         controller.error(recordTransferError(error, "receive", "stream"));
       }
     },
     async cancel() {
-      await cancelTransfer();
+      try {
+        await cancelTransfer();
+      } finally {
+        finish();
+      }
     },
   });
 }
@@ -443,28 +456,21 @@ async function collectStream(
 }
 
 class BaseTransferHandle {
-  readonly #nc: NatsConnection;
+  readonly #transport: TrellisTransportProvider;
   readonly #auth: TrellisTransferAuth;
   readonly #timeoutMs: number;
   readonly #inboxPrefix: string;
-  readonly #transportGate?: TransportAuthorizationGate;
 
   protected constructor(
-    nc: NatsConnection,
+    transport: TrellisTransportProvider,
     auth: TrellisTransferAuth,
     timeoutMs: number,
     inboxPrefix = "_INBOX",
-    transportGate?: TransportAuthorizationGate,
   ) {
-    this.#nc = nc;
+    this.#transport = transport;
     this.#auth = auth;
     this.#timeoutMs = timeoutMs;
     this.#inboxPrefix = inboxPrefix;
-    this.#transportGate = transportGate;
-  }
-
-  protected get nc(): NatsConnection {
-    return this.#nc;
   }
 
   protected get inboxPrefix(): string {
@@ -480,17 +486,19 @@ class BaseTransferHandle {
   }
 
   /**
-   * Return the transport failure when the transfer's subject needs a capability
-   * the current attachment has not adopted yet.
+   * Pin one transport generation for the whole transfer.
+   *
+   * A transfer is long-lived physical work: it acquires once at open and holds
+   * the generation until completion, cancellation, or error, so automatic
+   * adoption never moves it between sockets. The acquisition budget is part of
+   * the transfer's own timeout.
    */
-  protected async transportBlocked(
-    required: { publish?: readonly string[]; subscribe?: readonly string[] },
-    context: Record<string, unknown>,
-  ): Promise<TransportError | undefined> {
-    const gate = this.#transportGate;
-    if (!gate) return undefined;
-    const blocked = await requiresTransportUpgrade(gate, required);
-    return blocked ? transportUpgradeRequiredError(context) : undefined;
+  protected acquireTransport(
+    requirement: TransportRequirement,
+  ): Promise<TransportLease> {
+    return this.#transport.acquireFor(requirement, {
+      deadlineMs: Date.now() + this.#timeoutMs,
+    });
   }
 
   protected validateGrant(
@@ -549,7 +557,10 @@ class BaseTransferHandle {
     return headers;
   }
 
-  protected async cancelTransfer(subject: string): Promise<void> {
+  protected async cancelTransfer(
+    subject: string,
+    nc: NatsConnection,
+  ): Promise<void> {
     const payload = new TextEncoder().encode(
       JSON.stringify({ action: "cancel" }),
     );
@@ -562,7 +573,7 @@ class BaseTransferHandle {
       "cancel",
     );
     const response = await requestTransfer(
-      this.nc,
+      nc,
       subject,
       payload,
       headers,
@@ -583,14 +594,13 @@ export class SendTransferHandle extends BaseTransferHandle {
   readonly #grant: SendTransferGrant;
 
   constructor(
-    nc: NatsConnection,
+    transport: TrellisTransportProvider,
     auth: TrellisTransferAuth,
     timeoutMs: number,
     grant: SendTransferGrant,
     inboxPrefix = "_INBOX",
-    transportGate?: TransportAuthorizationGate,
   ) {
-    super(nc, auth, timeoutMs, inboxPrefix, transportGate);
+    super(transport, auth, timeoutMs, inboxPrefix);
     this.#grant = grant;
   }
 
@@ -607,186 +617,201 @@ export class SendTransferHandle extends BaseTransferHandle {
               recordTransferError(valid.error, "send", "grant"),
             );
           }
-          const blocked = await this.transportBlocked({
-            publish: [this.#grant.subject],
-            subscribe: [`${this.inboxPrefix}.>`],
-          }, { direction: "send", subject: this.#grant.subject });
-          if (blocked) return Result.err(blocked);
-
-          let sentBytes = 0;
-          let seq = 0;
-          const hasher = incrementalSha256.create();
-          const abort = () =>
-            this.cancelTransfer(this.#grant.subject).catch(() => {});
-
+          // A transfer pins one generation from open through completion.
+          let lease: TransportLease;
           try {
-            for await (const chunk of chunkBody(body, this.#grant.chunkBytes)) {
-              sentBytes += chunk.length;
-              if (
-                this.#grant.maxBytes !== undefined &&
-                sentBytes > this.#grant.maxBytes
-              ) {
-                await abort();
-                return Result.err(
-                  recordTransferError(
-                    new TransferError({
-                      operation: "send",
-                      context: {
-                        reason: "max_bytes_exceeded",
-                        maxBytes: this.#grant.maxBytes,
-                        attemptedBytes: sentBytes,
-                      },
-                    }),
-                    "send",
-                    "validation",
-                  ),
-                );
-              }
-
-              const reply = createInbox(this.inboxPrefix);
-              const headers = await this.buildHeaders(
-                this.#grant.subject,
-                reply,
-                chunk,
-                seq,
-                undefined,
-              );
-              const response = await AsyncResult.try(() =>
-                requestTransfer(
-                  this.nc,
-                  this.#grant.subject,
-                  chunk,
-                  headers,
-                  reply,
-                  this.timeoutMs,
-                )
-              ).take();
-              if (isErr(response)) {
-                await abort();
-                return Result.err(
-                  recordTransferError(
-                    new TransferError({
-                      operation: "send",
-                      cause: response.error,
-                    }),
-                    "send",
-                    "send",
-                  ),
-                );
-              }
-
-              const ack = parseTransferAck(response, "send").take();
-              if (isErr(ack)) {
-                await abort();
-                return Result.err(
-                  recordTransferError(ack.error, "send", "ack"),
-                );
-              }
-              if (ack.status === "complete") {
-                await abort();
-                return Result.err(
-                  recordTransferError(
-                    new TransferError({
-                      operation: "send",
-                      context: { reason: "premature_completion" },
-                    }),
-                    "send",
-                    "ack",
-                  ),
-                );
-              }
-              hasher.update(chunk);
-              seq += 1;
-            }
+            lease = await this.acquireTransport({
+              publish: [this.#grant.subject],
+              subscribe: [`${this.inboxPrefix}.>`],
+            });
           } catch (cause) {
-            await abort();
             return Result.err(
-              recordTransferError(
-                new TransferError({ operation: "send", cause }),
-                "send",
-                "source",
-              ),
+              cause instanceof TransportError
+                ? cause
+                : new TransferError({ operation: "send", cause }),
             );
           }
+          const nc = lease.nc;
+          try {
+            let sentBytes = 0;
+            let seq = 0;
+            const hasher = incrementalSha256.create();
+            const abort = () =>
+              this.cancelTransfer(this.#grant.subject, nc).catch(() => {});
 
-          const sentDigest = `SHA-256=${base64urlEncode(hasher.digest())}`;
-          const completion = new TextEncoder().encode(JSON.stringify({
-            action: "complete",
-            size: sentBytes,
-            digest: sentDigest,
-          }));
-          const reply = createInbox(this.inboxPrefix);
-          const finalHeaders = await this.buildHeaders(
-            this.#grant.subject,
-            reply,
-            completion,
-            seq,
-            "complete",
-          );
-          const finalResponse = await AsyncResult.try(() =>
-            requestTransfer(
-              this.nc,
+            try {
+              for await (
+                const chunk of chunkBody(body, this.#grant.chunkBytes)
+              ) {
+                sentBytes += chunk.length;
+                if (
+                  this.#grant.maxBytes !== undefined &&
+                  sentBytes > this.#grant.maxBytes
+                ) {
+                  await abort();
+                  return Result.err(
+                    recordTransferError(
+                      new TransferError({
+                        operation: "send",
+                        context: {
+                          reason: "max_bytes_exceeded",
+                          maxBytes: this.#grant.maxBytes,
+                          attemptedBytes: sentBytes,
+                        },
+                      }),
+                      "send",
+                      "validation",
+                    ),
+                  );
+                }
+
+                const reply = createInbox(this.inboxPrefix);
+                const headers = await this.buildHeaders(
+                  this.#grant.subject,
+                  reply,
+                  chunk,
+                  seq,
+                  undefined,
+                );
+                const response = await AsyncResult.try(() =>
+                  requestTransfer(
+                    nc,
+                    this.#grant.subject,
+                    chunk,
+                    headers,
+                    reply,
+                    this.timeoutMs,
+                  )
+                ).take();
+                if (isErr(response)) {
+                  await abort();
+                  return Result.err(
+                    recordTransferError(
+                      new TransferError({
+                        operation: "send",
+                        cause: response.error,
+                      }),
+                      "send",
+                      "send",
+                    ),
+                  );
+                }
+
+                const ack = parseTransferAck(response, "send").take();
+                if (isErr(ack)) {
+                  await abort();
+                  return Result.err(
+                    recordTransferError(ack.error, "send", "ack"),
+                  );
+                }
+                if (ack.status === "complete") {
+                  await abort();
+                  return Result.err(
+                    recordTransferError(
+                      new TransferError({
+                        operation: "send",
+                        context: { reason: "premature_completion" },
+                      }),
+                      "send",
+                      "ack",
+                    ),
+                  );
+                }
+                hasher.update(chunk);
+                seq += 1;
+              }
+            } catch (cause) {
+              await abort();
+              return Result.err(
+                recordTransferError(
+                  new TransferError({ operation: "send", cause }),
+                  "send",
+                  "source",
+                ),
+              );
+            }
+
+            const sentDigest = `SHA-256=${base64urlEncode(hasher.digest())}`;
+            const completion = new TextEncoder().encode(JSON.stringify({
+              action: "complete",
+              size: sentBytes,
+              digest: sentDigest,
+            }));
+            const reply = createInbox(this.inboxPrefix);
+            const finalHeaders = await this.buildHeaders(
               this.#grant.subject,
-              completion,
-              finalHeaders,
               reply,
-              this.timeoutMs,
-            )
-          ).take();
-          if (isErr(finalResponse)) {
-            return Result.err(
-              recordTransferError(
-                new TransferError({
-                  operation: "send",
-                  cause: finalResponse.error,
-                }),
-                "send",
-                "send",
-              ),
+              completion,
+              seq,
+              "complete",
             );
-          }
+            const finalResponse = await AsyncResult.try(() =>
+              requestTransfer(
+                nc,
+                this.#grant.subject,
+                completion,
+                finalHeaders,
+                reply,
+                this.timeoutMs,
+              )
+            ).take();
+            if (isErr(finalResponse)) {
+              return Result.err(
+                recordTransferError(
+                  new TransferError({
+                    operation: "send",
+                    cause: finalResponse.error,
+                  }),
+                  "send",
+                  "send",
+                ),
+              );
+            }
 
-          const finalAck = parseTransferAck(finalResponse, "send").take();
-          if (isErr(finalAck)) {
-            return Result.err(
-              recordTransferError(finalAck.error, "send", "ack"),
-            );
+            const finalAck = parseTransferAck(finalResponse, "send").take();
+            if (isErr(finalAck)) {
+              return Result.err(
+                recordTransferError(finalAck.error, "send", "ack"),
+              );
+            }
+            if (finalAck.status !== "complete") {
+              return Result.err(
+                recordTransferError(
+                  new TransferError({
+                    operation: "send",
+                    context: { reason: "missing_completion" },
+                  }),
+                  "send",
+                  "ack",
+                ),
+              );
+            }
+            if (
+              finalAck.info.size !== sentBytes ||
+              finalAck.info.digest?.replace(/=+$/, "") !==
+                sentDigest.replace(/=+$/, "")
+            ) {
+              return Result.err(
+                recordTransferError(
+                  new TransferError({
+                    operation: "send",
+                    context: {
+                      reason: "result_metadata_mismatch",
+                      expectedSize: sentBytes,
+                      actualSize: finalAck.info.size,
+                      expectedDigest: sentDigest,
+                      actualDigest: finalAck.info.digest,
+                    },
+                  }),
+                  "send",
+                  "ack",
+                ),
+              );
+            }
+            return Result.ok(finalAck.info);
+          } finally {
+            lease.release();
           }
-          if (finalAck.status !== "complete") {
-            return Result.err(
-              recordTransferError(
-                new TransferError({
-                  operation: "send",
-                  context: { reason: "missing_completion" },
-                }),
-                "send",
-                "ack",
-              ),
-            );
-          }
-          if (
-            finalAck.info.size !== sentBytes ||
-            finalAck.info.digest?.replace(/=+$/, "") !==
-              sentDigest.replace(/=+$/, "")
-          ) {
-            return Result.err(
-              recordTransferError(
-                new TransferError({
-                  operation: "send",
-                  context: {
-                    reason: "result_metadata_mismatch",
-                    expectedSize: sentBytes,
-                    actualSize: finalAck.info.size,
-                    expectedDigest: sentDigest,
-                    actualDigest: finalAck.info.digest,
-                  },
-                }),
-                "send",
-                "ack",
-              ),
-            );
-          }
-          return Result.ok(finalAck.info);
         })();
         if (result.isOk()) {
           const info = result.take() as FileInfo;
@@ -804,14 +829,13 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
   readonly #grant: ReceiveTransferGrant;
 
   constructor(
-    nc: NatsConnection,
+    transport: TrellisTransportProvider,
     auth: TrellisTransferAuth,
     timeoutMs: number,
     grant: ReceiveTransferGrant,
     inboxPrefix = "_INBOX",
-    transportGate?: TransportAuthorizationGate,
   ) {
-    super(nc, auth, timeoutMs, inboxPrefix, transportGate);
+    super(transport, auth, timeoutMs, inboxPrefix);
     this.#grant = grant;
   }
 
@@ -826,11 +850,23 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
             recordTransferError(valid.error, "receive", "grant"),
           );
         }
-        const blocked = await this.transportBlocked({
-          subscribe: [this.#grant.subject],
-          publish: [`${this.inboxPrefix}.>`],
-        }, { direction: "receive", subject: this.#grant.subject });
-        if (blocked) return Result.err(blocked);
+        // A transfer pins one generation for the whole stream: the frame
+        // request path and the reply subscription stay on this connection
+        // until the stream ends, errors, or is cancelled.
+        let lease: TransportLease;
+        try {
+          lease = await this.acquireTransport({
+            subscribe: [this.#grant.subject],
+            publish: [`${this.inboxPrefix}.>`],
+          });
+        } catch (cause) {
+          return Result.err(
+            cause instanceof TransportError
+              ? cause
+              : new TransferError({ operation: "stream", cause }),
+          );
+        }
+        const nc = lease.nc;
 
         return Result.ok(receiveStream(
           this.#grant,
@@ -845,7 +881,7 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
               undefined,
             );
             return await requestTransfer(
-              this.nc,
+              nc,
               this.#grant.subject,
               payload,
               headers,
@@ -853,7 +889,8 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
               this.timeoutMs,
             );
           },
-          () => this.cancelTransfer(this.#grant.subject),
+          () => this.cancelTransfer(this.#grant.subject, nc),
+          () => lease.release(),
         ));
       })(),
     );
@@ -889,53 +926,47 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
 export type TransferHandle = SendTransferHandle | ReceiveTransferHandle;
 
 export function createTransferHandle(
-  nc: NatsConnection,
+  transport: TrellisTransportProvider,
   auth: TrellisTransferAuth,
   timeoutMs: number,
   grant: SendTransferGrant,
   inboxPrefix?: string,
-  transportGate?: TransportAuthorizationGate,
 ): SendTransferHandle;
 export function createTransferHandle(
-  nc: NatsConnection,
+  transport: TrellisTransportProvider,
   auth: TrellisTransferAuth,
   timeoutMs: number,
   grant: ReceiveTransferGrant,
   inboxPrefix?: string,
-  transportGate?: TransportAuthorizationGate,
 ): ReceiveTransferHandle;
 export function createTransferHandle(
-  nc: NatsConnection,
+  transport: TrellisTransportProvider,
   auth: TrellisTransferAuth,
   timeoutMs: number,
   grant: TransferGrant,
   inboxPrefix?: string,
-  transportGate?: TransportAuthorizationGate,
 ): TransferHandle;
 export function createTransferHandle(
-  nc: NatsConnection,
+  transport: TrellisTransportProvider,
   auth: TrellisTransferAuth,
   timeoutMs: number,
   grant: TransferGrant,
   inboxPrefix = "_INBOX",
-  transportGate?: TransportAuthorizationGate,
 ): TransferHandle {
   return grant.direction === "send"
     ? new SendTransferHandle(
-      nc,
+      transport,
       auth,
       timeoutMs,
       grant,
       inboxPrefix,
-      transportGate,
     )
     : new ReceiveTransferHandle(
-      nc,
+      transport,
       auth,
       timeoutMs,
       grant,
       inboxPrefix,
-      transportGate,
     );
 }
 

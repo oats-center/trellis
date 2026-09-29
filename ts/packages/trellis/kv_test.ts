@@ -10,6 +10,7 @@ import {
   type KvRepresentation,
   TypedKV,
 } from "./kv.ts";
+import { fixedTransportProvider } from "./transport/generations.ts";
 
 const current: KvRepresentation<{ count: number }> = {
   version: 2,
@@ -75,7 +76,11 @@ Deno.test("KV keys exposes the broker error if its bucket disappears", async () 
   let nats: NatsTestContainer | undefined;
   try {
     nats = await NatsTestContainer.start(workdir);
-    const kv = (await TypedKV.open(nats.nc, "missing_after_open", current))
+    const kv = (await TypedKV.open(
+      fixedTransportProvider(nats.nc),
+      "missing_after_open",
+      current,
+    ))
       .orThrow();
     await kv.put("present", { count: 1 }).orThrow();
     assertEquals(await Array.fromAsync((await kv.keys()).orThrow()), [

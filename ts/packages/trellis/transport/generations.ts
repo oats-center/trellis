@@ -103,6 +103,12 @@ export type TrellisTransportProvider = {
   ): Promise<TransportLease>;
   /** Resolves when the logical connection closes. */
   closed(): Promise<void | Error>;
+  /** Logical lifecycle event stream (logical disconnect/reconnect/closed). */
+  status(): AsyncIterable<unknown>;
+  /** Close the logical connection and every physical generation. */
+  close(): Promise<void>;
+  /** Whether the logical connection is closed. */
+  isClosed(): boolean;
 };
 
 /**
@@ -121,6 +127,9 @@ export function fixedTransportProvider(
     acquireCurrent: () => Promise.resolve(lease),
     acquireFor: () => Promise.resolve(lease),
     closed: () => nc.closed(),
+    status: () => nc.status(),
+    close: () => nc.close(),
+    isClosed: () => nc.isClosed(),
   };
 }
 
@@ -262,9 +271,24 @@ export type TransportGenerationManagerOptions = {
    */
   onPreActivate?(generation: TransportGeneration): Promise<void> | void;
   /**
-   * Retire framework intake for a generation. Awaited before its physical
-   * connection closes and before `close()` resolves, so a superseded generation
-   * is never torn down while intake can still reference it.
+   * Stop *new* framework intake for a generation that has just been superseded
+   * as the default. The physical connection and already-accepted work stay
+   * alive until leases reach zero; this only retires the shared/queue-grouped
+   * intake so overlapped generations do not double-deliver.
+   * @internal
+   */
+  onDrain?(generation: TransportGeneration): void;
+  /**
+   * A generation has just become the logical default. Used to recompute
+   * admission-derived state (transport gate, health, hints) from the new
+   * current generation. @internal
+   */
+  onActivate?(generation: TransportGeneration): void;
+  /**
+   * Retire framework intake and per-generation resources for a generation.
+   * Awaited before its physical connection closes and before `close()`
+   * resolves, so a superseded generation is never torn down while intake can
+   * still reference it.
    * @internal
    */
   onRetire?(generation: TransportGeneration): Promise<void> | void;
@@ -310,7 +334,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
    * the current default with no safe survivor, or a logical close, does.
    * @internal
    */
-  logicalStatus(): AsyncIterable<unknown> {
+  status(): AsyncIterable<unknown> {
     const listeners = this.#logicalListeners;
     const closers = this.#logicalClosers;
     return {
@@ -792,6 +816,9 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         generationId: previous.id,
         reason,
       });
+      // Retire the superseded generation's shared intake now that a default
+      // exists. Its pinned sessions and accepted work are untouched.
+      this.#options.onDrain?.(previous);
     }
     if (!this.#generations.includes(generation)) {
       this.#generations.push(generation);
@@ -809,6 +836,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       this.#logicalConnected = true;
       this.#emitLogical({ type: "reconnect" });
     }
+    this.#options.onActivate?.(generation);
     this.#notify();
   }
 

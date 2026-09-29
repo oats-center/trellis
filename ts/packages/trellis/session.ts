@@ -613,6 +613,8 @@ function mapTransportAcquireFailure(args: {
       ? "trellis.request.timeout"
       : cause.code === "trellis.transport.aborted"
       ? "trellis.request.cancelled"
+      : cause.code === "trellis.transport.closed"
+      ? "trellis.request.closed"
       : "trellis.request.unavailable";
     return requestFailedTransportError({
       code,
@@ -2588,6 +2590,35 @@ export class Trellis<
   #stateMigrations: Readonly<
     Record<string, ResourceMigrations<unknown> | undefined>
   >;
+  /**
+   * Logical provider core: registered RPC handlers survive every transport
+   * generation. Ingress subscriptions are installed per generation.
+   */
+  #rpcRegistrations = new Map<string, {
+    method: MethodsOf<TA>;
+    ctx: RpcDescriptorOf<TA, MethodsOf<TA>>;
+    subject: string;
+    fn: HandlerFn<TA, MethodsOf<TA>, TA, HandlerTrellis<TA, TRequests>>;
+    handlerTrellis: HandlerTrellis<TA, TRequests>;
+  }>();
+  /**
+   * One installed provider ingress per admitted generation, keyed by the
+   * generation id the owning runtime reports.
+   */
+  #providerIngress = new Map<number, {
+    id: number;
+    nc: NatsConnection;
+    lease?: () => TransportLease;
+    /**
+     * Held from install until every intake *loop* has finished (not merely
+     * until `drain()` resolves), so a buffered accepted delivery cannot arrive
+     * after the generation is reaped but before its per-callback lease is
+     * taken. `drain()` stops new broker deliveries and only protocol-flushes;
+     * the iterator still has queued messages to consume.
+     */
+    intakeLease?: TransportLease;
+    retireFns: Array<{ drain: () => Promise<void>; done: Promise<void> }>;
+  }>();
 
   constructor(
     name: string, // Must be unique for a service
@@ -2869,7 +2900,7 @@ export class Trellis<
         TypedKV<DurableOperationRecord>
       > => {
         const result = await TypedKV.open<DurableOperationRecord>(
-          this.#nats,
+          this.#transport,
           bucket,
           {
             version: 1,
@@ -2883,6 +2914,7 @@ export class Trellis<
             bindOnly: true,
             ttl: 30 * 24 * 60 * 60 * 1_000,
             maxValueBytes: 1024 * 1024,
+            acquireTimeoutMs: this.timeout,
           },
         );
         const value = result.take();
@@ -3819,12 +3851,11 @@ export class Trellis<
       ): AsyncResult<FileInfo, TransferOperationError> =>
         AsyncResult.from((async () => {
           const handle = createTransferHandle(
-            this.#nats,
+            this.#transport,
             this.#auth,
             this.timeout,
             grant,
             this.#inboxPrefix,
-            this.#transportGate,
           );
           if (!(handle instanceof Object) || !("send" in handle)) {
             return err(
@@ -3851,12 +3882,11 @@ export class Trellis<
   transfer(grant: ReceiveTransferGrant): ReceiveTransferHandle;
   transfer(grant: TransferGrant): ReturnType<typeof createTransferHandle> {
     return createTransferHandle(
-      this.#nats,
+      this.#transport,
       this.#auth,
       this.timeout,
       grant,
       this.#inboxPrefix,
-      this.#transportGate,
     );
   }
 
@@ -3902,66 +3932,221 @@ export class Trellis<
       { method: String(method) },
       `Mounting ${method.toString()} RPC handler`,
     );
+    const registration = { method, ctx, subject, fn, handlerTrellis };
+    this.#rpcRegistrations.set(method, registration);
+
+    if (this.#adaptiveTransport) {
+      // Logical provider core: the handler is registered once and every
+      // admitted generation gets its own queue-grouped ingress subscription,
+      // so overlapping generations deliver each request exactly once.
+      for (const ingress of this.#providerIngress.values()) {
+        ingress.retireFns.push(this.#installRpcIngress(ingress, registration));
+      }
+      return AsyncResult.ok(undefined);
+    }
+
     const sub = this.#nats.subscribe(subject, {
       queue: routeQueueGroup(subject),
     });
+    return this.#runRpcIntake(sub, registration);
+  }
 
+  /**
+   * Install provider ingress for one admitted generation.
+   *
+   * Registers the queue-grouped subscriptions for every handler in the logical
+   * provider core. Called before the generation becomes the default so routing
+   * exists before new work can select it. @internal
+   */
+  async installProviderIngress(target: {
+    id: number;
+    nc: NatsConnection;
+    /**
+     * Lease the exact admitted generation the candidate ingress routes on. It is
+     * called once for the ingress-lifetime pin and again per accepted callback;
+     * it throws when the generation is no longer admitted, which fails the
+     * candidate rather than executing unpinned.
+     */
+    lease?: () => TransportLease;
+  }): Promise<void> {
+    if (this.#providerIngress.has(target.id)) return;
+    const ingress = {
+      id: target.id,
+      nc: target.nc,
+      lease: target.lease,
+      intakeLease: target.lease?.(),
+      retireFns: [] as Array<
+        { drain: () => Promise<void>; done: Promise<void> }
+      >,
+    };
+    this.#providerIngress.set(target.id, ingress);
+    try {
+      for (const registration of this.#rpcRegistrations.values()) {
+        ingress.retireFns.push(this.#installRpcIngress(ingress, registration));
+      }
+      // The SUBs above are only queued client-side. Flush proves the broker has
+      // accepted the candidate's routes before it becomes the default and the
+      // superseded intake is drained, so cutover cannot drop a request into a
+      // gap with no queue-group member.
+      await target.nc.flush();
+    } catch (cause) {
+      // A candidate that could not fully install must not be published with
+      // half-installed intake or an unpinned ingress. Stop new deliveries but
+      // never block rejection on a held application callback; release the
+      // ingress lease once the loops actually finish.
+      this.#providerIngress.delete(target.id);
+      const done = ingress.retireFns.map((entry) => {
+        void entry.drain();
+        return entry.done;
+      });
+      void Promise.allSettled(done).then(() => ingress.intakeLease?.release());
+      throw cause;
+    }
+  }
+
+  /**
+   * Stop new provider intake on one generation.
+   *
+   * `drain()` stops new broker deliveries and protocol-flushes; it does **not**
+   * wait for messages already buffered in the client iterator. The
+   * ingress-lifetime lease is therefore released only once every intake *loop*
+   * has finished, so a buffered accepted delivery stays protected through its
+   * per-callback lease. Already-accepted callbacks keep running independently.
+   * @internal
+   */
+  retireProviderIngress(id: number): void {
+    const ingress = this.#providerIngress.get(id);
+    if (!ingress) return;
+    this.#providerIngress.delete(id);
+    const done = ingress.retireFns.map((entry) => {
+      void entry.drain();
+      return entry.done;
+    });
+    void Promise.allSettled(done).then(() => ingress.intakeLease?.release());
+  }
+
+  #installRpcIngress(
+    ingress: {
+      id: number;
+      nc: NatsConnection;
+      lease?: () => TransportLease;
+      retireFns: Array<{ drain: () => Promise<void>; done: Promise<void> }>;
+    },
+    registration: {
+      method: MethodsOf<TA>;
+      ctx: RpcDescriptorOf<TA, MethodsOf<TA>>;
+      subject: string;
+      fn: HandlerFn<TA, MethodsOf<TA>, TA, HandlerTrellis<TA, TRequests>>;
+      handlerTrellis: HandlerTrellis<TA, TRequests>;
+    },
+  ): { drain: () => Promise<void>; done: Promise<void> } {
+    const sub = ingress.nc.subscribe(registration.subject, {
+      queue: routeQueueGroup(registration.subject),
+    });
+    const completion = Promise.withResolvers<void>();
+    const intake = this.#runRpcIntake(sub, registration, ingress.lease);
+    this.#tasks.add(
+      `rpc:${ingress.id}:${registration.method}`,
+      intake,
+    );
+    // `done` resolves when the intake loop itself finishes consuming buffered
+    // messages, independent of when `drain()` protocol-flushes.
+    intake.then(() => completion.resolve(), () => completion.resolve());
+    return {
+      drain: () => sub.drain().catch(() => undefined),
+      done: completion.promise,
+    };
+  }
+
+  #runRpcIntake(
+    sub: ReturnType<NatsConnection["subscribe"]>,
+    registration: {
+      method: MethodsOf<TA>;
+      ctx: RpcDescriptorOf<TA, MethodsOf<TA>>;
+      subject: string;
+      fn: HandlerFn<TA, MethodsOf<TA>, TA, HandlerTrellis<TA, TRequests>>;
+      handlerTrellis: HandlerTrellis<TA, TRequests>;
+    },
+    /** Pin the generation that accepted this callback through its reply. */
+    leaseFactory?: () => TransportLease,
+  ): AsyncResult<void, ValidationError | UnexpectedError> {
+    const { method, ctx, fn, handlerTrellis } = registration;
     return AsyncResult.try(async () => {
       for await (const msg of sub) {
-        const resultPromise = await this.#processRPCMessage(
-          method,
-          ctx,
-          msg,
-          fn,
-          handlerTrellis,
-        );
-        const result = resultPromise.take();
-
-        if (isErr(result)) {
-          this.#respondWithError(msg, result.error, { method: String(method) });
-          continue;
+        let lease: TransportLease | undefined;
+        if (leaseFactory) {
+          try {
+            lease = leaseFactory();
+          } catch {
+            // The generation is no longer admitted; never execute unpinned.
+            continue;
+          }
         }
-
-        const sent = this.#respondWithPayload(msg, result.payload, undefined, {
-          method: String(method),
-          responseKind: "success",
-        });
-        if (sent.isErr()) {
-          const responseBytes = payloadByteLength(result.payload);
-          const message = causeMessage(sent.error.cause);
-          this.#respondWithError(
+        try {
+          const resultPromise = await this.#processRPCMessage(
+            method,
+            ctx,
             msg,
-            new TransportError({
-              code: "trellis.rpc.response_send_failed",
-              message: message.includes("max_payload")
-                ? "Trellis RPC response exceeded NATS max_payload."
-                : "Trellis could not send the RPC response.",
-              hint:
-                "Reduce the requested page size or use a narrower RPC that does not include large detail payloads.",
-              cause: sent.error.cause,
-              context: {
-                method: String(method),
-                subject: msg.subject,
-                responseBytes,
-                causeMessage: message,
-              },
-            }),
-            { method: String(method), responseBytes },
+            fn,
+            handlerTrellis,
           );
-          continue;
-        }
+          const result = resultPromise.take();
 
-        if (result.afterReply.length > 0) {
-          for (const task of result.afterReply) {
-            try {
-              await task();
-            } catch (error) {
-              this.#log.error(
-                { method: String(method), error },
-                "RPC after-reply task failed",
-              );
+          if (isErr(result)) {
+            this.#respondWithError(msg, result.error, {
+              method: String(method),
+            });
+            continue;
+          }
+
+          const sent = this.#respondWithPayload(
+            msg,
+            result.payload,
+            undefined,
+            {
+              method: String(method),
+              responseKind: "success",
+            },
+          );
+          if (sent.isErr()) {
+            const responseBytes = payloadByteLength(result.payload);
+            const message = causeMessage(sent.error.cause);
+            this.#respondWithError(
+              msg,
+              new TransportError({
+                code: "trellis.rpc.response_send_failed",
+                message: message.includes("max_payload")
+                  ? "Trellis RPC response exceeded NATS max_payload."
+                  : "Trellis could not send the RPC response.",
+                hint:
+                  "Reduce the requested page size or use a narrower RPC that does not include large detail payloads.",
+                cause: sent.error.cause,
+                context: {
+                  method: String(method),
+                  subject: msg.subject,
+                  responseBytes,
+                  causeMessage: message,
+                },
+              }),
+              { method: String(method), responseBytes },
+            );
+            continue;
+          }
+
+          if (result.afterReply.length > 0) {
+            for (const task of result.afterReply) {
+              try {
+                await task();
+              } catch (error) {
+                this.#log.error(
+                  { method: String(method), error },
+                  "RPC after-reply task failed",
+                );
+              }
             }
           }
+        } finally {
+          lease?.release();
         }
       }
     });

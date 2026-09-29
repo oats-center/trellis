@@ -1,22 +1,19 @@
 /**
- * F2 — capability growth is passive until explicitly adopted.
+ * F2 — capability growth is adopted automatically on a service.
  *
  * One service attachment starts with capability A admitted and its optional
  * capability B offered-but-declined. Growing B through the real admin API must
- * leave the same physical attachment serving A and an active Live observation
- * while B is reported as a pending transport condition, and only an explicit
- * `refreshTransport()` may replace the attachment.
+ * automatically open a wider physical generation that serves B while A and an
+ * active Live observation accepted on the original generation keep working.
+ * No application refresh call is made, and growth is not an outage.
  *
- * Physical identity is `connectionId` (broker server + client id + user NKey);
- * `runtimeConnectionId` is the SDK logical connection and must stay stable
- * across the replacement.
+ * Physical identity is `connectionId`; `runtimeConnectionId` is the SDK logical
+ * connection and must stay stable across the generation change.
  */
 
 import { assert, assertEquals } from "@std/assert";
 import { fromFileUrl } from "@std/path";
 import { Result } from "@oatscenter/trellis";
-import { encodePermissionTargetWasm } from "@oatscenter/trellis/auth";
-import type { TransportError } from "@oatscenter/trellis/errors";
 import { TrellisService } from "@oatscenter/trellis/service";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
@@ -84,48 +81,9 @@ async function attachmentsFor(
 }
 
 /** Waits until the attachment predicate holds for one participant. */
-async function waitForAttachment(
-  runtime: Runtime,
-  participantId: string,
-  predicate: (item: Attachment) => boolean,
-): Promise<Attachment> {
-  return await runtime.waitFor(async () => {
-    const items = await attachmentsFor(runtime, participantId);
-    return items.find(predicate) ?? false;
-  }, { timeoutMs: 90_000 });
-}
-
-/** Grant binding as reported by the production admin surface. */
-type GrantBinding = {
-  revision: bigint;
-  installedRevision: bigint;
-  expiresAt: bigint | null;
-  ownerId: string;
-  ownerKind: string;
-  participantId: string;
-  platformPrivileges: string[];
-  grants: {
-    format: string;
-    permissions: { action: string; target: Uint8Array }[];
-  };
-};
-
-async function grantBinding(
-  runtime: Runtime,
-  participantId: string,
-): Promise<GrantBinding> {
-  const page = await runtime.callAdminRpc("authGrantsList", {
-    participantId,
-  }) as { items: GrantBinding[] };
-  const binding = page.items.find((item) =>
-    item.participantId === participantId
-  );
-  if (!binding) throw new Error(`no grant binding for ${participantId}`);
-  return binding;
-}
 
 Deno.test(
-  "F2 a grown capability stays passive until explicit adoption",
+  "F2 a grown service capability adopts automatically without disturbing Live",
   async () => {
     await withTrellisRuntime(async (runtime) => {
       const subjectContract = participants.TransportGrowthSubject.participant;
@@ -231,7 +189,7 @@ Deno.test(
         })().catch(() => undefined);
         await runtime.waitFor(() => frames.length > 0, { timeoutMs: 30_000 });
 
-        // 5. A succeeds on the admitted authority.
+        // 5. A succeeds on the initial authority.
         assertEquals(
           (await subject.advance({})).isOk(),
           true,
@@ -262,82 +220,58 @@ Deno.test(
           contract: subjectContract,
         });
 
-        // 9. The retained notice appears on the same attachment.
-        await runtime.waitFor(
-          () => subject.connection.status.transportUpgradeAvailable === true,
-          { timeoutMs: 90_000 },
+        // 9. Growth is adopted automatically: a second physical attachment
+        //    appears under the same logical connection without any application
+        //    refresh call.
+        const adopted = await runtime.waitFor(async () => {
+          const items = (await attachmentsFor(runtime, subjectId)).filter(
+            (item) => item.runtimeConnectionId === logical,
+          );
+          return items.length >= 2 ? items : false;
+        }, { timeoutMs: 90_000 });
+        assert(
+          adopted.some((item) => item.connectionId !== physical),
+          "authority growth must adopt a new physical generation",
         );
 
-        // 10. A reader arriving after the growth sees the retained status.
-        assertEquals(subject.connection.status.transportUpgradeAvailable, true);
-
-        // 11. Still the same attachment, logical and physical.
-        const [grown] = await attachmentsFor(runtime, subjectId);
-        assertEquals(grown.runtimeConnectionId, logical);
-        assertEquals(grown.connectionId, physical);
-
-        // 12-13. An ordinary renewal keeps everything on the same attachment.
-        // The short configured lifetimes guarantee at least one renewal inside
-        // this window; the attachment identity is re-read afterwards.
+        // 10. Planned growth is not an outage or a pending notice.
         assertEquals(
-          (await subject.advance({})).isOk(),
-          true,
+          subject.connection.status.transportUpgradeAvailable,
+          false,
         );
-        await runtime.waitFor(() => frames.length > 1, { timeoutMs: 30_000 });
-        const [renewed] = await attachmentsFor(runtime, subjectId);
-        assertEquals(renewed.runtimeConnectionId, logical);
-        assertEquals(renewed.connectionId, physical);
-        assertEquals(subject.connection.status.transportUpgradeAvailable, true);
 
-        // 14. The grown capability is gated, not silently attempted. The two
-        // layers are distinct: application authorization now makes B available
-        // while the current attachment has not adopted it.
+        // 11. The observation accepted on the original generation keeps
+        //     delivering: make-before-break, not a replacement.
+        await runtime.waitFor(() => frames.length > 1, { timeoutMs: 30_000 });
+
+        // 12-13. The grown capability now runs automatically on the new
+        //     generation, and A keeps working.
         assertEquals(
           subject.connection.availability().capabilities[CAPABILITY_B],
           true,
           "the approved capability must be available at the application layer",
         );
-        const gated = await subject.extend({});
-        assert(gated.isErr(), "the unadopted capability must not run");
-        assertEquals(
-          (gated.error as TransportError).code,
-          "transport_upgrade_required",
-        );
-        const [stillPending] = await attachmentsFor(runtime, subjectId);
-        assertEquals(stillPending.connectionId, physical);
-        assertEquals(
-          extendCalls,
-          0,
-          "the gated call must not reach the target",
-        );
-
-        // 15-16. Explicit adoption replaces the physical attachment only.
-        await subject.connection.refreshTransport().orThrow();
-        const adopted = await waitForAttachment(
-          runtime,
-          subjectId,
-          (item) => item.connectionId !== physical,
-        );
-        assertEquals(adopted.runtimeConnectionId, logical);
-        assert(
-          adopted.connectionId !== physical,
-          "explicit adoption must produce a new physical attachment",
-        );
-
-        // 17. The old ephemeral observation experiences ordinary loss.
-        await feedTask;
-
-        // 18. Both capabilities work on the adopted attachment.
         assertEquals(
           (await subject.extend({})).isOk(),
           true,
+          "the grown capability must run without an explicit refresh",
         );
         assertEquals(
           (await subject.advance({})).isOk(),
           true,
         );
         assertEquals(extendCalls, 1);
-        assertEquals(advanceCalls, 3);
+        assertEquals(advanceCalls, 2);
+
+        // 14. The logical identity stayed stable across the rollover.
+        assert(
+          (await attachmentsFor(runtime, subjectId)).every(
+            (item) => item.runtimeConnectionId === logical,
+          ),
+          "the logical connection identity must stay stable across growth",
+        );
+        void feed.close();
+        await feedTask;
 
         // 19. A newly opened observation works.
         const reopened = await caller.watch({

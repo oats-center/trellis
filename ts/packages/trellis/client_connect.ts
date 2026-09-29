@@ -23,7 +23,6 @@ import {
 } from "./auth/authorization_context.ts";
 import { installAuthorizationRefresh } from "./auth/authorization/install_refresh.ts";
 import {
-  resourceTransportCheck,
   type TransportAuthorizationGate,
   TransportAuthorizationState,
 } from "./auth/authorization/transport_state.ts";
@@ -83,6 +82,7 @@ import { TypedStore } from "./store.ts";
 import {
   TransportGenerationManager,
   type TransportGenerationPrepared,
+  type TrellisTransportProvider,
 } from "./transport/generations.ts";
 import {
   recordCatalogDuration,
@@ -313,15 +313,17 @@ type ClientConnectArgsFor<TContract extends ClientContract> =
     ) => Promise<ClientAuthContinuation> | ClientAuthContinuation;
   };
 
-async function resolveClientResources(args: {
-  nc: NatsConnection;
+function resolveClientResources(args: {
+  /** Logical transport the handles acquire a generation from. */
+  transport: TrellisTransportProvider;
+  /** Budget for acquiring a generation on a finite resource operation. */
+  acquireTimeoutMs: number;
   participant: ClientContract;
   participantDigest: string;
   bindings: ContractResourceBindings;
   previous?: InstalledClientResources;
-  transportGate?: TransportAuthorizationGate;
   migrations?: ClientResourceMigrations;
-}): Promise<InstalledClientResources> {
+}): InstalledClientResources {
   const signature = JSON.stringify({
     participantDigest: args.participantDigest,
     bindings: args.bindings,
@@ -366,22 +368,14 @@ async function resolveClientResources(args: {
       handles[name] = handleActive;
       // Bound but not opened: the backing bucket is materialized on first
       // operation, after the transport check admits it.
-      kv[name] = TypedKV.bind(args.nc, binding.bucket, descriptor, {
+      kv[name] = TypedKV.bind(args.transport, binding.bucket, descriptor, {
         bindOnly: true,
         history: binding.history,
         ttl: binding.ttlMs,
         maxValueBytes: binding.maxValueBytes,
         migrations: args.migrations?.kv?.[name],
         isCurrent: () => handleActive.value && active.value,
-        ...(args.transportGate
-          ? {
-            transport: resourceTransportCheck(
-              args.transportGate,
-              "kv",
-              binding.bucket,
-            ),
-          }
-          : {}),
+        acquireTimeoutMs: args.acquireTimeoutMs,
       });
     } else if (descriptor.kind === "store") {
       const binding = args.bindings.store?.[name];
@@ -400,21 +394,13 @@ async function resolveClientResources(args: {
       }
       const handleActive = { value: true };
       handles[name] = handleActive;
-      store[name] = TypedStore.bind(args.nc, binding.name, {
+      store[name] = TypedStore.bind(args.transport, binding.name, {
         bindOnly: true,
         ttlMs: binding.ttlMs,
         maxObjectBytes: binding.maxObjectBytes,
         maxTotalBytes: binding.maxTotalBytes,
         isCurrent: () => handleActive.value && active.value,
-        ...(args.transportGate
-          ? {
-            transport: resourceTransportCheck(
-              args.transportGate,
-              "store",
-              binding.name,
-            ),
-          }
-          : {}),
+        acquireTimeoutMs: args.acquireTimeoutMs,
       });
     }
   }
@@ -1545,12 +1531,6 @@ export async function connectClientWithDeps<
     () => authorizationProviderCache.stop(),
     () => authorizationProviderCache.stop(),
   );
-  // Resource resolution follows the logical default generation rather than the
-  // first physical attachment, so a refresh after a generation rollover opens
-  // resources on a live admitted connection. With no current generation the
-  // refresh fails transiently and the scheduler retries it.
-  const activeNc = (): NatsConnection => manager.currentNats();
-
   const clientOpts: ClientOpts = {
     ...(typeof args.name === "string" ? { name: args.name } : {}),
     ...(args.log ? { log: args.log } : {}),
@@ -1593,7 +1573,7 @@ export async function connectClientWithDeps<
   const connection = observeTrellisConnection({
     kind: "client",
     transport: {
-      status: () => manager.logicalStatus(),
+      status: () => manager.status(),
       closed: () => manager.closed(),
       close: () => manager.close(),
       isClosed: () => manager.isClosed(),
@@ -1646,12 +1626,12 @@ export async function connectClientWithDeps<
   ) as RuntimeApi;
   const resourceState: ClientResourceState = {
     current: await resolveClientResources({
-      nc: activeNc(),
+      transport: manager,
+      acquireTimeoutMs: args.timeout ?? 30_000,
       participant: args.participant,
       participantDigest: runtimeState.participantDigest,
       bindings: bootstrap.resourceBindings,
       migrations: args.resourceMigrations,
-      transportGate,
     }),
   };
   const resourceFacades = clientResourceFacades(resourceState);
@@ -1703,13 +1683,13 @@ export async function connectClientWithDeps<
         prepareOnly: true,
         prepareInstall: async (response) => {
           const nextResources = await resolveClientResources({
-            nc: activeNc(),
+            transport: manager,
+            acquireTimeoutMs: args.timeout ?? 30_000,
             participant: args.participant,
             participantDigest: response.authorization.participantDigest,
             bindings: response.authorization.resourceRuntime,
             previous: resourceState.current,
             migrations: args.resourceMigrations,
-            transportGate,
           });
           return (verified) => {
             if (nextResources !== resourceState.current) {

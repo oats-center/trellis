@@ -11,7 +11,11 @@ import {
   type Result as ResultType,
 } from "@oatscenter/result";
 import { StoreError, TransportError } from "./errors/index.ts";
-import type { ResourceTransportCheck } from "./auth/authorization/transport_state.ts";
+import type {
+  TransportLease,
+  TransportRequirement,
+  TrellisTransportProvider,
+} from "./transport/generations.ts";
 import {
   decodePaginationCursor,
   encodePaginationCursor,
@@ -22,6 +26,8 @@ export { TypedStoreEntry } from "./store_entry.ts";
 
 const INTERNAL_CONTENT_TYPE_METADATA_KEY = "__trellis_content_type";
 const DEFAULT_STORE_WAIT_POLL_INTERVAL_MS = 250;
+/** Default budget for acquiring a transport generation for one Store operation. */
+const DEFAULT_RESOURCE_ACQUIRE_TIMEOUT_MS = 30_000;
 const MAX_STORE_LIST_LIMIT = 500;
 const DEFAULT_STORE_LIST_LIMIT = 100;
 const STORE_LIST_CURSOR_ENDPOINT = "trellis.store.list";
@@ -43,8 +49,11 @@ export type StoreOpenOptions = {
   maxTotalBytes?: number;
   bindOnly?: boolean;
   isCurrent?: () => boolean;
-  /** Transport-admission check for operations on this bucket. @internal */
-  transport?: ResourceTransportCheck;
+  /**
+   * Budget for acquiring a transport generation on a finite operation.
+   * Defaults to 30 seconds.
+   */
+  acquireTimeoutMs?: number;
 };
 
 /** Failures a Store operation can report. */
@@ -83,6 +92,18 @@ export type StoreStatus = {
   ttlMs: number;
   maxObjectBytes?: number;
   maxTotalBytes?: number;
+};
+
+/** Structural ObjectStore read result used by a returned store entry. */
+type ObjectResultLike = {
+  data: ReadableStream<Uint8Array>;
+  error: Promise<unknown>;
+};
+
+/** Structural ObjectStore read surface used by a returned store entry. */
+type ObjectStoreLike = {
+  get(key: string): Promise<ObjectResultLike | null>;
+  getBlob(key: string): Promise<Uint8Array | null>;
 };
 
 function metadataWithContentType(
@@ -303,11 +324,61 @@ function storeOpenError(name: string, cause: unknown): StoreError {
   });
 }
 
-function abortedStoreError(key: string, cause: unknown): StoreError {
+function storeAbortedError(
+  operation: string,
+  key: string,
+  cause: unknown,
+): StoreError {
   return new StoreError({
-    operation: "waitFor",
+    operation,
     cause,
     context: { key, reason: "aborted" },
+  });
+}
+
+function storeTimeoutError(operation: string, key: string): StoreError {
+  return new StoreError({
+    operation,
+    context: { key, reason: "timeout" },
+  });
+}
+
+/**
+ * Settle `operation` within an absolute deadline and optional abort signal.
+ *
+ * Object/KV APIs do not accept a per-call timeout for backend open or metadata
+ * reads, so the caller's budget is enforced at this boundary; the abandoned
+ * request keeps running under the connection's own timeout.
+ */
+function withinDeadline<T>(
+  operation: Promise<T>,
+  deadlineMs: number,
+  signal: AbortSignal | undefined,
+  onTimeout: () => Error,
+  onAbort: () => Error,
+): Promise<T> {
+  const remaining = deadlineMs - Date.now();
+  if (remaining <= 0) return Promise.reject(onTimeout());
+  if (signal?.aborted) return Promise.reject(onAbort());
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (): boolean => {
+      if (settled) return false;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onSignalAbort);
+      return true;
+    };
+    const succeed = (value: T) => {
+      if (finish()) resolve(value);
+    };
+    const fail = (cause: unknown) => {
+      if (finish()) reject(cause);
+    };
+    const timer = setTimeout(() => fail(onTimeout()), remaining);
+    const onSignalAbort = () => fail(onAbort());
+    signal?.addEventListener("abort", onSignalAbort, { once: true });
+    operation.then(succeed, fail);
   });
 }
 
@@ -347,6 +418,45 @@ function streamFromBody(
   body: Exclude<StoreBody, Uint8Array>,
 ): ReadableStream<Uint8Array> {
   return body instanceof ReadableStream ? body : streamFromAsyncIterable(body);
+}
+
+/**
+ * Release a generation lease once the object data stream settles.
+ *
+ * An entry stream is a physical read exchange, so it holds its generation until
+ * the reader finishes, errors, or cancels.
+ */
+function releaseOnSettle(
+  data: ReadableStream<Uint8Array>,
+  release: () => void,
+): ReadableStream<Uint8Array> {
+  const reader = data.getReader();
+  let released = false;
+  const finish = () => {
+    if (released) return;
+    released = true;
+    release();
+  };
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await reader.read();
+        if (next.done) {
+          finish();
+          controller.close();
+          return;
+        }
+        controller.enqueue(next.value);
+      } catch (cause) {
+        finish();
+        controller.error(cause);
+      }
+    },
+    async cancel(reason) {
+      await reader.cancel(reason);
+      finish();
+    },
+  });
 }
 
 async function unwrapObjectInfo(
@@ -389,23 +499,38 @@ export async function ensureExistingStoreOptions(
 }
 
 export class TypedStore {
-  #store?: ObjectStore;
-  #opener?: () => Promise<ObjectStore>;
-  readonly #transport?: ResourceTransportCheck;
-  readonly #options:
-    & Required<Pick<StoreOpenOptions, "ttlMs">>
-    & Omit<StoreOpenOptions, "ttlMs">;
+  readonly #transport: TrellisTransportProvider;
+  readonly #name: string;
+  readonly #acquireTimeoutMs: number;
+  /**
+   * Normalized open options.
+   *
+   * `ttlMs` stays absent when the caller did not declare one, so binding to an
+   * existing store (for example the Trellis-owned operation staging bucket,
+   * whose server-side TTL is an implementation detail) does not fail the
+   * binding-match check against an unstated default.
+   */
+  readonly #options: StoreOpenOptions;
+  /**
+   * One generation-local backend per physical connection.
+   *
+   * Keyed by the connection object so a public handle keeps working across an
+   * automatic generation adoption without sharing an adapter between a drained
+   * generation and its replacement.
+   */
+  readonly #adapters = new WeakMap<NatsConnection, ObjectStore>();
 
   private constructor(
+    transport: TrellisTransportProvider,
+    name: string,
     options: StoreOpenOptions,
-    store?: ObjectStore,
-    opener?: () => Promise<ObjectStore>,
   ) {
-    this.#store = store;
-    this.#opener = opener;
-    this.#transport = options.transport;
+    this.#transport = transport;
+    this.#name = name;
+    this.#acquireTimeoutMs = options.acquireTimeoutMs ??
+      DEFAULT_RESOURCE_ACQUIRE_TIMEOUT_MS;
     this.#options = {
-      ttlMs: options.ttlMs ?? 0,
+      ...(options.ttlMs !== undefined ? { ttlMs: options.ttlMs } : {}),
       ...(options.maxObjectBytes !== undefined
         ? { maxObjectBytes: options.maxObjectBytes }
         : {}),
@@ -416,15 +541,17 @@ export class TypedStore {
     };
   }
 
+  /** Opens or creates a typed object store on the current generation. */
   static open(
-    nats: NatsConnection,
+    transport: TrellisTransportProvider,
     name: string,
     options: StoreOpenOptions = {},
   ): AsyncResult<TypedStore, StoreError> {
     return AsyncResult.from((async () => {
+      const handle = new TypedStore(transport, name, options);
       try {
-        const store = await openStore(nats, name, options);
-        return Result.ok(new TypedStore(options, store));
+        await handle.#materialize();
+        return Result.ok(handle);
       } catch (cause) {
         return Result.err(storeOpenError(name, cause));
       }
@@ -434,37 +561,84 @@ export class TypedStore {
   /**
    * Binds a typed object store without opening it.
    *
-   * The backing store is opened lazily on first operation, after the transport
-   * check admits that operation, so a resource whose broker subjects are not yet
-   * adopted never performs an unauthorized NATS request during refresh.
+   * The backing store is materialized against the generation acquired for the
+   * first operation, after that operation's exact transport requirement is
+   * admitted, so a resource whose broker subjects are not yet adopted never
+   * performs an unauthorized NATS request.
    * @internal
    */
   static bind(
-    nats: NatsConnection,
+    transport: TrellisTransportProvider,
     name: string,
     options: StoreOpenOptions = {},
   ): TypedStore {
-    return new TypedStore(
-      options,
-      undefined,
-      () => openStore(nats, name, options),
+    return new TypedStore(transport, name, options);
+  }
+
+  /** Exact broker subjects one Store action needs on its generation. */
+  #requirement(action: "read" | "write"): TransportRequirement {
+    return action === "read"
+      ? { publish: [`$JS.API.STREAM.INFO.OBJ_${this.#name}`] }
+      : { publish: [`$O.${this.#name}.C.>`] };
+  }
+
+  /**
+   * Acquire a generation covering `action`, or the current generation for an
+   * unclassified open.
+   */
+  #lease(
+    action?: "read" | "write",
+    deadlineMs?: number,
+    signal?: AbortSignal,
+  ): Promise<TransportLease> {
+    return this.#transport.acquireFor(
+      action === undefined ? {} : this.#requirement(action),
+      {
+        deadlineMs: deadlineMs ?? Date.now() + this.#acquireTimeoutMs,
+        ...(signal ? { signal } : {}),
+      },
     );
   }
 
-  async #backing(): Promise<ObjectStore> {
-    let store = this.#store;
+  /** Return the generation-local backend for `nc`, opening it once per nc. */
+  async #adapter(nc: NatsConnection): Promise<ObjectStore> {
+    let store = this.#adapters.get(nc);
     if (!store) {
-      store = await this.#opener!();
-      this.#store = store;
+      store = await openStore(nc, this.#name, this.#options);
+      this.#adapters.set(nc, store);
     }
     return store;
   }
 
-  /** Return the transport failure when `action` is not yet admitted. */
-  async #admission(
-    action: "read" | "write",
-  ): Promise<TransportError | undefined> {
-    return await this.#transport?.(action);
+  /**
+   * Acquire a generation and its backend for one finite operation.
+   *
+   * The caller must invoke `release` in a `finally` once the exchange ends. A
+   * backend that fails to open releases the generation before rethrowing.
+   */
+  async #acquire(
+    action?: "read" | "write",
+    deadlineMs?: number,
+    signal?: AbortSignal,
+  ): Promise<{ store: ObjectStore; release: () => void }> {
+    const lease = await this.#lease(action, deadlineMs, signal);
+    try {
+      const store = await this.#adapter(lease.nc);
+      return { store, release: () => lease.release() };
+    } catch (cause) {
+      lease.release();
+      throw cause;
+    }
+  }
+
+  /** Eagerly open the store against the current generation. */
+  async #materialize(): Promise<void> {
+    const lease = await this.#lease();
+    try {
+      await this.#adapter(lease.nc);
+    } finally {
+      lease.release();
+    }
   }
 
   create(
@@ -487,15 +661,106 @@ export class TypedStore {
     return AsyncResult.from((async (): Promise<
       ResultType<TypedStoreEntry, StoreOperationError>
     > => {
-      if (!this.#isCurrent()) return this.#stale("get", key);
-      const blocked = await this.#admission("read");
-      if (blocked) return Result.err(blocked);
-      const store = await this.#backing();
-      const info = await unwrapObjectInfo(store, key);
-      return info.map((objectInfo) =>
-        new TypedStoreEntry(store, storeInfoFromObjectInfo(objectInfo))
-      );
+      return await this.#getEntry(key, Date.now() + this.#acquireTimeoutMs);
     })());
+  }
+
+  /**
+   * Acquire a read generation and return the entry metadata for `key`.
+   *
+   * The deadline bounds the whole attempt, not just acquisition: backend open
+   * and the metadata read are enforced against the remaining budget at this
+   * boundary because the object API cannot time them out per call.
+   */
+  async #getEntry(
+    key: string,
+    deadlineMs: number,
+    signal?: AbortSignal,
+  ): Promise<ResultType<TypedStoreEntry, StoreOperationError>> {
+    if (!this.#isCurrent()) return this.#stale("get", key);
+    try {
+      return await withinDeadline(
+        this.#readMetadata(key, deadlineMs, signal),
+        deadlineMs,
+        signal,
+        () => storeTimeoutError("get", key),
+        () => storeAbortedError("get", key, signal?.reason),
+      );
+    } catch (cause) {
+      return Result.err(
+        cause instanceof StoreError || cause instanceof TransportError
+          ? cause
+          : new StoreError({ operation: "get", cause, context: { key } }),
+      );
+    }
+  }
+
+  async #readMetadata(
+    key: string,
+    deadlineMs: number,
+    signal?: AbortSignal,
+  ): Promise<ResultType<TypedStoreEntry, StoreOperationError>> {
+    let acquired: { store: ObjectStore; release: () => void };
+    try {
+      acquired = await this.#acquire("read", deadlineMs, signal);
+    } catch (cause) {
+      return Result.err(
+        cause instanceof TransportError
+          ? cause
+          : new StoreError({ operation: "get", cause, context: { key } }),
+      );
+    }
+    try {
+      const info = await unwrapObjectInfo(acquired.store, key);
+      return info.map((objectInfo) =>
+        new TypedStoreEntry(
+          this.#entryStore(),
+          storeInfoFromObjectInfo(objectInfo),
+        )
+      );
+    } finally {
+      acquired.release();
+    }
+  }
+
+  /**
+   * ObjectStore-shaped read surface for a returned entry.
+   *
+   * Every call re-acquires a generation, so an entry stays valid after an
+   * automatic adoption instead of pinning the generation it was read from.
+   */
+  #entryStore(): ObjectStoreLike {
+    return {
+      get: (key) => this.#entryGet(key),
+      getBlob: (key) => this.#entryGetBlob(key),
+    };
+  }
+
+  async #entryGet(key: string): Promise<ObjectResultLike | null> {
+    const acquired = await this.#acquire("read");
+    try {
+      const result = await acquired.store.get(key);
+      if (result === null) {
+        acquired.release();
+        return null;
+      }
+      return {
+        data: releaseOnSettle(result.data, acquired.release),
+        error: result.error,
+      };
+    } catch (cause) {
+      acquired.release();
+      throw cause;
+    }
+  }
+
+  async #entryGetBlob(key: string): Promise<Uint8Array | null> {
+    const acquired = await this.#acquire("read");
+    try {
+      return await acquired.store.getBlob(key);
+    } finally {
+      acquired.release();
+    }
   }
 
   /**
@@ -514,10 +779,19 @@ export class TypedStore {
 
       while (true) {
         if (options.signal?.aborted) {
-          return Result.err(abortedStoreError(key, options.signal.reason));
+          return Result.err(
+            storeAbortedError("waitFor", key, options.signal.reason),
+          );
         }
 
-        const entry = await this.get(key);
+        // Transport acquisition counts against the caller's wait budget.
+        const deadlineMs = options.timeoutMs === undefined
+          ? Date.now() + this.#acquireTimeoutMs
+          : Math.min(
+            Date.now() + this.#acquireTimeoutMs,
+            startedAt + options.timeoutMs,
+          );
+        const entry = await this.#getEntry(key, deadlineMs, options.signal);
         if (entry.isOk()) {
           return entry;
         }
@@ -547,7 +821,7 @@ export class TypedStore {
             options.signal,
           );
         } catch (cause) {
-          return Result.err(abortedStoreError(key, cause));
+          return Result.err(storeAbortedError("waitFor", key, cause));
         }
       }
     })());
@@ -556,16 +830,25 @@ export class TypedStore {
   delete(key: string): AsyncResult<void, StoreOperationError> {
     return AsyncResult.from((async () => {
       if (!this.#isCurrent()) return this.#stale("delete", key);
-      const blocked = await this.#admission("write");
-      if (blocked) return Result.err(blocked);
-      const store = await this.#backing();
+      let acquired: { store: ObjectStore; release: () => void };
       try {
-        await store.delete(key);
+        acquired = await this.#acquire("write");
+      } catch (cause) {
+        return Result.err(
+          cause instanceof TransportError
+            ? cause
+            : new StoreError({ operation: "delete", cause, context: { key } }),
+        );
+      }
+      try {
+        await acquired.store.delete(key);
         return Result.ok(undefined);
       } catch (cause) {
         return Result.err(
           new StoreError({ operation: "delete", cause, context: { key } }),
         );
+      } finally {
+        acquired.release();
       }
     })());
   }
@@ -575,14 +858,22 @@ export class TypedStore {
   ): AsyncResult<StoreListPage, StoreOperationError> {
     return AsyncResult.from((async () => {
       if (!this.#isCurrent()) return this.#stale("list");
-      const blocked = await this.#admission("read");
-      if (blocked) return Result.err(blocked);
       const query = validateStoreListOptions(opts);
       if (query.isErr()) return Result.err(query.error);
 
       const { prefix, cursor, limit } = query.unwrapOrElse(() => {
         throw new Error("unreachable");
       });
+      let acquired: { store: ObjectStore; release: () => void };
+      try {
+        acquired = await this.#acquire("read");
+      } catch (cause) {
+        return Result.err(
+          cause instanceof TransportError
+            ? cause
+            : new StoreError({ operation: "list", cause, context: { prefix } }),
+        );
+      }
       try {
         const queryDigest = await paginationQueryDigest(
           STORE_LIST_CURSOR_ENDPOINT,
@@ -599,8 +890,7 @@ export class TypedStore {
           }
           after = decoded;
         }
-        const store = await this.#backing();
-        const objects = await store.list();
+        const objects = await acquired.store.list();
         const filtered = objects
           .filter((info) => !info.deleted && info.name.startsWith(prefix))
           .map(storeInfoFromObjectInfo)
@@ -623,6 +913,8 @@ export class TypedStore {
         return Result.err(
           new StoreError({ operation: "list", cause, context: { prefix } }),
         );
+      } finally {
+        acquired.release();
       }
     })());
   }
@@ -630,15 +922,25 @@ export class TypedStore {
   status(): AsyncResult<StoreStatus, StoreOperationError> {
     return AsyncResult.from((async () => {
       if (!this.#isCurrent()) return this.#stale("status");
-      const blocked = await this.#admission("read");
-      if (blocked) return Result.err(blocked);
+      let acquired: { store: ObjectStore; release: () => void };
       try {
-        const status = await (await this.#backing()).status();
+        acquired = await this.#acquire("read");
+      } catch (cause) {
+        return Result.err(
+          cause instanceof TransportError
+            ? cause
+            : new StoreError({ operation: "status", cause }),
+        );
+      }
+      try {
+        const status = await acquired.store.status();
         return Result.ok(
           storeStatusFromObjectStoreStatus(status, this.#options),
         );
       } catch (cause) {
         return Result.err(new StoreError({ operation: "status", cause }));
+      } finally {
+        acquired.release();
       }
     })());
   }
@@ -652,8 +954,6 @@ export class TypedStore {
   ): Promise<ResultType<void, StoreOperationError>> {
     try {
       if (!this.#isCurrent()) return this.#stale(operation, key);
-      const blocked = await this.#admission("write");
-      if (blocked) return Result.err(blocked);
       const metadata = metadataWithContentType(options);
       if (body instanceof Uint8Array) {
         if (
@@ -672,28 +972,40 @@ export class TypedStore {
             }),
           );
         }
-
-        const store = await this.#backing();
-        await store.putBlob(
-          { name: key, ...(metadata ? { metadata } : {}) },
-          body,
-          previousRevision === undefined ? undefined : { previousRevision },
-        );
-        return Result.ok(undefined);
       }
 
-      const limitedStream = enforceMaxObjectBytes(
-        streamFromBody(body),
-        this.#options.maxObjectBytes,
-      );
-
-      const store = await this.#backing();
-      await store.put(
-        { name: key, ...(metadata ? { metadata } : {}) },
-        limitedStream,
-        previousRevision === undefined ? undefined : { previousRevision },
-      );
-      return Result.ok(undefined);
+      let acquired: { store: ObjectStore; release: () => void };
+      try {
+        acquired = await this.#acquire("write");
+      } catch (cause) {
+        return Result.err(
+          cause instanceof TransportError
+            ? cause
+            : new StoreError({ operation, cause, context: { key } }),
+        );
+      }
+      try {
+        if (body instanceof Uint8Array) {
+          await acquired.store.putBlob(
+            { name: key, ...(metadata ? { metadata } : {}) },
+            body,
+            previousRevision === undefined ? undefined : { previousRevision },
+          );
+        } else {
+          const limitedStream = enforceMaxObjectBytes(
+            streamFromBody(body),
+            this.#options.maxObjectBytes,
+          );
+          await acquired.store.put(
+            { name: key, ...(metadata ? { metadata } : {}) },
+            limitedStream,
+            previousRevision === undefined ? undefined : { previousRevision },
+          );
+        }
+        return Result.ok(undefined);
+      } finally {
+        acquired.release();
+      }
     } catch (cause) {
       return Result.err(
         cause instanceof StoreError
@@ -719,9 +1031,7 @@ export class TypedStore {
 
 function storeStatusFromObjectStoreStatus(
   status: ObjectStoreStatus,
-  options:
-    & Required<Pick<StoreOpenOptions, "ttlMs">>
-    & Omit<StoreOpenOptions, "ttlMs">,
+  options: StoreOpenOptions,
 ): StoreStatus {
   return {
     size: status.size,

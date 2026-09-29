@@ -149,15 +149,15 @@ async function platformConnection(runtime: Runtime): Promise<NatsConnection> {
 }
 
 /**
- * F3 — an offered-but-unadopted grant can be withdrawn harmlessly.
+ * F3 — a grown grant can be withdrawn, closing only the wider generation.
  *
  * The Provider deployment starts with `records` approved and its optional
- * `extras` KV declined. Approving `extras` grows the desired authority while
- * the admitted attachment keeps only `records`; withdrawing it again must
- * clear the retained notice, keep `records` working, and never replace the
- * attachment. A second connection that *did* adopt `extras` is removed.
+ * `extras` KV declined. Approving `extras` is adopted automatically on a wider
+ * generation under the same logical connection; withdrawing it again must
+ * close that generation immediately, keep `records` working on the original
+ * attachment, and keep the logical connection identity stable.
  */
-Deno.test("F3 an unadopted grant withdraws without touching the socket", async () => {
+Deno.test("F3 a reduction closes the wider generation and keeps the original", async () => {
   await withTrellisRuntime(async (runtime) => {
     const contract = participants.Provider.participant;
     await runtime.contracts.install({ contract });
@@ -193,7 +193,8 @@ Deno.test("F3 an unadopted grant withdraws without touching the socket", async (
         ),
       );
 
-      // Offer `extras` without adopting it: D grows, A does not.
+      // Grow `extras`: it is adopted automatically on a wider generation under
+      // the same logical connection.
       await runtime.contracts.apply({ contract });
       const extras = await runtime.waitFor(() => service.kv.extras ?? false, {
         timeoutMs: 60_000,
@@ -201,24 +202,21 @@ Deno.test("F3 an unadopted grant withdraws without touching the socket", async (
       assertEquals(
         await records.get("before").orThrow(),
         { value: "before" },
-        "the adopted resource keeps working while the new one is pending",
+        "the adopted resource keeps working across the growth",
       );
-      const pending = await extras.get("missing");
-      assert(pending.isErr());
-      assertEquals(
-        (pending.error as { code?: string }).code,
-        "transport_upgrade_required",
-      );
-
-      const [stillOne] = await attachmentsFor(runtime, participantId);
-      assertEquals(
-        stillOne.runtimeConnectionId,
-        before.runtimeConnectionId,
-        "growing authority must not replace the attachment",
+      await extras.put("grown", { value: "grown" });
+      assertEquals(await extras.get("grown").orThrow(), { value: "grown" });
+      const grownAttachments = await attachmentsFor(runtime, participantId);
+      assert(
+        grownAttachments.length >= 2 &&
+          grownAttachments.every((item) =>
+            item.runtimeConnectionId === before.runtimeConnectionId
+          ),
+        "growth must adopt a wider generation on the same logical connection",
       );
 
-      // Withdraw the unadopted grant by narrowing the binding back to the
-      // permissions the attachment actually adopted.
+      // Withdraw the grown grant by narrowing the binding back to the
+      // permissions the original attachment adopted.
       const binding = await grantBinding(runtime, participantId);
       const recordsOnly = binding.grants.permissions.filter((atom) =>
         adoptedKeys.has(atomKey(atom))
@@ -229,11 +227,12 @@ Deno.test("F3 an unadopted grant withdraws without touching the socket", async (
       );
       await setPermissions(runtime, binding, recordsOnly);
 
-      // The retained notice clears and the original socket is untouched.
-      await runtime.waitFor(
-        () => service.connection.status.transportUpgradeAvailable === false,
-        { timeoutMs: 60_000 },
-      );
+      // The wider generation closes immediately; the original attachment keeps
+      // serving adopted authority under the same logical connection.
+      await runtime.waitFor(async () => {
+        const items = await attachmentsFor(runtime, participantId);
+        return items.length === 1 ? items : undefined;
+      }, { timeoutMs: 60_000 });
       assertEquals(
         await records.get("before").orThrow(),
         { value: "before" },
@@ -243,7 +242,7 @@ Deno.test("F3 an unadopted grant withdraws without touching the socket", async (
       assertEquals(
         after.runtimeConnectionId,
         before.runtimeConnectionId,
-        "withdrawing an unadopted grant must not replace the attachment",
+        "withdrawing a grown grant must keep the logical connection",
       );
     } finally {
       await service.connection.close().catch(() => undefined);
