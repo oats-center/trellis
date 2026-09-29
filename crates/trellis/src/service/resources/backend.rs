@@ -58,6 +58,10 @@ struct ManagedStoreTransport {
     manager: TransportGenerationManager,
     binding: StoreResourceBinding,
     timeout_ms: u64,
+    /// Runtime-provisioned buckets (operation staging) are always authorized on
+    /// the current generation; contract resources require the exact store action
+    /// marker so a call adopts the generation that covers the resource.
+    runtime_provisioned: bool,
 }
 
 impl ManagedStoreTransport {
@@ -66,10 +70,17 @@ impl ManagedStoreTransport {
         action: ResourceTransportAction,
         deadline: Instant,
     ) -> Result<TransportLease, ServerError> {
-        let marker =
-            resource_action_marker(ResourceTransportKind::Store, &self.binding.name, action);
+        let requirement = if self.runtime_provisioned {
+            Vec::new()
+        } else {
+            vec![resource_action_marker(
+                ResourceTransportKind::Store,
+                &self.binding.name,
+                action,
+            )]
+        };
         self.manager
-            .acquire_for(&[marker], &[], deadline)
+            .acquire_for(&requirement, &[], deadline)
             .await
             .map_err(|error| ServerError::Nats(error.to_string()))
     }
@@ -297,7 +308,7 @@ impl KvResourceClient for BoundKvResourceClient {
     }
 }
 
-async fn open_kv_store(
+pub(super) async fn open_kv_store(
     nats: &async_nats::Client,
     binding: &KvResourceBinding,
 ) -> Result<async_nats::jetstream::kv::Store, ServerError> {
@@ -436,6 +447,30 @@ impl BoundStoreResourceClient {
                 manager,
                 binding,
                 timeout_ms,
+                runtime_provisioned: false,
+            }),
+        }
+    }
+
+    /// Build one store client for a runtime-provisioned bucket such as operation
+    /// staging: each call leases the current generation, which is always
+    /// authorized for the bucket, instead of a contract resource marker.
+    pub(crate) fn managed_current(
+        manager: TransportGenerationManager,
+        name: String,
+        timeout_ms: u64,
+    ) -> Self {
+        Self {
+            backend: StoreBackend::Managed(ManagedStoreTransport {
+                manager,
+                binding: StoreResourceBinding {
+                    name,
+                    max_object_bytes: None,
+                    max_total_bytes: None,
+                    ttl_ms: 0,
+                },
+                timeout_ms,
+                runtime_provisioned: true,
             }),
         }
     }
@@ -483,7 +518,13 @@ impl BoundStoreResourceClient {
                     Instant::now() + Duration::from_millis(transport.timeout_ms)
                 });
                 let lease = transport.lease(action, deadline).await?;
-                let store = open_object_store(lease.nats(), &transport.binding).await?;
+                let store = if transport.runtime_provisioned {
+                    // A runtime-provisioned bucket (operation staging) has no
+                    // contract binding to validate against.
+                    open_runtime_object_store(lease.nats(), &transport.binding.name).await?
+                } else {
+                    open_object_store(lease.nats(), &transport.binding).await?
+                };
                 Ok(StoreGuard {
                     _lease: Some(lease),
                     store,
@@ -634,6 +675,17 @@ async fn open_object_store(
         .map_err(nats_error)?;
     ensure_existing_store_binding(&context, binding).await?;
     Ok(store)
+}
+
+/// Open a runtime-provisioned bucket without a contract binding to validate.
+async fn open_runtime_object_store(
+    nats: &async_nats::Client,
+    name: &str,
+) -> Result<async_nats::jetstream::object_store::ObjectStore, ServerError> {
+    async_nats::jetstream::new(nats.clone())
+        .get_object_store(name)
+        .await
+        .map_err(nats_error)
 }
 
 fn store_object_info(

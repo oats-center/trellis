@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use async_nats::ConnectOptions;
+use futures_util::future::BoxFuture;
 use serde::Serialize;
 use tokio::sync::watch;
 use trellis_protocol::{TransportAuthorizationV1, TransportPolicyClass};
@@ -64,6 +65,27 @@ impl GenerationState {
     }
 }
 
+/// A framework owner's broker-ready generic intake on one generation.
+pub(crate) trait GenerationIntakeHandle: Send + Sync {
+    /// Stop accepting new intake; already-accepted work continues to completion.
+    fn retire(&self);
+}
+
+/// One framework owner that must have broker-ready intake on a candidate
+/// **before** the manager makes that candidate the default generation.
+///
+/// The manager adopts every registered owner on a candidate during the
+/// preactivation barrier; if any adoption fails the candidate is discarded and
+/// the current generation is left untouched.
+pub(crate) trait GenerationIntake: Send + Sync {
+    /// Install broker-ready intake on `generation` and return its handle. The
+    /// manager retires the handle when the generation is superseded.
+    fn adopt<'a>(
+        &'a self,
+        generation: Arc<TransportGeneration>,
+    ) -> BoxFuture<'a, Result<Box<dyn GenerationIntakeHandle>, TrellisClientError>>;
+}
+
 /// A candidate being opened but not yet published.
 struct Opening {
     id: u64,
@@ -101,6 +123,14 @@ pub(crate) struct TransportGeneration {
     leases: AtomicUsize,
     /// The manager's work channel; a lease release requests a reap.
     work: watch::Sender<u64>,
+    /// Framework owners' broker-ready intake installed on this generation before
+    /// it became the default. Retired when the generation is superseded and
+    /// dropped with the generation.
+    intake: Mutex<Vec<Box<dyn GenerationIntakeHandle>>>,
+    /// Whether broker-ready intake is currently installed. A superseded
+    /// generation's intake is retired; restoring it as current must re-adopt
+    /// owners rather than resurrecting a current with dead intake.
+    intake_active: AtomicBool,
 }
 
 impl TransportGeneration {
@@ -136,7 +166,7 @@ impl TransportGeneration {
     }
 
     /// Start one generation lease; release is automatic on drop.
-    fn lease(self: &Arc<Self>) -> TransportLease {
+    pub(crate) fn lease(self: &Arc<Self>) -> TransportLease {
         self.leases.fetch_add(1, Ordering::AcqRel);
         TransportLease {
             generation: self.clone(),
@@ -146,6 +176,33 @@ impl TransportGeneration {
     fn request_work(&self) {
         let next = self.work.borrow().wrapping_add(1);
         self.work.send_replace(next);
+    }
+
+    /// Attach one framework owner's broker-ready intake handle to this
+    /// generation.
+    fn push_intake(&self, handle: Box<dyn GenerationIntakeHandle>) {
+        if let Ok(mut intake) = self.intake.lock() {
+            intake.push(handle);
+        }
+        self.intake_active.store(true, Ordering::Release);
+    }
+
+    /// Whether broker-ready intake is currently installed on this generation.
+    fn intake_active(&self) -> bool {
+        self.intake_active.load(Ordering::Acquire)
+    }
+
+    /// Stop accepting new generic intake on this generation; already-accepted
+    /// work continues until its own lease releases. The installed handles are
+    /// dropped: each retires its own intake and drains its accepted work.
+    fn retire_intake(&self) {
+        self.intake_active.store(false, Ordering::Release);
+        if let Ok(mut intake) = self.intake.lock() {
+            for handle in intake.iter() {
+                handle.retire();
+            }
+            intake.clear();
+        }
     }
 }
 
@@ -161,6 +218,11 @@ impl TransportLease {
     /// The pinned physical NATS connection.
     pub(crate) fn nats(&self) -> &async_nats::Client {
         &self.generation.nats
+    }
+
+    /// The immutable identity of the generation this lease pins.
+    pub(crate) fn generation_id(&self) -> u64 {
+        self.generation.id
     }
 }
 
@@ -209,6 +271,9 @@ struct ManagerInner {
     state_version: watch::Sender<u64>,
     /// Work channel for the single adoption worker.
     work: watch::Sender<u64>,
+    /// Framework owners whose broker-ready intake must exist on a candidate
+    /// before it becomes the default generation (preactivation barrier).
+    intake_owners: Mutex<Vec<Arc<dyn GenerationIntake>>>,
     reconcile: tokio::sync::Mutex<()>,
     next_id: AtomicU64,
     /// The initial framework-loop generation whose loss is the only generation
@@ -240,6 +305,41 @@ impl ManagerInner {
     fn request_work(&self) {
         let next = self.work.borrow().wrapping_add(1);
         self.work.send_replace(next);
+    }
+
+    /// Adopt every registered framework owner on `generation` under **one**
+    /// absolute connection-budget deadline shared across all owners. A failed,
+    /// timed-out, or cancelled adoption retires any partial installation and
+    /// returns the error, so a caller never publishes a generation with
+    /// partially installed intake; dropping this future drops each in-flight
+    /// owner adoption, whose locally-held subscriptions unsubscribe on drop.
+    async fn adopt_owners(
+        &self,
+        generation: &Arc<TransportGeneration>,
+    ) -> Result<Vec<Box<dyn GenerationIntakeHandle>>, TrellisClientError> {
+        let owners = self
+            .intake_owners
+            .lock()
+            .map(|owners| owners.clone())
+            .unwrap_or_default();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(self.timeout_ms);
+        let mut handles = Vec::with_capacity(owners.len());
+        for owner in &owners {
+            match tokio::time::timeout_at(deadline, owner.adopt(generation.clone())).await {
+                Ok(Ok(handle)) => handles.push(handle),
+                Ok(Err(error)) => {
+                    drop(handles);
+                    return Err(error);
+                }
+                Err(_) => {
+                    drop(handles);
+                    return Err(TrellisClientError::TransportUnavailable(
+                        "framework intake adoption timed out".into(),
+                    ));
+                }
+            }
+        }
+        Ok(handles)
     }
 
     fn clear_opening(&self, id: u64) {
@@ -392,6 +492,7 @@ impl TransportGenerationManager {
             state: Mutex::new(ManagerState::default()),
             state_version,
             work,
+            intake_owners: Mutex::new(Vec::new()),
             reconcile: tokio::sync::Mutex::new(()),
             next_id: AtomicU64::new(1),
             baseline_id: AtomicU64::new(0),
@@ -437,6 +538,64 @@ impl TransportGenerationManager {
     pub(crate) fn authorization_promoted(&self) {
         self.inner.request_work();
         self.inner.signal_state();
+    }
+
+    /// Register one framework owner and install its broker-ready intake on the
+    /// current generation.
+    ///
+    /// Serialized with candidate activation, so a candidate cannot become the
+    /// default without this owner's intake: either the preactivation barrier
+    /// already adopted it, or this attach adopts the newly-current generation.
+    pub(crate) async fn attach_intake(
+        &self,
+        owner: Arc<dyn GenerationIntake>,
+    ) -> Result<(), TrellisClientError> {
+        let _guard = self.inner.reconcile.lock().await;
+        if self.inner.closed.load(Ordering::Acquire) {
+            return Err(TrellisClientError::TransportUnavailable(
+                "logical transport connection is closed".into(),
+            ));
+        }
+        let generation = self.inner.lock_state()?.current.clone().ok_or_else(|| {
+            TrellisClientError::TransportUnavailable(
+                "no current transport generation is available".into(),
+            )
+        })?;
+        // Install broker-ready intake **before** registering the owner, so a
+        // failed or timed-out install never leaves a resurrectable registration
+        // behind that a later candidate would blindly adopt.
+        let budget = Duration::from_millis(self.inner.timeout_ms);
+        let handle = match tokio::time::timeout(budget, owner.adopt(generation.clone())).await {
+            Ok(Ok(handle)) => handle,
+            Ok(Err(error)) => return Err(error),
+            Err(_) => {
+                return Err(TrellisClientError::TransportUnavailable(
+                    "framework intake adoption timed out".into(),
+                ))
+            }
+        };
+        // Recheck after the await: a close or a supersession during adoption must
+        // not leave the freshly installed intake registered on a stale generation.
+        let still_current = self
+            .inner
+            .lock_state()
+            .ok()
+            .and_then(|state| state.current.as_ref().map(|current| current.id))
+            == Some(generation.id);
+        if self.inner.closed.load(Ordering::Acquire)
+            || generation.state() == GenerationState::Closed
+            || !still_current
+        {
+            drop(handle);
+            return Err(TrellisClientError::TransportUnavailable(
+                "the current transport generation changed during intake adoption".into(),
+            ));
+        }
+        generation.push_intake(handle);
+        if let Ok(mut owners) = self.inner.intake_owners.lock() {
+            owners.push(owner);
+        }
+        Ok(())
     }
 
     /// Acquire a ready generation that can perform the exact requirement.
@@ -694,30 +853,92 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
             .iter()
             .find(|generation| generation_serves(generation, &desired.policy, now).unwrap_or(false))
             .cloned();
-        let needs_adoption = serving.is_none();
-        let chosen =
+        let mut needs_adoption = serving.is_none();
+        let mut chosen =
             serving.or_else(|| keep.iter().max_by_key(|generation| generation.id).cloned());
-        let chosen_id = chosen.as_ref().map(|generation| generation.id);
-        let next_draining: Vec<u64> = keep
-            .iter()
-            .filter(|generation| Some(generation.id) != chosen_id)
-            .map(|generation| generation.id)
-            .collect();
+        // A safe survivor restored as current may have had its generic intake
+        // retired when it was superseded. Re-install broker-ready intake before
+        // promoting it; on failure open a ready replacement rather than a current
+        // with dead intake.
+        let mut promoted_intake: Vec<Box<dyn GenerationIntakeHandle>> = Vec::new();
+        if chosen
+            .as_ref()
+            .is_some_and(|candidate| !candidate.intake_active())
+        {
+            let candidate = chosen.clone().expect("restore candidate is chosen");
+            match inner.adopt_owners(&candidate).await {
+                Ok(handles) => promoted_intake = handles,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        generation_id = candidate.id,
+                        "failed to restore survivor intake; opening a replacement"
+                    );
+                    chosen = None;
+                    needs_adoption = true;
+                }
+            }
+            // A newer desired policy after the await must restart reconciliation
+            // against the new snapshot rather than publish a survivor (or open a
+            // candidate) for the stale desired policy.
+            let stale_after_adopt = match inner.contexts.own_transport_snapshot() {
+                Ok(snapshot) => match snapshot.policy.digest() {
+                    Ok(digest) => digest != desired_policy_digest,
+                    Err(_) => true,
+                },
+                Err(_) => true,
+            };
+            if stale_after_adopt {
+                drop(promoted_intake);
+                continue;
+            }
+        }
 
+        // Publication under one state lock, the same atomic discipline as the new
+        // candidate: a survivor concurrently closed by `mark_failed` while its
+        // intake was prepared is never republished as current, and no freshly
+        // installed intake is attached to a lost generation.
         {
             let mut state = inner.lock_state()?;
+            if inner.closed.load(Ordering::Acquire) {
+                drop(state);
+                drop(promoted_intake);
+                return Ok(());
+            }
+            let survivor_closed = chosen
+                .as_ref()
+                .is_some_and(|candidate| candidate.state() == GenerationState::Closed);
+            if survivor_closed {
+                promoted_intake.clear();
+                chosen = None;
+                needs_adoption = true;
+            }
+            let chosen_id = chosen.as_ref().map(|generation| generation.id);
             state.current = chosen.clone();
             state.draining = keep
                 .iter()
                 .filter(|generation| Some(generation.id) != chosen_id)
                 .cloned()
                 .collect();
+            // Terminal state is monotonic: a generation concurrently closed by
+            // `mark_failed` is never reactivated as current or draining. The
+            // state transition and the freshly prepared intake install share this
+            // critical section with the current-pointer publication, so a
+            // concurrent `mark_failed` cannot close the survivor after
+            // publication but before its intake is attached.
+            if let Some(chosen) = &chosen {
+                chosen.set_state(GenerationState::Current);
+                for handle in promoted_intake.drain(..) {
+                    chosen.push_intake(handle);
+                }
+            }
         }
-        // Terminal state is monotonic: a generation concurrently closed by
-        // `mark_failed` is never reactivated as current or draining.
-        if let Some(chosen) = &chosen {
-            chosen.set_state(GenerationState::Current);
-        }
+        let chosen_id = chosen.as_ref().map(|generation| generation.id);
+        let next_draining: Vec<u64> = keep
+            .iter()
+            .filter(|generation| Some(generation.id) != chosen_id)
+            .map(|generation| generation.id)
+            .collect();
         for generation in &keep {
             if Some(generation.id) != chosen_id {
                 generation.set_state(GenerationState::Draining);
@@ -735,6 +956,7 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
         {
             inner.signal_state();
         }
+        // Framework owners follow the current generation identity.
 
         if !needs_adoption {
             return Ok(());
@@ -774,6 +996,43 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
             continue;
         }
 
+        // Preactivation readiness barrier: every framework owner installs
+        // broker-ready generic intake on the candidate **before** the candidate
+        // becomes the default generation, with each adoption bounded by the
+        // connection budget. A failed or timed-out adoption rolls the candidate
+        // back and leaves the current generation untouched.
+        let intake = match inner.adopt_owners(&candidate).await {
+            Ok(intake) => intake,
+            Err(error) => {
+                inner.clear_opening(id);
+                close_generation(&candidate);
+                tracing::warn!(
+                    event = "transport_generation.open_failed",
+                    generation_id = id,
+                    %error,
+                    "candidate intake barrier failed; rolling back"
+                );
+                return Ok(());
+            }
+        };
+        // A candidate that became stale while its intake was prepared must not be
+        // published; the next reconcile opens a fresh one from the newest policy.
+        let latest_after_barrier = match inner.contexts.own_transport_snapshot() {
+            Ok(snapshot) => snapshot.policy.digest()?,
+            Err(_) => {
+                drop(intake);
+                inner.clear_opening(id);
+                close_generation(&candidate);
+                return Ok(());
+            }
+        };
+        if latest_after_barrier != desired_policy_digest {
+            drop(intake);
+            inner.clear_opening(id);
+            close_generation(&candidate);
+            continue;
+        }
+
         {
             let mut state = inner.lock_state()?;
             // Atomically consume the opening slot and re-read the recorded loss
@@ -797,6 +1056,9 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
             let previous = state.current.take();
             if let Some(previous) = previous {
                 if previous.id != candidate.id {
+                    // Retire the superseded generation's generic intake promptly;
+                    // its accepted work keeps running until its leases release.
+                    previous.retire_intake();
                     previous.set_state(GenerationState::Draining);
                     state.draining.push(previous);
                 }
@@ -810,6 +1072,13 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
                 return Ok(());
             }
             state.current = Some(candidate.clone());
+            // Install the broker-ready intake in the same critical section as the
+            // current-pointer publication, so a concurrent `mark_failed` can
+            // never close the candidate after publication but before its intake
+            // is attached.
+            for handle in intake {
+                candidate.push_intake(handle);
+            }
         }
         inner.record_notice(&candidate, &desired.policy);
         tracing::info!(
@@ -1058,6 +1327,8 @@ async fn open_generation(
         state,
         leases: AtomicUsize::new(0),
         work: inner.work.clone(),
+        intake: Mutex::new(Vec::new()),
+        intake_active: AtomicBool::new(true),
     });
     // Install the built generation under the state lock and re-read the recorded
     // loss atomically. A disconnect that lands after the earlier check but

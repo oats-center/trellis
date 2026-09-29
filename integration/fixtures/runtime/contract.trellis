@@ -206,9 +206,11 @@ api transport_growth@v1 {
   description "Optional-capability growth on one live service attachment.";
   rpc Advance { input Empty; output Empty; }
   rpc Extend { input Empty; output Empty; }
+  rpc Park { input Empty; output Value; }
+  operation Hold { input Empty; progress Update; output Value; signals { Continue Value; } }
   live Progress { input Empty; event Value; }
   capabilities {
-    public { allows { rpc Advance; live Progress; } }
+    public { allows { rpc Advance; rpc Park; live Progress; operation Hold; } }
     capability extend {
       title "Optional capability";
       description "Optional growth operation.";
@@ -223,17 +225,27 @@ service TransportGrowthSubject {
   use transport_growth {
     rpc Advance;
     rpc Extend;
+    operation Hold;
     live Progress;
     optional capability extend;
   }
 }
 
 service TransportGrowthTarget { implements transport_growth; }
+service TransportGrowthOperationProvider {
+  implements transport_growth;
+  use transport_growth {
+    rpc Extend;
+    optional capability extend;
+  }
+}
 
 app TransportGrowthCaller {
   use transport_growth {
     rpc Advance;
     rpc Extend;
+    rpc Park;
+    operation Hold;
     optional capability extend;
   }
 }

@@ -35,6 +35,63 @@ pub struct LiveRequestContext {
     pub cancellation: crate::live::LiveCancellation,
 }
 
+/// The transport generation that accepted one request, when it arrived through a
+/// generation-scoped provider ingress.
+///
+/// Equality is by generation identity so [`RequestContext`] stays comparable;
+/// the lease pins the generation for session-scoped work accepted on it.
+#[derive(Clone, Default)]
+pub(crate) struct GenerationPin(pub(crate) Option<crate::client::TransportLease>);
+
+impl std::fmt::Debug for GenerationPin {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("GenerationPin")
+            .field(
+                &self
+                    .lease()
+                    .map(crate::client::TransportLease::generation_id),
+            )
+            .finish()
+    }
+}
+
+impl GenerationPin {
+    /// The pinned generation lease, when the request arrived through an ingress.
+    pub(crate) fn lease(&self) -> Option<&crate::client::TransportLease> {
+        self.0.as_ref()
+    }
+}
+
+impl PartialEq for GenerationPin {
+    fn eq(&self, other: &Self) -> bool {
+        self.lease()
+            .map(crate::client::TransportLease::generation_id)
+            == other
+                .lease()
+                .map(crate::client::TransportLease::generation_id)
+    }
+}
+
+impl Eq for GenerationPin {}
+
+/// Pin the generation that accepted one live-capable request, or the current
+/// generation when the request did not arrive through a generation-scoped
+/// ingress (for example a built-in runtime router).
+async fn accepted_generation(
+    owner: &super::live_router::LiveProviderOwner,
+    context: &RequestContext,
+) -> Result<crate::client::TransportLease, ServerError> {
+    if let Some(lease) = context.transport.lease() {
+        return Ok(lease.clone());
+    }
+    owner
+        .client()
+        .acquire_transport(&[], &[], owner.client().transport_deadline())
+        .await
+        .map_err(|error| ServerError::Nats(error.to_string()))
+}
+
 /// Request metadata forwarded to mounted RPC handlers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RequestContext {
@@ -66,6 +123,9 @@ pub struct RequestContext {
     pub traceparent: Option<String>,
     /// W3C trace state header propagated by the caller, if present.
     pub tracestate: Option<String>,
+    /// The generation that accepted this request through a provider ingress.
+    /// Session-scoped work accepted on it pins that generation.
+    pub(crate) transport: GenerationPin,
 }
 
 /// One exact API-surface permission required by a routed request.
@@ -582,8 +642,10 @@ impl Router {
                                     )
                                 }
                             };
+                            let lease = accepted_generation(&owner, &ctx).await?;
                             let reserved = crate::service::live_router::reserve_live::<D, _>(
                                 owner.client(),
+                                lease,
                                 owner.manager()?,
                                 &crate::service::live_router::LiveOpenRequest {
                                     request: ctx,
@@ -749,11 +811,13 @@ impl Router {
                                         ),
                                     )
                                 };
+                                let lease = accepted_generation(&owner, &ctx).await?;
                                 let reserved = crate::service::live_router::reserve_operation_watch::<
                                     D,
                                     _,
                                 >(
                                     owner.client(),
+                                    lease,
                                     owner.manager()?,
                                     &crate::service::live_router::OperationWatchOpenRequest {
                                         request: ctx,

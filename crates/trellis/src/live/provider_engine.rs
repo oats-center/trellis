@@ -114,6 +114,9 @@ pub(crate) struct ProviderSessionRecord {
     pub pending_close_ack: std::sync::Mutex<Option<PendingCloseAck>>,
     /// Exactly one terminal frame is published per session.
     pub end_sent: AtomicBool,
+    /// The generation that accepted this session. Held for the session lifetime
+    /// so a superseded provider generation is not reaped underneath it.
+    pub _generation_lease: Option<crate::client::TransportLease>,
 }
 
 impl ProviderSessionRecord {

@@ -22,6 +22,7 @@ mod live_router;
 mod local_validator;
 mod operation_repository;
 mod operations;
+mod provider_ingress;
 #[doc(hidden)]
 mod publisher;
 #[doc(hidden)]
@@ -107,6 +108,8 @@ pub use transfer::{
 pub mod internal {
     #[cfg(feature = "runtime-internals")]
     pub use super::operations::OperationHandlerRuntime;
+    #[cfg(feature = "runtime-internals")]
+    pub use super::operations::OperationTransport;
     pub use super::request_loop::{
         dispatch_one, encode_error_reply, encode_success_reply, HandlerResponse, InboundRequest,
         OutboundReply, RequestHandler, ResponseStream,

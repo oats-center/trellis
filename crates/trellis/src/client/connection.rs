@@ -686,17 +686,32 @@ async fn publish_health_heartbeat(
 }
 
 fn spawn_health_heartbeat_task(
-    nats: async_nats::Client,
+    manager: crate::client::TransportGenerationManager,
     timeout_ms: u64,
     config: HealthHeartbeatConfig,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        let subject = health_heartbeat_subject(&config);
         let mut interval =
             tokio::time::interval(std::time::Duration::from_millis(config.publish_interval_ms));
         interval.tick().await;
         loop {
             interval.tick().await;
-            if let Err(error) = publish_health_heartbeat(&nats, timeout_ms, &config).await {
+            // The heartbeat follows the current generation and never pins one
+            // forever: each publish acquires a suitable generation and releases
+            // it when the publish completes.
+            let deadline = Instant::now() + std::time::Duration::from_millis(timeout_ms);
+            let lease = match manager
+                .acquire_for(std::slice::from_ref(&subject), &[], deadline)
+                .await
+            {
+                Ok(lease) => lease,
+                Err(error) => {
+                    tracing::warn!(%error, "failed to acquire transport for health heartbeat");
+                    continue;
+                }
+            };
+            if let Err(error) = publish_health_heartbeat(lease.nats(), timeout_ms, &config).await {
                 tracing::warn!(%error, "failed to publish health heartbeat");
             }
         }
@@ -1213,12 +1228,28 @@ impl TrellisClient {
                 "required device companion is unavailable".into(),
             ));
         }
-        if let Err(error) = publish_health_heartbeat(&connected.nats, timeout_ms, &heartbeat).await
+        let heartbeat_subject = health_heartbeat_subject(&heartbeat);
+        match connected
+            .acquire_transport(
+                std::slice::from_ref(&heartbeat_subject),
+                &[],
+                connected.transport_deadline(),
+            )
+            .await
         {
-            tracing::warn!(%error, "failed to publish initial health heartbeat");
+            Ok(lease) => {
+                if let Err(error) =
+                    publish_health_heartbeat(lease.nats(), timeout_ms, &heartbeat).await
+                {
+                    tracing::warn!(%error, "failed to publish initial health heartbeat");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "failed to acquire transport for initial health heartbeat")
+            }
         }
         connected.health_heartbeat_task = Some(spawn_health_heartbeat_task(
-            connected.nats.clone(),
+            connected.generations.clone(),
             timeout_ms,
             heartbeat,
         ));
@@ -1876,7 +1907,12 @@ impl TrellisClient {
         max_messages: Option<usize>,
     ) -> Result<BoxStream<'static, Result<EventMessage<T>, TrellisClientError>>, TrellisClientError>
     {
-        let jetstream = jetstream::new(self.nats());
+        // Frame intake moves to the current generation: a superseded attachment
+        // is released once its delivered message has finished on it.
+        let lease = self
+            .acquire_transport(&[], &[], self.transport_deadline())
+            .await?;
+        let jetstream = jetstream::new(lease.nats().clone());
         let stream_name = options.stream.as_deref().unwrap_or(DEFAULT_EVENT_STREAM);
         if options.mode == EventSubscriptionMode::Durable && options.durable_name.is_none() {
             return Err(TrellisClientError::EventSubscriptionProtocol(
@@ -1933,14 +1969,14 @@ impl TrellisClient {
         .map_err(|_| TrellisClientError::Timeout)?
         .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
 
-        let stream = stream::try_unfold(messages, |mut messages| async move {
+        let stream = stream::try_unfold((messages, lease), |(mut messages, lease)| async move {
             match messages.next().await {
                 Some(Ok(message)) => {
                     let event_message = EventMessage {
                         message,
                         _event: PhantomData,
                     };
-                    Ok(Some((event_message, messages)))
+                    Ok(Some((event_message, (messages, lease))))
                 }
                 Some(Err(error)) => Err(TrellisClientError::NatsRequest(error.to_string())),
                 None => Ok(None),

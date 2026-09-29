@@ -84,6 +84,9 @@ pub use transfer::{
     download_transfer_grant_from_value, DownloadTransferDirection, DownloadTransferGrant, FileInfo,
     TransferCancellation, TransferGrantType, UploadTransferDirection, UploadTransferGrant,
 };
-pub(crate) use transport_generations::{TransportGenerationManager, TransportLease};
+pub(crate) use transport_generations::{
+    GenerationIntake, GenerationIntakeHandle, TransportGeneration, TransportGenerationManager,
+    TransportLease,
+};
 #[cfg(test)]
 mod tests;

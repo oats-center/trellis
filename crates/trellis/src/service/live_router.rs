@@ -351,6 +351,7 @@ pub(crate) struct ReservedOperationWatch {
 /// changed, admission is exhausted, or the offer cannot be authenticated.
 pub(crate) async fn reserve_live<D, F>(
     client: &TrellisClient,
+    lease: crate::client::TransportLease,
     manager: &std::sync::Arc<LiveSessionManager>,
     request: &LiveOpenRequest,
     source_factory: F,
@@ -416,7 +417,7 @@ where
     .map_err(|lost| ServerError::Nats(format!("caller authority unavailable: {lost:?}")))?;
     let negotiated = trellis_protocol::negotiate_max_data_body_bytes(
         opening.receive_max_payload_bytes,
-        client.nats().max_payload() as u64,
+        lease.nats().max_payload() as u64,
     )
     .map_err(|error| ServerError::Validation {
         issues: Box::new(vec![ValidationIssue {
@@ -492,6 +493,7 @@ where
         control_receipt: std::sync::Mutex::new(None),
         pending_close_ack: std::sync::Mutex::new(None),
         end_sent: std::sync::atomic::AtomicBool::new(false),
+        _generation_lease: Some(lease),
     });
     manager.insert_provider_session(session.session_id.clone(), std::sync::Arc::clone(&record));
     let offer = record
@@ -514,10 +516,20 @@ where
     )
     .map_err(|error| ServerError::Nats(error.to_string()))?;
     // Install the owner-control subscription before the offer is published so
-    // an immediate activation cannot be lost.
-    spawn_session_drivers(client.nats(), std::sync::Arc::clone(&record), negotiated)
-        .await
-        .map_err(|code| ServerError::Nats(format!("live control subscription failed: {code:?}")))?;
+    // an immediate activation cannot be lost. The session's physical path runs
+    // on the generation that accepted it.
+    spawn_session_drivers(
+        record
+            ._generation_lease
+            .as_ref()
+            .expect("reserved session generation lease")
+            .nats()
+            .clone(),
+        std::sync::Arc::clone(&record),
+        negotiated,
+    )
+    .await
+    .map_err(|code| ServerError::Nats(format!("live control subscription failed: {code:?}")))?;
     Ok(ReservedLive {
         prepared: LivePreparedResponse {
             offer,
@@ -537,6 +549,7 @@ where
 /// changed, admission is exhausted, or the offer cannot be authenticated.
 pub(crate) async fn reserve_operation_watch<D, F>(
     client: &TrellisClient,
+    lease: crate::client::TransportLease,
     manager: &std::sync::Arc<LiveSessionManager>,
     request: &OperationWatchOpenRequest,
     source_factory: F,
@@ -600,7 +613,7 @@ where
     .map_err(|lost| ServerError::Nats(format!("caller authority unavailable: {lost:?}")))?;
     let negotiated = trellis_protocol::negotiate_max_data_body_bytes(
         opening.receive_max_payload_bytes,
-        client.nats().max_payload() as u64,
+        lease.nats().max_payload() as u64,
     )
     .map_err(|error| ServerError::Validation {
         issues: Box::new(vec![ValidationIssue {
@@ -676,6 +689,7 @@ where
         control_receipt: std::sync::Mutex::new(None),
         pending_close_ack: std::sync::Mutex::new(None),
         end_sent: std::sync::atomic::AtomicBool::new(false),
+        _generation_lease: Some(lease),
     });
     manager.insert_provider_session(session.session_id.clone(), std::sync::Arc::clone(&record));
     let offer = record
@@ -699,9 +713,18 @@ where
     .map_err(|error| ServerError::Nats(error.to_string()))?;
     // Install the owner-control subscription before the offer is published so
     // an immediate activation cannot be lost.
-    spawn_session_drivers(client.nats(), std::sync::Arc::clone(&record), negotiated)
-        .await
-        .map_err(|code| ServerError::Nats(format!("live control subscription failed: {code:?}")))?;
+    spawn_session_drivers(
+        record
+            ._generation_lease
+            .as_ref()
+            .expect("reserved session generation lease")
+            .nats()
+            .clone(),
+        std::sync::Arc::clone(&record),
+        negotiated,
+    )
+    .await
+    .map_err(|code| ServerError::Nats(format!("live control subscription failed: {code:?}")))?;
     Ok(ReservedOperationWatch {
         prepared: LivePreparedResponse {
             offer,

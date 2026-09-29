@@ -787,7 +787,7 @@ impl AuthOperationRuntime {
                 executor_id: ulid::Ulid::new().to_string(),
                 connection_id: ulid::Ulid::new().to_string(),
                 repository: trellis_rs::service::KvOperationRepository::new(store),
-                nats: client.clone(),
+                transport: trellis_rs::service::internal::OperationTransport::fixed(client.clone()),
                 service_session_key: "trellis-auth-runtime".to_owned(),
                 staging: trellis_rs::service::internal::BoundStoreResourceClient::new(staging),
                 validator: verifier.clone(),

@@ -20,7 +20,6 @@ use trellis_protocol::event_patterns_overlap;
 pub use super::core_bootstrap::CoreBootstrapBinding;
 use super::resources::{validate_kv_binding, validate_store_binding};
 use super::resources::{KvHandle, KvResourceHandle, StoreHandle, StoreResourceHandle};
-use super::runtime::run_multi_subject_service;
 use super::transfer::{
     spawn_download_transfer_endpoint, spawn_upload_transfer_endpoint_with_completion,
     spawn_upload_transfer_endpoint_with_progress,
@@ -1275,7 +1274,10 @@ impl<C> ConnectedServiceRuntime<C> {
                         .operation_repository
                         .clone()
                         .expect("connected service operation repository"),
-                    nats: self.client.nats().clone(),
+                    transport: super::operations::OperationTransport::managed(
+                        self.client.transport_generations(),
+                        self.client.timeout_ms(),
+                    ),
                     service_session_key: self.client.auth().session_key.clone(),
                     staging: self
                         .operation_staging
@@ -1300,6 +1302,11 @@ impl<C> ConnectedServiceRuntime<C> {
     }
 
     /// Run registered subjects using the default NATS request loop.
+    ///
+    /// Generic provider intake follows the connection's current transport
+    /// generation: a new generation is fully subscribed before the superseded
+    /// one stops accepting new requests, and every accepted callback drains on
+    /// the generation that accepted it.
     pub async fn run(self) -> Result<(), ServiceRuntimeError> {
         self.router.recover_operations().await?;
         // A live-capable router must be given its connection's provider owner
@@ -1309,22 +1316,21 @@ impl<C> ConnectedServiceRuntime<C> {
             .require_live_owner()
             .map_err(ServiceRuntimeError::from)?;
         let mut event_failures = self.event_failure_receiver;
-        let subjects = self.registered_subjects.into_iter().collect::<Vec<_>>();
+        let subjects: std::sync::Arc<[String]> = self
+            .registered_subjects
+            .into_iter()
+            .collect::<Vec<_>>()
+            .into();
         let job_hosts = self.job_hosts;
-        let host = bootstrap_service_host(
+        let manager = self.client.transport_generations();
+        let host = std::sync::Arc::new(bootstrap_service_host(
             &self.service_name,
             self.binding.bootstrap_binding(),
             self.router,
             self.auth,
-        );
-        let serve = async {
-            if subjects.is_empty() {
-                std::future::pending::<()>().await;
-            }
-            let subject_refs = subjects.iter().map(String::as_str).collect::<Vec<_>>();
-            run_multi_subject_service(self.client.nats().clone(), &subject_refs, host)
-                .await
-                .map_err(ServiceRuntimeError::from)
+        ));
+        let serve = async move {
+            super::provider_ingress::run_provider_intake(manager, subjects, host).await
         };
         let run = async {
             if job_hosts.is_empty() {
@@ -1392,18 +1398,26 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
         );
         runtime.event_subscribe_needs = C::EVENT_SUBSCRIBE_NEEDS;
         runtime.operation_repository = Some(runtime.operation_repository().await?);
-        let staging = async_nats::jetstream::new(runtime.client.nats().clone())
-            .get_object_store(format!(
-                "trellis_operation_staging_{}",
-                runtime.provider_deployment_id
-            ))
+        let staging_bucket = format!(
+            "trellis_operation_staging_{}",
+            runtime.provider_deployment_id
+        );
+        // Validate the runtime-provisioned staging bucket on the initial
+        // generation, then acquire a suitable generation per staging call so
+        // staging follows cutover instead of pinning one.
+        async_nats::jetstream::new(runtime.client.nats().clone())
+            .get_object_store(&staging_bucket)
             .await
             .map_err(|error| {
                 ServiceRuntimeError::Server(Box::new(ServerError::Nats(error.to_string())))
             })?;
-        runtime.operation_staging = Some(super::resources::backend::BoundStoreResourceClient::new(
-            staging,
-        ));
+        runtime.operation_staging = Some(
+            super::resources::backend::BoundStoreResourceClient::managed_current(
+                runtime.client.transport_generations(),
+                staging_bucket,
+                runtime.client.timeout_ms(),
+            ),
+        );
         for name in runtime.resources.store.keys().cloned().collect::<Vec<_>>() {
             let handle = runtime.store_client(&name).await?;
             runtime.store_handles.insert(name, handle);

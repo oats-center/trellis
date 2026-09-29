@@ -1,4 +1,5 @@
-use super::request_loop::{run_nats_request_loop, RequestHandler};
+#[cfg(feature = "runtime-internals")]
+use super::request_loop::{run_nats_request_loop_until, RequestHandler};
 use super::ServerError;
 
 pub(crate) async fn subscribe_subject(
@@ -18,6 +19,11 @@ pub(crate) async fn subscribe_subject(
         })
 }
 
+/// Serve a fixed subject set over one connection until its subscribers close.
+///
+/// Exposed to the runtime crate so a built-in subsystem can serve its public
+/// router over the authenticated provider connection it bootstrapped with.
+#[cfg(feature = "runtime-internals")]
 pub(crate) async fn run_multi_subject_service<H>(
     client: async_nats::Client,
     subjects: &[&str],
@@ -30,10 +36,12 @@ where
     for subject in subjects {
         subscribers.push(subscribe_subject(&client, subject).await?);
     }
-    run_nats_request_loop(
+    run_nats_request_loop_until(
         client,
-        futures_util::stream::select_all(subscribers),
+        subscribers,
         handler,
+        super::router::GenerationPin::default(),
+        std::future::pending::<()>(),
     )
     .await
 }
