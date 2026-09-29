@@ -9,6 +9,7 @@ import type {
 } from "../protocol_wasm.ts";
 import { canonicalizeJsonValue } from "../utils.ts";
 import { trackCoverage } from "../../telemetry/lifecycle.ts";
+import type { TransportLease } from "../../transport/generations.ts";
 import type { AuthorizationContextCache } from "./client_context.ts";
 import {
   type AuthorizationRegistryIoCounters,
@@ -71,7 +72,19 @@ export class AuthorizationProviderUnavailableError extends Error {
 class InvalidIssuerResponseError extends Error {}
 
 /** Provider attach options. */
-export type AuthorizationProviderCacheOptions = { now?: () => number };
+export type AuthorizationProviderCacheOptions = {
+  now?: () => number;
+  /**
+   * Resolve the physical attachment verification should currently follow. When
+   * it changes (a replacement generation), new registry work moves to it; a
+   * still-draining generation keeps coverage for sessions it already admitted.
+   *
+   * When `nc` is given, the returned lease must be for exactly that attachment
+   * (never a substitute), so a watch and its pin are the same socket.
+   * @internal
+   */
+  follow?: (nc?: NatsConnection) => Promise<TransportLease | undefined>;
+};
 
 /** Read the hint format tag, ignoring any malformed or forged payload. */
 function hintFormat(message: { json<T>(): T }): string | undefined {
@@ -94,6 +107,8 @@ export type ProviderContextEntry = {
   revokedAt?: number;
   leases: number;
   watch?: AsyncIterator<RegistryWatchEntry>;
+  /** Lease on the attachment that admitted `watch`, held while it runs. */
+  watchLease?: TransportLease;
   closeWatch?: () => Promise<void>;
   live?: Promise<{
     handle: AuthorizationContextHandle;
@@ -122,11 +137,15 @@ type PendingContextEntry = {
 
 /** Connected provider-side authorization verifier. */
 export class AuthorizationProviderCache {
-  readonly #registry: AuthorizationRegistryReader;
+  #registry: AuthorizationRegistryReader;
   readonly #cache: AuthorizationContextCache;
   readonly #now: () => number;
-  readonly #nats: NatsConnection;
+  #nats: NatsConnection;
+  readonly #binding: AuthorizationRegistryBinding;
   readonly #inboxPrefix: string;
+  readonly #follow?: (
+    nc?: NatsConnection,
+  ) => Promise<TransportLease | undefined>;
   #hintSubscription?: Subscription;
   #hintLastTriggeredAt = 0;
   readonly #contexts = new Map<string, ProviderContextEntry>();
@@ -153,15 +172,18 @@ export class AuthorizationProviderCache {
     nats: NatsConnection,
     registry: AuthorizationRegistryReader,
     cache: AuthorizationContextCache,
+    binding: AuthorizationRegistryBinding,
     inboxPrefix: string,
     options: AuthorizationProviderCacheOptions,
   ) {
     this.#nats = nats;
     this.#registry = registry;
     this.#cache = cache;
+    this.#binding = binding;
     this.#inboxPrefix = inboxPrefix;
     this.#now = options.now ?? cache.correctedNowSeconds.bind(cache);
     this.#ownIssuer = structuredClone(cache.bundle().issuer);
+    this.#follow = options.follow;
   }
 
   /** Attach to the bootstrap-selected NATS authorization registry. */
@@ -186,6 +208,7 @@ export class AuthorizationProviderCache {
         inboxPrefix,
       ),
       cache,
+      binding,
       inboxPrefix,
       options,
     );
@@ -245,6 +268,122 @@ export class AuthorizationProviderCache {
     if (this.#ownEntry) this.#release(this.#ownEntry);
     this.#ownEntry = undefined;
     this.#notifyLiveChanges();
+  }
+
+  /**
+   * Move the registry reader onto `nats`.
+   *
+   * Active revocation watches migrate **make-before-break**: a replacement watch
+   * is created on the new attachment and driven to its initial snapshot plus
+   * checked revocations before the entry's ownership switches and the old watch
+   * is closed. If a replacement cannot be established, the still-healthy old
+   * coverage is kept. The reader state is mutated only after the new reader is
+   * open, so a concurrent operation never observes a mismatched pair.
+   *
+   * Returns the reader for `nats` (the just-opened one, or the existing reader
+   * when `nats` is already the current attachment) so callers bind to a local
+   * value instead of re-reading the shared field after an await.
+   */
+  async #swapAttachment(
+    nats: NatsConnection,
+  ): Promise<AuthorizationRegistryReader> {
+    if (nats === this.#nats) return this.#registry;
+    const registry = await AuthorizationRegistryReader.open(
+      nats,
+      this.#binding,
+      this.#inboxPrefix,
+    );
+    await this.#migrateWatches(registry, nats);
+    const previousHint = this.#hintSubscription;
+    this.#nats = nats;
+    this.#registry = registry;
+    this.#hintSubscription = undefined;
+    void previousHint?.unsubscribe();
+    if (!this.#stopped) this.#startHintSubscription();
+    return registry;
+  }
+
+  /**
+   * Re-establish every covered entry's revocation watch on `registry` without
+   * ever leaving an entry uncovered. A revocation observed in the replacement's
+   * initial snapshot invalidates the entry through the normal path.
+   */
+  async #migrateWatches(
+    registry: AuthorizationRegistryReader,
+    nats: NatsConnection,
+  ): Promise<void> {
+    for (const entry of [...this.#contexts.values()]) {
+      if (entry.disposed || !entry.covered || !entry.watch) continue;
+      // Lease the exact target attachment *before* creating the replacement
+      // watch, so the watch and its pin are the same socket.
+      const replacementLease = await this.#acquireWatchLease(nats);
+      if (!replacementLease) continue;
+      let replacement: Awaited<
+        ReturnType<AuthorizationRegistryReader["watchRevocation"]>
+      >;
+      try {
+        replacement = await registry.watchRevocation(entry.contextDigest);
+      } catch {
+        // Keep the still-healthy coverage on the previous attachment.
+        replacementLease.release();
+        continue;
+      }
+      let initialized = false;
+      try {
+        while (true) {
+          const result = await replacement.iterator.next();
+          if (result.done) {
+            throw new Error("authorization revocation watch ended");
+          }
+          if (!entry.covered || entry.disposed) {
+            throw new Error("authorization context lost revocation coverage");
+          }
+          if (result.value.operation === "initialized") break;
+          this.#applyRevocation(entry, result.value);
+        }
+        initialized = true;
+      } catch {
+        // Leave the previous watch authoritative.
+      }
+      if (!initialized) {
+        replacementLease.release();
+        try {
+          await replacement.close();
+        } catch {
+          // The old coverage is still authoritative.
+        }
+        continue;
+      }
+      const previousWatch = entry.closeWatch;
+      const previousLease = entry.watchLease;
+      entry.watch = replacement.iterator;
+      entry.watchLease = replacementLease;
+      entry.closeWatch = async () => {
+        try {
+          await replacement.close();
+        } finally {
+          replacementLease.release();
+        }
+      };
+      void this.#watchRevocation(entry, replacement.iterator);
+      try {
+        await previousWatch?.();
+      } catch {
+        // The previous watch is already being replaced.
+      }
+      previousLease?.release();
+    }
+  }
+
+  /**
+   * Lease the attachment a new revocation watch will be bound to. The lease is
+   * released only by an explicit successful replacement or entry disposal, so it
+   * never waits for a physical close.
+   */
+  async #acquireWatchLease(
+    nc?: NatsConnection,
+  ): Promise<TransportLease | undefined> {
+    return await this.#follow?.(nc);
   }
 
   /**
@@ -842,10 +981,43 @@ export class AuthorizationProviderCache {
   ): Promise<ProviderContextEntry> {
     assertDigest(contextDigest);
     this.#contextResolves += 1;
-    const watch = await this.#registryIo(
-      "authorization revocation watch is unavailable",
-      () => this.#registry.watchRevocation(contextDigest),
-    );
+    // The revocation watch lives on one attachment. It takes a lease on that
+    // attachment, released only when the watch is explicitly replaced or the
+    // entry is disposed, so it never waits for a physical close.
+    let watch: Awaited<
+      ReturnType<AuthorizationRegistryReader["watchRevocation"]>
+    >;
+    let watchLease: TransportLease | undefined;
+    try {
+      let reader: AuthorizationRegistryReader;
+      if (this.#follow) {
+        // Adaptive: prefer a leased admitted attachment; `#swapAttachment`
+        // returns the local reader for it, so no shared field is read after the
+        // await. With no admitted attachment, only fall back to the current
+        // reader while it is still open (the initial bootstrap attachment).
+        watchLease = await this.#acquireWatchLease();
+        if (watchLease) {
+          reader = await this.#swapAttachment(watchLease.nc);
+        } else if (!this.#nats.isClosed()) {
+          reader = this.#registry;
+        } else {
+          throw new AuthorizationProviderUnavailableError(
+            "authorization attachment is unavailable",
+          );
+        }
+      } else {
+        // Fixed single-attachment provider: no follow, use the current reader.
+        reader = this.#registry;
+      }
+      watch = await reader.watchRevocation(contextDigest);
+    } catch (error) {
+      watchLease?.release();
+      if (error instanceof AuthorizationProviderUnavailableError) throw error;
+      throw new AuthorizationProviderUnavailableError(
+        "authorization revocation watch is unavailable",
+        error,
+      );
+    }
     let entry: ProviderContextEntry | undefined;
     let watchOwned = false;
     try {
@@ -884,7 +1056,14 @@ export class AuthorizationProviderCache {
         resourcesDisposed: false,
         leases: 0,
         watch: watch.iterator,
-        closeWatch: watch.close,
+        watchLease,
+        closeWatch: async () => {
+          try {
+            await watch.close();
+          } finally {
+            watchLease?.release();
+          }
+        },
       };
       watchOwned = true;
       while (true) {
@@ -920,8 +1099,9 @@ export class AuthorizationProviderCache {
     } catch (error) {
       if (entry) {
         this.#invalidate(entry);
-      } else if (!watchOwned) {
-        await watch.close();
+      } else {
+        watchLease?.release();
+        if (!watchOwned) await watch.close();
       }
       throw error;
     }
@@ -931,6 +1111,7 @@ export class AuthorizationProviderCache {
     entry: ProviderContextEntry,
     iterator: AsyncIterator<RegistryWatchEntry>,
   ): Promise<void> {
+    const isActive = () => entry.watch === iterator;
     try {
       while (entry.covered && !entry.disposed) {
         const result = await iterator.next();
@@ -941,7 +1122,9 @@ export class AuthorizationProviderCache {
     } catch {
       // Coverage is invalidated below; the next request resynchronizes it.
     } finally {
-      this.#invalidate(entry);
+      // A watch that has already been replaced by a make-before-break migration
+      // must not invalidate the entry that now owns its successor.
+      if (isActive()) this.#invalidate(entry);
       try {
         await iterator.return?.();
       } catch {
@@ -1181,11 +1364,21 @@ export class AuthorizationProviderCache {
     message: string,
     operation: () => Promise<T>,
   ): Promise<T> {
+    // Each finite registry operation follows the current physical attachment
+    // under its own lease: the lease is held only across this operation and
+    // released on success or failure, so it never becomes a pin on a generation
+    // that the manager wants to retire.
+    const lease = await this.#follow?.();
     try {
+      if (lease && lease.nc !== this.#nats) {
+        await this.#swapAttachment(lease.nc);
+      }
       return await operation();
     } catch (error) {
       if (error instanceof AuthorizationProviderUnavailableError) throw error;
       throw new AuthorizationProviderUnavailableError(message, error);
+    } finally {
+      lease?.release();
     }
   }
 

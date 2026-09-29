@@ -768,6 +768,97 @@ export function buildProofInput(
   return buf;
 }
 
+/** One admitted generation a framework intake installs onto. @internal */
+export type GenerationIntakeTarget = {
+  id: number;
+  nc: NatsConnection;
+  contextDigest: string;
+  lease?: () => TransportLease;
+};
+
+/** Handle returned by one framework intake install. @internal */
+export type GenerationIntakeInstallResult = {
+  /** Stop accepting new intake; accepted work continues to completion. */
+  drain: () => Promise<void>;
+  /** Resolves when every accepted intake loop has finished. */
+  done: Promise<void>;
+  /** Release per-generation framework resources. */
+  dispose: () => Promise<void>;
+};
+
+/** Installs framework-owned broker-ready intake on one admitted generation. @internal */
+export type GenerationIntakeInstall = (
+  target: GenerationIntakeTarget,
+) => Promise<GenerationIntakeInstallResult>;
+
+/**
+ * Handle to retire and dispose one generation's generic provider intake.
+ *
+ * The same logical connection can install, drain, and dispose one attachment
+ * per admitted generation. `retireIntake` is idempotent and stops *new* broker
+ * deliveries; `intakeStopped` resolves once every outstanding intake loop has
+ * been accounted for (including queued delivery ownership), and `dispose`
+ * releases per-generation resources. Disposal is invoked only after intake has
+ * stopped and the generation's accepted leases have drained.
+ * @internal
+ */
+export type ProviderGenerationAttachment = {
+  retireIntake(): void;
+  readonly intakeStopped: Promise<void>;
+  dispose(): Promise<void>;
+};
+
+/** One installed provider ingress for one admitted generation. @internal */
+type ProviderIngress = {
+  id: number;
+  nc: NatsConnection;
+  /** Exact admitted context this generation's providers were built from. */
+  contextDigest: string;
+  lease?: () => TransportLease;
+  /**
+   * Held from install until every intake *loop* has finished (not merely until
+   * `drain()` resolves), so a buffered accepted delivery cannot arrive after the
+   * generation is reaped but before its per-callback lease is taken.
+   */
+  intakeLease?: TransportLease;
+  /**
+   * Generic intake subscriptions (RPC + live openings + framework intake).
+   * `intakeId` names the framework registration that owns the entry, so a
+   * single registration can be retracted without disturbing the others.
+   */
+  retireFns: Array<{
+    intakeId?: string;
+    /** Owning generic surface; live owners persist across a drain. */
+    owner?: "rpc" | "live";
+    drain: () => Promise<void>;
+    done: Promise<void>;
+    /**
+     * Live only: re-create the generic open subscription on the same provider
+     * without duplicating it or disturbing accepted sessions/receipts.
+     */
+    reopen?: () =>
+      | { drain: () => Promise<void>; done: Promise<void> }
+      | Promise<{ drain: () => Promise<void>; done: Promise<void> }>;
+  }>;
+  /**
+   * Coherent per-generation provider disposal (session-serving control, owned
+   * sessions, retained authority). Run only when the generation physically
+   * closes, never when its generic intake is drained, so an accepted live
+   * session keeps control until it terminates.
+   */
+  disposeFns: Array<{
+    intakeId?: string;
+    owner?: "rpc" | "live";
+    dispose: () => Promise<void>;
+  }>;
+  /** Generic intake already drained; no new registrations install here. */
+  retired?: boolean;
+  /** Resolves when every outstanding intake loop is accounted for. */
+  intakeStopped?: Promise<void>;
+  /** In-flight coherent disposal, so concurrent calls share one run. */
+  disposing?: Promise<void>;
+};
+
 export type TrellisSigner = (
   data: Uint8Array,
 ) => Promise<Uint8Array> | Uint8Array;
@@ -2545,6 +2636,21 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Error for an owner whose generation was retired before it could install, so
+ * it must not add resources to the disposed scope.
+ */
+function ingressRetiredError(id: number): TransportError {
+  return createTransportError({
+    code: "trellis.transport.ingress_retired",
+    message:
+      "Trellis stopped installing provider intake for a retired generation.",
+    hint:
+      "Retry against the current generation. This is expected during a fast supersede.",
+    context: { generationId: id },
+  });
+}
+
 export class Trellis<
   TA extends RuntimeApi = RuntimeApi,
   TMode extends TrellisMode = "client",
@@ -2572,6 +2678,8 @@ export class Trellis<
   readonly api: TA;
   #log: LoggerLike;
   #tasks: TrellisTasks;
+  #rpcTaskSeq = 0;
+  #liveTaskSeq = 0;
   #hasExplicitApi: boolean;
   #noResponderMaxRetries: number;
   #noResponderRetryMs: number;
@@ -2616,6 +2724,14 @@ export class Trellis<
       drain: () => Promise<void>;
       done: Promise<void>;
       /**
+       * Reinstall this generation's generic live-open intake on the same
+       * provider (its control subscription, retained authority, and accepted
+       * sessions stay intact). Used when a drained survivor is reactivated.
+       */
+      reopen: () =>
+        | { drain: () => Promise<void>; done: Promise<void> }
+        | Promise<{ drain: () => Promise<void>; done: Promise<void> }>;
+      /**
        * Retire this generation's provider: stop session-serving control, fence
        * and terminate owned sessions, and release its retained authority. Run
        * only when the generation physically closes or a failed install is
@@ -2648,33 +2764,7 @@ export class Trellis<
    * One installed provider ingress per admitted generation, keyed by the
    * generation id the owning runtime reports.
    */
-  #providerIngress = new Map<number, {
-    id: number;
-    nc: NatsConnection;
-    /** Exact admitted context this generation's providers were built from. */
-    contextDigest: string;
-    lease?: () => TransportLease;
-    /**
-     * Held from install until every intake *loop* has finished (not merely
-     * until `drain()` resolves), so a buffered accepted delivery cannot arrive
-     * after the generation is reaped but before its per-callback lease is
-     * taken. `drain()` stops new broker deliveries and only protocol-flushes;
-     * the iterator still has queued messages to consume.
-     */
-    intakeLease?: TransportLease;
-    /** Generic intake subscriptions (RPC + live openings). */
-    retireFns: Array<{ drain: () => Promise<void>; done: Promise<void> }>;
-    /**
-     * Coherent per-generation provider disposal (session-serving control,
-     * owned sessions, retained authority). Run only when the generation
-     * physically closes or a failed install is rolled back, never when its
-     * generic intake is drained, so an accepted live session keeps control until
-     * it terminates.
-     */
-    disposeFns: Array<() => Promise<void>>;
-    /** Generic intake already drained; no new registrations install here. */
-    retired?: boolean;
-  }>();
+  #providerIngress = new Map<number, ProviderIngress>();
 
   constructor(
     name: string, // Must be unique for a service
@@ -3697,8 +3787,13 @@ export class Trellis<
         contextDigest: ingress.contextDigest,
         lease: ingress.lease,
       });
-      ingress.retireFns.push({ drain: installed.drain, done: installed.done });
-      ingress.disposeFns.push(installed.dispose);
+      ingress.retireFns.push({
+        owner: "live",
+        drain: installed.drain,
+        done: installed.done,
+        reopen: installed.reopen,
+      });
+      ingress.disposeFns.push({ owner: "live", dispose: installed.dispose });
     }
   }
 
@@ -3725,6 +3820,9 @@ export class Trellis<
   }): Promise<{
     drain: () => Promise<void>;
     done: Promise<void>;
+    reopen: () =>
+      | { drain: () => Promise<void>; done: Promise<void> }
+      | Promise<{ drain: () => Promise<void>; done: Promise<void> }>;
     dispose: () => Promise<void>;
   }> {
     const { id, nc, contextDigest, lease, live, subject, descriptor, handler } =
@@ -3744,6 +3842,19 @@ export class Trellis<
       contextDigest,
       { kind: "local-provider" },
     );
+    const refreshOwnAuthority = async (): Promise<void> => {
+      const current = this.#contextDigest();
+      if (!current) {
+        throw new Error(
+          "no current authorization context to refresh live authority",
+        );
+      }
+      const candidate = await ownGuard.prepareReplacement(current);
+      const lost = ownGuard.commitReplacement(candidate);
+      if (lost !== undefined) {
+        throw new Error(`live own authority replacement rejected: ${lost}`);
+      }
+    };
     const provider = new LiveProvider({
       nats: nc,
       lease,
@@ -3757,14 +3868,7 @@ export class Trellis<
       },
       sign: async (digest) => await this.#auth.sign(digest),
       ownGuard,
-      refreshOwnAuthority: async () => {
-        const current = this.#contextDigest();
-        if (!current) return;
-        const candidate = await ownGuard.prepareReplacement(current);
-        if (ownGuard.commitReplacement(candidate)) {
-          throw new Error("own authority replacement was rejected");
-        }
-      },
+      refreshOwnAuthority,
       permission: toVerifierPermission(descriptor.permission),
       retainCallerAuthority: (digest, permission) =>
         LiveAuthorityGuard.retain(cache, digest, {
@@ -3773,15 +3877,54 @@ export class Trellis<
         }),
       manager: this.connection.live,
     });
-    let sub: ReturnType<NatsConnection["subscribe"]>;
-    let controlSub: ReturnType<NatsConnection["subscribe"]>;
+    let controlSub: ReturnType<NatsConnection["subscribe"]> | undefined;
+    // Generic live-open intake. Re-creatable so a survivor reactivation can
+    // reinstall the open subscription on the same provider without duplicating
+    // the provider or disturbing accepted sessions/receipts.
+    const openIntake = (): {
+      drain: () => Promise<void>;
+      done: Promise<void>;
+    } => {
+      const openSub = nc.subscribe(subject, {
+        queue: routeQueueGroup(subject),
+      });
+      const openDone = Promise.withResolvers<void>();
+      const openTask = AsyncResult.try(async () => {
+        // Admission bound before any verification work is spawned: an unbounded
+        // set of attacker-supplied openings must not create unbounded tasks.
+        let inFlight = 0;
+        for await (const msg of openSub) {
+          if (inFlight >= MAX_PENDING_OPENINGS) continue;
+          inFlight += 1;
+          void this.#acceptLiveOpen(
+            live,
+            descriptor,
+            msg,
+            handler,
+            provider,
+          ).finally(() => {
+            inFlight -= 1;
+          });
+        }
+      });
+      this.#tasks.add(
+        `live:${id}:${live}:open:${this.#liveTaskSeq++}`,
+        openTask,
+      );
+      openTask.then(() => openDone.resolve(), () => openDone.resolve());
+      return {
+        drain: () => openSub.drain().catch(() => undefined),
+        done: openDone.promise,
+      };
+    };
+    let open: { drain: () => Promise<void>; done: Promise<void> } | undefined;
     try {
-      sub = nc.subscribe(subject, { queue: routeQueueGroup(subject) });
       controlSub = nc.subscribe(provider.wildcardSubject(subject));
       // Registered once this generation can actually receive control on the
       // route, so takeover reaches a generation that has not yet served a
       // session; `dispose()` unregisters it transactionally on failure.
       provider.registerRoute(subject);
+      open = openIntake();
     } catch (cause) {
       const error = createTransportError({
         code: "trellis.live.listen_failed",
@@ -3804,27 +3947,6 @@ export class Trellis<
       ownGuard.release();
       throw error;
     }
-    const openDone = Promise.withResolvers<void>();
-    const openTask = AsyncResult.try(async () => {
-      // Admission bound before any verification work is spawned: an unbounded
-      // set of attacker-supplied openings must not create unbounded tasks.
-      let inFlight = 0;
-      for await (const msg of sub) {
-        if (inFlight >= MAX_PENDING_OPENINGS) continue;
-        inFlight += 1;
-        void this.#acceptLiveOpen(
-          live,
-          descriptor,
-          msg,
-          handler,
-          provider,
-        ).finally(() => {
-          inFlight -= 1;
-        });
-      }
-    });
-    this.#tasks.add(`live:${id}:${live}`, openTask);
-    openTask.then(() => openDone.resolve(), () => openDone.resolve());
     const controlTask = AsyncResult.try(async () => {
       for await (const msg of controlSub) {
         await provider.handleControl(msg, async (controlMsg) => {
@@ -3849,12 +3971,25 @@ export class Trellis<
         });
       }
     });
-    this.#tasks.add(`live:${id}:${live}:control`, controlTask);
+    this.#tasks.add(
+      `live:${id}:${live}:control:${this.#liveTaskSeq++}`,
+      controlTask,
+    );
+    const controlling = controlSub;
     return {
-      drain: () => sub.drain().catch(() => undefined),
-      done: openDone.promise,
+      drain: () => open!.drain(),
+      done: open!.done,
+      reopen: async () => {
+        // Adopt the session's current authorization context before admitting new
+        // sessions on a reactivated survivor whose original context may have
+        // been superseded by the reduction. A failure to establish verified
+        // current authority propagates so the caller rolls the reinstall back
+        // rather than admitting fresh sessions under stale evidence.
+        await refreshOwnAuthority();
+        return (open = openIntake());
+      },
       dispose: async () => {
-        void controlSub.drain().catch(() => undefined);
+        void controlling.drain().catch(() => undefined);
         await provider.dispose();
         ownGuard.release();
       },
@@ -4116,18 +4251,7 @@ export class Trellis<
 
   protected async declareGenerationIntake(
     id: string,
-    install: (
-      target: {
-        id: number;
-        nc: NatsConnection;
-        contextDigest: string;
-        lease?: () => TransportLease;
-      },
-    ) => Promise<{
-      drain: () => Promise<void>;
-      done: Promise<void>;
-      dispose: () => Promise<void>;
-    }>,
+    install: GenerationIntakeInstall,
   ): Promise<void> {
     this.#generationIntakes.set(id, install);
     if (!this.#adaptiveTransport) return;
@@ -4139,17 +4263,81 @@ export class Trellis<
         contextDigest: ingress.contextDigest,
         lease: ingress.lease,
       });
-      ingress.retireFns.push({ drain: installed.drain, done: installed.done });
-      ingress.disposeFns.push(installed.dispose);
+      ingress.retireFns.push({
+        intakeId: id,
+        drain: installed.drain,
+        done: installed.done,
+      });
+      ingress.disposeFns.push({ intakeId: id, dispose: installed.dispose });
     }
   }
 
   /**
-   * Install provider ingress for one admitted generation.
+   * Register framework-owned per-generation intake on this logical connection.
+   *
+   * Installs on every already-admitted generation and on every future candidate
+   * before it becomes the default. `retractFrameworkIntake` stops and disposes
+   * the installed intake so a later candidate can never resurrect a stopped
+   * framework host. @internal
+   */
+  async declareFrameworkIntake(
+    id: string,
+    install: GenerationIntakeInstall,
+  ): Promise<void> {
+    await this.declareGenerationIntake(id, install);
+  }
+
+  /**
+   * Retract one framework intake registration and stop its installed intake on
+   * every admitted generation. Accepted work is drained before each entry's
+   * `done` resolves; `dispose` releases per-generation resources. @internal
+   */
+  async retractFrameworkIntake(id: string): Promise<void> {
+    this.#generationIntakes.delete(id);
+    if (!this.#adaptiveTransport) return;
+    const pending: Promise<void>[] = [];
+    for (const ingress of this.#providerIngress.values()) {
+      const retired = ingress.retireFns.filter((entry) =>
+        entry.intakeId === id
+      );
+      if (retired.length > 0) {
+        ingress.retireFns = ingress.retireFns.filter((entry) =>
+          entry.intakeId !== id
+        );
+        for (const entry of retired) {
+          pending.push((async () => {
+            await entry.drain();
+            await entry.done;
+          })());
+        }
+      }
+      const disposed = ingress.disposeFns.filter((entry) =>
+        entry.intakeId === id
+      );
+      if (disposed.length > 0) {
+        ingress.disposeFns = ingress.disposeFns.filter((entry) =>
+          entry.intakeId !== id
+        );
+        for (const entry of disposed) {
+          // Invoke inside an async wrapper so a synchronous throw in `dispose`
+          // is a rejection for this entry, not an abort of the whole retraction.
+          pending.push(
+            (async () => await entry.dispose())().catch(() => undefined),
+          );
+        }
+      }
+    }
+    await Promise.allSettled(pending);
+  }
+
+  /**
+   * Install (or reinstall) provider ingress for one admitted generation.
    *
    * Registers the queue-grouped subscriptions for every handler in the logical
    * provider core. Called before the generation becomes the default so routing
-   * exists before new work can select it. @internal
+   * exists before new work can select it. Reinstalling a drained survivor
+   * restores only this generic intake scope; session/control owners registered
+   * outside it are left intact. @internal
    */
   async installProviderIngress(target: {
     id: number;
@@ -4163,49 +4351,150 @@ export class Trellis<
      * candidate rather than executing unpinned.
      */
     lease?: () => TransportLease;
-  }): Promise<void> {
-    if (this.#providerIngress.has(target.id)) return;
-    const ingress = {
+    /**
+     * Push this ingress's concrete cleanup scope into the owning manager
+     * synchronously, before the first install await, so cleanup ownership is
+     * never a fallible late lookup. @internal
+     */
+    registerDisposal?: (handle: ProviderGenerationAttachment) => boolean;
+  }): Promise<ProviderGenerationAttachment> {
+    const existing = this.#providerIngress.get(target.id);
+    if (existing && !existing.retired) {
+      return this.#attachmentFor(target.id);
+    }
+    const ingress: ProviderIngress = existing ?? {
       id: target.id,
       nc: target.nc,
       contextDigest: target.contextDigest,
       lease: target.lease,
-      intakeLease: target.lease?.(),
-      retireFns: [] as Array<
-        { drain: () => Promise<void>; done: Promise<void> }
-      >,
-      disposeFns: [] as Array<() => Promise<void>>,
+      retireFns: [],
+      disposeFns: [],
     };
     this.#providerIngress.set(target.id, ingress);
+    if (!existing) {
+      // First installation only: register the concrete scope now, before any
+      // await, so the retained ingress is always owned and disposable even if a
+      // later install step fails partway. A false result means the generation is
+      // already retired and the manager has taken over this scope's cleanup.
+      const accepted = target.registerDisposal?.(
+        this.#attachmentFor(target.id),
+      );
+      if (accepted === false) {
+        ingress.retireFns = [];
+        ingress.disposeFns = [];
+        throw ingressRetiredError(target.id);
+      }
+    }
+    // Reactivation of a drained survivor: reinstall only generic intake
+    // (RPC serve + framework intake) before the first await so a partial
+    // install is always discoverable and disposable. Live/control/session
+    // owners registered outside generic intake are preserved.
+    const reinstateGeneric = existing?.retired === true;
+    // Reactivation must never resurrect a scope whose disposal has begun; the
+    // manager only asks for reactivation of a non-disposing survivor, and this
+    // guards the reset from being reached any other way. The manager's
+    // `#disposing` boundary is the authority for irreversibility.
+    if (existing?.disposing) {
+      throw ingressRetiredError(target.id);
+    }
+    let liveEntries: ProviderIngress["retireFns"] = [];
+    if (reinstateGeneric) {
+      liveEntries = ingress.retireFns.filter((entry) => entry.owner === "live");
+      ingress.retireFns = ingress.retireFns.filter((entry) =>
+        entry.owner !== "rpc" && entry.intakeId === undefined
+      );
+      ingress.disposeFns = ingress.disposeFns.filter((entry) =>
+        entry.intakeId === undefined
+      );
+    } else {
+      ingress.retireFns = [];
+      ingress.disposeFns = [];
+    }
+    ingress.nc = target.nc;
+    ingress.contextDigest = target.contextDigest;
+    ingress.lease = target.lease;
+    ingress.retired = false;
+    ingress.intakeStopped = undefined;
+    ingress.disposing = undefined;
+    ingress.intakeLease = target.lease?.();
+    // Fence for resources created across an install await: the owner scope may
+    // have been force-retired while a subscription/consumer was being set up.
+    // Identity alone is not enough — `disposeProviderIngress` flags `disposing`
+    // and snapshots `disposeFns` before it deletes the map entry, so a pending
+    // installer that resolves in that window would push a new owner after the
+    // snapshot and have it wiped without cleanup. Retired or disposing scopes
+    // therefore reject further installation too.
+    const stillOwned = (): boolean =>
+      this.#providerIngress.get(ingress.id) === ingress &&
+      !ingress.retired && !ingress.disposing;
     try {
+      // Reinstall the live providers' generic open intake on the same provider
+      // first, under the same owned rollback: their control subscription,
+      // retained authority, and accepted sessions are preserved, not duplicated,
+      // and a partial reopen is retired like any other partial generic install.
+      for (const entry of liveEntries) {
+        if (!entry.reopen) continue;
+        const reopened = await entry.reopen();
+        entry.drain = reopened.drain;
+        entry.done = reopened.done;
+        if (!stillOwned()) {
+          await this.#releaseDetached(entry.drain);
+          throw ingressRetiredError(target.id);
+        }
+      }
       for (const registration of this.#rpcRegistrations.values()) {
-        ingress.retireFns.push(this.#installRpcIngress(ingress, registration));
-      }
-      for (const registration of this.#liveRegistrations.values()) {
-        const installed = await registration.install({
-          id: ingress.id,
-          nc: ingress.nc,
-          contextDigest: ingress.contextDigest,
-          lease: ingress.lease,
-        });
         ingress.retireFns.push({
-          drain: installed.drain,
-          done: installed.done,
+          owner: "rpc",
+          ...this.#installRpcIngress(ingress, registration),
         });
-        ingress.disposeFns.push(installed.dispose);
       }
-      for (const intake of this.#generationIntakes.values()) {
+      if (!reinstateGeneric) {
+        for (const registration of this.#liveRegistrations.values()) {
+          const installed = await registration.install({
+            id: ingress.id,
+            nc: ingress.nc,
+            contextDigest: ingress.contextDigest,
+            lease: ingress.lease,
+          });
+          if (!stillOwned()) {
+            // Release both the just-created generic open subscription and the
+            // control/authority scope; an open sub left running until the socket
+            // closes would keep accepting sessions on a retired generation.
+            await this.#releaseDetached(installed.drain, installed.dispose);
+            throw ingressRetiredError(target.id);
+          }
+          ingress.retireFns.push({
+            owner: "live",
+            drain: installed.drain,
+            done: installed.done,
+            reopen: installed.reopen,
+          });
+          ingress.disposeFns.push({
+            owner: "live",
+            dispose: installed.dispose,
+          });
+        }
+      }
+      for (const [intakeId, intake] of this.#generationIntakes) {
         const installed = await intake({
           id: ingress.id,
           nc: ingress.nc,
           contextDigest: ingress.contextDigest,
           lease: ingress.lease,
         });
+        if (!stillOwned()) {
+          await this.#releaseDetached(installed.dispose);
+          throw ingressRetiredError(target.id);
+        }
         ingress.retireFns.push({
+          intakeId,
           drain: installed.drain,
           done: installed.done,
         });
-        ingress.disposeFns.push(installed.dispose);
+        ingress.disposeFns.push({
+          intakeId,
+          dispose: installed.dispose,
+        });
       }
       // The SUBs above are only queued client-side. Flush proves the broker has
       // accepted the candidate's routes before it becomes the default and the
@@ -4213,21 +4502,44 @@ export class Trellis<
       // gap with no queue-group member.
       await target.nc.flush();
     } catch (cause) {
-      // A candidate that could not fully install must not be published with
-      // half-installed intake or an unpinned ingress. Stop new deliveries but
-      // never block rejection on a held application callback; release the
-      // ingress lease once the loops actually finish.
-      this.#providerIngress.delete(target.id);
-      const done = ingress.retireFns.map((entry) => {
-        void entry.drain();
-        return entry.done;
-      });
-      for (const dispose of ingress.disposeFns) {
-        void dispose().catch(() => undefined);
-      }
-      void Promise.allSettled(done).then(() => ingress.intakeLease?.release());
+      // Retain the partially installed attachment: registered intake may have
+      // accepted work. Stop new deliveries and keep it discoverable so the
+      // owner's retire/dispose settles what was accepted instead of detaching
+      // it. The candidate is still reported as failed.
+      this.#retireIngress(ingress);
       throw cause;
     }
+    return this.#attachmentFor(target.id);
+  }
+
+  #attachmentFor(id: number): ProviderGenerationAttachment {
+    const provider = this;
+    return {
+      retireIntake: () => provider.retireProviderIngress(id),
+      get intakeStopped() {
+        return provider.#providerIngress.get(id)?.intakeStopped ??
+          Promise.resolve();
+      },
+      dispose: () => provider.disposeProviderIngress(id),
+    };
+  }
+
+  /** Stop new intake and record when every outstanding intake loop settles. */
+  #retireIngress(ingress: ProviderIngress): void {
+    if (ingress.retired) return;
+    ingress.retired = true;
+    // Capture this retirement's own scope: a later reactivation installs a new
+    // intake lease and loop set, and this retirement must release exactly the
+    // lease and loops it retired, never the reinstalled pin.
+    const retiredLease = ingress.intakeLease;
+    const done = ingress.retireFns.map(async (entry) => {
+      await entry.drain();
+      return await entry.done;
+    });
+    ingress.intakeStopped = Promise.allSettled(done).then(() => {
+      retiredLease?.release();
+      if (ingress.intakeLease === retiredLease) ingress.intakeLease = undefined;
+    });
   }
 
   /**
@@ -4242,39 +4554,61 @@ export class Trellis<
    */
   retireProviderIngress(id: number): void {
     const ingress = this.#providerIngress.get(id);
-    if (!ingress || ingress.retired) return;
-    ingress.retired = true;
-    const done = ingress.retireFns.map((entry) => {
-      void entry.drain();
-      return entry.done;
-    });
-    void Promise.allSettled(done).then(() => ingress.intakeLease?.release());
+    if (!ingress) return;
+    this.#retireIngress(ingress);
   }
 
   /**
-   * Physically close one generation's provider ingress.
+   * Release one generation's provider resources.
    *
-   * Generic intake is drained if it was not already, and the session-serving
-   * control subscriptions are retired. Called when the generation is closed, so
-   * an accepted live session's control works until the generation it pinned is
-   * gone rather than being cancelled by a planned handoff.
-   * @internal
+   * Called after intake has stopped and accepted leases have drained, so owned
+   * sessions and retained authority are torn down coherently. Idempotent; a
+   * concurrent call shares the one run. @internal
    */
-  closeProviderIngress(id: number): void {
+  async disposeProviderIngress(id: number): Promise<void> {
     const ingress = this.#providerIngress.get(id);
     if (!ingress) return;
-    if (!ingress.retired) {
-      ingress.retired = true;
-      const done = ingress.retireFns.map((entry) => {
-        void entry.drain();
-        return entry.done;
-      });
-      void Promise.allSettled(done).then(() => ingress.intakeLease?.release());
+    if (ingress.disposing) {
+      await ingress.disposing;
+      return;
     }
-    for (const dispose of ingress.disposeFns) {
-      void dispose().catch(() => undefined);
+    ingress.disposing = (async () => {
+      // Release the ingress-lifetime pin and run coherent per-generation
+      // disposal. The graceful caller has already awaited intake; a forced path
+      // invokes disposal without blocking on accepted work.
+      const disposingLease = ingress.intakeLease;
+      disposingLease?.release();
+      if (ingress.intakeLease === disposingLease) {
+        ingress.intakeLease = undefined;
+      }
+      await Promise.allSettled(
+        ingress.disposeFns.map(async (entry) => await entry.dispose()),
+      );
+      ingress.disposeFns.length = 0;
+      this.#providerIngress.delete(id);
+    })();
+    await ingress.disposing;
+  }
+
+  /**
+   * Release resources an owner created across an install await after its scope
+   * was force-retired. Every cleanup is attempted even if another fails, and
+   * failures are reported, never silently dropped.
+   */
+  async #releaseDetached(
+    ...cleanups: Array<() => Promise<void> | void>
+  ): Promise<void> {
+    const results = await Promise.allSettled(
+      cleanups.map(async (cleanup) => await cleanup()),
+    );
+    for (const result of results) {
+      if (result.status === "rejected") {
+        this.#log.warn(
+          { error: result.reason },
+          "detached provider intake cleanup failed",
+        );
+      }
     }
-    this.#providerIngress.delete(id);
   }
 
   #installRpcIngress(
@@ -4282,7 +4616,11 @@ export class Trellis<
       id: number;
       nc: NatsConnection;
       lease?: () => TransportLease;
-      retireFns: Array<{ drain: () => Promise<void>; done: Promise<void> }>;
+      retireFns: Array<{
+        intakeId?: string;
+        drain: () => Promise<void>;
+        done: Promise<void>;
+      }>;
     },
     registration: {
       method: MethodsOf<TA>;
@@ -4298,7 +4636,9 @@ export class Trellis<
     const completion = Promise.withResolvers<void>();
     const intake = this.#runRpcIntake(sub, registration, ingress.lease);
     this.#tasks.add(
-      `rpc:${ingress.id}:${registration.method}`,
+      // Unique per install so a survivor reactivation can reinstall its RPC
+      // intake without colliding with the drained install's retained task.
+      `rpc:${ingress.id}:${registration.method}:${this.#rpcTaskSeq++}`,
       intake,
     );
     // `done` resolves when the intake loop itself finishes consuming buffered
@@ -5422,6 +5762,41 @@ export class Trellis<
     );
   }
 
+  /**
+   * Runs work bound to the current ready generation's JetStream client, holding
+   * that generation's lease for the duration. A fixed connection uses the
+   * initial socket.
+   *
+   * Durable event consumption re-acquires here on every bounded batch, so a
+   * growth rollover is adopted on the next fetch while a delivery already being
+   * handled keeps the generation that accepted it pinned through its ack.
+   */
+  async #withDurableEventGeneration<U>(
+    work: (deps: {
+      nc: NatsConnection;
+      js: JetStreamClient;
+      jsm: Awaited<ReturnType<typeof jetstreamManager>>;
+      lease?: TransportLease;
+    }) => Promise<U>,
+  ): Promise<U> {
+    let lease: TransportLease | undefined;
+    if (this.#adaptiveTransport) {
+      lease = await this.#transport.acquireCurrent({
+        deadlineMs: Date.now() + this.timeout,
+      });
+    }
+    const nc = lease?.nc ?? this.#nats;
+    try {
+      const js = lease ? jetstream(nc) : this.#js;
+      const jsm = lease
+        ? await jetstreamManager(nc)
+        : await jetstreamManager(this.#nats);
+      return await work({ nc, js, jsm, ...(lease ? { lease } : {}) });
+    } finally {
+      lease?.release();
+    }
+  }
+
   #runDurableEventConsumer(
     group: string,
     loop: DurableEventConsumerLoop<TA>,
@@ -5444,8 +5819,9 @@ export class Trellis<
       let fetchingReplay = true;
       try {
         const infoResult = await AsyncResult.try(async () => {
-          const jsm = await jetstreamManager(this.#nats);
-          return await jsm.consumers.info(binding.stream, binding.consumerName);
+          return await this.#withDurableEventGeneration(({ jsm }) =>
+            jsm.consumers.info(binding.stream, binding.consumerName)
+          );
         });
         const info = infoResult.take();
         if (isErr(info)) {
@@ -5467,50 +5843,60 @@ export class Trellis<
         }
         originalOpened = true;
 
-        const replayInfo = await (await jetstreamManager(this.#nats)).consumers
-          .info(
+        // Consumer metadata is stable across generations; only the physical
+        // connection it is consumed on moves.
+        const replayInfo = await this.#withDurableEventGeneration(({ jsm }) =>
+          jsm.consumers.info(
             binding.replayBinding.stream,
             binding.replayBinding.consumerName,
-          );
-        const consumers = [
-          this.#js.consumers.getConsumerFromInfo(info),
-          this.#js.consumers.getConsumerFromInfo(replayInfo),
-        ];
+          )
+        );
         let replay = false;
         while (
           !this.#durableEventListenersStopped &&
           this.#durableEventConsumerGroupReady(group, loop)
         ) {
           fetchingReplay = replay;
-          const messages = await consumers[replay ? 1 : 0]!.fetch({
-            max_messages: 1,
-            expires: 1_000,
-          });
           const isReplay = replay;
           replay = !replay;
-          loop.messages.add(messages);
-          if (!this.#durableEventConsumerGroupReady(group, loop)) {
-            messages.stop();
-            loop.messages.delete(messages);
-            break;
-          }
-          try {
-            await this.#handleDurableEventConsumer(
-              group,
-              loop,
-              messages,
-              isReplay,
-            )
-              .orThrow();
-          } finally {
-            loop.messages.delete(messages);
-          }
+          // One bounded batch per fetch on the current ready generation, pinned
+          // through the handler and its ack. Idle iterations release promptly,
+          // so growth is adopted on the next fetch with no second logical
+          // consumer.
+          await this.#withDurableEventGeneration(async ({ js }) => {
+            const messages = await js.consumers.getConsumerFromInfo(
+              isReplay ? replayInfo : info,
+            ).fetch({ max_messages: 1, expires: 1_000 });
+            loop.messages.add(messages);
+            if (!this.#durableEventConsumerGroupReady(group, loop)) {
+              messages.stop();
+              loop.messages.delete(messages);
+              return;
+            }
+            try {
+              await this.#handleDurableEventConsumer(
+                group,
+                loop,
+                messages,
+                isReplay,
+              )
+                .orThrow();
+            } finally {
+              loop.messages.delete(messages);
+            }
+          });
         }
       } catch (cause) {
         if (
           this.#durableEventListenersStopped ||
           !this.#durableEventConsumerGroupReady(group, loop)
         ) {
+          return ok(undefined);
+        }
+        if (this.#adaptiveTransport && this.#transport.isClosed()) {
+          // Terminal: a closed or revoked logical transport must stop durable
+          // consumption rather than retrying forever against no generation.
+          this.#durableEventListenersStopped = true;
           return ok(undefined);
         }
         if (

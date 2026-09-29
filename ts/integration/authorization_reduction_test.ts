@@ -56,6 +56,8 @@ type Runtime = Parameters<Parameters<typeof withTrellisRuntime>[0]>[0];
 /** One admitted attachment as reported by the production admin surface. */
 type Attachment = {
   runtimeConnectionId: string;
+  /** Per-physical-attachment identity, distinct across generations. */
+  connectionId: string;
   contextDigest: string;
   participantId: string;
   connectedAt: bigint;
@@ -179,11 +181,53 @@ Deno.test("F3 a reduction closes the wider generation and keeps the original", a
       seed: instance.seed,
     }).orThrow();
     const serviceExit = service.wait().catch((error: unknown) => error);
+    let closeCaller: (() => Promise<unknown>) | undefined;
+    const retainedAbort = new AbortController();
     try {
-      await service.handleEcho(({ input }) => Result.ok(input));
+      // A genuinely covered RPC accepted on the original generation and held
+      // across the reduction: real accepted work whose lease keeps the healthy
+      // original alive, so survivor reuse is proven by work, not by a pin.
+      let releaseHeld: (() => void) | undefined;
+      const heldGate = new Promise<void>((resolve) => {
+        releaseHeld = resolve;
+      });
+      let heldEntered = false;
+      await service.handleEcho(({ input }) => {
+        if (input.value === "held") {
+          heldEntered = true;
+          return heldGate.then(() => Result.ok(input));
+        }
+        return Result.ok(input);
+      });
+      let feeds = 0;
+      await service.handleWatch(async ({ emit, signal }) => {
+        const feed = ++feeds;
+        let frame = 0;
+        while (!signal.aborted) {
+          await emit({ value: `feed-${feed}-${++frame}` }).orThrow();
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      });
+      const caller = await runtime.connectClient({
+        name: "reduction-caller",
+        contract: participants.Caller.participant,
+        timeout: 120_000,
+      });
+      closeCaller = () => caller.connection.close();
       const records = service.kv.records;
       assert(records, "the required KV must be bound");
       await records.put("before", { value: "before" });
+      // Generic RPC intake on the original generation before any growth.
+      assertEquals(await caller.echo({ value: "before" }).orThrow(), {
+        value: "before",
+      });
+      // A live observation accepted on the original generation, kept across the
+      // growth and the reduction to prove retained continuity.
+      const retainedFeed = await caller.watch({}, {
+        signal: retainedAbort.signal,
+      }).orThrow();
+      const retained = retainedFeed[Symbol.asyncIterator]();
+      assert((await retained.next()).value?.value?.startsWith("feed-"));
 
       const participantId = contract.identity;
       const [before] = await waitForAttachmentCount(runtime, participantId, 1);
@@ -192,6 +236,10 @@ Deno.test("F3 a reduction closes the wider generation and keeps the original", a
           atomKey,
         ),
       );
+
+      // Hold one RPC accepted on the original generation across the reduction.
+      const held = caller.echo({ value: "held" });
+      await runtime.waitFor(() => heldEntered, { timeoutMs: 30_000 });
 
       // Grow `extras`: it is adopted automatically on a wider generation under
       // the same logical connection.
@@ -214,6 +262,14 @@ Deno.test("F3 a reduction closes the wider generation and keeps the original", a
           ),
         "growth must adopt a wider generation on the same logical connection",
       );
+      assert(
+        new Set(grownAttachments.map((item) => item.connectionId)).size >= 2,
+        "the wider generation is a distinct physical attachment",
+      );
+      const grownPhysical = grownAttachments.find((item) =>
+        item.connectionId !== before.connectionId
+      );
+      assert(grownPhysical, "the wider generation has its own attachment");
 
       // Withdraw the grown grant by narrowing the binding back to the
       // permissions the original attachment adopted.
@@ -227,24 +283,86 @@ Deno.test("F3 a reduction closes the wider generation and keeps the original", a
       );
       await setPermissions(runtime, binding, recordsOnly);
 
-      // The wider generation closes immediately; the original attachment keeps
-      // serving adopted authority under the same logical connection.
-      await runtime.waitFor(async () => {
+      // The wider generation closes immediately; the *exact original physical
+      // attachment* survives under the same logical connection. `runtimeConnectionId`
+      // is the logical identity and cannot prove this, so assert the per-physical
+      // `connectionId` from the authoritative broker inventory.
+      const survived = await runtime.waitFor(async () => {
         const items = await attachmentsFor(runtime, participantId);
         return items.length === 1 ? items : undefined;
       }, { timeoutMs: 60_000 });
+      assertEquals(
+        survived[0].connectionId,
+        before.connectionId,
+        "the original physical attachment must survive the reduction",
+      );
+      assert(
+        !survived.some((item) =>
+          item.connectionId === grownPhysical.connectionId
+        ),
+        "the wider physical attachment must be gone from broker inventory",
+      );
       assertEquals(
         await records.get("before").orThrow(),
         { value: "before" },
         "adopted authority survives the withdrawal",
       );
-      const [after] = await attachmentsFor(runtime, participantId);
+      // The covered RPC accepted on the original generation completes on that
+      // same healthy original after the wider one is forced away.
+      releaseHeld?.();
       assertEquals(
-        after.runtimeConnectionId,
-        before.runtimeConnectionId,
-        "withdrawing a grown grant must keep the logical connection",
+        await held.orThrow(),
+        { value: "held" },
+        "covered accepted work must complete on the reused original",
       );
+      // The original generation is reactivated after the reduction; its generic
+      // RPC intake must have been reinstalled before publication, so a fresh
+      // call is served rather than timing out into a drained generation.
+      const afterReduction = await runtime.waitFor(async () => {
+        const r = await caller.echo({ value: "after-reduction" });
+        return r.isOk() ? r.orThrow() : undefined;
+      }, { timeoutMs: 60_000, intervalMs: 1_000 });
+      assertEquals(afterReduction, { value: "after-reduction" });
+      // Fresh live intake works on the reactivated survivor: its generic
+      // live-open subscription was reinstalled on the same provider. The
+      // reduction re-issues the provider's authorization context, so bound the
+      // wait for intake to serve under the converged context.
+      const freshAbort = new AbortController();
+      const freshFeed = await runtime.waitFor(async () => {
+        try {
+          return await caller.watch({}, { signal: freshAbort.signal })
+            .orThrow();
+        } catch {
+          return undefined;
+        }
+      }, { timeoutMs: 90_000, intervalMs: 1_000 });
+      const fresh = freshFeed[Symbol.asyncIterator]();
+      const freshFrame = (await fresh.next()).value?.value;
+      assert(
+        typeof freshFrame === "string" && freshFrame.startsWith("feed-"),
+        "a fresh live observation must open on the reactivated survivor",
+      );
+      assertEquals(feeds, 2, "the fresh live observation opens a new feed");
+      // A reduction revokes the *original* authorization context the retained
+      // observation was accepted under, so that accepted session must end with a
+      // bounded authorization error rather than keep streaming under withdrawn
+      // authority. This is the distinct live failure a reduction has (a growth
+      // leaves the accepted context intact).
+      let retainedEnded = false;
+      try {
+        const next = await retained.next();
+        retainedEnded = next.done === true || next.value === undefined;
+      } catch {
+        retainedEnded = true;
+      }
+      assert(
+        retainedEnded,
+        "a retained observation must end when the reduction revokes its context",
+      );
+      freshAbort.abort();
     } finally {
+      retainedAbort.abort();
+      await closeCaller?.().catch(() => undefined);
       await service.connection.close().catch(() => undefined);
       await serviceExit;
     }

@@ -1318,6 +1318,7 @@
         "natural-compare",
         "optionator"
       ],
+      "deprecated": true,
       "bin": true
     },
     "esm-env@1.2.2": {
@@ -2533,7 +2534,6 @@
       "npm:@nats-io/nats-core@^3.3.1",
       "npm:@nats-io/nkeys@^2.0.3",
       "npm:@nats-io/obj@^3.3.1",
-      "npm:@nats-io/transport-node@^3.3.1",
       "npm:@noble/curves@^2.0.1",
       "npm:@noble/hashes@1.8.0",
       "npm:@opentelemetry/api@^1.9.1",

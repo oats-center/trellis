@@ -214,14 +214,18 @@ Deno.test(
       };
 
       try {
-        // 3. Only A is approved at connect; assert the exact encoding by
-        //    matching the retained binding against the computed A atom.
+        // 3. The public capability is approved at connect and the optional
+        //    `extend` capability starts unapproved, so growth must revise the
+        //    grant explicitly.
         const initial = await grantBinding(runtime, callerId);
         const initialKeys = initial.grants.permissions.map(atomKey);
-        assertEquals(
-          initialKeys,
-          [atomKey(advanceAtom)],
-          "the initial consent must grant only the public capability",
+        assert(
+          initialKeys.includes(atomKey(advanceAtom)),
+          "the public Advance capability must be granted at connect",
+        );
+        assert(
+          !initialKeys.includes(atomKey(extendAtom)),
+          "the optional extend capability must not be granted at connect",
         );
 
         const [before] = await attachmentsFor(runtime, callerId);
@@ -268,13 +272,15 @@ Deno.test(
         });
         await runtime.waitFor(() => advanceCalls === 2, { timeoutMs: 30_000 });
 
-        // 7. Grow B through an exact administrative grant revision.
+        // 7. Grow B through an exact administrative grant revision that keeps
+        //    the full public capability and adds the optional one, so the new
+        //    desired policy is a strict superset of the admitted one.
         await runtime.callAdminRpc("authGrantsSet", {
           expectedRevision: initial.revision,
           expiresAt: initial.expiresAt,
           grants: {
             format: initial.grants.format,
-            permissions: [advanceAtom, extendAtom],
+            permissions: [...initial.grants.permissions, extendAtom],
           },
           idempotencyKey: crypto.randomUUID(),
           installedRevision: initial.installedRevision,

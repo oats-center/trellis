@@ -8,7 +8,11 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import type { NatsConnection } from "@nats-io/nats-core";
+import { join } from "@std/path";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "./_support/runtime.ts";
@@ -20,6 +24,7 @@ type Attachment = {
   participantId: string;
   runtimeConnectionId: string;
   connectionId: string;
+  contextDigest: string;
 };
 
 async function attachmentsFor(
@@ -30,6 +35,46 @@ async function attachmentsFor(
     items: Attachment[];
   };
   return page.items.filter((item) => item.participantId === participantId);
+}
+
+/** One raw broker connection identity, joined to its admission context. */
+type ConnzIdentity = { server: string; cid: number; digest: string };
+
+/** Read the broker's own CONNZ inventory with per-connection auth identity. */
+async function connzIdentities(nc: NatsConnection): Promise<ConnzIdentity[]> {
+  const message = await nc.request(
+    "$SYS.REQ.SERVER.PING.CONNZ",
+    JSON.stringify({ auth: true }),
+    { timeout: 5_000 },
+  );
+  const reply = message.json<{
+    server?: { id?: string };
+    data?: { connections?: Array<{ cid?: number; authorized_user?: string }> };
+  }>();
+  const server = reply.server?.id ?? "";
+  const identities: ConnzIdentity[] = [];
+  for (const connection of reply.data?.connections ?? []) {
+    const user = connection.authorized_user ?? "";
+    if (!user.startsWith("trellis.auth.v1:") || connection.cid === undefined) {
+      continue;
+    }
+    identities.push({
+      server,
+      cid: connection.cid,
+      digest: user.split(":")[1] ?? "",
+    });
+  }
+  return identities;
+}
+
+/** The broker CONNZ identities for the attachments carrying `digests`. */
+function connzFor(
+  identities: ConnzIdentity[],
+  digests: Set<string>,
+): string[] {
+  return identities
+    .filter((identity) => digests.has(identity.digest))
+    .map((identity) => `${identity.server}:${identity.cid}`);
 }
 
 Deno.test(
@@ -59,9 +104,11 @@ Deno.test(
         seed: instance.seed,
       }).orThrow();
       const serviceExit = service.wait().catch((error: unknown) => error);
+      let systemNc: NatsConnection | undefined;
 
       let feeds = 0;
       let cancelled = 0;
+      await service.handleEcho(({ input }) => Result.ok(input));
       await service.handleWatch(async ({ emit, signal }) => {
         const feed = ++feeds;
         let frame = 0;
@@ -81,9 +128,27 @@ Deno.test(
       const firstAbort = new AbortController();
       const secondAbort = new AbortController();
       try {
+        const sysNc = await connect({
+          servers: runtime.natsUrl,
+          authenticator: credsAuthenticator(
+            await Deno.readFile(
+              join(runtime.workdir, "nats/creds/system.creds"),
+            ),
+          ),
+        });
+        systemNc = sysNc;
         const [before] = await attachmentsFor(runtime, providerId);
         assert(before, "the provider must have a physical attachment");
         const logical = before.runtimeConnectionId;
+        const g1Identity = connzFor(
+          await connzIdentities(sysNc),
+          new Set([before.contextDigest]),
+        );
+        assertEquals(
+          g1Identity.length,
+          1,
+          "the original generation must have exactly one broker CONNZ identity",
+        );
 
         // 1. Observe on the original generation.
         const firstFeed = await caller.watch({}, {
@@ -125,11 +190,38 @@ Deno.test(
         assertEquals(service.connection.status.phase, "connected");
 
         // 5. Close the original-generation observation while the newer
-        //    generation is live. The wildcard close reaches both providers; the
-        //    non-owner must not race the owner's terminal response.
-        // The bounded public close exchange completes against the owner's
-        // terminal receipt without a spurious non-owner response ending it.
-        await firstFeed.close();
+        //    generation is live. The bounded public close exchange completes
+        //    against the owner's terminal receipt without a spurious non-owner
+        //    response ending it.
+        const closeReceipt = await firstFeed.close().orThrow();
+        assertEquals(
+          closeReceipt.remote,
+          "confirmed",
+          "the owner must confirm the terminal close",
+        );
+        assertEquals(
+          closeReceipt.cleanup,
+          "complete",
+          "the closed session's cleanup must complete",
+        );
+
+        // 5a. The original generation is physically gone from the broker's own
+        //     CONNZ inventory: the exact captured server/cid identity is absent,
+        //     not merely a digest-filtered view.
+        await runtime.waitFor(async () => {
+          const identities = await connzIdentities(sysNc);
+          const present = new Set(
+            identities.map((identity) => `${identity.server}:${identity.cid}`),
+          );
+          return g1Identity.every((identity) => !present.has(identity))
+            ? true
+            : undefined;
+        }, { timeoutMs: 60_000 });
+
+        // 5c. A fresh RPC is still served after the retired socket is gone.
+        assertEquals(await caller.echo({ value: "after-reap" }).orThrow(), {
+          value: "after-reap",
+        });
 
         // 6. The newer observation is unaffected by the terminal close across
         //    the overlap.
@@ -162,6 +254,7 @@ Deno.test(
         await caller.connection.close().catch(() => undefined);
         await service.stop();
         await serviceExit;
+        await systemNc?.close().catch(() => undefined);
       }
     }, {
       authorization: {

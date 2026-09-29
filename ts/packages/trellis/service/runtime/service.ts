@@ -108,6 +108,7 @@ import type {
   OperationTransferContextOf,
   OperationUpdateOf,
   PreparedTrellisEvent,
+  ProviderGenerationAttachment,
   RpcHandlerContext,
   RpcHandlerErrorOf,
 } from "../../session.ts";
@@ -126,8 +127,8 @@ import {
   type ProviderRuntime,
 } from "../../provider.ts";
 import {
-  DEFAULT_RUNTIME_MAX_RECONNECT_ATTEMPTS,
   DEFAULT_SERVICE_RUNTIME_WAIT_ON_FIRST_CONNECT,
+  GENERATION_MAX_RECONNECT_ATTEMPTS,
   selectRuntimeTransportServers,
 } from "../../runtime_transport.ts";
 import { serviceRuntimeLogger } from "./logger.ts";
@@ -413,6 +414,22 @@ export const SERVICE_PROVIDER_INGRESS: unique symbol = Symbol(
   "trellis.service.providerIngress",
 );
 
+/**
+ * Logical transport lifetime of a connected service.
+ *
+ * Installed after the generation manager exists. Its `closed()` resolves when
+ * the logical connection ends (explicit close or an authoritative terminal
+ * failure), not when one physical generation is reaped. @internal
+ */
+export const SERVICE_TRANSPORT_LIFETIME: unique symbol = Symbol(
+  "trellis.service.transportLifetime",
+);
+
+/** Logical transport lifetime surface used by the service wait loop. @internal */
+type ServiceTransportLifetime = {
+  closed(): Promise<void | Error>;
+};
+
 /** @internal */
 export type ServiceProviderIngress = {
   install(target: {
@@ -420,11 +437,22 @@ export type ServiceProviderIngress = {
     nc: NatsConnection;
     contextDigest: string;
     lease?: () => TransportLease;
+    /**
+     * Push each owning ingress's concrete cleanup scope into the manager before
+     * async work, so cleanup is never a fallible late lookup. @internal
+     */
+    registerDisposal?: (handle: ProviderGenerationAttachment) => boolean;
   }): Promise<void>;
   /** Stop generic intake on a superseded generation. */
-  retire(id: number): void;
-  /** Physically close a generation: retire generic intake and session control. */
-  close(id: number): void;
+  retireIntake(id: number): void;
+};
+
+/** One Trellis surface that owns per-generation provider ingress. @internal */
+type ProviderIngressOwner = {
+  installProviderIngress(
+    target: Parameters<ServiceProviderIngress["install"]>[0],
+  ): Promise<ProviderGenerationAttachment>;
+  retireProviderIngress(id: number): void;
 };
 
 export abstract class StoreHandle {
@@ -2939,7 +2967,7 @@ export function connectTrellisServiceWithRuntimeDeps<
               ? preparedAuthenticator
               : [preparedAuthenticator],
             inboxPrefix: preparedInbox,
-            maxReconnectAttempts: DEFAULT_RUNTIME_MAX_RECONNECT_ATTEMPTS,
+            maxReconnectAttempts: GENERATION_MAX_RECONNECT_ATTEMPTS,
             waitOnFirstConnect: DEFAULT_SERVICE_RUNTIME_WAIT_ON_FIRST_CONNECT,
           },
         };
@@ -2960,7 +2988,7 @@ export function connectTrellisServiceWithRuntimeDeps<
           runtimeDeps.connect({
             servers: connect.servers,
             maxReconnectAttempts: connect.maxReconnectAttempts ??
-              DEFAULT_RUNTIME_MAX_RECONNECT_ATTEMPTS,
+              GENERATION_MAX_RECONNECT_ATTEMPTS,
             ignoreAuthErrorAbort: true,
             waitOnFirstConnect: connect.waitOnFirstConnect ??
               DEFAULT_SERVICE_RUNTIME_WAIT_ON_FIRST_CONNECT,
@@ -2975,17 +3003,17 @@ export function connectTrellisServiceWithRuntimeDeps<
             // Lease the exact admitted candidate directly; a lookup-by-id would
             // miss it because it is not yet published as the default.
             lease: () => generation.lease(),
+            // Push each owning ingress's cleanup scope into the manager before
+            // any install async work.
+            registerDisposal: (handle) => generation.registerDisposal(handle),
           });
         },
         onDrain: (generation) => {
-          serviceFacade?.retire(generation.id);
+          serviceFacade?.retireIntake(generation.id);
         },
         onActivate: () => {
           // Recompute the admitted-transport gate from the new default.
           void applyServiceAdmission().catch(() => undefined);
-        },
-        onRetire: (generation) => {
-          serviceFacade?.close(generation.id);
         },
         log: bootstrapLog,
       });
@@ -2999,7 +3027,7 @@ export function connectTrellisServiceWithRuntimeDeps<
         nc = await runtimeDeps.connect({
           servers: initialPrepared.connect.servers,
           maxReconnectAttempts: initialPrepared.connect.maxReconnectAttempts ??
-            DEFAULT_RUNTIME_MAX_RECONNECT_ATTEMPTS,
+            GENERATION_MAX_RECONNECT_ATTEMPTS,
           ignoreAuthErrorAbort: true,
           waitOnFirstConnect: initialPrepared.connect.waitOnFirstConnect ??
             DEFAULT_SERVICE_RUNTIME_WAIT_ON_FIRST_CONNECT,
@@ -3012,11 +3040,18 @@ export function connectTrellisServiceWithRuntimeDeps<
           authorizationContexts.bundle().authorizationRegistry,
           inboxPrefix,
           authorizationContexts,
+          {
+            follow: (nc) => generationManager.acquirePreferredAttachment(nc),
+          },
         );
         authorizationProviderCache.start();
         await authorizationProviderCache.waitReady();
         await authorizationProviderCache.retainOwnContext();
-        void connectedNats.closed().then(
+        // The provider cache is a logical-connection resource, not a property of
+        // the first physical generation. The initial attachment may be reaped on
+        // a rollover; stopping the cache then would block every later
+        // authenticator, so bind its lifetime to the logical transport.
+        void generationManager.closed().then(
           () => {
             stopContextRefresh?.();
             authorizationProviderCache?.stop();
@@ -3198,6 +3233,7 @@ export function connectTrellisServiceWithRuntimeDeps<
           throw new Error("missing prepared service generation");
         }
         await generationManager.initialize(nc, initialPrepared);
+        service[SERVICE_TRANSPORT_LIFETIME] = generationManager;
         let installedAvailability = participantAvailability(
           args.participant,
           bootstrap.binding.apiBindings,
@@ -3339,8 +3375,13 @@ export function connectTrellisServiceWithRuntimeDeps<
             // policy needs it; routine renewal leaves the attachment untouched.
             generationManager.authorizationPromoted();
           },
-          onTerminalFailure: async () => {
-            await generationManager.close().catch(() => undefined);
+          onTerminalFailure: async (error) => {
+            // The authorization controller only reports an authoritative
+            // terminal cause; carry the typed error into the logical lifetime so
+            // `closed()` preserves it instead of a bare close.
+            await generationManager.terminate(toUnexpectedError(error)).catch(
+              () => undefined,
+            );
             if (!nc.isClosed()) await nc.close();
           },
         });
@@ -3408,6 +3449,7 @@ export class TrellisServiceSession<
   readonly #handlerTrellis: Trellis<TTrellisApi, TKv, TJobs>;
   declare readonly [PROVIDER_CALLER]: ProviderCaller;
   declare readonly [SERVICE_PROVIDER_INGRESS]: ServiceProviderIngress;
+  declare [SERVICE_TRANSPORT_LIFETIME]: ServiceTransportLifetime;
   /** Event lifecycle surface for service startup listeners and publishers. */
   readonly event: ActiveEventFacade<TTrellisApi>;
   readonly kv: ServiceKvFacade<TKv>;
@@ -3465,24 +3507,13 @@ export class TrellisServiceSession<
         // Both the outbound framework surfaces and the operation runtime own
         // per-generation intake on the same generation.
         install: async (target) => {
-          await (providerCaller as {
-            installProviderIngress(
-              target: Parameters<ServiceProviderIngress["install"]>[0],
-            ): Promise<void>;
-          }).installProviderIngress(target);
+          const outbound = providerCaller as ProviderIngressOwner;
+          await outbound.installProviderIngress(target);
           await this.#runtime.installProviderIngress(target);
         },
-        retire: (id) => {
-          (providerCaller as {
-            retireProviderIngress(id: number): void;
-          }).retireProviderIngress(id);
+        retireIntake: (id) => {
+          (providerCaller as ProviderIngressOwner).retireProviderIngress(id);
           this.#runtime.retireProviderIngress(id);
-        },
-        close: (id) => {
-          (providerCaller as {
-            closeProviderIngress(id: number): void;
-          }).closeProviderIngress(id);
-          this.#runtime.closeProviderIngress(id);
         },
       } satisfies ServiceProviderIngress,
     });
@@ -3923,7 +3954,11 @@ export class TrellisServiceSession<
     this.#waitPromise ??= (async () => {
       try {
         await this.#managedJobWorkers.start().orThrow();
-        const closed = await this.#nc.closed();
+        // Supervise the logical connection: an authoritative terminal failure of
+        // the logical transport must stop the service. A single physical
+        // generation being reaped is not a stop.
+        const closed = await (this[SERVICE_TRANSPORT_LIFETIME]?.closed() ??
+          this.#nc.closed());
         if (closed instanceof Error) {
           throw closed;
         }

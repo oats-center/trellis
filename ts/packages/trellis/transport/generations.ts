@@ -23,6 +23,29 @@ export type TransportRequirement = {
 export type TransportGenerationState = "current" | "draining" | "closed";
 
 /**
+ * Handle to retire and dispose one generation's owner resources.
+ *
+ * `intakeStopped` resolves once every outstanding intake is accounted for; the
+ * manager awaits it and the generation's accepted lease count before invoking
+ * `dispose` on the graceful path. @internal
+ */
+export type TransportGenerationDisposal = {
+  readonly intakeStopped: Promise<void>;
+  dispose(): Promise<void>;
+};
+
+/**
+ * Discriminated terminal result retained by the logical connection.
+ *
+ * An explicit `close()` and an authoritative terminal failure are distinct: the
+ * latter carries the existing typed auth/transport error. Exposed only through
+ * the existing `closed()` result, never as a new public status surface. @internal
+ */
+export type TransportTerminalResult =
+  | { kind: "closed" }
+  | { kind: "failure"; error: Error };
+
+/**
  * Bounded reason one generation was opened, promoted, or retired.
  *
  * This is the only classification carried into telemetry; it never carries a
@@ -166,6 +189,18 @@ export class TransportGeneration {
   #activatedAtSeconds?: number;
   #closedAtSeconds?: number;
   readonly #onLeaseReleased: () => void;
+  /**
+   * Register a concrete cleanup handle for this generation's owner resources.
+   *
+   * The owner pushes its real retirement/disposal scope here synchronously,
+   * before its first install await, so the manager owns cleanup from
+   * installation onward rather than looking it up later. Returns false when the
+   * generation is already retired, in which case the manager has taken over the
+   * handle's cleanup and the owner must not add further resources. @internal
+   */
+  readonly registerDisposal: (
+    handle: TransportGenerationDisposal,
+  ) => boolean;
 
   /** @internal */
   constructor(args: {
@@ -178,6 +213,7 @@ export class TransportGeneration {
     state: TransportGenerationState;
     createdAtSeconds: number;
     onLeaseReleased: () => void;
+    registerDisposal: (handle: TransportGenerationDisposal) => boolean;
   }) {
     this.id = args.id;
     this.nc = args.nc;
@@ -188,6 +224,7 @@ export class TransportGeneration {
     this.state = args.state;
     this.createdAtSeconds = args.createdAtSeconds;
     this.#onLeaseReleased = args.onLeaseReleased;
+    this.registerDisposal = args.registerDisposal;
   }
 
   /** Number of leases currently held on this generation. */
@@ -267,7 +304,8 @@ export type TransportGenerationManagerOptions = {
    * Install framework intake for a generation before it is published as the
    * logical default. Awaited, so provider/Live/consumer routing exists before
    * any new work can select the generation; a rejection fails the candidate.
-   * @internal
+   * The generation's `registerDisposal` carries cleanup ownership pushed by the
+   * owner. @internal
    */
   onPreActivate?(generation: TransportGeneration): Promise<void> | void;
   /**
@@ -284,14 +322,6 @@ export type TransportGenerationManagerOptions = {
    * current generation. @internal
    */
   onActivate?(generation: TransportGeneration): void;
-  /**
-   * Retire framework intake and per-generation resources for a generation.
-   * Awaited before its physical connection closes and before `close()`
-   * resolves, so a superseded generation is never torn down while intake can
-   * still reference it.
-   * @internal
-   */
-  onRetire?(generation: TransportGeneration): Promise<void> | void;
 };
 
 /**
@@ -316,11 +346,33 @@ export class TransportGenerationManager implements TrellisTransportProvider {
   #failureTimer?: ReturnType<typeof setTimeout>;
   #closed = false;
   #logicalConnected = false;
-  readonly #closeDeferred = Promise.withResolvers<void>();
+  readonly #closeDeferred = Promise.withResolvers<void | Error>();
   readonly #changeWaiters = new Set<() => void>();
   readonly #logicalListeners = new Set<(event: unknown) => void>();
   readonly #logicalClosers = new Set<() => void>();
   readonly #retirements = new Set<Promise<void>>();
+  /**
+   * Cleanup handles pushed by each owning ingress at installation, per
+   * generation. The manager owns them from install onward; a zero-owner
+   * generation (e.g. a client with no provider ingress) legitimately has none.
+   */
+  readonly #disposals = new Map<number, TransportGenerationDisposal[]>();
+  /** Generations with a graceful reap in flight. */
+  readonly #reaping = new Set<number>();
+  /** In-flight graceful reap tasks, so a reactivation can abort and await one. */
+  readonly #reapTasks = new Map<number, Promise<void>>();
+  /** Abort hooks for in-flight graceful reaps, keyed by generation id. */
+  readonly #reapCancels = new Map<number, () => void>();
+  /**
+   * Generations whose disposal has irreversibly begun. A generation in this set
+   * can never be reactivated, so its owner's torn-down support is never
+   * resuscitated.
+   */
+  readonly #disposing = new Set<number>();
+  /** Pending lease-zero waiters per generation id. */
+  readonly #leaseZeroWaiters = new Map<number, Set<() => void>>();
+  /** Internal discriminated terminal result, latched once. */
+  #terminal?: TransportTerminalResult;
 
   constructor(options: TransportGenerationManagerOptions) {
     this.#options = options;
@@ -416,7 +468,14 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     try {
       await this.#options.onPreActivate?.(generation);
     } catch (error) {
-      this.#closeGeneration(generation, "logical_close");
+      // Owner cleanup is already pushed into the generation's registration;
+      // the connect caller owns this failed logical connection and force-closes
+      // its socket, so no accepted-work preservation is claimed here: run owner
+      // cleanup, drop the generation, and rethrow without leaking it.
+      generation.state = "closed";
+      generation.ready = false;
+      generation.markClosed(this.#options.nowSeconds());
+      await this.#forcedRetirement(generation);
       throw error;
     }
     if (this.#closed || this.#isGenerationClosed(generation)) {
@@ -440,6 +499,40 @@ export class TransportGenerationManager implements TrellisTransportProvider {
   /** Current default generation, when one exists. @internal */
   currentGeneration(): TransportGeneration | undefined {
     return this.#currentGeneration();
+  }
+
+  /**
+   * Lease the preferred attachment for the lifetime of one follower's use.
+   *
+   * Holding the lease keeps the generation from being reaped while verification
+   * still reads from it; the follower releases it when it moves on. When `nc` is
+   * given, that exact attachment is leased (never a substitute) so a watch and
+   * its pin stay paired. Returns undefined when no admitted attachment matches.
+   * @internal
+   */
+  acquirePreferredAttachment(
+    nc?: NatsConnection,
+  ): Promise<TransportLease | undefined> {
+    const acquire = (
+      generation: TransportGeneration | undefined,
+    ): TransportLease | undefined => {
+      if (!generation?.ready) return undefined;
+      // An explicit attachment must be leased exactly, never substituted.
+      if (nc !== undefined && generation.nc !== nc) return undefined;
+      try {
+        return generation.lease();
+      } catch {
+        return undefined;
+      }
+    };
+    let preferred = acquire(this.#currentGeneration());
+    if (!preferred) {
+      const ready = this.#readyGenerations();
+      for (let i = ready.length - 1; i >= 0 && !preferred; i -= 1) {
+        preferred = acquire(ready[i]);
+      }
+    }
+    return Promise.resolve(preferred);
   }
 
   /** Every non-closed generation, oldest first. @internal */
@@ -487,11 +580,19 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         // The fallback only exists to reach a real broker denial for an
         // ungranted requirement; it must never lease a generation whose
         // authority current desired policy no longer covers.
-        if (!desired || await this.#safeUnder(current, desired)) {
+        const safe = !desired || await this.#safeUnder(current, desired);
+        // Revalidate after the awaited classification: acquisition deadline,
+        // logical-connection terminal state, the logical default identity, and
+        // readiness may all have changed while the check was pending.
+        this.#assertNotAborted(opts);
+        this.#throwIfClosed();
+        if (safe) {
           if (this.#options.desiredPolicy() !== desired) continue;
+          if (this.#currentGeneration() !== current || !current.ready) continue;
           return current.lease();
         }
         if (this.#options.desiredPolicy() !== desired) continue;
+        if (this.#currentGeneration() !== current || !current.ready) continue;
       }
       if (desired) {
         this.#requestAdoption("reduction");
@@ -565,12 +666,37 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     return this.#closeDeferred.promise;
   }
 
+  /**
+   * Retained terminal result, once latched. @internal
+   */
+  terminalResult(): TransportTerminalResult | undefined {
+    return this.#terminal;
+  }
+
   /** Stop adoption and close every generation. @internal */
   async close(): Promise<void> {
+    await this.#terminate({ kind: "closed" });
+  }
+
+  /**
+   * Terminate the logical connection from an authoritative failure.
+   *
+   * Supplied only by the authorization controller once a failure is known to be
+   * terminal (never by a per-generation failure). The typed cause is retained
+   * and resolved through `closed()`, mirroring an explicit close for every
+   * existing consumer while preserving the discriminated reason.
+   * @internal
+   */
+  async terminate(error: Error): Promise<void> {
+    await this.#terminate({ kind: "failure", error });
+  }
+
+  async #terminate(result: TransportTerminalResult): Promise<void> {
     if (this.#closed) {
       await this.#closeDeferred.promise;
       return;
     }
+    this.#terminal = result;
     this.#closed = true;
     this.#adoptionRequested = false;
     this.#clearFailure();
@@ -582,13 +708,12 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       this.#closeGeneration(generation, "logical_close");
     }
     this.#currentId = undefined;
-    // Retirement must complete before the physical sockets are gone.
-    await Promise.all([...this.#retirements]);
-    await Promise.all(
-      generations.map((generation) =>
-        Promise.resolve(generation.nc.close()).catch(() => undefined)
-      ),
-    );
+    // Retirement must complete before the physical sockets are gone. Drain
+    // repeatedly so a late owner cleanup registered during teardown is awaited
+    // too instead of being dropped.
+    while (this.#retirements.size > 0) {
+      await Promise.allSettled([...this.#retirements]);
+    }
     // Never let a candidate CONNECT attempt block close; a late candidate is
     // retired by the `#closed` check when it resolves.
     if (this.#adoptionTask) {
@@ -597,7 +722,9 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
       ]);
     }
-    this.#closeDeferred.resolve();
+    this.#closeDeferred.resolve(
+      result.kind === "failure" ? result.error : undefined,
+    );
   }
 
   #createGeneration(
@@ -614,7 +741,9 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       physicalConnectionId: admission.authenticatedUser,
       state: "draining",
       createdAtSeconds: this.#options.nowSeconds(),
-      onLeaseReleased: () => this.#notify(),
+      onLeaseReleased: () => this.#onLeaseReleased(generation),
+      registerDisposal: (handle): boolean =>
+        this.#registerDisposal(generation, handle),
     });
     // The candidate is deliberately NOT in the selectable set yet: it is
     // published by `#activate` only after intake install and the final desired
@@ -817,8 +946,11 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         reason,
       });
       // Retire the superseded generation's shared intake now that a default
-      // exists. Its pinned sessions and accepted work are untouched.
+      // exists. Its pinned sessions and accepted work are untouched; the
+      // nonblocking reap closes it only after intake stops and its accepted
+      // leases drain.
       this.#options.onDrain?.(previous);
+      this.#beginGracefulRetire(previous, reason);
     }
     if (!this.#generations.includes(generation)) {
       this.#generations.push(generation);
@@ -840,6 +972,13 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     this.#notify();
   }
 
+  /**
+   * Force a generation closed immediately.
+   *
+   * Physical loss, uncovered authority, and logical terminal bypass the
+   * graceful work wait, but disposal cleanup is still owned and observed before
+   * the generation is dropped and its socket closed.
+   */
   #closeGeneration(
     generation: TransportGeneration,
     reason: TransportGenerationReason,
@@ -850,14 +989,9 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     generation.ready = false;
     generation.markClosed(this.#options.nowSeconds());
     if (wasCurrent) this.#currentId = undefined;
-    // Retire framework intake first; the physical socket closes afterwards so a
-    // superseded generation is never torn down while intake still references it.
-    const retirement = this.#runRetirement(generation);
+    const retirement = this.#forcedRetirement(generation);
     this.#retirements.add(retirement);
-    void retirement.finally(() => {
-      this.#retirements.delete(retirement);
-      void Promise.resolve(generation.nc.close()).catch(() => undefined);
-    });
+    void retirement.finally(() => this.#retirements.delete(retirement));
     this.#emit({
       type: "transport_generation.closed",
       generationId: generation.id,
@@ -869,23 +1003,296 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     this.#notify();
   }
 
-  #runRetirement(generation: TransportGeneration): Promise<void> {
-    try {
-      return Promise.resolve(this.#options.onRetire?.(generation)).catch(
-        (error) => {
-          this.#log.warn(
-            { error, generationId: generation.id },
-            "transport generation retirement failed",
-          );
-        },
+  /**
+   * Nonblocking graceful retirement of a superseded candidate.
+   *
+   * Retire intake immediately, wait for every outstanding intake and accepted
+   * lease to settle, invoke disposal, then close the socket and drop the
+   * generation. The wait is nonblocking so successor publication is never
+   * delayed by a slow draining generation.
+   */
+  #beginGracefulRetire(
+    generation: TransportGeneration,
+    reason: TransportGenerationReason,
+  ): void {
+    if (this.#reaping.has(generation.id)) return;
+    this.#reaping.add(generation.id);
+    let aborted = false;
+    const cancel = Promise.withResolvers<void>();
+    this.#reapCancels.set(generation.id, () => {
+      aborted = true;
+      cancel.resolve();
+    });
+    const abandoned = (): boolean =>
+      aborted || this.#closed || this.#isGenerationClosed(generation);
+    let closed = false;
+    const task = (async () => {
+      await Promise.race([
+        this.#intakeStoppedAll(generation.id),
+        cancel.promise,
+      ]);
+      if (abandoned()) return;
+      await Promise.race([this.#awaitLeaseZero(generation), cancel.promise]);
+      if (abandoned()) return;
+      // Disposal start is the irreversible retirement boundary: once it begins
+      // the generation finishes closing and is never reinstated.
+      this.#disposing.add(generation.id);
+      await this.#disposeAll(generation.id);
+      this.#finalizeRetired(generation, reason);
+      closed = true;
+    })().catch((error) => {
+      aborted = true;
+      this.#log.warn(
+        { error, generationId: generation.id },
+        "transport generation reaping failed",
       );
+      // A reaping failure still leaves the generation unusable; finish its
+      // physical teardown rather than leaking a half-retired generation.
+      this.#finalizeRetired(generation, reason);
+      closed = true;
+    }).finally(() => {
+      this.#reaping.delete(generation.id);
+      this.#reapCancels.delete(generation.id);
+      this.#reapTasks.delete(generation.id);
+      // Only a finalized generation closes its socket; an aborted reap belongs
+      // to a generation that was reinstated and stays open.
+      if (closed && !this.#closed) {
+        void Promise.resolve(generation.nc.close()).catch(() => undefined);
+      }
+    });
+    this.#reapTasks.set(generation.id, task);
+  }
+
+  /**
+   * Reinstall generic intake on a survivor that had been drained, before it is
+   * published again.
+   *
+   * Serialized against any in-flight graceful reap: the reap is aborted and
+   * awaited so it can never dispose the reinstalled generic intake or close the
+   * socket. Live/control/session owners registered outside generic intake are
+   * preserved. Returns false when the survivor is no longer usable.
+   */
+  async #ensureIntake(generation: TransportGeneration): Promise<boolean> {
+    if (generation.state !== "draining") return true;
+    // A generation whose disposal has begun is irreversibly retired; never
+    // abort it or resuscitate torn-down support.
+    if (this.#disposing.has(generation.id)) return false;
+    const task = this.#reapTasks.get(generation.id);
+    this.#reapCancels.get(generation.id)?.();
+    if (task) await task;
+    if (
+      this.#closed || this.#isGenerationClosed(generation) ||
+      this.#disposing.has(generation.id)
+    ) return false;
+    try {
+      await this.#options.onPreActivate?.(generation);
+      return true;
+    } catch (error) {
+      this.#log.warn(
+        {
+          error: error instanceof Error
+            ? { name: error.name, message: error.message }
+            : String(error),
+          generationId: generation.id,
+        },
+        "transport survivor intake reinstall failed",
+      );
+      this.#closeGeneration(generation, "recovery");
+      return false;
+    }
+  }
+
+  /**
+   * Reject an opened-but-unpublished candidate.
+   *
+   * Safety is judged against the *newest* desired policy with a post-await
+   * snapshot fence, so a change that lands during classification forces an
+   * immediate close instead of waiting for the next adoption pass. A candidate
+   * whose admitted policy safely supports current authority is always tracked
+   * draining (even with no current lease, because its intake may still account
+   * buffered arrivals); a candidate current authority no longer covers is
+   * force-closed as a reduction.
+   */
+  async #rejectCandidate(
+    generation: TransportGeneration,
+    reason: TransportGenerationReason,
+  ): Promise<void> {
+    if (generation.state === "closed") return;
+    let safe = false;
+    for (;;) {
+      const newest = this.#options.desiredPolicy();
+      if (!newest) {
+        safe = false;
+        break;
+      }
+      try {
+        safe = await this.#safeUnder(generation, newest);
+      } catch (error) {
+        this.#log.warn(
+          { error, generationId: generation.id },
+          "transport candidate safety classification failed",
+        );
+        safe = false;
+        break;
+      }
+      // Post-await fence: only accept the classification if the desired policy
+      // reference did not change across the await.
+      if (this.#options.desiredPolicy() === newest) break;
+    }
+    if (!safe) {
+      this.#closeGeneration(generation, "reduction");
+      return;
+    }
+    if (!this.#generations.includes(generation)) {
+      this.#generations.push(generation);
+    }
+    generation.state = "draining";
+    this.#options.onDrain?.(generation);
+    this.#beginGracefulRetire(generation, reason);
+  }
+
+  async #forcedRetirement(generation: TransportGeneration): Promise<void> {
+    try {
+      // Cleanup on a forced path is owned and observed, but never blocks on
+      // accepted work the lost physical attachment can no longer serve.
+      await this.#disposeAll(generation.id);
     } catch (error) {
       this.#log.warn(
         { error, generationId: generation.id },
         "transport generation retirement failed",
       );
-      return Promise.resolve();
+    } finally {
+      this.#generations = this.#generations.filter((candidate) =>
+        candidate !== generation
+      );
+      this.#reapTasks.delete(generation.id);
+      this.#reapCancels.delete(generation.id);
+      this.#disposals.delete(generation.id);
+      this.#disposing.delete(generation.id);
+      if (!generation.nc.isClosed()) {
+        await Promise.resolve(generation.nc.close()).catch(() => undefined);
+      }
     }
+  }
+
+  #finalizeRetired(
+    generation: TransportGeneration,
+    reason: TransportGenerationReason,
+  ): void {
+    if (generation.state === "closed") return;
+    generation.state = "closed";
+    generation.ready = false;
+    generation.markClosed(this.#options.nowSeconds());
+    if (this.#currentId === generation.id) this.#currentId = undefined;
+    this.#generations = this.#generations.filter((candidate) =>
+      candidate !== generation
+    );
+    this.#reapTasks.delete(generation.id);
+    this.#reapCancels.delete(generation.id);
+    this.#disposals.delete(generation.id);
+    this.#disposing.delete(generation.id);
+    this.#emit({
+      type: "transport_generation.closed",
+      generationId: generation.id,
+      reason,
+    });
+    this.#notify();
+  }
+
+  /**
+   * Await every pushed cleanup handle's intake stop, then dispose them all.
+   *
+   * All owners are attempted even if one fails; the first failure is rethrown
+   * after every owner has been given its cleanup. A zero-owner generation (a
+   * client with no provider ingress) resolves trivially.
+   */
+  /**
+   * Take ownership of one owner's cleanup scope for a generation.
+   *
+   * Returns true when the generation is still live and the handle is stored for
+   * its retirement; returns false when the generation is already closed or its
+   * disposal has begun, in which case the manager immediately takes over the
+   * late handle's cleanup under a tracked task (errors reported through the
+   * manager's normal cleanup path) and never stores an orphan on a dropped
+   * generation. The owner must stop installing when this returns false.
+   */
+  #registerDisposal(
+    generation: TransportGeneration,
+    handle: TransportGenerationDisposal,
+  ): boolean {
+    if (
+      this.#closed || generation.state === "closed" ||
+      this.#disposing.has(generation.id)
+    ) {
+      this.#trackLateCleanup(generation.id, handle);
+      return false;
+    }
+    const handles = this.#disposals.get(generation.id) ?? [];
+    handles.push(handle);
+    this.#disposals.set(generation.id, handles);
+    return true;
+  }
+
+  /** Run and observe a late owner cleanup, reporting failure without dropping it. */
+  #trackLateCleanup(
+    id: number,
+    handle: TransportGenerationDisposal,
+  ): void {
+    const task = (async () => {
+      try {
+        await handle.dispose();
+      } catch (error) {
+        this.#log.warn(
+          {
+            error: error instanceof Error
+              ? { name: error.name, message: error.message }
+              : String(error),
+            generationId: id,
+          },
+          "transport late owner cleanup failed",
+        );
+      }
+    })();
+    this.#retirements.add(task);
+    void task.finally(() => this.#retirements.delete(task));
+  }
+
+  async #intakeStoppedAll(id: number): Promise<void> {
+    const handles = this.#disposals.get(id) ?? [];
+    await Promise.allSettled(
+      handles.map(async (handle) => await handle.intakeStopped),
+    );
+  }
+
+  async #disposeAll(id: number): Promise<void> {
+    const handles = this.#disposals.get(id) ?? [];
+    const results = await Promise.allSettled(
+      handles.map(async (handle) => await handle.dispose()),
+    );
+    const failure = results.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    if (failure) throw failure.reason;
+  }
+
+  #onLeaseReleased(generation: TransportGeneration): void {
+    if (generation.leaseCount === 0) {
+      const waiters = this.#leaseZeroWaiters.get(generation.id);
+      if (waiters) {
+        this.#leaseZeroWaiters.delete(generation.id);
+        for (const waiter of waiters) waiter();
+      }
+    }
+    this.#notify();
+  }
+
+  #awaitLeaseZero(generation: TransportGeneration): Promise<void> {
+    if (generation.leaseCount === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const waiters = this.#leaseZeroWaiters.get(generation.id) ?? new Set();
+      waiters.add(resolve);
+      this.#leaseZeroWaiters.set(generation.id, waiters);
+    });
   }
 
   #requestAdoption(reason: TransportGenerationReason): void {
@@ -941,25 +1348,52 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         this.#adoptionRequested = true;
         continue;
       }
-      const usable = this.#readyGenerations().filter((generation) =>
-        generation.ready
-      );
-      if (!this.#currentGeneration()) {
-        const survivor = usable.findLast((generation) =>
-          generation.admittedPolicyDigest === desiredDigest
-        ) ?? usable[usable.length - 1];
-        if (survivor) {
-          this.#activate(survivor, "reduction_replacement");
+      // Keep a current generation that already serves the newest desired policy.
+      const current = this.#currentGeneration();
+      if (current?.ready && await this.#policyEqual(current, desired)) continue;
+      // Reuse a ready generation that already represents the desired policy
+      // (e.g. a reduction survivor), reinstalling its generic intake first.
+      let reused: TransportGeneration | undefined;
+      for (const generation of this.#readyGenerations()) {
+        if (generation.ready && await this.#policyEqual(generation, desired)) {
+          reused = generation;
+          break;
         }
       }
-      const matching = this.#matchingGeneration(desiredDigest);
-      if (matching) {
-        // A same-policy generation that is temporarily not ready is waited for
-        // rather than duplicated; its monitor re-verifies or it is retired.
-        if (this.#currentId !== matching.id && matching.ready) {
-          this.#activate(matching, "authorization_growth");
+      if (reused) {
+        if (
+          this.#currentId !== reused.id && await this.#ensureIntake(reused)
+        ) {
+          this.#activate(
+            reused,
+            this.#currentId === undefined
+              ? "reduction_replacement"
+              : "authorization_growth",
+          );
         }
         continue;
+      }
+      // With no *ready* default, publish the newest ready generation that does
+      // not exceed the desired policy as a provisional survivor instead of
+      // opening a duplicate. A desired policy still showing the just-forced
+      // wider authority narrows on the next pass, which then matches this
+      // survivor; a doomed candidate for the superseded policy (whose reset
+      // socket would be unowned) is never opened.
+      if (!current?.ready) {
+        let survivor: TransportGeneration | undefined;
+        const ready = this.#readyGenerations().filter((generation) =>
+          generation.ready
+        );
+        for (let i = ready.length - 1; i >= 0; i -= 1) {
+          if (await this.#safeUnder(ready[i], desired)) {
+            survivor = ready[i];
+            break;
+          }
+        }
+        if (survivor && await this.#ensureIntake(survivor)) {
+          this.#activate(survivor, "reduction_replacement");
+          continue;
+        }
       }
       await this.#openCandidate(desired, desiredDigest);
     }
@@ -983,12 +1417,23 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     return relation !== "reduction_required";
   }
 
-  #matchingGeneration(
-    desiredDigest: string,
-  ): TransportGeneration | undefined {
-    return this.#readyGenerations().find((generation) =>
-      generation.admittedPolicyDigest === desiredDigest
+  /**
+   * Whether a generation's admitted policy is content-equal to `desired`.
+   *
+   * Used to reuse a healthy generation across a context re-issue whose signed
+   * digest changed but whose authorized policy did not. Digest equality is not
+   * the contract; authorized-policy equality is.
+   */
+  async #policyEqual(
+    generation: TransportGeneration,
+    desired: TransportAuthorizationV1,
+  ): Promise<boolean> {
+    const relation = await classifyTransportAuthorizationWasm(
+      generation.admittedPolicy,
+      desired,
+      this.#options.nowSeconds(),
     );
+    return relation === "current";
   }
 
   /**
@@ -1064,23 +1509,44 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         outcome: "ok",
       });
       const generation = this.#createGeneration(nc, admission!, prepared);
+      const desiredSnapshot = desired;
       // Install before activation: routing exists before the generation can be
-      // selected as the default. A failure retires the unpublished candidate.
+      // selected as the default. A partial install retains whatever intake it
+      // registered so accepted work is not detached.
       try {
         await this.#options.onPreActivate?.(generation);
       } catch (error) {
-        this.#closeGeneration(generation, "logical_close");
-        throw error;
+        // Owner cleanup is already pushed into the generation's registration, so
+        // track/force-close the candidate without immediately closing the socket
+        // out from under accepted work. A local install failure recovers from
+        // newest authority; it is not a logical-connection terminal.
+        await this.#rejectCandidate(generation, "recovery");
+        this.#recordFailure(prepared.policyDigest);
+        this.#emit({
+          type: "transport_generation.open_failed",
+          generationId: generation.id,
+          reason: this.#lastReason,
+          outcome: "error",
+        });
+        this.#log.warn(
+          { error },
+          "transport generation candidate failed to install",
+        );
+        return;
       }
-      // Recheck the newest desired policy after intake install: a promotion
-      // that landed during preactivation must not publish an obsolete
-      // candidate. No await follows this check before activation.
+      // Recheck the newest desired policy after intake install. The desired
+      // snapshot is captured before digesting and re-verified by object identity
+      // synchronously, with no await before activation, so an obsolete candidate
+      // is never published.
       const latestDigest = await this.#latestDesiredDigest();
       if (
         this.#closed || this.#isGenerationClosed(generation) ||
+        this.#options.desiredPolicy() !== desiredSnapshot ||
         latestDigest !== prepared.policyDigest
       ) {
-        this.#closeGeneration(generation, "logical_close");
+        // The candidate was superseded by a newer authorization while it was
+        // unpublished; it did not become the default.
+        await this.#rejectCandidate(generation, "authorization_growth");
         if (!this.#closed) this.#adoptionRequested = true;
         return;
       }

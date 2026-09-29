@@ -69,7 +69,7 @@ import type { RuntimeApi } from "./participant_runtime/api.ts";
 import { TransportError } from "./errors/index.ts";
 import { type ResourceMigrations, TypedKV } from "./kv.ts";
 import {
-  DEFAULT_RUNTIME_MAX_RECONNECT_ATTEMPTS,
+  GENERATION_MAX_RECONNECT_ATTEMPTS,
   type RuntimeTransport,
 } from "./runtime_transport.ts";
 import {
@@ -1439,7 +1439,7 @@ export async function connectClientWithDeps<
         servers,
         authenticators: authenticator.authenticators,
         inboxPrefix: bootstrap.connectInfo.transport.inboxPrefix,
-        maxReconnectAttempts: DEFAULT_RUNTIME_MAX_RECONNECT_ATTEMPTS,
+        maxReconnectAttempts: GENERATION_MAX_RECONNECT_ATTEMPTS,
         timeoutMs: args.timeout ?? 30_000,
       },
     };
@@ -1455,7 +1455,7 @@ export async function connectClientWithDeps<
     nc = await transport.connect({
       servers: initialPrepared.connect.servers,
       maxReconnectAttempts: initialPrepared.connect.maxReconnectAttempts ??
-        DEFAULT_RUNTIME_MAX_RECONNECT_ATTEMPTS,
+        GENERATION_MAX_RECONNECT_ATTEMPTS,
       ignoreAuthErrorAbort: true,
       timeout: args.timeout ?? 30_000,
       inboxPrefix: initialPrepared.connect.inboxPrefix,
@@ -1467,6 +1467,11 @@ export async function connectClientWithDeps<
       authorizationContexts.bundle().authorizationRegistry,
       bootstrap.connectInfo.transport.inboxPrefix,
       authorizationContexts,
+      {
+        follow: (nc) =>
+          generationManager?.acquirePreferredAttachment(nc) ??
+            Promise.resolve(undefined),
+      },
     );
     authorizationProviderCache.start();
     await authorizationProviderCache.waitReady();
@@ -1488,7 +1493,7 @@ export async function connectClientWithDeps<
         transport.connect({
           servers: connect.servers,
           maxReconnectAttempts: connect.maxReconnectAttempts ??
-            DEFAULT_RUNTIME_MAX_RECONNECT_ATTEMPTS,
+            GENERATION_MAX_RECONNECT_ATTEMPTS,
           ignoreAuthErrorAbort: true,
           timeout: connect.timeoutMs ?? args.timeout ?? 30_000,
           inboxPrefix: connect.inboxPrefix,
@@ -1524,9 +1529,9 @@ export async function connectClientWithDeps<
   }
   const manager = generationManager;
   // The provider cache is a logical-connection resource, not a property of the
-  // first physical generation. Stopping it on generation-1 loss would make
-  // every later authenticator refuse (transportUsable() false) and block
-  // automatic recovery. Per-generation provider migration is a later unit.
+  // first physical generation. It is stopped only on the logical close, so the
+  // authenticator stays usable across a generation replacement; it follows the
+  // current attachment through `follow`.
   void manager.closed().then(
     () => authorizationProviderCache.stop(),
     () => authorizationProviderCache.stop(),
@@ -1735,7 +1740,9 @@ export async function connectClientWithDeps<
       manager.authorizationPromoted();
     },
     onTerminalFailure: async (error) => {
-      await manager.close().catch(() => undefined);
+      await manager.terminate(
+        error instanceof Error ? error : new Error(String(error)),
+      ).catch(() => undefined);
       // A revoked or expired authority context is not a durable login failure.
       if (
         error instanceof AuthorizationContextRefreshError && !error.loginInvalid
@@ -1743,7 +1750,17 @@ export async function connectClientWithDeps<
       await handleSessionNotFound?.();
     },
   });
-  void manager.closed().then(stopContextRefresh, stopContextRefresh);
+  // The provider cache is a logical-connection resource that follows the
+  // manager's current generation through `rebind`; stopping it on generation-1
+  // loss would make every later authenticator refuse and block recovery.
+  void manager.closed().then(
+    () => {
+      stopContextRefresh();
+    },
+    () => {
+      stopContextRefresh();
+    },
+  );
 
   const state = getParticipantRuntime(args.participant).state as TrellisOpts<
     RuntimeApi
