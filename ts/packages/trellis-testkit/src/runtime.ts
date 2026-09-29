@@ -7,6 +7,9 @@ import {
 import { recordTrellisDuration } from "@oatscenter/trellis/telemetry";
 import { dirname, join } from "@std/path";
 
+import { NativeTransportGate, type SerialWriter } from "./native_gate.ts";
+import { NatsFrameParser } from "./nats_wire.ts";
+
 import { TrellisTestAdminAutomation } from "./admin_client.ts";
 import { ADMIN_USERNAME } from "./admin/methods.ts";
 import type { AdminRpc, AdminRpcInput } from "./admin/methods.ts";
@@ -51,11 +54,51 @@ type RuntimeTimeouts = {
 const WORKDIR_PREFIX = "trellis-testkit-";
 const WORKDIR_OWNER_MARKER = ".trellis-testkit-owner";
 
-class TcpProxy {
+/** Serializes writes and a following half-close behind them. */
+class SerializedWriter implements SerialWriter {
+  #chain: Promise<void> = Promise.resolve();
+  #closed = false;
+  #closePromise: Promise<void> | undefined;
+  readonly #writer: WritableStreamDefaultWriter<Uint8Array>;
+
+  constructor(stream: WritableStream<Uint8Array>) {
+    this.#writer = stream.getWriter();
+  }
+
+  write(bytes: Uint8Array): Promise<void> {
+    const result = this.#chain.then(() => {
+      if (this.#closed) return;
+      return this.#writer.write(bytes);
+    });
+    // Keep a rejected write from poisoning later ordered operations; the caller
+    // still observes the failure through the returned promise.
+    this.#chain = result.catch(() => undefined);
+    return result;
+  }
+
+  /**
+   * Half-close the destination after every queued write, so the peer observes
+   * EOF once this direction is done and the other leg can terminate. Idempotent;
+   * a teardown close failure is ignored because the connection is being torn
+   * down either way.
+   */
+  close(): Promise<void> {
+    if (this.#closePromise) return this.#closePromise;
+    this.#closed = true;
+    this.#closePromise = this.#chain.then(() => this.#writer.close()).catch(
+      () => undefined,
+    );
+    return this.#closePromise;
+  }
+}
+
+/** Transparent TCP proxy used to interrupt and observe the native path. @internal */
+export class TcpProxy {
   readonly url: string;
   readonly #listener: Deno.TcpListener;
   readonly #target: Deno.ConnectOptions;
   readonly #connections = new Set<Deno.Conn>();
+  readonly #gate: NativeTransportGate | undefined;
   #interrupted = false;
 
   private constructor(
@@ -63,9 +106,11 @@ class TcpProxy {
     target: Deno.ConnectOptions,
     advertisedHost: string,
     scheme: string,
+    gate?: NativeTransportGate,
   ) {
     this.#listener = listener;
     this.#target = target;
+    this.#gate = gate;
     this.url = `${scheme}://${advertisedHost}:${listener.addr.port}`;
     this.#accept();
   }
@@ -76,6 +121,7 @@ class TcpProxy {
       bindHostname?: string;
       advertisedHost?: string;
       scheme?: string;
+      gate?: NativeTransportGate;
     } = {},
   ): TcpProxy {
     const target = new URL(targetUrl);
@@ -88,6 +134,7 @@ class TcpProxy {
       },
       options.advertisedHost ?? "127.0.0.1",
       options.scheme ?? "ws",
+      options.gate,
     );
   }
 
@@ -135,6 +182,7 @@ class TcpProxy {
 
   async #forward(client: Deno.Conn): Promise<void> {
     let upstream: Deno.Conn | undefined;
+    let connectionId: number | undefined;
     try {
       // Check before opening the upstream and again immediately after, so a
       // partition that lands in that interval closes both sides instead of
@@ -143,11 +191,51 @@ class TcpProxy {
       upstream = await Deno.connect(this.#target);
       if (this.#interrupted) return;
       this.#connections.add(upstream);
+      const toClient = new SerializedWriter(client.writable);
+      const toUpstream = new SerializedWriter(upstream.writable);
+      connectionId = this.#gate?.connectionOpened(toClient);
+      const clientParser = new NatsFrameParser();
+      const serverParser = new NatsFrameParser();
+      const clientReader = client.readable.getReader();
+      const upstreamReader = upstream.readable.getReader();
+      const clientToServer = this.#pump(
+        clientReader,
+        toUpstream,
+        clientParser,
+        "c2s",
+        connectionId,
+      );
+      const serverToClient = this.#pump(
+        upstreamReader,
+        toClient,
+        serverParser,
+        "s2c",
+        connectionId,
+      );
+      // Whichever direction ends first, tear the whole path down. Cancelling the
+      // remaining read first matters: a Deno conn cannot be closed while its own
+      // read is pending, so without it a peer that never writes would leave the
+      // other pump blocked and `#forward` would never report the close.
+      await Promise.race([clientToServer, serverToClient]);
       await Promise.allSettled([
-        client.readable.pipeTo(upstream.writable),
-        upstream.readable.pipeTo(client.writable),
+        clientReader.cancel(),
+        upstreamReader.cancel(),
       ]);
+      try {
+        client.close();
+      } catch {
+        // The peer may have closed first.
+      }
+      try {
+        upstream.close();
+      } catch {
+        // The peer may have closed first.
+      }
+      await Promise.allSettled([clientToServer, serverToClient]);
     } finally {
+      if (connectionId !== undefined) {
+        this.#gate?.connectionClosed(connectionId);
+      }
       if (upstream !== undefined) {
         this.#connections.delete(upstream);
         try {
@@ -162,6 +250,45 @@ class TcpProxy {
       } catch {
         // The stream may already have closed the connection.
       }
+    }
+  }
+
+  async #pump(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    sink: SerializedWriter,
+    parser: NatsFrameParser,
+    direction: "c2s" | "s2c",
+    connectionId: number | undefined,
+  ): Promise<void> {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        for (const frame of parser.push(value)) {
+          if (direction === "s2c") {
+            const hold = connectionId === undefined
+              ? false
+              : this.#gate!.onServerFrame(connectionId, frame.op, frame.raw);
+            if (hold) continue;
+          } else if (connectionId !== undefined) {
+            this.#gate!.onClientFrame(connectionId, frame.op, frame.raw);
+          }
+          await sink.write(frame.raw);
+        }
+      }
+    } catch (error) {
+      if (
+        !(error instanceof Deno.errors.BadResource) &&
+        !(error instanceof Deno.errors.BrokenPipe) &&
+        !(error instanceof Deno.errors.ConnectionReset)
+      ) {
+        throw error;
+      }
+    } finally {
+      // Propagate EOF (or failure) to the peer so its read side ends and the
+      // other leg can settle; without this both pumps await forever on a client
+      // close and `#forward` never reports the connection closed.
+      await sink.close();
     }
   }
 
@@ -273,6 +400,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
   #config: ReturnType<typeof buildControlPlaneConfig> | undefined;
   #websocketProxy: TcpProxy | undefined;
   #nativeProxy: TcpProxy | undefined;
+  #nativeGate: NativeTransportGate | undefined;
   #trellisOptions: TrellisTestRuntimeStartOptions["trellis"] | undefined;
   #keepWorkdir: boolean;
   #ownsWorkdir: boolean;
@@ -316,6 +444,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
     config?: ReturnType<typeof buildControlPlaneConfig>;
     websocketProxy?: TcpProxy;
     nativeProxy?: TcpProxy;
+    nativeGate?: NativeTransportGate;
     trellisOptions?: TrellisTestRuntimeStartOptions["trellis"];
     nats: NatsTestContainer;
     controlPlane?: TrellisProcessHandle;
@@ -339,6 +468,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
     this.#config = args.config;
     this.#websocketProxy = args.websocketProxy;
     this.#nativeProxy = args.nativeProxy;
+    this.#nativeGate = args.nativeGate;
     this.#trellisOptions = args.trellisOptions;
     this.#admin = args.admin;
     this.deployments = {
@@ -428,6 +558,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
     let portLease: ReservedPort | undefined;
     let websocketProxy: TcpProxy | undefined;
     let nativeProxy: TcpProxy | undefined;
+    let nativeGate: NativeTransportGate | undefined;
     try {
       const timeouts = {
         startupMs: options.timeouts?.startupMs ?? 30_000,
@@ -447,7 +578,11 @@ export class TrellisTestRuntime implements AsyncDisposable {
         });
       }
       if (options.interruptibleNativeProxy) {
-        nativeProxy = TcpProxy.start(nats.natsUrl, { scheme: "nats" });
+        nativeGate = new NativeTransportGate();
+        nativeProxy = TcpProxy.start(nats.natsUrl, {
+          scheme: "nats",
+          gate: nativeGate,
+        });
       }
       portLease = reserveLocalPort();
       const port = portLease.port;
@@ -507,6 +642,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
         config,
         websocketProxy,
         nativeProxy,
+        nativeGate,
         trellisOptions: options.trellis,
         nats,
         controlPlane: startedControlPlane,
@@ -710,6 +846,20 @@ export class TrellisTestRuntime implements AsyncDisposable {
       throw new Error("Runtime was not started with interruptibleNativeProxy");
     }
     this.#nativeProxy.restore();
+  }
+
+  /**
+   * Observation and readiness barrier for the native NATS path. The barrier can
+   * hold one generation's post-subscription readiness flush and the gate records
+   * the exact deliveries and outbound authorization contexts a test needs to
+   * attribute a real served RPC to a physical generation. Only available when
+   * the runtime was started with `interruptibleNativeProxy`.
+   */
+  nativeTransportGate(): NativeTransportGate {
+    if (this.#nativeGate === undefined) {
+      throw new Error("Runtime was not started with interruptibleNativeProxy");
+    }
+    return this.#nativeGate;
   }
 
   /** Replaces the browser WebSocket endpoint and retires the prior listener. */
