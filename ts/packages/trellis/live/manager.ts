@@ -70,8 +70,31 @@ export class LiveSessionManager {
   #suspended = false;
   #consumers = 0;
   #providers: ProviderAdmission | undefined;
-  readonly #sessions = new Map<ManagedSession, () => void>();
+  /**
+   * Every session this connection owns or recently owned, keyed by id: its
+   * endpoint, the provider that owns it, and whether it is still active. A
+   * terminated entry is retained until its bounded receipt expires so the
+   * owning provider remains the only authoritative responder through the whole
+   * receipt window.
+   */
+  readonly #sessions = new Map<
+    string,
+    {
+      session: ManagedSession;
+      owner: unknown;
+      active: boolean;
+      /** Exact protocol route this session's control frames are published to. */
+      baseSubject: string;
+    }
+  >();
   readonly #receipts = new Map<string, ClosedReceipt>();
+  /**
+   * Providers currently owning intake on this connection, keyed by the exact
+   * protocol route they serve. Ownership of a retained session fails over only
+   * to a provider serving the same route, because a frame is published to that
+   * route's subject: an unrelated provider would never receive it.
+   */
+  readonly #liveProviders = new Map<string, Set<unknown>>();
 
   #admission(): ProviderAdmission {
     return this.#providers ??= new ProviderAdmission(
@@ -101,9 +124,10 @@ export class LiveSessionManager {
   suspend(): void {
     this.#suspended = true;
     this.#generation += 1;
-    for (const [session, dispose] of this.#sessions) {
-      session.fence();
-      dispose();
+    for (const entry of this.#sessions.values()) {
+      if (!entry.active) continue;
+      entry.active = false;
+      entry.session.fence();
     }
   }
 
@@ -116,16 +140,19 @@ export class LiveSessionManager {
   stop(): void {
     this.#stopped = true;
     this.#generation += 1;
-    for (const [session, dispose] of this.#sessions) {
-      session.fence();
-      dispose();
+    for (const entry of this.#sessions.values()) {
+      if (!entry.active) continue;
+      entry.active = false;
+      entry.session.fence();
     }
   }
 
   /** Fence then close every owned session within one shared grace. */
   async shutdown(graceMs: number = C.closeExchangeMs): Promise<void> {
+    const sessions = [...this.#sessions.values()]
+      .filter((entry) => entry.active)
+      .map((entry) => entry.session);
     this.stop();
-    const sessions = [...this.#sessions.keys()];
     await Promise.race([
       Promise.allSettled(sessions.map((session) => session.close())),
       new Promise((resolve) => setTimeout(resolve, graceMs)),
@@ -164,19 +191,90 @@ export class LiveSessionManager {
     });
   }
 
+  /**
+   * Register one live provider for an exact route and return its deregistration.
+   * A provider deregisters when its physical ingress is disposed.
+   */
+  registerProvider(provider: unknown, baseSubject: string): () => void {
+    let providers = this.#liveProviders.get(baseSubject);
+    if (!providers) {
+      providers = new Set<unknown>();
+      this.#liveProviders.set(baseSubject, providers);
+    }
+    providers.add(provider);
+    let registered = true;
+    return () => {
+      if (!registered) return;
+      registered = false;
+      const set = this.#liveProviders.get(baseSubject);
+      if (!set) return;
+      set.delete(provider);
+      if (set.size === 0) this.#liveProviders.delete(baseSubject);
+    };
+  }
+
+  /**
+   * Drop one session record entirely. Used to roll back a failed opening so a
+   * rejected candidate never leaves a retained or owned record behind.
+   */
+  forgetSession(sessionId: string): void {
+    this.#sessions.delete(sessionId);
+  }
+
   /** Register one owned endpoint session and return its deregistration. */
-  registerSession(session: ManagedSession): () => void {
+  registerSession(
+    sessionId: string,
+    session: ManagedSession,
+    owner: unknown,
+    baseSubject: string,
+  ): () => void {
     let registered = true;
     const deregister = (): void => {
       if (!registered) return;
       registered = false;
-      this.#sessions.delete(session);
+      const entry = this.#sessions.get(sessionId);
+      if (entry) entry.active = false;
     };
-    this.#sessions.set(session, deregister);
+    this.#sessions.set(sessionId, {
+      session,
+      owner,
+      active: true,
+      baseSubject,
+    });
     if (this.#stopped || this.#suspended) {
       session.fence();
     }
     return deregister;
+  }
+
+  /**
+   * The provider that is authoritative for a session id across its whole
+   * lifetime: while active, and through the retained terminal receipt window.
+   * Returns `undefined` only for a session this connection never owned, which is
+   * the genuine unknown-session case.
+   */
+  ownerOf(sessionId: string): unknown {
+    // Expire on read: an expired receipt must never leave a stale owner
+    // authoritative, and a retained entry must be pruned exactly when its
+    // receipt expires.
+    this.#expireReceipts(performance.now());
+    const entry = this.#sessions.get(sessionId);
+    if (!entry) return undefined;
+    // Only a provider serving this session's exact route can receive and answer
+    // its control frame.
+    const providers = this.#liveProviders.get(entry.baseSubject);
+    if (providers?.has(entry.owner)) return entry.owner;
+    // The physical owner is gone. Elect a surviving live provider on the same
+    // route so a retained receipt still has exactly one responder; with no
+    // same-route survivor the record is orphaned and dropped rather than
+    // answered by nobody (or by an unrelated route).
+    const successor = providers?.values().next().value;
+    if (successor === undefined) {
+      this.#sessions.delete(sessionId);
+      return undefined;
+    }
+    entry.owner = successor;
+    return successor;
   }
 
   /** Record one bounded, expiring closed-session receipt. */
@@ -191,6 +289,10 @@ export class LiveSessionManager {
       const oldest = this.#receipts.keys().next().value;
       if (oldest === undefined) break;
       this.#receipts.delete(oldest);
+      // A cap eviction ends the ownership window too; otherwise the retained
+      // inactive session would never be pruned.
+      const entry = this.#sessions.get(oldest);
+      if (entry && !entry.active) this.#sessions.delete(oldest);
     }
   }
 
@@ -204,7 +306,11 @@ export class LiveSessionManager {
 
   #expireReceipts(nowMs: number): void {
     for (const [sessionId, receipt] of this.#receipts) {
-      if (receipt.expiresAtMs <= nowMs) this.#receipts.delete(sessionId);
+      if (receipt.expiresAtMs > nowMs) continue;
+      this.#receipts.delete(sessionId);
+      const entry = this.#sessions.get(sessionId);
+      // Drop the retained owner only once the terminal receipt has expired.
+      if (entry && !entry.active) this.#sessions.delete(sessionId);
     }
   }
 

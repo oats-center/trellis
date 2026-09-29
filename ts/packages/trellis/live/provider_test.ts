@@ -60,7 +60,10 @@ function authority(kind: string): ProviderAuthorityPort {
   };
 }
 
-function makeProvider(nats: NatsConnection): LiveProvider {
+function makeProvider(
+  nats: NatsConnection,
+  manager: LiveSessionManager = new LiveSessionManager(),
+): LiveProvider {
   const host: LiveProviderHost = {
     nats,
     identity: identity("provider"),
@@ -77,7 +80,7 @@ function makeProvider(nats: NatsConnection): LiveProvider {
     },
     refreshOwnAuthority: async () => {},
     retainCallerAuthority: async () => authority("owner"),
-    manager: new LiveSessionManager(),
+    manager,
   };
   return new LiveProvider(host);
 }
@@ -254,4 +257,327 @@ Deno.test("operation-watch offers advertise operation-watch kind", async () => {
   const offerJson = JSON.parse(new TextDecoder().decode(encodedOffers.at(-1)!));
   assertEquals(offerJson.kind, "operation");
   assertEquals(offerJson.baseSubject, operationSubject);
+});
+
+Deno.test("NX05 a terminal close is acknowledged only by the owning provider", async () => {
+  const manager = new LiveSessionManager();
+  const publishedOwner: { subject: string; data: Uint8Array }[] = [];
+  const publishedOther: { subject: string; data: Uint8Array }[] = [];
+  const capture = (sink: { subject: string; data: Uint8Array }[]) =>
+    ({
+      publish(subject: string, data?: Uint8Array) {
+        if (data) sink.push({ subject, data });
+      },
+      info: { max_payload: 1_048_576 },
+    }) as unknown as NatsConnection;
+
+  const owner = caller("owner");
+  const hdrs = () => {
+    const headers = natsHeaders();
+    headers.set("proof", "owner-proof");
+    headers.set("authorization-context", owner.contextDigest);
+    headers.set("session-key", owner.sessionKey);
+    return headers;
+  };
+  const allow = (request: Msg) =>
+    Promise.resolve(
+      request.reply === "_INBOX.owner" &&
+        request.headers?.get("proof") === "owner-proof"
+        ? owner
+        : undefined,
+    );
+  const encode = (value: unknown) =>
+    new TextEncoder().encode(JSON.stringify(value));
+
+  const providerOwner = makeProvider(capture(publishedOwner), manager);
+  const providerOther = makeProvider(capture(publishedOther), manager);
+
+  await providerOwner.offer(
+    msg({ data: new Uint8Array(), reply: "_INBOX.owner" }),
+    BASE_SUBJECT,
+    { openId: "open-1", receiveMaxPayloadBytes: 1_048_576 },
+    owner,
+    () => Promise.resolve(),
+  );
+  const sessionId = JSON.parse(
+    new TextDecoder().decode(publishedOwner.at(-1)!.data),
+  ).sessionId as string;
+
+  const closeBody = encode({
+    format: LIVE_VERSION,
+    type: "control",
+    sessionId,
+    controlSeq: "1",
+    action: "close",
+    reason: "cancelled",
+    receivedSeq: "0",
+    consumedSeq: "0",
+  });
+  const closeMsg = () =>
+    msg({ data: closeBody, reply: "_INBOX.owner", headers: hdrs() });
+
+  // The owner closes the session; it terminates and retains a terminal receipt.
+  publishedOwner.length = 0;
+  await providerOwner.handleControl(closeMsg(), allow);
+  const receiptDeadline = Date.now() + 15_000;
+  while (
+    manager.receipt(sessionId) === undefined && Date.now() < receiptDeadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assertEquals(
+    manager.receipt(sessionId) !== undefined,
+    true,
+    "a terminal session leaves a retained receipt",
+  );
+  assertEquals(
+    publishedOwner.length > 0,
+    true,
+    "the owner answers the close",
+  );
+
+  // A non-owner must stay silent through the retained terminal window rather
+  // than racing the owner's receipt acknowledgement with session_not_found.
+  publishedOther.length = 0;
+  await providerOther.handleControl(closeMsg(), allow);
+  assertEquals(
+    publishedOther.length,
+    0,
+    "a non-owner never answers a terminal close",
+  );
+
+  // The owner answers a close retry from its retained receipt.
+  publishedOwner.length = 0;
+  await providerOwner.handleControl(closeMsg(), allow);
+  assertEquals(
+    publishedOwner.length > 0,
+    true,
+    "the owner acknowledges the close retry from its receipt",
+  );
+
+  // A genuinely unknown session still gets the signed unknown-session error.
+  const unknownBody = encode({
+    format: LIVE_VERSION,
+    type: "control",
+    sessionId: base64urlEncode(new Uint8Array(16).fill(9)),
+    controlSeq: "1",
+    action: "close",
+    reason: "cancelled",
+    receivedSeq: "0",
+    consumedSeq: "0",
+  });
+  publishedOther.length = 0;
+  await providerOther.handleControl(
+    msg({ data: unknownBody, reply: "_INBOX.owner", headers: hdrs() }),
+    allow,
+  );
+  assertEquals(
+    publishedOther.length > 0,
+    true,
+    "an unknown session keeps the signed unknown-session error",
+  );
+});
+
+Deno.test("NX07 retained-receipt failover stays on the session's exact route", async () => {
+  const manager = new LiveSessionManager();
+  const publishedOwner: { subject: string; data: Uint8Array }[] = [];
+  const publishedSameRoute: { subject: string; data: Uint8Array }[] = [];
+  const publishedUnrelated: { subject: string; data: Uint8Array }[] = [];
+  const capture = (sink: { subject: string; data: Uint8Array }[]) =>
+    ({
+      publish(subject: string, data?: Uint8Array) {
+        if (data) sink.push({ subject, data });
+      },
+      info: { max_payload: 1_048_576 },
+    }) as unknown as NatsConnection;
+  const ROUTE_B = `live.v1.route.${encodeEventSubjectParameterToken("api-b")}.${
+    encodeEventSubjectParameterToken("deploy-b")
+  }.Watch`;
+
+  const owner = caller("owner");
+  const hdrs = () => {
+    const headers = natsHeaders();
+    headers.set("proof", "owner-proof");
+    headers.set("authorization-context", owner.contextDigest);
+    headers.set("session-key", owner.sessionKey);
+    return headers;
+  };
+  const allow = (request: Msg) =>
+    Promise.resolve(
+      request.reply === "_INBOX.owner" &&
+        request.headers?.get("proof") === "owner-proof"
+        ? owner
+        : undefined,
+    );
+  const encode = (value: unknown) =>
+    new TextEncoder().encode(JSON.stringify(value));
+  const closeBodyFor = (sessionId: string) =>
+    encode({
+      format: LIVE_VERSION,
+      type: "control",
+      sessionId,
+      controlSeq: "1",
+      action: "close",
+      reason: "cancelled",
+      receivedSeq: "0",
+      consumedSeq: "0",
+    });
+  const waitForReceipt = async (sessionId: string) => {
+    const deadline = Date.now() + 15_000;
+    while (manager.receipt(sessionId) === undefined && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  };
+
+  const providerOwner = makeProvider(capture(publishedOwner), manager);
+  const providerSameRoute = makeProvider(capture(publishedSameRoute), manager);
+  const providerUnrelated = makeProvider(capture(publishedUnrelated), manager);
+
+  // The unrelated route registers first and is live the whole time.
+  await providerUnrelated.offer(
+    msg({ data: new Uint8Array(), reply: "_INBOX.owner" }),
+    ROUTE_B,
+    { openId: "open-b", receiveMaxPayloadBytes: 1_048_576 },
+    owner,
+    () => Promise.resolve(),
+  );
+  // A same-route provider that has served this route (a surviving generation).
+  await providerSameRoute.offer(
+    msg({ data: new Uint8Array(), reply: "_INBOX.owner" }),
+    BASE_SUBJECT,
+    { openId: "open-a2", receiveMaxPayloadBytes: 1_048_576 },
+    owner,
+    () => Promise.resolve(),
+  );
+  await providerOwner.offer(
+    msg({ data: new Uint8Array(), reply: "_INBOX.owner" }),
+    BASE_SUBJECT,
+    { openId: "open-a1", receiveMaxPayloadBytes: 1_048_576 },
+    owner,
+    () => Promise.resolve(),
+  );
+  const sessionId = JSON.parse(
+    new TextDecoder().decode(publishedOwner.at(-1)!.data),
+  ).sessionId as string;
+  const closeBody = closeBodyFor(sessionId);
+  await providerOwner.handleControl(
+    msg({ data: closeBody, reply: "_INBOX.owner", headers: hdrs() }),
+    allow,
+  );
+  await waitForReceipt(sessionId);
+  assertEquals(
+    manager.receipt(sessionId) !== undefined,
+    true,
+    "a terminal session leaves a retained receipt",
+  );
+
+  await providerOwner.dispose();
+
+  // The unrelated route never receives this frame and must stay silent.
+  publishedUnrelated.length = 0;
+  await providerUnrelated.handleControl(
+    msg({ data: closeBody, reply: "_INBOX.owner", headers: hdrs() }),
+    allow,
+  );
+  assertEquals(
+    publishedUnrelated.length,
+    0,
+    "an unrelated-route provider never answers this session's close",
+  );
+
+  // The same-route survivor is the one authoritative responder.
+  publishedSameRoute.length = 0;
+  await providerSameRoute.handleControl(
+    msg({ data: closeBody, reply: "_INBOX.owner", headers: hdrs() }),
+    allow,
+  );
+  assertEquals(
+    publishedSameRoute.length > 0,
+    true,
+    "the same-route survivor answers the retained receipt",
+  );
+});
+
+Deno.test("NX08 an installed-but-unoffered same-route provider answers a retained receipt", async () => {
+  const manager = new LiveSessionManager();
+  const publishedOwner: { subject: string; data: Uint8Array }[] = [];
+  const publishedSurvivor: { subject: string; data: Uint8Array }[] = [];
+  const capture = (sink: { subject: string; data: Uint8Array }[]) =>
+    ({
+      publish(subject: string, data?: Uint8Array) {
+        if (data) sink.push({ subject, data });
+      },
+      info: { max_payload: 1_048_576 },
+    }) as unknown as NatsConnection;
+
+  const owner = caller("owner");
+  const hdrs = () => {
+    const headers = natsHeaders();
+    headers.set("proof", "owner-proof");
+    headers.set("authorization-context", owner.contextDigest);
+    headers.set("session-key", owner.sessionKey);
+    return headers;
+  };
+  const allow = (request: Msg) =>
+    Promise.resolve(
+      request.reply === "_INBOX.owner" &&
+        request.headers?.get("proof") === "owner-proof"
+        ? owner
+        : undefined,
+    );
+  const encode = (value: unknown) =>
+    new TextEncoder().encode(JSON.stringify(value));
+
+  const providerOwner = makeProvider(capture(publishedOwner), manager);
+  const providerSurvivor = makeProvider(capture(publishedSurvivor), manager);
+  // The survivor is installed for the route but has never served a session:
+  // it must still be in the ownership registry from readiness, not from
+  // incidental first traffic.
+  providerSurvivor.registerRoute(BASE_SUBJECT);
+
+  await providerOwner.offer(
+    msg({ data: new Uint8Array(), reply: "_INBOX.owner" }),
+    BASE_SUBJECT,
+    { openId: "open-1", receiveMaxPayloadBytes: 1_048_576 },
+    owner,
+    () => Promise.resolve(),
+  );
+  const sessionId = JSON.parse(
+    new TextDecoder().decode(publishedOwner.at(-1)!.data),
+  ).sessionId as string;
+  const closeBody = encode({
+    format: LIVE_VERSION,
+    type: "control",
+    sessionId,
+    controlSeq: "1",
+    action: "close",
+    reason: "cancelled",
+    receivedSeq: "0",
+    consumedSeq: "0",
+  });
+  await providerOwner.handleControl(
+    msg({ data: closeBody, reply: "_INBOX.owner", headers: hdrs() }),
+    allow,
+  );
+  const deadline = Date.now() + 15_000;
+  while (manager.receipt(sessionId) === undefined && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assertEquals(
+    manager.receipt(sessionId) !== undefined,
+    true,
+    "a terminal session leaves a retained receipt",
+  );
+
+  await providerOwner.dispose();
+  publishedSurvivor.length = 0;
+  await providerSurvivor.handleControl(
+    msg({ data: closeBody, reply: "_INBOX.owner", headers: hdrs() }),
+    allow,
+  );
+  assertEquals(
+    publishedSurvivor.length > 0,
+    true,
+    "the installed-but-unoffered same-route survivor answers the receipt",
+  );
 });

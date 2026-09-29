@@ -418,9 +418,13 @@ export type ServiceProviderIngress = {
   install(target: {
     id: number;
     nc: NatsConnection;
+    contextDigest: string;
     lease?: () => TransportLease;
   }): Promise<void>;
+  /** Stop generic intake on a superseded generation. */
   retire(id: number): void;
+  /** Physically close a generation: retire generic intake and session control. */
+  close(id: number): void;
 };
 
 export abstract class StoreHandle {
@@ -1371,6 +1375,9 @@ export async function createConnectedService<
       },
       operationDeploymentId: args.healthIdentity?.deploymentId,
       operationConnectionId: args.operationConnectionId,
+      // The operation runtime owns per-generation start/reconcile intake through
+      // the same generation provider as the outbound framework surfaces.
+      ...(args.transport ? { transport: args.transport } : {}),
       ...(args.transportGate ? { transportGate: args.transportGate } : {}),
     },
   );
@@ -2964,6 +2971,7 @@ export function connectTrellisServiceWithRuntimeDeps<
           await serviceFacade?.install({
             id: generation.id,
             nc: generation.nc,
+            contextDigest: generation.contextDigest,
             // Lease the exact admitted candidate directly; a lookup-by-id would
             // miss it because it is not yet published as the default.
             lease: () => generation.lease(),
@@ -2977,7 +2985,7 @@ export function connectTrellisServiceWithRuntimeDeps<
           void applyServiceAdmission().catch(() => undefined);
         },
         onRetire: (generation) => {
-          serviceFacade?.retire(generation.id);
+          serviceFacade?.close(generation.id);
         },
         log: bootstrapLog,
       });
@@ -3454,16 +3462,28 @@ export class TrellisServiceSession<
     });
     Object.defineProperty(this, SERVICE_PROVIDER_INGRESS, {
       value: {
-        install: (target) =>
-          (providerCaller as {
+        // Both the outbound framework surfaces and the operation runtime own
+        // per-generation intake on the same generation.
+        install: async (target) => {
+          await (providerCaller as {
             installProviderIngress(
               target: Parameters<ServiceProviderIngress["install"]>[0],
             ): Promise<void>;
-          }).installProviderIngress(target),
-        retire: (id) =>
+          }).installProviderIngress(target);
+          await this.#runtime.installProviderIngress(target);
+        },
+        retire: (id) => {
           (providerCaller as {
             retireProviderIngress(id: number): void;
-          }).retireProviderIngress(id),
+          }).retireProviderIngress(id);
+          this.#runtime.retireProviderIngress(id);
+        },
+        close: (id) => {
+          (providerCaller as {
+            closeProviderIngress(id: number): void;
+          }).closeProviderIngress(id);
+          this.#runtime.closeProviderIngress(id);
+        },
       } satisfies ServiceProviderIngress,
     });
     this.event = event;

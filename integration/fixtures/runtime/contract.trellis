@@ -220,8 +220,16 @@ api transport_growth@v1 {
   }
 }
 
+api probe_aux@v1 {
+  title "Auxiliary live route";
+  description "A second live route served on one service attachment.";
+  live Pulse { input Empty; event Value; }
+  capabilities { public { allows { live Pulse; } } }
+}
+
 service TransportGrowthSubject {
   implements liveprobe;
+  implements probe_aux;
   use transport_growth {
     rpc Advance;
     rpc Extend;
