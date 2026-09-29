@@ -12,6 +12,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
@@ -38,6 +39,10 @@ type OperationLeg = {
   send(command: string): Promise<void>;
   executionCount(): number | undefined;
   parkCalls(): number | undefined;
+  jobExecutions(): number | undefined;
+  /** Number of completed `Tick` deliveries observed for one payload value. */
+  tickDeliveries(value: string): number;
+  error(): string | undefined;
 };
 
 /** Spawns the Rust operation provider leg, runs `body`, and always reaps it. */
@@ -46,6 +51,7 @@ async function withOperationProviderLeg(
   seed: string,
   deadlineMs: number,
   body: (leg: OperationLeg) => Promise<void>,
+  options: { allowTerminalError?: boolean } = {},
 ): Promise<void> {
   const child = new Deno.Command("setsid", {
     args: rustFixtureArgv("transport_growth_operation"),
@@ -62,6 +68,15 @@ async function withOperationProviderLeg(
     return result;
   });
   const stdin = child.stdin.getWriter();
+  // Closing stdin for a child that already exited rejects (bad resource/broken
+  // pipe); both the terminal-error path and the cleanup path ignore that.
+  const closeStdin = async (): Promise<void> => {
+    try {
+      await stdin.close();
+    } catch {
+      // stdin may already be closed once the process exited.
+    }
+  };
   const drain = (async () => {
     const reader = child.stdout.pipeThrough(new TextDecoderStream())
       .getReader();
@@ -124,29 +139,61 @@ async function withOperationProviderLeg(
       }
       return latest;
     },
+    jobExecutions(): number | undefined {
+      let latest: number | undefined;
+      for (const line of lines) {
+        if (line.startsWith("JOB_EXECUTIONS ")) {
+          const value = Number(line.slice("JOB_EXECUTIONS ".length));
+          if (Number.isFinite(value)) latest = value;
+        }
+      }
+      return latest;
+    },
+    tickDeliveries(value: string): number {
+      let count = 0;
+      for (const line of lines) {
+        const parts = line.split(" ");
+        if (parts[0] === "TICK" && parts.slice(2).join(" ") === value) count++;
+      }
+      return count;
+    },
+    error(): string | undefined {
+      const line = lines.find((line) =>
+        line.startsWith("OPERATION_PROVIDER_ERROR ")
+      );
+      return line?.slice("OPERATION_PROVIDER_ERROR ".length);
+    },
   };
 
   try {
     await body(leg);
+    const terminalError = lines.some((line) =>
+      line.startsWith("OPERATION_PROVIDER_ERROR ")
+    );
     if (!lines.includes("OPERATION_PROVIDER_DONE") && !exited) {
-      await leg.send("EXIT");
-      await leg.waitFor("OPERATION_PROVIDER_DONE");
+      if (options.allowTerminalError && terminalError) {
+        // The leg is shutting down after a terminal error. Release its command
+        // reader so the fixture's blocking stdin read can finish and the process
+        // can exit; without this the harness holds the pipe open forever.
+        await closeStdin();
+      } else {
+        await leg.send("EXIT");
+        await leg.waitFor("OPERATION_PROVIDER_DONE");
+      }
     }
     await runtime.waitFor(() => (exited ? true : undefined), {
       timeoutMs: remainingMs(),
       intervalMs: 50,
     });
     const finalStatus = await status;
-    assert(
-      finalStatus.success,
-      `Rust operation provider leg failed: ${output}`,
-    );
-  } finally {
-    try {
-      await stdin.close();
-    } catch {
-      // stdin may already be closed once the process exited.
+    if (!options.allowTerminalError) {
+      assert(
+        finalStatus.success,
+        `Rust operation provider leg failed: ${output}`,
+      );
     }
+  } finally {
+    await closeStdin();
     if (!exited) {
       try {
         Deno.kill(-child.pid, "SIGKILL");
@@ -393,6 +440,143 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "Rust baseline generation is reclaimed after growth while held and fresh callbacks complete",
+  async () => {
+    await withTrellisRuntime(async (runtime) => {
+      const providerContract =
+        participants.TransportGrowthOperationProvider.participant;
+      const callerContract = participants.TransportGrowthCaller.participant;
+
+      await runtime.contracts.install({ contract: providerContract });
+      const requested = await runtime.contracts.requestApply({
+        deployment: PROVIDER_DEPLOYMENT,
+        contract: providerContract,
+      });
+      assert(
+        requested.status === "approval_required",
+        "the provider deployment must require an approval",
+      );
+      if (requested.status !== "approval_required") return;
+      await runtime.contracts.approveApply(requested.pendingId, {
+        excludeCapabilities: [CAPABILITY_EXTEND],
+      });
+      const providerInstance = await runtime.services.createInstance({
+        deployment: PROVIDER_DEPLOYMENT,
+        name: "tg-op-provider",
+        contract: providerContract,
+      });
+      const providerId = providerContract.identity;
+      const attachments = async (): Promise<
+        { connectionId: string; contextDigest: string }[]
+      > => {
+        const page = await runtime.callAdminRpc("authConnectionsList", {}) as {
+          items: {
+            participantId: string;
+            connectionId: string;
+            contextDigest: string;
+          }[];
+        };
+        return page.items.filter((item) => item.participantId === providerId);
+      };
+      const caller = await runtime.connectClient({
+        name: "tg-op-caller-reclaim",
+        contract: callerContract,
+      });
+
+      await withOperationProviderLeg(
+        runtime,
+        providerInstance.seed,
+        150_000,
+        async (leg) => {
+          await leg.waitFor("OPERATION_PROVIDER_READY");
+          const original = await attachments();
+          assertEquals(original.length, 1);
+          const baselineMarker = `trellis.auth.v1:${
+            original[0].contextDigest
+          }:`;
+          const before = await brokerAttachmentUsers(runtime);
+          assert(
+            [...before].some((user) => user.startsWith(baselineMarker)),
+            "the baseline generation must be physically admitted before growth",
+          );
+
+          // Hold one accepted callback on the baseline generation.
+          const held = caller.park({}, { timeout: 90_000 }).orThrow();
+          // Keep the rejection handled until it is awaited so a failure surfaces
+          // through the runtime's control-plane diagnostics rather than as an
+          // uncaught module-level promise.
+          held.catch(() => {});
+          const parkDeadline = Date.now() + 30_000;
+          while ((leg.parkCalls() ?? 0) < 1) {
+            if (Date.now() > parkDeadline) {
+              throw new Error("no Park callback was accepted");
+            }
+            await leg.send("PARKS");
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+
+          // Grow the provider. The baseline generation is superseded and, with no
+          // baseline pin, is reclaimed once its accepted work completes.
+          await runtime.contracts.apply({
+            deployment: PROVIDER_DEPLOYMENT,
+            contract: providerContract,
+          });
+          await runtime.waitFor(
+            async () => (await attachments()).length >= 2 ? true : undefined,
+            { timeoutMs: 45_000, intervalMs: 100 },
+          );
+
+          // New work is accepted on the current generation while the baseline
+          // callback is still held.
+          const fresh = caller.park({}, { timeout: 90_000 }).orThrow();
+          fresh.catch(() => {});
+          const freshDeadline = Date.now() + 30_000;
+          while ((leg.parkCalls() ?? 0) < 2) {
+            if (Date.now() > freshDeadline) {
+              throw new Error("no post-cutover Park callback was accepted");
+            }
+            await leg.send("PARKS");
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+
+          // Release: the held callback completes exactly once on the baseline.
+          await leg.send("RELEASE");
+          const heldResult = await held;
+          assert(
+            heldResult.value.startsWith("parked-"),
+            `held callback completed on the baseline: ${heldResult.value}`,
+          );
+          const freshResult = await fresh;
+          assert(
+            freshResult.value.startsWith("parked-"),
+            `fresh callback completed on the current generation: ${freshResult.value}`,
+          );
+
+          // The exact baseline physical attachment is gone from the broker while
+          // the logical connection and its current generation keep serving.
+          try {
+            await runtime.waitFor(async () => {
+              const now = await brokerAttachmentUsers(runtime);
+              return [...now].some((user) => user.startsWith(baselineMarker))
+                ? undefined
+                : true;
+            }, { timeoutMs: 45_000, intervalMs: 200 });
+          } catch (cause) {
+            const now = await brokerAttachmentUsers(runtime);
+            throw new Error(
+              `baseline ${baselineMarker} not reclaimed; broker users: ${
+                JSON.stringify([...now].sort())
+              }`,
+              { cause },
+            );
+          }
+        },
+      );
+    }, runtimeOptions);
+  },
+);
+
 /**
  * Grant binding as reported by the production admin surface.
  */
@@ -438,6 +622,66 @@ async function readGrantBinding(
   return binding;
 }
 
+/**
+ * Exact callout-owned physical connection identities from the production broker
+ * `CONNZ` inventory, read with the harness system account.
+ *
+ * This is the broker's own authenticated socket list, not the auth-side
+ * connection presence, so it attributes whether a generation's physical socket
+ * is actually closed rather than whether a pending presence record was reaped.
+ * The `authorized_user` field is the broker-authenticated identity the Trellis
+ * Auth Callout issued, never a freely chosen connection name.
+ */
+async function brokerAttachmentUsers(runtime: Runtime): Promise<Set<string>> {
+  const creds = await Deno.readTextFile(
+    `${runtime.workdir}/nats/creds/system.creds`,
+  );
+  const connection = await connect({
+    servers: runtime.natsUrl,
+    authenticator: credsAuthenticator(new TextEncoder().encode(creds)),
+  });
+  const users = new Set<string>();
+  try {
+    const inbox = `_INBOX.${crypto.randomUUID().replaceAll("-", "")}`;
+    const subscription = connection.subscribe(inbox);
+    connection.publish(
+      "$SYS.REQ.SERVER.PING.CONNZ",
+      new TextEncoder().encode('{"auth":true,"limit":256}'),
+      { reply: inbox },
+    );
+    const iterator = subscription[Symbol.asyncIterator]();
+    // A bounded window collects the scatter replies inherent to the system
+    // request; it is a collection window, not a readiness sleep.
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const remaining = deadline - Date.now();
+      const next = await Promise.race([
+        iterator.next(),
+        new Promise<undefined>((resolve) =>
+          setTimeout(() => resolve(undefined), remaining)
+        ),
+      ]);
+      if (!next || next.done) break;
+      const message = next.value;
+      try {
+        const reply = JSON.parse(new TextDecoder().decode(message.data)) as {
+          data?: { connections?: { authorized_user?: string }[] };
+        };
+        for (const entry of reply.data?.connections ?? []) {
+          const user = entry.authorized_user;
+          if (typeof user === "string" && user.startsWith("trellis.auth.v1:")) {
+            users.add(user);
+          }
+        }
+      } catch {
+        // A malformed reply is ignored; the caller re-polls.
+      }
+    }
+    return users;
+  } finally {
+    await connection.close();
+  }
+}
 /**
  * The provider's optional capability is withdrawn by narrowing its grant binding
  * back to the permissions the original attachment adopted. The wider generation
@@ -570,5 +814,556 @@ Deno.test(
         },
       );
     }, runtimeOptions);
+  },
+);
+
+/**
+ * The service hosts a durable `held` job worker. A job accepted before a real
+ * transport cutover must complete exactly once (no restart or duplication) on
+ * the generation that received it, and a fresh job submitted after cutover must
+ * be accepted by the same logical worker host on the new generation.
+ */
+Deno.test(
+  "Rust held job completes once across transport growth and a fresh job is accepted after cutover",
+  async () => {
+    await withTrellisRuntime(async (runtime) => {
+      const providerContract =
+        participants.TransportGrowthOperationProvider.participant;
+      const callerContract = participants.TransportGrowthCaller.participant;
+
+      await runtime.contracts.install({ contract: providerContract });
+      const requested = await runtime.contracts.requestApply({
+        deployment: PROVIDER_DEPLOYMENT,
+        contract: providerContract,
+      });
+      assert(
+        requested.status === "approval_required",
+        "the provider deployment must require an approval",
+      );
+      if (requested.status !== "approval_required") return;
+      await runtime.contracts.approveApply(requested.pendingId, {
+        excludeCapabilities: [CAPABILITY_EXTEND],
+      });
+      const providerInstance = await runtime.services.createInstance({
+        deployment: PROVIDER_DEPLOYMENT,
+        name: "tg-op-provider",
+        contract: providerContract,
+      });
+      const providerId = providerContract.identity;
+      const attachments = async (): Promise<
+        {
+          connectionId: string;
+          runtimeConnectionId: string;
+          contextDigest: string;
+        }[]
+      > => {
+        const page = await runtime.callAdminRpc("authConnectionsList", {}) as {
+          items: {
+            participantId: string;
+            connectionId: string;
+            runtimeConnectionId: string;
+            contextDigest: string;
+          }[];
+        };
+        return page.items.filter((item) => item.participantId === providerId);
+      };
+      const caller = await runtime.connectClient({
+        name: "tg-op-caller-job",
+        contract: callerContract,
+      });
+
+      await withOperationProviderLeg(
+        runtime,
+        providerInstance.seed,
+        150_000,
+        async (leg) => {
+          await leg.waitFor("OPERATION_PROVIDER_READY");
+          await leg.waitFor("JOB_SUBMITTED initial");
+          // The held job must be accepted and running before the cutover.
+          await leg.waitFor("JOB_STARTED 1 initial");
+          const original = await attachments();
+          assertEquals(original.length, 1);
+          const originalRuntimeId = original[0].runtimeConnectionId;
+          // Captured before growth so the reduction restores exactly the
+          // authority the original attachment adopted.
+          const baselineKeys = new Set(
+            (await readGrantBinding(runtime, providerId)).grants.permissions
+              .map(
+                atomKey,
+              ),
+          );
+
+          // Grow the optional capability while the job is held.
+          await runtime.contracts.apply({
+            deployment: PROVIDER_DEPLOYMENT,
+            contract: providerContract,
+          });
+          await runtime.waitFor(
+            async () => (await attachments()).length >= 2 ? true : undefined,
+            { timeoutMs: 45_000, intervalMs: 100 },
+          );
+
+          // Release the held job: it completes exactly once.
+          await leg.send("JOB_RELEASE");
+          await leg.waitFor("JOB_DONE 1 initial");
+
+          // A fresh job submitted after cutover is accepted on the new
+          // generation by the same logical worker host.
+          await caller.nudge({}).orThrow();
+          await leg.waitFor("JOB_DONE 2 extended");
+
+          await leg.send("JOB_COUNT");
+          await runtime.waitFor(
+            () => (leg.jobExecutions() ?? 0) >= 2 ? true : undefined,
+            { timeoutMs: 30_000, intervalMs: 100 },
+          );
+          assertEquals(
+            leg.jobExecutions(),
+            2,
+            "each accepted job must run exactly once",
+          );
+
+          // Reduce back to the original authority: the wider generation closes
+          // and the surviving generation's worker intake must be re-adopted, or
+          // fresh work would be accepted by a dead intake.
+          const binding = await readGrantBinding(runtime, providerId);
+          const kept = binding.grants.permissions.filter((atom) =>
+            baselineKeys.has(atomKey(atom))
+          );
+          await runtime.callAdminRpc("authGrantsSet", {
+            expectedRevision: binding.revision,
+            expiresAt: binding.expiresAt,
+            grants: { format: binding.grants.format, permissions: kept },
+            idempotencyKey: crypto.randomUUID(),
+            installedRevision: binding.installedRevision,
+            ownerId: binding.ownerId,
+            ownerKind: binding.ownerKind,
+            participantId: binding.participantId,
+            platformPrivileges: binding.platformPrivileges,
+          });
+          await runtime.waitFor(
+            async () => (await attachments()).length === 1 ? true : undefined,
+            { timeoutMs: 60_000, intervalMs: 200 },
+          );
+          await caller.nudge({}).orThrow();
+          await leg.waitFor("JOB_DONE 3 extended");
+          await leg.send("JOB_COUNT");
+          await runtime.waitFor(
+            () => (leg.jobExecutions() ?? 0) >= 3 ? true : undefined,
+            { timeoutMs: 30_000, intervalMs: 100 },
+          );
+          assertEquals(
+            leg.jobExecutions(),
+            3,
+            "the survivor's re-adopted intake must accept fresh work exactly once",
+          );
+
+          // One logical connection spans the cutover; growth adds a physical
+          // attachment without changing the logical identity.
+          const grown = await attachments();
+          assert(
+            grown.length === 1 &&
+              grown.every((item) =>
+                item.runtimeConnectionId === originalRuntimeId
+              ),
+            "the reduction must keep one logical connection identity",
+          );
+        },
+      );
+    }, runtimeOptions);
+  },
+);
+
+/**
+ * The service hosts a durable `ticks` event listener. A delivery received
+ * before a real transport cutover must stay held (and pinned to its receiving
+ * generation) across the cutover, then be acknowledged; a fresh delivery after
+ * cutover must be handled on the new generation.
+ */
+Deno.test(
+  "Rust durable event delivery survives transport growth and is acked after cutover",
+  async () => {
+    await withTrellisRuntime(async (runtime) => {
+      const providerContract =
+        participants.TransportGrowthOperationProvider.participant;
+      const callerContract = participants.TransportGrowthCaller.participant;
+
+      await runtime.contracts.install({ contract: providerContract });
+      const requested = await runtime.contracts.requestApply({
+        deployment: PROVIDER_DEPLOYMENT,
+        contract: providerContract,
+      });
+      assert(
+        requested.status === "approval_required",
+        "the provider deployment must require an approval",
+      );
+      if (requested.status !== "approval_required") return;
+      await runtime.contracts.approveApply(requested.pendingId, {
+        excludeCapabilities: [CAPABILITY_EXTEND],
+      });
+      const providerInstance = await runtime.services.createInstance({
+        deployment: PROVIDER_DEPLOYMENT,
+        name: "tg-op-provider",
+        contract: providerContract,
+      });
+      const providerId = providerContract.identity;
+      const attachments = async (): Promise<
+        {
+          connectionId: string;
+          runtimeConnectionId: string;
+          contextDigest: string;
+        }[]
+      > => {
+        const page = await runtime.callAdminRpc("authConnectionsList", {}) as {
+          items: {
+            participantId: string;
+            connectionId: string;
+            runtimeConnectionId: string;
+            contextDigest: string;
+          }[];
+        };
+        return page.items.filter((item) => item.participantId === providerId);
+      };
+      const caller = await runtime.connectClient({
+        name: "tg-op-caller-tick",
+        contract: callerContract,
+      });
+
+      await withOperationProviderLeg(
+        runtime,
+        providerInstance.seed,
+        150_000,
+        async (leg) => {
+          await leg.waitFor("OPERATION_PROVIDER_READY");
+          const original = await attachments();
+          assertEquals(original.length, 1);
+          const originalRuntimeId = original[0].runtimeConnectionId;
+          const baselineKeys = new Set(
+            (await readGrantBinding(runtime, providerId)).grants.permissions
+              .map(
+                atomKey,
+              ),
+          );
+
+          // The first delivery is accepted and held before cutover.
+          await caller.publishTick({ value: "first" }).orThrow();
+          await leg.waitFor("TICK 1 first");
+
+          // Grow while the delivery is held.
+          await runtime.contracts.apply({
+            deployment: PROVIDER_DEPLOYMENT,
+            contract: providerContract,
+          });
+          await runtime.waitFor(
+            async () => (await attachments()).length >= 2 ? true : undefined,
+            { timeoutMs: 45_000, intervalMs: 100 },
+          );
+
+          // Release: the held delivery is acknowledged after the cutover.
+          await leg.send("RELEASE");
+          await leg.waitFor("TICK_DONE 1 first");
+
+          // A fresh delivery after cutover is handled on the new generation.
+          await caller.publishTick({ value: "second" }).orThrow();
+          await leg.waitFor("TICK_DONE 2 second");
+
+          // Reduce back to baseline: the unsafe wider generation must close
+          // immediately regardless of any lingering lease or subscription, and a
+          // fresh delivery must still be handled under the original authority.
+          const binding = await readGrantBinding(runtime, providerId);
+          const kept = binding.grants.permissions.filter((atom) =>
+            baselineKeys.has(atomKey(atom))
+          );
+          await runtime.callAdminRpc("authGrantsSet", {
+            expectedRevision: binding.revision,
+            expiresAt: binding.expiresAt,
+            grants: { format: binding.grants.format, permissions: kept },
+            idempotencyKey: crypto.randomUUID(),
+            installedRevision: binding.installedRevision,
+            ownerId: binding.ownerId,
+            ownerKind: binding.ownerKind,
+            participantId: binding.participantId,
+            platformPrivileges: binding.platformPrivileges,
+          });
+          await runtime.waitFor(
+            async () => (await attachments()).length === 1 ? true : undefined,
+            { timeoutMs: 60_000, intervalMs: 200 },
+          );
+          await caller.publishTick({ value: "third" }).orThrow();
+          await leg.waitFor("TICK_DONE 3 third");
+
+          const grown = await attachments();
+          assert(
+            grown.length === 1 &&
+              grown.every((item) =>
+                item.runtimeConnectionId === originalRuntimeId
+              ),
+            "the reduction must keep one logical connection identity",
+          );
+        },
+      );
+    }, runtimeOptions);
+  },
+);
+
+/**
+ * A held durable delivery is pinned to the generation that received it. When an
+ * ordinary grant reduction makes that generation unsafe, the new architecture
+ * force-closes it even though the delivery still holds a lease, so the pending
+ * acknowledgement cannot reach the broker. The durable intake must not tear the
+ * service runtime down: it enters bounded recovery, the unacknowledged event is
+ * redelivered, and a subsequent event is processed on the surviving generation —
+ * under one stable logical connection identity.
+ */
+Deno.test(
+  "Rust durable event intake recovers when a reduction force-closes the generation holding a delivery",
+  async () => {
+    await withTrellisRuntime(async (runtime) => {
+      const providerContract =
+        participants.TransportGrowthOperationProvider.participant;
+      const callerContract = participants.TransportGrowthCaller.participant;
+
+      await runtime.contracts.install({ contract: providerContract });
+      const requested = await runtime.contracts.requestApply({
+        deployment: PROVIDER_DEPLOYMENT,
+        contract: providerContract,
+      });
+      assert(
+        requested.status === "approval_required",
+        "the provider deployment must require an approval",
+      );
+      if (requested.status !== "approval_required") return;
+      await runtime.contracts.approveApply(requested.pendingId, {
+        excludeCapabilities: [CAPABILITY_EXTEND],
+      });
+      const providerInstance = await runtime.services.createInstance({
+        deployment: PROVIDER_DEPLOYMENT,
+        name: "tg-op-provider",
+        contract: providerContract,
+      });
+      const providerId = providerContract.identity;
+      const attachments = async (): Promise<
+        {
+          connectionId: string;
+          runtimeConnectionId: string;
+          contextDigest: string;
+        }[]
+      > => {
+        const page = await runtime.callAdminRpc("authConnectionsList", {}) as {
+          items: {
+            participantId: string;
+            connectionId: string;
+            runtimeConnectionId: string;
+            contextDigest: string;
+          }[];
+        };
+        return page.items.filter((item) => item.participantId === providerId);
+      };
+      const caller = await runtime.connectClient({
+        name: "tg-op-caller-failed-ack",
+        contract: callerContract,
+      });
+
+      await withOperationProviderLeg(
+        runtime,
+        providerInstance.seed,
+        150_000,
+        async (leg) => {
+          await leg.waitFor("OPERATION_PROVIDER_READY");
+          const original = await attachments();
+          assertEquals(original.length, 1);
+          const originalRuntimeId = original[0].runtimeConnectionId;
+          const baselineDigest = original[0].contextDigest;
+          const baselineKeys = new Set(
+            (await readGrantBinding(runtime, providerId)).grants.permissions
+              .map(atomKey),
+          );
+
+          // Grow: a wider generation becomes current. The client's baseline lease
+          // pins the initial generation for the connection's lifetime, so it is not
+          // expected to reap yet; the durable intake follows the current (wider)
+          // generation.
+          await runtime.contracts.apply({
+            deployment: PROVIDER_DEPLOYMENT,
+            contract: providerContract,
+          });
+          await runtime.waitFor(
+            async () => (await attachments()).length >= 2 ? true : undefined,
+            { timeoutMs: 45_000, intervalMs: 100 },
+          );
+          // The wider generation's exact physical identity: the generation that
+          // admitted the grown authority, joined to the broker inventory by the
+          // context digest embedded in the callout-issued user.
+          const grown = await attachments();
+          const wide = grown.find((item) =>
+            item.contextDigest !== baselineDigest
+          );
+          assert(wide, "a wider generation must be admitted after growth");
+          const wideMarker = `trellis.auth.v1:${wide.contextDigest}:`;
+          const baselineMarker = `trellis.auth.v1:${baselineDigest}:`;
+
+          // Arm a value-scoped hold, then complete a warmup delivery so the durable
+          // intake is positively on the current (wider) generation before the real
+          // delivery is held. No timed readiness is used.
+          await leg.send("HOLD_ONLY held");
+          await caller.publishTick({ value: "warmup" }).orThrow();
+          await leg.waitFor("TICK 1 warmup");
+          await leg.waitFor("TICK_DONE 1 warmup");
+
+          // Exact physical inventory before the cutover: the broker's own
+          // callout-owned sockets, not the auth-side presence records. The wider
+          // generation's socket must be present now.
+          const beforeCutover = await brokerAttachmentUsers(runtime);
+          assert(
+            [...beforeCutover].some((user) => user.startsWith(wideMarker)),
+            "the wider generation's physical socket must be admitted before the cutover",
+          );
+
+          // Hold the real delivery on the current (wider) generation before the
+          // reduce.
+          await caller.publishTick({ value: "held" }).orThrow();
+          await leg.waitFor("TICK 2 held");
+
+          // Reduce to the baseline authority. The wider generation is unsafe and
+          // is force-closed even though the held delivery still pins its lease.
+          const binding = await readGrantBinding(runtime, providerId);
+          const kept = binding.grants.permissions.filter((atom) =>
+            baselineKeys.has(atomKey(atom))
+          );
+          assert(
+            binding.grants.permissions.length > kept.length,
+            "growth must have granted an optional-capability atom the reduction removes",
+          );
+          await runtime.callAdminRpc("authGrantsSet", {
+            expectedRevision: binding.revision,
+            expiresAt: binding.expiresAt,
+            grants: { format: binding.grants.format, permissions: kept },
+            idempotencyKey: crypto.randomUUID(),
+            installedRevision: binding.installedRevision,
+            ownerId: binding.ownerId,
+            ownerKind: binding.ownerKind,
+            participantId: binding.participantId,
+            platformPrivileges: binding.platformPrivileges,
+          });
+          // Exact broker proof, while the delivery is still held: the unsafe wider
+          // socket is physically gone from the callout-owned CONNZ inventory and a
+          // fresh survivor socket has opened. This attributes the close to the real
+          // socket, not to a lagging presence record.
+          await runtime.waitFor(async () => {
+            // One exact physical snapshot: the wider generation's socket is gone
+            // while the baseline generation's socket is still present, so the
+            // logical connection is alive and only the unsafe generation closed.
+            const now = await brokerAttachmentUsers(runtime);
+            const wideGone = ![...now].some((user) =>
+              user.startsWith(wideMarker)
+            );
+            const baselinePresent = [...now].some((user) =>
+              user.startsWith(baselineMarker)
+            );
+            return wideGone && baselinePresent ? true : undefined;
+          }, { timeoutMs: 30_000, intervalMs: 400 });
+
+          // Release: the handler completes, but its acknowledgement cannot reach
+          // the broker on the force-closed generation.
+          await leg.send("RELEASE");
+          await leg.waitFor("TICK_DONE 2 held");
+
+          // Corroboration only: the broker redelivers the unacknowledged event,
+          // which proves the ack did not land. The physical closure itself is
+          // proven by the exact CONNZ inventory above, not by the redelivery.
+          try {
+            await runtime.waitFor(
+              () => leg.tickDeliveries("held") >= 2 ? true : undefined,
+              { timeoutMs: 90_000, intervalMs: 100 },
+            );
+          } catch {
+            throw new Error(
+              "the held delivery stayed acknowledged: the forced-close acknowledgement path was not exercised",
+            );
+          }
+          await leg.waitFor("TICK_DONE 3 held");
+
+          // A subsequent event is processed on the surviving generation: the
+          // durable intake recovered instead of tearing down the service runtime.
+          await caller.publishTick({ value: "after" }).orThrow();
+          await leg.waitFor("TICK_DONE 4 after");
+
+          const remaining = await attachments();
+          assert(
+            remaining.every((item) =>
+              item.runtimeConnectionId === originalRuntimeId
+            ),
+            "recovery must keep one logical connection identity",
+          );
+        },
+      );
+    }, runtimeOptions);
+  },
+);
+
+/**
+ * A supported terminal deployment action (native deployment disable) must make
+ * the durable event intake surface its terminal transport error instead of
+ * keeping the service runtime alive on a revoked transport. The fixture reports
+ * that error on exit, which is the observable asserted here. Presence records
+ * are ephemeral admission bookkeeping, so they are not asserted.
+ */
+Deno.test(
+  "Rust durable event intake surfaces terminal transport loss after deployment disable",
+  async () => {
+    await withTrellisRuntime(async (runtime) => {
+      const providerContract =
+        participants.TransportGrowthOperationProvider.participant;
+
+      await runtime.contracts.install({ contract: providerContract });
+      const requested = await runtime.contracts.requestApply({
+        deployment: PROVIDER_DEPLOYMENT,
+        contract: providerContract,
+      });
+      assert(
+        requested.status === "approval_required",
+        "the provider deployment must require an approval",
+      );
+      if (requested.status !== "approval_required") return;
+      await runtime.contracts.approveApply(requested.pendingId, {
+        excludeCapabilities: [CAPABILITY_EXTEND],
+      });
+      const providerInstance = await runtime.services.createInstance({
+        deployment: PROVIDER_DEPLOYMENT,
+        name: "tg-op-provider",
+        contract: providerContract,
+      });
+
+      await withOperationProviderLeg(
+        runtime,
+        providerInstance.seed,
+        120_000,
+        async (leg) => {
+          await leg.waitFor("OPERATION_PROVIDER_READY");
+          // A supported terminal native action: disabling the deployment
+          // terminates its connections and denies new native bootstrap.
+          const current = await runtime.callAdminRpc("authDeploymentsGet", {
+            deploymentId: providerInstance.deploymentId,
+          });
+          await runtime.callAdminRpc("authDeploymentsDisable", {
+            deploymentId: providerInstance.deploymentId,
+            expectedVersion: current.deployment.version,
+            idempotencyKey: crypto.randomUUID(),
+            reason: null,
+          });
+          // Primary acceptance: the service runtime surfaces the terminal
+          // transport error rather than retrying a dead authority forever.
+          await runtime.waitFor(
+            () => leg.error() !== undefined ? true : undefined,
+            { timeoutMs: 90_000, intervalMs: 250 },
+          );
+          assert(
+            leg.error() !== undefined,
+            "the service runtime must surface a terminal transport error",
+          );
+        },
+        { allowTerminalError: true },
+      );
+    });
   },
 );

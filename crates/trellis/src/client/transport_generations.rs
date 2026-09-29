@@ -65,10 +65,80 @@ impl GenerationState {
     }
 }
 
+/// One authoritative, latched reason the logical connection can no longer serve
+/// application work. A generation revocation is not one of these: it is
+/// recoverable by adopting the newest authorization. Only the authorization
+/// controller's terminal refresh result or an explicit owner close latches one.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum LogicalTerminalCause {
+    /// The authorization controller authoritatively ended this connection; a
+    /// refresh for the installed session was rejected with a terminal code.
+    Authorization(String),
+    /// The owner explicitly closed the logical connection.
+    Closed,
+}
+
+impl LogicalTerminalCause {
+    /// The client error a waiting surface reports when the logical connection is
+    /// terminally finished.
+    pub(crate) fn client_error(&self) -> TrellisClientError {
+        match self {
+            Self::Authorization(code) => TrellisClientError::AuthorizationUnavailable(format!(
+                "authorization context is no longer valid: {code}"
+            )),
+            Self::Closed => TrellisClientError::TransportUnavailable(
+                "logical transport connection is closed".into(),
+            ),
+        }
+    }
+}
+
+/// Why one generation's framework intake is being retired.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GenerationIntakeRetireReason {
+    /// A newer generation superseded this one; accepted work continues.
+    Superseded,
+    /// Current authority no longer covers the admitted policy.
+    AuthorityReduced,
+    /// The physical attachment was lost.
+    PhysicalFailure,
+    /// The logical connection reached an authoritative terminal state.
+    LogicalTerminal,
+    /// The logical connection is shutting down.
+    Shutdown,
+}
+
+impl GenerationIntakeRetireReason {
+    /// Whether this retirement must terminate the generation's support without
+    /// waiting for accepted work: a physical loss, a policy no longer covered by
+    /// authority, an authoritative terminal, or a logical shutdown. Normal
+    /// supersession is graceful and waits for accepted work to drain.
+    fn is_forced(self) -> bool {
+        matches!(
+            self,
+            Self::AuthorityReduced | Self::PhysicalFailure | Self::LogicalTerminal | Self::Shutdown
+        )
+    }
+}
+
 /// A framework owner's broker-ready generic intake on one generation.
 pub(crate) trait GenerationIntakeHandle: Send + Sync {
-    /// Stop accepting new intake; already-accepted work continues to completion.
-    fn retire(&self);
+    /// Stop accepting new intake. Idempotent and nonblocking: already-accepted
+    /// work continues on its own until [`Self::intake_stopped`] resolves.
+    fn retire(&self, reason: GenerationIntakeRetireReason);
+
+    /// Resolve once every outstanding intake is accounted for: no queued broker
+    /// delivery remains, and every accepted handler future has finished. A
+    /// handle may conservatively wait its sequential handler loop rather than
+    /// only unsubscribing.
+    fn intake_stopped(&self) -> BoxFuture<'_, ()>;
+
+    /// Release owned resources. Idempotent and invoked once, asynchronously,
+    /// after [`Self::intake_stopped`] on the graceful path. It must not await
+    /// accepted work: on a force termination it is invoked without an
+    /// `intake_stopped` wait, so a never-ending accepted item can never block the
+    /// release (abandoned work governs itself through its own lease/RAII).
+    fn dispose(&self) -> BoxFuture<'_, ()>;
 }
 
 /// One framework owner that must have broker-ready intake on a candidate
@@ -84,6 +154,14 @@ pub(crate) trait GenerationIntake: Send + Sync {
         &'a self,
         generation: Arc<TransportGeneration>,
     ) -> BoxFuture<'a, Result<Box<dyn GenerationIntakeHandle>, TrellisClientError>>;
+}
+
+/// A preactivation adoption failure and the owners that had already installed
+/// broker-ready intake before it. The caller owns draining the installed handles
+/// so a later owner's failure never drops earlier accepted work.
+struct AdoptFailure {
+    error: TrellisClientError,
+    installed: Vec<Box<dyn GenerationIntakeHandle>>,
 }
 
 /// A candidate being opened but not yet published.
@@ -120,17 +198,35 @@ pub(crate) struct TransportGeneration {
     physical_connection_id: String,
     /// Terminal state is monotonic: once `Closed`, it never reactivates.
     state: Arc<AtomicU8>,
-    leases: AtomicUsize,
+    /// Authoritative lease admission and live-count predicate. `closed` is the
+    /// irreversible admission fence: once set (a close or a reap decided to
+    /// close), no new fresh lease can be admitted, so a close can never race a
+    /// lease that starts after the close observed zero.
+    lease_state: Arc<std::sync::Mutex<LeaseState>>,
+    /// Wake-only epoch for lease waiters. The payload is never trusted as the
+    /// predicate (the count is read from `lease_state`); a `watch` is used so
+    /// every waiter and a late subscriber observe a version change.
+    lease_wake: watch::Sender<u64>,
+    /// Broadcast force latch: once set, every in-flight and later disposal sweep
+    /// stops waiting for accepted work and disposes, so a force termination can
+    /// override a graceful sweep (including retained baseline/Live leases).
+    disposal_force: watch::Sender<bool>,
     /// The manager's work channel; a lease release requests a reap.
     work: watch::Sender<u64>,
     /// Framework owners' broker-ready intake installed on this generation before
-    /// it became the default. Retired when the generation is superseded and
-    /// dropped with the generation.
+    /// it became the default. A superseded generation's intake is retired, its
+    /// accepted work drained, and its handles disposed before the physical
+    /// attachment closes.
     intake: Mutex<Vec<Box<dyn GenerationIntakeHandle>>>,
     /// Whether broker-ready intake is currently installed. A superseded
     /// generation's intake is retired; restoring it as current must re-adopt
     /// owners rather than resurrecting a current with dead intake.
     intake_active: AtomicBool,
+    /// Number of live installed handles across every install on this generation.
+    intake_installed: AtomicUsize,
+    /// Number of in-flight retire+dispose sweeps. Shared with each detached sweep
+    /// so a completion is observed without blocking the retire.
+    intake_disposing: Arc<AtomicUsize>,
 }
 
 impl TransportGeneration {
@@ -142,7 +238,19 @@ impl TransportGeneration {
     ///
     /// A concurrent [`close`](Self::set_state) wins: a closed generation is
     /// never reactivated as current or draining.
+    /// Transition the generation state under the lease lock and broadcast the
+    /// change, so a disposal waiter that must observe "Draining AND zero" reads a
+    /// consistent state and is woken on every transition.
     fn set_state(&self, state: GenerationState) {
+        let _lease = self
+            .lease_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.set_state_locked(state);
+    }
+
+    /// [`Self::set_state`] with the lease lock already held by the caller.
+    fn set_state_locked(&self, state: GenerationState) {
         let next = state as u8;
         let mut current = self.state.load(Ordering::Acquire);
         loop {
@@ -155,22 +263,118 @@ impl TransportGeneration {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return,
+                Ok(_) => {
+                    if current != next {
+                        self.wake_lease_waiters();
+                    }
+                    return;
+                }
                 Err(observed) => current = observed,
             }
         }
     }
 
+    /// The authoritative live lease count, read under the lease lock.
     fn leases(&self) -> usize {
-        self.leases.load(Ordering::Acquire)
+        self.lease_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .live
     }
 
-    /// Start one generation lease; release is automatic on drop.
-    pub(crate) fn lease(self: &Arc<Self>) -> TransportLease {
-        self.leases.fetch_add(1, Ordering::AcqRel);
-        TransportLease {
-            generation: self.clone(),
+    /// Start one generation lease, or refuse when the generation is closed or
+    /// its admission fence is set. Admission is checked under the lease lock, so
+    /// a fresh lease can never start after a close or a disposal has begun.
+    pub(crate) fn lease(self: &Arc<Self>) -> Option<TransportLease> {
+        let mut state = self
+            .lease_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if state.disposing
+            || state.forced
+            || state.closed
+            || self.state() == GenerationState::Closed
+        {
+            return None;
         }
+        state.live += 1;
+        drop(state);
+        Some(TransportLease {
+            generation: self.clone(),
+        })
+    }
+
+    /// Whether this generation is fenced for admission and restoration: disposal
+    /// has begun, it was force-terminated, or it closed. A fenced generation can
+    /// be neither leased nor restored as a survivor; a fresh generation is opened
+    /// instead.
+    fn is_fenced(&self) -> bool {
+        let state = self
+            .lease_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.disposing || state.forced || state.closed
+    }
+
+    /// Conditionally promote to Current only when the generation is not fenced,
+    /// under the same lease lock as the disposal decision. Returns whether it
+    /// became Current; a fenced generation is never published as a usable current.
+    fn promote_to_current(&self) -> bool {
+        let lease = self
+            .lease_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if lease.disposing || lease.forced || lease.closed {
+            return false;
+        }
+        self.set_state_locked(GenerationState::Current);
+        drop(lease);
+        self.state() == GenerationState::Current
+    }
+
+    /// Irreversibly fence lease admission. Set once a close commits, so the
+    /// close can never race a fresh lease that starts after it observed zero.
+    fn close_leases(&self) {
+        let already = {
+            let mut state = self
+                .lease_state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let already = state.closed;
+            state.closed = true;
+            already
+        };
+        if !already {
+            self.wake_lease_waiters();
+        }
+    }
+
+    /// Irreversibly latch force termination for this generation. A forced
+    /// generation is fenced for admission and restoration, and every in-flight
+    /// sweep stops its graceful wait. The single entrypoint for force.
+    fn force_leases(&self) {
+        let newly = {
+            let mut state = self
+                .lease_state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let newly = !state.forced;
+            state.forced = true;
+            newly
+        };
+        if newly {
+            // Wake lease waiters on the shared epoch, and wake the in-flight
+            // `intake_stopped` select on the force watch.
+            self.disposal_force.send_replace(true);
+            self.wake_lease_waiters();
+        }
+    }
+
+    /// Wake lease waiters without carrying the predicate: a waiter re-reads the
+    /// authoritative count under the lease lock.
+    fn wake_lease_waiters(&self) {
+        let next = self.lease_wake.borrow().wrapping_add(1);
+        self.lease_wake.send_replace(next);
     }
 
     fn request_work(&self) {
@@ -179,11 +383,34 @@ impl TransportGeneration {
     }
 
     /// Attach one framework owner's broker-ready intake handle to this
-    /// generation.
+    /// generation, or force-own it immediately when the generation is already
+    /// closed or its disposal has begun. The closed/admission check, the
+    /// registration, and the active flag all happen under the intake lock,
+    /// mutually exclusive with [`Self::take_intake`], so a handle can never be
+    /// registered after the generation stopped owning intake or once disposal
+    /// started.
     fn push_intake(&self, handle: Box<dyn GenerationIntakeHandle>) {
-        if let Ok(mut intake) = self.intake.lock() {
-            intake.push(handle);
+        let mut intake = self
+            .intake
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let fenced = {
+            let lease = self
+                .lease_state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            lease.disposing || lease.forced || lease.closed
+        };
+        if fenced || self.state() == GenerationState::Closed {
+            drop(intake);
+            // The generation closed or began disposing under the install: it
+            // still owns and force-disposes the late handle.
+            handle.retire(GenerationIntakeRetireReason::PhysicalFailure);
+            self.spawn_disposal(vec![handle], true);
+            return;
         }
+        intake.push(handle);
+        self.intake_installed.fetch_add(1, Ordering::AcqRel);
         self.intake_active.store(true, Ordering::Release);
     }
 
@@ -192,16 +419,209 @@ impl TransportGeneration {
         self.intake_active.load(Ordering::Acquire)
     }
 
-    /// Stop accepting new generic intake on this generation; already-accepted
-    /// work continues until its own lease releases. The installed handles are
-    /// dropped: each retires its own intake and drains its accepted work.
-    fn retire_intake(&self) {
+    /// Whether the generation owns no live intake and no in-flight disposal
+    /// sweep. A draining generation closes only when this holds and its physical
+    /// leases have released.
+    fn intake_idle(&self) -> bool {
+        self.intake_installed.load(Ordering::Acquire) == 0
+            && self.intake_disposing.load(Ordering::Acquire) == 0
+    }
+
+    /// Atomically transition the generation state (when requested) and extract
+    /// every installed handle under the intake lock.
+    ///
+    /// The transition and the extraction share the lock with
+    /// [`Self::push_intake`], so no handle can be registered in the window
+    /// between "stop owning intake" and "become Draining/Closed": a late install
+    /// either lands before the transition and is extracted, or observes the
+    /// terminal state and force-disposes itself.
+    fn take_intake(&self, next: Option<GenerationState>) -> Vec<Box<dyn GenerationIntakeHandle>> {
+        let mut intake = self
+            .intake
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(state) = next {
+            self.set_state(state);
+        }
         self.intake_active.store(false, Ordering::Release);
-        if let Ok(mut intake) = self.intake.lock() {
-            for handle in intake.iter() {
-                handle.retire();
+        let handles = std::mem::take(&mut *intake);
+        self.intake_installed
+            .fetch_sub(handles.len(), Ordering::AcqRel);
+        if next == Some(GenerationState::Closed) {
+            // Fence lease admission while still holding the intake lock, so the
+            // close transition and the fence are one step against `push_intake`
+            // and `lease`.
+            self.close_leases();
+        }
+        handles
+    }
+
+    /// Signal extracted handles and hand them to a detached disposal sweep.
+    fn retire_handles(
+        &self,
+        handles: Vec<Box<dyn GenerationIntakeHandle>>,
+        reason: GenerationIntakeRetireReason,
+    ) {
+        if handles.is_empty() {
+            return;
+        }
+        for handle in &handles {
+            handle.retire(reason);
+        }
+        self.spawn_disposal(handles, reason.is_forced());
+    }
+
+    /// Stop intake without changing the state: the generation stays available for
+    /// a survivor re-adoption. Accepted work drains gracefully.
+    fn retire_intake(&self, reason: GenerationIntakeRetireReason) {
+        let handles = self.take_intake(None);
+        self.retire_handles(handles, reason);
+    }
+
+    /// Stop intake and atomically mark the generation Draining.
+    fn retire_intake_draining(&self, reason: GenerationIntakeRetireReason) {
+        let handles = self.take_intake(Some(GenerationState::Draining));
+        self.retire_handles(handles, reason);
+    }
+
+    /// Stop intake and atomically mark the generation Closed.
+    fn retire_intake_closed(&self, reason: GenerationIntakeRetireReason) {
+        let handles = self.take_intake(Some(GenerationState::Closed));
+        self.retire_handles(handles, reason);
+    }
+
+    /// Drive one retire sweep to completion on a detached task.
+    ///
+    /// Graceful order: retire (already signalled) -> `intake_stopped` AND every
+    /// accepted lease released -> `dispose`. A force termination sets the force
+    /// latch, which overrides both an already-running graceful sweep and every
+    /// later sweep so they dispose without waiting for accepted work. Never
+    /// awaited inline, so a retire never blocks the adoption worker or a
+    /// successor.
+    fn spawn_disposal(&self, handles: Vec<Box<dyn GenerationIntakeHandle>>, forced: bool) {
+        if handles.is_empty() {
+            return;
+        }
+        if forced {
+            self.force_leases();
+        }
+        self.intake_disposing.fetch_add(1, Ordering::AcqRel);
+        let guard = DisposalGuard {
+            disposing: Arc::clone(&self.intake_disposing),
+            work: self.work.clone(),
+            completed: false,
+        };
+        let lease_state = Arc::clone(&self.lease_state);
+        let state = Arc::clone(&self.state);
+        let lease_wake = self.lease_wake.clone();
+        let mut force = self.disposal_force.subscribe();
+        tokio::spawn(async move {
+            let mut guard = guard;
+            for handle in handles {
+                if !*force.borrow() {
+                    // Graceful: wait for intake to stop, then for accepted leases
+                    // to release. Either wait is overridden by a force latch, a
+                    // restore to Current, or an already-started disposal.
+                    tokio::select! {
+                        _ = handle.intake_stopped() => {
+                            wait_lease_idle(&lease_state, &state, &lease_wake, &mut force).await;
+                        }
+                        _ = force.changed() => {}
+                    }
+                }
+                handle.dispose().await;
             }
-            intake.clear();
+            guard.completed = true;
+        });
+    }
+}
+
+/// The authoritative lease admission, live-count, and disposal-start state.
+///
+/// `disposing` is the irreversible disposal-start fence: set atomically with
+/// observing zero, after which no fresh lease may be admitted and no survivor may
+/// be restored. It is distinct from `closed` (an explicit/terminal close).
+#[derive(Default)]
+struct LeaseState {
+    live: usize,
+    disposing: bool,
+    forced: bool,
+    closed: bool,
+}
+
+/// RAII completion for one disposal sweep: releases the in-flight counter and
+/// signals a reap on drop, including on unwind, so a failed or cancelled
+/// disposal can never permanently strand the generation's bookkeeping. An
+/// interrupted (unwound/cancelled) sweep leaves an observable warning.
+struct DisposalGuard {
+    disposing: Arc<AtomicUsize>,
+    work: watch::Sender<u64>,
+    completed: bool,
+}
+
+impl Drop for DisposalGuard {
+    fn drop(&mut self) {
+        self.disposing.fetch_sub(1, Ordering::AcqRel);
+        if !self.completed {
+            tracing::warn!(
+                event = "transport_generation.intake_disposal_interrupted",
+                "framework intake disposal ended before completing; released bookkeeping"
+            );
+        }
+        let next = self.work.borrow().wrapping_add(1);
+        self.work.send_replace(next);
+    }
+}
+
+/// Wait until the generation is Draining with zero live leases, or the scope is
+/// terminated.
+///
+/// The count predicate and the state are read together under the lease lock (the
+/// same lock `set_state` takes), so "disposal permitted" is observed atomically
+/// with admission and the state transition. Returns when: force is latched or
+/// disposal already began (the shared irreversible fence); or the generation is
+/// Draining with zero live leases, at which point it sets the disposal-start
+/// fence. A restored Current generation is **not** exempted: its retire-scope
+/// cleanup stays pending until the generation is Draining with zero again, and
+/// the epoch broadcast wakes this wait on every state transition so it never
+/// spins while Current+zero. `force.changed()` overrides an in-flight wait.
+async fn wait_lease_idle(
+    lease_state: &std::sync::Mutex<LeaseState>,
+    state: &AtomicU8,
+    lease_wake: &watch::Sender<u64>,
+    force: &mut watch::Receiver<bool>,
+) {
+    let mut receiver = lease_wake.subscribe();
+    loop {
+        {
+            let mut lease = lease_state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if lease.forced || lease.disposing {
+                return;
+            }
+            if GenerationState::from_u8(state.load(Ordering::Acquire)) == GenerationState::Draining
+                && lease.live == 0
+            {
+                // Irreversible disposal-start fence, set under the same lock as
+                // the zero predicate, admission, and the state transition.
+                lease.disposing = true;
+                drop(lease);
+                let next = lease_wake.borrow().wrapping_add(1);
+                lease_wake.send_replace(next);
+                return;
+            }
+        }
+        if *force.borrow() {
+            return;
+        }
+        tokio::select! {
+            result = receiver.changed() => {
+                if result.is_err() {
+                    return;
+                }
+            }
+            _ = force.changed() => {}
         }
     }
 }
@@ -226,12 +646,29 @@ impl TransportLease {
     }
 }
 
+impl std::fmt::Debug for TransportLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TransportLease")
+            .field("generation_id", &self.generation.id)
+            .finish()
+    }
+}
+
 impl Clone for TransportLease {
     /// Retain one more independent owner of the same generation. Each owner
     /// releases its own count on drop, so one owner can never release another
-    /// owner's only remaining lease.
+    /// owner's only remaining lease. A clone extends already-admitted work, so it
+    /// counts under the same lease lock but is not a fresh admission; the source
+    /// lease keeps the count non-zero, so it can never race a zero observation.
     fn clone(&self) -> Self {
-        self.generation.leases.fetch_add(1, Ordering::AcqRel);
+        let mut state = self
+            .generation
+            .lease_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.live += 1;
+        drop(state);
         Self {
             generation: Arc::clone(&self.generation),
         }
@@ -240,10 +677,19 @@ impl Clone for TransportLease {
 
 impl Drop for TransportLease {
     fn drop(&mut self) {
-        let previous = self.generation.leases.fetch_sub(1, Ordering::AcqRel);
-        if previous == 1 {
-            // A draining generation may now be eligible to close; request a
-            // reap from the worker.
+        let zero = {
+            let mut state = self
+                .generation
+                .lease_state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            state.live = state.live.saturating_sub(1);
+            state.live == 0
+        };
+        if zero {
+            // The last live lease released: wake disposal waiters and request a
+            // reap. The wake carries no predicate; waiters re-read the count.
+            self.generation.wake_lease_waiters();
             self.generation.request_work();
         }
     }
@@ -282,6 +728,10 @@ struct ManagerInner {
     /// Retained admitted-versus-renewed notice for surfaces not yet migrated to
     /// generation leases. It always reflects the current generation.
     notice: Option<TransportAuthorizationState>,
+    /// The one latched authoritative terminal cause for the logical connection.
+    /// `None` while the connection may still recover; once set it is never
+    /// overwritten. A generation revocation is not a terminal cause.
+    terminal: watch::Sender<Option<LogicalTerminalCause>>,
 }
 
 impl ManagerInner {
@@ -316,7 +766,7 @@ impl ManagerInner {
     async fn adopt_owners(
         &self,
         generation: &Arc<TransportGeneration>,
-    ) -> Result<Vec<Box<dyn GenerationIntakeHandle>>, TrellisClientError> {
+    ) -> Result<Vec<Box<dyn GenerationIntakeHandle>>, AdoptFailure> {
         let owners = self
             .intake_owners
             .lock()
@@ -328,18 +778,45 @@ impl ManagerInner {
             match tokio::time::timeout_at(deadline, owner.adopt(generation.clone())).await {
                 Ok(Ok(handle)) => handles.push(handle),
                 Ok(Err(error)) => {
-                    drop(handles);
-                    return Err(error);
+                    return Err(AdoptFailure {
+                        error,
+                        installed: handles,
+                    })
                 }
                 Err(_) => {
-                    drop(handles);
-                    return Err(TrellisClientError::TransportUnavailable(
-                        "framework intake adoption timed out".into(),
-                    ));
+                    return Err(AdoptFailure {
+                        error: TrellisClientError::TransportUnavailable(
+                            "framework intake adoption timed out".into(),
+                        ),
+                        installed: handles,
+                    })
                 }
             }
         }
         Ok(handles)
+    }
+
+    /// Retire a generation's framework intake and keep it tracked as draining so
+    /// its already-accepted work survives instead of being dropped. A generation
+    /// already physically closed is only swept, never re-tracked.
+    fn track_draining(
+        &self,
+        generation: &Arc<TransportGeneration>,
+        reason: GenerationIntakeRetireReason,
+    ) {
+        generation.retire_intake_draining(reason);
+        if generation.state() != GenerationState::Closed {
+            if let Ok(mut state) = self.lock_state() {
+                if !state
+                    .draining
+                    .iter()
+                    .any(|existing| existing.id == generation.id)
+                {
+                    state.draining.push(generation.clone());
+                }
+            }
+        }
+        self.request_work();
     }
 
     fn clear_opening(&self, id: u64) {
@@ -361,6 +838,23 @@ impl ManagerInner {
             == Some(id)
     }
 
+    /// The error every waiting surface reports once the logical connection is
+    /// finished for good: an authoritative terminal cause, or an explicit close.
+    fn terminated_error(&self) -> Option<TrellisClientError> {
+        match self.terminal.borrow().as_ref() {
+            Some(cause) => Some(cause.client_error()),
+            None if self.closed.load(Ordering::Acquire) => {
+                Some(LogicalTerminalCause::Closed.client_error())
+            }
+            None => None,
+        }
+    }
+
+    /// Whether the logical connection is terminated for good.
+    fn is_terminated(&self) -> bool {
+        self.terminated_error().is_some()
+    }
+
     /// Handle one physical NATS event for a specific generation.
     fn on_generation_event(&self, id: u64, event: async_nats::Event) {
         match event {
@@ -370,8 +864,14 @@ impl ManagerInner {
             // context remains valid and unrelated to this physical loss.
             async_nats::Event::Disconnected | async_nats::Event::Closed => {
                 let baseline_lost = self.baseline_id.load(Ordering::Acquire) == id;
+                let still_current = self.is_current(id);
                 self.mark_failed(id);
-                if baseline_lost {
+                // Suspend shared live observation only when the *current*
+                // generation is lost with no healthier successor. A superseded
+                // generation's loss (for example the reclaimed baseline after a
+                // real growth) must not suspend live observation that a newer
+                // current generation is already serving.
+                if baseline_lost && still_current {
                     self.suspend_live();
                 }
                 tracing::info!(
@@ -416,6 +916,17 @@ impl ManagerInner {
         }
     }
 
+    /// Re-point shared live observation at a newly published current generation.
+    /// Live controls and availability then follow the current attachment instead
+    /// of a superseded one; the logical registry and sessions are preserved.
+    fn rebind_live(&self, generation: &Arc<TransportGeneration>) {
+        if let Ok(slot) = self.live_slot.lock() {
+            if let Some(live) = slot.as_ref().and_then(Weak::upgrade) {
+                live.rebind(generation.nats.clone());
+            }
+        }
+    }
+
     /// Mark a known or opening generation closed and close its physical
     /// connection now.
     ///
@@ -445,7 +956,7 @@ impl ManagerInner {
             }
         }
         if let Some(generation) = built {
-            close_generation(&generation);
+            close_generation(&generation, GenerationIntakeRetireReason::PhysicalFailure);
         }
         self.request_work();
         self.signal_state();
@@ -483,6 +994,7 @@ impl TransportGenerationManager {
     ) -> Result<(Self, TransportLease), TrellisClientError> {
         let (state_version, _) = watch::channel(0u64);
         let (work, work_rx) = watch::channel(0u64);
+        let (terminal, _) = watch::channel(None);
         let inner = Arc::new(ManagerInner {
             auth,
             contexts,
@@ -497,12 +1009,13 @@ impl TransportGenerationManager {
             next_id: AtomicU64::new(1),
             baseline_id: AtomicU64::new(0),
             notice,
+            terminal,
         });
         let snapshot = inner.contexts.own_transport_snapshot()?;
         let id = inner.alloc_id();
         inner.baseline_id.store(id, Ordering::Release);
         let generation = open_generation(&inner, id, &snapshot, "initial").await?;
-        generation.set_state(GenerationState::Current);
+        let promoted = generation.promote_to_current();
         let lost = {
             let mut state = inner.lock_state()?;
             // Consume the opening slot atomically with the initial publication so
@@ -513,6 +1026,7 @@ impl TransportGenerationManager {
                 .filter(|opening| opening.id == id)
                 .map(|opening| opening.failed.load(Ordering::Acquire))
                 .unwrap_or(true)
+                || !promoted
                 || generation.state() == GenerationState::Closed;
             state.opening = None;
             if !lost {
@@ -527,7 +1041,11 @@ impl TransportGenerationManager {
             ));
         }
         inner.record_notice(&generation, &snapshot.policy);
-        let baseline = generation.lease();
+        let baseline = generation.lease().ok_or_else(|| {
+            TrellisClientError::TransportUnavailable(
+                "initial transport generation was closed before its baseline lease".into(),
+            )
+        })?;
         // Subscribe before the worker is spawned so no work request is missed.
         let worker_inner = inner.clone();
         tokio::spawn(async move { run_worker(worker_inner, work_rx).await });
@@ -551,10 +1069,8 @@ impl TransportGenerationManager {
         owner: Arc<dyn GenerationIntake>,
     ) -> Result<(), TrellisClientError> {
         let _guard = self.inner.reconcile.lock().await;
-        if self.inner.closed.load(Ordering::Acquire) {
-            return Err(TrellisClientError::TransportUnavailable(
-                "logical transport connection is closed".into(),
-            ));
+        if let Some(error) = self.inner.terminated_error() {
+            return Err(error);
         }
         let generation = self.inner.lock_state()?.current.clone().ok_or_else(|| {
             TrellisClientError::TransportUnavailable(
@@ -582,11 +1098,14 @@ impl TransportGenerationManager {
             .ok()
             .and_then(|state| state.current.as_ref().map(|current| current.id))
             == Some(generation.id);
-        if self.inner.closed.load(Ordering::Acquire)
+        if self.inner.is_terminated()
             || generation.state() == GenerationState::Closed
             || !still_current
         {
-            drop(handle);
+            // The generation changed under the install: hand the handle to the
+            // generation so its accepted work drains instead of being dropped.
+            generation.push_intake(handle);
+            generation.retire_intake(GenerationIntakeRetireReason::Superseded);
             return Err(TrellisClientError::TransportUnavailable(
                 "the current transport generation changed during intake adoption".into(),
             ));
@@ -596,6 +1115,70 @@ impl TransportGenerationManager {
             owners.push(owner);
         }
         Ok(())
+    }
+
+    /// The latched authoritative terminal cause, if the logical connection can
+    /// no longer recover. A generation revocation is not a terminal cause.
+    pub(crate) fn terminal(&self) -> Option<LogicalTerminalCause> {
+        self.inner.terminal.borrow().clone()
+    }
+
+    /// Wait one bounded pacing step, returning early with the terminal cause if
+    /// the logical connection latches one first. Used to pace transient recovery
+    /// without an arbitrary per-loop terminal window.
+    pub(crate) async fn pace_or_terminal(&self, pace: Duration) -> Option<LogicalTerminalCause> {
+        if let Some(cause) = self.terminal() {
+            return Some(cause);
+        }
+        let mut receiver = self.inner.terminal.subscribe();
+        tokio::select! {
+            _ = tokio::time::sleep(pace) => None,
+            _ = receiver.changed() => self.terminal(),
+        }
+    }
+
+    /// Latch an authoritative terminal cause. The first cause wins: a later
+    /// stale result never overwrites it.
+    pub(crate) fn publish_terminal(&self, cause: LogicalTerminalCause) {
+        // First wins atomically: `send_if_modified` runs the predicate under the
+        // watch's own lock, so concurrent writers (an explicit close and an
+        // authoritative auth failure) can never overwrite each other's cause.
+        let published = self.inner.terminal.send_if_modified(|value| {
+            if value.is_some() {
+                false
+            } else {
+                *value = Some(cause.clone());
+                true
+            }
+        });
+        if published {
+            self.inner.request_work();
+            self.inner.signal_state();
+        }
+    }
+
+    /// Wait until the logical connection latches a terminal cause.
+    pub(crate) async fn wait_terminal(&self) -> LogicalTerminalCause {
+        let mut receiver = self.inner.terminal.subscribe();
+        loop {
+            if let Some(cause) = receiver.borrow_and_update().clone() {
+                return cause;
+            }
+            if receiver.changed().await.is_err() {
+                return LogicalTerminalCause::Closed;
+            }
+        }
+    }
+
+    /// Unregister a framework intake owner so no future candidate adopts it.
+    ///
+    /// The owner's currently installed intake is retired and drained by the
+    /// owner itself; this only removes the registration so a stopped host can
+    /// never be resurrected by a later generation's adoption barrier.
+    pub(crate) fn detach_intake(&self, owner: &Arc<dyn GenerationIntake>) {
+        if let Ok(mut owners) = self.inner.intake_owners.lock() {
+            owners.retain(|existing| !Arc::ptr_eq(existing, owner));
+        }
     }
 
     /// Acquire a ready generation that can perform the exact requirement.
@@ -613,10 +1196,8 @@ impl TransportGenerationManager {
     ) -> Result<TransportLease, TrellisClientError> {
         let mut rx = self.inner.state_version.subscribe();
         loop {
-            if self.inner.closed.load(Ordering::Acquire) {
-                return Err(TrellisClientError::TransportUnavailable(
-                    "logical transport connection is closed".into(),
-                ));
+            if let Some(error) = self.inner.terminated_error() {
+                return Err(error);
             }
             let desired = match self.inner.contexts.own_transport_snapshot() {
                 Ok(snapshot) => snapshot,
@@ -649,10 +1230,8 @@ impl TransportGenerationManager {
         let deadline = Instant::now() + Duration::from_millis(self.inner.timeout_ms);
         let mut rx = self.inner.state_version.subscribe();
         loop {
-            if self.inner.closed.load(Ordering::Acquire) {
-                return Err(TrellisClientError::TransportUnavailable(
-                    "logical transport connection is closed".into(),
-                ));
+            if let Some(error) = self.inner.terminated_error() {
+                return Err(error);
             }
             let desired = self.inner.contexts.own_transport_snapshot()?;
             if self.current_serves(&desired.policy)? {
@@ -675,10 +1254,19 @@ impl TransportGenerationManager {
     }
 
     /// Close every generation and stop automatic adoption.
+    ///
+    /// Ownership: the only caller is [`TrellisClient`]'s `Drop`, so an explicit
+    /// `Closed` cause is reachable only from dropping the client. `Drop` takes
+    /// `&mut self`, and every public refresh (`refresh_authorization_context`) is
+    /// `&self`, so Rust's borrow rules make a concurrent drop during a public
+    /// promotion impossible; no extra synchronization is needed for that pairing.
+    /// An authoritative auth terminal is published separately under the
+    /// own-transition guard.
     pub(crate) fn close(&self) {
         if self.inner.closed.swap(true, Ordering::AcqRel) {
             return;
         }
+        self.publish_terminal(LogicalTerminalCause::Closed);
         self.inner.request_work();
         self.inner.signal_state();
     }
@@ -705,7 +1293,9 @@ impl TransportGenerationManager {
                 continue;
             }
             if policy_covers(&generation.admitted_policy, publish, subscribe, now)? {
-                return Ok(Some(generation.lease()));
+                if let Some(lease) = generation.lease() {
+                    return Ok(Some(lease));
+                }
             }
         }
         Ok(None)
@@ -722,7 +1312,7 @@ impl TransportGenerationManager {
                 if !generation_is_safe(current, desired, now)? {
                     return Ok(None);
                 }
-                Ok(Some(current.lease()))
+                Ok(current.lease())
             }
             _ => Ok(None),
         }
@@ -753,20 +1343,16 @@ async fn await_adoption(
     rx: &mut watch::Receiver<u64>,
     deadline: Instant,
 ) -> Result<(), TrellisClientError> {
-    if inner.closed.load(Ordering::Acquire) {
-        return Err(TrellisClientError::TransportUnavailable(
-            "logical transport connection is closed".into(),
-        ));
+    if let Some(error) = inner.terminated_error() {
+        return Err(error);
     }
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
         return Err(TrellisClientError::Timeout);
     }
     request_adoption_step(&inner.work, rx, remaining).await;
-    if inner.closed.load(Ordering::Acquire) {
-        return Err(TrellisClientError::TransportUnavailable(
-            "logical transport connection is closed".into(),
-        ));
+    if let Some(error) = inner.terminated_error() {
+        return Err(error);
     }
     Ok(())
 }
@@ -774,7 +1360,7 @@ async fn await_adoption(
 /// One long-lived adoption worker for a logical connection.
 async fn run_worker(inner: Arc<ManagerInner>, mut work_rx: watch::Receiver<u64>) {
     loop {
-        if inner.closed.load(Ordering::Acquire) {
+        if inner.is_terminated() {
             shutdown(&inner).await;
             return;
         }
@@ -785,7 +1371,7 @@ async fn run_worker(inner: Arc<ManagerInner>, mut work_rx: watch::Receiver<u64>)
             }
             reap(&inner).await;
         }
-        if inner.closed.load(Ordering::Acquire) {
+        if inner.is_terminated() {
             shutdown(&inner).await;
             return;
         }
@@ -806,7 +1392,7 @@ async fn run_worker(inner: Arc<ManagerInner>, mut work_rx: watch::Receiver<u64>)
 /// desired policy, and the logical connection is still open.
 async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> {
     loop {
-        if inner.closed.load(Ordering::Acquire) {
+        if inner.is_terminated() {
             return Ok(());
         }
         let desired = match inner.contexts.own_transport_snapshot() {
@@ -851,11 +1437,20 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
 
         let serving = keep
             .iter()
+            .filter(|generation| {
+                generation.state() != GenerationState::Closed && !generation.is_fenced()
+            })
             .find(|generation| generation_serves(generation, &desired.policy, now).unwrap_or(false))
             .cloned();
         let mut needs_adoption = serving.is_none();
-        let mut chosen =
-            serving.or_else(|| keep.iter().max_by_key(|generation| generation.id).cloned());
+        let mut chosen = serving.or_else(|| {
+            keep.iter()
+                .filter(|generation| {
+                    generation.state() != GenerationState::Closed && !generation.is_fenced()
+                })
+                .max_by_key(|generation| generation.id)
+                .cloned()
+        });
         // A safe survivor restored as current may have had its generic intake
         // retired when it was superseded. Re-install broker-ready intake before
         // promoting it; on failure open a ready replacement rather than a current
@@ -868,9 +1463,16 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
             let candidate = chosen.clone().expect("restore candidate is chosen");
             match inner.adopt_owners(&candidate).await {
                 Ok(handles) => promoted_intake = handles,
-                Err(error) => {
+                Err(failure) => {
+                    // A partial re-adoption must not drop earlier owners' accepted
+                    // work or a Live control: the survivor takes the installed
+                    // handles and drains them.
+                    for handle in failure.installed {
+                        candidate.push_intake(handle);
+                    }
+                    candidate.retire_intake(GenerationIntakeRetireReason::Superseded);
                     tracing::warn!(
-                        %error,
+                        error = %failure.error,
                         generation_id = candidate.id,
                         "failed to restore survivor intake; opening a replacement"
                     );
@@ -889,7 +1491,10 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
                 Err(_) => true,
             };
             if stale_after_adopt {
-                drop(promoted_intake);
+                for handle in promoted_intake.drain(..) {
+                    candidate.push_intake(handle);
+                }
+                candidate.retire_intake(GenerationIntakeRetireReason::Superseded);
                 continue;
             }
         }
@@ -902,14 +1507,31 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
             let mut state = inner.lock_state()?;
             if inner.closed.load(Ordering::Acquire) {
                 drop(state);
-                drop(promoted_intake);
+                if let Some(chosen) = &chosen {
+                    for handle in promoted_intake.drain(..) {
+                        chosen.push_intake(handle);
+                    }
+                    chosen.retire_intake(GenerationIntakeRetireReason::Shutdown);
+                }
                 return Ok(());
             }
             let survivor_closed = chosen
                 .as_ref()
                 .is_some_and(|candidate| candidate.state() == GenerationState::Closed);
-            if survivor_closed {
-                promoted_intake.clear();
+            // Conditional promote under the lease lock: a concurrent disposal fence
+            // (or close) makes promotion fail, so the survivor is never published
+            // as an unusable current. Its prepared intake is force-owned and
+            // drained, and a fresh generation is opened instead.
+            let promoted = chosen
+                .as_ref()
+                .is_some_and(|candidate| !survivor_closed && candidate.promote_to_current());
+            if !promoted && chosen.is_some() {
+                if let Some(candidate) = &chosen {
+                    for handle in promoted_intake.drain(..) {
+                        candidate.push_intake(handle);
+                    }
+                    candidate.retire_intake_draining(GenerationIntakeRetireReason::Superseded);
+                }
                 chosen = None;
                 needs_adoption = true;
             }
@@ -920,14 +1542,8 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
                 .filter(|generation| Some(generation.id) != chosen_id)
                 .cloned()
                 .collect();
-            // Terminal state is monotonic: a generation concurrently closed by
-            // `mark_failed` is never reactivated as current or draining. The
-            // state transition and the freshly prepared intake install share this
-            // critical section with the current-pointer publication, so a
-            // concurrent `mark_failed` cannot close the survivor after
-            // publication but before its intake is attached.
             if let Some(chosen) = &chosen {
-                chosen.set_state(GenerationState::Current);
+                inner.rebind_live(chosen);
                 for handle in promoted_intake.drain(..) {
                     chosen.push_intake(handle);
                 }
@@ -941,11 +1557,16 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
             .collect();
         for generation in &keep {
             if Some(generation.id) != chosen_id {
-                generation.set_state(GenerationState::Draining);
+                // Every demotion stops generic intake exactly once (idempotent)
+                // while marking the generation Draining, so a demoted current can
+                // never keep its retired-scope intake active. Accepted work is
+                // preserved by the graceful retire. This is the same rule the
+                // candidate publication applies to its superseded predecessor.
+                generation.retire_intake_draining(GenerationIntakeRetireReason::Superseded);
             }
         }
         for generation in &close {
-            close_generation(generation);
+            close_generation(generation, GenerationIntakeRetireReason::AuthorityReduced);
         }
         if let Some(chosen) = &chosen {
             inner.record_notice(chosen, &desired.policy);
@@ -981,18 +1602,22 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
         };
 
         // A superseded policy must not be published. Read it before taking the
-        // state lock to preserve the contexts-before-state lock order.
+        // state lock to preserve the contexts-before-state lock order. This branch
+        // is **pre-barrier**: `adopt_owners` has not run, so the candidate owns no
+        // generic intake and no accepted work, and closing it strands nothing. A
+        // candidate that becomes stale *after* the barrier owns its intake and
+        // follows the safe-drain rule below instead.
         let latest = match inner.contexts.own_transport_snapshot() {
             Ok(snapshot) => snapshot.policy.digest()?,
             Err(_) => {
                 inner.clear_opening(id);
-                close_generation(&candidate);
+                close_generation(&candidate, GenerationIntakeRetireReason::Superseded);
                 return Ok(());
             }
         };
         if latest != desired_policy_digest {
             inner.clear_opening(id);
-            close_generation(&candidate);
+            close_generation(&candidate, GenerationIntakeRetireReason::Superseded);
             continue;
         }
 
@@ -1003,33 +1628,47 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
         // back and leaves the current generation untouched.
         let intake = match inner.adopt_owners(&candidate).await {
             Ok(intake) => intake,
-            Err(error) => {
+            Err(failure) => {
                 inner.clear_opening(id);
-                close_generation(&candidate);
+                // Partial installation: earlier owners already hold accepted work.
+                // Take their handles, retire them, and keep the candidate draining
+                // so the work survives instead of being dropped.
+                for handle in failure.installed {
+                    candidate.push_intake(handle);
+                }
+                inner.track_draining(&candidate, GenerationIntakeRetireReason::Superseded);
                 tracing::warn!(
                     event = "transport_generation.open_failed",
                     generation_id = id,
-                    %error,
-                    "candidate intake barrier failed; rolling back"
+                    error = %failure.error,
+                    "candidate intake barrier failed; draining"
                 );
                 return Ok(());
             }
         };
+        // Ownership of the installed intake is taken before any further await, so
+        // a candidate that turns out stale below drains its accepted work rather
+        // than dropping it (and never duplicates a logical owner).
+        for handle in intake {
+            candidate.push_intake(handle);
+        }
         // A candidate that became stale while its intake was prepared must not be
         // published; the next reconcile opens a fresh one from the newest policy.
         let latest_after_barrier = match inner.contexts.own_transport_snapshot() {
             Ok(snapshot) => snapshot.policy.digest()?,
             Err(_) => {
-                drop(intake);
                 inner.clear_opening(id);
-                close_generation(&candidate);
+                inner.track_draining(&candidate, GenerationIntakeRetireReason::Superseded);
                 return Ok(());
             }
         };
         if latest_after_barrier != desired_policy_digest {
-            drop(intake);
             inner.clear_opening(id);
-            close_generation(&candidate);
+            if candidate_is_safe(inner, &candidate) {
+                inner.track_draining(&candidate, GenerationIntakeRetireReason::Superseded);
+            } else {
+                close_generation(&candidate, GenerationIntakeRetireReason::AuthorityReduced);
+            }
             continue;
         }
 
@@ -1050,35 +1689,30 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
                 || candidate.state() == GenerationState::Closed
             {
                 drop(state);
-                close_generation(&candidate);
+                inner.track_draining(&candidate, GenerationIntakeRetireReason::PhysicalFailure);
                 return Ok(());
             }
             let previous = state.current.take();
             if let Some(previous) = previous {
                 if previous.id != candidate.id {
-                    // Retire the superseded generation's generic intake promptly;
-                    // its accepted work keeps running until its leases release.
-                    previous.retire_intake();
-                    previous.set_state(GenerationState::Draining);
+                    // Retire the superseded generation's generic intake
+                    // atomically with marking it Draining, so a concurrent install
+                    // either lands before and is drained, or observes Closed.
+                    previous.retire_intake_draining(GenerationIntakeRetireReason::Superseded);
                     state.draining.push(previous);
                 }
             }
-            candidate.set_state(GenerationState::Current);
-            if candidate.state() == GenerationState::Closed {
-                // Lost between the check above and this activation.
-                state.current = None;
+            // Conditional promote under the lease lock: a concurrent disposal fence
+            // or close makes promotion fail, so the candidate is never published as
+            // an unusable current. The candidate is drained, the previous stays as a
+            // draining survivor, and the next reconcile restores or opens fresh.
+            if !candidate.promote_to_current() {
                 drop(state);
-                close_generation(&candidate);
+                inner.track_draining(&candidate, GenerationIntakeRetireReason::Superseded);
                 return Ok(());
             }
             state.current = Some(candidate.clone());
-            // Install the broker-ready intake in the same critical section as the
-            // current-pointer publication, so a concurrent `mark_failed` can
-            // never close the candidate after publication but before its intake
-            // is attached.
-            for handle in intake {
-                candidate.push_intake(handle);
-            }
+            inner.rebind_live(&candidate);
         }
         inner.record_notice(&candidate, &desired.policy);
         tracing::info!(
@@ -1097,7 +1731,17 @@ async fn reap(inner: &Arc<ManagerInner>) {
     if let Ok(mut state) = inner.lock_state() {
         let mut still = Vec::new();
         for generation in state.draining.drain(..) {
-            if generation.state() == GenerationState::Draining && generation.leases() == 0 {
+            // A draining generation closes only after its physical leases release
+            // AND its retired intake has fully stopped and disposed, so a queued
+            // delivery still being handled is never cut off by the close.
+            if generation.state() == GenerationState::Draining
+                && generation.leases() == 0
+                && generation.intake_idle()
+            {
+                // Fence lease admission at the close decision, under the same
+                // manager-state lock that `acquire_for` uses to select and lease,
+                // so a fresh lease can never start after this zero observation.
+                generation.close_leases();
                 to_close.push(generation);
             } else {
                 still.push(generation);
@@ -1106,7 +1750,7 @@ async fn reap(inner: &Arc<ManagerInner>) {
         state.draining = still;
     }
     for generation in &to_close {
-        close_generation(generation);
+        close_generation(generation, GenerationIntakeRetireReason::Superseded);
     }
 }
 
@@ -1126,8 +1770,17 @@ async fn shutdown(inner: &Arc<ManagerInner>) {
         }
         all
     };
+    // A logical shutdown retires every physical generation's framework intake
+    // before closing the attachment, the same discipline as reduction/reap. An
+    // authoritative terminal cause is distinguished from an explicit close.
+    let reason = match inner.terminal.borrow().as_ref() {
+        Some(LogicalTerminalCause::Authorization(_)) => {
+            GenerationIntakeRetireReason::LogicalTerminal
+        }
+        _ => GenerationIntakeRetireReason::Shutdown,
+    };
     for generation in known {
-        generation.set_state(GenerationState::Closed);
+        generation.retire_intake_closed(reason);
         let _ = generation.nats.drain().await;
     }
 }
@@ -1137,8 +1790,12 @@ async fn shutdown(inner: &Arc<ManagerInner>) {
 /// `drain` unsubscribes, flushes, and then makes the connection handler exit,
 /// which closes the socket; it is the SDK-side cooperative close. The broker
 /// remains authoritative for reductions and kicks any uncooperative socket.
-fn close_generation(generation: &Arc<TransportGeneration>) {
-    generation.set_state(GenerationState::Closed);
+fn close_generation(generation: &Arc<TransportGeneration>, reason: GenerationIntakeRetireReason) {
+    // Atomically mark the generation Closed and extract its framework intake under
+    // the intake lock, so a concurrent install cannot register a handle after the
+    // close. `retire_intake_closed` signals retire and hands the handles to an
+    // asynchronous disposal sweep without awaiting held handlers (the force path).
+    generation.retire_intake_closed(reason);
     let nats = generation.nats.clone();
     let id = generation.id;
     tokio::spawn(async move {
@@ -1149,6 +1806,17 @@ fn close_generation(generation: &Arc<TransportGeneration>) {
             "closed transport generation"
         );
     });
+}
+
+/// Whether a candidate's admitted policy is still safe under the newest
+/// authorization. An unreadable snapshot is treated as unsafe, so an
+/// unclassifiable candidate is force-closed rather than kept.
+fn candidate_is_safe(inner: &ManagerInner, candidate: &Arc<TransportGeneration>) -> bool {
+    let Ok(snapshot) = inner.contexts.own_transport_snapshot() else {
+        return false;
+    };
+    let now = inner.contexts.corrected_now_seconds().unwrap_or(0);
+    generation_is_safe(candidate, &snapshot.policy, now).unwrap_or(false)
 }
 
 /// Whether policy `admitted` is still covered by current authority `allowed`.
@@ -1317,6 +1985,8 @@ async fn open_generation(
         policy_digest = %admitted_policy_digest,
         "admitted transport generation"
     );
+    let (lease_wake, _) = watch::channel(0u64);
+    let (disposal_force, _) = watch::channel(false);
     let generation = Arc::new(TransportGeneration {
         id,
         nats,
@@ -1325,10 +1995,14 @@ async fn open_generation(
         admitted_policy_digest,
         physical_connection_id: admission.authenticated_user,
         state,
-        leases: AtomicUsize::new(0),
+        lease_state: Arc::new(std::sync::Mutex::new(LeaseState::default())),
+        lease_wake,
+        disposal_force,
         work: inner.work.clone(),
         intake: Mutex::new(Vec::new()),
         intake_active: AtomicBool::new(true),
+        intake_installed: AtomicUsize::new(0),
+        intake_disposing: Arc::new(AtomicUsize::new(0)),
     });
     // Install the built generation under the state lock and re-read the recorded
     // loss atomically. A disconnect that lands after the earlier check but
@@ -1387,5 +2061,137 @@ mod tests {
         state.send_replace(1);
         let changed = tokio::time::timeout(Duration::from_millis(100), state_rx.changed()).await;
         assert!(changed.is_ok(), "a ready-set change must wake the waiter");
+    }
+
+    /// A lease wake carries no predicate: a stale or out-of-order notification
+    /// must never let a waiter treat a non-zero count as idle, a force latch must
+    /// override an unresolved wait, and observing zero must set the irreversible
+    /// disposal-start fence atomically. This is the defect the previous
+    /// `watch<usize>` payload could not express.
+    #[tokio::test]
+    async fn lease_idle_wait_uses_the_authoritative_predicate() {
+        let draining = Arc::new(AtomicU8::new(GenerationState::Draining as u8));
+        let (wake, _) = watch::channel(0u64);
+
+        // A stale wake with a non-zero count must not resolve the wait.
+        let (force_tx, _) = watch::channel(false);
+        let state = Arc::new(std::sync::Mutex::new(LeaseState {
+            live: 1,
+            disposing: false,
+            forced: false,
+            closed: false,
+        }));
+        let waiting = {
+            let state = Arc::clone(&state);
+            let draining = Arc::clone(&draining);
+            let wake = wake.clone();
+            let mut force = force_tx.subscribe();
+            tokio::spawn(async move { wait_lease_idle(&state, &draining, &wake, &mut force).await })
+        };
+        wake.send_replace(1);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !waiting.is_finished(),
+            "a wake must not treat a non-zero count as idle"
+        );
+
+        // A force latch overrides an unresolved wait on a non-zero count.
+        force_tx.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("a force latch must override an unresolved wait")
+            .unwrap();
+
+        // A fresh scope: dropping to zero under the lock and waking resolves it
+        // and sets the irreversible disposal-start fence.
+        let (force_tx, _) = watch::channel(false);
+        let state = Arc::new(std::sync::Mutex::new(LeaseState {
+            live: 1,
+            disposing: false,
+            forced: false,
+            closed: false,
+        }));
+        let waiting = {
+            let state = Arc::clone(&state);
+            let draining = Arc::clone(&draining);
+            let wake = wake.clone();
+            let mut force = force_tx.subscribe();
+            tokio::spawn(async move { wait_lease_idle(&state, &draining, &wake, &mut force).await })
+        };
+        state.lock().unwrap().live = 0;
+        wake.send_replace(2);
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("a waiter must resolve once the authoritative count is zero")
+            .unwrap();
+        assert!(
+            state.lock().unwrap().disposing,
+            "observing zero must set the disposal-start fence"
+        );
+    }
+
+    /// Disposal-start requires a Draining generation with zero live leases: a
+    /// shared fence ends a later sweep immediately (no stale-counter wait), and a
+    /// Current+zero generation is **not** fenced (the retire-scope cleanup stays
+    /// pending, without spinning) until it is Draining with zero again.
+    #[tokio::test]
+    async fn disposal_start_requires_draining_and_zero() {
+        let (wake, _) = watch::channel(0u64);
+        let (force_tx, _) = watch::channel(false);
+
+        // A later sweep sharing an already-fenced generation returns immediately
+        // even though the counter is non-zero (a stale counter must not hang it).
+        let draining = Arc::new(AtomicU8::new(GenerationState::Draining as u8));
+        let fenced = Arc::new(std::sync::Mutex::new(LeaseState {
+            live: 5,
+            disposing: true,
+            forced: false,
+            closed: false,
+        }));
+        let mut force = force_tx.subscribe();
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            wait_lease_idle(&fenced, &draining, &wake, &mut force),
+        )
+        .await
+        .expect("a later sweep must not wait behind the shared fence");
+
+        // A Current generation with zero leases must NOT fence and must not spin:
+        // the retire scope stays pending.
+        let state = Arc::new(AtomicU8::new(GenerationState::Current as u8));
+        let restored = Arc::new(std::sync::Mutex::new(LeaseState {
+            live: 0,
+            disposing: false,
+            forced: false,
+            closed: false,
+        }));
+        let waiting = {
+            let restored = Arc::clone(&restored);
+            let state = Arc::clone(&state);
+            let wake = wake.clone();
+            let mut force = force_tx.subscribe();
+            tokio::spawn(async move { wait_lease_idle(&restored, &state, &wake, &mut force).await })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !waiting.is_finished(),
+            "a Current generation must not be fenced"
+        );
+        assert!(
+            !restored.lock().unwrap().disposing,
+            "Current+zero must not set the disposal fence"
+        );
+
+        // A state transition to Draining (broadcast) lets the same wait fence.
+        state.store(GenerationState::Draining as u8, Ordering::Release);
+        wake.send_replace(1);
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("Draining+zero must permit disposal")
+            .unwrap();
+        assert!(
+            restored.lock().unwrap().disposing,
+            "Draining+zero must set the disposal fence"
+        );
     }
 }

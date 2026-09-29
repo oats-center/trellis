@@ -1019,7 +1019,7 @@ impl<C> ConnectedServiceRuntime<C> {
 
     /// Return the Jobs-domain transport used by Trellis infrastructure services.
     pub fn jobs_runtime(&self) -> crate::jobs::JobsRuntime {
-        crate::jobs::JobsRuntime::from_client(self.client())
+        crate::jobs::JobsRuntime::from_client(std::sync::Arc::clone(self.client()))
     }
 
     /// Return the Event Log domain transport used by Trellis infrastructure.
@@ -1094,7 +1094,7 @@ impl<C> ConnectedServiceRuntime<C> {
             });
         }
         let host = start_worker_host_from_client(
-            self.client(),
+            Arc::clone(self.client()),
             binding,
             ulid::Ulid::new().to_string(),
             |_, _| TrellisJobMetaSource,
@@ -1815,6 +1815,31 @@ async fn run_durable_event_pull_loop(
 ) -> Result<(), ServiceRuntimeError> {
     let mut replay = false;
     let mut original_consumer_opened = false;
+    // Transient transport recovery is paced by the logical connection, not an
+    // arbitrary per-loop window: the durable intake keeps consuming while a
+    // usable generation returns, and stops only on an authoritative logical
+    // terminal cause. Application errors and a missing durable consumer keep
+    // their own fail-fast paths below.
+    let manager = client.transport_generations();
+    let mut settle_failure = false;
+    // A message-settle transport failure (ack/nak/term/progress) enters the same
+    // paced recovery instead of tearing down the service runtime; a permanent
+    // protocol failure still propagates. Application handler failures are handled
+    // inline below and never re-run here.
+    macro_rules! settle {
+        ($label:lifetime, $operation:expr) => {
+            match $operation {
+                Ok(value) => value,
+                Err(error) => {
+                    if durable_event_transport_error_is_retryable(&error) {
+                        settle_failure = true;
+                        break $label;
+                    }
+                    return Err(error.into());
+                }
+            }
+        };
+    }
     loop {
         let is_replay = replay;
         replay = !replay;
@@ -1841,6 +1866,19 @@ async fn run_durable_event_pull_loop(
                 tokio::time::sleep(Duration::from_millis(DURABLE_EVENT_CONSUMER_RETRY_MS)).await;
                 continue;
             }
+            // A revoked or refreshing authorization context and a recovering
+            // transport generation are transient for a durable intake loop: it
+            // must keep consuming rather than tear down the whole service runtime,
+            // and stops only on an authoritative logical terminal cause.
+            Err(error) if durable_event_transport_error_is_retryable(&error) => {
+                if let Some(cause) = manager
+                    .pace_or_terminal(Duration::from_millis(DURABLE_EVENT_CONSUMER_RETRY_MS))
+                    .await
+                {
+                    return Err(cause.client_error().into());
+                }
+                continue;
+            }
             Err(error) => return Err(error.into()),
         };
         if !is_replay {
@@ -1848,7 +1886,7 @@ async fn run_durable_event_pull_loop(
         }
         let mut messages = messages.take(1);
 
-        loop {
+        'batch: loop {
             let result = match tokio::time::timeout(Duration::from_secs(1), messages.next()).await {
                 Ok(Some(result)) => result,
                 Ok(None) => break,
@@ -1867,6 +1905,15 @@ async fn run_durable_event_pull_loop(
                         .await;
                     break;
                 }
+                Err(error) if durable_event_transport_error_is_retryable(&error) => {
+                    if let Some(cause) = manager
+                        .pace_or_terminal(Duration::from_millis(DURABLE_EVENT_CONSUMER_RETRY_MS))
+                        .await
+                    {
+                        return Err(cause.client_error().into());
+                    }
+                    break;
+                }
                 Err(error) => return Err(error.into()),
             };
             let replay_envelope = if is_replay {
@@ -1882,7 +1929,7 @@ async fn run_durable_event_pull_loop(
                 if envelope.resource_id != config.resource_id
                     || envelope.original_record_sequence == 0
                 {
-                    message.term().await?;
+                    settle!('batch, message.term().await);
                     continue;
                 }
                 let inspected = match crate::generated::Client::from_client(Arc::clone(&client))
@@ -1902,7 +1949,7 @@ async fn run_durable_event_pull_loop(
                             .or_else(|| config.backoff.last())
                             .copied()
                             .unwrap_or(config.ack_wait);
-                        message.nak_after(delay).await?;
+                        settle!('batch, message.nak_after(delay).await);
                         continue;
                     }
                 };
@@ -1914,9 +1961,12 @@ async fn run_durable_event_pull_loop(
                         .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
                 });
                 if projected_generation.is_none_or(|generation| generation < envelope.generation) {
-                    message
-                        .nak_after(Duration::from_millis(DURABLE_EVENT_CONSUMER_RETRY_MS))
-                        .await?;
+                    settle!(
+                        'batch,
+                        message
+                            .nak_after(Duration::from_millis(DURABLE_EVENT_CONSUMER_RETRY_MS))
+                            .await
+                    );
                     continue;
                 }
                 if projected_generation != Some(envelope.generation)
@@ -1925,7 +1975,7 @@ async fn run_durable_event_pull_loop(
                         Some("replayPending" | "replaying")
                     )
                 {
-                    message.ack().await?;
+                    settle!('batch, message.ack().await);
                     continue;
                 }
             }
@@ -1944,7 +1994,7 @@ async fn run_durable_event_pull_loop(
                 });
             let Some(registration) = registration else {
                 tracing::warn!(subject = %message.subject(), "No registered event handler; retaining message for redelivery");
-                message.nak_after(Duration::from_secs(5)).await?;
+                settle!('batch, message.nak_after(Duration::from_secs(5)).await);
                 continue;
             };
             let mut replay_headers = HeaderMap::new();
@@ -2010,10 +2060,11 @@ async fn run_durable_event_pull_loop(
                                     "error"
                                 });
                             }
+                            settle!('batch, result);
                         }
                         super::EventVerificationFailure::Rejected(_) => {
                             if let Some(envelope) = &replay_envelope {
-                                message.ack_progress().await?;
+                                settle!('batch, message.ack_progress().await);
                                 let report = ConsumerDeliveryReport {
                                     resource_id: config.resource_id.clone(),
                                     source_stream: config
@@ -2047,7 +2098,7 @@ async fn run_durable_event_pull_loop(
                                         "error"
                                     });
                                 }
-                                result?;
+                                settle!('batch, result);
                             } else {
                                 let result = message.term().await;
                                 for observation in observations.drain(..) {
@@ -2057,6 +2108,7 @@ async fn run_durable_event_pull_loop(
                                         "error"
                                     });
                                 }
+                                settle!('batch, result);
                             }
                         }
                     }
@@ -2110,13 +2162,25 @@ async fn run_durable_event_pull_loop(
                 let result = loop {
                     tokio::select! {
                         result = &mut future => break result,
-                        _ = progress.tick() => message.ack_progress().await?,
+                        _ = progress.tick() => {
+                            // A progress-ack transport failure must never drop the
+                            // in-flight handler: it is already-accepted work. Record
+                            // the recovery need and keep waiting for the handler to
+                            // finish before the batch is re-opened.
+                            if let Err(error) = message.ack_progress().await {
+                                if durable_event_transport_error_is_retryable(&error) {
+                                    settle_failure = true;
+                                } else {
+                                    return Err(error.into());
+                                }
+                            }
+                        }
                     }
                 };
                 if result.is_err() {
                     let error = result.err().map(|error| error.to_string());
                     if delivery >= config.max_deliver {
-                        message.ack_progress().await?;
+                        settle!('batch, message.ack_progress().await);
                         let report = ConsumerDeliveryReport {
                             resource_id: config.resource_id.clone(),
                             source_stream: if is_replay {
@@ -2143,11 +2207,16 @@ async fn run_durable_event_pull_loop(
                                 .await;
                         let reported = report_result.is_ok();
                         if reported {
-                            if let Err(error) = message.ack().await {
+                            let ack = message.ack().await;
+                            if let Err(error) = ack {
                                 for earlier in completed.drain(..) {
                                     earlier.finish("ok");
                                 }
                                 observation.finish("error");
+                                if durable_event_transport_error_is_retryable(&error) {
+                                    settle_failure = true;
+                                    break 'batch;
+                                }
                                 return Err(error.into());
                             }
                         } else if let Err(error) = report_result {
@@ -2171,6 +2240,7 @@ async fn run_durable_event_pull_loop(
                         earlier.finish("ok");
                     }
                     observation.finish(if result.is_ok() { "retry" } else { "error" });
+                    settle!('batch, result);
                     handled = false;
                     break;
                 }
@@ -2183,7 +2253,7 @@ async fn run_durable_event_pull_loop(
                 continue;
             }
             if let Some(envelope) = &replay_envelope {
-                message.ack_progress().await?;
+                settle!('batch, message.ack_progress().await);
                 let report = ConsumerDeliveryReport {
                     resource_id: config.resource_id.clone(),
                     source_stream: config
@@ -2213,7 +2283,21 @@ async fn run_durable_event_pull_loop(
             for observation in completed {
                 observation.finish(if ack.is_ok() { "ok" } else { "error" });
             }
-            ack?;
+            settle!('batch, ack);
+        }
+
+        // A settle that failed on the transport is a paced recovery condition:
+        // re-open the durable consumer on the current generation and let the
+        // broker redeliver the unacknowledged message. A permanent error already
+        // returned; only an authoritative logical terminal ends the loop.
+        if settle_failure {
+            settle_failure = false;
+            if let Some(cause) = manager
+                .pace_or_terminal(Duration::from_millis(DURABLE_EVENT_CONSUMER_RETRY_MS))
+                .await
+            {
+                return Err(cause.client_error().into());
+            }
         }
     }
 }
@@ -2287,6 +2371,34 @@ fn missing_durable_event_consumer_is_retryable(
     original_consumer_opened: bool,
 ) -> bool {
     is_missing_durable_event_consumer_error(error) && (is_replay || !original_consumer_opened)
+}
+
+/// Whether a durable event intake error is a transient transport condition.
+///
+/// A revoked or refreshing authorization context, a suspended transport, a
+/// recovering generation, and a raw NATS transport/request failure are all
+/// transient for a generation-following intake loop: it must keep consuming
+/// rather than tear down the whole service runtime. Such a recoverable outage is
+/// paced indefinitely until the logical connection latches an authoritative
+/// terminal cause; individual operation callers retain their own deadlines.
+///
+/// The class matches the client's transport-`unavailable` outcome
+/// classification. Non-transport errors stay terminal: an uninstalled bootstrap
+/// context, protocol/codec failures, and a misconfigured subscription. A
+/// missing or paused durable consumer has its own guard and is not folded in.
+fn durable_event_transport_error_is_retryable(error: &TrellisClientError) -> bool {
+    if is_missing_durable_event_consumer_error(error) {
+        return false;
+    }
+    matches!(
+        error,
+        TrellisClientError::AuthorizationUnavailable(_)
+            | TrellisClientError::TransportUnavailable(_)
+            | TrellisClientError::Nats(_)
+            | TrellisClientError::NatsConnect(_)
+            | TrellisClientError::NatsRequest(_)
+            | TrellisClientError::Timeout
+    )
 }
 
 #[cfg(test)]

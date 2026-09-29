@@ -261,6 +261,7 @@ impl AuthorizationProviderCache {
         nats: async_nats::Client,
         binding: &AuthorizationRegistryBinding,
         own: Arc<AuthorizationContextCache>,
+        manager: Option<crate::client::TransportGenerationManager>,
     ) -> Result<Self, TrellisClientError> {
         let bundle = own.bundle()?;
         let policy = bundle
@@ -274,6 +275,7 @@ impl AuthorizationProviderCache {
             Some(bundle.issuer),
             policy,
             Some(own.clone()),
+            manager,
         )
         .await?;
         let digest = own.retained_context_digest()?;
@@ -295,6 +297,7 @@ impl AuthorizationProviderCache {
             trust.issuer,
             trust.policy,
             None,
+            None,
         )
         .await
     }
@@ -306,13 +309,14 @@ impl AuthorizationProviderCache {
         issuer: Option<AuthorizationIssuerKey>,
         verification_policy: AuthorizationVerificationPolicy,
         own: Option<Arc<AuthorizationContextCache>>,
+        manager: Option<crate::client::TransportGenerationManager>,
     ) -> Result<Self, TrellisClientError> {
         if let Some(issuer) = &issuer {
             issuer
                 .verifying_key()
                 .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
         }
-        let registry = AuthorizationRegistryReader::open(nats.clone(), binding).await?;
+        let registry = AuthorizationRegistryReader::open(nats.clone(), binding, manager).await?;
         let state = Arc::new(RwLock::new(ProviderState {
             issuers: issuer
                 .into_iter()

@@ -369,6 +369,12 @@ where
     ));
     core.set_phase(ConsumerPhase::Prepared);
     let provider_guard = std::sync::Arc::new(prepared.provider_guard);
+    // One shared slot owns the consumer's provider-context guard: the running
+    // session keeps it, and the subscription clears it on the terminal outcome so
+    // a retained closed handle cannot pin provider evidence.
+    let provider_guard_slot: crate::live::subscription::ProviderGuardSlot = std::sync::Arc::new(
+        std::sync::Mutex::new(Some(std::sync::Arc::clone(&provider_guard))),
+    );
     let control = Arc::new(ConsumerControl {
         nats: nats.clone(),
         auth: client.auth_handle(),
@@ -378,7 +384,7 @@ where
         control_subject: prepared.offer.control_subject.clone(),
         pinned_session_key: prepared.peer.session_key.clone(),
         pinned_identity: prepared.peer.clone(),
-        provider_guard: provider_guard.clone(),
+        provider_guard: std::sync::Arc::clone(&provider_guard_slot),
         close_started: std::sync::atomic::AtomicBool::new(false),
         last_control_seq: std::sync::atomic::AtomicU64::new(0),
     });
@@ -411,7 +417,7 @@ where
         drain,
         control,
         cancellation,
-        provider_guard,
+        provider_guard_slot,
         close_slot,
     ))
 }

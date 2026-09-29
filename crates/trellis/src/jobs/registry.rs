@@ -51,15 +51,24 @@ pub struct WorkerHeartbeatOptions {
 impl WorkerHeartbeatHandle {
     /// Stop the heartbeat task and swallow expected cancellation shutdown.
     #[doc = concat!("Asynchronous Trellis API operation `", stringify!(stop), "`.")]
-    pub async fn stop(self) -> Result<(), ServiceRegistryError> {
+    pub async fn stop(mut self) -> Result<(), ServiceRegistryError> {
         self.task.abort();
-        match self.task.await {
+        match (&mut self.task).await {
             Ok(result) => result,
             Err(error) if error.is_cancelled() => Ok(()),
             Err(error) => Err(ServiceRegistryError::HeartbeatTask {
                 details: error.to_string(),
             }),
         }
+    }
+}
+
+impl Drop for WorkerHeartbeatHandle {
+    fn drop(&mut self) {
+        // RAII: a heartbeat handle dropped without `stop` (a failed or cancelled
+        // multi-queue startup, or a host dropped without shutdown) must not
+        // leave a publishing heartbeat task running.
+        self.task.abort();
     }
 }
 

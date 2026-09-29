@@ -7,11 +7,12 @@
 //! harness drives the optional capability and the ordinary-renewal window; the
 //! process only prints a bounded line protocol.
 
-use futures_util::StreamExt as _;
+use futures_util::{stream, StreamExt as _};
 use runtime_trellis::participants::runtime_trellis_transport_growth_subject::{
     Participant as SubjectParticipant, Provider as SubjectProvider,
 };
-use runtime_trellis::types::Empty;
+use runtime_trellis::types::{Empty, LiveProbeFrame};
+use runtime_trellis::Int64;
 use std::io::Write as _;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt as _, BufReader};
@@ -40,8 +41,41 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let url = std::env::var("TRELLIS_URL")?;
     let seed = std::env::var("TRELLIS_IDENTITY_SEED")?;
     let mut runtime = SubjectParticipant::connect(ServiceConnectOptions::new(&url, &seed)).await?;
-    let client = SubjectProvider::new(&mut runtime).client();
-    let api = client.runtime_trellis_transport_growth_v1();
+    let (client, api) = {
+        let mut provider = SubjectProvider::new(&mut runtime);
+        let client = provider.client();
+        // Serve the generated `liveprobe Watch` source so a caller can observe
+        // this service across a real transport growth: a monotonic index is
+        // emitted on the attachment that accepted the observation, and the source
+        // lifetime is driven by the receiving generation's owner controls.
+        provider
+            .runtime_trellis_liveprobe_v1()
+            .register_watch(move |context, input| {
+                let cancellation = context.cancellation.clone();
+                stream::unfold(
+                    (Int64(0), cancellation, input.run_id, input.stream_id),
+                    |(index, cancellation, run_id, stream_id)| async move {
+                        if cancellation.is_cancelled() {
+                            return None;
+                        }
+                        tokio::time::sleep(Duration::from_millis(150)).await;
+                        let next = Int64(index.0 + 1);
+                        let frame = LiveProbeFrame {
+                            run_id: run_id.clone(),
+                            stream_id: stream_id.clone(),
+                            source_generation: Int64(1),
+                            index: next,
+                            payload: Vec::new().into(),
+                            padding: String::new(),
+                            extra: Default::default(),
+                        };
+                        Some((Ok(frame), (next, cancellation, run_id, stream_id)))
+                    },
+                )
+            });
+        let api = client.runtime_trellis_transport_growth_v1();
+        (client, api)
+    };
     emit("TRANSPORT_GROWTH_CONNECTED")?;
 
     api.advance(&Empty {
@@ -49,6 +83,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     })
     .await?;
     emit("TRANSPORT_GROWTH_ADVANCE_OK")?;
+
+    // Serve the registered routes — including the liveprobe Watch source — on the
+    // connection's transport generations while the harness drives commands.
+    let _serve = tokio::spawn(async move {
+        if let Err(error) = runtime.run().await {
+            let _ = emit(&format!("TRANSPORT_GROWTH_SERVE_ERROR {error}"));
+        }
+    });
 
     let mut commands = BufReader::new(tokio::io::stdin()).lines();
     let mut observe_close: Option<oneshot::Sender<()>> = None;

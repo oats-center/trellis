@@ -85,8 +85,8 @@ pub use transfer::{
     TransferCancellation, TransferGrantType, UploadTransferDirection, UploadTransferGrant,
 };
 pub(crate) use transport_generations::{
-    GenerationIntake, GenerationIntakeHandle, TransportGeneration, TransportGenerationManager,
-    TransportLease,
+    GenerationIntake, GenerationIntakeHandle, GenerationIntakeRetireReason, LogicalTerminalCause,
+    TransportGeneration, TransportGenerationManager, TransportLease,
 };
 #[cfg(test)]
 mod tests;

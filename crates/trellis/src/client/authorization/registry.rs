@@ -28,6 +28,9 @@ pub(crate) struct RegistryWatch {
     subscription: Subscriber,
     subject: String,
     key: String,
+    /// Attachment lease for this watch's whole life: the watch never outlives its
+    /// socket, and releasing the lease lets a superseded generation be reclaimed.
+    _lease: Option<crate::client::TransportLease>,
     initial_boundary: u64,
     delivered: u64,
     initialized: bool,
@@ -223,34 +226,64 @@ fn parse_delivery_sequences(reply: &str) -> Result<(u64, u64), &'static str> {
 #[derive(Clone)]
 pub(crate) struct AuthorizationRegistryReader {
     nats: async_nats::Client,
-    contexts: stream::Stream<()>,
     binding: AuthorizationRegistryBinding,
+    /// The connection's generation manager when attached. Registry I/O then
+    /// acquires the current generation's attachment, so reads and watches follow
+    /// a transport cutover instead of pinning the initial connection.
+    manager: Option<crate::client::TransportGenerationManager>,
 }
 
 impl AuthorizationRegistryReader {
     pub(crate) async fn open(
         nats: async_nats::Client,
         binding: &AuthorizationRegistryBinding,
+        manager: Option<crate::client::TransportGenerationManager>,
     ) -> Result<Self, TrellisClientError> {
         if binding.context_bucket.trim().is_empty() {
             return Err(TrellisClientError::Bootstrap(
                 "authorization registry bucket is empty".into(),
             ));
         }
-        let jetstream = jetstream::new(nats.clone());
-        let contexts = jetstream
-            .get_stream_no_info(format!("KV_{}", binding.context_bucket))
+        Ok(Self {
+            nats,
+            binding: binding.clone(),
+            manager,
+        })
+    }
+
+    /// Acquire the current attachment for one registry operation.
+    ///
+    /// Returns the lease (held for the operation, or for a watch's whole life so
+    /// it never outlives its socket) and the registry stream opened on that
+    /// attachment. Without a manager the fixed bootstrap attachment is used, so
+    /// runtime-internal callers keep their existing behaviour.
+    async fn attachment(
+        &self,
+    ) -> Result<(Option<crate::client::TransportLease>, stream::Stream<()>), TrellisClientError>
+    {
+        let (lease, nats) = match &self.manager {
+            Some(manager) => {
+                let lease = manager
+                    .acquire_for(
+                        &[],
+                        &[],
+                        std::time::Instant::now() + Duration::from_secs(30),
+                    )
+                    .await?;
+                let nats = lease.nats().clone();
+                (Some(lease), nats)
+            }
+            None => (None, self.nats.clone()),
+        };
+        let contexts = jetstream::new(nats)
+            .get_stream_no_info(format!("KV_{}", self.binding.context_bucket))
             .await
             .map_err(|error| {
                 TrellisClientError::AuthorizationUnavailable(format!(
                     "cannot open authorization registry: {error}"
                 ))
             })?;
-        Ok(Self {
-            nats,
-            contexts,
-            binding: binding.clone(),
-        })
+        Ok((lease, contexts))
     }
 
     pub(crate) async fn get_context(
@@ -258,8 +291,11 @@ impl AuthorizationRegistryReader {
         digest: &str,
     ) -> Result<Option<Vec<u8>>, TrellisClientError> {
         validate_digest_key(digest)?;
+        // A finite read leases the current attachment for the operation only, so
+        // it follows a cutover and never pins a superseded generation.
+        let (_lease, contexts) = self.attachment().await?;
         let subject = format!("$KV.{}.{digest}", self.binding.context_bucket);
-        match self.contexts.direct_get_last_for_subject(&subject).await {
+        match contexts.direct_get_last_for_subject(&subject).await {
             Ok(message)
                 if message
                     .headers
@@ -283,18 +319,26 @@ impl AuthorizationRegistryReader {
         digest: &str,
     ) -> Result<RegistryWatch, TrellisClientError> {
         validate_digest_key(digest)?;
+        // The watch holds its attachment lease for the watch's whole life, so it
+        // cannot outlive its socket. It is acquired at open on the generation
+        // current at that time; moving an existing watch across a later cutover is
+        // not performed here.
+        let (lease, contexts) = self.attachment().await?;
+        let nats = lease
+            .as_ref()
+            .map(|lease| lease.nats().clone())
+            .unwrap_or_else(|| self.nats.clone());
         let subject = format!(
             "$KV.{}.{REVOCATION_PREFIX}{digest}",
             self.binding.context_bucket
         );
         let key = format!("{REVOCATION_PREFIX}{digest}");
-        let deliver_subject = self.nats.new_inbox();
+        let deliver_subject = nats.new_inbox();
         let consumer_name = format!(
             "TrellisAuth{}",
             deliver_subject.rsplit('.').next().unwrap_or_default()
         );
-        let mut consumer = self
-            .contexts
+        let mut consumer = contexts
             .create_consumer(jetstream::consumer::push::Config {
                 deliver_subject: deliver_subject.clone(),
                 name: Some(consumer_name),
@@ -314,16 +358,12 @@ impl AuthorizationRegistryReader {
                     "cannot create authorization revocation watch: {error}"
                 ))
             })?;
-        let subscription = self
-            .nats
-            .subscribe(deliver_subject)
-            .await
-            .map_err(|error| {
-                TrellisClientError::AuthorizationUnavailable(format!(
-                    "cannot consume authorization revocation watch: {error}"
-                ))
-            })?;
-        self.nats.flush().await.map_err(|error| {
+        let subscription = nats.subscribe(deliver_subject).await.map_err(|error| {
+            TrellisClientError::AuthorizationUnavailable(format!(
+                "cannot consume authorization revocation watch: {error}"
+            ))
+        })?;
+        nats.flush().await.map_err(|error| {
             TrellisClientError::AuthorizationUnavailable(format!(
                 "cannot establish authorization revocation watch: {error}"
             ))
@@ -334,10 +374,11 @@ impl AuthorizationRegistryReader {
             ))
         })?;
         Ok(RegistryWatch {
-            client: self.nats.clone(),
+            client: nats,
             subscription,
             subject,
             key,
+            _lease: lease,
             initial_boundary: info
                 .delivered
                 .consumer_sequence

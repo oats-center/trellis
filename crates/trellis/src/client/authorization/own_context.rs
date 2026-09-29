@@ -410,6 +410,32 @@ impl AuthorizationContextCache {
         self.clear_locked(&transition)
     }
 
+    /// Discard the installed context only when it still matches `expected_digest`,
+    /// invoking `on_cleared` while the own-transition guard is still held.
+    ///
+    /// Holding the guard across the callback linearizes the conditional clear
+    /// with a terminal-latch publication: a public refresh that promotes a new
+    /// context must take the same guard, so it can neither interleave between the
+    /// digest check and the clear nor invalidate the latched terminal. Returns
+    /// whether the context was actually cleared.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrellisClientError::Bootstrap`] when the state lock is poisoned.
+    pub fn clear_if_installed(
+        &self,
+        expected_digest: &str,
+        on_cleared: impl FnOnce(),
+    ) -> Result<bool, TrellisClientError> {
+        let transition = self.lock_own_transition()?;
+        if self.stored_context_digest().ok().as_deref() != Some(expected_digest) {
+            return Ok(false);
+        }
+        self.clear_locked(&transition)?;
+        on_cleared();
+        Ok(true)
+    }
+
     fn clear_locked(&self, _transition: &OwnTransitionGuard<'_>) -> Result<(), TrellisClientError> {
         let mut state = self
             .state

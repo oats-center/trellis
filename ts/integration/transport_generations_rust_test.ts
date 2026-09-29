@@ -295,6 +295,27 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
             "the Live observation must start delivering frames",
           );
 
+          // The Rust subject now serves the generated `liveprobe Watch` source.
+          // Observe it from a real LiveProbeCaller so the Rust provider's
+          // receiving-generation owner controls are exercised across the growth.
+          const observer = await runtime.connectClient({
+            name: "tg-subject-live",
+            contract: participants.LiveProbeCaller.participant,
+          });
+          const feed = await observer.watch({
+            runId: crypto.randomUUID(),
+            streamId: "growth",
+          }).orThrow();
+          const liveFrames: bigint[] = [];
+          const liveTask = (async () => {
+            for await (const frame of feed) liveFrames.push(frame.index);
+          })().catch(() => undefined);
+          await runtime.waitFor(
+            () => liveFrames.length > 0 ? true : undefined,
+            { timeoutMs: 30_000, intervalMs: 50 },
+          );
+          const liveBefore = liveFrames.length;
+
           // An ordinary renewal must not replace or add a physical attachment.
           await waitForRenewals(2);
           assertEquals(
@@ -366,7 +387,45 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
             "the observation's original attachment must remain while it is open",
           );
 
-          // A retained closed handle settles its signed close exchange and then
+          // The caller's observation was accepted on the subject's initial
+          // generation and keeps delivering across the growth: its control must
+          // still reach the subject on the receiving generation.
+          await runtime.waitFor(
+            () => liveFrames.length > liveBefore ? true : undefined,
+            { timeoutMs: 30_000, intervalMs: 50 },
+          );
+          // Explicit close, asserting the *confirmed* remote disposition: the
+          // close receipt reports whether the receiving generation settled it,
+          // not merely that the local request promise resolved.
+          const receipt = await feed.close().orThrow();
+          assertEquals(
+            receipt.remote,
+            "confirmed",
+            "the Live close must be remotely confirmed on the receiving generation",
+          );
+          assertEquals(
+            receipt.cleanup,
+            "complete",
+            "the closed observation must report a complete remote cleanup",
+          );
+          await liveTask;
+          // A fresh observation opens on the current generation and delivers.
+          const fresh = await observer.watch({
+            runId: crypto.randomUUID(),
+            streamId: "growth",
+          }).orThrow();
+          const freshFrames: bigint[] = [];
+          const freshTask = (async () => {
+            for await (const frame of fresh) freshFrames.push(frame.index);
+          })().catch(() => undefined);
+          await runtime.waitFor(
+            () => freshFrames.length > 0 ? true : undefined,
+            { timeoutMs: 30_000, intervalMs: 50 },
+          );
+          await fresh.close().orThrow();
+          await freshTask;
+          await observer.connection.close().catch(() => undefined);
+
           // A retained closed handle settles its signed close exchange and then
           // stops pinning its generation; the application keeps the handle.
           await leg.send("OBSERVE_CLOSE");

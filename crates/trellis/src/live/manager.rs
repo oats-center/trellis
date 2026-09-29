@@ -44,6 +44,11 @@ pub(crate) struct OwnerControlRegistration {
     pub base_subject: String,
     pub provider_connection_id: String,
     pub wildcard_subject: String,
+    /// Connect-count epoch of the attachment socket this control is subscribed
+    /// on. Distinct generations get distinct epochs, so the same route can have
+    /// one live control per receiving generation; a superseded generation's
+    /// control is preserved until its socket closes.
+    pub attachment_epoch: u64,
     pub dispatcher: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -105,7 +110,10 @@ impl ManagerUnavailable {
 
 /// One live session manager for an actual authenticated connection owner.
 pub struct LiveSessionManager {
-    nats: async_nats::Client,
+    /// The current attachment socket. It follows the generation manager's current
+    /// generation (swapped by [`Self::rebind`]) instead of pinning the initial
+    /// connection, so a superseded baseline does not strand live observation.
+    nats: std::sync::Mutex<async_nats::Client>,
     auth: Arc<SessionAuth>,
     contexts: Arc<crate::client::AuthorizationContextCache>,
     provider_connection_id: String,
@@ -143,7 +151,7 @@ impl LiveSessionManager {
     ) -> Arc<Self> {
         let local_epoch = nats.statistics().connects.load(Ordering::Acquire);
         Arc::new(Self {
-            nats,
+            nats: std::sync::Mutex::new(nats),
             auth,
             contexts,
             provider_connection_id,
@@ -185,7 +193,11 @@ impl LiveSessionManager {
 
     /// Permit new sessions on the current transport attachment.
     pub(crate) fn resume(&self) {
-        let connects = self.nats.statistics().connects.load(Ordering::Acquire);
+        let connects = self
+            .current_nats()
+            .statistics()
+            .connects
+            .load(Ordering::Acquire);
         self.local_epoch.store(connects, Ordering::Release);
         self.suspended.store(false, Ordering::Release);
     }
@@ -196,7 +208,7 @@ impl LiveSessionManager {
             return Err(ManagerUnavailable::Stopped);
         }
         if self.suspended.load(Ordering::Acquire)
-            || self.nats.connection_state() != async_nats::connection::State::Connected
+            || self.current_nats().connection_state() != async_nats::connection::State::Connected
         {
             return Err(ManagerUnavailable::EpochChanged);
         }
@@ -263,6 +275,8 @@ impl LiveSessionManager {
         self: &Arc<Self>,
         base_subject: &str,
     ) -> Result<(), async_nats::Error> {
+        let nats = self.current_nats();
+        let epoch = nats.statistics().connects.load(Ordering::Acquire);
         let wildcard =
             derive_live_observe_wildcard_subject(base_subject, &self.provider_connection_id)
                 .map_err(|error| {
@@ -277,17 +291,31 @@ impl LiveSessionManager {
                 .owner_controls
                 .read()
                 .map_err(|_| std::io::Error::other("owner control lock poisoned"))?;
-            if controls
-                .iter()
-                .any(|registration| registration.base_subject == base_subject)
-            {
+            if controls.iter().any(|registration| {
+                registration.attachment_epoch == epoch && registration.base_subject == base_subject
+            }) {
                 return Ok(());
             }
         }
-        let mut subscription = self.nats.subscribe(wildcard.clone()).await?;
-        self.nats.flush().await?;
+        self.install_owner_control(base_subject, wildcard, nats, epoch)
+            .await
+    }
+
+    /// Subscribe one owner-control route on an exact attachment socket and spawn
+    /// its dispatcher. The dispatcher keeps the *receiving* socket, so a control
+    /// for a session accepted on a superseded generation is answered on the
+    /// socket it arrived on, never through a global current pointer.
+    async fn install_owner_control(
+        self: &Arc<Self>,
+        base_subject: &str,
+        wildcard: String,
+        nats: async_nats::Client,
+        epoch: u64,
+    ) -> Result<(), async_nats::Error> {
+        let mut subscription = nats.subscribe(wildcard.clone()).await?;
+        nats.flush().await?;
         let manager = Arc::clone(self);
-        let nats = self.nats.clone();
+        let receiving = nats;
         let dispatcher = tokio::spawn(async move {
             while let Some(message) = subscription.next().await {
                 if manager.stopped.load(Ordering::Acquire) {
@@ -297,9 +325,9 @@ impl LiveSessionManager {
                     continue;
                 };
                 if let Some(record) = manager.provider_session(&session_id) {
-                    record.dispatch_control(&nats, message).await;
+                    record.dispatch_control(&receiving, message).await;
                 } else {
-                    manager.dispatch_closed_receipt(&message).await;
+                    manager.dispatch_closed_receipt(&receiving, &message).await;
                 }
             }
         });
@@ -310,6 +338,7 @@ impl LiveSessionManager {
                 base_subject: base_subject.to_owned(),
                 provider_connection_id: self.provider_connection_id.clone(),
                 wildcard_subject: wildcard,
+                attachment_epoch: epoch,
                 dispatcher: Some(dispatcher),
             });
         Ok(())
@@ -372,7 +401,11 @@ impl LiveSessionManager {
     /// caller guard before anything is signed or published. Only close/end-ack
     /// retries receive a closed acknowledgement; other controls receive a
     /// bounded `session_not_found`.
-    pub(crate) async fn dispatch_closed_receipt(&self, message: &async_nats::Message) {
+    pub(crate) async fn dispatch_closed_receipt(
+        &self,
+        nats: &async_nats::Client,
+        message: &async_nats::Message,
+    ) {
         let Some(reply) = message.reply.clone() else {
             return;
         };
@@ -456,8 +489,7 @@ impl LiveSessionManager {
         let Ok(headers) = self.signed_reply_headers(reply.as_str(), &body) else {
             return;
         };
-        let _ = self
-            .nats
+        let _ = nats
             .publish_with_headers(reply, headers, bytes::Bytes::from(body))
             .await;
     }
@@ -562,10 +594,71 @@ impl LiveSessionManager {
         }
     }
 
+    /// Return the current attachment socket for owned dispatch and controls.
+    fn current_nats(&self) -> async_nats::Client {
+        self.nats
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    /// Re-point NEW work at a new physical attachment while preserving every
+    /// receiving generation's existing owner controls.
+    ///
+    /// Invoked when the generation manager publishes a new current generation.
+    /// The logical registry, sessions, and receipts are preserved. This only ADDS
+    /// the new generation's control subscriptions; it never aborts a superseded
+    /// generation's controls, because a session or receipt accepted on that
+    /// generation must keep receiving its controls through that generation's
+    /// retirement. Those subscriptions end when their socket closes and never pin
+    /// the generation (Live holds no generation lease on the attachment here).
+    pub(crate) fn rebind(self: &Arc<Self>, nats: async_nats::Client) {
+        if let Ok(mut current) = self.nats.lock() {
+            *current = nats.clone();
+        }
+        let epoch = nats.statistics().connects.load(Ordering::Acquire);
+        self.local_epoch.store(epoch, Ordering::Release);
+        self.suspended.store(false, Ordering::Release);
+        let subjects: Vec<(String, String)> = match self.owner_controls.read() {
+            Ok(controls) => controls
+                .iter()
+                .filter(|registration| registration.attachment_epoch != epoch)
+                .map(|registration| {
+                    (
+                        registration.base_subject.clone(),
+                        registration.wildcard_subject.clone(),
+                    )
+                })
+                .collect(),
+            Err(_) => return,
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        for (base_subject, wildcard) in subjects {
+            if !seen.insert(base_subject.clone()) {
+                continue;
+            }
+            let manager = Arc::clone(self);
+            let nats = nats.clone();
+            tokio::spawn(async move {
+                let epoch = nats.statistics().connects.load(Ordering::Acquire);
+                if let Err(error) = manager
+                    .install_owner_control(&base_subject, wildcard, nats, epoch)
+                    .await
+                {
+                    tracing::warn!(
+                        %error,
+                        %base_subject,
+                        "failed to add live owner control for the current attachment"
+                    );
+                }
+            });
+        }
+    }
+
     /// Return the cloneable transport handle for this manager.
     #[must_use]
     pub(crate) fn nats_handle(&self) -> async_nats::Client {
-        self.nats.clone()
+        self.current_nats()
     }
 
     /// Return the cloneable signing material for provider publications.

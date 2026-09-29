@@ -16,6 +16,10 @@ use time::{Duration as TimeDuration, OffsetDateTime};
 use tracing::Instrument as _;
 use ulid::Ulid;
 
+use crate::client::{
+    GenerationIntake, GenerationIntakeHandle, GenerationIntakeRetireReason, TransportGeneration,
+    TrellisClientError,
+};
 use crate::jobs::active_job::ActiveJob;
 use crate::jobs::bindings::{
     JobKeyConcurrencyBinding, JobQueueWhenFull, JobsQueueBinding, JobsRuntimeBinding,
@@ -249,20 +253,67 @@ pub struct WorkerHostHandle {
     cancellation: JobCancellationToken,
     heartbeats: Vec<WorkerHeartbeatHandle>,
     workers: Vec<WorkerTaskHandle>,
+    intake: Option<Arc<dyn WorkerIntake>>,
+    /// The manager-registered owner, unregistered on stop/drop so a stopped host
+    /// is never resurrected by a later candidate adoption.
+    intake_owner: Option<Arc<dyn GenerationIntake>>,
+    manager: Option<crate::client::TransportGenerationManager>,
+}
+
+/// Shuts down a generation-following worker intake owner.
+pub(crate) trait WorkerIntake: Send + Sync {
+    /// Retire all installed intake, await accepted work, and release leases.
+    fn shutdown<'a>(&'a self) -> BoxFuture<'a, ()>;
+    /// Signal retirement without awaiting accepted work (bounded drop path).
+    fn retire_now(&self);
+    /// Resolve with the first unexpected worker failure; otherwise wait forever.
+    fn failure<'a>(&'a self) -> BoxFuture<'a, Option<WorkerHostError>>;
+    /// The logical worker count this host owns across every physical generation.
+    fn worker_count(&self) -> usize;
 }
 
 impl WorkerHostHandle {
-    /// Return the number of queue-worker tasks owned by this host.
+    /// Unregister the owner so no future generation can resurrect a stopped host.
+    fn detach_owner(&mut self) {
+        if let (Some(manager), Some(owner)) = (&self.manager, &self.intake_owner) {
+            manager.detach_intake(owner);
+        }
+    }
+}
+
+impl Drop for WorkerHostHandle {
+    fn drop(&mut self) {
+        // Bounded cancellation: a host dropped without `stop` still stops
+        // accepting new intake, unregisters its owner, and signals shutdown to
+        // in-flight handlers.
+        self.cancellation.cancel_for_shutdown();
+        if let Some(intake) = &self.intake {
+            intake.retire_now();
+        }
+        self.detach_owner();
+    }
+}
+
+impl WorkerHostHandle {
+    /// Return the number of logical queue workers owned by this host.
     pub fn worker_count(&self) -> usize {
-        self.workers.len()
+        match &self.intake {
+            Some(intake) => intake.worker_count(),
+            None => self.workers.len(),
+        }
     }
 
     /// Stop all worker tasks and then stop host heartbeats.
-    pub async fn stop(self) -> Result<(), WorkerHostError> {
+    pub async fn stop(mut self) -> Result<(), WorkerHostError> {
         self.cancellation.cancel_for_shutdown();
+        self.detach_owner();
+        let intake = self.intake.take();
+        if let Some(intake) = &intake {
+            intake.shutdown().await;
+        }
 
         let mut first_error = None;
-        for worker in self.workers {
+        for worker in std::mem::take(&mut self.workers) {
             match worker.task.await {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
@@ -283,7 +334,7 @@ impl WorkerHostHandle {
             }
         }
 
-        for heartbeat in self.heartbeats {
+        for heartbeat in std::mem::take(&mut self.heartbeats) {
             heartbeat.stop().await.map_err(WorkerHostError::Heartbeat)?;
         }
 
@@ -294,11 +345,29 @@ impl WorkerHostHandle {
     }
 
     /// Supervise worker tasks until one exits, then stop the complete host.
-    pub async fn join(self) -> Result<(), WorkerHostError> {
-        let cancellation = self.cancellation;
+    pub async fn join(mut self) -> Result<(), WorkerHostError> {
+        if let Some(intake) = self.intake.take() {
+            // A generation-following host is supervised across generations: it
+            // stops on host cancellation or on the first unexpected worker
+            // failure, and always awaits accepted work before returning.
+            let cancellation = self.cancellation.clone();
+            let _cancel_on_drop = CancelWorkersOnDrop(cancellation.clone());
+            let failure = tokio::select! {
+                _ = cancellation.cancelled() => None,
+                failure = intake.failure() => failure,
+            };
+            intake.shutdown().await;
+            for heartbeat in std::mem::take(&mut self.heartbeats) {
+                heartbeat.stop().await.map_err(WorkerHostError::Heartbeat)?;
+            }
+            if let Some(error) = failure {
+                return Err(error);
+            }
+            return Ok(());
+        }
+        let cancellation = self.cancellation.clone();
         let _cancel_on_drop = CancelWorkersOnDrop(cancellation.clone());
-        let mut workers: FuturesUnordered<WorkerJoinFuture> = self
-            .workers
+        let mut workers: FuturesUnordered<WorkerJoinFuture> = std::mem::take(&mut self.workers)
             .into_iter()
             .map(|worker| {
                 Box::pin(async move { (worker.queue_type, worker.worker_index, worker.task.await) })
@@ -329,7 +398,7 @@ impl WorkerHostHandle {
         };
         cancellation.cancel_for_shutdown();
         while workers.next().await.is_some() {}
-        for heartbeat in self.heartbeats {
+        for heartbeat in std::mem::take(&mut self.heartbeats) {
             heartbeat.stop().await.map_err(WorkerHostError::Heartbeat)?;
         }
         Err(first_error)
@@ -472,6 +541,17 @@ where
     cancellation: JobCancellationToken,
     cancellation_registry: ActiveJobCancellationRegistry,
     key_coordinator: Option<NatsKeyCoordinator>,
+    /// The generation lease this worker's consumer was opened on. Held for the
+    /// worker's whole life so a delivered job pins its receiving generation
+    /// through its final ack/nak/term and handler completion.
+    _lease: Option<crate::client::TransportLease>,
+    /// Signals that this worker must stop accepting **new** intake. An accepted
+    /// job always completes through its ack/nak before the worker exits. A fixed
+    /// built-in worker has no retire watcher and never spins on a dropped sender.
+    retire: Option<tokio::sync::watch::Receiver<bool>>,
+    /// The one logical concurrency budget shared across every physical intake
+    /// generation, so a cutover overlap never doubles running handlers.
+    capacity: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 async fn run_prepared_queue_worker_loop<P, M, H, Fut, E>(
@@ -494,6 +574,9 @@ where
         cancellation,
         cancellation_registry,
         key_coordinator,
+        _lease,
+        mut retire,
+        capacity,
     } = resources;
     let mut messages = consumer
         .messages()
@@ -504,17 +587,43 @@ where
         })?;
 
     'work: loop {
+        // Retirement stops new intake: an accepted job below always completes
+        // through its ack/nak before the loop exits and releases the lease.
+        if retire.as_ref().is_some_and(|retire| *retire.borrow()) {
+            break;
+        }
+        // One logical concurrency budget is shared across every physical intake
+        // generation, so a cutover overlap never doubles running handlers.
+        let _permit = match &capacity {
+            Some(semaphore) => semaphore.clone().acquire_owned().await.ok(),
+            None => None,
+        };
         let next_message = tokio::select! {
             _ = cancellation.cancelled() => break,
+            _ = wait_for_retire(&mut retire) => break,
             next_message = messages.next() => next_message,
         };
         let Some(message) = next_message else {
             break;
         };
-        let message = message.map_err(|error| RuntimeWorkerError::Messages {
-            consumer: queue.consumer_name.clone(),
-            details: error.to_string(),
-        })?;
+        let message = match message {
+            Ok(message) => message,
+            Err(error) => {
+                // A retired generation's consumer stream ends with a connection
+                // error as the physical attachment is retired; that is expected,
+                // not a worker fault. A live worker's stream error stays fatal
+                // and is surfaced through host supervision.
+                if retire.as_ref().is_some_and(|retire| *retire.borrow())
+                    || cancellation.is_host_shutdown()
+                {
+                    break;
+                }
+                return Err(RuntimeWorkerError::Messages {
+                    consumer: queue.consumer_name.clone(),
+                    details: error.to_string(),
+                });
+            }
+        };
         let delivery_attempt = match message.info() {
             Ok(info) => u64::try_from(info.delivered)
                 .map_err(|error| RuntimeWorkerError::Messages {
@@ -1070,35 +1179,8 @@ where
     }
 
     let jetstream = jetstream::new(nats.clone());
-    let mut prepared_workers = Vec::new();
-    for queue_type in &queue_types {
-        let queue = binding.jobs.queues.get(queue_type).ok_or_else(|| {
-            WorkerHostError::MissingQueueBinding {
-                queue_type: queue_type.clone(),
-            }
-        })?;
-        for worker_index in 0..queue_concurrency[queue_type] {
-            let lifecycle_stream = lifecycle_stream(&jetstream).await.map_err(|error| {
-                WorkerHostError::WorkerStartup {
-                    queue_type: queue_type.clone(),
-                    details: error.to_string(),
-                }
-            })?;
-            let consumer = ensure_worker_consumer(&jetstream, &binding.work_stream, queue)
-                .await
-                .map_err(|error| WorkerHostError::WorkerStartup {
-                    queue_type: queue_type.clone(),
-                    details: error.to_string(),
-                })?;
-            prepared_workers.push((
-                queue_type.clone(),
-                worker_index,
-                queue.clone(),
-                lifecycle_stream,
-                consumer,
-            ));
-        }
-    }
+    let prepared_workers =
+        prepare_workers(&jetstream, &binding, &queue_types, &queue_concurrency).await?;
 
     let cancellation = JobCancellationToken::new();
     let mut heartbeats = Vec::new();
@@ -1141,6 +1223,9 @@ where
                     cancellation: worker_cancellation,
                     cancellation_registry: worker_cancellation_registry,
                     key_coordinator: None,
+                    _lease: None,
+                    retire: None,
+                    capacity: None,
                 },
                 worker_handler,
             )
@@ -1157,6 +1242,9 @@ where
         cancellation,
         heartbeats,
         workers,
+        intake: None,
+        intake_owner: None,
+        manager: None,
     })
 }
 
@@ -1733,4 +1821,597 @@ mod tests {
         assert!(token.is_host_shutdown());
         assert!(!token.is_job_cancelled());
     }
+}
+
+/// Wait until this worker's retire signal fires, or forever when there is none.
+///
+/// The fixed built-in path has no retire watcher, so it must never resolve on a
+/// dropped sender (which would busy-spin or instantly terminate a valid worker).
+async fn wait_for_retire(retire: &mut Option<tokio::sync::watch::Receiver<bool>>) {
+    match retire {
+        Some(receiver) => {
+            // `Err` means the sender was dropped: treat it as retirement.
+            let _ = receiver.changed().await;
+        }
+        None => std::future::pending().await,
+    }
+}
+
+/// One prepared queue worker: its queue identity, lifecycle stream, and durable
+/// consumer opened on the receiving generation.
+type PreparedWorker = (
+    String,
+    u32,
+    JobsQueueBinding,
+    stream::Stream<()>,
+    consumer::PullConsumer,
+);
+
+/// Open every durable worker consumer for `binding` on one generation's
+/// connection. The durable consumer identity is unchanged; only the physical
+/// connection it is opened on follows the generation.
+async fn prepare_workers(
+    jetstream: &jetstream::Context,
+    binding: &JobsRuntimeBinding,
+    queue_types: &[String],
+    queue_concurrency: &BTreeMap<String, u32>,
+) -> Result<Vec<PreparedWorker>, WorkerHostError> {
+    let mut prepared = Vec::new();
+    for queue_type in queue_types {
+        let queue = binding.jobs.queues.get(queue_type).ok_or_else(|| {
+            WorkerHostError::MissingQueueBinding {
+                queue_type: queue_type.clone(),
+            }
+        })?;
+        for worker_index in 0..queue_concurrency[queue_type] {
+            let lifecycle_stream = lifecycle_stream(jetstream).await.map_err(|error| {
+                WorkerHostError::WorkerStartup {
+                    queue_type: queue_type.clone(),
+                    details: error.to_string(),
+                }
+            })?;
+            let consumer = ensure_worker_consumer(jetstream, &binding.work_stream, queue)
+                .await
+                .map_err(|error| WorkerHostError::WorkerStartup {
+                    queue_type: queue_type.clone(),
+                    details: error.to_string(),
+                })?;
+            prepared.push((
+                queue_type.clone(),
+                worker_index,
+                queue.clone(),
+                lifecycle_stream,
+                consumer,
+            ));
+        }
+    }
+    Ok(prepared)
+}
+
+/// One generation's worker intake: the durable consumer tasks opened on that
+/// generation, and the retire signal that stops new intake and drains accepted
+/// jobs before each task releases its lease.
+struct JobsWorkerIngress {
+    retire: tokio::sync::watch::Sender<bool>,
+    tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<Result<(), RuntimeWorkerError>>>>,
+}
+
+impl JobsWorkerIngress {
+    fn retire(&self) {
+        let _ = self.retire.send(true);
+    }
+
+    fn is_finished(&self) -> bool {
+        self.tasks
+            .lock()
+            .map(|tasks| tasks.iter().all(|task| task.is_finished()))
+            .unwrap_or(true)
+    }
+
+    fn push_task(&self, task: tokio::task::JoinHandle<Result<(), RuntimeWorkerError>>) {
+        if let Ok(mut tasks) = self.tasks.lock() {
+            tasks.push(task);
+        } else {
+            task.abort();
+        }
+    }
+
+    /// Stop new intake on every worker and await each accepted job through its
+    /// final ack/nak before the leases release.
+    async fn shutdown(&self) {
+        self.retire();
+        let tasks = self
+            .tasks
+            .lock()
+            .map(|mut tasks| std::mem::take(&mut *tasks))
+            .unwrap_or_default();
+        for task in tasks {
+            let _ = task.await;
+        }
+    }
+
+    /// Abandon this generation's intake without waiting for accepted jobs: stop
+    /// new intake and abort any task still running. The graceful disposal path
+    /// only reaches here after [`Self::shutdown`], so it is a no-op there; a
+    /// forced termination abandons accepted jobs rather than blocking on them.
+    fn abort(&self) {
+        self.retire();
+        if let Ok(mut tasks) = self.tasks.lock() {
+            for task in tasks.drain(..) {
+                task.abort();
+            }
+        }
+    }
+}
+
+impl Drop for JobsWorkerIngress {
+    fn drop(&mut self) {
+        // RAII: a rolled-back or cancelled adoption and a reaped generation both
+        // stop new intake here. Tasks that have not already drained are aborted
+        // so a dropped ingress cannot leave broker subscriptions or leases
+        // behind; a normally retired ingress has already drained, so this is a
+        // no-op.
+        let _ = self.retire.send(true);
+        if let Ok(mut tasks) = self.tasks.lock() {
+            for task in tasks.drain(..) {
+                task.abort();
+            }
+        }
+    }
+}
+
+/// RAII handle the manager holds for one generation's jobs intake.
+///
+/// Dropping the handle retires the ingress even while the owner keeps its own
+/// `Arc` for bookkeeping and shutdown, so a failed or cancelled adoption always
+/// stops the intake it started without relying on the final `Arc` drop.
+struct JobsWorkerIngressHandle {
+    ingress: Arc<JobsWorkerIngress>,
+}
+
+impl Drop for JobsWorkerIngressHandle {
+    fn drop(&mut self) {
+        self.ingress.retire();
+    }
+}
+
+impl GenerationIntakeHandle for JobsWorkerIngressHandle {
+    fn retire(&self, _reason: GenerationIntakeRetireReason) {
+        self.ingress.retire();
+    }
+
+    fn intake_stopped(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            // Each worker task pins its generation lease until every accepted
+            // job drains, so this only needs to observe task completion. The
+            // ingress owns its tasks; `dispose` awaits them.
+            loop {
+                if self.ingress.is_finished() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+    }
+
+    fn dispose(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            // Release the generation's worker intake without awaiting accepted
+            // jobs; the graceful path only reaches here after `intake_stopped`.
+            self.ingress.abort();
+        })
+    }
+}
+
+/// The logical service job worker host's generation-following intake owner.
+///
+/// One owner spans the host's whole life: it installs broker-ready durable
+/// consumer intake on each adopted generation and retires the previous
+/// generation's intake when that generation is superseded, so there is exactly
+/// one logical worker host and no per-generation registration of it.
+struct JobsWorkerIntake<PF, P, MF, M, H, Fut, E>
+where
+    PF: Fn() -> P + Clone + Send + Sync + 'static,
+    P: JobEventPublisher + Send + Sync + 'static,
+    P::Error: std::fmt::Display,
+    MF: Fn(&str, u32) -> M + Clone + Send + Sync + 'static,
+    M: JobMetaSource + Send + Sync + 'static,
+    H: Fn(ActiveJob<P, M>) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<Value, JobProcessError<E>>> + Send + 'static,
+    E: ToString + Send + 'static,
+{
+    binding: JobsRuntimeBinding,
+    queue_types: Vec<String>,
+    queue_concurrency: BTreeMap<String, u32>,
+    publisher_factory: PF,
+    meta_factory: MF,
+    handler: H,
+    cancellation: JobCancellationToken,
+    cancellation_registry: ActiveJobCancellationRegistry,
+    /// One logical concurrency budget **per queue**, shared across every
+    /// physical intake generation, so a cutover overlap never doubles running
+    /// handlers and one queue's idle permits never starve another queue.
+    capacity: BTreeMap<String, Arc<tokio::sync::Semaphore>>,
+    /// The total logical worker count, reported honestly for managed hosts.
+    logical_workers: usize,
+    installed: std::sync::Mutex<Vec<Arc<JobsWorkerIngress>>>,
+    /// Set once the host is stopped, so no later candidate can resurrect it.
+    stopped: std::sync::atomic::AtomicBool,
+    /// The first unexpected worker failure, surfaced to `join`.
+    failure: Arc<tokio::sync::Notify>,
+    failure_message: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl<PF, P, MF, M, H, Fut, E> JobsWorkerIntake<PF, P, MF, M, H, Fut, E>
+where
+    PF: Fn() -> P + Clone + Send + Sync + 'static,
+    P: JobEventPublisher + Send + Sync + 'static,
+    P::Error: std::fmt::Display,
+    MF: Fn(&str, u32) -> M + Clone + Send + Sync + 'static,
+    M: JobMetaSource + Send + Sync + 'static,
+    H: Fn(ActiveJob<P, M>) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<Value, JobProcessError<E>>> + Send + 'static,
+    E: ToString + Send + 'static,
+{
+    async fn install(
+        &self,
+        generation: Arc<TransportGeneration>,
+    ) -> Result<Arc<JobsWorkerIngress>, WorkerHostError> {
+        let lease = generation
+            .lease()
+            .ok_or_else(|| WorkerHostError::WorkerStartup {
+                queue_type: "<all>".to_string(),
+                details: "transport generation is closed; jobs intake was not installed"
+                    .to_string(),
+            })?;
+        let nats = lease.nats().clone();
+        let jetstream = jetstream::new(nats.clone());
+        let prepared = prepare_workers(
+            &jetstream,
+            &self.binding,
+            &self.queue_types,
+            &self.queue_concurrency,
+        )
+        .await?;
+        let (retire, retire_rx) = tokio::sync::watch::channel(false);
+        // Built incrementally and wrapped in an RAII ingress: cancelling this
+        // future drops the ingress, whose `Drop` retires and aborts any partial
+        // installation instead of leaking broker subscriptions.
+        let ingress = Arc::new(JobsWorkerIngress {
+            retire,
+            tasks: std::sync::Mutex::new(Vec::new()),
+        });
+        for (queue_type, worker_index, queue, lifecycle_stream, consumer) in prepared {
+            let worker_nats = nats.clone();
+            let publisher = (self.publisher_factory)();
+            let meta = (self.meta_factory)(&queue_type, worker_index);
+            let handler = self.handler.clone();
+            let cancellation = self.cancellation.clone();
+            let registry = self.cancellation_registry.clone();
+            let jobs = self.binding.jobs.clone();
+            let worker_retire = retire_rx.clone();
+            let worker_lease = Some(lease.clone());
+            let capacity = Arc::clone(&self.capacity[&queue_type]);
+            let failure = Arc::clone(&self.failure);
+            let failure_message = Arc::clone(&self.failure_message);
+            let task = tokio::spawn(async move {
+                let manager = JobManager::new(publisher, jobs, meta);
+                let result = run_prepared_queue_worker_with_cancellation(
+                    worker_nats,
+                    WorkerLoopResources {
+                        consumer,
+                        lifecycle_stream,
+                        queue,
+                        manager,
+                        cancellation,
+                        cancellation_registry: registry,
+                        key_coordinator: None,
+                        _lease: worker_lease,
+                        retire: Some(worker_retire),
+                        capacity: Some(capacity),
+                    },
+                    handler,
+                )
+                .await;
+                if let Err(error) = &result {
+                    if let Ok(mut message) = failure_message.lock() {
+                        if message.is_none() {
+                            *message = Some(error.to_string());
+                        }
+                    }
+                    failure.notify_one();
+                }
+                result
+            });
+            ingress.push_task(task);
+        }
+        Ok(ingress)
+    }
+}
+
+impl<PF, P, MF, M, H, Fut, E> GenerationIntake for JobsWorkerIntake<PF, P, MF, M, H, Fut, E>
+where
+    PF: Fn() -> P + Clone + Send + Sync + 'static,
+    P: JobEventPublisher + Send + Sync + 'static,
+    P::Error: std::fmt::Display,
+    MF: Fn(&str, u32) -> M + Clone + Send + Sync + 'static,
+    M: JobMetaSource + Send + Sync + 'static,
+    H: Fn(ActiveJob<P, M>) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<Value, JobProcessError<E>>> + Send + 'static,
+    E: ToString + Send + 'static,
+{
+    fn adopt<'a>(
+        &'a self,
+        generation: Arc<TransportGeneration>,
+    ) -> BoxFuture<'a, Result<Box<dyn GenerationIntakeHandle>, TrellisClientError>> {
+        Box::pin(async move {
+            if self.stopped.load(Ordering::Acquire) {
+                return Err(TrellisClientError::TransportUnavailable(
+                    "job worker host is stopped".into(),
+                ));
+            }
+            let ingress = self
+                .install(generation)
+                .await
+                .map_err(|error| TrellisClientError::TransportUnavailable(error.to_string()))?;
+            // The stopped check and the registration share the `installed` lock
+            // with `shutdown`/`retire_now`, so a host stopped under an in-flight
+            // adoption can never end up with an undrained late ingress: either it
+            // is registered before the drain takes the list, or the check sees
+            // the stop and this ingress is retired instead of registered.
+            {
+                let mut installed = self
+                    .installed
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if self.stopped.load(Ordering::Acquire) {
+                    drop(installed);
+                    ingress.retire();
+                    return Err(TrellisClientError::TransportUnavailable(
+                        "job worker host is stopped".into(),
+                    ));
+                }
+                installed.retain(|existing| !existing.is_finished());
+                installed.push(Arc::clone(&ingress));
+            }
+            Ok(Box::new(JobsWorkerIngressHandle { ingress }) as Box<dyn GenerationIntakeHandle>)
+        })
+    }
+}
+
+impl<PF, P, MF, M, H, Fut, E> WorkerIntake for JobsWorkerIntake<PF, P, MF, M, H, Fut, E>
+where
+    PF: Fn() -> P + Clone + Send + Sync + 'static,
+    P: JobEventPublisher + Send + Sync + 'static,
+    P::Error: std::fmt::Display,
+    MF: Fn(&str, u32) -> M + Clone + Send + Sync + 'static,
+    M: JobMetaSource + Send + Sync + 'static,
+    H: Fn(ActiveJob<P, M>) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<Value, JobProcessError<E>>> + Send + 'static,
+    E: ToString + Send + 'static,
+{
+    fn shutdown<'a>(&'a self) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            let ingresses = {
+                let mut installed = self
+                    .installed
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                self.stopped.store(true, Ordering::Release);
+                std::mem::take(&mut *installed)
+            };
+            for ingress in ingresses {
+                ingress.shutdown().await;
+            }
+        })
+    }
+
+    fn retire_now(&self) {
+        let mut installed = self
+            .installed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.stopped.store(true, Ordering::Release);
+        // Completed generations are dropped so bookkeeping cannot accumulate
+        // indefinitely across repeated growth.
+        installed.retain(|ingress| !ingress.is_finished());
+        for ingress in installed.iter() {
+            ingress.retire();
+        }
+    }
+
+    fn failure<'a>(&'a self) -> BoxFuture<'a, Option<WorkerHostError>> {
+        Box::pin(async move {
+            self.failure.notified().await;
+            self.failure_message
+                .lock()
+                .ok()
+                .and_then(|message| message.clone())
+                .map(|details| WorkerHostError::WorkerTask {
+                    queue_type: "*".to_string(),
+                    worker_index: 0,
+                    details,
+                })
+        })
+    }
+
+    fn worker_count(&self) -> usize {
+        self.logical_workers
+    }
+}
+
+/// RAII guard for worker-host startup.
+///
+/// A startup that fails or whose future is dropped before the host is returned
+/// detaches the owner and retires the intake it installed, so a failed or
+/// cancelled start never leaves worker intake or a registration behind.
+struct WorkerHostStartupGuard {
+    intake: Arc<dyn WorkerIntake>,
+    owner: Arc<dyn GenerationIntake>,
+    manager: crate::client::TransportGenerationManager,
+    /// Every heartbeat started so far. Dropped (aborting each task) if startup
+    /// fails or is cancelled; handed to the host only on successful return.
+    heartbeats: Vec<WorkerHeartbeatHandle>,
+    armed: bool,
+}
+
+impl WorkerHostStartupGuard {
+    fn push_heartbeat(&mut self, heartbeat: WorkerHeartbeatHandle) {
+        self.heartbeats.push(heartbeat);
+    }
+
+    /// Disarm and release the started heartbeats to the completed host.
+    fn finish(mut self) -> Vec<WorkerHeartbeatHandle> {
+        self.armed = false;
+        std::mem::take(&mut self.heartbeats)
+    }
+}
+
+impl Drop for WorkerHostStartupGuard {
+    fn drop(&mut self) {
+        // `heartbeats` drop first and abort themselves, so a failed or cancelled
+        // start leaves no publishing heartbeat zombie.
+        if self.armed {
+            self.intake.retire_now();
+            self.manager.detach_intake(&self.owner);
+        }
+    }
+}
+
+/// Start a first-class worker host whose work intake follows the logical
+/// connection's current transport generation.
+///
+/// The host registers one generation-following intake owner: the manager
+/// installs broker-ready durable consumer intake on a candidate **before** it
+/// becomes the default, and retires the superseded generation's intake so its
+/// accepted jobs finish through their final ack. There is one logical worker
+/// host; only the physical receive loops move.
+pub async fn start_worker_host_generation_following<PF, P, MF, M, H, Fut, E>(
+    client: Arc<crate::client::TrellisClient>,
+    binding: JobsRuntimeBinding,
+    instance_id: String,
+    publisher_factory: PF,
+    meta_factory: MF,
+    handler: H,
+    options: WorkerHostOptions,
+) -> Result<WorkerHostHandle, WorkerHostError>
+where
+    PF: Fn() -> P + Clone + Send + Sync + 'static,
+    P: JobEventPublisher + Send + Sync + 'static,
+    P::Error: std::fmt::Display,
+    MF: Fn(&str, u32) -> M + Clone + Send + Sync + 'static,
+    M: JobMetaSource + Send + Sync + 'static,
+    H: Fn(ActiveJob<P, M>) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<Value, JobProcessError<E>>> + Send + 'static,
+    E: ToString + Send + 'static,
+{
+    let queue_types = selected_queue_types(&binding, options.queue_types.as_deref())?;
+    let queue_concurrency = queue_types
+        .iter()
+        .map(|queue_type| {
+            let concurrency = options
+                .queue_concurrency
+                .get(queue_type)
+                .copied()
+                .unwrap_or(1);
+            if concurrency == 0 {
+                Err(WorkerHostError::InvalidConcurrency {
+                    queue_type: queue_type.clone(),
+                    concurrency,
+                })
+            } else {
+                Ok((queue_type.clone(), concurrency))
+            }
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    for queue_type in &queue_types {
+        binding.jobs.queues.get(queue_type).ok_or_else(|| {
+            WorkerHostError::MissingQueueBinding {
+                queue_type: queue_type.clone(),
+            }
+        })?;
+    }
+
+    let cancellation = JobCancellationToken::new();
+    let logical_workers: usize = queue_concurrency
+        .values()
+        .map(|count| *count as usize)
+        .sum();
+    // One semaphore per queue so each queue enforces its own declared
+    // concurrency and a busy queue never blocks an idle one.
+    let capacity = queue_concurrency
+        .iter()
+        .map(|(queue_type, concurrency)| {
+            (
+                queue_type.clone(),
+                Arc::new(tokio::sync::Semaphore::new(*concurrency as usize)),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let owner = Arc::new(JobsWorkerIntake {
+        binding,
+        queue_types: queue_types.clone(),
+        queue_concurrency,
+        publisher_factory,
+        meta_factory,
+        handler,
+        cancellation: cancellation.clone(),
+        cancellation_registry: ActiveJobCancellationRegistry::new(),
+        capacity,
+        logical_workers,
+        installed: std::sync::Mutex::new(Vec::new()),
+        stopped: std::sync::atomic::AtomicBool::new(false),
+        failure: Arc::new(tokio::sync::Notify::new()),
+        failure_message: Arc::new(std::sync::Mutex::new(None)),
+    });
+    let generation_owner: Arc<dyn GenerationIntake> =
+        Arc::clone(&owner) as Arc<dyn GenerationIntake>;
+    // Attach intake before starting heartbeats, so a failed registration cannot
+    // leave detached heartbeat loops behind, and a failed heartbeat start drains
+    // the intake it just installed.
+    client
+        .transport_generations()
+        .attach_intake(Arc::clone(&generation_owner))
+        .await
+        .map_err(|error| WorkerHostError::WorkerStartup {
+            queue_type: "<all>".to_string(),
+            details: error.to_string(),
+        })?;
+    let intake: Arc<dyn WorkerIntake> = Arc::clone(&owner) as Arc<dyn WorkerIntake>;
+    // Cancellation-safe startup: if this future is dropped or a heartbeat fails
+    // before the host is returned, the guard detaches the owner and retires the
+    // intake it installed.
+    let mut startup = WorkerHostStartupGuard {
+        intake: Arc::clone(&intake),
+        owner: Arc::clone(&generation_owner),
+        manager: client.transport_generations(),
+        heartbeats: Vec::new(),
+        armed: true,
+    };
+    for queue_type in &queue_types {
+        let heartbeat = start_worker_heartbeat_loop(
+            client.nats().clone(),
+            WorkerHeartbeatOptions {
+                service: owner.binding.jobs.service_name.clone(),
+                subject_service: owner.binding.jobs.namespace.clone(),
+                job_type: queue_type.clone(),
+                instance_id: instance_id.clone(),
+                concurrency: Some(owner.queue_concurrency[queue_type]),
+                version: options.version.clone(),
+                interval: options.heartbeat_interval,
+            },
+        )
+        .await?;
+        startup.push_heartbeat(heartbeat);
+    }
+    let heartbeats = startup.finish();
+
+    Ok(WorkerHostHandle {
+        cancellation,
+        heartbeats,
+        workers: Vec::new(),
+        intake: Some(intake),
+        intake_owner: Some(generation_owner),
+        manager: Some(client.transport_generations()),
+    })
 }

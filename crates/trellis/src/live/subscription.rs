@@ -339,6 +339,15 @@ impl<T> ConsumerCore<T> {
     }
 }
 
+/// Shared slot for the consumer's retained provider-context guard.
+///
+/// The slot is cleared when the session reaches its terminal outcome, so a
+/// retained closed handle stops pinning provider-context evidence while an
+/// active session keeps the guard. Never force-cleared while the session runs,
+/// so revocation checks and identity-preserving replacement still apply.
+pub(crate) type ProviderGuardSlot =
+    Arc<std::sync::Mutex<Option<Arc<super::authority::LiveAuthorityGuard>>>>;
+
 /// The public Rust owned live subscription handle.
 pub struct LiveSubscription<T> {
     pub(crate) core: Arc<ConsumerCore<T>>,
@@ -347,8 +356,10 @@ pub struct LiveSubscription<T> {
     pub(crate) cancellation: LiveCancellation,
     /// Set once the first poll installed the activation path.
     pub(crate) activated: bool,
-    /// Retained provider authority; a loss fences queued yields.
-    pub(crate) guard: Arc<super::authority::LiveAuthorityGuard>,
+    /// Retained provider authority; a loss fences queued yields. Cleared once the
+    /// session terminal settles, so a retained closed handle does not pin the
+    /// provider context.
+    pub(crate) guard: ProviderGuardSlot,
     /// One shared close result for repeated close calls.
     pub(crate) close_result: std::sync::Mutex<Option<LiveCloseReceipt>>,
     /// Close-work lease slot. An explicit close or drop atomically takes it
@@ -368,7 +379,7 @@ impl<T> LiveSubscription<T> {
         drain: tokio::task::JoinHandle<()>,
         control: Arc<ConsumerControl>,
         cancellation: LiveCancellation,
-        guard: Arc<super::authority::LiveAuthorityGuard>,
+        guard: ProviderGuardSlot,
         lease: Arc<std::sync::Mutex<Option<crate::client::TransportLease>>>,
     ) -> Self {
         Self {
@@ -418,6 +429,7 @@ impl<T> LiveSubscription<T> {
                 slot.take();
             }
             self.cancellation.cancel();
+            self.release_provider_guard();
             return Ok(receipt);
         }
         // Atomically take the close-work lease so the exchange owns it until it
@@ -433,7 +445,17 @@ impl<T> LiveSubscription<T> {
             *slot = Some(receipt.clone());
         }
         self.cancellation.cancel();
+        self.release_provider_guard();
         Ok(receipt)
+    }
+
+    /// Drop the retained provider-context guard once the session is terminal, so
+    /// a retained closed handle cannot pin provider-context evidence. Active
+    /// sessions keep it for fencing and identity-preserving replacement.
+    fn release_provider_guard(&self) {
+        if let Ok(mut slot) = self.guard.lock() {
+            slot.take();
+        }
     }
 
     /// Map or filter application items while retaining the owning handle.
@@ -471,6 +493,9 @@ impl<T> Drop for LiveSubscription<T> {
             lease,
         );
         self._drain.abort();
+        // The handle is gone: drop the retained provider-context guard so the
+        // provider evidence is not pinned by a dropped observation.
+        self.release_provider_guard();
     }
 }
 
@@ -534,6 +559,13 @@ impl<T> Stream for LiveSubscription<T> {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
+        if this.core.committed_end().is_some() {
+            // The session settled: a retained closed handle must not keep
+            // provider-context evidence leased.
+            if let Ok(mut slot) = this.guard.lock() {
+                slot.take();
+            }
+        }
         if !this.activated {
             this.activated = true;
             this.core.start.notify_one();
@@ -544,9 +576,12 @@ impl<T> Stream for LiveSubscription<T> {
         }
         if this.core.committed_end().is_none() && matches!(this.core.phase(), ConsumerPhase::Active)
         {
-            if let Err(lost) = this.guard.check_now() {
-                this.core.discard_queue();
-                this.core.commit_end(authority_failure(&lost));
+            let guard = this.guard.lock().ok().and_then(|slot| slot.clone());
+            if let Some(guard) = guard {
+                if let Err(lost) = guard.check_now() {
+                    this.core.discard_queue();
+                    this.core.commit_end(authority_failure(&lost));
+                }
             }
         }
         if let Some(end) = this.core.committed_end() {
@@ -610,8 +645,9 @@ pub(crate) struct ConsumerControl {
     /// Provider identity tuple pinned at offer acceptance.
     pub(crate) pinned_identity: super::authority::PinnedPeerIdentity,
     /// Retained provider authority for responses and identity-preserving
-    /// refresh replacement.
-    pub(crate) provider_guard: Arc<super::authority::LiveAuthorityGuard>,
+    /// refresh replacement. Shared with the subscription so the terminal outcome
+    /// releases it exactly once for a retained closed handle.
+    pub(crate) provider_guard: ProviderGuardSlot,
     pub(crate) close_started: AtomicBool,
     pub(crate) last_control_seq: AtomicU64,
 }
@@ -754,25 +790,24 @@ impl ConsumerControl {
             .ok_or_else(|| {
                 TrellisClientError::LiveProtocol("control reply omitted context".into())
             })?;
-        if digest == self.provider_guard.context_digest() {
+        let guard = self
+            .provider_guard
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone());
+        // A settled session has no control exchange to reconcile.
+        let Some(guard) = guard else {
+            return Ok(());
+        };
+        if digest == guard.context_digest() {
             return Ok(());
         }
-        let candidate = self
-            .provider_guard
-            .prepare_replacement(&digest)
-            .await
-            .map_err(|lost| {
-                TrellisClientError::AuthorizationUnavailable(format!(
-                    "control reply context: {lost:?}"
-                ))
-            })?;
-        self.provider_guard
-            .commit_replacement(candidate)
-            .map_err(|lost| {
-                TrellisClientError::AuthorizationUnavailable(format!(
-                    "control reply context: {lost:?}"
-                ))
-            })?;
+        let candidate = guard.prepare_replacement(&digest).await.map_err(|lost| {
+            TrellisClientError::AuthorizationUnavailable(format!("control reply context: {lost:?}"))
+        })?;
+        guard.commit_replacement(candidate).map_err(|lost| {
+            TrellisClientError::AuthorizationUnavailable(format!("control reply context: {lost:?}"))
+        })?;
         Ok(())
     }
 

@@ -254,6 +254,10 @@ impl EventSubscribeOptions {
 #[derive(Debug)]
 pub struct EventMessage<T> {
     message: jetstream::Message,
+    /// The generation lease that admitted this delivery. Retained on the delivery
+    /// itself until it is dropped, so an un-acked message keeps its receiving
+    /// generation alive even if the originating stream is dropped first.
+    _lease: Option<crate::client::TransportLease>,
     _event: PhantomData<fn() -> T>,
 }
 
@@ -730,6 +734,7 @@ struct AuthorizationProviderHandle {
 async fn attach_authorization_provider(
     nats: async_nats::Client,
     authorization_contexts: Arc<AuthorizationContextCache>,
+    generations: Option<crate::client::TransportGenerationManager>,
 ) -> Result<AuthorizationProviderHandle, TrellisClientError> {
     let registry_binding = match authorization_contexts.bundle() {
         Ok(bundle) => bundle.authorization_registry.clone(),
@@ -739,6 +744,7 @@ async fn attach_authorization_provider(
         nats.clone(),
         &registry_binding,
         authorization_contexts.clone(),
+        generations,
     )
     .await
     {
@@ -875,9 +881,6 @@ pub struct TrellisClient {
     /// Automatic transport generations that own this logical connection's
     /// physical NATS attachments for finite request and publish work.
     generations: crate::client::TransportGenerationManager,
-    /// Keeps the initial framework-loop attachment alive until provider/live
-    /// intake migrates to the current generation.
-    _baseline_lease: crate::client::TransportLease,
     authorization_context_refresh_task: Option<JoinHandle<()>>,
     companion: Option<Arc<TrellisClient>>,
     /// Process-local connection state registration for telemetry gauges.
@@ -1345,6 +1348,11 @@ impl TrellisClient {
         )
         .await?;
         let nats = baseline_lease.nats().clone();
+        // The baseline attachment is not pinned for the connection lifetime: its
+        // framework-loop attachment migrates to the current generation through
+        // the established attachment contract, so the initial generation is
+        // reclaimed once superseded. `drop` releases the bootstrap hold here.
+        drop(baseline_lease);
 
         let live = crate::live::manager::LiveSessionManager::new(
             nats.clone(),
@@ -1355,8 +1363,12 @@ impl TrellisClient {
         if let Ok(mut slot) = live_slot.lock() {
             *slot = Some(std::sync::Arc::downgrade(&live));
         }
-        let provider =
-            attach_authorization_provider(nats.clone(), authorization_contexts.clone()).await?;
+        let provider = attach_authorization_provider(
+            nats.clone(),
+            authorization_contexts.clone(),
+            Some(generations.clone()),
+        )
+        .await?;
         let applied_native_authorization =
             Arc::new(tokio::sync::Mutex::new(applied_native_authorization));
         let authorization_context_refresh_task = Some(
@@ -1389,7 +1401,6 @@ impl TrellisClient {
             applied_native_authorization,
             transport,
             generations,
-            _baseline_lease: baseline_lease,
             authorization_context_refresh_task,
             companion: None,
             live: Some(live),
@@ -1974,6 +1985,7 @@ impl TrellisClient {
                 Some(Ok(message)) => {
                     let event_message = EventMessage {
                         message,
+                        _lease: Some(lease.clone()),
                         _event: PhantomData,
                     };
                     Ok(Some((event_message, (messages, lease))))

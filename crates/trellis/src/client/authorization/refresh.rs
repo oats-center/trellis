@@ -252,7 +252,18 @@ pub(crate) async fn refresh_until_materialized(
 pub(crate) async fn install_prepared_authorization(
     runtime: &AuthorizationRefreshRuntime,
 ) -> Result<String, TrellisClientError> {
+    // A connection that has latched a terminal cause must not report a
+    // successful authorization install, and must not make a refreshed context
+    // current. The latch is monotonic, so checking it before the prepare step and
+    // again before the promotion (which is what makes a context current) fences a
+    // concurrent terminal from being reported as success.
+    if let Some(cause) = runtime.generations.terminal() {
+        return Err(cause.client_error());
+    }
     let (candidate_digest, _) = runtime.contexts.prepare_refresh(&runtime.auth).await?;
+    if let Some(cause) = runtime.generations.terminal() {
+        return Err(cause.client_error());
+    }
     let refreshed = AppliedNativeAuthorization::from_cache(&runtime.contexts)?;
     let mut applied = runtime.applied_native_authorization.lock().await;
     apply_native_runtime_refresh(&runtime.nats, &applied.runtime, &refreshed.runtime).await?;
@@ -289,6 +300,14 @@ pub(crate) fn spawn_authorization_context_refresh_task(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
+            // Stop once the logical connection latches an authoritative terminal
+            // cause: a dead authority must not be retried every refresh interval.
+            if runtime.generations.terminal().is_some() {
+                tracing::info!(
+                    "authorization context refresh stopped: logical connection is terminal"
+                );
+                return;
+            }
             let delay = match runtime.contexts.refresh_delay() {
                 Ok(delay) => delay,
                 Err(error) => {
@@ -302,6 +321,12 @@ pub(crate) fn spawn_authorization_context_refresh_task(
                     refresh_credential: true,
                 },
                 request = runtime.contexts.wait_refresh_request() => request,
+                _ = runtime.generations.wait_terminal() => {
+                    tracing::info!(
+                        "authorization context refresh stopped: logical connection is terminal"
+                    );
+                    return;
+                }
             };
             if request.context_digest.is_some()
                 && request.context_digest != runtime.contexts.stored_context_digest().ok()
@@ -336,19 +361,51 @@ pub(crate) fn spawn_authorization_context_refresh_task(
                 runtime.contexts.request_coverage_reconciliation();
                 continue;
             }
+            // Bind the attempt to the installed context so a terminal result is
+            // only committed for the authorization it actually describes.
+            let originating_digest = runtime.contexts.stored_context_digest().ok();
             match install_prepared_authorization(&runtime).await {
                 Ok(_) => {}
                 Err(TrellisClientError::BootstrapHttp { status, code })
                     if is_terminal_refresh_error(&code) =>
                 {
                     tracing::warn!(status, "authorization context refresh rejected");
-                    if let Err(error) = runtime.contexts.clear() {
-                        tracing::warn!(%error, "failed to clear rejected authorization context");
+                    // Positive stale-result guard: latch a terminal cause only
+                    // when the refused result positively describes the still
+                    // installed originating context. An absent or superseded
+                    // context is not this logical connection's terminal cause,
+                    // and the conditional clear never discards a newer install.
+                    let Some(origin) = originating_digest.as_deref() else {
+                        continue;
+                    };
+                    let terminal = crate::client::LogicalTerminalCause::Authorization(code.clone());
+                    // The conditional clear and the terminal latch are published
+                    // while the own-transition guard is held, so a concurrent
+                    // public refresh cannot install a valid new context in the
+                    // window between them (it takes the same guard).
+                    match runtime.contexts.clear_if_installed(origin, || {
+                        runtime.generations.publish_terminal(terminal.clone());
+                    }) {
+                        Ok(true) => {}
+                        Ok(false) => continue,
+                        Err(error) => {
+                            tracing::warn!(%error, "failed to clear rejected authorization context");
+                            continue;
+                        }
                     }
                     let _ = runtime.nats.drain().await;
                     return;
                 }
                 Err(error) => {
+                    // A terminal latched during the attempt (for example the
+                    // promotion fence returning `AuthorizationUnavailable`) must
+                    // end the loop now, not retry on the refresh interval.
+                    if runtime.generations.terminal().is_some() {
+                        tracing::info!(
+                            "authorization context refresh stopped: logical connection is terminal"
+                        );
+                        return;
+                    }
                     tracing::warn!(%error, "authorization context refresh will retry");
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                     runtime.contexts.request_refresh();
