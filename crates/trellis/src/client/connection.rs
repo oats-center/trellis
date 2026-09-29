@@ -1197,25 +1197,15 @@ impl TrellisClient {
         let identity = Arc::new(SessionAuth::from_seed_base64url(identity_seed)?);
         let (session_seed, _) = crate::auth::generate_session_keypair();
         let auth = SessionAuth::from_seed_base64url(&session_seed)?;
-        let companion_credential = match (companion_descriptor, companion_installation_seed) {
-            (Some(descriptor), Some(seed)) => {
-                Some(super::authorization::NativeCompanionCredential {
-                    participant_id: descriptor.id,
-                    installation: Arc::new(SessionAuth::from_seed_base64url(seed)?),
-                })
-            }
-            (Some(_), None) => {
-                return Err(TrellisClientError::Bootstrap(
-                    "device companion installation seed is required".into(),
-                ))
-            }
-            (None, Some(_)) => {
-                return Err(TrellisClientError::Bootstrap(
-                    "device descriptor has no companion".into(),
-                ))
-            }
-            (None, None) => None,
-        };
+        // A device companion is never part of the native bootstrap request. The
+        // server returns a durable companion assignment from an active device
+        // delegation, and the companion then connects through the ordinary user
+        // login path after this native connection is established.
+        if companion_descriptor.is_none() && companion_installation_seed.is_some() {
+            return Err(TrellisClientError::Bootstrap(
+                "device descriptor has no companion".into(),
+            ));
+        }
         let contexts = Arc::new(AuthorizationContextCache::new(
             trellis_url,
             participant_id.to_owned(),
@@ -1226,7 +1216,6 @@ impl TrellisClient {
                 identity,
                 package_evidence,
                 participant_path,
-                companion: companion_credential,
             },
             name.map(str::to_owned),
         )?);
@@ -1285,11 +1274,21 @@ impl TrellisClient {
             authorization.resource_runtime,
         ));
         if let Some(companion) = authorization.companion {
+            if companion_descriptor
+                .is_none_or(|descriptor| descriptor.id != companion.participant_id.as_str())
+            {
+                return Err(TrellisClientError::Bootstrap(
+                    "device bootstrap companion does not match its descriptor".into(),
+                ));
+            }
             let seed = companion_installation_seed.ok_or_else(|| {
                 TrellisClientError::Bootstrap(
-                    "device bootstrap returned a companion without its installation seed".into(),
+                    "device companion installation seed is required".into(),
                 )
             })?;
+            // The companion is an ordinary App/Agent user login: only the durable
+            // assignment comes from device bootstrap, and the user-connect path
+            // derives its own runtime session key and authorization context.
             match Self::connect_user(UserConnectOptions::new(
                 trellis_url,
                 timeout_ms,
@@ -1307,6 +1306,10 @@ impl TrellisClient {
                 }
                 Err(error) => return Err(error),
             }
+        } else if companion_descriptor.is_some_and(|descriptor| descriptor.required) {
+            return Err(TrellisClientError::Bootstrap(
+                "required device companion is unavailable".into(),
+            ));
         }
         if let Err(error) = publish_health_heartbeat(&connected.nats, timeout_ms, &heartbeat).await
         {

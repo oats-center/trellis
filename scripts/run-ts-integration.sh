@@ -40,6 +40,7 @@ fixture_bins=(
   live_probe_caller
   empty_watch
   operation_lease_loss
+  device_companion
 )
 
 # CI stages the producer-built executables; a missing one is a setup failure.
