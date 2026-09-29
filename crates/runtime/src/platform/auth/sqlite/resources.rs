@@ -337,15 +337,123 @@ impl SqliteAuthorizationStore {
                 Some(installed_revision),
             )?
             .ok_or(AuthorizationStateError::ParticipantMissing)?;
+            let Some(binding) =
+                load_grant_binding(connection, owner_kind, &owner_id, &participant_id)?
+            else {
+                return Ok(Vec::new());
+            };
             super::contexts::load_resource_bindings(
                 connection,
                 owner_kind,
                 &owner_id,
                 &participant_id,
-                installed_revision,
-                installed_revision,
+                &binding.approved_resources,
+                binding.revision,
                 &participant.projection,
             )
+        })
+        .await
+    }
+
+    /// Records the intrinsic, current materialization of Trellis-owned builtin
+    /// resources whose physical identity is fixed by the runtime rather than
+    /// derived by a provider reconcile.
+    ///
+    /// Builtin resources such as the Auth runtime KV buckets already exist under
+    /// stable names, so the generic provider reconcile cannot own their physical
+    /// identity. Writing the same authoritative `auth_resources` facts here keeps
+    /// a single projection path for every participant: issuance always
+    /// interprets the pinned or current declaration against the one current
+    /// catalog materialization. The write is idempotent for an already-matching
+    /// row, and any other write advances the catalog revision so a stale
+    /// provider reconcile for the same identity becomes a no-op.
+    pub(crate) async fn record_builtin_resource_materialization(
+        &self,
+        owner_kind: GrantOwnerKind,
+        owner_id: String,
+        participant_id: String,
+        binding_revision: u64,
+        resources: Vec<crate::platform::auth::resources::BuiltinResourceMaterialization>,
+        now: i64,
+    ) -> Result<(), AuthorizationStateError> {
+        self.run(move |connection| {
+            let transaction = connection.transaction().map_err(sql_error)?;
+            for resource in &resources {
+                let kind = participant_kind(resource.kind);
+                let current = load_resource_by_identity(
+                    &transaction,
+                    owner_kind,
+                    &owner_id,
+                    &participant_id,
+                    kind,
+                    &resource.local_name,
+                )?;
+                if current.as_ref().is_some_and(|existing| {
+                    existing.state == ResourceCatalogState::Ready
+                        && existing.physical_id == resource.physical_id
+                        && existing.commitment == resource.commitment
+                        && existing.binding_revision == binding_revision
+                        && existing.actual.as_ref() == Some(&resource.actual)
+                }) {
+                    continue;
+                }
+                let revision = current
+                    .as_ref()
+                    .map(|existing| super::validation::next_version(existing.revision))
+                    .transpose()?
+                    .unwrap_or(1);
+                let created_at = current.as_ref().map_or(now, |existing| existing.created_at);
+                let id = resource_id(
+                    owner_kind,
+                    &owner_id,
+                    &participant_id,
+                    kind,
+                    &resource.local_name,
+                );
+                transaction
+                    .execute(
+                        "INSERT INTO auth_resources (resource_id, owner_kind, owner_id, \
+                         participant_id, kind, local_name, commitment_json, physical_id, \
+                         actual_json, state, readiness_reason, binding_revision, revision, \
+                         created_at, updated_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'ready', NULL, ?10, ?11, ?12, ?13)
+                         ON CONFLICT(resource_id) DO UPDATE SET
+                             commitment_json = excluded.commitment_json,
+                             physical_id = excluded.physical_id,
+                             actual_json = excluded.actual_json,
+                             state = 'ready',
+                             readiness_reason = NULL,
+                             binding_revision = excluded.binding_revision,
+                             revision = excluded.revision,
+                             updated_at = excluded.updated_at",
+                        params![
+                            id,
+                            encode_enum(owner_kind)?,
+                            owner_id,
+                            participant_id,
+                            resource_kind_sql(kind),
+                            resource.local_name,
+                            encode_json(&resource.commitment)?,
+                            resource.physical_id,
+                            encode_json(&resource.actual)?,
+                            binding_revision,
+                            revision,
+                            created_at,
+                            now,
+                        ],
+                    )
+                    .map_err(map_write_error)?;
+                insert_history(
+                    &transaction,
+                    &id,
+                    revision,
+                    &resource.commitment,
+                    Some(&resource.actual),
+                    ResourceCatalogState::Ready,
+                    now,
+                )?;
+            }
+            transaction.commit().map_err(sql_error)
         })
         .await
     }
@@ -583,8 +691,8 @@ impl SqliteAuthorizationStore {
                     binding.owner_kind,
                     &binding.owner_id,
                     &binding.participant_id,
-                    binding.installed_revision,
-                    binding.installed_revision,
+                    &binding.approved_resources,
+                    binding.revision,
                     &participant.projection,
                 )?;
                 let authority = super::super::policy::resolve_authority(&participant, binding.approval_mode, &binding.approved_capabilities, &binding.approved_resources, &binding.platform_privileges, &binding.delegation_ceiling, (&resources, binding.companion_approved))?;
@@ -914,7 +1022,7 @@ fn load_resource(
         .transpose()
 }
 
-fn load_resource_by_identity(
+pub(super) fn load_resource_by_identity(
     connection: &Connection,
     owner_kind: GrantOwnerKind,
     owner_id: &str,
@@ -953,7 +1061,38 @@ fn insert_history(
     Ok(())
 }
 
-fn resource_evidence(
+/// Whether a present materialization still satisfies the declaration's hard
+/// retention contract.
+///
+/// Desired capacity stays a non-hard hint, but a physical resource that retains
+/// less history or a shorter window than the declaration promises cannot carry
+/// that declaration's authority, so issuance must not treat it as available.
+pub(super) fn materialization_satisfies(
+    declaration: &crate::platform::auth::evidence::ResourceRuntimeProjection,
+    actual: &ResourceActual,
+) -> bool {
+    match actual {
+        ResourceActual::Kv {
+            history, ttl_ms, ..
+        } => {
+            *history >= declaration.history.unwrap_or(0)
+                && retention_satisfies(*ttl_ms, declaration.ttl_ms)
+        }
+        ResourceActual::Store { ttl_ms, .. } => retention_satisfies(*ttl_ms, declaration.ttl_ms),
+        ResourceActual::State | ResourceActual::Job | ResourceActual::Consumer => true,
+    }
+}
+
+/// A zero declared window means unlimited retention, and a zero actual window
+/// also means unlimited, which satisfies any finite requirement.
+fn retention_satisfies(actual_ttl_ms: u64, declared_ttl_ms: Option<u64>) -> bool {
+    match declared_ttl_ms.unwrap_or(0) {
+        0 => actual_ttl_ms == 0,
+        required => actual_ttl_ms == 0 || actual_ttl_ms >= required,
+    }
+}
+
+pub(super) fn resource_evidence(
     resource: &ResourceCatalogRecord,
     participant: &crate::platform::auth::evidence::ParticipantRuntimeProjection,
     declaration: &crate::platform::auth::evidence::ResourceRuntimeProjection,
@@ -1181,7 +1320,7 @@ fn validate_approved_declaration(
     Ok(())
 }
 
-fn participant_kind(kind: AuthorizationResourceKind) -> ParticipantResourceKind {
+pub(super) fn participant_kind(kind: AuthorizationResourceKind) -> ParticipantResourceKind {
     match kind {
         AuthorizationResourceKind::Consumer => ParticipantResourceKind::EventConsumer,
         AuthorizationResourceKind::Job => ParticipantResourceKind::JobQueue,

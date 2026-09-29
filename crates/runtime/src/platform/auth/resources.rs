@@ -47,6 +47,26 @@ pub(crate) struct ResourceCatalogRecord {
     pub updated_at: i64,
 }
 
+/// Intrinsic materialization facts for a Trellis-owned builtin resource.
+///
+/// Builtin resources already exist under stable runtime-owned physical names, so
+/// their catalog rows cannot be produced by a provider reconcile. A builtin
+/// records the same authoritative `auth_resources` facts here, preserving its
+/// intrinsic physical identity so every participant uses one projection path.
+#[derive(Clone, Debug)]
+pub(crate) struct BuiltinResourceMaterialization {
+    /// Resource family.
+    pub kind: AuthorizationResourceKind,
+    /// Participant-local resource name.
+    pub local_name: String,
+    /// Declaration-derived commitment recorded in the catalog.
+    pub commitment: super::domain::ResourceCommitment,
+    /// Fixed physical identity owned by the runtime.
+    pub physical_id: String,
+    /// Effective provider configuration actually in use.
+    pub actual: ResourceActual,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(crate) enum ResourceActual {

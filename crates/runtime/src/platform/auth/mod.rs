@@ -37,6 +37,8 @@ pub(super) use builtins::{
     events_runtime_participant_binding, health_runtime_participant_binding,
     jobs_runtime_participant_binding, portal_participant_binding,
 };
+#[cfg(feature = "nats-leases")]
+pub(crate) use ephemeral::AUTH_KV_MATERIALIZATION;
 pub(crate) use ephemeral::{
     validate_connection_kick_response, AuthAttachmentState, AuthConnectionPresence,
     AuthEphemeralRepository, ConnectionKickOutcome, ConsentApproval, ConsentRequest,

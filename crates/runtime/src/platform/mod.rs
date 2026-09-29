@@ -18,8 +18,7 @@ use auth::{
     DeploymentProfileCreation, DeploymentProfileRecord, DeploymentProfileState, DeploymentRecord,
     DeploymentRepository, FirstAdminAuthorityTarget, IdempotencyResultRecord, LoginPortalMutation,
     LoginPortalRecord, LoginSettingsRecord, ParticipantBindingRecord, PortalRepository,
-    PrincipalKind, PrincipalRecord, PrincipalState, ResourceBindingEvidence, ResourceBindingState,
-    ResourceProviderIdentity, RuntimeInstanceRecord, RuntimeInstanceState,
+    PrincipalKind, PrincipalRecord, PrincipalState, RuntimeInstanceRecord, RuntimeInstanceState,
     SqliteAuthorizationStore,
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -907,48 +906,39 @@ async fn ensure_auth_event_session(
         .ok_or_else(|| {
             RuntimeError::Platform("installed Auth participant revision is missing".to_owned())
         })?;
-    let resources = [
-        (
-            "browserFlows",
-            "trellis_auth_browser_flows",
-            86_400_000,
-            65_536,
-        ),
-        ("oauthStates", "trellis_auth_oauth_states", 900_000, 16_384),
-        ("connections", "trellis_auth_connections", 120_000, 16_384),
-    ]
-    .into_iter()
-    .map(
-        |(local_name, bucket, ttl_ms, max_value_bytes)| ResourceBindingEvidence {
-            resource_kind: "kv".to_owned(),
-            local_name: local_name.to_owned(),
-            binding_id: format!("binding:{DEPLOYMENT_ID}:kv:{local_name}"),
-            owner_participant_id: participant.participant_id.clone(),
-            provider_identity: ResourceProviderIdentity::Kv {
-                bucket: bucket.to_owned(),
-            },
-            actual: Some(auth::resources::ResourceActual::Kv {
-                history: 1,
-                ttl_ms,
-                max_value_bytes: Some(max_value_bytes),
-            }),
-            state: ResourceBindingState::Available,
-            materialized_at: now,
-            error: None,
-        },
-    )
-    .collect::<Vec<_>>();
-    service
-        .repository()
-        .replace_resource_bindings(
-            auth::GrantOwnerKind::Deployment,
-            DEPLOYMENT_ID.to_owned(),
-            participant.participant_id.clone(),
-            installed_revision,
-            resources.clone(),
-        )
-        .await
-        .map_err(|error| RuntimeError::Platform(format!("bind Auth resources: {error}")))?;
+    // The Auth runtime KV buckets already exist under stable runtime-owned
+    // names, so their physical identity is intrinsic rather than provider
+    // derived. Record the same authoritative `auth_resources` materialization
+    // facts a reconcile would, so issuance has one projection path and the
+    // intrinsic buckets' subjects stay exactly as compiled before. The hard
+    // requirements come from the published participant declaration; the
+    // physical facts come from the table the runtime uses to open those stores.
+    let commitments = auth::policy::participant_resource_commitments(participant)
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let materializations = auth::AUTH_KV_MATERIALIZATION
+        .iter()
+        .map(|(local_name, bucket, history, ttl_ms, max_value_bytes)| {
+            let approved = commitments
+                .iter()
+                .find(|approved| approved.name == *local_name)
+                .ok_or_else(|| {
+                    RuntimeError::Platform(format!(
+                        "builtin Auth resource {local_name} is not declared by its participant"
+                    ))
+                })?;
+            Ok(auth::resources::BuiltinResourceMaterialization {
+                kind: approved.kind,
+                local_name: (*local_name).to_owned(),
+                commitment: approved.commitment.clone(),
+                physical_id: (*bucket).to_owned(),
+                actual: auth::resources::ResourceActual::Kv {
+                    history: *history,
+                    ttl_ms: *ttl_ms,
+                    max_value_bytes: Some(u64::from(*max_value_bytes)),
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, RuntimeError>>()?;
     let current = service
         .repository()
         .get_grant_binding(
@@ -958,11 +948,29 @@ async fn ensure_auth_event_session(
         )
         .await
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let expected_revision = current.as_ref().map_or(0, |binding| binding.revision);
-    if current.as_ref().is_none_or(|binding| {
+    let change_binding = current.as_ref().is_none_or(|binding| {
         binding.installed_revision != installed_revision
             || binding.state != auth::GrantBindingState::Active
-    }) {
+    });
+    // Attach the materialization at the persisted binding revision the approval
+    // validation fences on. The following reconcile retains these rows and
+    // advances their binding revision to the replacement's revision, so both the
+    // approval and immediate issuance observe the intrinsic builtin physical
+    // identity.
+    let materialization_revision = current.as_ref().map_or(1, |binding| binding.revision);
+    service
+        .repository()
+        .record_builtin_resource_materialization(
+            auth::GrantOwnerKind::Deployment,
+            DEPLOYMENT_ID.to_owned(),
+            participant.participant_id.clone(),
+            materialization_revision,
+            materializations.clone(),
+            now,
+        )
+        .await
+        .map_err(|error| RuntimeError::Platform(format!("materialize Auth resources: {error}")))?;
+    if change_binding {
         let grants = participant
             .resolve()
             .map_err(|error| RuntimeError::Platform(error.to_string()))?
@@ -980,8 +988,7 @@ async fn ensure_auth_event_session(
                     grants: grants.clone(),
                     approval_mode: auth::ApprovalMode::Exact,
                     approved_capabilities: Vec::new(),
-                    approved_resources: auth::policy::participant_resource_commitments(participant)
-                        .map_err(|error| RuntimeError::Platform(error.to_string()))?,
+                    approved_resources: commitments.clone(),
                     delegation_ceiling: auth::DelegationCeiling {
                         capabilities: Vec::new(),
                         exact_restrictions: Some(grants),
@@ -990,7 +997,7 @@ async fn ensure_auth_event_session(
                     approval_decision_digest: digest.clone(),
                     companion_approved: false,
                     platform_privileges: Vec::new(),
-                    expected_revision,
+                    expected_revision: current.as_ref().map_or(0, |binding| binding.revision),
                     expected_current_installed_revision: None,
                     state: auth::GrantBindingState::Active,
                     expires_at: None,
@@ -1010,17 +1017,6 @@ async fn ensure_auth_event_session(
             .await
             .map_err(|error| RuntimeError::Platform(format!("bind Auth deployment: {error}")))?;
     }
-    service
-        .repository()
-        .replace_resource_bindings(
-            auth::GrantOwnerKind::Deployment,
-            DEPLOYMENT_ID.to_owned(),
-            participant.participant_id.clone(),
-            installed_revision,
-            resources,
-        )
-        .await
-        .map_err(|error| RuntimeError::Platform(format!("bind Auth resources: {error}")))?;
     let mut seed = [0_u8; 32];
     getrandom::fill(&mut seed).map_err(|error| RuntimeError::Platform(error.to_string()))?;
     let seed = URL_SAFE_NO_PAD.encode(seed);
