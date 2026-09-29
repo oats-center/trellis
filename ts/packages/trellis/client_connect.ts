@@ -23,7 +23,6 @@ import {
 } from "./auth/authorization_context.ts";
 import { installAuthorizationRefresh } from "./auth/authorization/install_refresh.ts";
 import {
-  readOwnAdmission,
   resourceTransportCheck,
   type TransportAuthorizationGate,
   TransportAuthorizationState,
@@ -41,6 +40,10 @@ import {
   decodeTrellisHttpError,
   isRetriableAuthorizationCode,
 } from "./auth/http_error.ts";
+import {
+  transportAuthorizationDigestWasm,
+  type TransportAuthorizationV1,
+} from "./auth/protocol_wasm.ts";
 import { createAuth, type TrellisAuth } from "./auth/session_auth.ts";
 import { estimateMidpointClockOffsetMs } from "./auth/time.ts";
 import { type CallerRuntime, createCallerRuntime } from "./caller.ts";
@@ -48,8 +51,7 @@ import type { ClientOpts } from "./client.ts";
 import {
   installConnectionAvailability,
   installConnectionTransportUpgrade,
-  observeNatsTrellisConnection,
-  replaceTransportAttachment,
+  observeTrellisConnection,
   sameTransportServers,
   startConnectionTelemetry,
   transitionConnectionAvailability,
@@ -78,6 +80,10 @@ import {
   type TrellisOpts,
 } from "./session.ts";
 import { TypedStore } from "./store.ts";
+import {
+  TransportGenerationManager,
+  type TransportGenerationPrepared,
+} from "./transport/generations.ts";
 import {
   recordCatalogDuration,
   recordTrellisDuration,
@@ -158,6 +164,7 @@ function createConnectedClient(args: {
     resourceAvailability: TrellisOpts<RuntimeApi>["resourceAvailability"];
     onSessionNotFound?: TrellisOpts<RuntimeApi>["onSessionNotFound"];
     transportGate?: TrellisOpts<RuntimeApi>["transportGate"];
+    transport?: TrellisOpts<RuntimeApi>["transport"];
   };
 }): Trellis<RuntimeApi, "client", RuntimeStateStores> {
   const trellis = new Trellis<RuntimeApi, "client", RuntimeStateStores>(
@@ -1333,8 +1340,6 @@ export async function connectClientWithDeps<
   const runtimeState = {
     participantDigest: bootstrap.connectInfo.participantDigest,
     sessionId: bootstrap.connectInfo.sessionId,
-    jwt: () => authorizationContexts.nextConnectRoutingJwt(),
-    contextDigest: () => authorizationContexts.transportCurrent().contextDigest,
   };
   let endingSession = false;
   const handleSessionNotFound = identity.mode === "browser"
@@ -1368,30 +1373,107 @@ export async function connectClientWithDeps<
       }
     }
     : undefined;
-  const runtimeAuth = await createRuntimeUserAuthenticator({
-    identity,
-    inboxPrefix: bootstrap.connectInfo.transport.inboxPrefix,
-    contextDigest: runtimeState.contextDigest,
-    jwt: runtimeState.jwt,
-    authorizationUsable: () =>
-      authorizationProviderCache?.transportUsable() ?? true,
-  });
   let nc: NatsConnection | undefined;
   let appliedTransportServers: string[] | undefined;
   let authorizationProviderCache: AuthorizationProviderCache | undefined;
+  let generationManager: TransportGenerationManager | undefined;
   const connectionTelemetry = startConnectionTelemetry("client");
+
+  /** Newest installed desired application transport policy. */
+  const currentDesiredPolicy = (): TransportAuthorizationV1 | undefined => {
+    try {
+      return authorizationContexts.current().context.transportAuthorization;
+    } catch {
+      return undefined;
+    }
+  };
+
+  // The admitted-transport gate remains the boundary for surfaces not yet
+  // routed through generation leases (Live, KV/store). It tracks the current
+  // generation's exact admission rather than one fixed physical socket.
+  const transportState = new TransportAuthorizationState();
+  const syncTransportGate = async (): Promise<void> => {
+    const active = generationManager;
+    if (!active) return;
+    const generation = active.currentGeneration();
+    if (!generation || !generation.ready) {
+      transportState.markDisconnected();
+      return;
+    }
+    await transportState.recordAdmission({
+      contextDigest: generation.contextDigest,
+      policy: generation.admittedPolicy,
+      allowed: currentDesiredPolicy(),
+      nowUnixSeconds: authorizationContexts.correctedNowSeconds(),
+    });
+  };
+
+  /**
+   * Capture immutable CONNECT material for the newest installed authorization
+   * context.
+   *
+   * The initial connection and every automatic generation use this one path, so
+   * a candidate can only CONNECT with the exact context it later reports.
+   */
+  const prepareGeneration = async (): Promise<
+    TransportGenerationPrepared | undefined
+  > => {
+    let verified;
+    try {
+      verified = authorizationContexts.current();
+    } catch {
+      return undefined;
+    }
+    const policy = verified.context.transportAuthorization;
+    let routingJwt: string;
+    let servers: string[];
+    try {
+      routingJwt = authorizationContexts.routingJwt();
+      servers = selectClientRuntimeTransportServers(
+        authorizationContexts.transportRuntimeBinding().transports,
+      );
+    } catch {
+      authorizationContexts.requestRefresh();
+      return undefined;
+    }
+    const policyDigest = await transportAuthorizationDigestWasm(policy);
+    const authenticator = await createRuntimeUserAuthenticator({
+      identity,
+      inboxPrefix: bootstrap.connectInfo.transport.inboxPrefix,
+      contextDigest: verified.contextDigest,
+      jwt: routingJwt,
+      authorizationUsable: () =>
+        authorizationProviderCache?.transportUsable() ?? true,
+    });
+    return {
+      contextDigest: verified.contextDigest,
+      policy,
+      policyDigest,
+      connect: {
+        servers,
+        authenticators: authenticator.authenticators,
+        inboxPrefix: bootstrap.connectInfo.transport.inboxPrefix,
+        maxReconnectAttempts: DEFAULT_RUNTIME_MAX_RECONNECT_ATTEMPTS,
+        timeoutMs: args.timeout ?? 30_000,
+      },
+    };
+  };
+
   try {
     const natsStartedAt = performance.now();
-    appliedTransportServers = selectClientRuntimeTransportServers(
-      bootstrap.connectInfo.transports,
-    );
+    const initialPrepared = await prepareGeneration();
+    if (!initialPrepared) {
+      throw new Error("no current authorization context to connect with");
+    }
+    appliedTransportServers = initialPrepared.connect.servers;
     nc = await transport.connect({
-      servers: appliedTransportServers,
-      maxReconnectAttempts: DEFAULT_RUNTIME_MAX_RECONNECT_ATTEMPTS,
+      servers: initialPrepared.connect.servers,
+      maxReconnectAttempts: initialPrepared.connect.maxReconnectAttempts ??
+        DEFAULT_RUNTIME_MAX_RECONNECT_ATTEMPTS,
       ignoreAuthErrorAbort: true,
       timeout: args.timeout ?? 30_000,
-      inboxPrefix: bootstrap.connectInfo.transport.inboxPrefix,
-      authenticator: runtimeAuth.authenticators,
+      inboxPrefix: initialPrepared.connect.inboxPrefix,
+      authenticator: initialPrepared.connect.authenticators,
     });
     const connectedNats = nc;
     authorizationProviderCache = await AuthorizationProviderCache.attach(
@@ -1403,10 +1485,32 @@ export async function connectClientWithDeps<
     authorizationProviderCache.start();
     await authorizationProviderCache.waitReady();
     await authorizationProviderCache.retainOwnContext();
-    void connectedNats.closed().then(
-      () => authorizationProviderCache?.stop(),
-      () => authorizationProviderCache?.stop(),
-    );
+    generationManager = new TransportGenerationManager({
+      kind: "user",
+      nowSeconds: () => authorizationContexts.correctedNowSeconds(),
+      desiredPolicy: currentDesiredPolicy,
+      prepare: prepareGeneration,
+      onEvent: (event) => {
+        if (
+          event.type === "transport_generation.activated" ||
+          event.type === "transport_generation.closed"
+        ) {
+          void syncTransportGate().catch(() => undefined);
+        }
+      },
+      open: (connect) =>
+        transport.connect({
+          servers: connect.servers,
+          maxReconnectAttempts: connect.maxReconnectAttempts ??
+            DEFAULT_RUNTIME_MAX_RECONNECT_ATTEMPTS,
+          ignoreAuthErrorAbort: true,
+          timeout: connect.timeoutMs ?? args.timeout ?? 30_000,
+          inboxPrefix: connect.inboxPrefix,
+          authenticator: connect.authenticators,
+        }),
+      ...(args.log ? { log: args.log } : {}),
+    });
+    await generationManager.initialize(connectedNats, initialPrepared);
     recordTrellisDuration(
       "trellis.connect.duration",
       performance.now() - natsStartedAt,
@@ -1420,7 +1524,6 @@ export async function connectClientWithDeps<
     connectionTelemetry.dispose();
     authorizationProviderCache?.stop();
     if (nc && !nc.isClosed()) await nc.close();
-    runtimeAuth.stop();
     throw createTransportError({
       code: "trellis.runtime.connect_failed",
       message: "Trellis could not open the runtime connection.",
@@ -1430,10 +1533,23 @@ export async function connectClientWithDeps<
       context: { trellisUrl },
     });
   }
-  if (!nc || !authorizationProviderCache) {
+  if (!nc || !authorizationProviderCache || !generationManager) {
     throw new Error("Trellis client runtime connection was not established");
   }
-  void nc.closed().then(() => runtimeAuth.stop(), () => runtimeAuth.stop());
+  const manager = generationManager;
+  // The provider cache is a logical-connection resource, not a property of the
+  // first physical generation. Stopping it on generation-1 loss would make
+  // every later authenticator refuse (transportUsable() false) and block
+  // automatic recovery. Per-generation provider migration is a later unit.
+  void manager.closed().then(
+    () => authorizationProviderCache.stop(),
+    () => authorizationProviderCache.stop(),
+  );
+  // Resource resolution follows the logical default generation rather than the
+  // first physical attachment, so a refresh after a generation rollover opens
+  // resources on a live admitted connection. With no current generation the
+  // refresh fails transiently and the scheduler retries it.
+  const activeNc = (): NatsConnection => manager.currentNats();
 
   const clientOpts: ClientOpts = {
     ...(typeof args.name === "string" ? { name: args.name } : {}),
@@ -1444,39 +1560,23 @@ export async function connectClientWithDeps<
       ? { noResponderRetry: args.noResponderRetry }
       : {}),
   };
-  const transportState = new TransportAuthorizationState();
   const transportGate: TransportAuthorizationGate = {
     status: () => transportState.status(),
     admittedPolicy: () => transportState.admittedPolicy(),
     allowedPolicy: () => transportState.allowedPolicy(),
     nowSeconds: () => authorizationContexts.correctedNowSeconds(),
   };
-  const currentTransportPolicy = () =>
-    authorizationContexts.current().context.transportAuthorization;
-  const applyClientAdmission = async (): Promise<void> => {
-    const digest = authorizationContexts.storedContextDigest();
-    if (digest === undefined) return;
-    const policy = currentTransportPolicy();
-    const own = await readOwnAdmission(nc, 5_000);
-    await transportState.recordAdmission({
-      contextDigest: own?.contextDigest ?? digest,
-      policy,
-      allowed: policy,
-      nowUnixSeconds: authorizationContexts.correctedNowSeconds(),
-    });
-  };
+  // Transitional bridge for the explicit `refreshTransport()` API: it drives the
+  // same automatic adoption coordinator rather than forcing a blind reconnect.
   const refreshClientTransport = (): AsyncResult<void, TransportRefreshError> =>
     AsyncResult.from(
       (async () => {
-        if (nc.isClosed()) {
-          return Result.err(TransportRefreshError.connectionClosed());
-        }
         const timeoutMs = args.timeout ?? 30_000;
         try {
-          await replaceTransportAttachment(nc, timeoutMs);
+          await manager.adoptNow({ deadlineMs: Date.now() + timeoutMs });
           await authorizationProviderCache.waitReady({ timeoutMs });
           await authorizationProviderCache.retainOwnContext();
-          await applyClientAdmission();
+          await syncTransportGate();
           return Result.ok(undefined);
         } catch (error) {
           return Result.err(
@@ -1487,9 +1587,18 @@ export async function connectClientWithDeps<
         }
       })(),
     );
-  const connection = observeNatsTrellisConnection({
+  // Observe the manager's logical lifecycle, never one physical generation, so
+  // retiring the initial generation for a reduction does not close the logical
+  // owner and a planned rollover emits no disconnect.
+  const connection = observeTrellisConnection({
     kind: "client",
-    nc,
+    transport: {
+      status: () => manager.logicalStatus(),
+      closed: () => manager.closed(),
+      close: () => manager.close(),
+      isClosed: () => manager.isClosed(),
+      getServer: () => manager.currentGeneration()?.nc.getServer?.(),
+    },
     log: false,
     telemetry: connectionTelemetry,
     refreshTransport: refreshClientTransport,
@@ -1508,7 +1617,11 @@ export async function connectClientWithDeps<
       ) {
         transportState.markDisconnected();
       } else if (type === "reconnect") {
-        void applyClientAdmission().catch(() => undefined);
+        void syncTransportGate().catch(() => undefined);
+        // A logical reconnect is a new physical attachment; confirm a fresh
+        // authorization context (and re-resolve resources on it) promptly
+        // instead of waiting out the refresh scheduler's transient backoff.
+        authorizationContexts.requestRefresh();
       }
     },
     ...(args.log
@@ -1526,14 +1639,14 @@ export async function connectClientWithDeps<
       status === "upgrade_available",
     )
   );
-  await applyClientAdmission();
+  await syncTransportGate();
   const api = bindApiRoutes(
     getParticipantRuntime(args.participant).usedApi,
     bootstrap.apiBindings,
   ) as RuntimeApi;
   const resourceState: ClientResourceState = {
     current: await resolveClientResources({
-      nc,
+      nc: activeNc(),
       participant: args.participant,
       participantDigest: runtimeState.participantDigest,
       bindings: bootstrap.resourceBindings,
@@ -1590,7 +1703,7 @@ export async function connectClientWithDeps<
         prepareOnly: true,
         prepareInstall: async (response) => {
           const nextResources = await resolveClientResources({
-            nc,
+            nc: activeNc(),
             participant: args.participant,
             participantDigest: response.authorization.participantDigest,
             bindings: response.authorization.resourceRuntime,
@@ -1630,25 +1743,19 @@ export async function connectClientWithDeps<
       );
       if (!sameTransportServers(refreshedServers, appliedTransportServers)) {
         appliedTransportServers = refreshedServers;
-        nc.setServers(refreshedServers);
+        // The initial attachment may already be retired; new generations read
+        // the refreshed server pool directly from the runtime binding.
+        if (!nc.isClosed()) nc.setServers(refreshedServers);
       }
       await installAuthorizationRefresh({
         provider: authorizationProviderCache,
         contextDigest: context.contextDigest,
       });
-      await transportState.recompute(
-        context.context.transportAuthorization,
-        authorizationContexts.correctedNowSeconds(),
-      );
+      await syncTransportGate();
+      manager.authorizationPromoted();
     },
     onTerminalFailure: async (error) => {
-      if (!nc.isClosed()) {
-        try {
-          await nc.close();
-        } catch {
-          await nc.closed().catch(() => undefined);
-        }
-      }
+      await manager.close().catch(() => undefined);
       // A revoked or expired authority context is not a durable login failure.
       if (
         error instanceof AuthorizationContextRefreshError && !error.loginInvalid
@@ -1656,7 +1763,7 @@ export async function connectClientWithDeps<
       await handleSessionNotFound?.();
     },
   });
-  void nc.closed().then(stopContextRefresh, stopContextRefresh);
+  void manager.closed().then(stopContextRefresh, stopContextRefresh);
 
   const state = getParticipantRuntime(args.participant).state as TrellisOpts<
     RuntimeApi
@@ -1684,6 +1791,7 @@ export async function connectClientWithDeps<
         connection.availability().resources[name] ?? true,
       onSessionNotFound: handleSessionNotFound,
       transportGate,
+      transport: manager,
     },
   });
   recordTrellisDuration(
@@ -1712,7 +1820,7 @@ export async function connectClientWithDeps<
         }
         const operationCompleted = await Promise.race([
           result.orThrow().then(() => true),
-          nc.closed().then(() => false),
+          manager.closed().then(() => false),
         ]);
         if (!operationCompleted) {
           try {

@@ -48,6 +48,11 @@ import {
   type TransportAuthorizationGate,
   transportUpgradeRequiredError,
 } from "./auth/authorization/transport_state.ts";
+import {
+  fixedTransportProvider,
+  type TransportLease,
+  type TrellisTransportProvider,
+} from "./transport/generations.ts";
 import type {
   AuthorizationVerificationErrorCode,
   PermissionAtom as VerifierPermissionAtom,
@@ -587,6 +592,44 @@ export function classifyRequestTransportFailure(args: {
       lowLevelMessage: message,
     },
   });
+}
+
+/**
+ * Map a generation acquisition failure to the ordinary request transport error.
+ *
+ * Automatic adoption never invents `transport_upgrade_required`; a caller that
+ * cannot obtain a suitable generation within its budget observes a normal
+ * unavailable/timeout/cancelled request failure.
+ */
+function mapTransportAcquireFailure(args: {
+  method?: string;
+  subject: string;
+  callerCapabilities?: readonly string[];
+  cause: unknown;
+}): TransportError {
+  const cause = args.cause;
+  if (cause instanceof TransportError) {
+    const code = cause.code === "trellis.transport.timeout"
+      ? "trellis.request.timeout"
+      : cause.code === "trellis.transport.aborted"
+      ? "trellis.request.cancelled"
+      : "trellis.request.unavailable";
+    return requestFailedTransportError({
+      code,
+      message: cause.message,
+      hint: cause.hint,
+      method: args.method,
+      subject: args.subject,
+      cause,
+      context: {
+        ...(args.callerCapabilities === undefined
+          ? {}
+          : { requiredCapabilities: args.callerCapabilities }),
+        generationCode: cause.code,
+      },
+    });
+  }
+  return classifyRequestTransportFailure(args);
 }
 
 /** Creates the existing typed transport error for an unavailable optional action. */
@@ -1579,6 +1622,12 @@ export type TrellisOpts<TA extends RuntimeApi> = {
   connection?: TrellisConnection;
   /** Admitted-transport view for boundary checks, set by the connection owner. @internal */
   transportGate?: TransportAuthorizationGate;
+  /**
+   * Generation-aware transport provider. When present, finite request and event
+   * exchanges acquire a lease for the exact generation they use; when absent,
+   * the session keeps its single fixed physical connection. @internal
+   */
+  transport?: TrellisTransportProvider;
   onSessionNotFound?: () => MaybePromise<void>;
   contractId?: string;
   contractDigest?: string;
@@ -2514,8 +2563,8 @@ export class Trellis<
   readonly contractId?: string;
   readonly contractDigest?: string;
 
-  #nats: NatsConnection;
-  #js: JetStreamClient;
+  #transport: TrellisTransportProvider;
+  #adaptiveTransport: boolean;
   #auth: TrellisAuth;
   #inboxPrefix: string;
   readonly api: TA;
@@ -2551,13 +2600,13 @@ export class Trellis<
     const api = opts?.api;
 
     this.name = name;
-    this.#nats = nats;
+    this.#adaptiveTransport = opts?.transport !== undefined;
+    this.#transport = opts?.transport ?? fixedTransportProvider(nats);
     const liveClosers = this.#liveClosers;
-    void nats.closed().then((terminal) => {
+    void this.#transport.closed().then((terminal) => {
       for (const close of liveClosers) close(terminal);
       liveClosers.clear();
     });
-    this.#js = jetstream(this.#nats);
     this.#auth = auth as TrellisAuth;
     this.#inboxPrefix = inboxPrefix;
     this.api = (api ?? EMPTY_TRELLIS_API) as TA;
@@ -2589,6 +2638,14 @@ export class Trellis<
     this.event = this.#createEventFacade();
     this.live = this.#createLiveFacade();
     this.operation = this.#createOperationFacade();
+  }
+
+  get #nats(): NatsConnection {
+    return this.#transport.currentNats();
+  }
+
+  get #js(): JetStreamClient {
+    return jetstream(this.#nats);
   }
 
   protected get nats(): NatsConnection {
@@ -3050,7 +3107,10 @@ export class Trellis<
         });
         return subject;
       }
-      const gate = this.#transportGate;
+      // A generation-aware session waits for automatic transport adoption in
+      // `#requestMessageWithRetry` instead of failing this pre-flight check. The
+      // retained gate remains for sessions still bound to one fixed connection.
+      const gate = this.#adaptiveTransport ? undefined : this.#transportGate;
       if (gate) {
         const upgradeRequired = await requiresTransportUpgrade(gate, {
           publish: [subject],
@@ -4392,19 +4452,45 @@ export class Trellis<
           },
         );
       };
-      try {
-        const gate = this.#transportGate;
-        if (gate) {
-          const upgradeRequired = await requiresTransportUpgrade(gate, {
-            publish: [event.subject],
+      // Generation acquisition and the publish+ack share one deadline.
+      const deadlineMs = Date.now() + this.timeout;
+      let lease: TransportLease | undefined;
+      if (this.#adaptiveTransport) {
+        try {
+          lease = await this.#transport.acquireFor(
+            { publish: [event.subject] },
+            { deadlineMs },
+          );
+        } catch (cause) {
+          finish("error");
+          const error = mapTransportAcquireFailure({
+            subject: event.subject,
+            cause,
           });
-          if (upgradeRequired) {
-            return err(
-              transportUpgradeRequiredError({
-                event: event.event,
-                subject: event.subject,
-              }),
-            );
+          recordRuntimeError(error, {
+            surface: "event",
+            direction: "publisher",
+            operation: event.event,
+            phase: "publish",
+          });
+          return err(error);
+        }
+      }
+      try {
+        if (!this.#adaptiveTransport) {
+          const gate = this.#transportGate;
+          if (gate) {
+            const upgradeRequired = await requiresTransportUpgrade(gate, {
+              publish: [event.subject],
+            });
+            if (upgradeRequired) {
+              return err(
+                transportUpgradeRequiredError({
+                  event: event.event,
+                  subject: event.subject,
+                }),
+              );
+            }
           }
         }
         const headers = natsHeaders();
@@ -4423,8 +4509,10 @@ export class Trellis<
           { subject: event.subject },
           `Publishing ${event.event} event.`,
         );
-        await this.#js.publish(event.subject, event.encodedPayload, {
+        const js = lease ? jetstream(lease.nc) : this.#js;
+        await js.publish(event.subject, event.encodedPayload, {
           headers,
+          timeout: Math.max(1, deadlineMs - Date.now()),
         });
         finish("ok");
         return ok(undefined);
@@ -4441,6 +4529,8 @@ export class Trellis<
           phase: "publish",
         });
         return err(error);
+      } finally {
+        lease?.release();
       }
     })());
   }
@@ -4498,8 +4588,8 @@ export class Trellis<
         const subject = this.template(ctx.subject, subjectData, true).take();
         if (isErr(subject)) return subject;
 
-        const gate = this.#transportGate;
-        if (gate) {
+        if (this.#transportGate && !this.#adaptiveTransport) {
+          const gate = this.#transportGate;
           const upgradeRequired = await requiresTransportUpgrade(gate, {
             subscribe: [subject],
           });
@@ -4534,12 +4624,31 @@ export class Trellis<
               }),
             );
           }
+          // An ephemeral observation pins one generation for its lifetime: the
+          // subscription is opened and closed on the same physical connection.
+          let lease: TransportLease | undefined;
+          if (this.#adaptiveTransport) {
+            try {
+              lease = await this.#transport.acquireFor(
+                { subscribe: [subject] },
+                {
+                  ...(opts.signal ? { signal: opts.signal } : {}),
+                  // Bound opening with the normal request budget instead of an
+                  // unbounded adoption wait when no signal is supplied.
+                  deadlineMs: Date.now() + this.timeout,
+                },
+              );
+            } catch (cause) {
+              return err(mapTransportAcquireFailure({ subject, cause }));
+            }
+          }
           return await this.#startEphemeralEvent(
             eventName,
             ctx,
             subject,
             fn,
             opts.signal,
+            lease,
           );
         }
 
@@ -4570,23 +4679,28 @@ export class Trellis<
     subject: string,
     fn: EventCallback<EventOf<TA, EventsOf<TA>>>,
     signal?: AbortSignal,
+    lease?: TransportLease,
   ): Promise<Result<void, ValidationError | UnexpectedError>> {
+    const nc = lease?.nc ?? this.#nats;
     let sub: ReturnType<NatsConnection["subscribe"]> | undefined;
     try {
-      sub = this.#nats.subscribe(subject);
+      sub = nc.subscribe(subject);
       if (signal) {
         if (signal.aborted) {
           sub.unsubscribe();
+          lease?.release();
           return ok(undefined);
         }
-        signal.addEventListener("abort", () => sub?.unsubscribe(), {
-          once: true,
-        });
+        signal.addEventListener("abort", () => {
+          sub?.unsubscribe();
+          lease?.release();
+        }, { once: true });
       }
     } catch (cause) {
       if (sub) {
         sub.unsubscribe();
       }
+      lease?.release();
       return err(
         new UnexpectedError({
           cause,
@@ -4596,54 +4710,58 @@ export class Trellis<
     }
 
     const task = AsyncResult.try(async () => {
-      for await (const msg of sub) {
-        const proofResult = await this.#validateEventProof(event, ctx, msg);
-        const proofValue = proofResult.take();
-        if (isErr(proofValue)) {
-          this.#log.warn(
-            { error: proofValue.error, event, subject: msg.subject },
-            "Event auth validation failed",
-          );
-          continue;
-        }
+      try {
+        for await (const msg of sub) {
+          const proofResult = await this.#validateEventProof(event, ctx, msg);
+          const proofValue = proofResult.take();
+          if (isErr(proofValue)) {
+            this.#log.warn(
+              { error: proofValue.error, event, subject: msg.subject },
+              "Event auth validation failed",
+            );
+            continue;
+          }
 
-        const parsedEvent = this.#parseEventMessage(event, ctx, msg);
-        const m = parsedEvent.take();
-        if (isErr(m)) {
-          this.#log.error({ error: m.error }, "Event validation failed");
-          recordRuntimeError(m.error, {
-            surface: "event",
-            direction: "consumer",
-            operation: String(event),
-            phase: "input_validation",
-          });
-          continue;
-        }
+          const parsedEvent = this.#parseEventMessage(event, ctx, msg);
+          const m = parsedEvent.take();
+          if (isErr(m)) {
+            this.#log.error({ error: m.error }, "Event validation failed");
+            recordRuntimeError(m.error, {
+              surface: "event",
+              direction: "consumer",
+              operation: String(event),
+              phase: "input_validation",
+            });
+            continue;
+          }
 
-        const handlerResult = await this.#invokeEventHandler({
-          event,
-          payload: m,
-          mode: "ephemeral",
-          message: msg,
-          fn,
-        });
-        const handlerValue = handlerResult.take();
-        if (isErr(handlerValue)) {
-          recordRuntimeError(handlerValue.error, {
-            surface: "event",
-            direction: "consumer",
-            operation: String(event),
-            phase: "handler_result",
+          const handlerResult = await this.#invokeEventHandler({
+            event,
+            payload: m,
+            mode: "ephemeral",
+            message: msg,
+            fn,
           });
-          this.#log.error(
-            {
-              error: handlerValue.error.toSerializable(),
-              event,
-              subject: msg.subject,
-            },
-            "Event handler failed",
-          );
+          const handlerValue = handlerResult.take();
+          if (isErr(handlerValue)) {
+            recordRuntimeError(handlerValue.error, {
+              surface: "event",
+              direction: "consumer",
+              operation: String(event),
+              phase: "handler_result",
+            });
+            this.#log.error(
+              {
+                error: handlerValue.error.toSerializable(),
+                event,
+                subject: msg.subject,
+              },
+              "Event handler failed",
+            );
+          }
         }
+      } finally {
+        lease?.release();
       }
     });
 
@@ -5524,6 +5642,56 @@ export class Trellis<
     };
   }
 
+  /**
+   * Acquire the physical transport for one finite request attempt.
+   *
+   * When generation routing is installed, the exact generation covering the
+   * request is leased for the whole exchange; otherwise the single fixed
+   * connection is returned with a no-op release. Acquisition failures become
+   * ordinary request transport errors, never `transport_upgrade_required`.
+   */
+  async #acquireRequestTransport(args: {
+    method?: string;
+    subject: string;
+    deadlineMs: number;
+    signal?: AbortSignal;
+    callerCapabilities?: readonly string[];
+  }): Promise<Result<{ nc: NatsConnection; release(): void }, TransportError>> {
+    if (!this.#adaptiveTransport) {
+      if (this.#nats.isClosed()) {
+        return err(requestFailedTransportError({
+          code: "trellis.request.closed",
+          message: "The Trellis connection is closed.",
+          hint: "Connect to Trellis again before making another request.",
+          method: args.method,
+          subject: args.subject,
+        }));
+      }
+      return ok({ nc: this.#nats, release: () => {} });
+    }
+    let lease: TransportLease;
+    try {
+      lease = await this.#transport.acquireFor(
+        {
+          publish: [args.subject],
+          subscribe: [`${this.#inboxPrefix}.>`],
+        },
+        {
+          ...(args.signal ? { signal: args.signal } : {}),
+          deadlineMs: args.deadlineMs,
+        },
+      );
+    } catch (cause) {
+      return err(mapTransportAcquireFailure({
+        method: args.method,
+        subject: args.subject,
+        callerCapabilities: args.callerCapabilities,
+        cause,
+      }));
+    }
+    return ok({ nc: lease.nc, release: () => lease.release() });
+  }
+
   async #requestMessageWithRetry(args: {
     method?: string;
     /** Bounded registered-route token for attempt accounting. */
@@ -5548,136 +5716,157 @@ export class Trellis<
             new DOMException("Request aborted", "AbortError"),
         }));
       }
-      if (this.#nats.isClosed()) {
-        return err(requestFailedTransportError({
-          code: "trellis.request.closed",
-          message: "The Trellis connection is closed.",
-          hint: "Connect to Trellis again before making another request.",
-          method: args.method,
-          subject: args.subject,
-        }));
-      }
-      // Create the exact reply inbox before signing so the proof binds the
-      // reply subject the response arrives on.
-      const reply = createInbox(this.#inboxPrefix);
-      const authHeaders = await this.createRequestProof(
-        args.subject,
-        args.payload,
-        reply,
-      );
-      const headers = natsHeaders();
-      headers.set("authorization-context", authHeaders.contextDigest);
-      headers.set("session-key", this.#auth.sessionKey);
-      headers.set("proof", authHeaders.proof);
-      headers.set("iat", String(authHeaders.iat));
-      headers.set("request-id", authHeaders.requestId);
-      injectTraceContext(createNatsHeaderCarrier(headers), args.span);
-
-      const result = await AsyncResult.try(async () => {
-        const response = Promise.withResolvers<Msg>();
-        const abort = () =>
-          response.reject(
-            args.signal?.reason ??
-              new DOMException("Request aborted", "AbortError"),
-          );
-        args.signal?.addEventListener("abort", abort, { once: true });
-        const subscription = this.#nats.subscribe(reply, {
-          max: 1,
-          timeout: args.timeout,
-          callback: (error, message) => {
-            if (error) response.reject(error);
-            else if (
-              message.data.length === 0 && message.headers?.code === 503
-            ) {
-              response.reject(new Error("no responders"));
-            } else response.resolve(message);
-          },
-        });
-        // NATS noMux requests abandon their promise when connection closure
-        // cancels the subscription timer. Bind settlement to this subscription.
-        subscription.closed.then((error) => {
-          response.reject(
-            error ?? new Error("connection closed before RPC response"),
-          );
-        });
-        const initialStatus = this.connection.status;
-        const stopObserving = this.connection.subscribe((status) => {
-          // Publish denials arrive on the connection, not the reply inbox.
-          if (status === initialStatus) return;
-          const error = status.transport?.error;
-          if (
-            error instanceof Error &&
-            ((error.name === "PermissionViolationError" &&
-              Reflect.get(error, "operation") === "publish" &&
-              Reflect.get(error, "subject") === args.subject) ||
-              error.name === "AuthorizationError" ||
-              error.name === "UserAuthenticationExpiredError")
-          ) response.reject(error);
-        });
-        try {
-          if (args.signal?.aborted) {
-            abort();
-          } else {
-            this.#nats.publish(args.subject, args.payload, {
-              headers,
-              reply,
-            });
-          }
-          return await response.promise;
-        } finally {
-          args.signal?.removeEventListener("abort", abort);
-          stopObserving();
-          subscription.unsubscribe();
-        }
-      });
-
-      if (result.isOk()) {
-        recordAttempt("ok");
-        return ok(result.take() as Msg);
-      }
-
-      const cause = result.error.cause;
-      const message = cause instanceof Error ? cause.message : String(cause);
-      const isNoResponders = message.includes("no responders");
-
-      if (isNoResponders && retry < this.#noResponderMaxRetries) {
-        recordAttempt("unavailable");
-        this.#log.debug(
-          { method: args.method, subject: args.subject, retry },
-          "No responders, retrying...",
-        );
-        await new Promise<void>((resolve) => {
-          const done = () => {
-            clearTimeout(timeout);
-            args.signal?.removeEventListener("abort", done);
-            resolve();
-          };
-          const timeout = setTimeout(
-            done,
-            this.#noResponderRetryMs * (retry + 1),
-          );
-          args.signal?.addEventListener("abort", done, { once: true });
-        });
-        continue;
-      }
-
-      this.#log.warn(
-        { method: args.method, subject: args.subject, error: message },
-        "NATS request failed",
-      );
-      recordAttempt(
-        args.signal?.aborted
-          ? "cancelled"
-          : /timeout/i.test(message)
-          ? "timeout"
-          : "unavailable",
-      );
-      return err(classifyRequestTransportFailure({
+      // One physical-exchange deadline per attempt (the intentional
+      // no-responder retry contract re-creates it each time): generation
+      // acquisition and the actual publish/reply share it.
+      const deadlineMs = Date.now() + args.timeout;
+      const acquired = await this.#acquireRequestTransport({
         method: args.method,
         subject: args.subject,
+        deadlineMs,
+        signal: args.signal,
         callerCapabilities: args.callerCapabilities,
-        cause,
-      }));
+      });
+      const acquiredTransport = acquired.take();
+      if (isErr(acquiredTransport)) {
+        recordAttempt(
+          acquiredTransport.error.code === "trellis.request.cancelled"
+            ? "cancelled"
+            : acquiredTransport.error.code === "trellis.request.timeout"
+            ? "timeout"
+            : "unavailable",
+        );
+        return err(acquiredTransport.error);
+      }
+      const { nc, release } = acquiredTransport;
+      try {
+        // Create the exact reply inbox before signing so the proof binds the
+        // reply subject the response arrives on.
+        const reply = createInbox(this.#inboxPrefix);
+        const authHeaders = await this.createRequestProof(
+          args.subject,
+          args.payload,
+          reply,
+        );
+        const headers = natsHeaders();
+        headers.set("authorization-context", authHeaders.contextDigest);
+        headers.set("session-key", this.#auth.sessionKey);
+        headers.set("proof", authHeaders.proof);
+        headers.set("iat", String(authHeaders.iat));
+        headers.set("request-id", authHeaders.requestId);
+        injectTraceContext(createNatsHeaderCarrier(headers), args.span);
+
+        const result = await AsyncResult.try(async () => {
+          const response = Promise.withResolvers<Msg>();
+          const abort = () =>
+            response.reject(
+              args.signal?.reason ??
+                new DOMException("Request aborted", "AbortError"),
+            );
+          args.signal?.addEventListener("abort", abort, { once: true });
+          const subscription = nc.subscribe(reply, {
+            max: 1,
+            timeout: Math.max(1, deadlineMs - Date.now()),
+            callback: (error, message) => {
+              if (error) response.reject(error);
+              else if (
+                message.data.length === 0 && message.headers?.code === 503
+              ) {
+                response.reject(new Error("no responders"));
+              } else response.resolve(message);
+            },
+          });
+          // NATS noMux requests abandon their promise when connection closure
+          // cancels the subscription timer. Bind settlement to this subscription.
+          subscription.closed.then((error) => {
+            response.reject(
+              error ?? new Error("connection closed before RPC response"),
+            );
+          });
+          // Publish denials arrive on this generation's own status stream, not
+          // the reply inbox. Watch the leased connection, never a mutable
+          // logical default.
+          const statusIterator = nc.status()[Symbol.asyncIterator]();
+          const stopWatching = (async () => {
+            while (true) {
+              const next = await statusIterator.next();
+              if (next.done) return;
+              const error = (next.value as { error?: unknown } | null)?.error;
+              if (
+                error instanceof Error &&
+                ((error.name === "PermissionViolationError" &&
+                  Reflect.get(error, "operation") === "publish" &&
+                  Reflect.get(error, "subject") === args.subject) ||
+                  error.name === "AuthorizationError" ||
+                  error.name === "UserAuthenticationExpiredError")
+              ) response.reject(error);
+            }
+          })().catch(() => undefined);
+          try {
+            if (args.signal?.aborted) {
+              abort();
+            } else {
+              nc.publish(args.subject, args.payload, { headers, reply });
+            }
+            return await response.promise;
+          } finally {
+            args.signal?.removeEventListener("abort", abort);
+            void statusIterator.return?.();
+            void stopWatching;
+            subscription.unsubscribe();
+          }
+        });
+
+        if (result.isOk()) {
+          recordAttempt("ok");
+          return ok(result.take() as Msg);
+        }
+
+        const cause = result.error.cause;
+        const message = cause instanceof Error ? cause.message : String(cause);
+        const isNoResponders = message.includes("no responders");
+
+        if (isNoResponders && retry < this.#noResponderMaxRetries) {
+          recordAttempt("unavailable");
+          this.#log.debug(
+            { method: args.method, subject: args.subject, retry },
+            "No responders, retrying...",
+          );
+          await new Promise<void>((resolve) => {
+            const done = () => {
+              clearTimeout(timeout);
+              args.signal?.removeEventListener("abort", done);
+              resolve();
+            };
+            const timeout = setTimeout(
+              done,
+              this.#noResponderRetryMs * (retry + 1),
+            );
+            args.signal?.addEventListener("abort", done, { once: true });
+          });
+          continue;
+        }
+
+        this.#log.warn(
+          { method: args.method, subject: args.subject, error: message },
+          "NATS request failed",
+        );
+        recordAttempt(
+          args.signal?.aborted
+            ? "cancelled"
+            : /timeout/i.test(message)
+            ? "timeout"
+            : "unavailable",
+        );
+        return err(classifyRequestTransportFailure({
+          method: args.method,
+          subject: args.subject,
+          callerCapabilities: args.callerCapabilities,
+          cause,
+        }));
+      } finally {
+        release();
+      }
     }
 
     recordAttempt("unavailable");

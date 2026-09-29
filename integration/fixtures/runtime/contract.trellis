@@ -227,3 +227,11 @@ service TransportGrowthSubject {
 }
 
 service TransportGrowthTarget { implements transport_growth; }
+
+app TransportGrowthCaller {
+  use transport_growth {
+    rpc Advance;
+    rpc Extend;
+    optional capability extend;
+  }
+}
