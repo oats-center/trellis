@@ -45,7 +45,7 @@ pub use connection::{
 };
 pub use error::{
     AuthenticationError, CallError, ProtocolError, RemoteErrorPayload, RpcErrorPayload,
-    TransportError, TrellisClientError,
+    ServiceUnavailableError, TransportError, TrellisClientError,
 };
 pub use events::{
     dispatch_outbox_once, prepare_event, prepare_event_value, EventStoreError, InboxReceipt,

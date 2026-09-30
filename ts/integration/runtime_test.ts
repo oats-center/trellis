@@ -586,6 +586,7 @@ Deno.test("generated runtime workflows", async (t) => {
         cancelledFeeds += 1;
       });
       await service.handleUpload(async ({ input, op, transfer }) => {
+        assert(transfer);
         const body = await transfer.stream().orThrow();
         const store = await service.store.files.open().orThrow();
         await store.put(input.value, body).orThrow();

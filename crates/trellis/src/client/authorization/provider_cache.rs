@@ -1207,6 +1207,7 @@ fn classify_event_resolution_failure(
             | TrellisClientError::Nats(_)
             | TrellisClientError::NatsConnect(_)
             | TrellisClientError::NatsRequest(_)
+            | TrellisClientError::ServiceUnavailable(_)
             | TrellisClientError::Timeout
     ) {
         crate::service::EventVerificationFailure::retryable(error.to_string())

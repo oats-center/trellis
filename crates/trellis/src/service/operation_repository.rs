@@ -257,7 +257,7 @@ pub trait OperationRepository: Send + Sync {
         invocation_id: &str,
     ) -> impl Future<Output = Result<Option<RevisionedOperationRecord>, ServerError>> + Send;
 
-    /// Create an invocation, or return the exact existing invocation on replay.
+    /// Create or replay an invocation, monotonically merging requested cancellation.
     fn create(
         &self,
         record: DurableOperationRecord,
@@ -382,17 +382,36 @@ impl OperationRepository for KvOperationRepository {
         match self.store.create(record.invocation_id.clone(), bytes).await {
             Ok(revision) => Ok(RevisionedOperationRecord { record, revision }),
             Err(_) => {
-                let existing = self.load(&record.invocation_id).await?.ok_or_else(|| {
-                    ServerError::Nats("operation acceptance lost its KV create race".to_owned())
-                })?;
-                if existing.record.same_invocation(&record) {
-                    Ok(existing)
-                } else {
-                    Err(ServerError::OperationIdempotencyConflict {
-                        kind: "invocation",
-                        request_id: record.invocation_id,
-                    })
+                for _ in 0..8 {
+                    let existing = self.load(&record.invocation_id).await?.ok_or_else(|| {
+                        ServerError::Nats("operation acceptance lost its KV create race".to_owned())
+                    })?;
+                    if !existing.record.same_invocation(&record) {
+                        return Err(ServerError::OperationIdempotencyConflict {
+                            kind: "invocation",
+                            request_id: record.invocation_id,
+                        });
+                    }
+                    if !record.cancellation_requested
+                        || existing.record.cancellation_requested
+                        || existing.record.snapshot.state.is_terminal()
+                    {
+                        return Ok(existing);
+                    }
+                    let mut cancelled = existing.record;
+                    cancelled.revision += 1;
+                    cancelled.cancellation_requested = true;
+                    cancelled.snapshot.updated_at = record.snapshot.updated_at.clone();
+                    if let Ok(updated) = self
+                        .compare_record_exchange(existing.revision, cancelled)
+                        .await
+                    {
+                        return Ok(updated);
+                    }
                 }
+                Err(ServerError::Nats(
+                    "cancelled admission exceeded CAS retry limit".to_owned(),
+                ))
             }
         }
     }

@@ -15,8 +15,8 @@ path = "../../../crates/runtime"
 [[packages]]
 name = "trellis-test-fixture"
 version = "0.100.0"
-digest = "aShA6qPtvPXkkage5o6vFD0ZerZx9ER79a3hZKJGfgE"
-distribution-digest = "sha256:d3a3c43cb2ea190b5fcd2e9246f041a3a8f7d834419f71fbce0744ad55c083ca"
+digest = "A0NoLO4lIYaJ-DQPbW6OcughXUIGu0HZ6oAXVyNCyNc"
+distribution-digest = "sha256:e85b0458369eeaa540865c7bbbc342a9849cdfaa9ef5a72b6c7797a71c427145"
 
 [[packages.dependencies]]
 name = "trellis"

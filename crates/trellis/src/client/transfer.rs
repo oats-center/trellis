@@ -340,7 +340,7 @@ where
             Ok(Ok(response)) => response,
             Ok(Err(error)) => {
                 let _ = send_transfer_cancel(client, &grant.subject, &context_digest, seq).await;
-                return Err(TrellisClientError::NatsRequest(error.to_string()));
+                return Err(TrellisClientError::from(error));
             }
             Err(_) => {
                 let _ = send_transfer_cancel(client, &grant.subject, &context_digest, seq).await;
@@ -394,7 +394,7 @@ where
     )
     .await
     .map_err(|_| TrellisClientError::Timeout)?
-    .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+    .map_err(TrellisClientError::from)?;
 
     match parse_upload_ack(response)? {
         UploadAck::Continue | UploadAck::Cancelled => Err(TrellisClientError::TransferProtocol(
@@ -447,7 +447,7 @@ async fn send_transfer_cancel(
     )
     .await
     .map_err(|_| TrellisClientError::Timeout)?
-    .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+    .map_err(TrellisClientError::from)?;
     if !matches!(parse_upload_ack(response)?, UploadAck::Cancelled) {
         return Err(TrellisClientError::TransferProtocol(
             "transfer cancellation was not acknowledged".to_string(),
@@ -556,7 +556,7 @@ where
                 .await
                 .map_err(|_| TrellisClientError::Timeout)?
         }
-        .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+        .map_err(TrellisClientError::from)?;
 
         if message
             .headers

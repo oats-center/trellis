@@ -1053,6 +1053,53 @@ where
             .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))
     }
 
+    /// Start or replay the Operation with a caller-selected ULID.
+    ///
+    /// Persist the chosen id before this network call to retain ownership even if
+    /// the acceptance reply is lost. The invocation id is the durable Operation
+    /// id; recover the same Operation with [`Self::control`].
+    pub async fn start_with_invocation_id(
+        &self,
+        invocation_id: impl Into<String>,
+        input: &D::Input,
+    ) -> Result<OperationRef<'a, D>, crate::client::CallError<D::Error>> {
+        self.client
+            .ensure_available(OptionalAction::operation(
+                D::API_ID,
+                action_name(D::DESCRIPTOR_NAME),
+            ))
+            .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))?;
+        self.inner
+            .start_with_invocation_id(invocation_id, input)
+            .await
+            .map(|inner| OperationRef { inner })
+            .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))
+    }
+
+    /// Admit or replay this Operation with cancellation durably requested.
+    ///
+    /// Use the reserved invocation id and original input to prevent a delayed
+    /// normal start from entering business work. Requires Invoke and Cancel
+    /// authority. Returns after admission, not cleanup; explicitly call `wait()`
+    /// on the returned reference to observe the terminal result.
+    pub async fn start_cancelled_with_invocation_id(
+        &self,
+        invocation_id: impl Into<String>,
+        input: &D::Input,
+    ) -> Result<OperationRef<'a, D>, crate::client::CallError<D::Error>> {
+        self.client
+            .ensure_available(OptionalAction::operation(
+                D::API_ID,
+                action_name(D::DESCRIPTOR_NAME),
+            ))
+            .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))?;
+        self.inner
+            .start_cancelled_with_invocation_id(invocation_id, input)
+            .await
+            .map(|inner| OperationRef { inner })
+            .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))
+    }
+
     /// Open typed control for an existing durable Operation id without starting it.
     pub fn control(
         &self,

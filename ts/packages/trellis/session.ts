@@ -2875,13 +2875,20 @@ export class Trellis<
     return records;
   }
 
-  async saveOperationRecord(runtime: RuntimeOperationRecord): Promise<void> {
+  /** Persists a fenced operation; fresh admission must never replace an invocation. */
+  async saveOperationRecord(
+    runtime: RuntimeOperationRecord,
+    createOnly = false,
+  ): Promise<void> {
     const store = await this.operationStoreHandle();
     const loaded = await store.getEntry(runtime.id);
     const loadedValue = loaded.take();
     if (isErr(loadedValue)) throw loadedValue.error;
     const existing = loadedValue?.value;
-    if (existing && existing.revision !== runtime.revision) {
+    if (
+      (createOnly && loadedValue !== undefined) ||
+      (existing && existing.revision !== runtime.revision)
+    ) {
       throw new Error("operation revision conflict");
     }
     const revision = existing ? runtime.revision + 1 : runtime.revision;
@@ -2940,7 +2947,7 @@ export class Trellis<
     if (byteLength(record) > MAX_OPERATION_RECORD_BYTES) {
       throw new Error("operation record exceeds 1 MiB");
     }
-    const saved = loadedValue === undefined
+    const saved = createOnly || loadedValue === undefined
       ? await store.create(runtime.id, record)
       : await store.replace(runtime.id, loadedValue.revision, record);
     const value = saved.take();
@@ -3468,7 +3475,9 @@ export class Trellis<
           const _ = route;
           return ok(subscription!);
         } catch (cause) {
-          const error = cause instanceof LiveStreamError
+          const error = cause instanceof TransportError
+            ? cause
+            : cause instanceof LiveStreamError
             ? createTransportError({
               code: `trellis.live.${cause.code}`,
               message: cause.message,
@@ -5902,7 +5911,9 @@ export class Trellis<
         );
         return ok(subscription);
       } catch (cause) {
-        const error = cause instanceof LiveStreamError
+        const error = cause instanceof TransportError
+          ? cause
+          : cause instanceof LiveStreamError
           ? createTransportError({
             code: cause.codeString(),
             message: cause.message,

@@ -1,14 +1,14 @@
-//! Generated participant `trellis-test-fixture.AgentCaller`.
-pub const PARTICIPANT_ID: &str = "trellis-test-fixture.AgentCaller";
-pub const PARTICIPANT_PATH: &str = "AgentCaller";
-pub const PARTICIPANT_DIGEST: &str = "mOYnuUUckA2Et2eSA8_-oWWWS5e39OrLNlA2UbcSJgE";
+//! Generated participant `trellis-test-fixture.OperationAuthorizationCaller`.
+pub const PARTICIPANT_ID: &str = "trellis-test-fixture.OperationAuthorizationCaller";
+pub const PARTICIPANT_PATH: &str = "OperationAuthorizationCaller";
+pub const PARTICIPANT_DIGEST: &str = "ukTfOoPnnJ7lXD-IB8P3sB2YpPrTJFJ0c7xFBaWBHP8";
 pub const IMPLEMENTED_API_IDS: &[&str] = &[];
-pub const EVENT_SUBSCRIBE_NEEDS: &[&str] = &["event:Observed"];
+pub const EVENT_SUBSCRIBE_NEEDS: &[&str] = &[];
 pub struct Participant;
 impl trellis_rs::generated::ParticipantDescriptor for Participant {
     const ID: &'static str = PARTICIPANT_ID;
     const PATH: &'static str = PARTICIPANT_PATH;
-    const KIND: trellis_rs::generated::ParticipantKind = trellis_rs::generated::ParticipantKind::Agent;
+    const KIND: trellis_rs::generated::ParticipantKind = trellis_rs::generated::ParticipantKind::App;
     const COMPANION: Option<trellis_rs::generated::CompanionDescriptor> = None;
     const IMPLEMENTED_API_IDS: &'static [&'static str] = IMPLEMENTED_API_IDS;
     const EVENT_SUBSCRIBE_NEEDS: &'static [&'static str] = EVENT_SUBSCRIBE_NEEDS;

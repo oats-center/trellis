@@ -136,6 +136,14 @@ async fn verify_offer(
     consumer: &PinnedPeerIdentity,
     consumer_digest: &str,
 ) -> Result<PreparedClientSession, TrellisClientError> {
+    if response.status == Some(async_nats::StatusCode::NO_RESPONDERS) {
+        return Err(crate::client::ServiceUnavailableError.into());
+    }
+    if let Some(status) = response.status {
+        return Err(TrellisClientError::LiveProtocol(format!(
+            "unexpected live opening response status: {status}"
+        )));
+    }
     trellis_protocol::validate_control_body(&response.payload)
         .map_err(|error| TrellisClientError::LiveProtocol(error.to_string()))?;
     let value: serde_json::Value = serde_json::from_slice(&response.payload)

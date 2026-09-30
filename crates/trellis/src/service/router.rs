@@ -116,6 +116,8 @@ type BoxedHandler = Box<
 struct OperationStartEnvelope {
     invocation_id: String,
     input: Value,
+    #[serde(default)]
+    cancellation_requested: bool,
 }
 
 struct Route {
@@ -663,7 +665,12 @@ impl Router {
                             D::INPUT_SCHEMA_JSON,
                         )?;
                         let output = start
-                            .start_invocation(ctx, envelope.invocation_id, input)
+                            .start_invocation(
+                                ctx,
+                                envelope.invocation_id,
+                                input,
+                                envelope.cancellation_requested.then_some(payload),
+                            )
                             .await?;
                         validate_operation_snapshot::<D>(&output.snapshot)?;
                         Ok(HandlerResponse::Frames(vec![Bytes::from(

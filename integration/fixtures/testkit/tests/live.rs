@@ -958,6 +958,651 @@ async fn runtime_endpoints_child() {
     runtime.shutdown().await.expect("shutdown child runtime");
 }
 
+/// A caller-selected invocation id replays one execution and opens the same
+/// durable operation through generated control; unavailable optional calls deny.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn operation_chosen_invocation_id_replays_and_preserves_availability() {
+    use trellis_rs::client::CallError;
+    use trellis_rs::generated::OptionalAction;
+
+    const OPTIONAL_ACTIONS: &[OptionalAction] = &[OptionalAction::operation(
+        trellis_test_fixture::apis::trellis_test_fixture_echo_v1::API_ID,
+        "Silent",
+    )];
+
+    let mut runtime = TrellisTestRuntime::builder()
+        .start()
+        .await
+        .expect("start runtime");
+    let identity = runtime
+        .register_service::<ProviderParticipant>("provider")
+        .await
+        .expect("register provider");
+    let mut service = ProviderParticipant::connect(identity.connect_options())
+        .await
+        .expect("connect provider");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let handler_calls = Arc::clone(&calls);
+    Provider::new(&mut service)
+        .trellis_test_fixture_echo_v1()
+        .register_silent(move |_context, input, operation| {
+            let calls = Arc::clone(&handler_calls);
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                operation.complete(input).await?;
+                Ok(())
+            }
+        });
+    let task = tokio::spawn(async move { service.run().await });
+    let identity = runtime
+        .register_client::<CallerParticipant>("caller")
+        .await
+        .expect("register caller");
+    let caller = CallerClient::connect(identity.connect_options())
+        .await
+        .expect("connect caller");
+    let api = caller.trellis_test_fixture_echo_v1();
+    let invocation_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    let input = value("chosen invocation");
+    let operation = api
+        .silent()
+        .start_with_invocation_id(invocation_id, &input)
+        .await
+        .expect("start Silent with chosen id");
+    assert_eq!(operation.id(), invocation_id);
+    let completed = tokio::time::timeout(Duration::from_secs(20), operation.wait())
+        .await
+        .expect("Silent completes before timeout")
+        .expect("wait for Silent");
+    assert_eq!(completed.output.expect("Silent output").value, input.value);
+    let replay = api
+        .silent()
+        .start_with_invocation_id(invocation_id, &input)
+        .await
+        .expect("replay Silent");
+    assert_eq!(replay.id(), invocation_id);
+    assert_eq!(
+        replay
+            .get()
+            .await
+            .expect("read replay")
+            .output
+            .expect("replayed output")
+            .value,
+        input.value
+    );
+    assert_eq!(
+        api.silent()
+            .control(invocation_id)
+            .expect("open chosen id")
+            .get()
+            .await
+            .expect("read recovered operation")
+            .output
+            .expect("recovered output")
+            .value,
+        input.value
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let identity = runtime
+        .register_client::<RestrictedCallerParticipant>("restricted")
+        .await
+        .expect("register restricted caller");
+    let restricted = trellis_rs::generated::Client::connect_user(identity.connect_options())
+        .await
+        .expect("connect restricted caller")
+        .with_optional_actions(OPTIONAL_ACTIONS);
+    let restricted =
+        trellis_test_fixture::apis::trellis_test_fixture_echo_v1::Client::from_generated(
+            restricted,
+        );
+    assert!(matches!(
+        restricted.silent().start(&input).await,
+        Err(CallError::AuthorizationUnavailable(_))
+    ));
+    assert!(matches!(
+        restricted
+            .silent()
+            .start_with_invocation_id(invocation_id, &input)
+            .await,
+        Err(CallError::AuthorizationUnavailable(_))
+    ));
+    assert!(matches!(
+        restricted
+            .silent()
+            .start_cancelled_with_invocation_id(invocation_id, &input)
+            .await,
+        Err(CallError::AuthorizationUnavailable(_))
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    task.abort();
+    let _ = task.await;
+    runtime.shutdown().await.expect("shutdown runtime");
+}
+
+/// Cancellation-first admission freezes input/creator and cannot be undone by
+/// normal replay, concurrent admission, or a recovered cleanup execution.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelled_admission_is_atomic_and_replayable() {
+    use trellis_rs::client::OperationState;
+    use trellis_rs::generated::{Client as GeneratedClient, ParticipantDescriptor};
+    use trellis_rs::service::OperationCancellationReason;
+    use trellis_test_fixture::apis::trellis_test_fixture_echo_v1::Client as EchoClient;
+    use trellis_test_fixture::participants::trellis_test_fixture_agent_caller::{
+        Client as AgentClient, Participant as AgentParticipant,
+    };
+
+    let mut runtime = TrellisTestRuntime::builder()
+        .start()
+        .await
+        .expect("start runtime");
+    let identity = runtime
+        .register_service::<ProviderParticipant>("provider")
+        .await
+        .expect("register provider");
+    let mut service = ProviderParticipant::connect(identity.connect_options())
+        .await
+        .expect("connect provider");
+    let business = Arc::new(AtomicUsize::new(0));
+    let executions = Arc::new(AtomicUsize::new(0));
+    let retry_failures = Arc::new(AtomicUsize::new(0));
+    let cleanup = Arc::new(tokio::sync::Semaphore::new(0));
+    let (entered, mut entries) = tokio::sync::mpsc::unbounded_channel();
+    {
+        let mut provider = Provider::new(&mut service);
+        provider
+            .trellis_test_fixture_echo_v1()
+            .register_echo(|context, _input| async move {
+                let caller = context
+                    .request()
+                    .caller
+                    .as_ref()
+                    .expect("authenticated caller");
+                Ok(value(&format!(
+                    "{}|{}",
+                    caller.principal_id, caller.participant_id
+                )))
+            });
+        provider.trellis_test_fixture_echo_v1().register_silent({
+            let business = Arc::clone(&business);
+            let executions = Arc::clone(&executions);
+            let retry_failures = Arc::clone(&retry_failures);
+            let cleanup = Arc::clone(&cleanup);
+            move |context, input, operation| {
+                let business = Arc::clone(&business);
+                let executions = Arc::clone(&executions);
+                let retry_failures = Arc::clone(&retry_failures);
+                let cleanup = Arc::clone(&cleanup);
+                let entered = entered.clone();
+                async move {
+                    executions.fetch_add(1, Ordering::SeqCst);
+                    let cancellation = operation.cancellation();
+                    let initial_reason = cancellation.reason();
+                    if initial_reason.is_none() {
+                        if operation.started().await.is_ok() {
+                            business.fetch_add(1, Ordering::SeqCst);
+                        } else {
+                            // Cancellation can win between admission and the
+                            // fenced started write. Join cleanup, not new work.
+                            assert_eq!(
+                                cancellation.cancelled().await,
+                                OperationCancellationReason::Requested
+                            );
+                        }
+                    }
+                    entered
+                        .send((input.value.clone(), initial_reason, context.resuming))
+                        .unwrap();
+                    if input.value == "complete" {
+                        operation.complete(input).await?;
+                        return Ok(());
+                    }
+                    assert_eq!(
+                        cancellation.cancelled().await,
+                        OperationCancellationReason::Requested
+                    );
+                    if input.value == "retry" && retry_failures.fetch_add(1, Ordering::SeqCst) == 0
+                    {
+                        return Err(ServerError::Nats("cleanup needs recovery".to_owned()));
+                    }
+                    cleanup.acquire().await.unwrap().forget();
+                    Ok(())
+                }
+            }
+        });
+    }
+    let task = tokio::spawn(async move { service.run().await });
+    let identity = runtime
+        .register_client::<CallerParticipant>("caller")
+        .await
+        .expect("register caller");
+    let caller = CallerClient::connect(identity.connect_options())
+        .await
+        .expect("connect caller");
+    let identity = runtime
+        .register_client::<CallerParticipant>("another-name")
+        .await
+        .expect("register same principal");
+    let same_creator = CallerClient::connect(identity.connect_options())
+        .await
+        .expect("connect same creator");
+    let identity = runtime
+        .register_client::<AgentParticipant>("agent")
+        .await
+        .expect("register different participant");
+    let agent = AgentClient::connect(identity.connect_options())
+        .await
+        .expect("connect agent");
+    let api = caller.trellis_test_fixture_echo_v1();
+    let who = api
+        .echo(&value("identity"))
+        .await
+        .expect("read caller identity")
+        .value;
+    let same_who = same_creator
+        .trellis_test_fixture_echo_v1()
+        .echo(&value("identity"))
+        .await
+        .expect("read same caller identity")
+        .value;
+    let agent_who = agent
+        .trellis_test_fixture_echo_v1()
+        .echo(&value("identity"))
+        .await
+        .expect("read agent identity")
+        .value;
+    assert_eq!(who, same_who, "connection names are not creator identities");
+    assert_eq!(
+        who.split_once('|').unwrap().0,
+        agent_who.split_once('|').unwrap().0
+    );
+    assert_eq!(who.split_once('|').unwrap().1, CallerParticipant::ID);
+    assert_eq!(agent_who.split_once('|').unwrap().1, AgentParticipant::ID);
+
+    let id = "01J00000000000000000000010";
+    let input = value("cancel-first");
+    let operation = api
+        .silent()
+        .start_cancelled_with_invocation_id(id, &input)
+        .await
+        .expect("cancel unknown reserved id");
+    let entry = tokio::time::timeout(Duration::from_secs(20), entries.recv())
+        .await
+        .expect("cleanup entered")
+        .unwrap();
+    assert_eq!(
+        entry,
+        (
+            input.value.clone(),
+            Some(OperationCancellationReason::Requested),
+            false
+        )
+    );
+    assert_eq!(operation.id(), id);
+    assert_eq!(business.load(Ordering::SeqCst), 0);
+    let same_api = same_creator.trellis_test_fixture_echo_v1();
+    let replay = same_api
+        .silent()
+        .start_with_invocation_id(id, &input)
+        .await
+        .expect("late normal start replays");
+    assert_eq!(replay.id(), id);
+    let pending = operation.get().await.expect("pending cleanup");
+    assert_eq!(pending.state, OperationState::Pending);
+    let cancelled_retry = api
+        .silent()
+        .start_cancelled_with_invocation_id(id, &input)
+        .await
+        .expect("nonterminal cancelled admission replay");
+    assert_eq!(cancelled_retry.id(), id);
+    assert_eq!(
+        cancelled_retry.get().await.unwrap().revision,
+        pending.revision
+    );
+    assert!(api
+        .silent()
+        .start_cancelled_with_invocation_id(id, &value("changed"))
+        .await
+        .is_err());
+    assert!(agent
+        .trellis_test_fixture_echo_v1()
+        .silent()
+        .start_cancelled_with_invocation_id(id, &input)
+        .await
+        .is_err());
+    assert_eq!(
+        operation.get().await.expect("unchanged record").revision,
+        pending.revision
+    );
+    cleanup.add_permits(1);
+    let terminal = tokio::time::timeout(Duration::from_secs(20), operation.wait())
+        .await
+        .expect("cleanup finishes")
+        .expect("Cancelled result");
+    assert_eq!(terminal.state, OperationState::Cancelled);
+    let retry = api
+        .silent()
+        .start_cancelled_with_invocation_id(id, &input)
+        .await
+        .expect("durable cancelled replay");
+    assert_eq!(retry.get().await.unwrap().revision, terminal.revision);
+    let normal = api
+        .silent()
+        .start_with_invocation_id(id, &input)
+        .await
+        .expect("terminal normal replay");
+    assert_eq!(normal.get().await.unwrap().state, OperationState::Cancelled);
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    assert_eq!(business.load(Ordering::SeqCst), 0);
+
+    // Invoke/Cancel authority is absent for this actual installed participant.
+    let identity = runtime
+        .register_client::<RestrictedCallerParticipant>("restricted")
+        .await
+        .expect("register restricted");
+    let restricted = GeneratedClient::connect_user(identity.connect_options())
+        .await
+        .expect("connect restricted");
+    let restricted_api = EchoClient::from_generated(restricted);
+    let denied_id = "01J00000000000000000000011";
+    assert!(restricted_api
+        .silent()
+        .start_cancelled_with_invocation_id(denied_id, &value("denied"))
+        .await
+        .is_err());
+    assert!(api
+        .silent()
+        .control(denied_id)
+        .unwrap()
+        .get()
+        .await
+        .is_err());
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+
+    // Reusing the denied ID as an authorized, different participant proves that
+    // denial did not reserve it (a persisted restricted creator would conflict).
+    let after_denial = api
+        .silent()
+        .start_cancelled_with_invocation_id(denied_id, &value("denied"))
+        .await
+        .expect("denial left invocation absent");
+    let entry = tokio::time::timeout(Duration::from_secs(20), entries.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        entry,
+        (
+            "denied".to_owned(),
+            Some(OperationCancellationReason::Requested),
+            false
+        )
+    );
+    cleanup.add_permits(1);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(20), after_denial.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        OperationState::Cancelled
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 2);
+
+    // Normal admission wins deterministically, then cancelled admission joins it.
+    let id = "01J00000000000000000000012";
+    let input = value("normal-first");
+    let normal = api
+        .silent()
+        .start_with_invocation_id(id, &input)
+        .await
+        .expect("normal admission");
+    let entry = tokio::time::timeout(Duration::from_secs(20), entries.recv())
+        .await
+        .expect("business entered")
+        .unwrap();
+    assert_eq!(entry, (input.value.clone(), None, false));
+    let cancelled = api
+        .silent()
+        .start_cancelled_with_invocation_id(id, &input)
+        .await
+        .expect("cancel admitted operation");
+    assert_eq!(normal.id(), cancelled.id());
+    cleanup.add_permits(1);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(20), cancelled.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        OperationState::Cancelled
+    );
+    assert_eq!(business.load(Ordering::SeqCst), 1);
+
+    // Concurrent creates must converge to one cleanup and one durable identity.
+    let id = "01J00000000000000000000013";
+    let input = value("race");
+    let silent = api.silent();
+    let (normal, cancelled) = tokio::join!(
+        silent.start_with_invocation_id(id, &input),
+        silent.start_cancelled_with_invocation_id(id, &input)
+    );
+    let normal = normal.expect("racing normal admission");
+    let cancelled = cancelled.expect("racing cancelled admission");
+    assert_eq!(normal.id(), cancelled.id());
+    let entry = tokio::time::timeout(Duration::from_secs(20), entries.recv())
+        .await
+        .expect("one racing handler")
+        .unwrap();
+    assert_eq!(entry.0, "race");
+    assert!(!entry.2);
+    cleanup.add_permits(1);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(20), cancelled.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        OperationState::Cancelled
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 4);
+    assert!(business.load(Ordering::SeqCst) <= 2);
+
+    // Completed terminals replay unchanged, and ordinary uncancelled work works.
+    let id = "01J00000000000000000000014";
+    let input = value("complete");
+    let completed = api
+        .silent()
+        .start_with_invocation_id(id, &input)
+        .await
+        .expect("ordinary start");
+    let terminal = tokio::time::timeout(Duration::from_secs(20), completed.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(terminal.state, OperationState::Completed);
+    let replay = api
+        .silent()
+        .start_cancelled_with_invocation_id(id, &input)
+        .await
+        .expect("completed replay");
+    assert_eq!(replay.get().await.unwrap().revision, terminal.revision);
+    assert_eq!(
+        replay.get().await.unwrap().output.unwrap().value,
+        input.value
+    );
+    entries.recv().await.expect("completed handler entry");
+
+    // Failed cancellation-first cleanup recovers with Requested still seeded.
+    let id = "01J00000000000000000000015";
+    let input = value("retry");
+    let retry = api
+        .silent()
+        .start_cancelled_with_invocation_id(id, &input)
+        .await
+        .expect("cancel-first with failed cleanup");
+    let entry = tokio::time::timeout(Duration::from_secs(20), entries.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        entry,
+        (
+            input.value.clone(),
+            Some(OperationCancellationReason::Requested),
+            false
+        )
+    );
+    let before = business.load(Ordering::SeqCst);
+    let entry = tokio::time::timeout(Duration::from_secs(55), entries.recv())
+        .await
+        .expect("ordinary owner recovery")
+        .unwrap();
+    assert_eq!(
+        entry,
+        (
+            input.value.clone(),
+            Some(OperationCancellationReason::Requested),
+            true
+        )
+    );
+    assert_eq!(retry.get().await.unwrap().state, OperationState::Pending);
+    assert_eq!(business.load(Ordering::SeqCst), before);
+    cleanup.add_permits(1);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(20), retry.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        OperationState::Cancelled
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 7);
+    task.abort();
+    let _ = task.await;
+    runtime.shutdown().await.expect("shutdown runtime");
+}
+
+/// Failed cancellation cleanup remains nonterminal; recovery enters cleanup
+/// already cancelled and retries without repeating business work.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancellation_cleanup_failure_recovers_through_generated_client() {
+    use trellis_rs::client::OperationState;
+    use trellis_rs::service::OperationCancellationReason;
+
+    let mut runtime = TrellisTestRuntime::builder()
+        .start()
+        .await
+        .expect("start runtime");
+    let identity = runtime
+        .register_service::<ProviderParticipant>("provider")
+        .await
+        .expect("register provider");
+    let mut service = ProviderParticipant::connect(identity.connect_options())
+        .await
+        .expect("connect provider");
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let business_calls = Arc::new(AtomicUsize::new(0));
+    let release_cleanup = Arc::new(tokio::sync::Notify::new());
+    let (entered, mut entries) = tokio::sync::mpsc::unbounded_channel();
+    let (failed, mut failures) = tokio::sync::mpsc::unbounded_channel();
+    Provider::new(&mut service)
+        .trellis_test_fixture_echo_v1()
+        .register_silent({
+            let attempts = Arc::clone(&attempts);
+            let business_calls = Arc::clone(&business_calls);
+            let release_cleanup = Arc::clone(&release_cleanup);
+            move |context, _input, operation| {
+                let attempts = Arc::clone(&attempts);
+                let business_calls = Arc::clone(&business_calls);
+                let release_cleanup = Arc::clone(&release_cleanup);
+                let entered = entered.clone();
+                let failed = failed.clone();
+                async move {
+                    let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                    let cancellation = operation.cancellation();
+                    let initial_reason = cancellation.reason();
+                    if initial_reason.is_none() {
+                        business_calls.fetch_add(1, Ordering::SeqCst);
+                        operation.started().await?;
+                    }
+                    entered
+                        .send((attempt, context.resuming, initial_reason))
+                        .unwrap();
+                    assert_eq!(
+                        cancellation.cancelled().await,
+                        OperationCancellationReason::Requested
+                    );
+                    if attempt < 2 {
+                        failed.send(attempt).unwrap();
+                        return Err(ServerError::Nats("owned child cleanup failed".to_owned()));
+                    }
+                    release_cleanup.notified().await;
+                    Ok(())
+                }
+            }
+        });
+    let task = tokio::spawn(async move { service.run().await });
+    let identity = runtime
+        .register_client::<CallerParticipant>("caller")
+        .await
+        .expect("register caller");
+    let caller = CallerClient::connect(identity.connect_options())
+        .await
+        .expect("connect caller");
+    let api = caller.trellis_test_fixture_echo_v1();
+    let operation = api
+        .silent()
+        .start(&value("cleanup"))
+        .await
+        .expect("start Silent");
+    let entry = tokio::time::timeout(Duration::from_secs(20), entries.recv())
+        .await
+        .expect("initial handler enters")
+        .expect("initial entry");
+    assert_eq!(entry, (0, false, None));
+    let cancel = operation.cancel();
+    tokio::pin!(cancel);
+    tokio::select! {
+        failure = failures.recv() => assert_eq!(failure, Some(0)),
+        result = &mut cancel => panic!("cancel completed before cleanup failed: {result:?}"),
+        _ = tokio::time::sleep(Duration::from_secs(20)) => panic!("handler did not observe Requested"),
+    }
+    // Each failed execution must remain recoverable through ordinary lease expiry.
+    // A bounded entry wait, not a sleep, synchronizes with each recovered handler.
+    for attempt in 1..=2 {
+        let entry = tokio::select! {
+            entry = entries.recv() => entry.expect("recovered entry"),
+            result = &mut cancel => panic!("cancel completed after failed cleanup: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_secs(55)) => panic!("cleanup was not recovered"),
+        };
+        assert_eq!(
+            entry,
+            (attempt, true, Some(OperationCancellationReason::Requested))
+        );
+        let snapshot = operation.get().await.expect("read pending cleanup");
+        assert_eq!(snapshot.state, OperationState::Running);
+        assert!(snapshot.output.is_none());
+    }
+    assert_eq!(failures.recv().await, Some(1));
+    assert_eq!(business_calls.load(Ordering::SeqCst), 1);
+    release_cleanup.notify_one();
+    let terminal = tokio::time::timeout(Duration::from_secs(20), &mut cancel)
+        .await
+        .expect("successful cleanup finalizes")
+        .expect("cancel succeeds");
+    assert_eq!(terminal.state, OperationState::Cancelled);
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    let durable = operation.get().await.expect("read durable cancellation");
+    assert_eq!(durable.state, OperationState::Cancelled);
+    assert_eq!(durable.revision, terminal.revision);
+    task.abort();
+    let _ = task.await;
+    runtime.shutdown().await.expect("shutdown runtime");
+}
+
 /// T11: generated distinct `progress`/`update` schemas deliver a live preview
 /// while the durable snapshot keeps only the declared progress status.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

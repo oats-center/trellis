@@ -1,6 +1,6 @@
 //! Generated API `trellis-test-fixture.echo@v1`.
 pub const API_ID: &str = "trellis-test-fixture.echo@v1";
-pub const API_DIGEST: &str = "MqZ30Qrlp_inA3MTrwvQDynI6-braKV14fvrCHbRyf0";
+pub const API_DIGEST: &str = "HVm3bSAwXRcG1MJ91pesDhpxXzg0WUD-yhp5WyS-PNY";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;
@@ -41,6 +41,45 @@ pub mod rpc {
     }
 }
 pub mod operations {
+    pub type OptionalSilentInput = crate::__types::trellis_test_fixture::Value;
+    pub type OptionalSilentOutput = crate::__types::trellis_test_fixture::Value;
+    pub struct OptionalSilent;
+    impl OptionalSilent {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "operation.OptionalSilent";
+        pub const KEY: &'static str = "echo.OptionalSilent";
+        pub const SUBJECT: &'static str = "operations.v1.echo.OptionalSilent";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis-test-fixture.echo@v1::optionalSilent",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[];
+        pub const UPLOAD: bool = false;
+    }
+    impl trellis_rs::generated::OperationDescriptor for OptionalSilent {
+        type Input = OptionalSilentInput;
+        type Output = OptionalSilentOutput;
+        type Progress = serde_json::Value;
+        type Update = serde_json::Value;
+        type UpdateEvidence = trellis_rs::client::NoOperationUpdates;
+        type Error = std::convert::Infallible;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const ERRORS: &'static [&'static str] = &[];
+        const SIGNALS: &'static [&'static str] = &[];
+        const SIGNAL_INPUT_SCHEMAS_JSON: &'static str = "{}";
+        const UPLOAD: bool = Self::UPLOAD;
+        const HAS_PROGRESS: bool = false;
+        const UPDATE_SCHEMA_JSON: Option<&'static str> = None;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            let _ = value;
+            Ok(None)
+        }
+    }
     pub type SilentInput = crate::__types::trellis_test_fixture::Value;
     pub type SilentOutput = crate::__types::trellis_test_fixture::Value;
     pub struct Silent;
@@ -232,6 +271,11 @@ impl Client {
     > {
         self.inner.call::<rpc::Echo>(input).await
     }
+    pub fn optional_silent(
+        &self,
+    ) -> trellis_rs::generated::Operation<'_, operations::OptionalSilent> {
+        self.inner.operation::<operations::OptionalSilent>()
+    }
     pub fn silent(&self) -> trellis_rs::generated::Operation<'_, operations::Silent> {
         self.inner.operation::<operations::Silent>()
     }
@@ -280,6 +324,25 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
             > + Send + 'static,
     {
         self.runtime.register_rpc::<rpc::Echo, _, _>(handler);
+    }
+    pub fn register_optional_silent<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::RequestContext,
+                operations::OptionalSilentInput,
+                trellis_rs::service::OperationControl<
+                    trellis_rs::generated::OperationAdapter<operations::OptionalSilent>,
+                >,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<(), trellis_rs::service::ServerError>>
+            + Send + 'static,
+    {
+        self.runtime
+            .register_operation_handler::<
+                trellis_rs::generated::OperationAdapter<operations::OptionalSilent>,
+                F,
+                Fut,
+            >(handler);
     }
     pub fn register_silent<F, Fut>(&mut self, handler: F)
     where

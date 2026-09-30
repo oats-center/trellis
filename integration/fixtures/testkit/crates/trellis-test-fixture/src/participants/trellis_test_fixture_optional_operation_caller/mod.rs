@@ -1,14 +1,14 @@
-//! Generated participant `trellis-test-fixture.AgentCaller`.
-pub const PARTICIPANT_ID: &str = "trellis-test-fixture.AgentCaller";
-pub const PARTICIPANT_PATH: &str = "AgentCaller";
-pub const PARTICIPANT_DIGEST: &str = "mOYnuUUckA2Et2eSA8_-oWWWS5e39OrLNlA2UbcSJgE";
+//! Generated participant `trellis-test-fixture.OptionalOperationCaller`.
+pub const PARTICIPANT_ID: &str = "trellis-test-fixture.OptionalOperationCaller";
+pub const PARTICIPANT_PATH: &str = "OptionalOperationCaller";
+pub const PARTICIPANT_DIGEST: &str = "qiBatzW6cbhquBNrFKNmECIw2TJhRVdxa7aEXnFHAnI";
 pub const IMPLEMENTED_API_IDS: &[&str] = &[];
-pub const EVENT_SUBSCRIBE_NEEDS: &[&str] = &["event:Observed"];
+pub const EVENT_SUBSCRIBE_NEEDS: &[&str] = &[];
 pub struct Participant;
 impl trellis_rs::generated::ParticipantDescriptor for Participant {
     const ID: &'static str = PARTICIPANT_ID;
     const PATH: &'static str = PARTICIPANT_PATH;
-    const KIND: trellis_rs::generated::ParticipantKind = trellis_rs::generated::ParticipantKind::Agent;
+    const KIND: trellis_rs::generated::ParticipantKind = trellis_rs::generated::ParticipantKind::App;
     const COMPANION: Option<trellis_rs::generated::CompanionDescriptor> = None;
     const IMPLEMENTED_API_IDS: &'static [&'static str] = IMPLEMENTED_API_IDS;
     const EVENT_SUBSCRIBE_NEEDS: &'static [&'static str] = EVENT_SUBSCRIBE_NEEDS;
@@ -40,15 +40,40 @@ pub mod types {
 }
 /// Immutable snapshot of optional installed surfaces.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Availability {}
+pub struct Availability {
+    /// Availability of optional action trellis-test-fixture.echo@v1 OptionalSilent.
+    pub action_trellis_test_fixture_echo_v1_operations_optional_silent: bool,
+    /// Availability of capability trellis-test-fixture.echo@v1::optionalSilent.
+    pub trellis_test_fixture_echo_v1_optional_silent: bool,
+}
 impl Availability {
     #[doc(hidden)]
     pub fn from_runtime(snapshot: &trellis_rs::generated::AvailabilitySnapshot) -> Self {
         let _ = snapshot;
-        Self {}
+        Self {
+            action_trellis_test_fixture_echo_v1_operations_optional_silent: snapshot
+                .allows_action(
+                    trellis_rs::generated::OptionalAction::operation(
+                        "trellis-test-fixture.echo@v1",
+                        "OptionalSilent",
+                    ),
+                ),
+            trellis_test_fixture_echo_v1_optional_silent: snapshot
+                .allows_action(
+                    trellis_rs::generated::OptionalAction::operation(
+                        "trellis-test-fixture.echo@v1",
+                        "OptionalSilent",
+                    ),
+                ),
+        }
     }
 }
-const OPTIONAL_ACTIONS: &[trellis_rs::generated::OptionalAction] = &[];
+const OPTIONAL_ACTIONS: &[trellis_rs::generated::OptionalAction] = &[
+    trellis_rs::generated::OptionalAction::operation(
+        "trellis-test-fixture.echo@v1",
+        "OptionalSilent",
+    ),
+];
 #[derive(Clone)]
 pub struct Client {
     inner: trellis_rs::generated::Client,

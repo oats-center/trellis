@@ -1732,7 +1732,7 @@ impl TrellisClient {
             let message = timeout(std::time::Duration::from_millis(self.timeout_ms), future)
                 .await
                 .map_err(|_| TrellisClientError::Timeout)?
-                .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+                .map_err(TrellisClientError::from)?;
             Ok(message)
         }
         .instrument(span.clone())
@@ -1762,6 +1762,7 @@ impl TrellisClient {
             TrellisClientError::Nats(_)
             | TrellisClientError::NatsConnect(_)
             | TrellisClientError::NatsRequest(_)
+            | TrellisClientError::ServiceUnavailable(_)
             | TrellisClientError::BootstrapHttp { .. }
             | TrellisClientError::AuthorizationUnavailable(_)
             | TrellisClientError::TransportUpgradeRequired(_) => "unavailable",

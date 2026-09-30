@@ -111,6 +111,17 @@ impl TransportError {
     }
 }
 
+/// The broker reported no responder for the requested Trellis service.
+///
+/// This is a transient service-availability failure, not an authorization denial
+/// or a malformed response. Retrying does not by itself start or restart an
+/// existing operation.
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+#[error(
+    "the requested Trellis service is unavailable; check that the service is running and retry"
+)]
+pub struct ServiceUnavailableError;
+
 /// Errors returned by generated caller methods.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -136,6 +147,9 @@ where
     /// NATS or other connected transport failure.
     #[error(transparent)]
     Transport(TransportError),
+    /// The requested service has no responder on the broker.
+    #[error(transparent)]
+    ServiceUnavailable(ServiceUnavailableError),
     /// An optional generated action is not present in the installed availability snapshot.
     #[error("optional action unavailable: {0}")]
     AuthorizationUnavailable(String),
@@ -166,6 +180,7 @@ where
                 )),
             },
             TrellisClientError::Timeout => Self::Timeout,
+            TrellisClientError::ServiceUnavailable(error) => Self::ServiceUnavailable(error),
             TrellisClientError::Json(error) => {
                 Self::Protocol(ProtocolError::new(error.to_string()))
             }
@@ -288,6 +303,10 @@ pub enum TrellisClientError {
     #[error("nats request error: {0}")]
     NatsRequest(String),
 
+    /// The requested service has no responder on the broker.
+    #[error(transparent)]
+    ServiceUnavailable(#[from] ServiceUnavailableError),
+
     #[error("Trellis HTTP request failed with status {status}: {code}")]
     BootstrapHttp { status: u16, code: String },
 
@@ -343,6 +362,17 @@ pub enum TrellisClientError {
     /// A live observation failed after setup with a bounded public envelope.
     #[error(transparent)]
     Live(crate::live::LiveStreamError),
+}
+
+impl From<async_nats::RequestError> for TrellisClientError {
+    fn from(error: async_nats::RequestError) -> Self {
+        match error.kind() {
+            async_nats::RequestErrorKind::NoResponders => {
+                Self::ServiceUnavailable(ServiceUnavailableError)
+            }
+            _ => Self::NatsRequest(error.to_string()),
+        }
+    }
 }
 
 #[cfg(test)]

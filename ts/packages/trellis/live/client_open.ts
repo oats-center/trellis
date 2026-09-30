@@ -4,6 +4,7 @@ import {
   type NatsConnection,
   type Subscription,
 } from "@nats-io/nats-core";
+import { TransportError } from "../errors/TransportError.ts";
 import { encodeEventSubjectParameterToken } from "../helpers.ts";
 import {
   liveConstants,
@@ -168,6 +169,15 @@ async function request(
     );
     if (!received) {
       throw new LiveStreamError("setup_timeout", "live request timed out");
+    }
+    if (received.headers?.code === 503) {
+      throw new TransportError({
+        code: "trellis.request.unavailable",
+        message: "Trellis could not reach the requested service.",
+        hint:
+          "Check that the target service is installed and reachable, then try again.",
+        context: { subject, noResponders: true },
+      });
     }
     return { msg: received, requestId: proof.requestId };
   } finally {
