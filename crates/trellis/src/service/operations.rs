@@ -801,9 +801,11 @@ where
                         }
                     }
                     _ = heartbeat.tick() => {
-                        let _guard = mutation_gate.lock().await;
-                        let now = now_ms();
-                        let renewed = repository.renew(&claimed.record.invocation_id, &fence.executor_id, fence.owner_epoch, now, now + 30_000).await;
+                        let renewed = {
+                            let _guard = mutation_gate.lock().await;
+                            let now = now_ms();
+                            repository.renew(&claimed.record.invocation_id, &fence.executor_id, fence.owner_epoch, now, now + 30_000).await
+                        };
                         record_ownership_event("renew", renewed.is_ok());
                         if renewed.is_err() {
                             cancel_sender.send_replace(Some(OperationCancellationReason::OwnershipLost));

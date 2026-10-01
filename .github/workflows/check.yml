@@ -268,7 +268,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist/runtime-binaries/fixtures dist/runtime-binaries/examples
           cp target/release/trellis target/release/trellis-server target/debug/trellis-testkit-live dist/runtime-binaries/
-          for bin in trellis-runtime-acceptance caller resources events live_probe live_probe_caller empty_watch; do
+          for bin in trellis-runtime-acceptance caller resources events live_probe live_probe_caller empty_watch operation_lease_loss; do
             cp "target/debug/${bin}" dist/runtime-binaries/fixtures/
           done
           cp target/debug/examples/health_watch dist/runtime-binaries/examples/
