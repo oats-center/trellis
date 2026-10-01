@@ -67,7 +67,13 @@ Deno.test("V3 Operation observation delivers typed updates then terminal", async
             {
               type: string;
               update?: { value: string };
-              snapshot?: { state: string; output?: { value: string } };
+              snapshot?: {
+                id: string;
+                revision: number;
+                state: string;
+                output?: { value: string };
+                error?: { type: string; message: string };
+              };
             }
           >
         ) {
@@ -78,7 +84,19 @@ Deno.test("V3 Operation observation delivers typed updates then terminal", async
             terminalOutput = event.snapshot?.output?.value;
             // Do not break: let the normal transport END complete the stream.
           } else if (event.type === "failed" || event.type === "cancelled") {
-            throw new Error(`operation ended ${event.type}`);
+            throw new Error(
+              `operation ended ${event.type}: ${
+                JSON.stringify({
+                  id: event.snapshot?.id,
+                  revision: event.snapshot?.revision,
+                  state: event.snapshot?.state,
+                  error: event.snapshot?.error === undefined ? undefined : {
+                    type: event.snapshot.error.type,
+                    message: event.snapshot.error.message,
+                  },
+                })
+              }`,
+            );
           }
         }
       })();
