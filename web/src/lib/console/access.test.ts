@@ -4,8 +4,31 @@ import {
   type CapabilityGroup,
   type Permission,
   permissionKey,
+  permissionLabel,
   presetPermissions,
 } from "./access.ts";
+
+Deno.test("permission descriptions identify operation signals and declared resources", () => {
+  const encoder = new TextEncoder();
+  assertEquals(
+    permissionLabel({
+      action: "control",
+      target: encoder.encode(
+        '{"api":"example.work@v1","kind":"operationSignal","operation":"Upload","signal":"Continue"}',
+      ),
+    }),
+    "example.work@v1 / operation Upload / signal Continue · control",
+  );
+  assertEquals(
+    permissionLabel({
+      action: "read",
+      target: encoder.encode(
+        '{"kind":"participantResource","name":"documents","participant":"example.editor","resource":"state"}',
+      ),
+    }),
+    "example.editor / state resource documents · read",
+  );
+});
 
 Deno.test("applying nested permission presets deduplicates actions regardless of target JSON order", () => {
   const first: Permission = {
