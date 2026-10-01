@@ -59,6 +59,7 @@
   let review = $state(false);
   let revokeTarget = $state.raw<Binding | null>(null);
   let editorGeneration = 0;
+  let selectionGeneration = 0;
   beforeNavigate((navigation) => {
     if (editing && !pending && !window.confirm("Leave without saving the access-grant draft?")) navigation.cancel();
   });
@@ -104,6 +105,7 @@
 
   async function loadCatalog(): Promise<void> {
     const key = scope.key;
+    const generation = selectionGeneration;
     try {
       const [participantResult, capabilityResult, groupResult] = await Promise.all([
         traverseAll<Participant>(async (request) => {
@@ -119,7 +121,7 @@
           return { items: response.items, cursor: response.page.nextCursor };
         }),
       ]);
-      if (scope.key !== key) return;
+      if (scope.key !== key || selectionGeneration !== generation) return;
       if (!participantResult.complete) throw participantResult.error;
       if (!capabilityResult.complete) throw capabilityResult.error;
       if (!groupResult.complete) throw groupResult.error;
@@ -128,7 +130,7 @@
       groups = [...groupResult.items];
       catalogError = null;
     } catch (cause) {
-      if (scope.key === key) catalogError = errorMessage(cause);
+      if (scope.key === key && selectionGeneration === generation) catalogError = errorMessage(cause);
     }
   }
 
@@ -193,7 +195,7 @@
       isStillValid: () => scope.key === intent.scope.routeKey && !disabled && editing && generation === editorGeneration,
       dispatch: ({ input }) => trellis.grantsSet(input).orThrow(),
     });
-    if (!outcome || scope.key !== intent.scope.routeKey) return;
+    if (!outcome || scope.key !== intent.scope.routeKey || editorGeneration !== generation) return;
     if (outcome.kind === "succeeded") {
       bindings = [...bindings.filter((binding) => binding.participantId !== outcome.value.binding.participantId), outcome.value.binding];
       editing = false;
@@ -209,11 +211,12 @@
     const input: RevokeInput = { ownerKind, ownerId, participantId: binding.participantId, expectedRevision: binding.revision, idempotencyKey: key, reason: "Revoked from Console" };
     const intent = captureIntent<RevokeInput>({ operation: "grantsRevoke", input, targetId: ownerId, label: ownerLabel, idempotencyKey: key, scope: { routeKey: scope.key } });
     if (!revokeMutation.begin(intent)) return;
+    const generation = editorGeneration;
     const outcome = await revokeMutation.send({
       isStillValid: () => scope.key === intent.scope.routeKey && !disabled && revokeTarget?.revision === input.expectedRevision,
       dispatch: ({ input }) => trellis.grantsRevoke(input).orThrow(),
     });
-    if (!outcome || scope.key !== intent.scope.routeKey) return;
+    if (!outcome || scope.key !== intent.scope.routeKey || editorGeneration !== generation) return;
     if (outcome.kind === "succeeded") {
       bindings = bindings.map((entry) => entry.participantId === binding.participantId ? outcome.value.binding : entry);
       revokeTarget = null;
@@ -231,7 +234,11 @@
       ++editorGeneration;
       void load(); void loadCatalog();
     });
-    return () => scope.invalidate();
+    return () => {
+      ++editorGeneration;
+      ++selectionGeneration;
+      scope.invalidate();
+    };
   });
   onDestroy(() => scope.dispose());
 </script>
