@@ -932,11 +932,6 @@ where
             .get_user_account(&input.principal_id)
             .await?
             .ok_or(AuthorizationStateError::PrincipalMissing)?;
-        if current_principal.version != input.expected_version
-            || current_profile.version != input.expected_version
-        {
-            return Err(AuthorizationStateError::StorageConflict);
-        }
         let version = input.expected_version.checked_add(1).ok_or_else(|| {
             AuthorizationStateError::InvalidRecord("user version overflow".to_owned())
         })?;

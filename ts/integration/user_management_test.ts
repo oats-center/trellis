@@ -7,6 +7,7 @@ import {
   submitPortalApproval,
 } from "@oatscenter/trellis/auth/browser";
 import { participants } from "trellis-web-generated";
+import { AuthError as RpcAuthError } from "../packages/trellis/internal_sdk/generated/apis/auth/mod.js";
 import { participant as adminParticipant } from "../packages/trellis/internal_sdk/generated/participants/console/mod.js";
 import { ulid } from "ulid";
 import { withTrellisRuntime } from "./_support/runtime.ts";
@@ -221,17 +222,36 @@ Deno.test("user administration renames local login, restores access, and scopes 
 
       const loaded =
         (await admin.usersGet({ userId: targetId }).orThrow()).user;
-      const updated = await admin.usersUpdate({
+      const updateInput = {
         userId: targetId,
         username: "  Managed-After  ",
         name: "Renamed account",
         email: "renamed@example.com",
         image: null,
-        state: "active",
+        state: "active" as const,
         expectedVersion: loaded.version,
         idempotencyKey: ulid(),
-      }).orThrow();
+      };
+      const updated = await admin.usersUpdate(updateInput).orThrow();
       assertEquals(updated.user.username, "managed-after");
+      const replayed = await admin.usersUpdate(updateInput).orThrow();
+      assertEquals(replayed.user, updated.user);
+      assertEquals(
+        (await admin.usersGet({ userId: targetId }).orThrow()).user,
+        updated.user,
+      );
+      const staleUpdate = await admin.usersUpdate({
+        ...updateInput,
+        idempotencyKey: ulid(),
+        name: "Stale update must not commit",
+      });
+      assert(staleUpdate.isErr());
+      assert(staleUpdate.error instanceof RpcAuthError);
+      assertEquals(staleUpdate.error.data.code, "conflict");
+      assertEquals(
+        (await admin.usersGet({ userId: targetId }).orThrow()).user,
+        updated.user,
+      );
       assertEquals(
         (await admin.userIdentitiesList({ userId: targetId }).orThrow())
           .items[0].subject,

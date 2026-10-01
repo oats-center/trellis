@@ -2445,6 +2445,80 @@ mod password_reset_action_tests {
             Some(principal_id)
         );
 
+        // The ordinary service must reach transaction idempotency before CAS
+        // rejects the original version on a lost-response retry.
+        let original = service.user(principal_id).await.unwrap().unwrap();
+        let update_input = crate::platform::auth::application::UpdateUserInput {
+            actor: actor.clone(),
+            principal_id: principal_id.to_owned(),
+            username: Some("  Reset-Renamed  ".to_owned()),
+            expected_version: original.principal.version,
+            name: Some("Renamed reset target".to_owned()),
+            email: Some("renamed@example.com".to_owned()),
+            image: None,
+            state: PrincipalState::Active,
+            updated_at: NOW + 1_000,
+            idempotency: proof(
+                "target.update",
+                "auth.user.update",
+                "target-update",
+                NOW + 1_000,
+            ),
+            actions: Vec::new(),
+        };
+        let updated = match service.update_user(update_input.clone()).await.unwrap() {
+            IdempotentOutcome::Applied(account) => account,
+            IdempotentOutcome::Replayed(_) => panic!("first update must apply"),
+        };
+        let credential = store
+            .get_local_credential(principal_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(credential.normalized_username, "reset-renamed");
+        assert!(matches!(
+            service.update_user(update_input.clone()).await.unwrap(),
+            IdempotentOutcome::Replayed(_)
+        ));
+        assert_eq!(service.user(principal_id).await.unwrap().unwrap(), updated);
+        assert_eq!(
+            store
+                .get_local_credential(principal_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            credential
+        );
+        assert!(matches!(
+            service
+                .update_user(crate::platform::auth::application::UpdateUserInput {
+                    idempotency: proof(
+                        "target.update.stale",
+                        "auth.user.update",
+                        "target-update-stale",
+                        NOW + 1_000
+                    ),
+                    name: Some("Stale update must not commit".to_owned()),
+                    ..update_input
+                })
+                .await,
+            Err(AuthorizationStateError::StorageConflict)
+        ));
+        assert_eq!(service.user(principal_id).await.unwrap().unwrap(), updated);
+        assert_eq!(
+            store
+                .get_local_credential(principal_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            credential
+        );
+        assert!(
+            matches!(service.authenticate_local("reset-renamed", "reset-password-1", NOW + 1_000).await.unwrap(),
+            crate::platform::auth::application::LocalAuthentication::Authenticated { principal }
+                if principal.principal_id == principal_id)
+        );
+
         // A validated caller captured before its login is revoked cannot create
         // another user's bearer flow or replay a previously authorized creation.
         let mut revoked_event = json!({
