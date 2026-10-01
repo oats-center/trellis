@@ -747,7 +747,6 @@
     const capturedQueryEpoch = queryEpoch;
     const capturedKey = desiredQuery.key;
     const capturedSelectionEpoch = selectionEpoch;
-    const mutationToken = ++deadLetterBusyGeneration;
     const owned = () =>
       !disposed &&
       capturedQueryEpoch === queryEpoch &&
@@ -763,7 +762,8 @@
     });
     if (!confirmed || !owned() || selectedConsumer?.row.resourceId !== resourceId ||
       !deadLetters.some((item) => item.deadLetterId === input.deadLetterId && item.revision === input.expectedRevision)) return;
-    deadLetterBusy = deadLetter.deadLetterId;
+    const mutationToken = ++deadLetterBusyGeneration;
+    deadLetterBusy = input.deadLetterId;
     deadLetterError = { ...deadLetterError, [deadLetter.deadLetterId]: "" };
     try {
       await runDeadLetterMutation({
@@ -772,7 +772,7 @@
           if (action === "replay") await trellis.deadLettersReplay(input, { timeout: rpcTimeout }).orThrow();
           else await trellis.deadLettersDismiss(input, { timeout: rpcTimeout }).orThrow();
         },
-        followUp: () => {
+        followUp: async () => {
           if (!owned()) return;
           return requestSnapshot(false);
         },
@@ -787,7 +787,7 @@
         },
       });
     } finally {
-      if (owned() && deadLetterBusy === mutationToken) deadLetterBusy = null;
+      if (!disposed && deadLetterBusyGeneration === mutationToken && deadLetterBusy === input.deadLetterId) deadLetterBusy = null;
     }
   }
 
@@ -818,7 +818,7 @@
           onFrame: (frame) => {
             if (objectRecord(frame).kind !== "ready") refreshScheduler.notify();
           },
-          stillOwned: () => !disposed && watchAttempt === attempt,
+          stillOwned: (): boolean => !disposed && watchAttempt === attempt,
           onUnexpectedEnd: (cause) => live.closed(cause),
         });
         watchAttempt = attempt;

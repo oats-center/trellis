@@ -462,7 +462,7 @@
           open: (signal) =>
             trellis.jobsWatch({ includeInitial: false }, { signal }).orThrow(),
           onFrame: () => refreshScheduler.notify(),
-          stillOwned: () => !disposed && watchAttempt === attempt,
+          stillOwned: (): boolean => !disposed && watchAttempt === attempt,
           onUnexpectedEnd: (cause) => live.closed(cause),
         });
         watchAttempt = attempt;
