@@ -1896,6 +1896,7 @@ mod tests {
                 &format!("trellis-rs = \"{}\"", env!("CARGO_PKG_VERSION")),
                 &format!("trellis-rs = {{ path = {runtime:?} }}"),
             );
+        // This fixture is independent even when TMPDIR is inside the repository.
         fs::write(
             output.path().join("Cargo.toml"),
             format!("{cargo}\n[workspace]\n"),
@@ -2044,6 +2045,7 @@ fn download_output_round_trips_transfer_grant() {
                 &format!("trellis-rs = \"{}\"", env!("CARGO_PKG_VERSION")),
                 &format!("trellis-rs = {{ path = {runtime:?} }}"),
             );
+        // This fixture is independent even when TMPDIR is inside the repository.
         fs::write(
             output.path().join("Cargo.toml"),
             format!("{cargo}\n[workspace]\n"),

@@ -147,6 +147,7 @@ fn generated_package_exercises_wo03_b2_b4() {
             "trellis-rs = \"0.100.0\"",
             &format!("trellis-rs = {{ path = {runtime:?} }}"),
         );
+    // Repository-owned temporary output must not join the enclosing workspace.
     fs::write(
         rust.join("Cargo.toml"),
         format!("{manifest}\n[workspace]\n"),
