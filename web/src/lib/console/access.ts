@@ -25,6 +25,20 @@ export function permissionLabel(permission: Permission): string {
     return `${permission.action} · ${displayJson(permission.target)}`;
   }
   const target = decoded.value;
+  if (typeof target === "object" && target !== null && "kind" in target) {
+    if (
+      target.kind === "operationSignal" && "api" in target &&
+      "operation" in target && "signal" in target
+    ) {
+      return `${target.api} / operation ${target.operation} / signal ${target.signal} · ${permission.action}`;
+    }
+    if (
+      target.kind === "participantResource" && "participant" in target &&
+      "resource" in target && "name" in target
+    ) {
+      return `${target.participant} / ${target.resource} resource ${target.name} · ${permission.action}`;
+    }
+  }
   if (
     typeof target === "object" && target !== null && "api" in target &&
     "name" in target

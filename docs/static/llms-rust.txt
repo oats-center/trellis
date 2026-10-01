@@ -17,6 +17,9 @@ protected-account safeguards remain. `Connections.List` accepts `principalId`.
 Declare these actions in native IDL and use generated request models/facades;
 capability-group presets saved through `Grants.Set` are exact snapshots, not live
 group memberships.
+Exact snapshots can initiate resource provisioning without bypassing runtime
+readiness. Resource actions stay within the snapshot and delegation ceiling;
+read-only approval does not grant write access.
 
 Author native IDL and set `[package]`, `[sources]`, and `[generate.rust].output`
 in `trellis.toml`. `trellis generate` is offline after dependencies are

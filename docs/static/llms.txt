@@ -39,6 +39,8 @@ access grants, target-user password-reset and identity-link flows, sign-in
 methods, sessions, and connections. Exact grants apply capability groups as
 one-time presets, not live memberships. See the authentication-and-authorization
 guide for administrative scope and protected-account safeguards.
+Exact snapshots may initiate resource provisioning; readiness still gates access,
+and read-only resource approval does not grant write access.
 
 1. Author the `.trellis` files explicitly listed by `[sources]`.
 2. Set `[package]`, `[dependencies]`, and language outputs in `trellis.toml`;

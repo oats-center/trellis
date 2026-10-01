@@ -7,6 +7,7 @@ import {
   submitPortalApproval,
 } from "@oatscenter/trellis/auth/browser";
 import { participants } from "trellis-web-generated";
+import { participants as runtimeParticipants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { participant as adminParticipant } from "../packages/trellis/internal_sdk/generated/participants/console/mod.js";
 import { ulid } from "ulid";
 import { withTrellisRuntime } from "./_support/runtime.ts";
@@ -15,6 +16,9 @@ Deno.test("user administration renames local login, restores access, and scopes 
   await withTrellisRuntime(async (runtime) => {
     await runtime.contracts.install({
       contract: participants.Console.participant,
+    });
+    await runtime.contracts.install({
+      contract: runtimeParticipants.StateCaller.participant,
     });
     const adminAuth = runtime.clientAuth({
       seed: base64urlEncode(crypto.getRandomValues(new Uint8Array(32))),
@@ -103,10 +107,14 @@ Deno.test("user administration renames local login, restores access, and scopes 
       grant.binding.grants,
     );
 
-    async function login(username: string) {
+    async function login<
+      const TParticipant extends
+        | typeof participants.Console.participant
+        | typeof runtimeParticipants.StateCaller.participant,
+    >(username: string, contract: TParticipant, allowConsent = true) {
       return await TrellisClient.connect({
         trellisUrl: runtime.trellisUrl,
-        participant: participants.Console.participant,
+        participant: contract,
         name: `managed-login-${username}`,
         auth: {
           mode: "session_key",
@@ -143,6 +151,10 @@ Deno.test("user administration renames local login, restores access, and scopes 
           };
           const state = await fetchPortalFlowState(location, flowId, binding);
           if (state.status === "approval_required") {
+            assert(
+              allowConsent,
+              "Login must not replace the administrator's read-only grant with a broader consent approval",
+            );
             const approved = await submitPortalApproval(
               location,
               flowId,
@@ -156,7 +168,25 @@ Deno.test("user administration renames local login, restores access, and scopes 
       }).orThrow();
     }
 
-    const user = await login("managed-before");
+    const resourceParticipant = (await admin.participantsGet({
+      participantId: runtimeParticipants.StateCaller.participant.id,
+    }).orThrow()).participant;
+    await admin.grantsSet({
+      ownerKind: "user",
+      ownerId: targetId,
+      participantId: resourceParticipant.participantId,
+      installedRevision: resourceParticipant.revision,
+      expectedRevision: 0n,
+      grants: resourceParticipant.requiredGrants,
+      platformPrivileges: [],
+      expiresAt: null,
+      idempotencyKey: ulid(),
+    }).orThrow();
+
+    const user = await login(
+      "managed-before",
+      participants.Console.participant,
+    );
     try {
       const me = await user.sessionsMe({}).orThrow();
       assertEquals(me.user?.userId, targetId);
@@ -248,7 +278,10 @@ Deno.test("user administration renames local login, restores access, and scopes 
           ),
         })).isErr(),
       );
-      const renamedLogin = await login("managed-after");
+      const renamedLogin = await login(
+        "managed-after",
+        participants.Console.participant,
+      );
       try {
         assertEquals(
           (await renamedLogin.sessionsMe({}).orThrow()).user?.userId,
@@ -303,6 +336,73 @@ Deno.test("user administration renames local login, restores access, and scopes 
           connection.principalId === targetId
         ),
       );
+
+      const stateClient = await login(
+        "managed-after",
+        runtimeParticipants.StateCaller.participant,
+      );
+      try {
+        await stateClient.state.savedResource.set({ value: "approved write" })
+          .orThrow();
+        assertEquals(
+          (await stateClient.state.savedResource.get().orThrow())?.value,
+          { value: "approved write" },
+        );
+      } finally {
+        await stateClient.connection.close();
+      }
+
+      const currentResourceGrant = (await admin.grantsGet({
+        ownerKind: "user",
+        ownerId: targetId,
+        participantId: resourceParticipant.participantId,
+      }).orThrow()).binding;
+      assert(currentResourceGrant);
+      await admin.grantsSet({
+        ownerKind: "user",
+        ownerId: targetId,
+        participantId: resourceParticipant.participantId,
+        installedRevision: resourceParticipant.revision,
+        expectedRevision: currentResourceGrant.revision,
+        grants: {
+          ...resourceParticipant.requiredGrants,
+          permissions: resourceParticipant.requiredGrants.permissions.filter(
+            (permission) => {
+              const target: unknown = JSON.parse(
+                new TextDecoder().decode(permission.target),
+              );
+              return !(typeof target === "object" && target !== null &&
+                "kind" in target && target.kind === "participantResource") ||
+                permission.action === "read";
+            },
+          ),
+        },
+        platformPrivileges: [],
+        expiresAt: null,
+        idempotencyKey: ulid(),
+      }).orThrow();
+      const readOnlyClient = await login(
+        "managed-after",
+        runtimeParticipants.StateCaller.participant,
+        false,
+      );
+      try {
+        assertEquals(
+          (await readOnlyClient.state.savedResource.get().orThrow())?.value,
+          { value: "approved write" },
+        );
+        assert(
+          (await readOnlyClient.state.savedResource.set({
+            value: "must not write",
+          })).isErr(),
+        );
+        assertEquals(
+          (await readOnlyClient.state.savedResource.get().orThrow())?.value,
+          { value: "approved write" },
+        );
+      } finally {
+        await readOnlyClient.connection.close();
+      }
     } finally {
       await user.connection.close();
       await admin.connection.close();

@@ -24,6 +24,8 @@ last-method and protected-account safeguards. `Connections.List` supports
 `principalId`. Declare the required actions in native IDL and use the generated
 participant's exact method names. Capability groups applied to `Grants.Set` are
 one-time presets; the saved grant is an exact permission snapshot.
+Saving that snapshot can initiate resource provisioning; access still requires
+runtime readiness, and read-only resource approval does not grant write access.
 
 Author native IDL, run `trellis update` after dependency changes, and run
 `trellis generate` after IDL changes. Set `[package]`, `[sources]`, and

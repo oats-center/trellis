@@ -683,10 +683,16 @@ pub(in crate::platform::auth) fn replace_grant_binding(
         &binding.delegation_ceiling,
         (&resources, true),
     )?;
+    // Exact bindings retain desired authority while resource provisioning can
+    // temporarily narrow effective authority. Resolution must never widen it.
     if binding.approval_mode == super::super::ApprovalMode::Capabilities {
         binding.grants = authority.exact_grants;
         binding.platform_privileges = authority.platform_privileges;
-    } else if authority.exact_grants != binding.grants
+    } else if authority
+        .exact_grants
+        .permissions()
+        .iter()
+        .any(|permission| !binding.grants.permissions().contains(permission))
         || authority.platform_privileges != binding.platform_privileges
     {
         tracing::warn!(
@@ -694,10 +700,10 @@ pub(in crate::platform::auth) fn replace_grant_binding(
             owner_id = %binding.owner_id,
             participant_id = %binding.participant_id,
             revision = binding.revision,
-            "stored grant binding differs from resolved authority"
+            "resolved authority exceeds the approved exact grant binding"
         );
         return Err(AuthorizationStateError::InvalidRecord(
-            "grant binding does not match resolved authority".to_owned(),
+            "resolved authority exceeds the approved exact grant binding".to_owned(),
         ));
     }
     for permission in binding.grants.permissions() {
