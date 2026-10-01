@@ -136,6 +136,9 @@ Console access editors save exact participant-scoped snapshots; capability group
 are one-time permission presets, not ongoing memberships. Replacing a
 policy-approved grant with an exact grant changes its approval mode. Service and
 device grants are deployment-owned, separate from device user delegation.
+Exact snapshots can initiate resource provisioning without bypassing runtime
+readiness. Resource actions remain within the approved snapshot and delegation
+ceiling; read-only approval does not grant write access.
 `Auth.Users.Update` accepts optional `username` to atomically rename an existing
 local credential and identity, preserving the user ID and password; uniqueness
 conflicts roll back the accompanying profile edits. Accounts without a local

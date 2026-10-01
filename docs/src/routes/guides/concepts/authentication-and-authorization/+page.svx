@@ -69,6 +69,10 @@ cannot remove the last method or bypass protected-administrator safeguards.
 Access grants select an installed participant revision and its concrete
 permissions. Capabilities explain related permissions; capability groups are
 one-time presets when editing an exact grant, not ongoing group memberships.
+An exact grant can initiate provisioning of newly approved resources; runtime
+access remains subject to resource readiness. Read-only resource permissions do
+not imply write access.
+
 Saving an exact snapshot replaces policy-based approval, and later changes to a
 group do not automatically update it. Platform administration is a separate
 privilege, not all application permissions. Service and device access belongs to

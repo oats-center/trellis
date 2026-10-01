@@ -69,6 +69,13 @@ Bindings are keyed by identity plus participant. Mutations require
 `expectedRevision`, validate atoms against the selected installed revision, and
 carry a finite platform-privilege set containing only `Admin`.
 
+An exact binding stores the approved desired permission snapshot, not just the
+permissions whose resources are already available. A new binding can initiate
+resource provisioning; context issuance still requires the applicable resource
+evidence and readiness. Resource permissions remain bounded by the exact
+restrictions and delegation ceiling: approving a resource must not expand a
+read-only snapshot into write access.
+
 ### Issuers
 
 - `Auth.Issuers.Revoke`

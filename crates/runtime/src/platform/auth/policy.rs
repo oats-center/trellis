@@ -626,7 +626,10 @@ pub(crate) fn resolve_authority(
             },
         );
         if available {
-            allowed.extend(selected.iter().filter(|permission| matches!(permission.target(), PermissionTarget::ParticipantResource { participant, resource, name: resource_name } if participant == &resolved.participant_id && *resource == declaration.kind && resource_name == name)).cloned());
+            allowed.extend(selected.iter().filter(|permission| {
+                matches!(permission.target(), PermissionTarget::ParticipantResource { participant, resource, name: resource_name } if participant == &resolved.participant_id && *resource == declaration.kind && resource_name == name)
+                    && exact_restrictions.as_ref().is_none_or(|restrictions| restrictions.contains(permission))
+            }).cloned());
         }
         if !available && !declaration.optional {
             let prefix = if stale { "stale-resource" } else { "resource" };
