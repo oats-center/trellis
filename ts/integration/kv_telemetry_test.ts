@@ -10,6 +10,7 @@ import { resourceFromAttributes } from "@opentelemetry/resources";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { assertEquals } from "@std/assert";
 import { TypedKV } from "../packages/trellis/kv.ts";
+import { fixedTransportProvider } from "../packages/trellis/transport/generations.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
 Deno.test("typed KV records one bounded storage duration per caller operation", async () => {
@@ -53,14 +54,19 @@ Deno.test("typed KV records one bounded storage duration per caller operation", 
       });
       try {
         let current = true;
-        const kv = await TypedKV.open(nats, "kv_telemetry", {
-          version: 1,
-          codec: {
-            encode: (value: number) => value,
-            decode: (value: unknown) => Number(value),
+        const kv = await TypedKV.open(
+          fixedTransportProvider(nats),
+          "kv_telemetry",
+          {
+            version: 1,
+            codec: {
+              encode: (value: number) => value,
+              decode: (value: unknown) => Number(value),
+            },
+            migrations: {},
           },
-          migrations: {},
-        }, { history: 4, isCurrent: () => current }).orThrow();
+          { history: 4, isCurrent: () => current },
+        ).orThrow();
 
         assertEquals(await kv.get("absent").orThrow(), undefined);
         const created = await kv.create("secret-key", 1).orThrow();
@@ -143,14 +149,18 @@ Deno.test("typed KV CAS remains intact with telemetry disabled", async () => {
       ),
     });
     try {
-      const kv = await TypedKV.open(nats, "kv_disabled", {
-        version: 1,
-        codec: {
-          encode: (value: number) => value,
-          decode: (value: unknown) => Number(value),
+      const kv = await TypedKV.open(
+        fixedTransportProvider(nats),
+        "kv_disabled",
+        {
+          version: 1,
+          codec: {
+            encode: (value: number) => value,
+            decode: (value: unknown) => Number(value),
+          },
+          migrations: {},
         },
-        migrations: {},
-      }).orThrow();
+      ).orThrow();
       assertEquals(await kv.get("absent").orThrow(), undefined);
       const created = await kv.create("key", 1).orThrow();
       await kv.replace("key", created.revision, 2).orThrow();

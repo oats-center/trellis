@@ -75,11 +75,14 @@ async function startContinuousProvider(
   const exit = service.wait().catch((error: unknown) => error);
   await service.handleWatch(async ({ emit, signal }) => {
     onStart();
-    while (!signal.aborted) {
-      if (mayEmit()) await emit({ value: `frame-${Date.now()}` }).orThrow();
-      await new Promise((resolve) => setTimeout(resolve, 200));
+    try {
+      while (!signal.aborted) {
+        if (mayEmit()) await emit({ value: `frame-${Date.now()}` }).orThrow();
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+    } finally {
+      onCleanup();
     }
-    onCleanup();
   });
   return { service, exit };
 }
@@ -222,6 +225,7 @@ Deno.test("an active live observation continues across consumer and provider aut
 
       await handle.return?.();
       await drain;
+      if (sessionError) throw sessionError;
       await runtime.waitFor(() => cleanups === 1, { timeoutMs: 15_000 });
     } finally {
       await client.connection.close();

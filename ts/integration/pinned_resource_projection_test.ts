@@ -16,6 +16,11 @@ import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { participants as pinnedParticipants } from "../../integration/fixtures/runtime-pinned/packages/runtime-trellis/index.js";
+import {
+  admittedConnections,
+  brokerConnectionKey,
+  readRuntimeBrokerInventory,
+} from "./_support/broker_inventory.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
 const DEPLOYMENT = "pinned-projection";
@@ -76,7 +81,8 @@ Deno.test("a revision-pinned service projects current materialization", async ()
       );
 
       const aBefore = await runtime.waitFor(
-        async () => (await liveConnection(runtime, instanceA.instanceId)) ?? false,
+        async () =>
+          (await liveConnection(runtime, instanceA.instanceId)) ?? false,
         { timeoutMs: 30_000 },
       );
 
@@ -95,7 +101,8 @@ Deno.test("a revision-pinned service projects current materialization", async ()
       // The R1-pinned attachment is still covered by R2 and serves its own
       // declared resources without reconnecting.
       const aAfterAdvance = await runtime.waitFor(
-        async () => (await liveConnection(runtime, instanceA.instanceId)) ?? false,
+        async () =>
+          (await liveConnection(runtime, instanceA.instanceId)) ?? false,
         { timeoutMs: 30_000 },
       );
       assertEquals(aAfterAdvance.connectionId, aBefore.connectionId);
@@ -120,12 +127,6 @@ Deno.test("a revision-pinned service projects current materialization", async ()
       cleanups.push(() => serviceB.stop().catch(() => {}));
       const serviceBExit = serviceB.wait().catch((error: unknown) => error);
       cleanups.push(() => serviceBExit.catch(() => {}));
-      // The ordinary client transport-lifecycle signal: `wait()` settles when
-      // the service's NATS connection actually closes.
-      let bTransportClosed = false;
-      serviceBExit.then(() => {
-        bTransportClosed = true;
-      });
 
       const extended = await runtime.waitFor(
         () => serviceB.kv.extended ?? false,
@@ -134,44 +135,138 @@ Deno.test("a revision-pinned service projects current materialization", async ()
       await extended.put("r2", { value: "r2" });
       assertEquals(await extended.get("r2").orThrow(), { value: "r2" });
 
+      // Admission uses the physical attachment's context, not the application's
+      // latest context. Keep the original digests so growth overlap is covered.
+      const bInitialPresence = await runtime.callAdminRpc(
+        "authConnectionsList",
+        {
+          page: { limit: 100 },
+        },
+      ) as { items: { instanceId?: string; contextDigest: string }[] };
+      const bInitialAttachments = bInitialPresence.items.filter((item) =>
+        item.instanceId === instanceB.instanceId
+      );
+      assert(
+        bInitialAttachments.length > 0,
+        "B must have admitted attachments",
+      );
+      const bDigests = new Set<string>();
+      for (const attachment of bInitialAttachments) {
+        assert(
+          typeof attachment.contextDigest === "string" &&
+            attachment.contextDigest.length > 0,
+          "B's admission must identify its authorization context",
+        );
+        bDigests.add(attachment.contextDigest);
+      }
+      const bInitialSockets = admittedConnections(
+        await readRuntimeBrokerInventory(runtime),
+        bDigests,
+      );
+      for (const digest of bDigests) {
+        assert(
+          admittedConnections(bInitialSockets, new Set([digest])).length > 0,
+          `B's initial admission ${digest} must match an authenticated socket`,
+        );
+      }
+
       // Approve the compatible optional resource. The pinned R1 view must become
       // available from the one current materialization.
       await runtime.contracts.apply({ deployment: DEPLOYMENT, contract: r2 });
       const extrasA = await runtime.waitFor(() => serviceA.kv.extras ?? false, {
         timeoutMs: 60_000,
       });
-      const beforeAdoption = await extrasA.get("missing");
-      assert(beforeAdoption.isErr());
-      await serviceA.connection.refreshTransport().orThrow();
-      await extrasA.put("after", { value: "after" });
+      await extrasA.put("after", { value: "after" }).orThrow();
       assertEquals(await extrasA.get("after").orThrow(), { value: "after" });
       assertEquals(
         await recordsA.get("pinned").orThrow(),
         { value: "pinned" },
         "the earlier resource stays usable after adopting the added one",
       );
-      // Adopting the added resource replaces A's admitted socket; capture the
-      // new physical attachment to prove the later removal does not disturb it.
+      // Resource IO automatically adopts a wider generation. Wait for overlap
+      // to settle before capturing the attachment used for the removal check.
       const aAfterGrowth = await runtime.waitFor(
-        async () => (await liveConnection(runtime, instanceA.instanceId)) ?? false,
+        async () => {
+          const listed = await runtime.callAdminRpc("authConnectionsList", {
+            page: { limit: 100 },
+          });
+          const attachments = listed.items.filter((item) =>
+            item.instanceId === instanceA.instanceId
+          );
+          return attachments.length === 1 &&
+              attachments[0].connectionId !== aBefore.connectionId
+            ? attachments[0]
+            : false;
+        },
         { timeoutMs: 30_000 },
       );
+      assertEquals(
+        aAfterGrowth.runtimeConnectionId,
+        aBefore.runtimeConnectionId,
+      );
+
+      const bPhysicalKeys = new Set(bInitialSockets.map(brokerConnectionKey));
+      const requiredServerIds = new Set(
+        bInitialSockets.map((socket) => socket.server),
+      );
+      // Growth may still retire an old attachment between presence and CONNZ.
+      // Preserve every observed socket and wait for current admissions to match.
+      await runtime.waitFor(async () => {
+        const listed = await runtime.callAdminRpc("authConnectionsList", {
+          page: { limit: 100 },
+        }) as { items: { instanceId?: string; contextDigest: string }[] };
+        const attachments = listed.items.filter((item) =>
+          item.instanceId === instanceB.instanceId
+        );
+        for (const attachment of attachments) {
+          assert(
+            typeof attachment.contextDigest === "string" &&
+              attachment.contextDigest.length > 0,
+            "B's admission must identify its authorization context",
+          );
+          bDigests.add(attachment.contextDigest);
+        }
+        const sockets = admittedConnections(
+          await readRuntimeBrokerInventory(runtime, {
+            requiredServerIds: [...requiredServerIds],
+          }),
+          bDigests,
+        );
+        for (const socket of sockets) {
+          bPhysicalKeys.add(brokerConnectionKey(socket));
+          requiredServerIds.add(socket.server);
+        }
+        return attachments.length > 0 &&
+          attachments.every((attachment) =>
+            admittedConnections(sockets, new Set([attachment.contextDigest]))
+              .length > 0
+          );
+      }, { timeoutMs: 30_000 });
 
       // Remove the R2-only resource by returning to R1. The R2-pinned
       // attachment loses its required resource and is retired; the R1-pinned
       // attachment stays.
       await runtime.contracts.apply({ deployment: DEPLOYMENT, contract: r1 });
       await runtime.waitFor(
-        async () => (await liveConnection(runtime, instanceB.instanceId)) === undefined,
+        async () =>
+          (await liveConnection(runtime, instanceB.instanceId)) === undefined,
         { timeoutMs: 30_000 },
       );
       const aFinal = await liveConnection(runtime, instanceA.instanceId);
       assert(aFinal, "the R1-pinned attachment must survive the removal");
       assertEquals(aFinal.connectionId, aAfterGrowth.connectionId);
 
-      // The removal must retire B's actual physical transport, observed through
-      // the client lifecycle rather than the presence table alone.
-      await runtime.waitFor(() => bTransportClosed, { timeoutMs: 30_000 });
+      // Logical service lifetime can survive generation loss. Prove physical
+      // retirement independently of presence through complete broker inventory.
+      await runtime.waitFor(async () => {
+        const inventory = await readRuntimeBrokerInventory(runtime, {
+          requiredServerIds: [...requiredServerIds],
+        });
+        return admittedConnections(inventory, bDigests).length === 0 &&
+          inventory.every((socket) =>
+            !bPhysicalKeys.has(brokerConnectionKey(socket))
+          );
+      }, { timeoutMs: 30_000 });
 
       // The surviving R1-pinned attachment is usable, not merely present.
       await recordsA.put("after-removal", { value: "after-removal" });

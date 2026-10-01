@@ -205,25 +205,85 @@ api transport_growth@v1 {
   title "Capability growth acceptance";
   description "Optional-capability growth on one live service attachment.";
   rpc Advance { input Empty; output Empty; }
+  rpc Nudge { input Empty; output Empty; }
   rpc Extend { input Empty; output Empty; }
+  rpc Extend2 { input Empty; output Empty; }
+  rpc Park { input Empty; output Value; }
+  event Tick { payload Value; }
+  operation Hold { input Empty; progress Update; output Value; signals { Continue Value; } }
+  live Progress { input Empty; event Value; }
   capabilities {
-    public { allows { rpc Advance; } }
+    public { allows { rpc Advance; rpc Nudge; rpc Park; publish event Tick; subscribe event Tick; live Progress; operation Hold; } }
     capability extend {
       title "Optional capability";
       description "Optional growth operation.";
       consequence "The subject can invoke its optional operation.";
       allows { rpc Extend; }
     }
+    capability extend2 {
+      title "Second optional capability";
+      description "Second optional growth operation.";
+      consequence "The subject can invoke its second optional operation.";
+      allows { rpc Extend2; }
+    }
   }
+}
+
+api probe_aux@v1 {
+  title "Auxiliary live route";
+  description "A second live route served on one service attachment.";
+  live Pulse { input Empty; event Value; }
+  capabilities { public { allows { live Pulse; } } }
 }
 
 service TransportGrowthSubject {
   implements liveprobe;
+  implements probe_aux;
   use transport_growth {
     rpc Advance;
     rpc Extend;
+    operation Hold;
+    live Progress;
     optional capability extend;
   }
 }
 
 service TransportGrowthTarget { implements transport_growth; }
+service TransportGrowthOperationProvider {
+  implements transport_growth;
+  use transport_growth {
+    rpc Advance;
+    rpc Extend;
+    rpc Extend2;
+    optional capability extend;
+    optional capability extend2;
+  }
+  job held {
+    title "Held work";
+    description "A job accepted before a transport cutover completes exactly once.";
+    payload Value;
+    result Value;
+    update Value;
+    deadline 30s;
+    retry { attempts 2; backoff [250ms]; }
+  }
+  consumer ticks {
+    title "Ticks";
+    description "A durable delivery held across a transport cutover.";
+    events [transport_growth.Tick];
+    concurrency 1;
+    replay new;
+  }
+}
+
+app TransportGrowthCaller {
+  use transport_growth {
+    rpc Advance;
+    rpc Extend;
+    rpc Nudge;
+    rpc Park;
+    operation Hold;
+    publish event Tick;
+    optional capability extend;
+  }
+}

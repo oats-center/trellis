@@ -94,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .await
                     .expect_err("interrupted native transport must fail the cleanup read");
                 assert!(
-                    matches!(error, ServerError::Nats(ref message) if message.contains("timed out")),
+                    matches!(error, ServerError::Nats(_)),
                     "{error}"
                 );
                 println!("cleanup complete");

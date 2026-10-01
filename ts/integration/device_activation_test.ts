@@ -4,7 +4,9 @@ import {
 } from "@oatscenter/trellis/device";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
+import { createClient } from "@libsql/client";
 import { assert, assertEquals, assertRejects } from "@std/assert";
+import { join } from "@std/path";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import type {
@@ -12,6 +14,11 @@ import type {
   ConsentResource,
 } from "../../integration/fixtures/runtime/packages/runtime-trellis/types/index.js";
 import { withTrellisRuntime } from "./_support/runtime.ts";
+import {
+  admittedConnections,
+  brokerConnectionKey,
+  readRuntimeBrokerInventory,
+} from "./_support/broker_inventory.ts";
 
 Deno.test("device companion requires separate selected consent across restart", async (t) => {
   await withTrellisRuntime(async (runtime) => {
@@ -186,6 +193,68 @@ Deno.test("device companion requires separate selected consent across restart", 
       assertEquals((await companion.optional({})).isErr(), true);
     });
 
+    await t.step(
+      "native device renewal keeps its socket and State usable",
+      async () => {
+        const database = createClient({
+          url: `file:${
+            join(runtime.workdir, "trellis", "trellis.sqlite.platform")
+          }`,
+        });
+        try {
+          const nativeDigests = async () => {
+            const contexts = await database.execute({
+              sql:
+                "SELECT DISTINCT context_digest FROM auth_authorization_contexts WHERE participant_id = ?",
+              args: [participants.Device.participant.identity],
+            });
+            return new Set(
+              contexts.rows.map((row) => String(row.context_digest)),
+            );
+          };
+          const before = await nativeDigests();
+          const initial = admittedConnections(
+            await readRuntimeBrokerInventory(runtime),
+            before,
+          );
+          assertEquals(initial.length, 1);
+          await device.state.telemetry.set({ value: "native-before-renewal" })
+            .orThrow();
+          await runtime.waitFor(
+            async () =>
+              (await nativeDigests()).size >= before.size + 2
+                ? true
+                : undefined,
+            { timeoutMs: 45_000, intervalMs: 250 },
+          );
+          assertEquals(
+            (await device.state.telemetry.get().orThrow())?.value,
+            { value: "native-before-renewal" },
+          );
+          await device.state.telemetry.set({ value: "native-renewed" })
+            .orThrow();
+          assertEquals(
+            (await device.state.telemetry.get().orThrow())?.value,
+            { value: "native-renewed" },
+          );
+          assertEquals((await companion.required({})).isOk(), true);
+          const renewed = admittedConnections(
+            await readRuntimeBrokerInventory(runtime, {
+              requiredServerIds: [initial[0].server],
+            }),
+            await nativeDigests(),
+          );
+          assertEquals(
+            renewed.map(brokerConnectionKey),
+            initial.map(brokerConnectionKey),
+            "policy-equivalent native renewal must retain the same single socket",
+          );
+        } finally {
+          database.close();
+        }
+      },
+    );
+
     const secondProvisioned = await runtime.devices.provision({
       deploymentId: "device",
       participantId: participants.Device.participant.identity,
@@ -287,6 +356,11 @@ Deno.test("device companion requires separate selected consent across restart", 
       rootSecret,
     }).orThrow();
     const restartedCompanion = device.companion;
+    assertEquals(
+      (await device.state.telemetry.get().orThrow())?.value,
+      { value: "native-renewed" },
+    );
+    await device.state.telemetry.delete().orThrow();
     assert(restartedCompanion);
     assert(restartedCompanion.connection !== device.connection);
     assertEquals((await restartedCompanion.required({})).isOk(), true);
@@ -308,5 +382,12 @@ Deno.test("device companion requires separate selected consent across restart", 
     await secondDevice.connection.close();
     await portal.connection.close();
     await childProvider.connection.close();
+  }, {
+    authorization: {
+      contextLifetimeSeconds: 62,
+      refreshLeadSeconds: 25,
+      refreshJitterSeconds: 0,
+      minimumContextLifetimeSeconds: 32,
+    },
   });
 });

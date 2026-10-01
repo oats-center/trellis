@@ -7,8 +7,8 @@
  *      installed.
  * F9 — enforcement survives an auth/runtime restart, and a delayed
  *      reevaluation does not remove a freshly admitted safe replacement.
- * F10 — observing a durable operation is not executing it: refreshing the
- *      observer's transport neither restarts the executor nor disturbs the
+ * F10 — observing a durable operation is not executing it: automatic growth of
+ *      the observer's transport neither restarts the executor nor disturbs the
  *      durable result.
  */
 
@@ -46,6 +46,7 @@ type GrantBinding = {
 /** One admitted attachment as reported by the production admin surface. */
 type Attachment = {
   runtimeConnectionId: string;
+  connectionId: string;
   participantId: string;
 };
 
@@ -272,32 +273,24 @@ Deno.test("F9 enforcement survives a control-plane restart", async () => {
 /**
  * F10 — observing a durable operation is not executing it.
  *
- * Refreshing the observing service's transport must not start a second
+ * Growing the observing service's transport must not start a second
  * execution, cancel the operation, or lose the durable result.
  */
-Deno.test("F10 refreshing an observer transport does not restart execution", async () => {
+Deno.test("F10 automatic observer transport growth does not restart execution", async () => {
   await withTrellisRuntime(async (runtime) => {
-    const ownerIdentity = await runtime.registerService({
-      name: "observer-owner",
-      contract: participants.Provider.participant,
-    });
-    const observerIdentity = await runtime.services.createInstance({
-      name: "observer-watcher",
-      contract: participants.Provider.participant,
-    });
+    const contract = participants.Provider.participant;
+    const ownerIdentity = await installProvider(runtime, "observer-owner");
     const observer = await TrellisService.connect({
       trellisUrl: runtime.trellisUrl,
-      participant: participants.Provider.participant,
+      participant: contract,
       name: "observer-owner",
       seed: ownerIdentity.seed,
     }).orThrow();
-    void observerIdentity;
-    const exits = [observer.wait()].map((promise) =>
-      promise.catch((error: unknown) => error)
-    );
+    const observerExit = observer.wait().catch((error: unknown) => error);
     let executions = 0;
     const started = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
+    let closeCaller: (() => Promise<void>) | undefined;
     try {
       await observer.handleWork(async ({ input, op }) => {
         executions += 1;
@@ -309,6 +302,7 @@ Deno.test("F10 refreshing an observer transport does not restart execution", asy
         name: "observer-caller",
         contract: participants.Caller.participant,
       });
+      closeCaller = () => client.connection.close();
       const operation = await client.work({ value: "observed" }).start()
         .orThrow();
       await started.promise;
@@ -316,25 +310,48 @@ Deno.test("F10 refreshing an observer transport does not restart execution", asy
       const watched = await observer.handleWork.control(operation.id).orThrow();
       assertEquals(watched.id, operation.id);
 
-      // Refresh the observing service's transport explicitly.
-      await observer.connection.refreshTransport().orThrow();
-      const afterRefresh = await observer.handleWork.control(operation.id)
+      const [before] = await runtime.waitFor(async () => {
+        const items = await attachmentsFor(runtime, contract.identity);
+        return items.length === 1 ? items : false;
+      }, { timeoutMs: 60_000 });
+
+      // Approve the existing compatible optional resource through real consent.
+      // The held execution keeps the original generation alive during growth.
+      await runtime.contracts.apply({ contract });
+      await runtime.waitFor(async () => {
+        const items = await attachmentsFor(runtime, contract.identity);
+        return items.some((item) =>
+          item.runtimeConnectionId === before.runtimeConnectionId &&
+          item.connectionId !== before.connectionId
+        );
+      }, { timeoutMs: 60_000 });
+      const extras = await runtime.waitFor(() => observer.kv.extras ?? false, {
+        timeoutMs: 60_000,
+      });
+      await extras.put("observer-growth", { value: "ready" }).orThrow();
+      assertEquals(await extras.get("observer-growth").orThrow(), {
+        value: "ready",
+      });
+
+      const afterGrowth = await observer.handleWork.control(operation.id)
         .orThrow();
       assertEquals(
-        afterRefresh.id,
+        afterGrowth.id,
         operation.id,
-        "observation survives the observer's transport refresh",
+        "observation survives the observer's automatic transport growth",
       );
       assertEquals(executions, 1, "observation must not start an execution");
 
       release.resolve();
       const completed = await operation.wait().orThrow();
       assertEquals(completed.state, "completed");
+      assertEquals(completed.output, { value: "observed" });
       assertEquals(executions, 1, "the durable result must not rerun the work");
     } finally {
       release.resolve();
+      await closeCaller?.().catch(() => undefined);
       await observer.connection.close().catch(() => undefined);
-      await Promise.all(exits);
+      await observerExit;
     }
   });
 });
