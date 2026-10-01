@@ -1296,7 +1296,9 @@ impl SqliteAuthorizationStore {
                 "packageEvidence": package_evidence,
                 "requiredGrants": resolved.required_grants,
                 "optionalBundles": resolved.optional_grant_bundles.iter().map(|(id, grant)| json!({
-                    "id": id, "permissions": grant.permissions(),
+                    "id": id,
+                    "apiId": id.rsplit_once("::").map_or(id.as_str(), |(api, _)| api),
+                    "permissions": grant.permissions(),
                 })).collect::<Vec<_>>(),
             }}))
           }).await
@@ -2779,6 +2781,25 @@ device Device { app Companion { use access { rpc B; optional capability b; } } }
             .unwrap();
 
         let (device, _) = installed(evidence, "Device");
+        let inspected = store
+            .get_installed_participant(participant_id.clone(), None)
+            .await
+            .unwrap();
+        let bundle = inspected["participant"]["optionalBundles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|bundle| bundle["id"] == "binding-test.access@v1::b")
+            .unwrap();
+        assert_eq!(bundle["apiId"], "binding-test.access@v1");
+        assert_eq!(
+            bundle["permissions"],
+            serde_json::to_value(
+                participant.projection.optional_grant_bundles[bundle["id"].as_str().unwrap()]
+                    .permissions()
+            )
+            .unwrap()
+        );
         assert!(device.projection.companion_participant_id.is_some());
         assert!(
             crate::platform::auth::policy::participant_delegation_ceiling(&device)
