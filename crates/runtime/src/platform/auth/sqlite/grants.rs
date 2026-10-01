@@ -1361,7 +1361,8 @@ impl SqliteAuthorizationStore {
                     }
                     Ok(participant)
                 }).collect::<Result<Vec<_>, AuthorizationStateError>>()?;
-                Ok(json!({"items": items, "page": {"nextCursor": next_cursor}}))
+                let page = next_cursor.map_or_else(|| json!({}), |cursor| json!({"nextCursor": cursor}));
+                Ok(json!({"items": items, "page": page}))
             }).await
     }
 
