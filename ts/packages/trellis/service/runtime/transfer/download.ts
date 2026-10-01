@@ -1,5 +1,6 @@
 import { sha256 } from "@noble/hashes/sha256";
 import type { Subscription } from "@nats-io/nats-core";
+import type { TransportLease } from "../../../transport/generations.ts";
 
 import type { PermissionAtom } from "../../../participant_runtime/api.ts";
 import type { TypedStore } from "../../../store.ts";
@@ -15,6 +16,8 @@ export type DownloadSession = {
   inboxPrefix: string;
   expiresAtMs: number;
   store: TypedStore;
+  /** Transport generation pinned for this session's subscription. */
+  lease: TransportLease;
   key: string;
   info: FileInfo;
   subscription: Subscription;

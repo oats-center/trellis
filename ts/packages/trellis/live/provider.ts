@@ -6,6 +6,7 @@ import {
 } from "@nats-io/nats-core";
 import { encodeEventSubjectParameterToken } from "../helpers.ts";
 import { base64urlEncode } from "../auth/utils.ts";
+import type { TransportLease } from "../transport/generations.ts";
 import type { PermissionAtom } from "../auth/protocol_wasm.ts";
 import {
   liveConstants,
@@ -122,6 +123,12 @@ export type LiveProviderHost = {
   ) => Promise<ProviderAuthorityPort>;
   /** The connection's single live session manager. */
   manager: LiveSessionManager;
+  /**
+   * Pin the exact receiving generation for an admitted session or control
+   * exchange, so session cleanup cannot retire a carrier still authenticating
+   * or signing its control reply.
+   */
+  lease?: () => TransportLease;
   /** Internal monotonic clock; production connections omit it. */
   clock?: LiveClock;
 };
@@ -183,7 +190,7 @@ class ProviderSessionRecord {
   cleanupState: "complete" | "incomplete" | "unknown" = "unknown";
   settlement: Promise<void> | undefined;
   creditWaiter: (() => void) | undefined;
-  closeSettled = false;
+  closeSettled: Promise<void> | undefined;
   permit: { [Symbol.dispose](): void } | undefined;
   deregister: (() => void) | undefined;
   lane: Promise<void> = Promise.resolve();
@@ -263,6 +270,8 @@ export class LiveProvider {
   readonly #sessions = new Map<string, ProviderSessionRecord>();
   readonly #routeTelemetry: LiveTelemetryOwner;
   #lane: Promise<void> = Promise.resolve();
+  /** Per-route manager registrations, released when this provider is disposed. */
+  readonly #providerRegistrations = new Map<string, () => void>();
 
   constructor(host: LiveProviderHost) {
     this.#host = host;
@@ -271,6 +280,45 @@ export class LiveProvider {
       host.kind ?? "standalone",
       "provider",
     );
+  }
+
+  /**
+   * Register this provider as the authoritative live responder for an exact
+   * route. Called at provider-ingress installation/readiness (so a generation
+   * that has not yet served a session can still own a retained receipt's
+   * takeover) and idempotently again on the first offer.
+   */
+  registerRoute(baseSubject: string): void {
+    this.#ensureProviderRegistered(baseSubject);
+  }
+
+  /** Register this provider as a live responder for one exact route. */
+  #ensureProviderRegistered(baseSubject: string): void {
+    if (this.#providerRegistrations.has(baseSubject)) return;
+    this.#providerRegistrations.set(
+      baseSubject,
+      this.#host.manager.registerProvider(this, baseSubject),
+    );
+  }
+
+  /**
+   * Fence and terminate every owned session, then stop owning on this manager.
+   *
+   * Invoked when the physical ingress that built this provider is retired, or
+   * when a failed install is rolled back — never at a planned generic-intake
+   * cutover. Terminating the sessions turns each into a retained terminal
+   * receipt, and unregistering lets the manager fail ownership over to a
+   * surviving provider so the receipt still has one responder.
+   */
+  async dispose(): Promise<void> {
+    const records = [...this.#sessions.values()];
+    await Promise.allSettled(
+      records.map((record) =>
+        this.#terminate(record, new LiveEnd("local_shutdown"))
+      ),
+    );
+    for (const unregister of this.#providerRegistrations.values()) unregister();
+    this.#providerRegistrations.clear();
   }
 
   /** Run one publication under this provider's single ordering lane. */
@@ -362,6 +410,12 @@ export class LiveProvider {
     startSource: (session: {
       emit: (value: unknown) => Promise<void>;
       signal: AbortSignal;
+      /**
+       * The session's live caller-authority port, replaced in place on an
+       * identity-preserving caller refresh. Long-lived sources must consult this
+       * rather than retaining the opening digest themselves.
+       */
+      callerAuthority: () => ProviderAuthorityPort;
     }) => Promise<void>,
     kind: LiveSessionKind = "standalone",
   ): Promise<void> {
@@ -414,22 +468,48 @@ export class LiveProvider {
       void this.#runSource(record, startSource);
     };
     this.#sessions.set(sessionId, record);
-    record.deregister = this.#host.manager.registerSession({
-      fence: () => this.#fence(record),
-      close: async () => {
-        await this.#terminate(record, new LiveEnd("local_shutdown"));
+    this.#ensureProviderRegistered(baseSubject);
+    record.deregister = this.#host.manager.registerSession(
+      sessionId,
+      {
+        fence: () => this.#fence(record),
+        close: async () => {
+          await this.#terminate(record, new LiveEnd("local_shutdown"));
+        },
       },
-    });
+      this,
+      baseSubject,
+    );
     const deregister = record.deregister;
-    const unsubscribeOwn = this.#host.ownGuard.subscribeChanges(() => {
-      if (!record.closed && record.phase === "active") {
-        record.timer.arm(this.#clock.nowMs());
-      }
-    });
-    record.deregister = () => {
-      unsubscribeOwn();
+    // Pin the receiving generation for the whole session. The pin is released
+    // on every terminal path (natural close, cancel, error, authority loss)
+    // because all of them funnel through `record.deregister`, and on failure to
+    // install it here so a rejected opening never leaks a lease.
+    let sessionLease: TransportLease | undefined;
+    try {
+      sessionLease = this.#host.lease?.();
+      const unsubscribeOwn = this.#host.ownGuard.subscribeChanges(() => {
+        if (!record.closed && record.phase === "active") {
+          record.timer.arm(this.#clock.nowMs());
+        }
+      });
+      const heldLease = sessionLease;
+      record.deregister = () => {
+        unsubscribeOwn();
+        deregister();
+        heldLease?.release();
+      };
+    } catch (cause) {
+      // Full rollback: a rejected opening must leave no lease, local record,
+      // admission permit, retained caller authority, or manager record behind.
+      sessionLease?.release();
       deregister();
-    };
+      this.#sessions.delete(sessionId);
+      this.#host.manager.forgetSession(sessionId);
+      permit[Symbol.dispose]();
+      callerGuard.release();
+      throw cause;
+    }
     // Arm the reservation deadline before any externally interruptible handoff
     // so a stalled or failed offer still enters owned teardown.
     this.#armTimer(record);
@@ -497,154 +577,195 @@ export class LiveProvider {
       msg: Msg,
     ) => Promise<LiveProviderCaller | undefined>,
   ): Promise<void> {
-    if (!msg.reply || !msg.headers) return;
-    const sessionKey = singletonHeader(msg.headers, "session-key");
-    const contextDigest = singletonHeader(msg.headers, "authorization-context");
-    if (!sessionKey || !contextDigest) {
-      this.#routeTelemetry.rejection("invalid_signature");
-      return;
-    }
-    const caller = await authenticate(msg);
-    if (!caller) {
-      this.#routeTelemetry.rejection("invalid_signature");
-      return;
-    }
-    if (caller.sessionKey !== sessionKey) {
-      this.#routeTelemetry.rejection("foreign_identity");
-      return;
-    }
-    let control: LiveControlWire;
+    let deliveryLease: TransportLease | undefined;
     try {
-      control = liveParseControl(msg.data);
+      deliveryLease = this.#host.lease?.();
     } catch {
-      this.#routeTelemetry.rejection("invalid_protocol");
+      // Retirement already fenced this carrier; no safe reply was verified.
       return;
     }
-    const record = this.#sessions.get(control.sessionId);
-    if (!record) {
-      // Safely authenticated unknown session: a bounded signed error is safe
-      // because authenticate already validated the exact reply destination.
-      // A receipt is only disclosed to its original owner.
-      const receipt = this.#host.manager.receipt(control.sessionId);
-      if (
-        receipt && control.action === "close" &&
-        receipt.ownerConnectionId === caller.connectionId &&
-        receipt.ownerSessionKey === caller.sessionKey
-      ) {
-        await this.#publishReceiptAck(msg, control, receipt);
-        return;
-      }
-      await this.#publishControlError(
-        msg,
-        control,
-        "session_not_found",
-        caller,
+    try {
+      if (!msg.reply || !msg.headers) return;
+      const sessionKey = singletonHeader(msg.headers, "session-key");
+      const contextDigest = singletonHeader(
+        msg.headers,
+        "authorization-context",
       );
-      return;
-    }
-    if (record.closed) {
-      const receipt = this.#host.manager.receipt(control.sessionId);
-      if (
-        receipt && control.action === "close" &&
-        receipt.ownerConnectionId === caller.connectionId &&
-        receipt.ownerSessionKey === caller.sessionKey
-      ) {
-        await this.#publishReceiptAck(msg, control, receipt);
-        return;
-      }
-      await this.#publishControlError(
-        msg,
-        control,
-        "session_not_found",
-        caller,
-      );
-      return;
-    }
-    if (sessionKey !== record.consumer.sessionKey) {
-      this.#routeTelemetry.rejection("foreign_identity");
-      return;
-    }
-    if (
-      caller.connectionId !== record.consumer.connectionId ||
-      caller.principalId !== record.consumer.principalId ||
-      caller.participantId !== record.consumer.participantId
-    ) {
-      this.#routeTelemetry.rejection("foreign_identity");
-      return;
-    }
-    // An identity-preserving caller refresh replaces the retained guard before
-    // its control is applied.
-    if (caller.contextDigest !== record.consumer.contextDigest) {
-      try {
-        const candidate = await record.callerGuard.prepareReplacement(
-          caller.contextDigest,
-        );
-        if (record.callerGuard.commitReplacement(candidate)) {
-          this.#routeTelemetry.rejection("invalid_signature");
-          return;
-        }
-      } catch {
+      if (!sessionKey || !contextDigest) {
         this.#routeTelemetry.rejection("invalid_signature");
         return;
       }
-      record.consumer = caller;
-    }
-    record.telemetry.frame("control", "receive");
-    const now = this.#clock.nowMs();
-    const requestId = singletonHeader(msg.headers, "request-id") ?? "";
-    const result = this.#applyControl(record, control, msg.data, now);
-    if (result.kind === "error") {
-      const error = this.#controlErrorBody(
-        record,
-        control,
-        requestId,
-        result.code,
-      );
-      await this.#withSessionLane(
-        record,
-        () => this.#tryPublishSigned(msg.reply!.toString(), jsonBytes(error)),
-      );
-      return;
-    }
-    const outcome = result.outcome;
-    if (outcome.deferCleanup) {
-      record.pendingClose = { reply: msg.reply.toString(), requestId, control };
-      this.#settleClose(record);
-      return;
-    }
-    const ack = this.#ackBody(record, control, requestId, outcome);
-    const published = await this.#withSessionLane(
-      record,
-      () => this.#tryPublishSigned(msg.reply!.toString(), jsonBytes(ack)),
-    );
-    if (!published) {
-      await this.#terminate(
-        record,
-        new LiveEnd(
-          "peer_lost",
-          new LiveStreamError(
-            "peer_lost",
-            "activation acknowledgement handoff failed",
-          ),
-        ),
-      );
-      return;
-    }
-    if (outcome.challenge) {
-      await this.#publishChallenge(record);
-    }
-    if (outcome.startSource) {
-      if (record.phase !== "active" || record.closed) return;
-      const ownLost = await this.#ownAuthorityLost();
-      const callerLost = await record.callerGuard.reconcile();
-      if (ownLost || callerLost) {
-        await this.#terminate(
-          record,
-          authorityLostEnd(ownLost ?? callerLost ?? "coverage_lost"),
+      const caller = await authenticate(msg);
+      if (!caller) {
+        this.#routeTelemetry.rejection("invalid_signature");
+        return;
+      }
+      if (caller.sessionKey !== sessionKey) {
+        this.#routeTelemetry.rejection("foreign_identity");
+        return;
+      }
+      let control: LiveControlWire;
+      try {
+        control = liveParseControl(msg.data);
+      } catch {
+        this.#routeTelemetry.rejection("invalid_protocol");
+        return;
+      }
+      const record = this.#sessions.get(control.sessionId);
+      if (!record) {
+        // A wildcard control reaches every live provider on this connection. The
+        // shared manager names the single authoritative provider for a session id
+        // across its active and retained terminal receipt windows, so exactly one
+        // provider ever answers: an active non-owner stays silent, the owner
+        // answers (including the bounded receipt ack once its record is closed),
+        // and a genuinely unknown session gets the signed unknown-session error.
+        const owner = this.#host.manager.ownerOf(control.sessionId);
+        if (owner !== undefined && owner !== this) return;
+        if (owner === undefined) {
+          await this.#publishControlError(
+            msg,
+            control,
+            "session_not_found",
+            caller,
+          );
+          return;
+        }
+        // This provider owned the now-terminal session: acknowledge the bounded
+        // close from the retained receipt, and only for its original owner.
+        const receipt = this.#host.manager.receipt(control.sessionId);
+        if (
+          receipt && control.action === "close" &&
+          receipt.ownerConnectionId === caller.connectionId &&
+          receipt.ownerSessionKey === caller.sessionKey
+        ) {
+          await this.#publishReceiptAck(msg, control, receipt);
+          return;
+        }
+        await this.#publishControlError(
+          msg,
+          control,
+          "session_not_found",
+          caller,
         );
         return;
       }
-      record.startSource();
+      if (record.closed) {
+        const receipt = this.#host.manager.receipt(control.sessionId);
+        if (
+          receipt && control.action === "close" &&
+          receipt.ownerConnectionId === caller.connectionId &&
+          receipt.ownerSessionKey === caller.sessionKey
+        ) {
+          await this.#publishReceiptAck(msg, control, receipt);
+          return;
+        }
+        await this.#publishControlError(
+          msg,
+          control,
+          "session_not_found",
+          caller,
+        );
+        return;
+      }
+      if (sessionKey !== record.consumer.sessionKey) {
+        this.#routeTelemetry.rejection("foreign_identity");
+        return;
+      }
+      if (
+        caller.connectionId !== record.consumer.connectionId ||
+        caller.principalId !== record.consumer.principalId ||
+        caller.participantId !== record.consumer.participantId
+      ) {
+        this.#routeTelemetry.rejection("foreign_identity");
+        return;
+      }
+      // An identity-preserving caller refresh replaces the retained guard before
+      // its control is applied.
+      if (caller.contextDigest !== record.consumer.contextDigest) {
+        try {
+          const candidate = await record.callerGuard.prepareReplacement(
+            caller.contextDigest,
+          );
+          if (record.callerGuard.commitReplacement(candidate)) {
+            this.#routeTelemetry.rejection("invalid_signature");
+            return;
+          }
+        } catch {
+          this.#routeTelemetry.rejection("invalid_signature");
+          return;
+        }
+        record.consumer = caller;
+      }
+      record.telemetry.frame("control", "receive");
+      const now = this.#clock.nowMs();
+      const requestId = singletonHeader(msg.headers, "request-id") ?? "";
+      const result = this.#applyControl(record, control, msg.data, now);
+      if (result.kind === "error") {
+        const error = this.#controlErrorBody(
+          record,
+          control,
+          requestId,
+          result.code,
+        );
+        await this.#withSessionLane(
+          record,
+          () => this.#tryPublishSigned(msg.reply!.toString(), jsonBytes(error)),
+        );
+        return;
+      }
+      const outcome = result.outcome;
+      if (outcome.deferCleanup) {
+        record.pendingClose = {
+          reply: msg.reply.toString(),
+          requestId,
+          control,
+        };
+        const settlement = this.#settleClose(record);
+        // Cleanup stays detached so other sessions' controls keep flowing.
+        // Its existing completion now owns this delivery through signed reply.
+        if (deliveryLease) {
+          const lease = deliveryLease;
+          void settlement.finally(() => lease.release());
+          deliveryLease = undefined;
+        }
+        return;
+      }
+      const ack = this.#ackBody(record, control, requestId, outcome);
+      const published = await this.#withSessionLane(
+        record,
+        () => this.#tryPublishSigned(msg.reply!.toString(), jsonBytes(ack)),
+      );
+      if (!published) {
+        await this.#terminate(
+          record,
+          new LiveEnd(
+            "peer_lost",
+            new LiveStreamError(
+              "peer_lost",
+              "activation acknowledgement handoff failed",
+            ),
+          ),
+        );
+        return;
+      }
+      if (outcome.challenge) {
+        await this.#publishChallenge(record);
+      }
+      if (outcome.startSource) {
+        if (record.phase !== "active" || record.closed) return;
+        const ownLost = await this.#ownAuthorityLost();
+        const callerLost = await record.callerGuard.reconcile();
+        if (ownLost || callerLost) {
+          await this.#terminate(
+            record,
+            authorityLostEnd(ownLost ?? callerLost ?? "coverage_lost"),
+          );
+          return;
+        }
+        record.startSource();
+      }
+    } finally {
+      deliveryLease?.release();
     }
   }
 
@@ -1140,6 +1261,7 @@ export class LiveProvider {
     startSource: (session: {
       emit: (value: unknown) => Promise<void>;
       signal: AbortSignal;
+      callerAuthority: () => ProviderAuthorityPort;
     }) => Promise<void>,
   ): Promise<void> {
     const running = (async () => {
@@ -1149,6 +1271,7 @@ export class LiveProvider {
           emit: async (value) => {
             await this.#emit(record, value);
           },
+          callerAuthority: () => record.callerGuard,
         });
         return new LiveEnd("complete");
       } catch (cause) {
@@ -1382,10 +1505,9 @@ export class LiveProvider {
   }
 
   /** Await cleanup, then answer any deferred close acknowledgement. */
-  #settleClose(record: ProviderSessionRecord): void {
-    if (record.closeSettled) return;
-    record.closeSettled = true;
-    void (async () => {
+  #settleClose(record: ProviderSessionRecord): Promise<void> {
+    if (record.closeSettled) return record.closeSettled;
+    record.closeSettled = (async () => {
       record.telemetry.closing();
       record.telemetry.end(
         record.terminal ?? record.lastControl?.outcome.terminal ??
@@ -1415,6 +1537,7 @@ export class LiveProvider {
         () => this.#tryPublishSigned(pending.reply, jsonBytes(ack)),
       );
     })();
+    return record.closeSettled;
   }
 }
 

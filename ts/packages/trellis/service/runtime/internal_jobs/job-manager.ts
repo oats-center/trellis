@@ -22,6 +22,7 @@ import { getTrellisTracer } from "../../../telemetry/trace.ts";
 import {
   ActiveJob,
   ActiveJobRuntimeError,
+  type ActiveJobRuntimeMetadata as ActiveJobMetadata,
   JobCancellationToken,
 } from "./active-job.ts";
 import type { JobsBinding, JobsQueueBinding } from "./bindings.ts";
@@ -67,8 +68,7 @@ type JobManagerContext = {
   meta?: JobMetaSource;
 };
 
-type ActiveJobRuntimeMetadata = {
-  redeliveryCount?: number;
+type ActiveJobRuntimeMetadata = Partial<ActiveJobMetadata> & {
   instanceId?: string;
   progressAckIntervalMs?: number;
   latestState?: Job["state"];
@@ -137,7 +137,15 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
   readonly #context: JobManagerContext;
 
   constructor(context: JobManagerContext) {
-    this.#context = context;
+    this.#context = { ...context };
+  }
+
+  /** @internal Binds a new manager to one transport without redirecting existing attempts. */
+  withTransport(
+    publisher: Publisher,
+    keyCoordinator: JobKeyCoordinator | undefined,
+  ): JobManager<TPayload, TResult> {
+    return new JobManager({ ...this.#context, nc: publisher, keyCoordinator });
   }
 
   #meta(): Required<JobMetaSource> {
@@ -1032,11 +1040,13 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
     metadata: ActiveJobRuntimeMetadata = {},
     lease?: ActiveSlotLease,
   ): Promise<T> {
-    const stopProgressAcks = startAutoHeartbeat(
-      heartbeat,
-      metadata.progressAckIntervalMs ?? 1_000,
-      () => cancellation.cancelForLeaseLoss(),
-    );
+    const stopProgressAcks = metadata.progressAckManaged
+      ? () => {}
+      : startAutoHeartbeat(
+        heartbeat,
+        metadata.progressAckIntervalMs ?? 1_000,
+        () => cancellation.cancelForLeaseLoss(),
+      );
     const stopKeyHeartbeat = lease
       ? startAutoHeartbeat(
         this.#keyedHeartbeat(job, lease),
@@ -1145,7 +1155,8 @@ function getKeyPolicy(
   });
 }
 
-function startAutoHeartbeat(
+/** @internal Starts automatic maintenance; a failed heartbeat cancels its owner. */
+export function startAutoHeartbeat(
   heartbeat: () => Promise<void>,
   intervalMs: number,
   onFailure: () => void,

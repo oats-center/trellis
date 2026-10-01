@@ -282,8 +282,21 @@ async function openLiveSession<T>(
     const core = new ConsumerCore<T>(offer.sessionId, expectedKind);
     const cancellation = new LiveCancellation();
     const session = { seq: 0n };
-    const closeFn = (): Promise<LiveCloseReceipt> =>
-      closeExchange(host, offer, core, session, clock, retainedProvider);
+    const closeFn = async (): Promise<LiveCloseReceipt> => {
+      try {
+        return await closeExchange(
+          host,
+          offer,
+          core,
+          session,
+          clock,
+          retainedProvider,
+        );
+      } finally {
+        retainedLocal.release();
+        retainedProvider.release();
+      }
+    };
     const fence = async (): Promise<LiveEnd | undefined> => {
       const localLost = await retainedLocal.reconcile();
       if (localLost) return authorityLostEnd(localLost);
@@ -298,6 +311,12 @@ async function openLiveSession<T>(
       permit,
       fence,
     );
+    permit.attach(() => {
+      subscription.fence();
+      void subscription.close().orThrow().catch(() => {
+        // Connection teardown may prevent remote confirmation; cleanup is bounded.
+      });
+    });
     void runPump(
       host,
       core,
@@ -405,7 +424,7 @@ async function verifyOffer(
   let offer: LiveOfferWire;
   try {
     offer = liveParseOffer(response.data);
-  } catch (cause) {
+  } catch {
     // A signed open-error or any non-offer body is a setup failure.
     const decoded = safeCode(response.data);
     throw new LiveStreamError(
@@ -1183,7 +1202,12 @@ async function controlAttempt(
   control: Record<string, string>,
   deadlineMs: number | undefined,
   providerGuard: LiveAuthorityGuard,
+  onFailure?: (reason: string) => void,
 ): Promise<LiveControlResponse | undefined> {
+  const failed = (reason: string): undefined => {
+    onFailure?.(reason);
+    return undefined;
+  };
   const reply = inbox(host.inboxPrefix);
   const payload = JSON.stringify({
     format: LIVE_VERSION,
@@ -1203,7 +1227,7 @@ async function controlAttempt(
   const remaining = deadlineMs === undefined
     ? Number.POSITIVE_INFINITY
     : deadlineMs - clock.nowMs();
-  if (remaining <= 0) return undefined;
+  if (remaining <= 0) return failed("close_budget_elapsed");
   const sub = host.nats.subscribe(reply);
   try {
     host.nats.publish(offer.controlSubject, payload, {
@@ -1218,15 +1242,19 @@ async function controlAttempt(
         next.done ? undefined : next.value
       ),
     );
-    if (!received) return undefined;
+    if (!received) return failed("reply_timeout_or_subscription_ended");
     const contextDigest = singletonHeader(
       received.headers,
       "authorization-context",
     );
     const sessionKey = singletonHeader(received.headers, "session-key");
     const proofHeader = singletonHeader(received.headers, "trellis-live-proof");
-    if (!contextDigest || !sessionKey || !proofHeader) return undefined;
-    if (sessionKey !== providerGuard.identity.sessionKey) return undefined;
+    if (!contextDigest || !sessionKey || !proofHeader) {
+      return failed("reply_missing_proof_headers");
+    }
+    if (sessionKey !== providerGuard.identity.sessionKey) {
+      return failed("reply_provider_identity_mismatch");
+    }
     try {
       liveVerifyServerProof(
         proofHeader,
@@ -1236,34 +1264,50 @@ async function controlAttempt(
         sessionKey,
       );
     } catch {
-      return undefined;
+      return failed("reply_proof_rejected");
     }
     // Retain an identity-preserving provider refresh before trusting it.
     if (contextDigest !== providerGuard.contextDigest) {
       let candidate: LiveAuthorityGuard;
       try {
         candidate = await providerGuard.prepareReplacement(contextDigest);
-      } catch {
-        return undefined;
+      } catch (error) {
+        return failed(
+          `reply_provider_replacement_preparation_${
+            authorityLostFrom(error) ?? "rejected"
+          }`,
+        );
       }
-      if (providerGuard.commitReplacement(candidate)) return undefined;
+      const replacementLost = providerGuard.commitReplacement(candidate);
+      if (replacementLost) {
+        return failed(`reply_provider_replacement_${replacementLost}`);
+      }
     }
-    if (await providerGuard.reconcile()) return undefined;
+    const authorityLost = await providerGuard.reconcile();
+    if (authorityLost) {
+      return failed(`reply_provider_reconciliation_${authorityLost}`);
+    }
     let response: LiveControlResponse;
     try {
       response = liveParseControlResponse(received.data);
     } catch {
-      return undefined;
+      return failed("reply_parse_rejected");
     }
-    if (response.body.sessionId !== offer.sessionId) return undefined;
-    if (response.body.controlSeq !== control.controlSeq) return undefined;
-    if (response.body.requestId !== proof.requestId) return undefined;
+    if (response.body.sessionId !== offer.sessionId) {
+      return failed("reply_session_mismatch");
+    }
+    if (response.body.controlSeq !== control.controlSeq) {
+      return failed("reply_control_sequence_mismatch");
+    }
+    if (response.body.requestId !== proof.requestId) {
+      return failed("reply_request_mismatch");
+    }
     if (response.kind === "ack" && response.body.action !== control.action) {
-      return undefined;
+      return failed("reply_action_mismatch");
     }
     return response;
   } catch {
-    return undefined;
+    return failed("control_exchange_exception");
   } finally {
     sub.unsubscribe();
   }
@@ -1285,6 +1329,8 @@ async function closeExchange<T>(
   const closeSeq = nextSeq(session).toString();
   let cleanup: "complete" | "incomplete" | "unknown" = "unknown";
   let remote: "confirmed" | "unconfirmed" = "unconfirmed";
+  let firstFailure: string | undefined;
+  let lastFailure = "no_attempt_completed";
   while (clock.nowMs() < deadline) {
     const response = await controlAttempt(
       host,
@@ -1299,7 +1345,16 @@ async function closeExchange<T>(
       },
       deadline,
       providerGuard,
+      (reason) => {
+        firstFailure ??= reason;
+        lastFailure = reason;
+      },
     );
+    if (response) {
+      lastFailure = response.kind === "error"
+        ? `owner_error_${response.body.code}`
+        : `owner_state_${response.body.state}`;
+    }
     // Only a verified matching closed result establishes remote confirmation.
     if (
       response && response.kind === "ack" && response.body.state === "closed"
@@ -1324,6 +1379,14 @@ async function closeExchange<T>(
       clock,
       clock.nowMs() + Math.min(C.closeRetryMs, remaining),
     );
+  }
+  if (remote === "unconfirmed") {
+    // Do not include signed payloads, proof headers, or keys in diagnostics.
+    console.warn("Trellis Live close was not remotely confirmed", {
+      firstFailure,
+      lastFailure,
+      connectionClosed: host.nats.isClosed(),
+    });
   }
   return { end, remote, cleanup };
 }

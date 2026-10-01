@@ -1,4 +1,5 @@
 import type { Subscription } from "@nats-io/nats-core";
+import type { TransportLease } from "../../../transport/generations.ts";
 import type { PermissionAtom } from "../../../participant_runtime/api.ts";
 import type { RuntimeOperationTransferProgress } from "../../../session.ts";
 import type { StoreError } from "../../../errors/StoreError.ts";
@@ -20,6 +21,8 @@ export type UploadSession = {
   requiredCapabilities: readonly string[];
   expiresAtMs: number;
   store: TypedStore;
+  /** Transport generation pinned for this session's subscription. */
+  lease: TransportLease;
   key: string;
   maxBytes?: number;
   contentType?: string;

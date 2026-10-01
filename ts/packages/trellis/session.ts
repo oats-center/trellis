@@ -12,12 +12,7 @@ import {
   type MsgHdrs,
   type NatsConnection,
 } from "@nats-io/nats-core";
-import type {
-  EventDesc,
-  InferSchemaType,
-  LiveDesc,
-  RPCDesc,
-} from "./participant.ts";
+import type { EventDesc, InferSchemaType, LiveDesc } from "./participant.ts";
 import {
   boundApiSubject,
   type PermissionAtom as DescriptorPermissionAtom,
@@ -37,17 +32,17 @@ import type { EventConsumerResourceBinding } from "./participant_runtime/schemas
 import type { StaticDecode } from "typebox";
 import { buildEventProofInput } from "./auth/proof.ts";
 import { trellisCrypto } from "./auth/crypto.ts";
-import {
+import type {
   AuthorizationProviderCache,
-  type AuthorizationProviderEvent,
-  type AuthorizationProviderRequest,
+  AuthorizationProviderEvent,
+  AuthorizationProviderRequest,
 } from "./auth/authorization_context.ts";
 import { AuthorizationProviderUnavailableError } from "./auth/authorization/provider_cache.ts";
 import {
-  requiresTransportUpgrade,
-  type TransportAuthorizationGate,
-  transportUpgradeRequiredError,
-} from "./auth/authorization/transport_state.ts";
+  fixedTransportProvider,
+  type TransportLease,
+  type TrellisTransportProvider,
+} from "./transport/generations.ts";
 import type {
   AuthorizationVerificationErrorCode,
   PermissionAtom as VerifierPermissionAtom,
@@ -57,14 +52,12 @@ import {
   AsyncResult,
   BaseError,
   err,
-  type InferErr,
   isErr,
   type MaybeAsync,
   ok,
   Result,
 } from "@oatscenter/result";
 import {
-  context,
   createNatsHeaderCarrier,
   extractTraceContext,
   injectTraceContext,
@@ -76,28 +69,25 @@ import {
   SpanStatusCode,
   startClientSpan,
   startServerSpan,
-  trace,
   type TrellisErrorMetricAttributes,
   trellisRoute,
   UNKNOWN_ROUTE,
   withSpanAsync,
 } from "./telemetry/mod.ts";
 import { Type } from "typebox";
-import { AssertError, Pointer } from "typebox/value";
+import { Pointer } from "typebox/value";
 import { ulid } from "ulid";
 import {
   encodeSchema,
   type JsonValue,
   parse,
-  parseSchema,
   parseUnknownSchema,
 } from "./codec.ts";
 import {
   AuthError,
-  BUILTIN_RPC_ERRORS,
   getBuiltinRpcError,
   machineErrorCode,
-  SchemaValidationError,
+  type SchemaValidationError,
   type StoreError,
   TransferError,
   TransportError,
@@ -589,6 +579,46 @@ export function classifyRequestTransportFailure(args: {
   });
 }
 
+/**
+ * Map a generation acquisition failure to the ordinary request transport error.
+ *
+ * Automatic adoption never invents `transport_upgrade_required`; a caller that
+ * cannot obtain a suitable generation within its budget observes a normal
+ * unavailable/timeout/cancelled request failure.
+ */
+function mapTransportAcquireFailure(args: {
+  method?: string;
+  subject: string;
+  callerCapabilities?: readonly string[];
+  cause: unknown;
+}): TransportError {
+  const cause = args.cause;
+  if (cause instanceof TransportError) {
+    const code = cause.code === "trellis.transport.timeout"
+      ? "trellis.request.timeout"
+      : cause.code === "trellis.transport.aborted"
+      ? "trellis.request.cancelled"
+      : cause.code === "trellis.transport.closed"
+      ? "trellis.request.closed"
+      : "trellis.request.unavailable";
+    return requestFailedTransportError({
+      code,
+      message: cause.message,
+      hint: cause.hint,
+      method: args.method,
+      subject: args.subject,
+      cause,
+      context: {
+        ...(args.callerCapabilities === undefined
+          ? {}
+          : { requiredCapabilities: args.callerCapabilities }),
+        generationCode: cause.code,
+      },
+    });
+  }
+  return classifyRequestTransportFailure(args);
+}
+
 /** Creates the existing typed transport error for an unavailable optional action. */
 export function createActionUnavailableError(
   action: string,
@@ -722,6 +752,97 @@ export function buildProofInput(
 
   return buf;
 }
+
+/** One admitted generation a framework intake installs onto. @internal */
+export type GenerationIntakeTarget = {
+  id: number;
+  nc: NatsConnection;
+  contextDigest: string;
+  lease?: () => TransportLease;
+};
+
+/** Handle returned by one framework intake install. @internal */
+export type GenerationIntakeInstallResult = {
+  /** Stop accepting new intake; accepted work continues to completion. */
+  drain: () => Promise<void>;
+  /** Resolves when every accepted intake loop has finished. */
+  done: Promise<void>;
+  /** Release per-generation framework resources. */
+  dispose: () => Promise<void>;
+};
+
+/** Installs framework-owned broker-ready intake on one admitted generation. @internal */
+export type GenerationIntakeInstall = (
+  target: GenerationIntakeTarget,
+) => Promise<GenerationIntakeInstallResult>;
+
+/**
+ * Handle to retire and dispose one generation's generic provider intake.
+ *
+ * The same logical connection can install, drain, and dispose one attachment
+ * per admitted generation. `retireIntake` is idempotent and stops *new* broker
+ * deliveries; `intakeStopped` resolves once every outstanding intake loop has
+ * been accounted for (including queued delivery ownership), and `dispose`
+ * releases per-generation resources. Disposal is invoked only after intake has
+ * stopped and the generation's accepted leases have drained.
+ * @internal
+ */
+export type ProviderGenerationAttachment = {
+  retireIntake(): void;
+  readonly intakeStopped: Promise<void>;
+  dispose(): Promise<void>;
+};
+
+/** One installed provider ingress for one admitted generation. @internal */
+type ProviderIngress = {
+  id: number;
+  nc: NatsConnection;
+  /** Exact admitted context this generation's providers were built from. */
+  contextDigest: string;
+  lease?: () => TransportLease;
+  /**
+   * Held from install until every intake *loop* has finished (not merely until
+   * `drain()` resolves), so a buffered accepted delivery cannot arrive after the
+   * generation is reaped but before its per-callback lease is taken.
+   */
+  intakeLease?: TransportLease;
+  /**
+   * Generic intake subscriptions (RPC + live openings + framework intake).
+   * `intakeId` names the framework registration that owns the entry, so a
+   * single registration can be retracted without disturbing the others.
+   */
+  retireFns: Array<{
+    intakeId?: string;
+    /** Owning generic surface; live owners persist across a drain. */
+    owner?: "rpc" | "live";
+    drain: () => Promise<void>;
+    done: Promise<void>;
+    /**
+     * Live only: re-create the generic open subscription on the same provider
+     * without duplicating it or disturbing accepted sessions/receipts.
+     */
+    reopen?: () =>
+      | { drain: () => Promise<void>; done: Promise<void> }
+      | Promise<{ drain: () => Promise<void>; done: Promise<void> }>;
+  }>;
+  /**
+   * Coherent per-generation provider disposal (session-serving control, owned
+   * sessions, retained authority). Run only when the generation physically
+   * closes, never when its generic intake is drained, so an accepted live
+   * session keeps control until it terminates.
+   */
+  disposeFns: Array<{
+    intakeId?: string;
+    owner?: "rpc" | "live";
+    dispose: () => Promise<void>;
+  }>;
+  /** Generic intake already drained; no new registrations install here. */
+  retired?: boolean;
+  /** Resolves when every outstanding intake loop is accounted for. */
+  intakeStopped?: Promise<void>;
+  /** In-flight coherent disposal, so concurrent calls share one run. */
+  disposing?: Promise<void>;
+};
 
 export type TrellisSigner = (
   data: Uint8Array,
@@ -1592,7 +1713,12 @@ export type TrellisOpts<TA extends RuntimeApi> = {
   resourceAvailability?: (name: string) => boolean;
   connection?: TrellisConnection;
   /** Admitted-transport view for boundary checks, set by the connection owner. @internal */
-  transportGate?: TransportAuthorizationGate;
+  /**
+   * Generation-aware transport provider. When present, finite request and event
+   * exchanges acquire a lease for the exact generation they use; when absent,
+   * the session keeps its single fixed physical connection. @internal
+   */
+  transport?: TrellisTransportProvider;
   onSessionNotFound?: () => MaybePromise<void>;
   contractId?: string;
   contractDigest?: string;
@@ -2011,14 +2137,6 @@ export type HandlerTrellis<
   publishPrepared(
     event: PreparedTrellisEvent,
   ): AsyncResult<void, TransportError | UnexpectedError>;
-  /**
-   * Whether an operation's transport requirement is granted by the newest
-   * authorization but absent from the admitted attachment.
-   * @internal
-   */
-  transportUpgradeRequired?(
-    required: { publish?: readonly string[]; subscribe?: readonly string[] },
-  ): Promise<boolean>;
   /** Stops durable event listener loops owned by this handler runtime. */
   stopEventListeners(): void;
 };
@@ -2508,6 +2626,21 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Error for an owner whose generation was retired before it could install, so
+ * it must not add resources to the disposed scope.
+ */
+function ingressRetiredError(id: number): TransportError {
+  return createTransportError({
+    code: "trellis.transport.ingress_retired",
+    message:
+      "Trellis stopped installing provider intake for a retired generation.",
+    hint:
+      "Retry against the current generation. This is expected during a fast supersede.",
+    context: { generationId: id },
+  });
+}
+
 export class Trellis<
   TA extends RuntimeApi = RuntimeApi,
   TMode extends TrellisMode = "client",
@@ -2528,13 +2661,15 @@ export class Trellis<
   readonly contractId?: string;
   readonly contractDigest?: string;
 
-  #nats: NatsConnection;
-  #js: JetStreamClient;
+  #transport: TrellisTransportProvider;
+  #adaptiveTransport: boolean;
   #auth: TrellisAuth;
   #inboxPrefix: string;
   readonly api: TA;
   #log: LoggerLike;
   #tasks: TrellisTasks;
+  #rpcTaskSeq = 0;
+  #liveTaskSeq = 0;
   #hasExplicitApi: boolean;
   #noResponderMaxRetries: number;
   #noResponderRetryMs: number;
@@ -2549,10 +2684,76 @@ export class Trellis<
   #liveClosers = new Set<(terminal: void | Error) => void>();
   #resourceGeneration: () => number;
   #resourceAvailability: (name: string) => boolean;
-  #transportGate?: TransportAuthorizationGate;
   #stateMigrations: Readonly<
     Record<string, ResourceMigrations<unknown> | undefined>
   >;
+  /**
+   * Logical provider core: registered RPC handlers survive every transport
+   * generation. Ingress subscriptions are installed per generation.
+   */
+  #rpcRegistrations = new Map<string, {
+    method: MethodsOf<TA>;
+    ctx: RpcDescriptorOf<TA, MethodsOf<TA>>;
+    subject: string;
+    fn: HandlerFn<TA, MethodsOf<TA>, TA, HandlerTrellis<TA, TRequests>>;
+    handlerTrellis: HandlerTrellis<TA, TRequests>;
+  }>();
+  /**
+   * Logical provider core: registered live handlers survive every transport
+   * generation. Each holds a per-generation installer that builds the admitted
+   * provider from that generation's exact context.
+   */
+  #liveRegistrations = new Map<string, {
+    install: (target: {
+      id: number;
+      nc: NatsConnection;
+      contextDigest: string;
+      lease?: () => TransportLease;
+    }) => Promise<{
+      drain: () => Promise<void>;
+      done: Promise<void>;
+      /**
+       * Reinstall this generation's generic live-open intake on the same
+       * provider (its control subscription, retained authority, and accepted
+       * sessions stay intact). Used when a drained survivor is reactivated.
+       */
+      reopen: () =>
+        | { drain: () => Promise<void>; done: Promise<void> }
+        | Promise<{ drain: () => Promise<void>; done: Promise<void> }>;
+      /**
+       * Retire this generation's provider: stop session-serving control, fence
+       * and terminate owned sessions, and release its retained authority. Run
+       * only when the generation physically closes or a failed install is
+       * rolled back, never at a planned generic-intake cutover.
+       */
+      dispose: () => Promise<void>;
+    }>;
+  }>();
+  /**
+   * Internal framework surfaces (operations) that install their own generic
+   * intake per admitted generation through the shared provider-ingress
+   * mechanism instead of subscribing on a fixed connection.
+   */
+  #generationIntakes = new Map<
+    string,
+    (
+      target: {
+        id: number;
+        nc: NatsConnection;
+        contextDigest: string;
+        lease?: () => TransportLease;
+      },
+    ) => Promise<{
+      drain: () => Promise<void>;
+      done: Promise<void>;
+      dispose: () => Promise<void>;
+    }>
+  >();
+  /**
+   * One installed provider ingress per admitted generation, keyed by the
+   * generation id the owning runtime reports.
+   */
+  #providerIngress = new Map<number, ProviderIngress>();
 
   constructor(
     name: string, // Must be unique for a service
@@ -2565,13 +2766,13 @@ export class Trellis<
     const api = opts?.api;
 
     this.name = name;
-    this.#nats = nats;
+    this.#adaptiveTransport = opts?.transport !== undefined;
+    this.#transport = opts?.transport ?? fixedTransportProvider(nats);
     const liveClosers = this.#liveClosers;
-    void nats.closed().then((terminal) => {
+    void this.#transport.closed().then((terminal) => {
       for (const close of liveClosers) close(terminal);
       liveClosers.clear();
     });
-    this.#js = jetstream(this.#nats);
     this.#auth = auth as TrellisAuth;
     this.#inboxPrefix = inboxPrefix;
     this.api = (api ?? EMPTY_TRELLIS_API) as TA;
@@ -2589,7 +2790,6 @@ export class Trellis<
     this.#resourceGeneration = opts?.resourceGeneration ?? (() => 0);
     this.#resourceAvailability = opts?.resourceAvailability ?? (() => true);
     this.#stateMigrations = opts?.stateMigrations ?? {};
-    this.#transportGate = opts?.transportGate;
     this.#eventConsumers = internalOpts?.[internalEventConsumers] ?? {};
     this.#apiBindings = internalOpts?.[internalApiBindings] ?? {};
     this.#ephemeralEventNeeds = internalOpts?.[internalEphemeralEventNeeds];
@@ -2603,6 +2803,14 @@ export class Trellis<
     this.event = this.#createEventFacade();
     this.live = this.#createLiveFacade();
     this.operation = this.#createOperationFacade();
+  }
+
+  get #nats(): NatsConnection {
+    return this.#transport.currentNats();
+  }
+
+  get #js(): JetStreamClient {
+    return jetstream(this.#nats);
   }
 
   protected get nats(): NatsConnection {
@@ -2826,7 +3034,7 @@ export class Trellis<
         TypedKV<DurableOperationRecord>
       > => {
         const result = await TypedKV.open<DurableOperationRecord>(
-          this.#nats,
+          this.#transport,
           bucket,
           {
             version: 1,
@@ -2840,6 +3048,7 @@ export class Trellis<
             bindOnly: true,
             ttl: 30 * 24 * 60 * 60 * 1_000,
             maxValueBytes: 1024 * 1024,
+            acquireTimeoutMs: this.timeout,
           },
         );
         const value = result.take();
@@ -3074,21 +3283,6 @@ export class Trellis<
           phase: "request_encoding",
         });
         return subject;
-      }
-      const gate = this.#transportGate;
-      if (gate) {
-        const upgradeRequired = await requiresTransportUpgrade(gate, {
-          publish: [subject],
-          subscribe: [`${this.#inboxPrefix}.>`],
-        });
-        if (upgradeRequired) {
-          return err(
-            transportUpgradeRequiredError({
-              method: String(method),
-              subject,
-            }),
-          );
-        }
       }
       const route = trellisRoute("rpc", method);
       const span = startClientSpan(route);
@@ -3337,7 +3531,7 @@ export class Trellis<
     opts?: LiveSubscribeOpts,
   ): AsyncResult<LiveSubscription<TEvent>, BaseError> {
     const route = trellisRoute("rpc", live);
-    let owned = false;
+    let transport: { nc: NatsConnection; release(): void } | undefined;
     let subscription: LiveSubscription<TEvent> | undefined;
     const closeOnNats = () => {
       subscription?.close();
@@ -3368,25 +3562,6 @@ export class Trellis<
           });
           return subject;
         }
-        const gate = this.#transportGate;
-        if (gate) {
-          // A Live observation opens with a bound publish route and receives on
-          // this caller's own inbox family. A capability granted by renewed
-          // authority but not yet admitted must report the pending transport
-          // condition instead of opening an unauthorized exchange.
-          const upgradeRequired = await requiresTransportUpgrade(gate, {
-            publish: [subject],
-            subscribe: [`${this.#inboxPrefix}.>`],
-          });
-          if (upgradeRequired) {
-            return err(
-              transportUpgradeRequiredError({
-                method: String(live),
-                subject,
-              }),
-            );
-          }
-        }
         if (opts?.signal?.aborted) {
           const error = createTransportError({
             code: "trellis.live.subscribe_aborted",
@@ -3398,6 +3573,11 @@ export class Trellis<
           });
           return err(error);
         }
+        const abort = () => {
+          const current = subscription;
+          current?.fence();
+          if (current) void current.close().take().catch(() => undefined);
+        };
         try {
           const cache = this.#auth.authorizationProviderCache;
           if (!cache) {
@@ -3438,18 +3618,33 @@ export class Trellis<
           // follows is what tells the provider to abort its own handler, so a
           // consumer abort must not leave the provider waiting out peer
           // inactivity.
-          const abort = () => {
-            const current = subscription;
-            current?.fence();
-            if (current) void current.close().take().catch(() => undefined);
-          };
           opts?.signal?.addEventListener("abort", abort, { once: true });
+          if (opts?.signal?.aborted) {
+            throw new LiveStreamError("cancelled", "live open was aborted");
+          }
+          const acquired = (await this.#acquireRequestTransport({
+            method: live,
+            subject,
+            deadlineMs: Date.now() + this.timeout,
+            signal: opts?.signal,
+          })).take();
+          if (isErr(acquired)) {
+            opts?.signal?.removeEventListener("abort", abort);
+            recordRuntimeError(acquired.error, {
+              surface: "live",
+              direction: "client",
+              operation: live,
+              phase: "handshake",
+            });
+            return acquired;
+          }
+          transport = acquired;
           if (opts?.signal?.aborted) {
             throw new LiveStreamError("cancelled", "live open was aborted");
           }
           subscription = await openLive(
             {
-              nats: this.#nats,
+              nats: transport.nc,
               inboxPrefix: this.#inboxPrefix,
               timeoutMs: this.timeout,
               sessionKey: this.#auth.sessionKey,
@@ -3482,17 +3677,23 @@ export class Trellis<
             void subscription.close().take().catch(() => undefined);
             throw new LiveStreamError("cancelled", "live open was aborted");
           }
-          owned = true;
           this.#liveClosers.add(closeOnNats);
           // The endpoint's own telemetry owner records the legacy Live
           // projection from the same local state; no second accounting here.
           void subscription.closed.then(() => {
+            transport?.release();
             opts?.signal?.removeEventListener("abort", abort);
             this.#liveClosers.delete(closeOnNats);
           });
           const _ = route;
           return ok(subscription!);
         } catch (cause) {
+          opts?.signal?.removeEventListener("abort", abort);
+          if (subscription) {
+            void subscription.closed.then(() => transport?.release());
+          } else {
+            transport?.release();
+          }
           const error = cause instanceof TransportError
             ? cause
             : cause instanceof LiveStreamError
@@ -3542,14 +3743,111 @@ export class Trellis<
         context: { live, subject },
       });
     }
-    const own = await cache.resolveContext(this.#contextDigest());
+    const start = (target: {
+      id: number;
+      nc: NatsConnection;
+      contextDigest: string;
+      lease?: () => TransportLease;
+    }) =>
+      this.#startLiveProvider({
+        ...target,
+        live,
+        subject,
+        descriptor,
+        handler,
+      });
+    // A logical registration installs a provider per admitted generation, so a
+    // new opening routes to the generation that admits it while an already
+    // accepted session keeps its own generation's provider.
+    if (!this.#adaptiveTransport) {
+      await start({
+        id: 0,
+        nc: this.#nats,
+        contextDigest: this.#contextDigest(),
+        lease: undefined,
+      });
+      return;
+    }
+    this.#liveRegistrations.set(live, { install: start });
+    for (const ingress of this.#providerIngress.values()) {
+      if (ingress.retired) continue;
+      const installed = await start({
+        id: ingress.id,
+        nc: ingress.nc,
+        contextDigest: ingress.contextDigest,
+        lease: ingress.lease,
+      });
+      ingress.retireFns.push({
+        owner: "live",
+        drain: installed.drain,
+        done: installed.done,
+        reopen: installed.reopen,
+      });
+      ingress.disposeFns.push({ owner: "live", dispose: installed.dispose });
+    }
+  }
+
+  /**
+   * Build one generation's admitted live provider and its intake.
+   *
+   * The live-open subscription is generic intake (retired when the generation is
+   * superseded). The control subscription serves only the sessions this
+   * generation accepted and is retired when the generation physically closes.
+   * Each accepted session pins this generation through its `lease` until it
+   * terminates.
+   */
+  async #startLiveProvider<TInput, TEvent>(args: {
+    id: number;
+    nc: NatsConnection;
+    contextDigest: string;
+    lease?: () => TransportLease;
+    live: string;
+    subject: string;
+    descriptor: LiveDesc;
+    handler: (
+      context: LiveHandlerContext<TInput, TEvent>,
+    ) => unknown | Promise<unknown>;
+  }): Promise<{
+    drain: () => Promise<void>;
+    done: Promise<void>;
+    reopen: () =>
+      | { drain: () => Promise<void>; done: Promise<void> }
+      | Promise<{ drain: () => Promise<void>; done: Promise<void> }>;
+    dispose: () => Promise<void>;
+  }> {
+    const { id, nc, contextDigest, lease, live, subject, descriptor, handler } =
+      args;
+    const cache = this.#auth.authorizationProviderCache;
+    if (!cache) {
+      throw createTransportError({
+        code: "trellis.live.listen_failed",
+        message: "Trellis could not listen for live requests.",
+        hint: "Provider authorization cache is required for live observations.",
+        context: { live, subject },
+      });
+    }
+    const own = await cache.resolveContext(contextDigest);
     const ownGuard = await LiveAuthorityGuard.retain(
       cache,
-      this.#contextDigest(),
+      contextDigest,
       { kind: "local-provider" },
     );
+    const refreshOwnAuthority = async (): Promise<void> => {
+      const current = this.#contextDigest();
+      if (!current) {
+        throw new Error(
+          "no current authorization context to refresh live authority",
+        );
+      }
+      const candidate = await ownGuard.prepareReplacement(current);
+      const lost = ownGuard.commitReplacement(candidate);
+      if (lost !== undefined) {
+        throw new Error(`live own authority replacement rejected: ${lost}`);
+      }
+    };
     const provider = new LiveProvider({
-      nats: this.#nats,
+      nats: nc,
+      lease,
       identity: {
         connectionId: own.context.connectionId,
         sessionKey: own.context.sessionKey,
@@ -3560,14 +3858,7 @@ export class Trellis<
       },
       sign: async (digest) => await this.#auth.sign(digest),
       ownGuard,
-      refreshOwnAuthority: async () => {
-        const current = this.#contextDigest();
-        if (!current) return;
-        const candidate = await ownGuard.prepareReplacement(current);
-        if (ownGuard.commitReplacement(candidate)) {
-          throw new Error("own authority replacement was rejected");
-        }
-      },
+      refreshOwnAuthority,
       permission: toVerifierPermission(descriptor.permission),
       retainCallerAuthority: (digest, permission) =>
         LiveAuthorityGuard.retain(cache, digest, {
@@ -3576,11 +3867,54 @@ export class Trellis<
         }),
       manager: this.connection.live,
     });
-    let sub: ReturnType<NatsConnection["subscribe"]>;
-    let controlSub: ReturnType<NatsConnection["subscribe"]>;
+    let controlSub: ReturnType<NatsConnection["subscribe"]> | undefined;
+    // Generic live-open intake. Re-creatable so a survivor reactivation can
+    // reinstall the open subscription on the same provider without duplicating
+    // the provider or disturbing accepted sessions/receipts.
+    const openIntake = (): {
+      drain: () => Promise<void>;
+      done: Promise<void>;
+    } => {
+      const openSub = nc.subscribe(subject, {
+        queue: routeQueueGroup(subject),
+      });
+      const openDone = Promise.withResolvers<void>();
+      const openTask = AsyncResult.try(async () => {
+        // Admission bound before any verification work is spawned: an unbounded
+        // set of attacker-supplied openings must not create unbounded tasks.
+        let inFlight = 0;
+        for await (const msg of openSub) {
+          if (inFlight >= MAX_PENDING_OPENINGS) continue;
+          inFlight += 1;
+          void this.#acceptLiveOpen(
+            live,
+            descriptor,
+            msg,
+            handler,
+            provider,
+          ).finally(() => {
+            inFlight -= 1;
+          });
+        }
+      });
+      this.#tasks.add(
+        `live:${id}:${live}:open:${this.#liveTaskSeq++}`,
+        openTask,
+      );
+      openTask.then(() => openDone.resolve(), () => openDone.resolve());
+      return {
+        drain: () => openSub.drain().catch(() => undefined),
+        done: openDone.promise,
+      };
+    };
+    let open: { drain: () => Promise<void>; done: Promise<void> } | undefined;
     try {
-      sub = this.#nats.subscribe(subject, { queue: routeQueueGroup(subject) });
-      controlSub = this.#nats.subscribe(provider.wildcardSubject(subject));
+      controlSub = nc.subscribe(provider.wildcardSubject(subject));
+      // Registered once this generation can actually receive control on the
+      // route, so takeover reaches a generation that has not yet served a
+      // session; `dispose()` unregisters it transactionally on failure.
+      provider.registerRoute(subject);
+      open = openIntake();
     } catch (cause) {
       const error = createTransportError({
         code: "trellis.live.listen_failed",
@@ -3596,56 +3930,60 @@ export class Trellis<
         operation: live,
         phase: "listen",
       });
+      // Clean up the partial install: no subscription exists, so no session
+      // can be served; unregister the provider and release its retained own
+      // authority rather than leaking the guard for the process lifetime.
+      await provider.dispose().catch(() => undefined);
+      ownGuard.release();
       throw error;
     }
-    this.#tasks.add(
-      `live:${live}`,
-      AsyncResult.try(async () => {
-        // Admission bound before any verification work is spawned: an unbounded
-        // set of attacker-supplied openings must not create unbounded tasks.
-        let inFlight = 0;
-        for await (const msg of sub) {
-          if (inFlight >= MAX_PENDING_OPENINGS) continue;
-          inFlight += 1;
-          void this.#acceptLiveOpen(
-            live,
-            descriptor,
-            msg,
-            handler,
-            provider,
-          ).finally(() => {
-            inFlight -= 1;
+    const controlTask = AsyncResult.try(async () => {
+      for await (const msg of controlSub) {
+        await provider.handleControl(msg, async (controlMsg) => {
+          const caller = await this.#authenticateLiveRequest({
+            msg: controlMsg,
+            permission: descriptor.permission,
+            requiredCapabilities: descriptor.subscribeCapabilities,
           });
-        }
-      }),
-    );
+          const callerValue = caller.take();
+          if (isErr(callerValue) || callerValue.type !== "verified") {
+            return undefined;
+          }
+          return {
+            connectionId: callerValue.connectionId,
+            sessionKey: callerValue.sessionKey,
+            principalId: callerValue.principalId,
+            participantId: callerValue.participantId,
+            deploymentId: callerValue.deploymentId ?? undefined,
+            instanceId: callerValue.instanceId ?? undefined,
+            contextDigest: callerValue.contextDigest,
+          };
+        });
+      }
+    });
     this.#tasks.add(
-      `live:${live}:control`,
-      AsyncResult.try(async () => {
-        for await (const msg of controlSub) {
-          await provider.handleControl(msg, async (controlMsg) => {
-            const caller = await this.#authenticateLiveRequest({
-              msg: controlMsg,
-              permission: descriptor.permission,
-              requiredCapabilities: descriptor.subscribeCapabilities,
-            });
-            const callerValue = caller.take();
-            if (isErr(callerValue) || callerValue.type !== "verified") {
-              return undefined;
-            }
-            return {
-              connectionId: callerValue.connectionId,
-              sessionKey: callerValue.sessionKey,
-              principalId: callerValue.principalId,
-              participantId: callerValue.participantId,
-              deploymentId: callerValue.deploymentId ?? undefined,
-              instanceId: callerValue.instanceId ?? undefined,
-              contextDigest: callerValue.contextDigest,
-            };
-          });
-        }
-      }),
+      `live:${id}:${live}:control:${this.#liveTaskSeq++}`,
+      controlTask,
     );
+    const controlling = controlSub;
+    return {
+      drain: () => open!.drain(),
+      done: open!.done,
+      reopen: async () => {
+        // Adopt the session's current authorization context before admitting new
+        // sessions on a reactivated survivor whose original context may have
+        // been superseded by the reduction. A failure to establish verified
+        // current authority propagates so the caller rolls the reinstall back
+        // rather than admitting fresh sessions under stale evidence.
+        await refreshOwnAuthority();
+        return (open = openIntake());
+      },
+      dispose: async () => {
+        void controlling.drain().catch(() => undefined);
+        await provider.dispose();
+        ownGuard.release();
+      },
+    };
   }
 
   async #acceptLiveOpen<TInput, TEvent>(
@@ -3786,12 +4124,11 @@ export class Trellis<
       ): AsyncResult<FileInfo, TransferOperationError> =>
         AsyncResult.from((async () => {
           const handle = createTransferHandle(
-            this.#nats,
+            this.#transport,
             this.#auth,
             this.timeout,
             grant,
             this.#inboxPrefix,
-            this.#transportGate,
           );
           if (!(handle instanceof Object) || !("send" in handle)) {
             return err(
@@ -3818,12 +4155,11 @@ export class Trellis<
   transfer(grant: ReceiveTransferGrant): ReceiveTransferHandle;
   transfer(grant: TransferGrant): ReturnType<typeof createTransferHandle> {
     return createTransferHandle(
-      this.#nats,
+      this.#transport,
       this.#auth,
       this.timeout,
       grant,
       this.#inboxPrefix,
-      this.#transportGate,
     );
   }
 
@@ -3869,66 +4205,530 @@ export class Trellis<
       { method: String(method) },
       `Mounting ${method.toString()} RPC handler`,
     );
+    const registration = { method, ctx, subject, fn, handlerTrellis };
+    this.#rpcRegistrations.set(method, registration);
+
+    if (this.#adaptiveTransport) {
+      // Logical provider core: the handler is registered once and every
+      // admitted generation gets its own queue-grouped ingress subscription,
+      // so overlapping generations deliver each request exactly once.
+      for (const ingress of this.#providerIngress.values()) {
+        if (ingress.retired) continue;
+        ingress.retireFns.push(this.#installRpcIngress(ingress, registration));
+      }
+      return AsyncResult.ok(undefined);
+    }
+
     const sub = this.#nats.subscribe(subject, {
       queue: routeQueueGroup(subject),
     });
+    return this.#runRpcIntake(sub, registration);
+  }
 
+  /**
+   * Register an internal framework surface that installs its own generic
+   * intake per admitted generation.
+   *
+   * Used by the operation runtime so start/reconcile/control intake is created
+   * on every generation with stable queue groups rather than on one fixed
+   * connection. The returned `drain`/`done` participate in the ingress lease
+   * lifetime. @internal
+   */
+  /** Whether this connection owns physical generations through a provider. */
+  protected get adaptiveTransport(): boolean {
+    return this.#adaptiveTransport;
+  }
+
+  protected async declareGenerationIntake(
+    id: string,
+    install: GenerationIntakeInstall,
+  ): Promise<void> {
+    this.#generationIntakes.set(id, install);
+    if (!this.#adaptiveTransport) return;
+    for (const ingress of this.#providerIngress.values()) {
+      if (ingress.retired) continue;
+      const installed = await install({
+        id: ingress.id,
+        nc: ingress.nc,
+        contextDigest: ingress.contextDigest,
+        lease: ingress.lease,
+      });
+      ingress.retireFns.push({
+        intakeId: id,
+        drain: installed.drain,
+        done: installed.done,
+      });
+      ingress.disposeFns.push({ intakeId: id, dispose: installed.dispose });
+    }
+  }
+
+  /**
+   * Register framework-owned per-generation intake on this logical connection.
+   *
+   * Installs on every already-admitted generation and on every future candidate
+   * before it becomes the default. `retractFrameworkIntake` stops and disposes
+   * the installed intake so a later candidate can never resurrect a stopped
+   * framework host. @internal
+   */
+  async declareFrameworkIntake(
+    id: string,
+    install: GenerationIntakeInstall,
+  ): Promise<void> {
+    await this.declareGenerationIntake(id, install);
+  }
+
+  /**
+   * Retract one framework intake registration and stop its installed intake on
+   * every admitted generation. Accepted work is drained before each entry's
+   * `done` resolves; `dispose` releases per-generation resources. @internal
+   */
+  async retractFrameworkIntake(id: string): Promise<void> {
+    this.#generationIntakes.delete(id);
+    if (!this.#adaptiveTransport) return;
+    const pending: Promise<void>[] = [];
+    for (const ingress of this.#providerIngress.values()) {
+      const retired = ingress.retireFns.filter((entry) =>
+        entry.intakeId === id
+      );
+      if (retired.length > 0) {
+        ingress.retireFns = ingress.retireFns.filter((entry) =>
+          entry.intakeId !== id
+        );
+        for (const entry of retired) {
+          pending.push((async () => {
+            await entry.drain();
+            await entry.done;
+          })());
+        }
+      }
+      const disposed = ingress.disposeFns.filter((entry) =>
+        entry.intakeId === id
+      );
+      if (disposed.length > 0) {
+        ingress.disposeFns = ingress.disposeFns.filter((entry) =>
+          entry.intakeId !== id
+        );
+        for (const entry of disposed) {
+          // Invoke inside an async wrapper so a synchronous throw in `dispose`
+          // is a rejection for this entry, not an abort of the whole retraction.
+          pending.push(
+            (async () => await entry.dispose())().catch(() => undefined),
+          );
+        }
+      }
+    }
+    await Promise.allSettled(pending);
+  }
+
+  /**
+   * Install (or reinstall) provider ingress for one admitted generation.
+   *
+   * Registers the queue-grouped subscriptions for every handler in the logical
+   * provider core. Called before the generation becomes the default so routing
+   * exists before new work can select it. Reinstalling a drained survivor
+   * restores only this generic intake scope; session/control owners registered
+   * outside it are left intact. @internal
+   */
+  async installProviderIngress(target: {
+    id: number;
+    nc: NatsConnection;
+    /** Exact admitted context this generation's providers are built from. */
+    contextDigest: string;
+    /**
+     * Lease the exact admitted generation the candidate ingress routes on. It is
+     * called once for the ingress-lifetime pin and again per accepted callback;
+     * it throws when the generation is no longer admitted, which fails the
+     * candidate rather than executing unpinned.
+     */
+    lease?: () => TransportLease;
+    /**
+     * Push this ingress's concrete cleanup scope into the owning manager
+     * synchronously, before the first install await, so cleanup ownership is
+     * never a fallible late lookup. @internal
+     */
+    registerDisposal?: (handle: ProviderGenerationAttachment) => boolean;
+  }): Promise<ProviderGenerationAttachment> {
+    const existing = this.#providerIngress.get(target.id);
+    if (existing && !existing.retired) {
+      return this.#attachmentFor(target.id);
+    }
+    const ingress: ProviderIngress = existing ?? {
+      id: target.id,
+      nc: target.nc,
+      contextDigest: target.contextDigest,
+      lease: target.lease,
+      retireFns: [],
+      disposeFns: [],
+    };
+    this.#providerIngress.set(target.id, ingress);
+    if (!existing) {
+      // First installation only: register the concrete scope now, before any
+      // await, so the retained ingress is always owned and disposable even if a
+      // later install step fails partway. A false result means the generation is
+      // already retired and the manager has taken over this scope's cleanup.
+      const accepted = target.registerDisposal?.(
+        this.#attachmentFor(target.id),
+      );
+      if (accepted === false) {
+        ingress.retireFns = [];
+        ingress.disposeFns = [];
+        throw ingressRetiredError(target.id);
+      }
+    }
+    // Reactivation of a drained survivor: reinstall only generic intake
+    // (RPC serve + framework intake) before the first await so a partial
+    // install is always discoverable and disposable. Live/control/session
+    // owners registered outside generic intake are preserved.
+    const reinstateGeneric = existing?.retired === true;
+    // Reactivation must never resurrect a scope whose disposal has begun; the
+    // manager only asks for reactivation of a non-disposing survivor, and this
+    // guards the reset from being reached any other way. The manager's
+    // `#disposing` boundary is the authority for irreversibility.
+    if (existing?.disposing) {
+      throw ingressRetiredError(target.id);
+    }
+    let liveEntries: ProviderIngress["retireFns"] = [];
+    if (reinstateGeneric) {
+      liveEntries = ingress.retireFns.filter((entry) => entry.owner === "live");
+      ingress.retireFns = ingress.retireFns.filter((entry) =>
+        entry.owner !== "rpc" && entry.intakeId === undefined
+      );
+      // Replacing generic intake does not release its accepted work. Keep every
+      // previous framework disposal owner until this physical generation ends,
+      // so forced loss also reaches attempts retained by a replaced intake.
+    } else {
+      ingress.retireFns = [];
+      ingress.disposeFns = [];
+    }
+    ingress.nc = target.nc;
+    ingress.contextDigest = target.contextDigest;
+    ingress.lease = target.lease;
+    ingress.retired = false;
+    ingress.intakeStopped = undefined;
+    ingress.disposing = undefined;
+    ingress.intakeLease = target.lease?.();
+    // Fence for resources created across an install await: the owner scope may
+    // have been force-retired while a subscription/consumer was being set up.
+    // Identity alone is not enough — `disposeProviderIngress` flags `disposing`
+    // and snapshots `disposeFns` before it deletes the map entry, so a pending
+    // installer that resolves in that window would push a new owner after the
+    // snapshot and have it wiped without cleanup. Retired or disposing scopes
+    // therefore reject further installation too.
+    const stillOwned = (): boolean =>
+      this.#providerIngress.get(ingress.id) === ingress &&
+      !ingress.retired && !ingress.disposing;
+    try {
+      // Reinstall the live providers' generic open intake on the same provider
+      // first, under the same owned rollback: their control subscription,
+      // retained authority, and accepted sessions are preserved, not duplicated,
+      // and a partial reopen is retired like any other partial generic install.
+      for (const entry of liveEntries) {
+        if (!entry.reopen) continue;
+        const reopened = await entry.reopen();
+        entry.drain = reopened.drain;
+        entry.done = reopened.done;
+        if (!stillOwned()) {
+          await this.#releaseDetached(entry.drain);
+          throw ingressRetiredError(target.id);
+        }
+      }
+      for (const registration of this.#rpcRegistrations.values()) {
+        ingress.retireFns.push({
+          owner: "rpc",
+          ...this.#installRpcIngress(ingress, registration),
+        });
+      }
+      if (!reinstateGeneric) {
+        for (const registration of this.#liveRegistrations.values()) {
+          const installed = await registration.install({
+            id: ingress.id,
+            nc: ingress.nc,
+            contextDigest: ingress.contextDigest,
+            lease: ingress.lease,
+          });
+          if (!stillOwned()) {
+            // Release both the just-created generic open subscription and the
+            // control/authority scope; an open sub left running until the socket
+            // closes would keep accepting sessions on a retired generation.
+            await this.#releaseDetached(installed.drain, installed.dispose);
+            throw ingressRetiredError(target.id);
+          }
+          ingress.retireFns.push({
+            owner: "live",
+            drain: installed.drain,
+            done: installed.done,
+            reopen: installed.reopen,
+          });
+          ingress.disposeFns.push({
+            owner: "live",
+            dispose: installed.dispose,
+          });
+        }
+      }
+      for (const [intakeId, intake] of this.#generationIntakes) {
+        const installed = await intake({
+          id: ingress.id,
+          nc: ingress.nc,
+          contextDigest: ingress.contextDigest,
+          lease: ingress.lease,
+        });
+        if (!stillOwned()) {
+          await this.#releaseDetached(installed.dispose);
+          throw ingressRetiredError(target.id);
+        }
+        ingress.retireFns.push({
+          intakeId,
+          drain: installed.drain,
+          done: installed.done,
+        });
+        ingress.disposeFns.push({
+          intakeId,
+          dispose: installed.dispose,
+        });
+      }
+      // The SUBs above are only queued client-side. Flush proves the broker has
+      // accepted the candidate's routes before it becomes the default and the
+      // superseded intake is drained, so cutover cannot drop a request into a
+      // gap with no queue-group member.
+      await target.nc.flush();
+    } catch (cause) {
+      // Retain the partially installed attachment: registered intake may have
+      // accepted work. Stop new deliveries and keep it discoverable so the
+      // owner's retire/dispose settles what was accepted instead of detaching
+      // it. The candidate is still reported as failed.
+      this.#retireIngress(ingress);
+      throw cause;
+    }
+    return this.#attachmentFor(target.id);
+  }
+
+  #attachmentFor(id: number): ProviderGenerationAttachment {
+    const ingresses = this.#providerIngress;
+    return {
+      retireIntake: () => this.retireProviderIngress(id),
+      get intakeStopped() {
+        return ingresses.get(id)?.intakeStopped ??
+          Promise.resolve();
+      },
+      dispose: () => this.disposeProviderIngress(id),
+    };
+  }
+
+  /** Stop new intake and record when every outstanding intake loop settles. */
+  #retireIngress(ingress: ProviderIngress): void {
+    if (ingress.retired) return;
+    ingress.retired = true;
+    // Capture this retirement's own scope: a later reactivation installs a new
+    // intake lease and loop set, and this retirement must release exactly the
+    // lease and loops it retired, never the reinstalled pin.
+    const retiredLease = ingress.intakeLease;
+    const done = ingress.retireFns.map(async (entry) => {
+      await entry.drain();
+      return await entry.done;
+    });
+    ingress.intakeStopped = Promise.allSettled(done).then(() => {
+      retiredLease?.release();
+      if (ingress.intakeLease === retiredLease) ingress.intakeLease = undefined;
+    });
+  }
+
+  /**
+   * Stop new provider intake on one generation.
+   *
+   * `drain()` stops new broker deliveries and protocol-flushes; it does **not**
+   * wait for messages already buffered in the client iterator. The
+   * ingress-lifetime lease is therefore released only once every intake *loop*
+   * has finished, so a buffered accepted delivery stays protected through its
+   * per-callback lease. Already-accepted callbacks keep running independently.
+   * @internal
+   */
+  retireProviderIngress(id: number): void {
+    const ingress = this.#providerIngress.get(id);
+    if (!ingress) return;
+    this.#retireIngress(ingress);
+  }
+
+  /**
+   * Release one generation's provider resources.
+   *
+   * Called after intake has stopped and accepted leases have drained, so owned
+   * sessions and retained authority are torn down coherently. Idempotent; a
+   * concurrent call shares the one run. @internal
+   */
+  async disposeProviderIngress(id: number): Promise<void> {
+    const ingress = this.#providerIngress.get(id);
+    if (!ingress) return;
+    if (ingress.disposing) {
+      await ingress.disposing;
+      return;
+    }
+    ingress.disposing = (async () => {
+      // Release the ingress-lifetime pin and run coherent per-generation
+      // disposal. The graceful caller has already awaited intake; a forced path
+      // invokes disposal without blocking on accepted work.
+      const disposingLease = ingress.intakeLease;
+      disposingLease?.release();
+      if (ingress.intakeLease === disposingLease) {
+        ingress.intakeLease = undefined;
+      }
+      await Promise.allSettled(
+        ingress.disposeFns.map(async (entry) => await entry.dispose()),
+      );
+      ingress.disposeFns.length = 0;
+      this.#providerIngress.delete(id);
+    })();
+    await ingress.disposing;
+  }
+
+  /**
+   * Release resources an owner created across an install await after its scope
+   * was force-retired. Every cleanup is attempted even if another fails, and
+   * failures are reported, never silently dropped.
+   */
+  async #releaseDetached(
+    ...cleanups: Array<() => Promise<void> | void>
+  ): Promise<void> {
+    const results = await Promise.allSettled(
+      cleanups.map(async (cleanup) => await cleanup()),
+    );
+    for (const result of results) {
+      if (result.status === "rejected") {
+        this.#log.warn(
+          { error: result.reason },
+          "detached provider intake cleanup failed",
+        );
+      }
+    }
+  }
+
+  #installRpcIngress(
+    ingress: {
+      id: number;
+      nc: NatsConnection;
+      lease?: () => TransportLease;
+      retireFns: Array<{
+        intakeId?: string;
+        drain: () => Promise<void>;
+        done: Promise<void>;
+      }>;
+    },
+    registration: {
+      method: MethodsOf<TA>;
+      ctx: RpcDescriptorOf<TA, MethodsOf<TA>>;
+      subject: string;
+      fn: HandlerFn<TA, MethodsOf<TA>, TA, HandlerTrellis<TA, TRequests>>;
+      handlerTrellis: HandlerTrellis<TA, TRequests>;
+    },
+  ): { drain: () => Promise<void>; done: Promise<void> } {
+    const sub = ingress.nc.subscribe(registration.subject, {
+      queue: routeQueueGroup(registration.subject),
+    });
+    const completion = Promise.withResolvers<void>();
+    const intake = this.#runRpcIntake(sub, registration, ingress.lease);
+    this.#tasks.add(
+      // Unique per install so a survivor reactivation can reinstall its RPC
+      // intake without colliding with the drained install's retained task.
+      `rpc:${ingress.id}:${registration.method}:${this.#rpcTaskSeq++}`,
+      intake,
+    );
+    // `done` resolves when the intake loop itself finishes consuming buffered
+    // messages, independent of when `drain()` protocol-flushes.
+    intake.then(() => completion.resolve(), () => completion.resolve());
+    return {
+      drain: () => sub.drain().catch(() => undefined),
+      done: completion.promise,
+    };
+  }
+
+  #runRpcIntake(
+    sub: ReturnType<NatsConnection["subscribe"]>,
+    registration: {
+      method: MethodsOf<TA>;
+      ctx: RpcDescriptorOf<TA, MethodsOf<TA>>;
+      subject: string;
+      fn: HandlerFn<TA, MethodsOf<TA>, TA, HandlerTrellis<TA, TRequests>>;
+      handlerTrellis: HandlerTrellis<TA, TRequests>;
+    },
+    /** Pin the generation that accepted this callback through its reply. */
+    leaseFactory?: () => TransportLease,
+  ): AsyncResult<void, ValidationError | UnexpectedError> {
+    const { method, ctx, fn, handlerTrellis } = registration;
     return AsyncResult.try(async () => {
       for await (const msg of sub) {
-        const resultPromise = await this.#processRPCMessage(
-          method,
-          ctx,
-          msg,
-          fn,
-          handlerTrellis,
-        );
-        const result = resultPromise.take();
-
-        if (isErr(result)) {
-          this.#respondWithError(msg, result.error, { method: String(method) });
-          continue;
+        let lease: TransportLease | undefined;
+        if (leaseFactory) {
+          try {
+            lease = leaseFactory();
+          } catch {
+            // The generation is no longer admitted; never execute unpinned.
+            continue;
+          }
         }
-
-        const sent = this.#respondWithPayload(msg, result.payload, undefined, {
-          method: String(method),
-          responseKind: "success",
-        });
-        if (sent.isErr()) {
-          const responseBytes = payloadByteLength(result.payload);
-          const message = causeMessage(sent.error.cause);
-          this.#respondWithError(
+        try {
+          const resultPromise = await this.#processRPCMessage(
+            method,
+            ctx,
             msg,
-            new TransportError({
-              code: "trellis.rpc.response_send_failed",
-              message: message.includes("max_payload")
-                ? "Trellis RPC response exceeded NATS max_payload."
-                : "Trellis could not send the RPC response.",
-              hint:
-                "Reduce the requested page size or use a narrower RPC that does not include large detail payloads.",
-              cause: sent.error.cause,
-              context: {
-                method: String(method),
-                subject: msg.subject,
-                responseBytes,
-                causeMessage: message,
-              },
-            }),
-            { method: String(method), responseBytes },
+            fn,
+            handlerTrellis,
           );
-          continue;
-        }
+          const result = resultPromise.take();
 
-        if (result.afterReply.length > 0) {
-          for (const task of result.afterReply) {
-            try {
-              await task();
-            } catch (error) {
-              this.#log.error(
-                { method: String(method), error },
-                "RPC after-reply task failed",
-              );
+          if (isErr(result)) {
+            this.#respondWithError(msg, result.error, {
+              method: String(method),
+            });
+            continue;
+          }
+
+          const sent = this.#respondWithPayload(
+            msg,
+            result.payload,
+            undefined,
+            {
+              method: String(method),
+              responseKind: "success",
+            },
+          );
+          if (sent.isErr()) {
+            const responseBytes = payloadByteLength(result.payload);
+            const message = causeMessage(sent.error.cause);
+            this.#respondWithError(
+              msg,
+              new TransportError({
+                code: "trellis.rpc.response_send_failed",
+                message: message.includes("max_payload")
+                  ? "Trellis RPC response exceeded NATS max_payload."
+                  : "Trellis could not send the RPC response.",
+                hint:
+                  "Reduce the requested page size or use a narrower RPC that does not include large detail payloads.",
+                cause: sent.error.cause,
+                context: {
+                  method: String(method),
+                  subject: msg.subject,
+                  responseBytes,
+                  causeMessage: message,
+                },
+              }),
+              { method: String(method), responseBytes },
+            );
+            continue;
+          }
+
+          if (result.afterReply.length > 0) {
+            for (const task of result.afterReply) {
+              try {
+                await task();
+              } catch (error) {
+                this.#log.error(
+                  { method: String(method), error },
+                  "RPC after-reply task failed",
+                );
+              }
             }
           }
+        } finally {
+          lease?.release();
         }
       }
     });
@@ -4419,21 +5219,31 @@ export class Trellis<
           },
         );
       };
-      try {
-        const gate = this.#transportGate;
-        if (gate) {
-          const upgradeRequired = await requiresTransportUpgrade(gate, {
-            publish: [event.subject],
+      // Generation acquisition and the publish+ack share one deadline.
+      const deadlineMs = Date.now() + this.timeout;
+      let lease: TransportLease | undefined;
+      if (this.#adaptiveTransport) {
+        try {
+          lease = await this.#transport.acquireFor(
+            { publish: [event.subject] },
+            { deadlineMs },
+          );
+        } catch (cause) {
+          finish("error");
+          const error = mapTransportAcquireFailure({
+            subject: event.subject,
+            cause,
           });
-          if (upgradeRequired) {
-            return err(
-              transportUpgradeRequiredError({
-                event: event.event,
-                subject: event.subject,
-              }),
-            );
-          }
+          recordRuntimeError(error, {
+            surface: "event",
+            direction: "publisher",
+            operation: event.event,
+            phase: "publish",
+          });
+          return err(error);
         }
+      }
+      try {
         const headers = natsHeaders();
         for (const [key, value] of Object.entries(event.headers)) {
           headers.set(key, value);
@@ -4450,8 +5260,10 @@ export class Trellis<
           { subject: event.subject },
           `Publishing ${event.event} event.`,
         );
-        await this.#js.publish(event.subject, event.encodedPayload, {
+        const js = lease ? jetstream(lease.nc) : this.#js;
+        await js.publish(event.subject, event.encodedPayload, {
           headers,
+          timeout: Math.max(1, deadlineMs - Date.now()),
         });
         finish("ok");
         return ok(undefined);
@@ -4468,6 +5280,8 @@ export class Trellis<
           phase: "publish",
         });
         return err(error);
+      } finally {
+        lease?.release();
       }
     })());
   }
@@ -4484,18 +5298,6 @@ export class Trellis<
       >(Promise.resolve(prepared));
     }
     return this.publishPrepared(prepared);
-  }
-
-  /**
-   * Whether an operation's transport requirement is granted by the newest
-   * authorization but absent from the admitted attachment.
-   * @internal
-   */
-  async transportUpgradeRequired(
-    required: { publish?: readonly string[]; subscribe?: readonly string[] },
-  ): Promise<boolean> {
-    const gate = this.#transportGate;
-    return gate ? await requiresTransportUpgrade(gate, required) : false;
   }
 
   listenEvent<E extends EventsOf<TA>>(
@@ -4525,21 +5327,6 @@ export class Trellis<
         const subject = this.template(ctx.subject, subjectData, true).take();
         if (isErr(subject)) return subject;
 
-        const gate = this.#transportGate;
-        if (gate) {
-          const upgradeRequired = await requiresTransportUpgrade(gate, {
-            subscribe: [subject],
-          });
-          if (upgradeRequired) {
-            return err(
-              transportUpgradeRequiredError({
-                event: String(eventName),
-                subject,
-              }),
-            );
-          }
-        }
-
         if (opts?.mode === "ephemeral") {
           // A declared durable consumer grants Consume authority only. Raw
           // ephemeral observation needs its own Event Subscribe need; fail
@@ -4561,12 +5348,31 @@ export class Trellis<
               }),
             );
           }
+          // An ephemeral observation pins one generation for its lifetime: the
+          // subscription is opened and closed on the same physical connection.
+          let lease: TransportLease | undefined;
+          if (this.#adaptiveTransport) {
+            try {
+              lease = await this.#transport.acquireFor(
+                { subscribe: [subject] },
+                {
+                  ...(opts.signal ? { signal: opts.signal } : {}),
+                  // Bound opening with the normal request budget instead of an
+                  // unbounded adoption wait when no signal is supplied.
+                  deadlineMs: Date.now() + this.timeout,
+                },
+              );
+            } catch (cause) {
+              return err(mapTransportAcquireFailure({ subject, cause }));
+            }
+          }
           return await this.#startEphemeralEvent(
             eventName,
             ctx,
             subject,
             fn,
             opts.signal,
+            lease,
           );
         }
 
@@ -4597,23 +5403,28 @@ export class Trellis<
     subject: string,
     fn: EventCallback<EventOf<TA, EventsOf<TA>>>,
     signal?: AbortSignal,
+    lease?: TransportLease,
   ): Promise<Result<void, ValidationError | UnexpectedError>> {
+    const nc = lease?.nc ?? this.#nats;
     let sub: ReturnType<NatsConnection["subscribe"]> | undefined;
     try {
-      sub = this.#nats.subscribe(subject);
+      sub = nc.subscribe(subject);
       if (signal) {
         if (signal.aborted) {
           sub.unsubscribe();
+          lease?.release();
           return ok(undefined);
         }
-        signal.addEventListener("abort", () => sub?.unsubscribe(), {
-          once: true,
-        });
+        signal.addEventListener("abort", () => {
+          sub?.unsubscribe();
+          lease?.release();
+        }, { once: true });
       }
     } catch (cause) {
       if (sub) {
         sub.unsubscribe();
       }
+      lease?.release();
       return err(
         new UnexpectedError({
           cause,
@@ -4623,54 +5434,58 @@ export class Trellis<
     }
 
     const task = AsyncResult.try(async () => {
-      for await (const msg of sub) {
-        const proofResult = await this.#validateEventProof(event, ctx, msg);
-        const proofValue = proofResult.take();
-        if (isErr(proofValue)) {
-          this.#log.warn(
-            { error: proofValue.error, event, subject: msg.subject },
-            "Event auth validation failed",
-          );
-          continue;
-        }
+      try {
+        for await (const msg of sub) {
+          const proofResult = await this.#validateEventProof(event, ctx, msg);
+          const proofValue = proofResult.take();
+          if (isErr(proofValue)) {
+            this.#log.warn(
+              { error: proofValue.error, event, subject: msg.subject },
+              "Event auth validation failed",
+            );
+            continue;
+          }
 
-        const parsedEvent = this.#parseEventMessage(event, ctx, msg);
-        const m = parsedEvent.take();
-        if (isErr(m)) {
-          this.#log.error({ error: m.error }, "Event validation failed");
-          recordRuntimeError(m.error, {
-            surface: "event",
-            direction: "consumer",
-            operation: String(event),
-            phase: "input_validation",
-          });
-          continue;
-        }
+          const parsedEvent = this.#parseEventMessage(event, ctx, msg);
+          const m = parsedEvent.take();
+          if (isErr(m)) {
+            this.#log.error({ error: m.error }, "Event validation failed");
+            recordRuntimeError(m.error, {
+              surface: "event",
+              direction: "consumer",
+              operation: String(event),
+              phase: "input_validation",
+            });
+            continue;
+          }
 
-        const handlerResult = await this.#invokeEventHandler({
-          event,
-          payload: m,
-          mode: "ephemeral",
-          message: msg,
-          fn,
-        });
-        const handlerValue = handlerResult.take();
-        if (isErr(handlerValue)) {
-          recordRuntimeError(handlerValue.error, {
-            surface: "event",
-            direction: "consumer",
-            operation: String(event),
-            phase: "handler_result",
+          const handlerResult = await this.#invokeEventHandler({
+            event,
+            payload: m,
+            mode: "ephemeral",
+            message: msg,
+            fn,
           });
-          this.#log.error(
-            {
-              error: handlerValue.error.toSerializable(),
-              event,
-              subject: msg.subject,
-            },
-            "Event handler failed",
-          );
+          const handlerValue = handlerResult.take();
+          if (isErr(handlerValue)) {
+            recordRuntimeError(handlerValue.error, {
+              surface: "event",
+              direction: "consumer",
+              operation: String(event),
+              phase: "handler_result",
+            });
+            this.#log.error(
+              {
+                error: handlerValue.error.toSerializable(),
+                event,
+                subject: msg.subject,
+              },
+              "Event handler failed",
+            );
+          }
         }
+      } finally {
+        lease?.release();
       }
     });
 
@@ -4894,6 +5709,41 @@ export class Trellis<
     );
   }
 
+  /**
+   * Runs work bound to the current ready generation's JetStream client, holding
+   * that generation's lease for the duration. A fixed connection uses the
+   * initial socket.
+   *
+   * Durable event consumption re-acquires here on every bounded batch, so a
+   * growth rollover is adopted on the next fetch while a delivery already being
+   * handled keeps the generation that accepted it pinned through its ack.
+   */
+  async #withDurableEventGeneration<U>(
+    work: (deps: {
+      nc: NatsConnection;
+      js: JetStreamClient;
+      jsm: Awaited<ReturnType<typeof jetstreamManager>>;
+      lease?: TransportLease;
+    }) => Promise<U>,
+  ): Promise<U> {
+    let lease: TransportLease | undefined;
+    if (this.#adaptiveTransport) {
+      lease = await this.#transport.acquireCurrent({
+        deadlineMs: Date.now() + this.timeout,
+      });
+    }
+    const nc = lease?.nc ?? this.#nats;
+    try {
+      const js = lease ? jetstream(nc) : this.#js;
+      const jsm = lease
+        ? await jetstreamManager(nc)
+        : await jetstreamManager(this.#nats);
+      return await work({ nc, js, jsm, ...(lease ? { lease } : {}) });
+    } finally {
+      lease?.release();
+    }
+  }
+
   #runDurableEventConsumer(
     group: string,
     loop: DurableEventConsumerLoop<TA>,
@@ -4916,8 +5766,9 @@ export class Trellis<
       let fetchingReplay = true;
       try {
         const infoResult = await AsyncResult.try(async () => {
-          const jsm = await jetstreamManager(this.#nats);
-          return await jsm.consumers.info(binding.stream, binding.consumerName);
+          return await this.#withDurableEventGeneration(({ jsm }) =>
+            jsm.consumers.info(binding.stream, binding.consumerName)
+          );
         });
         const info = infoResult.take();
         if (isErr(info)) {
@@ -4939,50 +5790,60 @@ export class Trellis<
         }
         originalOpened = true;
 
-        const replayInfo = await (await jetstreamManager(this.#nats)).consumers
-          .info(
+        // Consumer metadata is stable across generations; only the physical
+        // connection it is consumed on moves.
+        const replayInfo = await this.#withDurableEventGeneration(({ jsm }) =>
+          jsm.consumers.info(
             binding.replayBinding.stream,
             binding.replayBinding.consumerName,
-          );
-        const consumers = [
-          this.#js.consumers.getConsumerFromInfo(info),
-          this.#js.consumers.getConsumerFromInfo(replayInfo),
-        ];
+          )
+        );
         let replay = false;
         while (
           !this.#durableEventListenersStopped &&
           this.#durableEventConsumerGroupReady(group, loop)
         ) {
           fetchingReplay = replay;
-          const messages = await consumers[replay ? 1 : 0]!.fetch({
-            max_messages: 1,
-            expires: 1_000,
-          });
           const isReplay = replay;
           replay = !replay;
-          loop.messages.add(messages);
-          if (!this.#durableEventConsumerGroupReady(group, loop)) {
-            messages.stop();
-            loop.messages.delete(messages);
-            break;
-          }
-          try {
-            await this.#handleDurableEventConsumer(
-              group,
-              loop,
-              messages,
-              isReplay,
-            )
-              .orThrow();
-          } finally {
-            loop.messages.delete(messages);
-          }
+          // One bounded batch per fetch on the current ready generation, pinned
+          // through the handler and its ack. Idle iterations release promptly,
+          // so growth is adopted on the next fetch with no second logical
+          // consumer.
+          await this.#withDurableEventGeneration(async ({ js }) => {
+            const messages = await js.consumers.getConsumerFromInfo(
+              isReplay ? replayInfo : info,
+            ).fetch({ max_messages: 1, expires: 1_000 });
+            loop.messages.add(messages);
+            if (!this.#durableEventConsumerGroupReady(group, loop)) {
+              messages.stop();
+              loop.messages.delete(messages);
+              return;
+            }
+            try {
+              await this.#handleDurableEventConsumer(
+                group,
+                loop,
+                messages,
+                isReplay,
+              )
+                .orThrow();
+            } finally {
+              loop.messages.delete(messages);
+            }
+          });
         }
       } catch (cause) {
         if (
           this.#durableEventListenersStopped ||
           !this.#durableEventConsumerGroupReady(group, loop)
         ) {
+          return ok(undefined);
+        }
+        if (this.#adaptiveTransport && this.#transport.isClosed()) {
+          // Terminal: a closed or revoked logical transport must stop durable
+          // consumption rather than retrying forever against no generation.
+          this.#durableEventListenersStopped = true;
           return ok(undefined);
         }
         if (
@@ -5393,7 +6254,7 @@ export class Trellis<
   }
 
   async #validateEventProof(
-    event: EventsOf<TA>,
+    _event: EventsOf<TA>,
     descriptor: EventDescriptorOf<TA, EventsOf<TA>>,
     msg: Pick<Msg, "data" | "headers" | "subject">,
   ): Promise<Result<VerifiedCaller, BaseError>> {
@@ -5551,6 +6412,56 @@ export class Trellis<
     };
   }
 
+  /**
+   * Acquire the physical transport for one finite request attempt.
+   *
+   * When generation routing is installed, the exact generation covering the
+   * request is leased for the whole exchange; otherwise the single fixed
+   * connection is returned with a no-op release. Acquisition failures become
+   * ordinary request transport errors, never `transport_upgrade_required`.
+   */
+  async #acquireRequestTransport(args: {
+    method?: string;
+    subject: string;
+    deadlineMs: number;
+    signal?: AbortSignal;
+    callerCapabilities?: readonly string[];
+  }): Promise<Result<{ nc: NatsConnection; release(): void }, TransportError>> {
+    if (!this.#adaptiveTransport) {
+      if (this.#nats.isClosed()) {
+        return err(requestFailedTransportError({
+          code: "trellis.request.closed",
+          message: "The Trellis connection is closed.",
+          hint: "Connect to Trellis again before making another request.",
+          method: args.method,
+          subject: args.subject,
+        }));
+      }
+      return ok({ nc: this.#nats, release: () => {} });
+    }
+    let lease: TransportLease;
+    try {
+      lease = await this.#transport.acquireFor(
+        {
+          publish: [args.subject],
+          subscribe: [`${this.#inboxPrefix}.>`],
+        },
+        {
+          ...(args.signal ? { signal: args.signal } : {}),
+          deadlineMs: args.deadlineMs,
+        },
+      );
+    } catch (cause) {
+      return err(mapTransportAcquireFailure({
+        method: args.method,
+        subject: args.subject,
+        callerCapabilities: args.callerCapabilities,
+        cause,
+      }));
+    }
+    return ok({ nc: lease.nc, release: () => lease.release() });
+  }
+
   async #requestMessageWithRetry(args: {
     method?: string;
     /** Bounded registered-route token for attempt accounting. */
@@ -5575,136 +6486,157 @@ export class Trellis<
             new DOMException("Request aborted", "AbortError"),
         }));
       }
-      if (this.#nats.isClosed()) {
-        return err(requestFailedTransportError({
-          code: "trellis.request.closed",
-          message: "The Trellis connection is closed.",
-          hint: "Connect to Trellis again before making another request.",
-          method: args.method,
-          subject: args.subject,
-        }));
-      }
-      // Create the exact reply inbox before signing so the proof binds the
-      // reply subject the response arrives on.
-      const reply = createInbox(this.#inboxPrefix);
-      const authHeaders = await this.createRequestProof(
-        args.subject,
-        args.payload,
-        reply,
-      );
-      const headers = natsHeaders();
-      headers.set("authorization-context", authHeaders.contextDigest);
-      headers.set("session-key", this.#auth.sessionKey);
-      headers.set("proof", authHeaders.proof);
-      headers.set("iat", String(authHeaders.iat));
-      headers.set("request-id", authHeaders.requestId);
-      injectTraceContext(createNatsHeaderCarrier(headers), args.span);
-
-      const result = await AsyncResult.try(async () => {
-        const response = Promise.withResolvers<Msg>();
-        const abort = () =>
-          response.reject(
-            args.signal?.reason ??
-              new DOMException("Request aborted", "AbortError"),
-          );
-        args.signal?.addEventListener("abort", abort, { once: true });
-        const subscription = this.#nats.subscribe(reply, {
-          max: 1,
-          timeout: args.timeout,
-          callback: (error, message) => {
-            if (error) response.reject(error);
-            else if (
-              message.data.length === 0 && message.headers?.code === 503
-            ) {
-              response.reject(new Error("no responders"));
-            } else response.resolve(message);
-          },
-        });
-        // NATS noMux requests abandon their promise when connection closure
-        // cancels the subscription timer. Bind settlement to this subscription.
-        subscription.closed.then((error) => {
-          response.reject(
-            error ?? new Error("connection closed before RPC response"),
-          );
-        });
-        const initialStatus = this.connection.status;
-        const stopObserving = this.connection.subscribe((status) => {
-          // Publish denials arrive on the connection, not the reply inbox.
-          if (status === initialStatus) return;
-          const error = status.transport?.error;
-          if (
-            error instanceof Error &&
-            ((error.name === "PermissionViolationError" &&
-              Reflect.get(error, "operation") === "publish" &&
-              Reflect.get(error, "subject") === args.subject) ||
-              error.name === "AuthorizationError" ||
-              error.name === "UserAuthenticationExpiredError")
-          ) response.reject(error);
-        });
-        try {
-          if (args.signal?.aborted) {
-            abort();
-          } else {
-            this.#nats.publish(args.subject, args.payload, {
-              headers,
-              reply,
-            });
-          }
-          return await response.promise;
-        } finally {
-          args.signal?.removeEventListener("abort", abort);
-          stopObserving();
-          subscription.unsubscribe();
-        }
-      });
-
-      if (result.isOk()) {
-        recordAttempt("ok");
-        return ok(result.take() as Msg);
-      }
-
-      const cause = result.error.cause;
-      const message = cause instanceof Error ? cause.message : String(cause);
-      const isNoResponders = message.includes("no responders");
-
-      if (isNoResponders && retry < this.#noResponderMaxRetries) {
-        recordAttempt("unavailable");
-        this.#log.debug(
-          { method: args.method, subject: args.subject, retry },
-          "No responders, retrying...",
-        );
-        await new Promise<void>((resolve) => {
-          const done = () => {
-            clearTimeout(timeout);
-            args.signal?.removeEventListener("abort", done);
-            resolve();
-          };
-          const timeout = setTimeout(
-            done,
-            this.#noResponderRetryMs * (retry + 1),
-          );
-          args.signal?.addEventListener("abort", done, { once: true });
-        });
-        continue;
-      }
-
-      this.#log.warn(
-        { method: args.method, subject: args.subject, error: message },
-        "NATS request failed",
-      );
-      recordAttempt(
-        args.signal?.aborted
-          ? "cancelled"
-          : /timeout/i.test(message)
-          ? "timeout"
-          : "unavailable",
-      );
-      return err(classifyRequestTransportFailure({
+      // One physical-exchange deadline per attempt (the intentional
+      // no-responder retry contract re-creates it each time): generation
+      // acquisition and the actual publish/reply share it.
+      const deadlineMs = Date.now() + args.timeout;
+      const acquired = await this.#acquireRequestTransport({
         method: args.method,
         subject: args.subject,
+        deadlineMs,
+        signal: args.signal,
         callerCapabilities: args.callerCapabilities,
-        cause,
-      }));
+      });
+      const acquiredTransport = acquired.take();
+      if (isErr(acquiredTransport)) {
+        recordAttempt(
+          acquiredTransport.error.code === "trellis.request.cancelled"
+            ? "cancelled"
+            : acquiredTransport.error.code === "trellis.request.timeout"
+            ? "timeout"
+            : "unavailable",
+        );
+        return err(acquiredTransport.error);
+      }
+      const { nc, release } = acquiredTransport;
+      try {
+        // Create the exact reply inbox before signing so the proof binds the
+        // reply subject the response arrives on.
+        const reply = createInbox(this.#inboxPrefix);
+        const authHeaders = await this.createRequestProof(
+          args.subject,
+          args.payload,
+          reply,
+        );
+        const headers = natsHeaders();
+        headers.set("authorization-context", authHeaders.contextDigest);
+        headers.set("session-key", this.#auth.sessionKey);
+        headers.set("proof", authHeaders.proof);
+        headers.set("iat", String(authHeaders.iat));
+        headers.set("request-id", authHeaders.requestId);
+        injectTraceContext(createNatsHeaderCarrier(headers), args.span);
+
+        const result = await AsyncResult.try(async () => {
+          const response = Promise.withResolvers<Msg>();
+          const abort = () =>
+            response.reject(
+              args.signal?.reason ??
+                new DOMException("Request aborted", "AbortError"),
+            );
+          args.signal?.addEventListener("abort", abort, { once: true });
+          const subscription = nc.subscribe(reply, {
+            max: 1,
+            timeout: Math.max(1, deadlineMs - Date.now()),
+            callback: (error, message) => {
+              if (error) response.reject(error);
+              else if (
+                message.data.length === 0 && message.headers?.code === 503
+              ) {
+                response.reject(new Error("no responders"));
+              } else response.resolve(message);
+            },
+          });
+          // NATS noMux requests abandon their promise when connection closure
+          // cancels the subscription timer. Bind settlement to this subscription.
+          subscription.closed.then((error) => {
+            response.reject(
+              error ?? new Error("connection closed before RPC response"),
+            );
+          });
+          // Publish denials arrive on this generation's own status stream, not
+          // the reply inbox. Watch the leased connection, never a mutable
+          // logical default.
+          const statusIterator = nc.status()[Symbol.asyncIterator]();
+          const stopWatching = (async () => {
+            while (true) {
+              const next = await statusIterator.next();
+              if (next.done) return;
+              const error = (next.value as { error?: unknown } | null)?.error;
+              if (
+                error instanceof Error &&
+                ((error.name === "PermissionViolationError" &&
+                  Reflect.get(error, "operation") === "publish" &&
+                  Reflect.get(error, "subject") === args.subject) ||
+                  error.name === "AuthorizationError" ||
+                  error.name === "UserAuthenticationExpiredError")
+              ) response.reject(error);
+            }
+          })().catch(() => undefined);
+          try {
+            if (args.signal?.aborted) {
+              abort();
+            } else {
+              nc.publish(args.subject, args.payload, { headers, reply });
+            }
+            return await response.promise;
+          } finally {
+            args.signal?.removeEventListener("abort", abort);
+            void statusIterator.return?.();
+            void stopWatching;
+            subscription.unsubscribe();
+          }
+        });
+
+        if (result.isOk()) {
+          recordAttempt("ok");
+          return ok(result.take() as Msg);
+        }
+
+        const cause = result.error.cause;
+        const message = cause instanceof Error ? cause.message : String(cause);
+        const isNoResponders = message.includes("no responders");
+
+        if (isNoResponders && retry < this.#noResponderMaxRetries) {
+          recordAttempt("unavailable");
+          this.#log.debug(
+            { method: args.method, subject: args.subject, retry },
+            "No responders, retrying...",
+          );
+          await new Promise<void>((resolve) => {
+            const done = () => {
+              clearTimeout(timeout);
+              args.signal?.removeEventListener("abort", done);
+              resolve();
+            };
+            const timeout = setTimeout(
+              done,
+              this.#noResponderRetryMs * (retry + 1),
+            );
+            args.signal?.addEventListener("abort", done, { once: true });
+          });
+          continue;
+        }
+
+        this.#log.warn(
+          { method: args.method, subject: args.subject, error: message },
+          "NATS request failed",
+        );
+        recordAttempt(
+          args.signal?.aborted
+            ? "cancelled"
+            : /timeout/i.test(message)
+            ? "timeout"
+            : "unavailable",
+        );
+        return err(classifyRequestTransportFailure({
+          method: args.method,
+          subject: args.subject,
+          callerCapabilities: args.callerCapabilities,
+          cause,
+        }));
+      } finally {
+        release();
+      }
     }
 
     recordAttempt("unavailable");
@@ -5893,10 +6825,25 @@ export class Trellis<
         });
         return err(error);
       }
+      let transport: { nc: NatsConnection; release(): void } | undefined;
       try {
+        const acquired = (await this.#acquireRequestTransport({
+          subject,
+          deadlineMs: Date.now() + this.timeout,
+        })).take();
+        if (isErr(acquired)) {
+          recordRuntimeError(acquired.error, {
+            surface: "operation",
+            direction: "client",
+            operation: "watchJson",
+            phase: "handshake",
+          });
+          return acquired;
+        }
+        transport = acquired;
         const subscription = await openLiveOperationWatch(
           {
-            nats: this.#nats,
+            nats: transport.nc,
             inboxPrefix: this.#inboxPrefix,
             timeoutMs: this.timeout,
             sessionKey: this.#auth.sessionKey,
@@ -5924,11 +6871,13 @@ export class Trellis<
           this.#liveClosers.delete(closeOnNats);
         };
         this.#liveClosers.add(closeOnNats);
-        void subscription.closed.then(() =>
-          this.#liveClosers.delete(closeOnNats)
-        );
+        void subscription.closed.then(() => {
+          transport?.release();
+          this.#liveClosers.delete(closeOnNats);
+        });
         return ok(subscription);
       } catch (cause) {
+        transport?.release();
         const error = cause instanceof TransportError
           ? cause
           : cause instanceof LiveStreamError

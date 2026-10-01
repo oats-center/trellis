@@ -11,6 +11,13 @@ type RuntimeTransports = {
 };
 
 export const DEFAULT_RUNTIME_MAX_RECONNECT_ATTEMPTS = -1;
+/**
+ * A generation-managed connection never reconnects in place: the attachment is
+ * immutable for its generation, so any loss closes it and the manager opens a
+ * replacement generation with its own admission. In-place reconnection would
+ * let a socket silently outlive the authorization context it was admitted with.
+ */
+export const GENERATION_MAX_RECONNECT_ATTEMPTS = 0;
 export const DEFAULT_SERVICE_RUNTIME_WAIT_ON_FIRST_CONNECT = true;
 
 export type RuntimeTransportConnectOptions = {

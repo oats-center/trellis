@@ -1,6 +1,4 @@
 import type { NatsConnection } from "@nats-io/nats-core";
-import { AsyncResult } from "@oatscenter/result";
-import { TransportRefreshError } from "./errors/TransportRefreshError.ts";
 import { logger as noopLogger, type LoggerLike } from "./globals.ts";
 import { LiveSessionManager } from "./live/manager.ts";
 import { trackConnection } from "./telemetry/lifecycle.ts";
@@ -30,14 +28,6 @@ export type TrellisConnectionStatus = {
   readonly kind: TrellisConnectionKind;
   readonly phase: TrellisConnectionPhase;
   readonly observedAt: Date;
-  /**
-   * Whether the newest valid application authorization offers transport
-   * capability not yet admitted on the current physical attachment.
-   *
-   * Only meaningful while `phase` is `connected`; a disconnect clears it and a
-   * successful replacement recomputes it from the actual admitted policy.
-   */
-  readonly transportUpgradeAvailable: boolean;
   readonly transport?: TrellisConnectionTransportMetadata;
 };
 
@@ -58,16 +48,11 @@ export type TrellisConnectionStatusTransport = {
 /** Options for constructing a manually controlled Trellis connection lifecycle. */
 export type TrellisConnectionOptions = {
   kind: TrellisConnectionKind;
-  initialStatus?: Omit<TrellisConnectionStatus, "transportUpgradeAvailable">;
+  initialStatus?: TrellisConnectionStatus;
   availability?: TrellisAvailability;
   close?: () => Promise<void>;
   stopObserving?: () => void | Promise<void>;
   log?: LoggerLike | false;
-  /**
-   * Explicitly replace the physical attachment when the application asks for a
-   * wider admitted policy. Absent on manually controlled handles. @internal
-   */
-  refreshTransport?: () => AsyncResult<void, TransportRefreshError>;
 };
 
 /** Options for observing a transport-backed Trellis connection lifecycle. */
@@ -82,8 +67,6 @@ export type ObserveTrellisConnectionOptions = {
    * Receives every raw transport event.
    */
   onTransportEvent?: (event: unknown) => void;
-  /** Explicit physical-attachment replacement owned by the connection owner. @internal */
-  refreshTransport?: () => AsyncResult<void, TransportRefreshError>;
   /** Process-local handle started before the transport connected. @internal */
   telemetry?: ConnectionTelemetryHandle;
 };
@@ -96,8 +79,6 @@ export type ObserveNatsTrellisConnectionOptions = {
   lifecycleLog?: TrellisConnectionLifecycleLogOptions;
   availability?: TrellisAvailability;
   onTransportEvent?: (event: unknown) => void;
-  /** Explicit physical-attachment replacement owned by the connection owner. @internal */
-  refreshTransport?: () => AsyncResult<void, TransportRefreshError>;
   /** Process-local handle started before the transport connected. @internal */
   telemetry?: ConnectionTelemetryHandle;
 };
@@ -124,7 +105,6 @@ const transitionTelemetry = Symbol("transitionTelemetry");
 const terminalTelemetry = Symbol("terminalTelemetry");
 const disposeTelemetry = Symbol("disposeTelemetry");
 const installTransportBase = Symbol("installTransportBase");
-const installTransportUpgrade = Symbol("installTransportUpgrade");
 
 type ConnectionTelemetryHandle = ReturnType<typeof trackConnection>;
 
@@ -182,20 +162,15 @@ export class TrellisConnection {
   #telemetry?: ReturnType<typeof trackConnection>;
   #telemetryUsable = false;
   #transportBase: TrellisConnectionTransportMetadata = {};
-  #transportUpgradeAvailable = false;
-  #refreshTransportWork?: () => AsyncResult<void, TransportRefreshError>;
-  #refreshInFlight?: AsyncResult<void, TransportRefreshError>;
   readonly live = new LiveSessionManager();
 
   /** Creates a Trellis connection lifecycle handle. */
   constructor(options: TrellisConnectionOptions) {
-    this.#status = options.initialStatus
-      ? { ...options.initialStatus, transportUpgradeAvailable: false }
-      : createStatus(options.kind, "connected");
+    this.#status = options.initialStatus ??
+      createStatus(options.kind, "connected");
     this.#closeTransport = options.close ?? (async () => {});
     this.#stopObserving = options.stopObserving ?? (async () => {});
     this.#log = options.log === false ? noopLogger : options.log ?? noopLogger;
-    this.#refreshTransportWork = options.refreshTransport;
     this.#availability = options.availability
       ? immutableAvailability(options.availability)
       : EMPTY_AVAILABILITY;
@@ -252,57 +227,6 @@ export class TrellisConnection {
 
   [installTransportBase](base: TrellisConnectionTransportMetadata): void {
     this.#transportBase = base;
-  }
-
-  /**
-   * Records the retained transport-upgrade observation.
-   *
-   * The flag is only meaningful while connected: a disconnect clears it, and a
-   * successful replacement recomputes it from the actual admitted policy.
-   * @internal
-   */
-  [installTransportUpgrade](available: boolean): void {
-    const next = available && this.#status.phase === "connected";
-    if (next === this.#transportUpgradeAvailable) return;
-    this.#transportUpgradeAvailable = next;
-    this.#status = { ...this.#status, transportUpgradeAvailable: next };
-    for (const listener of this.#listeners) listener(this.#status);
-  }
-
-  /**
-   * Explicitly replace the physical NATS attachment to adopt wider authority.
-   *
-   * Available whether or not an upgrade is currently outstanding. Concurrent
-   * calls coalesce onto a single in-flight operation and result; the operation
-   * runs under one deadline owned by the connection owner. This is a real
-   * reconnect: it publishes ordinary lifecycle transitions rather than hiding
-   * the replacement as maintenance.
-   */
-  refreshTransport(): AsyncResult<void, TransportRefreshError> {
-    if (this.#refreshInFlight) return this.#refreshInFlight;
-    if (this.#stopped || this.#status.phase === "closed") {
-      return AsyncResult.err(TransportRefreshError.connectionClosed());
-    }
-    const work = this.#refreshTransportWork;
-    if (!work) {
-      return AsyncResult.err(TransportRefreshError.connectionClosed());
-    }
-    let inFlight: AsyncResult<void, TransportRefreshError>;
-    try {
-      inFlight = work();
-    } catch (error) {
-      return AsyncResult.err(
-        error instanceof TransportRefreshError
-          ? error
-          : TransportRefreshError.fromTransport(error),
-      );
-    }
-    this.#refreshInFlight = inFlight;
-    const clear = () => {
-      if (this.#refreshInFlight === inFlight) this.#refreshInFlight = undefined;
-    };
-    inFlight.then(clear, clear);
-    return inFlight;
   }
 
   [attachTelemetry](telemetry?: ConnectionTelemetryHandle): void {
@@ -399,17 +323,7 @@ export class TrellisConnection {
       }
     }
 
-    // Transport-upgrade availability is a retained observation, not a phase.
-    // It survives ordinary status changes while connected and is cleared the
-    // moment the logical connection leaves the connected phase.
-    const transportUpgradeAvailable = status.phase === "connected"
-      ? this.#transportUpgradeAvailable
-      : false;
-    this.#transportUpgradeAvailable = transportUpgradeAvailable;
-    this.#status =
-      transportUpgradeAvailable === status.transportUpgradeAvailable
-        ? status
-        : { ...status, transportUpgradeAvailable };
+    this.#status = status;
     this.#log.debug(
       {
         kind: status.kind,
@@ -437,61 +351,14 @@ export function installConnectionAvailability(
 export function transitionConnectionAvailability(
   connection: TrellisConnection,
   usable: boolean,
-  reason: "connected" | "coverage_lost" | "resumed" | "revoked",
+  reason:
+    | "connected"
+    | "coverage_lost"
+    | "transport_unavailable"
+    | "resumed"
+    | "revoked",
 ): void {
   connection[transitionTelemetry](usable ? "usable" : "suspended", reason);
-}
-
-/**
- * Records whether the current attachment has a deferred transport upgrade.
- *
- * Called by the connection owner after an actual admission read. @internal
- */
-export function installConnectionTransportUpgrade(
-  connection: TrellisConnection,
-  available: boolean,
-): void {
-  connection[installTransportUpgrade](available);
-}
-
-/**
- * Force one ordinary physical NATS reconnect and resolve on the reconnect
- * event.
- *
- * The status iterator is taken before the reconnect request so the event cannot
- * be missed, and the whole wait shares one absolute deadline. This is a real
- * replacement, so callers must let it flow through ordinary lifecycle
- * transitions rather than hiding it as maintenance. @internal
- */
-export async function replaceTransportAttachment(
-  nc: NatsConnection,
-  timeoutMs: number,
-): Promise<void> {
-  const iterator = nc.status()[Symbol.asyncIterator]();
-  try {
-    nc.reconnect();
-    const deadline = Date.now() + timeoutMs;
-    while (true) {
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) throw TransportRefreshError.timedOut();
-      const next = await Promise.race([
-        iterator.next(),
-        new Promise<never>((_, reject) => {
-          setTimeout(
-            () => reject(TransportRefreshError.timedOut()),
-            remaining,
-          );
-        }),
-      ]);
-      if (next.done) break;
-      if ((next.value as { type?: unknown } | null)?.type === "reconnect") {
-        return;
-      }
-    }
-    throw TransportRefreshError.timedOut();
-  } finally {
-    await iterator.return?.();
-  }
 }
 
 /** Observes a narrow transport status stream as a Trellis connection lifecycle. */
@@ -509,7 +376,6 @@ export function observeTrellisConnection(
   const connection = new TrellisConnection({
     kind: options.kind,
     availability: options.availability,
-    refreshTransport: options.refreshTransport,
     close: async () => {
       const alreadyClosed = options.transport.isClosed?.() ?? false;
       await options.transport.close();
@@ -626,7 +492,6 @@ export function observeNatsTrellisConnection(
     lifecycleLog: options.lifecycleLog,
     availability: options.availability,
     onTransportEvent: options.onTransportEvent,
-    refreshTransport: options.refreshTransport,
     telemetry: options.telemetry,
   });
   void options.nc.closed().then(
@@ -781,7 +646,6 @@ function createStatus(
     kind,
     phase,
     observedAt: new Date(),
-    transportUpgradeAvailable: false,
     ...(transport ? { transport } : {}),
   };
 }

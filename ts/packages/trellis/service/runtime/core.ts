@@ -16,7 +16,7 @@ import {
   err,
   isErr,
   ok,
-  Result,
+  type Result,
 } from "@oatscenter/result";
 import { ulid } from "ulid";
 import { base64urlEncode, utf8 } from "../../auth/utils.ts";
@@ -32,7 +32,6 @@ import {
   OperationNotFoundError,
   TransferError,
   TransportError,
-  type TrellisErrorInstance,
   UnexpectedError,
   ValidationError,
 } from "../../errors/index.ts";
@@ -104,6 +103,11 @@ import {
   verifyLocalAuthorization,
 } from "../../session.ts";
 import { LiveAuthorityGuard } from "../../live/authority.ts";
+import type { ProviderAuthorityPort } from "../../live/provider.ts";
+import type {
+  TransportLease,
+  TrellisTransportProvider,
+} from "../../transport/generations.ts";
 import {
   type FileInfo,
   FileInfoSchema,
@@ -397,6 +401,100 @@ export function operationOwnerFenceHolds(
     runtime.ownerEpoch === fence.ownerEpoch;
 }
 
+/**
+ * Decouples per-generation intake subscriptions from a single shared consumer
+ * loop, so a subscription can be installed on every admitted generation while
+ * the operation protocol logic stays registered once. @internal
+ */
+function createOperationIntakeQueue<T>(
+  release?: (item: T) => void,
+): AsyncIterable<T> & {
+  push(value: T): void;
+  close(): void;
+} {
+  const items: T[] = [];
+  let wake: (() => void) | undefined;
+  let closed = false;
+  return {
+    push(value) {
+      if (closed) {
+        // The consumer is gone: release any held pin immediately.
+        release?.(value);
+        return;
+      }
+      items.push(value);
+      const resume = wake;
+      wake = undefined;
+      resume?.();
+    },
+    close() {
+      closed = true;
+      // Release every delivery that was accepted but never consumed.
+      while (items.length > 0) release?.(items.shift() as T);
+      const resume = wake;
+      wake = undefined;
+      resume?.();
+    },
+    async *[Symbol.asyncIterator]() {
+      // Each delivery's held generation lease is retained through its full
+      // handling and released when the consumer advances past it, unless an
+      // accepted execution took ownership (which clears the lease).
+      let previous: T | undefined;
+      let started = false;
+      const releasePrevious = () => {
+        if (!started) return;
+        release?.(previous as T);
+        started = false;
+        previous = undefined;
+      };
+      try {
+        while (true) {
+          // The consumer asked for the next item: the previous delivery's
+          // handling is complete, so release its held generation pin now.
+          if (items.length === 0) {
+            releasePrevious();
+            if (closed) return;
+            await new Promise<void>((resolve) => {
+              wake = resolve;
+            });
+          }
+          while (items.length > 0) {
+            releasePrevious();
+            const item = items.shift() as T;
+            previous = item;
+            started = true;
+            yield item;
+          }
+        }
+      } finally {
+        releasePrevious();
+      }
+    },
+  };
+}
+
+/**
+ * One message received by an operation intake, tagged with its receiving
+ * generation and holding that generation's lease until handling completes.
+ */
+type OperationIntakeDelivery = {
+  nc: NatsConnection;
+  lease?: TransportLease;
+};
+
+/**
+ * One generation's operation observation provider and the cleanup for its
+ * wildcard control subscription, retained until the generation retires.
+ */
+type OperationLiveObservation = {
+  provider: LiveProvider;
+  /**
+   * Ordered disposal: terminate owned sessions (publishing their signed ENDs),
+   * then release retained authority. Idempotent on repeat.
+   */
+  close: () => Promise<void>;
+};
+
 export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
   #nats: NatsConnection;
   #version?: string;
@@ -441,8 +539,44 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     { unsubscribe: () => void; loop: Promise<unknown> }
   >();
   #operationControlTasks = new Set<Promise<unknown>>();
+  /** Coalesces concurrent per-operation control-loop installs by subject. */
+  #operationControlInstalls = new Map<string, Promise<void>>();
+  /**
+   * Per accepted operation, the receiving generation's connection and a lease
+   * that pins that generation through terminal work. Released when the
+   * operation's fence is released.
+   */
+  #operationTransport = new Map<
+    string,
+    { nc: NatsConnection; lease?: TransportLease }
+  >();
+  /** Closes shared operation intake queues, releasing any queued delivery pins. */
+  #operationIntakeClosers = new Set<() => void>();
+  /**
+   * Recovery-scan intervals owned by registered operation handlers. They are
+   * logical (record-driven), not bound to any one physical generation, and are
+   * cleared explicitly on stop rather than by watching a generation's socket.
+   */
+  #operationRecoveryScans = new Set<ReturnType<typeof setInterval>>();
+  /** Drains fixed-connection intake subscriptions on stop. */
+  #operationIntakeDrains = new Set<() => Promise<void>>();
   #stopPromise?: Promise<void>;
   #transferSupport?: RuntimeOperationTransferSupport;
+  /**
+   * Logical transport provider owning this runtime's physical generations. When
+   * present, runtime lifecycle and cross-connection requests resolve through it
+   * rather than the initial physical socket, which may itself be reaped.
+   */
+  #transport?: TrellisTransportProvider;
+
+  /**
+   * Whether the runtime's logical transport is already closed. Resolved through
+   * the provider's logical lifecycle, never a raw seed socket that may itself
+   * have been reaped.
+   */
+  #transportClosed(): boolean {
+    return this.#transport?.isClosed() ?? this.#nats.isClosed();
+  }
   #operationOwnerId: string;
   #operationConnectionId: string;
   #operationDeploymentId?: string;
@@ -463,6 +597,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     }
 
     this.#nats = nats;
+    this.#transport = opts?.transport;
     this.#version = opts?.version;
     this.#log = (opts?.log ?? serviceRuntimeLogger).child({
       lib: "trellis-service-runtime",
@@ -741,7 +876,54 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     ) {
       this.#activeOperationFences.delete(operationId);
       this.#operationTransferSessions.delete(operationId);
+      this.#releaseOperationTransport(operationId);
     }
+  }
+
+  /** Release the receiving-generation pin once an operation can no longer run. */
+  #releaseOperationTransport(operationId: string): void {
+    const held = this.#operationTransport.get(operationId);
+    if (!held) return;
+    this.#operationTransport.delete(operationId);
+    held.lease?.release();
+  }
+
+  /** The connection that should carry this operation's execution support traffic. */
+  #operationNats(operationId: string): NatsConnection {
+    const pinned = this.#operationTransport.get(operationId)?.nc;
+    if (pinned) return pinned;
+    // An operation that is not pinned to the generation that accepted it (for
+    // example one recovered on this process) uses the current admitted
+    // generation, never the initial seed socket, which may already be reaped.
+    if (this.adaptiveTransport && this.#transport) {
+      return this.#transport.currentNats();
+    }
+    return this.#nats;
+  }
+
+  /**
+   * Pin the current admitted generation for a recovered execution that has no
+   * accepting-generation pin, so its support traffic cannot outlive the
+   * generation that carries it. A no-op when already pinned or fixed.
+   */
+  async #pinRecoveredOperation(operationId: string): Promise<void> {
+    if (this.#operationTransport.has(operationId)) return;
+    if (!this.adaptiveTransport || !this.#transport) return;
+    const lease = await this.#transport.acquireCurrent({
+      deadlineMs: Date.now() + 30_000,
+    });
+    if (this.#operationTransport.has(operationId)) {
+      lease.release();
+      return;
+    }
+    this.#operationTransport.set(operationId, { nc: lease.nc, lease });
+  }
+
+  /** The runtime's own current authorization context digest, if any. */
+  #operationContextDigest(): string {
+    const digest = this.auth.contextDigest;
+    if (typeof digest === "function") return digest() ?? "";
+    return digest ?? "";
   }
 
   #applyOperationUpdate(
@@ -1063,12 +1245,16 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         subject,
         reply,
       }, "Publishing transient operation update");
-      await this.#nats.publish(
+      // Publish on the receiving generation so an observation opened on that
+      // generation keeps seeing transient updates after a newer generation
+      // takes over new intake.
+      const transportNats = this.#operationNats(runtime.id);
+      await transportNats.publish(
         subject,
         payload,
         { headers: metadata, reply },
       );
-      await this.#nats.flush();
+      await transportNats.flush();
       this.#log.info({
         operationId: runtime.id,
         ownerEpoch: fence.ownerEpoch,
@@ -1612,259 +1798,192 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     });
   }
 
-  #ensureOperationControlLoop(
+  async #ensureOperationControlLoop(
     operation: string,
     ctx: RegisteredRuntimeOperationDesc,
-  ): void {
+  ): Promise<void> {
     const controlSubject = `${ctx.subject}.control`;
     if (this.#mountedOperationControls.has(controlSubject)) {
       return;
     }
+    const pending = this.#operationControlInstalls.get(controlSubject);
+    if (pending) {
+      await pending;
+      return;
+    }
+    // Coalesce every concurrent install synchronously, before the first await,
+    // so a second caller cannot build a duplicate intake queue, subscription, or
+    // observation provider. A failed attempt clears the slot so a later caller
+    // can retry.
+    const done = Promise.withResolvers<void>();
+    this.#operationControlInstalls.set(controlSubject, done.promise);
+    try {
+      const respondControlError = (msg: Msg, error: Error | BaseError) => {
+        const trellisError = error instanceof BaseError
+          ? error
+          : new UnexpectedError({ cause: error });
+        recordOperationServiceError(trellisError, {
+          operation,
+          phase: "control",
+        });
+        msg.respond(JSON.stringify({
+          kind: "error",
+          error: trellisError.toSerializable(),
+        }));
+      };
 
-    const respondControlError = (msg: Msg, error: Error | BaseError) => {
-      const trellisError = error instanceof BaseError
-        ? error
-        : new UnexpectedError({ cause: error });
-      recordOperationServiceError(trellisError, {
-        operation,
-        phase: "control",
-      });
-      msg.respond(JSON.stringify({
-        kind: "error",
-        error: trellisError.toSerializable(),
-      }));
-    };
-
-    const controlSub = this.#nats.subscribe(controlSubject, {
-      queue: routeQueueGroup(controlSubject),
-    });
-    const controlLoop = (async () => {
-      let liveProvider: LiveProvider | undefined;
-      try {
-        liveProvider = await this.#createOperationLiveProvider(ctx);
-      } catch (error) {
-        this.#log.warn(
-          { error, operation: String(operation) },
-          "Operation live observation unavailable",
-        );
-      }
-      for await (const msg of controlSub) {
-        const request = safeJson(msg).take();
-        if (isErr(request)) {
-          respondControlError(msg, request.error);
-          continue;
-        }
-
-        if (
-          !request ||
-          typeof request !== "object" ||
-          !["get", "watch", "signal", "cancel"].includes(
-            String((request as RuntimeOperationControlRequest).action),
-          ) ||
-          typeof (request as RuntimeOperationControlRequest).operationId !==
-            "string" ||
-          ((request as RuntimeOperationControlRequest).action === "signal" &&
-            typeof (request as { signal?: unknown }).signal !== "string")
-        ) {
-          respondControlError(
-            msg,
-            new UnexpectedError({
-              cause: new Error("Invalid operation control request"),
-            }),
-          );
-          continue;
-        }
-
-        const control = request as RuntimeOperationControlRequest;
-        if (control.action === "signal" && !ctx.signals?.[control.signal]) {
-          respondControlError(
-            msg,
-            new ValidationError({
-              errors: [{
-                path: "/signal",
-                message: `Unknown operation signal '${control.signal}'`,
-              }],
-            }),
-          );
-          continue;
-        }
-        let permission = ctx.permissions?.observe;
-        let capabilities = ctx.observeCapabilities ?? [];
-        if (control.action === "cancel") {
-          permission = ctx.permissions?.cancel;
-          capabilities = ctx.cancelCapabilities ?? [];
-        } else if (control.action === "signal") {
-          permission = ctx.permissions?.control[control.signal];
-          capabilities = ctx.controlCapabilities ?? [];
-        }
-        const validated = await this.#authenticateOperationMessage(
-          msg,
-          ctx,
-          false,
-          permission,
-          capabilities,
-        );
-        const value = validated.take();
-        if (isErr(value)) {
-          respondControlError(msg, value.error);
-          continue;
-        }
-
-        let runtime: RuntimeOperationRecord | null;
+      // Per-generation control intake: the control subscription is installed on
+      // every admitted generation with a stable queue group, and its live
+      // observation provider is built on that same receiving connection from the
+      // generation's exact admitted context. Each control delivery holds that
+      // generation's lease through handling; observation sessions take their own
+      // pin through the provider host and keep the wildcard control subscription
+      // alive until the generation physically retires.
+      const controlIntake = createOperationIntakeQueue<{
+        msg: Msg;
+        providerPromise: Promise<OperationLiveObservation | undefined>;
+        lease?: TransportLease;
+      }>((delivery) => delivery.lease?.release());
+      this.#operationIntakeClosers.add(() => controlIntake.close());
+      const installControl = async (target: {
+        id: number;
+        nc: NatsConnection;
+        contextDigest: string;
+        lease?: () => TransportLease;
+      }): Promise<{
+        drain: () => Promise<void>;
+        done: Promise<void>;
+        dispose: () => Promise<void>;
+      }> => {
+        const controlSub = target.nc.subscribe(controlSubject, {
+          queue: routeQueueGroup(controlSubject),
+        });
+        // Await full readiness before returning so the candidate cannot activate
+        // with a half-installed control intake (the barrier flushes after this).
+        let liveObservation: OperationLiveObservation | undefined;
         try {
-          runtime = await this.#resolveOperation(control.operationId);
-        } catch (cause) {
-          respondControlError(
-            msg,
-            cause instanceof Error ? cause : new Error(String(cause)),
-          );
-          continue;
-        }
-        if (!runtime) {
-          respondControlError(
-            msg,
-            this.#operationNotFoundError(control.operationId),
-          );
-          continue;
-        }
-
-        if (
-          !this.#matchesOperationRoute(runtime, operation, ctx, value.caller)
-        ) {
-          respondControlError(
-            msg,
-            this.#operationNotFoundError(control.operationId),
-          );
-          continue;
-        }
-        if (control.action === "watch") {
-          const opening = parseOperationWatchOpen(request);
-          if (!opening) {
-            respondControlError(
-              msg,
-              new TransportError({
-                code: "trellis.live.invalid_request",
-                message:
-                  "Operation watch requires a live observation envelope.",
-                hint: "Use the live Operation watch client.",
-              }),
-            );
-            continue;
+          liveObservation = await this.#createOperationLiveProvider(ctx, {
+            nc: target.nc,
+            lease: target.lease,
+          });
+        } catch (error) {
+          // A generation-owned candidate must not activate with a half-built
+          // observation provider. Retire the already-created control subscription
+          // (and any wildcard controls the provider created before failing) and
+          // rethrow so the candidate fails; a fixed connection keeps the
+          // historical tolerant behavior.
+          if (this.adaptiveTransport) {
+            await controlSub.drain().catch(() => undefined);
+            throw error;
           }
-          if (!liveProvider) {
-            respondControlError(
-              msg,
-              new AuthError({ reason: "authorization_unavailable" }),
-            );
-            continue;
-          }
-          try {
-            await liveProvider.offer(
-              msg,
-              ctx.subject,
-              opening.observation,
-              {
-                connectionId: value.caller.connectionId,
-                sessionKey: value.caller.sessionKey,
-                principalId: value.caller.principalId,
-                participantId: value.caller.participantId,
-                deploymentId: value.caller.deploymentId ?? undefined,
-                instanceId: value.caller.instanceId ?? undefined,
-                contextDigest: value.caller.contextDigest,
-              },
-              async (session) => {
-                await runDelayedOperationSource(
-                  session,
-                  async ({ emit, signal }) => {
-                    await this.#runOperationWatchSource({
-                      operation,
-                      ctx,
-                      operationId: opening.operationId,
-                      includeUpdates: opening.includeUpdates,
-                      caller: value.caller,
-                      emit,
-                      signal,
-                    });
-                  },
+          this.#log.warn(
+            { error, operation: String(operation) },
+            "Operation live observation unavailable",
+          );
+        }
+        const providerPromise = Promise.resolve(liveObservation);
+        const pump = (async () => {
+          for await (const msg of controlSub) {
+            let lease: TransportLease | undefined;
+            if (target.lease) {
+              try {
+                lease = target.lease();
+              } catch {
+                respondControlError(
+                  msg,
+                  new UnexpectedError({
+                    cause: new Error(
+                      "operation control generation unavailable",
+                    ),
+                  }),
                 );
-              },
-              "operation",
-            );
-          } catch (cause) {
-            respondControlError(
-              msg,
-              cause instanceof Error ? cause : new Error(String(cause)),
-            );
-          }
-          continue;
-        }
-
-        if (control.action === "get") {
-          msg.respond(
-            JSON.stringify({ kind: "snapshot", snapshot: runtime.snapshot }),
-          );
-          continue;
-        }
-
-        if (control.action === "cancel") {
-          if (runtime.terminal) {
-            if (runtime.cancelRequestedAt) {
-              msg.respond(JSON.stringify({
-                kind: "snapshot",
-                snapshot: runtime.snapshot,
-              }));
-              continue;
+                continue;
+              }
             }
-            respondControlError(
+            controlIntake.push({
               msg,
-              this.#operationAlreadyTerminalError(runtime),
-            );
+              providerPromise,
+              ...(lease ? { lease } : {}),
+            });
+          }
+        })();
+        return {
+          drain: () => controlSub.drain().catch(() => undefined),
+          done: pump.then(() => undefined),
+          dispose: async () => {
+            await liveObservation?.close();
+          },
+        };
+      };
+      const controlLoop = (async () => {
+        for await (const delivery of controlIntake) {
+          const { msg, providerPromise } = delivery;
+          const liveObservation = await providerPromise;
+          const liveProvider = liveObservation?.provider;
+          const request = safeJson(msg).take();
+          if (isErr(request)) {
+            respondControlError(msg, request.error);
             continue;
           }
-          const cancelTask = (async () => {
-            try {
-              const snapshot = await this.#requestOperationCancellation(
-                runtime,
-              );
-              msg.respond(JSON.stringify({
-                kind: "snapshot",
-                snapshot,
-              }));
-            } catch (cause) {
-              respondControlError(msg, new UnexpectedError({ cause }));
-            }
-          })();
-          this.#operationControlTasks.add(cancelTask);
-          const forgetCancelTask = () =>
-            this.#operationControlTasks.delete(cancelTask);
-          void cancelTask.then(forgetCancelTask, forgetCancelTask);
-          continue;
-        }
 
-        if (control.action === "signal") {
-          if (!runtime) {
+          if (
+            !request ||
+            typeof request !== "object" ||
+            !["get", "watch", "signal", "cancel"].includes(
+              String((request as RuntimeOperationControlRequest).action),
+            ) ||
+            typeof (request as RuntimeOperationControlRequest).operationId !==
+              "string" ||
+            ((request as RuntimeOperationControlRequest).action === "signal" &&
+              typeof (request as { signal?: unknown }).signal !== "string")
+          ) {
             respondControlError(
               msg,
               new UnexpectedError({
-                cause: new Error("operation is not running in this process"),
+                cause: new Error("Invalid operation control request"),
               }),
             );
             continue;
           }
 
-          try {
-            const accepted = await this.#acceptSignal(
-              runtime,
-              ctx,
-              control,
-              msg.headers?.get("request-id") ?? ulid(),
+          const control = request as RuntimeOperationControlRequest;
+          if (control.action === "signal" && !ctx.signals?.[control.signal]) {
+            respondControlError(
+              msg,
+              new ValidationError({
+                errors: [{
+                  path: "/signal",
+                  message: `Unknown operation signal '${control.signal}'`,
+                }],
+              }),
             );
-            const acceptedValue = accepted.take();
-            if (isErr(acceptedValue)) {
-              respondControlError(msg, acceptedValue.error);
-              continue;
-            }
-            msg.respond(JSON.stringify(acceptedValue));
+            continue;
+          }
+          let permission = ctx.permissions?.observe;
+          let capabilities = ctx.observeCapabilities ?? [];
+          if (control.action === "cancel") {
+            permission = ctx.permissions?.cancel;
+            capabilities = ctx.cancelCapabilities ?? [];
+          } else if (control.action === "signal") {
+            permission = ctx.permissions?.control[control.signal];
+            capabilities = ctx.controlCapabilities ?? [];
+          }
+          const validated = await this.#authenticateOperationMessage(
+            msg,
+            ctx,
+            false,
+            permission,
+            capabilities,
+          );
+          const value = validated.take();
+          if (isErr(value)) {
+            respondControlError(msg, value.error);
+            continue;
+          }
+
+          let runtime: RuntimeOperationRecord | null;
+          try {
+            runtime = await this.#resolveOperation(control.operationId);
           } catch (cause) {
             respondControlError(
               msg,
@@ -1872,29 +1991,225 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             );
             continue;
           }
-          continue;
-        }
+          if (!runtime) {
+            respondControlError(
+              msg,
+              this.#operationNotFoundError(control.operationId),
+            );
+            continue;
+          }
 
-        respondControlError(
-          msg,
-          new UnexpectedError({
-            cause: new Error(
-              `Unknown operation control action '${control.action}' for '${operation}'`,
-            ),
-          }),
+          if (
+            !this.#matchesOperationRoute(runtime, operation, ctx, value.caller)
+          ) {
+            respondControlError(
+              msg,
+              this.#operationNotFoundError(control.operationId),
+            );
+            continue;
+          }
+          if (control.action === "watch") {
+            const opening = parseOperationWatchOpen(request);
+            if (!opening) {
+              respondControlError(
+                msg,
+                new TransportError({
+                  code: "trellis.live.invalid_request",
+                  message:
+                    "Operation watch requires a live observation envelope.",
+                  hint: "Use the live Operation watch client.",
+                }),
+              );
+              continue;
+            }
+            if (!liveProvider) {
+              respondControlError(
+                msg,
+                new AuthError({ reason: "authorization_unavailable" }),
+              );
+              continue;
+            }
+            try {
+              await liveProvider.offer(
+                msg,
+                ctx.subject,
+                opening.observation,
+                {
+                  connectionId: value.caller.connectionId,
+                  sessionKey: value.caller.sessionKey,
+                  principalId: value.caller.principalId,
+                  participantId: value.caller.participantId,
+                  deploymentId: value.caller.deploymentId ?? undefined,
+                  instanceId: value.caller.instanceId ?? undefined,
+                  contextDigest: value.caller.contextDigest,
+                },
+                async (session) => {
+                  await runDelayedOperationSource(
+                    session,
+                    async ({ callerAuthority, emit, signal }) => {
+                      await this.#runOperationWatchSource({
+                        operation,
+                        ctx,
+                        operationId: opening.operationId,
+                        includeUpdates: opening.includeUpdates,
+                        caller: value.caller,
+                        callerAuthority,
+                        emit,
+                        signal,
+                      });
+                    },
+                  );
+                },
+                "operation",
+              );
+            } catch (cause) {
+              respondControlError(
+                msg,
+                cause instanceof Error ? cause : new Error(String(cause)),
+              );
+            }
+            continue;
+          }
+
+          if (control.action === "get") {
+            msg.respond(
+              JSON.stringify({ kind: "snapshot", snapshot: runtime.snapshot }),
+            );
+            continue;
+          }
+
+          if (control.action === "cancel") {
+            if (runtime.terminal) {
+              if (runtime.cancelRequestedAt) {
+                msg.respond(JSON.stringify({
+                  kind: "snapshot",
+                  snapshot: runtime.snapshot,
+                }));
+                continue;
+              }
+              respondControlError(
+                msg,
+                this.#operationAlreadyTerminalError(runtime),
+              );
+              continue;
+            }
+            // Cancellation continues after shared intake advances, so transfer
+            // this delivery's receiving-generation lease through its final reply.
+            const lease = delivery.lease;
+            delivery.lease = undefined;
+            const cancelTask = (async () => {
+              try {
+                const snapshot = await this.#requestOperationCancellation(
+                  runtime,
+                );
+                msg.respond(JSON.stringify({
+                  kind: "snapshot",
+                  snapshot,
+                }));
+              } catch (cause) {
+                respondControlError(msg, new UnexpectedError({ cause }));
+              } finally {
+                lease?.release();
+              }
+            })();
+            this.#operationControlTasks.add(cancelTask);
+            const forgetCancelTask = () =>
+              this.#operationControlTasks.delete(cancelTask);
+            void cancelTask.then(forgetCancelTask, forgetCancelTask);
+            continue;
+          }
+
+          if (control.action === "signal") {
+            if (!runtime) {
+              respondControlError(
+                msg,
+                new UnexpectedError({
+                  cause: new Error("operation is not running in this process"),
+                }),
+              );
+              continue;
+            }
+
+            try {
+              const accepted = await this.#acceptSignal(
+                runtime,
+                ctx,
+                control,
+                msg.headers?.get("request-id") ?? ulid(),
+              );
+              const acceptedValue = accepted.take();
+              if (isErr(acceptedValue)) {
+                respondControlError(msg, acceptedValue.error);
+                continue;
+              }
+              msg.respond(JSON.stringify(acceptedValue));
+            } catch (cause) {
+              respondControlError(
+                msg,
+                cause instanceof Error ? cause : new Error(String(cause)),
+              );
+              continue;
+            }
+            continue;
+          }
+
+          respondControlError(
+            msg,
+            new UnexpectedError({
+              cause: new Error(
+                `Unknown operation control action '${control.action}' for '${operation}'`,
+              ),
+            }),
+          );
+        }
+      })();
+      this.#mountedOperationControls.set(controlSubject, {
+        // Per-generation control subscriptions are retired by the generation
+        // manager; shutdown ends the shared control consumer so `stop()` can
+        // await it.
+        unsubscribe: () => controlIntake.close(),
+        loop: controlLoop,
+      });
+      // The control intake must be fully installed and ready before the caller
+      // can rely on it, so this is awaited by the registration path (and by the
+      // activation barrier for a new generation).
+      if (this.adaptiveTransport) {
+        await this.declareGenerationIntake(
+          `operation:${operation}:control`,
+          installControl,
         );
+      } else {
+        const installed = await installControl({
+          id: 0,
+          nc: this.#nats,
+          contextDigest: this.#operationContextDigest(),
+        });
+        this.#operationIntakeDrains.add(installed.drain);
+        // Fixed connections have no per-generation retirement, so dispose the
+        // control intake and its observation provider (guards included) on stop
+        // rather than leaking them.
+        this.#operationIntakeDrains.add(installed.dispose);
       }
-    })();
-    this.#mountedOperationControls.set(controlSubject, {
-      unsubscribe: () => controlSub.unsubscribe(),
-      loop: controlLoop,
-    });
+    } finally {
+      this.#operationControlInstalls.delete(controlSubject);
+      done.resolve();
+    }
   }
 
   async #createOperationLiveProvider(
     ctx: RegisteredRuntimeOperationDesc,
-  ): Promise<LiveProvider | undefined> {
+    target: {
+      nc: NatsConnection;
+      lease?: () => TransportLease;
+    },
+  ): Promise<OperationLiveObservation | undefined> {
     const cache = this.auth.authorizationProviderCache;
+    // Reconstruct from the connection's *installed application authority*,
+    // captured once before any await, never the historic immutable CONNECT
+    // digest this physical generation was admitted with. On a safe survivor
+    // after a growth or reduction that admitted digest can name an evicted or
+    // superseded context, so it must not gate a healthy survivor's provider;
+    // the socket and lease below still belong to this generation.
     const digest = typeof this.auth.contextDigest === "function"
       ? this.auth.contextDigest()
       : this.auth.contextDigest;
@@ -1905,40 +2220,58 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     const ownGuard = await LiveAuthorityGuard.retain(cache, digest, {
       kind: "local-provider",
     });
-    const provider = new LiveProvider({
-      nats: this.#nats,
-      identity: {
-        connectionId: own.context.connectionId,
-        sessionKey: own.context.sessionKey,
-        principalId: own.context.principalId,
-        participantId: own.context.participantId,
-        deploymentId: own.context.deploymentId ?? "",
-        instanceId: own.context.instanceId ?? "",
-      },
-      sign: async (bytes) => await this.auth.sign(bytes),
-      ownGuard,
-      refreshOwnAuthority: async () => {
-        const current = typeof this.auth.contextDigest === "function"
-          ? this.auth.contextDigest()
-          : this.auth.contextDigest;
-        if (!current) return;
-        const candidate = await ownGuard.prepareReplacement(current);
-        if (ownGuard.commitReplacement(candidate)) {
-          throw new Error("own authority replacement was rejected");
-        }
-      },
-      permission: toVerifierPermission(observe),
-      retainCallerAuthority: (callerDigest, permission) =>
-        LiveAuthorityGuard.retain(cache, callerDigest, {
-          kind: "observer",
-          permission,
-        }),
-      manager: this.connection.live,
-    });
-    const observeSub = this.#nats.subscribe(
-      provider.wildcardSubject(ctx.subject),
-    );
-    void (async () => {
+    let provider: LiveProvider | undefined;
+    let observeSub: ReturnType<NatsConnection["subscribe"]> | undefined;
+    try {
+      provider = new LiveProvider({
+        nats: target.nc,
+        // Each admitted observation session pins the generation that served it.
+        lease: target.lease,
+        identity: {
+          connectionId: own.context.connectionId,
+          sessionKey: own.context.sessionKey,
+          principalId: own.context.principalId,
+          participantId: own.context.participantId,
+          deploymentId: own.context.deploymentId ?? "",
+          instanceId: own.context.instanceId ?? "",
+        },
+        sign: async (bytes) => await this.auth.sign(bytes),
+        ownGuard,
+        refreshOwnAuthority: async () => {
+          const current = typeof this.auth.contextDigest === "function"
+            ? this.auth.contextDigest()
+            : this.auth.contextDigest;
+          if (!current) return;
+          const candidate = await ownGuard.prepareReplacement(current);
+          if (ownGuard.commitReplacement(candidate)) {
+            throw new Error("own authority replacement was rejected");
+          }
+        },
+        permission: toVerifierPermission(observe),
+        retainCallerAuthority: (callerDigest, permission) =>
+          LiveAuthorityGuard.retain(cache, callerDigest, {
+            kind: "observer",
+            permission,
+          }),
+        manager: this.connection.live,
+      });
+      observeSub = target.nc.subscribe(
+        provider.wildcardSubject(ctx.subject),
+      );
+      // Register at readiness so this generation owns the route's retained
+      // receipts even before it has served a session; dispose() unregisters
+      // transactionally on a failed install.
+      provider.registerRoute(ctx.subject);
+    } catch (cause) {
+      // Roll back a partial provider so a failed candidate leaves no retained
+      // authority, wildcard control subscription, or manager registration
+      // behind. Terminate/unregister first, then release authority.
+      void observeSub?.drain().catch(() => undefined);
+      await provider?.dispose().catch(() => undefined);
+      ownGuard.release();
+      throw cause;
+    }
+    const observeDone = (async () => {
       for await (const msg of observeSub) {
         await provider.handleControl(msg, async (controlMsg) => {
           const validated = await this.#authenticateOperationMessage(
@@ -1963,7 +2296,19 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         });
       }
     })();
-    return provider;
+    return {
+      provider,
+      // Retained until physical retirement so already-admitted observation
+      // sessions keep their control channel; drained only when the generation
+      // closes. Ordered so each owned session's signed END is published with a
+      // live guard before the authority is released; idempotent on repeat.
+      close: async () => {
+        void observeSub.drain().catch(() => undefined);
+        await provider.dispose().catch(() => undefined);
+        await observeDone.catch(() => undefined);
+        ownGuard.release();
+      },
+    };
   }
 
   async #runOperationWatchSource(args: {
@@ -1972,6 +2317,12 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     operationId: string;
     includeUpdates: boolean;
     caller: VerifiedCaller;
+    /**
+     * The live session's caller-authority port, replaced in place on an
+     * identity-preserving caller refresh, so the durable watch follows the
+     * caller's renewed authority instead of expiring with its opening digest.
+     */
+    callerAuthority: () => ProviderAuthorityPort;
     emit: (value: unknown) => Promise<void>;
     signal: AbortSignal;
   }): Promise<void> {
@@ -1981,6 +2332,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       operationId,
       includeUpdates,
       caller,
+      callerAuthority,
       emit,
       signal,
     } = args;
@@ -1988,14 +2340,9 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     const cache = this.auth.authorizationProviderCache;
     const observe = ctx.permissions?.observe;
     if (!cache || !observe) throw new Error("authorization unavailable");
-    // The current observer guard is retained before any async allocation and
-    // follows identity-preserving refresh; `caller.contextDigest` is only the
-    // opening evidence.
-    const observerGuard = await LiveAuthorityGuard.retain(
-      cache,
-      caller.contextDigest,
-      { kind: "observer", permission: toVerifierPermission(observe) },
-    );
+    // The observer authority is the live session's port, which the provider
+    // replaces in place on an identity-preserving caller refresh; `caller` is
+    // only the opening evidence recorded on the session.
     let updateSub: ReturnType<NatsConnection["subscribe"]> | undefined;
     let durableWatch: AsyncIterator<unknown> | undefined;
     let updates: Promise<void> = Promise.resolve();
@@ -2011,15 +2358,18 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     const arbiter = new OperationObserverArbiter(emit);
 
     try {
+      // Subscribe on the operation's receiving generation so transient updates
+      // published there after a newer generation takes over are still observed.
+      const watchNats = this.#operationNats(operationId);
       updateSub = includeUpdates
-        ? this.#nats.subscribe(`${ctx.subject}.updates.${operationId}`)
+        ? watchNats.subscribe(`${ctx.subject}.updates.${operationId}`)
         : undefined;
       const watchIterator = (await (await this.operationStoreHandle())
         .watch(operationId)
         .orThrow())[Symbol.asyncIterator]();
       durableWatch = watchIterator as AsyncIterator<unknown>;
       if (signal.aborted) throw new Error("operation watch aborted");
-      if (updateSub) await this.#nats.flush();
+      if (updateSub) await watchNats.flush();
       const current = await this.#resolveOperation(operationId);
       if (
         !current ||
@@ -2044,7 +2394,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         ? (async () => {
           for await (const updateMsg of updateSub) {
             if (signal.aborted) break;
-            if (observerGuard.checkNow() || terminalSeen) {
+            if (callerAuthority().checkNow() || terminalSeen) {
               stop();
               break;
             }
@@ -2171,7 +2521,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         ) {
           throw new Error("operation watch source ended");
         }
-        if (observerGuard.checkNow()) {
+        if (callerAuthority().checkNow()) {
           throw new Error("authorization unavailable");
         }
         const terminal = durable.value.snapshot.state === "completed" ||
@@ -2195,7 +2545,6 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       }
     } finally {
       stop();
-      observerGuard.release();
       signal.removeEventListener("abort", stop);
       await updates.catch(() => {});
     }
@@ -2238,10 +2587,15 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     const route = routeToken("operation", String(operation));
 
     return {
-      control: (operationId) => {
-        this.#ensureOperationControlLoop(String(operation), ctx);
-        return this.#controlOperation(String(operation), ctx, operationId);
-      },
+      control: (operationId) =>
+        AsyncResult.from((async () => {
+          await this.#ensureOperationControlLoop(String(operation), ctx);
+          return await this.#controlOperation(
+            String(operation),
+            ctx,
+            operationId,
+          );
+        })()),
       reconcile: (operationId) =>
         AsyncResult.from((async () => {
           const reconcile = this.#operationReconciliation.get(ctx.subject);
@@ -2272,10 +2626,6 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       ) => {
         const startSubject = ctx.subject;
         const now = () => new Date().toISOString();
-
-        const publishFrame = async (reply: string, frame: unknown) => {
-          await this.#nats.publish(reply, JSON.stringify(frame));
-        };
 
         const makeOperation = (
           runtime: RuntimeOperationRecord,
@@ -2751,7 +3101,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           `Mounting ${String(operation)} operation handler`,
         );
 
-        this.#ensureOperationControlLoop(String(operation), ctx);
+        await this.#ensureOperationControlLoop(String(operation), ctx);
         const recover = async (durable: DurableOperationRecord) => {
           if (!this.#matchesOperationRoute(durable, String(operation), ctx)) {
             return;
@@ -2759,6 +3109,9 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           const runtime = await this.#acquireOperation(durable);
           if (!runtime?.reclaimed) return;
           runtime.reclaimed = false;
+          // Recovered execution pins the current generation so its support
+          // traffic does not resurrect the seed socket or outlive its carrier.
+          await this.#pinRecoveredOperation(runtime.id);
           if (runtime.transferGrant && !runtime.cancelRequestedAt) {
             const fence = this.#operationFence(runtime);
             const committed = Reflect.get(runtime.transferGrant, "committed");
@@ -2949,14 +3302,26 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               const subject = `${ctx.subject}.reconcile.${
                 base64urlEncode(utf8(runtime.ownerConnectionId))
               }`;
+              // Hold one generation lease through the whole reconcile exchange:
+              // an adaptive failure to acquire fails the exchange rather than
+              // falling back to a seed socket, and the reply cannot outlive the
+              // generation that carried it.
+              const reconcileDeadlineMs = Date.now() + 30_000;
+              const reconcileLease = this.adaptiveTransport && this.#transport
+                ? await this.#transport.acquireCurrent({
+                  deadlineMs: reconcileDeadlineMs,
+                })
+                : { nc: this.#nats, release: () => {} };
               try {
-                const reply = await this.#nats.request(
+                const reply = await reconcileLease.nc.request(
                   subject,
                   JSON.stringify({
                     operationId,
                     ownerEpoch: runtime.ownerEpoch,
                   }),
-                  { timeout: 30_000 },
+                  {
+                    timeout: Math.max(0, reconcileDeadlineMs - Date.now()),
+                  },
                 );
                 const frame: unknown = JSON.parse(
                   new TextDecoder().decode(reply.data),
@@ -2988,18 +3353,98 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                   latest?.ownerEpoch === runtime.ownerEpoch &&
                   latest.ownerConnectionId === runtime.ownerConnectionId
                 ) throw cause;
+              } finally {
+                reconcileLease.release();
               }
             }
             throw new Error("operation owner changed during reconciliation");
           },
         );
-        const reconcileSub = this.#nats.subscribe(
-          `${ctx.subject}.reconcile.${
+        // Per-generation generic intake: the start and reconcile subscriptions
+        // are installed on every admitted generation with stable queue groups
+        // and pumped into a single shared consumer, so the operation protocol
+        // logic is registered once and each request is delivered exactly once.
+        const startIntake = createOperationIntakeQueue<
+          OperationIntakeDelivery & { msg: Msg }
+        >((delivery) => delivery.lease?.release());
+        const reconcileIntake = createOperationIntakeQueue<
+          OperationIntakeDelivery & { msg: Msg }
+        >((delivery) => delivery.lease?.release());
+        this.#operationIntakeClosers.add(() => {
+          startIntake.close();
+          reconcileIntake.close();
+        });
+        const installIntake = (target: {
+          id: number;
+          nc: NatsConnection;
+          contextDigest: string;
+          lease?: () => TransportLease;
+        }): Promise<{
+          drain: () => Promise<void>;
+          done: Promise<void>;
+          dispose: () => Promise<void>;
+        }> => {
+          const reconcileSubject = `${ctx.subject}.reconcile.${
             base64urlEncode(utf8(this.#operationConnectionId))
-          }`,
-        );
+          }`;
+          const startSub = target.nc.subscribe(startSubject, {
+            queue: routeQueueGroup(startSubject),
+          });
+          const reconcileSub = target.nc.subscribe(reconcileSubject, {
+            queue: routeQueueGroup(reconcileSubject),
+          });
+          const acquireDeliveryLease = (
+            msg: Msg,
+          ): TransportLease | undefined => {
+            if (!target.lease) return undefined;
+            try {
+              return target.lease();
+            } catch {
+              // The receiving generation can no longer be pinned: never hand the
+              // delivery to a consumer that would execute it unpinned.
+              msg.respond(JSON.stringify({
+                error: "operation intake generation unavailable",
+              }));
+              return undefined;
+            }
+          };
+          const startPump = (async () => {
+            for await (const msg of startSub) {
+              const lease = acquireDeliveryLease(msg);
+              if (!lease && target.lease) continue;
+              startIntake.push({
+                msg,
+                nc: target.nc,
+                ...(lease ? { lease } : {}),
+              });
+            }
+          })();
+          const reconcilePump = (async () => {
+            for await (const msg of reconcileSub) {
+              const lease = acquireDeliveryLease(msg);
+              if (!lease && target.lease) continue;
+              reconcileIntake.push({
+                msg,
+                nc: target.nc,
+                ...(lease ? { lease } : {}),
+              });
+            }
+          })();
+          return Promise.resolve({
+            drain: async () => {
+              await startSub.drain().catch(() => undefined);
+              await reconcileSub.drain().catch(() => undefined);
+            },
+            done: Promise.all([startPump, reconcilePump]).then(() => undefined),
+            dispose: async () => {
+              await startSub.drain().catch(() => undefined);
+              await reconcileSub.drain().catch(() => undefined);
+            },
+          });
+        };
         void (async () => {
-          for await (const message of reconcileSub) {
+          for await (const delivery of reconcileIntake) {
+            const message = delivery.msg;
             try {
               const value: unknown = JSON.parse(
                 new TextDecoder().decode(message.data),
@@ -3022,10 +3467,13 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               message.respond(JSON.stringify({
                 error: cause instanceof Error ? cause.message : String(cause),
               }));
+            } finally {
+              // Release the receiving generation's pin once the reconcile
+              // request has been fully answered.
+              delivery.lease?.release();
             }
           }
         })();
-        await this.#nats.flush();
         const recoverExpired = async () => {
           for (const durable of await this.listNonterminalOperationRecords()) {
             if (Date.parse(durable.leaseExpiresAt) <= Date.now()) {
@@ -3035,25 +3483,18 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         };
         await recoverExpired();
         const recoveryScan = setInterval(() => {
-          if (this.#nats.isClosed()) {
-            clearInterval(recoveryScan);
-            return;
-          }
           void recoverExpired().catch((error) => {
-            if (!this.#nats.isClosed()) {
-              this.#log.warn(
-                { error, operation: String(operation) },
-                "Operation recovery scan failed",
-              );
-            }
+            if (!this.#operationRecoveryScans.has(recoveryScan)) return;
+            this.#log.warn(
+              { error, operation: String(operation) },
+              "Operation recovery scan failed",
+            );
           });
         }, 1_000);
-        const startSub = this.#nats.subscribe(startSubject, {
-          queue: routeQueueGroup(startSubject),
-        });
-
+        this.#operationRecoveryScans.add(recoveryScan);
         void (async () => {
-          for await (const msg of startSub) {
+          for await (const delivery of startIntake) {
+            const { msg, nc } = delivery;
             const validated = await authenticate(msg, true);
             const value = validated.take();
             if (isErr(value)) {
@@ -3066,7 +3507,6 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             }
 
             let transferSession: RuntimeOperationTransferSession | undefined;
-            let transferFence: RuntimeOperationFence | undefined;
             const operationId = value.invocationId!;
             const apiId = `${ctx.permissions?.invoke.apiId ?? ""}@${
               ctx.permissions?.invoke.apiVersion ?? ""
@@ -3286,7 +3726,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               signalWaiters: new Set(),
               cancellation: new AbortController(),
             };
-            transferFence = this.#operationFence(runtime);
+            const transferFence = this.#operationFence(runtime);
             this.#activeOperationFences.set(runtime.id, transferFence);
             if (!reclaimed) {
               this.#operations.set(operationId, runtime);
@@ -3399,6 +3839,12 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             if (transferSession) {
               this.#operationTransferSessions.set(runtime.id, transferSession);
             }
+            // Pin the receiving generation for the whole operation lifetime so
+            // its execution support/control/observation keep working even after
+            // newer generations take over new intake.
+            // Ownership of the delivery's generation lease transfers to the
+            // accepted execution; the loop releases only rejected deliveries.
+            this.#pinOperationTransport(runtime.id, nc, delivery);
             void scheduleHandler(
               runtime,
               transferFence!,
@@ -3414,9 +3860,46 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           }
         })();
 
+        // Install the generic intake on every admitted generation (or directly
+        // on the fixed connection when this runtime has no generation owner).
+        if (this.adaptiveTransport) {
+          await this.declareGenerationIntake(
+            `operation:${String(operation)}:intake`,
+            installIntake,
+          );
+        } else {
+          const installed = await installIntake({
+            id: 0,
+            nc: this.#nats,
+            contextDigest: this.#operationContextDigest(),
+          });
+          this.#operationIntakeDrains.add(installed.drain);
+          this.#operationIntakeDrains.add(installed.dispose);
+        }
         return Promise.resolve();
       },
     };
+  }
+
+  /**
+   * Transfer an accepted delivery's already-held generation lease to the
+   * operation execution so it is retained through terminal cleanup.
+   *
+   * The lease is acquired when the delivery is enqueued, never here: an
+   * execution must not begin after a failed acquisition, and the receiving
+   * generation is the one that accepted the start. When the operation is
+   * already pinned (recovery/replay) this delivery's lease is left in place for
+   * the consumer to release.
+   */
+  #pinOperationTransport(
+    operationId: string,
+    nc: NatsConnection,
+    delivery: OperationIntakeDelivery,
+  ): void {
+    if (this.#operationTransport.has(operationId)) return;
+    const lease = delivery.lease;
+    delivery.lease = undefined;
+    this.#operationTransport.set(operationId, { nc, lease });
   }
 
   async stop(): Promise<void> {
@@ -3424,23 +3907,39 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       for (const observation of this.#executionObservations.values()) {
         observation.finish("interrupted");
       }
-      if (this.#nats.isClosed()) {
+      // Logical cleanup is unconditional: a transport that is already closed
+      // must not skip terminating intake, releasing queued generation pins, or
+      // clearing logical recovery scans.
+      for (const scan of this.#operationRecoveryScans) clearInterval(scan);
+      this.#operationRecoveryScans.clear();
+      for (const close of this.#operationIntakeClosers) close();
+      for (const drain of this.#operationIntakeDrains) {
+        void drain().catch(() => undefined);
+      }
+      this.#operationIntakeDrains.clear();
+      for (const control of this.#mountedOperationControls.values()) {
+        control.unsubscribe();
+      }
+
+      if (this.#transportClosed()) {
         return;
       }
 
-      // Watch the transport before reading any state or awaiting, so a loss
-      // cannot slip between the usability check and this watch. Any physical
-      // loss or terminal close releases the waits below: NATS never rejects a
-      // pending flush on close and reconnects are unbounded, so the transport
-      // status is the only signal that can settle them.
-      const statuses = this.#nats.status()[Symbol.asyncIterator]();
+      // Watch the logical lifecycle before reading any state or awaiting, so a
+      // loss cannot slip between the usability check and this watch. A terminal
+      // loss or close releases the waits below: NATS never rejects a pending
+      // flush on close and reconnects are unbounded, so the transport status is
+      // the only signal that can settle them.
+      const statuses = (this.#transport?.status() ?? this.#nats.status())[
+        Symbol.asyncIterator
+      ]();
       const released = Promise.withResolvers<void>();
       void (async () => {
         try {
           for (;;) {
             const next = await statuses.next();
             if (next.done) break;
-            const { type } = next.value;
+            const type = (next.value as { type?: string } | undefined)?.type;
             if (
               type === "disconnect" || type === "reconnecting" ||
               type === "forceReconnect" || type === "close"
@@ -3461,16 +3960,18 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         ]);
 
       try {
-        // An already-unusable transport cannot finish admitted control work or
-        // a graceful flush: close directly.
+        // A stopped or not-yet-started verifier cannot settle admitted control
+        // work or a graceful flush: close directly. (`health()` reports cache
+        // lifecycle readiness, not current socket availability.)
         const cache = this.auth.authorizationProviderCache;
         if (cache !== undefined && !cache.health().healthy) {
           return;
         }
 
-        // Settle admitted control work before draining, so a stopping replica
-        // never answers a control request from a draining connection. Each
-        // wait is released if the transport is lost or closes.
+        // Intake is already terminated above; settle admitted control work
+        // before draining, so a stopping replica never answers a control
+        // request from a draining connection. Each wait is released if the
+        // transport is lost or closes.
         const controls = [...this.#mountedOperationControls.values()];
         for (const control of controls) {
           control.unsubscribe();
@@ -3493,20 +3994,28 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         }
 
         // A loss or terminal close releases the drain instead of waiting on a
-        // flush that never settles.
-        await untilReleased(
-          this.#nats.drain().catch((cause) => {
-            if (
-              !(cause instanceof Error) ||
-              cause.name !== "DrainingConnectionError"
-            ) {
-              throw cause;
-            }
-          }),
-        );
+        // flush that never settles. An adaptive transport is closed through the
+        // logical provider in `finally`, never drained on a raw generation.
+        if (!this.adaptiveTransport) {
+          await untilReleased(
+            this.#nats.drain().catch((cause) => {
+              if (
+                !(cause instanceof Error) ||
+                cause.name !== "DrainingConnectionError"
+              ) {
+                throw cause;
+              }
+            }),
+          );
+        }
       } finally {
         void statuses.return?.().catch(() => undefined);
-        await this.#nats.close();
+        if (this.adaptiveTransport) {
+          // The logical owner closes every generation; never a raw seed socket.
+          await this.#transport?.close().catch(() => undefined);
+        } else {
+          await this.#nats.close();
+        }
       }
     })();
 

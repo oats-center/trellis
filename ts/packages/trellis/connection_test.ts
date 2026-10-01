@@ -16,7 +16,6 @@ import {
   type TrellisConnectionStatus,
   type TrellisConnectionStatusTransport,
 } from "./connection.ts";
-import { installAuthorizationRefresh } from "./auth/authorization/install_refresh.ts";
 
 class FakeStatusStream implements TrellisConnectionStatusTransport {
   #events: unknown[] = [];
@@ -385,48 +384,6 @@ Deno.test("a diagnostic transport error keeps the logical phase and reaches raw 
   assertEquals(phases, ["connected"]);
   assertEquals(events.length, 1);
   assertEquals((events[0]?.event as { error?: unknown })?.error, error);
-});
-
-Deno.test("installAuthorizationRefresh promotes in place without replacing the transport", async () => {
-  const stream = new FakeStatusStream();
-  const connection = observeTrellisConnection({
-    kind: "client",
-    transport: stream,
-  });
-  const phases: string[] = [];
-  connection.subscribe((status) => phases.push(status.phase));
-  let retainedGeneration: number | undefined;
-  let promotedGeneration: number | undefined;
-  const provider = {
-    waitReady: () => Promise.resolve(),
-    connectionGeneration: () => 7,
-    retainOwnCandidate: (digest: string, generation: number) => {
-      assertEquals(digest, "candidate-digest");
-      retainedGeneration = generation;
-      return Promise.resolve();
-    },
-    promoteOwnCandidate: (digest: string, generation: number) => {
-      assertEquals(digest, "candidate-digest");
-      promotedGeneration = generation;
-    },
-    releaseCandidate: () => {},
-  };
-  try {
-    // Routine renewal retains and promotes the candidate on the current
-    // generation; it never asks the owner to replace the physical attachment.
-    await installAuthorizationRefresh({
-      provider,
-      contextDigest: "candidate-digest",
-    });
-
-    assertEquals(retainedGeneration, 7);
-    assertEquals(promotedGeneration, 7);
-    assertEquals(connection.status.phase, "connected");
-    assertEquals(phases, ["connected"]);
-    assertEquals(connection.live.isAvailable(), true);
-  } finally {
-    await connection.close();
-  }
 });
 
 Deno.test("observeTrellisConnection publishes error transition from closed result", async () => {
