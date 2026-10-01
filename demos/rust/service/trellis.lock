@@ -5,7 +5,7 @@ root = "demo-rust-service"
 name = "demo-rust-service"
 version = "1.0.0"
 digest = "qxrQW1gDAGES-oNhec6OBqCCNxr77tHxcOOLh1LZYKc"
-distribution-digest = "sha256:719508d84f182d9ae0ef68dbefec0d33f366fa571b334d53826449d87c489da2"
+distribution-digest = "sha256:88d7f0fe9c5630723d37ce589a15f497485112a6f7d629507df1c3ed10517803"
 
 [[packages.dependencies]]
 name = "demo-service"
@@ -25,4 +25,4 @@ dependencies = []
 
 [packages.source]
 kind = "path"
-path = "./../../ts/service"
+path = "../../ts/service"

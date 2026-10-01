@@ -1,6 +1,10 @@
 import { TrellisService } from "@oatscenter/trellis/service";
-import { OperationNotFoundError } from "@oatscenter/trellis/errors";
-import { isOk } from "@oatscenter/result";
+import {
+  OperationNotFoundError,
+  UnexpectedError,
+} from "@oatscenter/trellis/errors";
+import { isOk, Result } from "@oatscenter/result";
+import { ulid } from "ulid";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
@@ -203,7 +207,7 @@ Deno.test("handler cancellation stays nonterminal until cleanup returns", async 
   });
 });
 
-Deno.test("interrupted cancellation recovers to Cancelled without rerunning the handler", async () => {
+Deno.test("interrupted cancellation recovers through cleanup without rerunning business work", async () => {
   await withTrellisRuntime(async (runtime) => {
     const firstIdentity = await runtime.registerService({
       name: "operation-interrupted-cancel-replicas",
@@ -226,9 +230,15 @@ Deno.test("interrupted cancellation recovers to Cancelled without rerunning the 
     const firstStarted = Promise.withResolvers<number>();
     const cancellationObserved = Promise.withResolvers<void>();
     let executions = 0;
+    let businessExecutions = 0;
     for (const [index, service] of services.entries()) {
       await service.handleWork(async ({ op, signal }) => {
         const count = ++executions;
+        if (signal.aborted) {
+          assertEquals(count, 2);
+          return;
+        }
+        businessExecutions++;
         await op.started().orThrow();
         if (count === 1) {
           firstStarted.resolve(index);
@@ -242,7 +252,7 @@ Deno.test("interrupted cancellation recovers to Cancelled without rerunning the 
           cancellationObserved.resolve();
           return await new Promise<never>(() => {});
         }
-        return await op.complete({ value: "recovered" }).orThrow();
+        throw new Error("recovery entered business work");
       });
     }
     const client = await runtime.connectClient({
@@ -259,7 +269,7 @@ Deno.test("interrupted cancellation recovers to Cancelled without rerunning the 
       const cancellation = operation.cancel();
       await cancellationObserved.promise;
       // The owner dies mid-cleanup. The durable cancellation request survives,
-      // so the successor must finalize Cancelled without entering the handler.
+      // so the successor must re-enter cleanup with an already-aborted signal.
       await services[owner].stop();
       await exits[owner];
       const terminal = await Promise.race([
@@ -272,7 +282,8 @@ Deno.test("interrupted cancellation recovers to Cancelled without rerunning the 
         ),
       ]);
       assertEquals(terminal.state, "cancelled");
-      assertEquals(executions, 1);
+      assertEquals(executions, 2);
+      assertEquals(businessExecutions, 1);
     } finally {
       await client.connection.close();
       await Promise.all(services.map((service) => service.stop()));
@@ -321,6 +332,113 @@ Deno.test("cancellation request serializes with handler completion", async () =>
       await client.connection.close();
       await service.stop();
       await exit;
+    }
+  });
+});
+
+Deno.test("cancel-first admission retains failed cleanup and replays terminal cancellation", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: "operation-cancel-first",
+      contract: participants.Provider.participant,
+    });
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.Provider.participant,
+      name: "operation-cancel-first",
+      seed: identity.seed,
+    }).orThrow();
+    let cleanupAttempts = 0;
+    let businessAttempts = 0;
+    const entered = Promise.withResolvers<void>();
+    await service.handleWork(({ signal, op, input }) => {
+      if (!signal.aborted) {
+        businessAttempts++;
+        if (input.value === "normal-first") return op.defer();
+        return { value: "business" };
+      }
+      cleanupAttempts++;
+      if (cleanupAttempts === 1) {
+        entered.resolve();
+        return op.defer();
+      }
+      if (cleanupAttempts === 2) throw new Error("cleanup interrupted");
+      if (cleanupAttempts === 3) {
+        return Result.err(
+          new UnexpectedError({ cause: new Error("cleanup failed") }),
+        );
+      }
+      return;
+    });
+    const client = await runtime.connectClient({
+      name: "operation-cancel-first-caller",
+      contract: participants.Caller.participant,
+    });
+    try {
+      const invocationId = ulid();
+      const operation = await client.work({ value: "cancel-first" }).start(
+        undefined,
+        {
+          invocationId,
+          cancellationRequested: true,
+        },
+      ).orThrow();
+      await entered.promise;
+      const replay = await client.work({ value: "cancel-first" }).start(
+        undefined,
+        {
+          invocationId,
+        },
+      ).orThrow();
+      assertEquals(replay.id, operation.id);
+      assertEquals((await operation.get().orThrow()).state, "pending");
+      for (let attempt = 2; attempt <= 3; attempt++) {
+        const snapshot = await service.handleWork.reconcile(operation.id)
+          .orThrow();
+        assertEquals(snapshot.state, "pending");
+        assertEquals(cleanupAttempts, attempt);
+      }
+      const terminal = await service.handleWork.reconcile(operation.id)
+        .orThrow();
+      assertEquals(terminal.state, "cancelled");
+      const terminalReplay = await client.work({ value: "cancel-first" }).start(
+        undefined,
+        {
+          invocationId,
+          cancellationRequested: true,
+        },
+      ).orThrow();
+      const replaySnapshot = await terminalReplay.get().orThrow();
+      assertEquals(replaySnapshot.state, terminal.state);
+      assertEquals(replaySnapshot.revision, terminal.revision);
+      assertEquals(replaySnapshot.completedAt, terminal.completedAt);
+      assertEquals(cleanupAttempts, 4);
+      assertEquals(businessAttempts, 0);
+
+      const normalId = ulid();
+      const normal = await client.work({ value: "normal-first" }).start(
+        undefined,
+        {
+          invocationId: normalId,
+        },
+      ).orThrow();
+      await runtime.waitFor(() => businessAttempts === 1);
+      const cancelledReplay = await client.work({ value: "normal-first" })
+        .start(undefined, {
+          invocationId: normalId,
+          cancellationRequested: true,
+        }).orThrow();
+      assertEquals(cancelledReplay.id, normal.id);
+      await client.work({ value: "normal-first" }).start(undefined, {
+        invocationId: normalId,
+      }).orThrow();
+      assertEquals((await normal.wait().orThrow()).state, "cancelled");
+      assertEquals(businessAttempts, 1);
+      assertEquals(cleanupAttempts, 5);
+    } finally {
+      await client.connection.close();
+      await service.stop();
+      await service.wait();
     }
   });
 });

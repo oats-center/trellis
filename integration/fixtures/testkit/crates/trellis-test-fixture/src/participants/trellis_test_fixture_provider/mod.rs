@@ -1,7 +1,7 @@
 //! Generated participant `trellis-test-fixture.Provider`.
 pub const PARTICIPANT_ID: &str = "trellis-test-fixture.Provider";
 pub const PARTICIPANT_PATH: &str = "Provider";
-pub const PARTICIPANT_DIGEST: &str = "3Oh4-bY6JkkSByu1TIUmMkCjBO7n01tgwtT5feNsYvw";
+pub const PARTICIPANT_DIGEST: &str = "APr_AMdRxtgBJG6bQcVpLjg4U4S6iebFgNhn7QjAZo0";
 pub const IMPLEMENTED_API_IDS: &[&str] = &["trellis-test-fixture.echo@v1"];
 pub const EVENT_SUBSCRIBE_NEEDS: &[&str] = &[];
 pub struct Participant;
@@ -26,13 +26,13 @@ const PACKAGE_SOURCES: &[trellis_rs::generated::PackageSourceEvidence] = &[
     trellis_rs::generated::PackageSourceEvidence::from_generated(
         "trellis-test-fixture",
         "0.100.0",
-        "aShA6qPtvPXkkage5o6vFD0ZerZx9ER79a3hZKJGfgE",
-        "package \"trellis-test-fixture\";\ndependency d0 \"trellis\" version \"0.100.0\" digest \"JiXmBn7sIt0wGALg2SJqFXuaCnlJo-qomcQ7g0bR7EU\";\n\nmodel Preview {\n  text: string;\n}\n\nmodel Status {\n  stage: string;\n}\n\nmodel Value {\n  value: string;\n}\n\napi echo@v1 {\n  title \"Testkit echo\";\n  description \"External Rust testkit acceptance fixture.\";\n  event Observed {\n    payload Value;\n  }\n  operation Silent {\n    input Value;\n    output Value;\n  }\n  operation UpdateOnly {\n    input Value;\n    output Value;\n    update Preview;\n    signals {\n      Continue Value;\n    }\n  }\n  operation Work {\n    input Value;\n    output Value;\n    progress Status;\n    update Preview;\n    signals {\n      Continue Value;\n    }\n  }\n  rpc Echo {\n    input Value;\n    output Value;\n  }\n  capabilities {\n    public {\n      allows {\n        operation Silent;\n        operation UpdateOnly;\n        operation Work;\n        publish event Observed;\n        rpc Echo;\n        subscribe event Observed;\n      }\n    }\n  }\n}\n\nagent AgentCaller {\n  use echo {\n    operation Silent;\n    operation UpdateOnly;\n    operation Work;\n    rpc Echo;\n    subscribe event Observed;\n  }\n}\n\napp Caller {\n  use echo {\n    operation Silent;\n    operation UpdateOnly;\n    operation Work;\n    rpc Echo;\n    subscribe event Observed;\n  }\n}\n\nservice Provider {\n  implements echo;\n}\n\napp RestrictedCaller {\n}\n\ndevice UnsupportedDevice {\n}\n\n",
+        "vDFkmpIB-sXAldcH4bt-u_U3HYWa7JC0Wse2GT-ChuQ",
+        "package \"trellis-test-fixture\";\ndependency d0 \"trellis\" version \"0.100.0\" digest \"JiXmBn7sIt0wGALg2SJqFXuaCnlJo-qomcQ7g0bR7EU\";\n\nmodel Preview {\n  text: string;\n}\n\nmodel Status {\n  stage: string;\n}\n\nmodel Value {\n  value: string;\n}\n\napi echo@v1 {\n  title \"Testkit echo\";\n  description \"External Rust testkit acceptance fixture.\";\n  event Observed {\n    payload Value;\n  }\n  operation Silent {\n    input Value;\n    output Value;\n  }\n  operation UpdateOnly {\n    input Value;\n    output Value;\n    update Preview;\n    signals {\n      Continue Value;\n    }\n  }\n  operation Upload {\n    input Value;\n    output Value;\n    upload;\n  }\n  operation Work {\n    input Value;\n    output Value;\n    progress Status;\n    update Preview;\n    signals {\n      Continue Value;\n    }\n  }\n  rpc Echo {\n    input Value;\n    output Value;\n  }\n  capabilities {\n    public {\n      allows {\n        operation Silent;\n        operation UpdateOnly;\n        operation Upload;\n        operation Work;\n        publish event Observed;\n        rpc Echo;\n        subscribe event Observed;\n      }\n    }\n  }\n}\n\nagent AgentCaller {\n  use echo {\n    operation Silent;\n    operation UpdateOnly;\n    operation Work;\n    rpc Echo;\n    subscribe event Observed;\n  }\n}\n\napp Caller {\n  use echo {\n    operation Silent;\n    operation UpdateOnly;\n    operation Upload;\n    operation Work;\n    rpc Echo;\n    subscribe event Observed;\n  }\n}\n\nservice Provider {\n  implements echo;\n}\n\napp RestrictedCaller {\n}\n\ndevice UnsupportedDevice {\n}\n\n",
     ),
 ];
 pub const PACKAGE_EVIDENCE: trellis_rs::generated::PackageEvidence = trellis_rs::generated::PackageEvidence::from_generated(
     "trellis-test-fixture",
-    "aShA6qPtvPXkkage5o6vFD0ZerZx9ER79a3hZKJGfgE",
+    "vDFkmpIB-sXAldcH4bt-u_U3HYWa7JC0Wse2GT-ChuQ",
     PACKAGE_SOURCES,
 );
 pub mod types {

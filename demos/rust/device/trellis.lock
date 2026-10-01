@@ -5,7 +5,7 @@ root = "demo-device"
 name = "demo-device"
 version = "1.0.0"
 digest = "wyrgyEXV--fq0vsINZsMIkyAISwxFZYkrZgOFccilBw"
-distribution-digest = "sha256:9d8fa36d762db480d6658e641f5adbce12b20cb43b323d067abdcd57b6ea7752"
+distribution-digest = "sha256:25fd28157fce422a8da42298f1b15e90e758fc21a7d8b89711e8084169a51fda"
 
 [[packages.dependencies]]
 name = "demo-service"
@@ -30,7 +30,7 @@ dependencies = []
 
 [packages.source]
 kind = "path"
-path = "./../../ts/service"
+path = "../../ts/service"
 
 [[packages]]
 name = "trellis"
@@ -41,4 +41,4 @@ dependencies = []
 
 [packages.source]
 kind = "path"
-path = "./../../../crates/runtime"
+path = "../../../crates/runtime"

@@ -77,6 +77,10 @@ caller, and progress. A cancellation request stays nonterminal while the owner
 renews its lease and joins handler cleanup; only then is `Cancelled` persisted.
 Stalled cleanup has no forced terminal timeout, and external side effects may
 overlap across owner loss.
+Cancellation-first admission requires both Invoke and Cancel authority and the
+same caller-chosen invocation ID and input on every retry. It atomically records
+non-clearable cancellation intent; the handler must perform already-aborted
+cleanup before business work. Errors or explicit deferral leave cleanup pending.
 Job deadlines are creation-relative;
 retry defaults to five deliveries delayed by 5s, 30s, 2m, and 10m. Jobs Summary
 is independent of Query pages. Capability approval is not an exact grant. Resource commitments are

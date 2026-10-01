@@ -1,6 +1,6 @@
 //! Generated API `trellis-test-fixture.echo@v1`.
 pub const API_ID: &str = "trellis-test-fixture.echo@v1";
-pub const API_DIGEST: &str = "MqZ30Qrlp_inA3MTrwvQDynI6-braKV14fvrCHbRyf0";
+pub const API_DIGEST: &str = "WgJsAYzutZb_zpExP-Ds0YxKuOPV5jV2GtKxkLreNyI";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;
@@ -129,6 +129,45 @@ pub mod operations {
         type Input = UpdateOnlyContinueSignalInput;
         const NAME: &'static str = "Continue";
     }
+    pub type UploadInput = crate::__types::trellis_test_fixture::Value;
+    pub type UploadOutput = crate::__types::trellis_test_fixture::Value;
+    pub struct Upload;
+    impl Upload {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "operation.Upload";
+        pub const KEY: &'static str = "echo.Upload";
+        pub const SUBJECT: &'static str = "operations.v1.echo.Upload";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis-test-fixture.echo@v1::public",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[];
+        pub const UPLOAD: bool = true;
+    }
+    impl trellis_rs::generated::OperationDescriptor for Upload {
+        type Input = UploadInput;
+        type Output = UploadOutput;
+        type Progress = serde_json::Value;
+        type Update = serde_json::Value;
+        type UpdateEvidence = trellis_rs::client::NoOperationUpdates;
+        type Error = std::convert::Infallible;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const ERRORS: &'static [&'static str] = &[];
+        const SIGNALS: &'static [&'static str] = &[];
+        const SIGNAL_INPUT_SCHEMAS_JSON: &'static str = "{}";
+        const UPLOAD: bool = Self::UPLOAD;
+        const HAS_PROGRESS: bool = false;
+        const UPDATE_SCHEMA_JSON: Option<&'static str> = None;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            let _ = value;
+            Ok(None)
+        }
+    }
     pub type WorkInput = crate::__types::trellis_test_fixture::Value;
     pub type WorkOutput = crate::__types::trellis_test_fixture::Value;
     pub type WorkProgress = crate::__types::trellis_test_fixture::Status;
@@ -240,6 +279,9 @@ impl Client {
     ) -> trellis_rs::generated::Operation<'_, operations::UpdateOnly> {
         self.inner.operation::<operations::UpdateOnly>()
     }
+    pub fn upload(&self) -> trellis_rs::generated::Operation<'_, operations::Upload> {
+        self.inner.operation::<operations::Upload>()
+    }
     pub fn work(&self) -> trellis_rs::generated::Operation<'_, operations::Work> {
         self.inner.operation::<operations::Work>()
     }
@@ -315,6 +357,25 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
         self.runtime
             .register_operation_handler::<
                 trellis_rs::generated::OperationAdapter<operations::UpdateOnly>,
+                F,
+                Fut,
+            >(handler);
+    }
+    pub fn register_upload<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::RequestContext,
+                operations::UploadInput,
+                trellis_rs::service::OperationControl<
+                    trellis_rs::generated::OperationAdapter<operations::Upload>,
+                >,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<(), trellis_rs::service::ServerError>>
+            + Send + 'static,
+    {
+        self.runtime
+            .register_operation_handler::<
+                trellis_rs::generated::OperationAdapter<operations::Upload>,
                 F,
                 Fut,
             >(handler);

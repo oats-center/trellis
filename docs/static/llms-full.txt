@@ -212,6 +212,15 @@ nonterminal during handler cleanup and owner lease renewal. `Cancelled` is
 persisted only after the handler joins its owned side-effecting children; a
 stalled cleanup has no forced terminal timeout. After owner loss, epoch fencing
 does not prevent arbitrary external side effects from overlapping.
+Cancellation-first admission requires both Invoke and Cancel authority before
+durable reservation. Retry with the same caller-chosen invocation ID and input:
+intent is atomic with fresh admission, merges into an exact existing invocation,
+cannot be cleared by a normal replay, and does not change terminal records.
+Reconciliation and recovery enter cleanup with the handler signal already
+aborted; throwing, returning an error, or explicit deferral leaves cancellation
+nonterminal. Native upload cancellation may have no transfer handle or staging;
+check cancellation before accessing transfer resources. TypeScript exposes the
+cancellation-first start option only for ordinary, non-transfer operations.
 
 Keyed Jobs waiting for an active capacity slot maintain the current delivery and
 do not consume a retry attempt before handler entry. `Jobs.Summary` computes all

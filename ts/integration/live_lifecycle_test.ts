@@ -233,15 +233,19 @@ Deno.test("L28 cancelling a blocked source settles provider cleanup", async () =
   await withTrellisRuntime(async (runtime) => {
     let starts = 0;
     let cleanups = 0;
+    let cleanupAborted = false;
     const { service, exit } = await startProvider(
       runtime,
       async ({ emit, signal }) => {
         starts += 1;
-        while (!signal.aborted) {
-          await emit({ value: "blocked" }).orThrow();
-          await new Promise((resolve) => setTimeout(resolve, 10));
+        try {
+          while (!signal.aborted) {
+            await emit({ value: "blocked" }).orThrow();
+          }
+        } finally {
+          cleanupAborted = signal.aborted;
+          cleanups += 1;
         }
-        cleanups += 1;
       },
     );
     const client = await runtime.connectClient({
@@ -262,12 +266,12 @@ Deno.test("L28 cancelling a blocked source settles provider cleanup", async () =
 
       assertEquals(starts, 1);
       assertEquals(cleanups, 1);
+      assert(cleanupAborted);
       // A settled cancellation leaves no retained cleanup behind.
       assertEquals(
         metricsCapture.total("trellis.live.cleanup.pending"),
         beforePending,
       );
-      assert(true);
     } finally {
       await client.connection.close();
       await service.stop();

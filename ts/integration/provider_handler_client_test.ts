@@ -39,13 +39,16 @@ Deno.test(
         seed: identity.seed,
       }).orThrow();
       let serviceExit: Promise<unknown> | undefined;
+      const failures: unknown[] = [];
       try {
         await service.handleEcho(echoHandler);
         await operationRegistration(service)(workHandler);
         await service.handleWatch(watchHandler);
         await service.onChanged(changedListener);
         service.jobs.work.handle(workJobHandler);
-        serviceExit = service.wait().catch((error: unknown) => error);
+        serviceExit = service.wait().catch((error: unknown) => {
+          failures.push(error);
+        });
 
         assertEquals(
           await exerciseHandlerClient(service, "consumer"),
@@ -54,9 +57,45 @@ Deno.test(
 
         const job = await service.jobs.work.create({ value: "live-job" })
           .orThrow();
-        const terminal = await job.wait().orThrow();
-        assertEquals(terminal.state, "completed", terminal.lastError);
-        assertEquals(terminal.result, { value: "work:live-job" });
+        const updates = await job.updates().orThrow();
+        const iterator = updates[Symbol.asyncIterator]();
+        let receivedUpdate:
+          | Awaited<ReturnType<typeof iterator.next>>
+          | undefined;
+        let updateError: unknown;
+        const nextUpdate = iterator.next().then(
+          (update) => {
+            receivedUpdate = update;
+          },
+          (error: unknown) => {
+            updateError = error;
+          },
+        );
+        try {
+          await service.kv.records.put(`release-${job.id}`, { value: "ready" })
+            .orThrow();
+          const terminal = await job.wait().orThrow();
+          assertEquals(terminal.state, "completed", terminal.lastError);
+          assertEquals(terminal.result, { value: "work:live-job" });
+          const received = await runtime.waitFor(() => {
+            if (updateError !== undefined) throw updateError;
+            return receivedUpdate ?? false;
+          });
+          assert(!received.done);
+          assertEquals(received.value, {
+            value: "live-job",
+            nested: {
+              count: 9_007_199_254_740_993n,
+              payload: new Uint8Array([0, 128, 255]),
+            },
+          });
+          assertEquals(typeof received.value.nested.count, "bigint");
+          assert(received.value.nested.payload instanceof Uint8Array);
+        } finally {
+          updates.unsubscribe();
+          await nextUpdate;
+          await iterator.return?.();
+        }
 
         const records = service.kv.records;
         assert(records, "the required KV records binding must be available");
@@ -91,11 +130,20 @@ Deno.test(
             "the Live handler reached the flat client's selected Echo call",
           );
         } finally {
-          await client.connection.close();
+          await client.connection.close().catch((error: unknown) => {
+            failures.push(error);
+          });
         }
+      } catch (error) {
+        failures.unshift(error);
       } finally {
-        await service.stop();
+        await service.stop().catch((error: unknown) => {
+          failures.push(error);
+        });
         await serviceExit;
+      }
+      if (failures.length) {
+        throw new AggregateError(failures, "Provider case failed");
       }
     });
   },
@@ -117,6 +165,7 @@ Deno.test(
         seed: serviceIdentity.seed,
       }).orThrow();
       let serviceExit: Promise<unknown> | undefined;
+      const failures: unknown[] = [];
       try {
         const received: string[] = [];
         const clientErrors: string[] = [];
@@ -127,7 +176,9 @@ Deno.test(
         // The declared durable consumer spans Alpha and Beta, so its listener
         // loop only starts once every declared event has a registration.
         await eventService.onBeta(() => {}).orThrow();
-        serviceExit = eventService.wait().catch((error: unknown) => error);
+        serviceExit = eventService.wait().catch((error: unknown) => {
+          failures.push(error);
+        });
 
         const clientName = `event-client-${crypto.randomUUID()}`;
         const clientIdentity = await runtime.registerService({
@@ -162,7 +213,9 @@ Deno.test(
             {},
             { mode: "ephemeral" },
           ).orThrow();
-          clientExit = eventClient.wait().catch((error: unknown) => error);
+          clientExit = eventClient.wait().catch((error: unknown) => {
+            failures.push(error);
+          });
 
           await eventService.publishBeta({ site: "case-b", value: "beta-one" })
             .orThrow();
@@ -176,13 +229,24 @@ Deno.test(
             `the owned listener must receive the transformed Alpha (beta deliveries: ${betaDeliveries})`,
           );
           assert(betaDeliveries >= 1);
+        } catch (error) {
+          failures.unshift(error);
         } finally {
-          await eventClient.stop();
+          await eventClient.stop().catch((error: unknown) => {
+            failures.push(error);
+          });
           await clientExit;
         }
+      } catch (error) {
+        failures.unshift(error);
       } finally {
-        await eventService.stop();
+        await eventService.stop().catch((error: unknown) => {
+          failures.push(error);
+        });
         await serviceExit;
+      }
+      if (failures.length) {
+        throw new AggregateError(failures, "Event case failed");
       }
     });
   },

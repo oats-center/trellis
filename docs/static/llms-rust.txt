@@ -79,6 +79,14 @@ Exact method and model names come from the generated crate. Match generated
 declared-error variants directly; transport and unknown remote failures remain
 distinct. Operations expose generated invokers and typed references for start,
 wait, progress/watch, and optional cancellation/transfer.
+Persist a caller-selected ULID before `start_with_invocation_id(id, &input)`;
+this is the durable operation ID, recoverable through `control(id)`.
+To cancel a reserved invocation that may not yet be admitted, use
+`start_cancelled_with_invocation_id(id, &input)` with its original input. It
+requires both Invoke and Cancel authority and atomically retains cancellation
+intent before new handler entry. The returned reference does not imply finished
+cleanup; explicitly `wait()` for the terminal result. Normal replay never clears
+that intent; an existing terminal result is returned unchanged.
 
 Owned event publication uses generated publishers. Durable handlers use declared
 Consumer resources; Trellis resolves durable identity, local concurrency, retry,
@@ -117,9 +125,11 @@ Rust operation handlers can clone `control.cancellation()` and observe
 including already-running `spawn_blocking` closures, before returning from
 requested cancellation. A healthy owner renews its lease and leaves cancellation
 nonterminal while cleanup runs; the caller's `cancel()` resolves terminal
-`Cancelled` only after cleanup and the fenced write. Interrupted cancellation
-recovers without re-entering business work. External effects may still overlap
-across owner loss; use idempotency or external fencing.
+`Cancelled` only after cleanup and the fenced write. A cleanup handler error
+leaves cancellation nonterminal for recovery. Recovered handlers enter with
+`Requested` already set and must retry cleanup without starting new business
+work; return `Ok(())` only after cleanup succeeds. External effects may still
+overlap across owner loss; use idempotency or external fencing.
 
 Live observations and Operation watchers are authorized live sessions negotiated with
 bounded opening requests. The provider signs its offer and frames; control

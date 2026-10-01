@@ -61,7 +61,20 @@ export const workJobHandler: JobHandler<ProviderContract, "work"> = async (
   const availability = client.watchAvailability()[Symbol.asyncIterator]();
   await availability.next();
   await availability.return?.();
-  await job.emitUpdate({ value: job.payload.value }).orThrow();
+  const releaseDeadline = Date.now() + 4_000;
+  while (!await client.kv.records.get(`release-${job.ref.id}`).orThrow()) {
+    if (job.signal.aborted || Date.now() >= releaseDeadline) {
+      throw new Error("Job update subscription was not released in time");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  await job.emitUpdate({
+    value: job.payload.value,
+    nested: {
+      count: 9_007_199_254_740_993n,
+      payload: new Uint8Array([0, 128, 255]),
+    },
+  }).orThrow();
   const operation = await client.work({ value: job.payload.value }).start()
     .orThrow();
   const terminal = await operation.wait().orThrow();
@@ -100,7 +113,9 @@ export async function readJobUpdates(
 ): Promise<void> {
   const updates = await client.jobs.work.updates(jobId).orThrow();
   for await (const update of updates) {
-    void update.value;
+    const count: bigint = update.nested.count;
+    const payload: Uint8Array = update.nested.payload;
+    void [count, payload];
   }
 }
 

@@ -532,6 +532,7 @@ Deno.test("generated runtime workflows", async (t) => {
     try {
       await service.handleEcho(({ input }) => Result.ok(input));
       await service.handleWork(async ({ input, op, signal }) => {
+        if (signal.aborted) return;
         await op.started().orThrow();
         if (input.value === "reconnect-live") {
           const accepted = await op.nextSignal("Continue").orThrow();
@@ -550,7 +551,7 @@ Deno.test("generated runtime workflows", async (t) => {
             (await op.complete({ value: "too late" })).isErr(),
           );
           await cancellationCleanup.promise;
-          return op.defer();
+          return;
         }
         return await op.complete({ value: `completed ${input.value}` })
           .orThrow();
@@ -586,6 +587,7 @@ Deno.test("generated runtime workflows", async (t) => {
         cancelledFeeds += 1;
       });
       await service.handleUpload(async ({ input, op, transfer }) => {
+        assert(transfer);
         const body = await transfer.stream().orThrow();
         const store = await service.store.files.open().orThrow();
         await store.put(input.value, body).orThrow();

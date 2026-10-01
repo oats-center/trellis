@@ -216,6 +216,36 @@ impl OutboxRepository for SqliteAuthorizationStore {
 }
 
 impl SqliteAuthorizationStore {
+    /// Enqueue fallback transport enforcement only while hard-security
+    /// revocation has not taken ownership of terminating the context.
+    pub(crate) async fn enqueue_transport_reevaluation_event(
+        &self,
+        context_digest: &str,
+        event: PostCommitActionRecord,
+    ) -> Result<bool, AuthorizationStateError> {
+        super::super::application::validation::validate_post_commit_action(&event)?;
+        let context_digest = context_digest.to_owned();
+        self.run(move |connection| {
+            let transaction = connection.transaction().map_err(sql_error)?;
+            let context =
+                super::super::context::load_sql_context_by_digest(&transaction, &context_digest)?;
+            if context.is_some_and(|context| {
+                context.state == super::super::context::AuthorizationContextState::Revoked
+                    && context
+                        .revocation_reason
+                        .is_some_and(|reason| reason.requires_immediate_physical_kick())
+            }) {
+                return Ok(false);
+            }
+            // A missing row has no dedicated hard-security kick; preserve
+            // fallback enforcement for the already captured attachment.
+            insert_sql_post_commit_actions(&transaction, &[event])?;
+            transaction.commit().map_err(sql_error)?;
+            Ok(true)
+        })
+        .await
+    }
+
     pub(crate) async fn enqueue_post_commit_actions(
         &self,
         actions: Vec<PostCommitActionRecord>,
@@ -446,6 +476,70 @@ mod tests {
     use crate::platform::auth::{
         IdempotencyResultRecord, PostCommitActionKind, PostCommitActionRecord,
     };
+
+    #[tokio::test]
+    async fn missing_transport_context_keeps_fallback_kick_event_claimable(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+        const NOW: i64 = 1_700_000_000_000;
+        let store = SqliteAuthorizationStore::open_in_memory()?;
+        let connection = crate::platform::auth::AuthConnectionPresence {
+            storage_revision: 1,
+            format: "trellis.auth-connection-presence.v2".to_owned(),
+            connection_id: "physical-connection".to_owned(),
+            runtime_connection_id: "runtime-connection".to_owned(),
+            session_key: URL_SAFE_NO_PAD.encode([1; 32]),
+            login_session_id: Some("login-session".to_owned()),
+            principal_id: "principal".to_owned(),
+            principal_kind: trellis_protocol::AuthorizationPrincipalKind::User,
+            participant_id: "participant".to_owned(),
+            deployment_id: None,
+            instance_id: None,
+            context_digest: URL_SAFE_NO_PAD.encode([2; 32]),
+            transport_authorization_digest: URL_SAFE_NO_PAD.encode([3; 32]),
+            attachment_state: crate::platform::auth::AuthAttachmentState::Confirmed,
+            pending_deadline: None,
+            server_id: "server".to_owned(),
+            client_id: "1".to_owned(),
+            user_nkey: "user-nkey".to_owned(),
+            remote_address: None,
+            connected_at: NOW,
+            last_seen_at: NOW,
+            version: 1,
+        };
+        let event = crate::platform::auth::connection_event_action::<
+            trellis_runtime_apis::apis::trellis_auth_v1::events::ConnectionsKicked,
+        >(
+            &connection,
+            "Auth.Connections.Kicked",
+            "kicked",
+            Some("transport_reevaluate"),
+            NOW,
+        )?;
+        let action_id = event.action_id.clone();
+        let expected_payload = event.payload.clone();
+        assert!(
+            store
+                .enqueue_transport_reevaluation_event(&connection.context_digest, event)
+                .await?
+        );
+        let ready = store.list_ready_post_commit_actions(NOW, 10).await?;
+        assert_eq!(ready.len(), 1);
+        let claim = store
+            .claim_post_commit_action(&action_id, NOW, NOW + 30_000)
+            .await?
+            .expect("missing context must not suppress fallback enforcement");
+        assert_eq!(claim.action.payload, expected_payload);
+        store
+            .acknowledge_post_commit_action(&action_id, &claim.token)
+            .await?;
+        assert!(store
+            .list_ready_post_commit_actions(NOW, 10)
+            .await?
+            .is_empty());
+        Ok(())
+    }
 
     #[tokio::test]
     async fn event_delivery_is_prepared_once_by_the_current_claim(

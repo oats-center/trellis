@@ -1123,17 +1123,31 @@ export type OperationHandlerContext<
   TTransfer,
   TError extends BaseError,
   TUpdate = unknown,
-> = {
-  input: TInput;
-  op: OperationRuntimeHandle<TProgress, TOutput, TError, TUpdate>;
-  caller: SessionCaller;
-  /** Aborted when cancellation is requested or this executor loses ownership. */
-  signal: AbortSignal;
-  /** Whether this handler resumes an earlier invocation or reconciles durable state. */
-  resuming: boolean;
-  /** Last durably persisted progress available to a resumed handler. */
-  progress?: TProgress;
-} & (TTransfer extends undefined ? {} : { transfer: TTransfer });
+> =
+  & {
+    input: TInput;
+    op: OperationRuntimeHandle<TProgress, TOutput, TError, TUpdate>;
+    caller: SessionCaller;
+    /**
+     * Aborted when cancellation is requested or this executor loses ownership.
+     * Cancellation-first admission and cancellation recovery enter the handler
+     * with this signal already aborted. Perform cleanup before business work or
+     * accessing transfer, then return successfully to acknowledge cleanup.
+     * Throwing, returning an error, or deferring leaves cancellation nonterminal.
+     */
+    signal: AbortSignal;
+    /** Whether this handler resumes an earlier invocation or reconciles durable state. */
+    resuming: boolean;
+    /** Last durably persisted progress available to a resumed handler. */
+    progress?: TProgress;
+  }
+  & (TTransfer extends undefined ? {} : {
+    /**
+     * Absent during cancellation-first admission or cancellation-only recovery
+     * when staging was not opened. Handle aborted-signal cleanup before use.
+     */
+    transfer?: TTransfer;
+  });
 export type OperationRegistration<
   TInput,
   TProgress,
@@ -2875,13 +2889,16 @@ export class Trellis<
     return records;
   }
 
-  async saveOperationRecord(runtime: RuntimeOperationRecord): Promise<void> {
+  async saveOperationRecord(
+    runtime: RuntimeOperationRecord,
+    createOnly = false,
+  ): Promise<void> {
     const store = await this.operationStoreHandle();
     const loaded = await store.getEntry(runtime.id);
     const loadedValue = loaded.take();
     if (isErr(loadedValue)) throw loadedValue.error;
     const existing = loadedValue?.value;
-    if (existing && existing.revision !== runtime.revision) {
+    if (existing && (createOnly || existing.revision !== runtime.revision)) {
       throw new Error("operation revision conflict");
     }
     const revision = existing ? runtime.revision + 1 : runtime.revision;
@@ -2901,8 +2918,11 @@ export class Trellis<
       ownerConnectionId: runtime.ownerConnectionId,
       ownerEpoch: runtime.ownerEpoch,
       leaseExpiresAt: runtime.leaseExpiresAt,
-      ...(runtime.cancelRequestedAt
-        ? { cancelRequestedAt: runtime.cancelRequestedAt }
+      ...(existing?.cancelRequestedAt || runtime.cancelRequestedAt
+        ? {
+          cancelRequestedAt: existing?.cancelRequestedAt ??
+            runtime.cancelRequestedAt,
+        }
         : {}),
       ...(runtime.transferGrant
         ? { transferGrant: runtime.transferGrant }
@@ -2945,6 +2965,7 @@ export class Trellis<
       : await store.replace(runtime.id, loadedValue.revision, record);
     const value = saved.take();
     if (isErr(value)) throw value.error;
+    runtime.cancelRequestedAt = record.cancelRequestedAt;
     runtime.revision = revision;
   }
 

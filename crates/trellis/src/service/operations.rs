@@ -4,6 +4,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use futures_util::stream::{self, BoxStream};
 use futures_util::{Stream, StreamExt};
@@ -376,7 +377,15 @@ where
         context: RequestContext,
         _invocation_id: String,
         input: D::Input,
+        cancelled_admission: Option<Bytes>,
     ) -> AcceptedOperationFuture<D> {
+        if cancelled_admission.is_some() {
+            return Box::pin(async {
+                Err(ServerError::Nats(
+                    "cancelled admission is unsupported".to_owned(),
+                ))
+            });
+        }
         self.start(context, input)
     }
 
@@ -573,17 +582,6 @@ where
         )
         .await?
         .ok_or_else(|| ServerError::Nats("operation owner fence is stale".to_owned()))?;
-        if claimed.record.cancellation_requested {
-            finalize_cancellation::<D>(
-                &repository,
-                &fence,
-                &mutation_gate,
-                &claimed.record.invocation_id,
-                None,
-            )
-            .await?;
-            return Ok(());
-        }
         let mut cancellation = repository.watch(&claimed.record.invocation_id).await?;
         let input = serde_json::from_value(claimed.record.input.clone())?;
         let route = crate::telemetry::instruments::route_token(
@@ -607,17 +605,7 @@ where
             let Some(admitted) = admitted else {
                 return;
             };
-            if admitted.record.cancellation_requested {
-                let _ = finalize_cancellation::<D>(
-                    &repository,
-                    &fence,
-                    &mutation_gate,
-                    &claimed.record.invocation_id,
-                    None,
-                )
-                .await;
-                return;
-            }
+            let cancellation_requested = admitted.record.cancellation_requested;
             let context = RequestContext {
                 resuming: admitted.record.owner_epoch > 1,
                 operation_progress: admitted.record.snapshot.progress.clone(),
@@ -627,7 +615,9 @@ where
             };
             // One telemetry-only terminal witness for this acquired execution.
             let witness = Arc::new(TerminalWitness::default());
-            let (cancel_sender, cancel_receiver) = tokio::sync::watch::channel(None);
+            let (cancel_sender, cancel_receiver) = tokio::sync::watch::channel(
+                cancellation_requested.then_some(OperationCancellationReason::Requested),
+            );
             let control = OperationControl {
                 operation_ref: OperationRefData {
                     id: claimed.record.invocation_id.clone(),
@@ -679,7 +669,7 @@ where
             let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(10));
             heartbeat.tick().await;
             let mut execution = Box::pin(handler(context, input, control));
-            let mut cancellation_started = None;
+            let mut cancellation_started = cancellation_requested.then(std::time::Instant::now);
             let outcome = loop {
                 tokio::select! {
                     result = &mut execution => {
@@ -695,19 +685,24 @@ where
                         // handler that returns Ok(()) without a committed
                         // terminal snapshot is not a completed operation.
                         let mut durable = if cancellation_requested {
-                            match finalize_cancellation::<D>(
-                                &repository,
-                                &fence,
-                                &mutation_gate,
-                                &claimed.record.invocation_id,
-                                Some(&witness),
-                            )
-                            .await
-                            {
-                                Ok(_) => witness.get().unwrap_or("interrupted"),
-                                Err(error) => {
-                                    tracing::warn!(%error, "operation cancellation persistence failed");
-                                    "error"
+                            if let Err(error) = &result {
+                                tracing::error!(%error, "operation cancellation cleanup failed; intent retained for recovery");
+                                witness.get().unwrap_or("interrupted")
+                            } else {
+                                match finalize_cancellation::<D>(
+                                    &repository,
+                                    &fence,
+                                    &mutation_gate,
+                                    &claimed.record.invocation_id,
+                                    Some(&witness),
+                                )
+                                .await
+                                {
+                                    Ok(_) => witness.get().unwrap_or("interrupted"),
+                                    Err(error) => {
+                                        tracing::warn!(%error, "operation cancellation persistence failed");
+                                        "error"
+                                    }
                                 }
                             }
                         } else if let Err(error) = &result {
@@ -743,10 +738,11 @@ where
                             // makes it a completed/failed/cancelled outcome.
                             witness.get().unwrap_or("interrupted")
                         };
-                        // Cancellation may commit between the read above and a
-                        // competing handler failure write. The handler has now
-                        // returned, so finish that request under the same fence.
-                        if witness.get().is_none()
+                        // Cancellation may commit after the read above. Only a
+                        // successful cleanup may finalize it under this fence;
+                        // a failed handler leaves the intent for recovery.
+                        if result.is_ok()
+                            && witness.get().is_none()
                             && repository
                                 .get(&claimed.record.invocation_id)
                                 .await
@@ -865,7 +861,7 @@ where
                         {
                             continue;
                         }
-                        if D::UPLOAD {
+                        if D::UPLOAD && !record.record.cancellation_requested {
                             let Some(upload) = record.record.transfer.as_ref().and_then(|value| {
                                 serde_json::from_value::<DurableOperationUpload>(value.clone()).ok()
                             }) else {
@@ -912,7 +908,7 @@ where
                             record_ownership_event("claim", claim.is_ok());
                             if let Ok(claimed) = claim {
                                 let reconciled = async {
-                                    if !D::UPLOAD {
+                                    if !D::UPLOAD || claimed.record.cancellation_requested {
                                         return Ok(claimed);
                                     }
                                     let mut claimed = claimed;
@@ -1033,7 +1029,7 @@ where
     }
 
     fn start(&self, context: RequestContext, input: D::Input) -> AcceptedOperationFuture<D> {
-        self.start_invocation(context, ulid::Ulid::new().to_string(), input)
+        self.start_invocation(context, ulid::Ulid::new().to_string(), input, None)
     }
 
     fn start_invocation(
@@ -1041,6 +1037,7 @@ where
         context: RequestContext,
         invocation_id: String,
         input: D::Input,
+        cancelled_admission: Option<Bytes>,
     ) -> AcceptedOperationFuture<D> {
         let service = self.service.clone();
         let deployment_id = self.deployment_id.clone();
@@ -1057,6 +1054,43 @@ where
         let next_update_sequence = Arc::clone(&self.next_update_sequence);
         let update_subject = operation_update_subject::<D>(&deployment_id, &invocation_id);
         Box::pin(async move {
+            let cancellation_requested = cancelled_admission.is_some();
+            if let Some(payload) = cancelled_admission {
+                if !D::CANCELABLE {
+                    return Err(ServerError::Nats("operation is not cancelable".to_owned()));
+                }
+                // Invoke was verified by the authenticated router. Verify Cancel
+                // against the same proof and raw payload before any durable write.
+                let cancel_context = RequestContext {
+                    required_capabilities: Some(
+                        D::CANCEL_CAPABILITIES
+                            .iter()
+                            .map(|capability| (*capability).to_owned())
+                            .collect(),
+                    ),
+                    required_permission: Some(super::RoutePermission {
+                        api: D::API_ID.to_owned(),
+                        surface: ApiSurfaceKind::Operation,
+                        name: D::KEY
+                            .split_once('.')
+                            .map_or(D::KEY, |(_, name)| name)
+                            .to_owned(),
+                        action: PermissionAction::Cancel,
+                        signal: None,
+                    }),
+                    ..context.clone()
+                };
+                if !validator
+                    .validate(&context.subject, &payload, &cancel_context)
+                    .await?
+                    .allowed
+                {
+                    return Err(ServerError::RequestDenied {
+                        subject: context.subject.clone(),
+                        session_key: context.session_key.clone().unwrap_or_default(),
+                    });
+                }
+            }
             let caller = context.caller.as_ref().ok_or_else(|| {
                 ServerError::Nats("operation start is missing verified caller".to_owned())
             })?;
@@ -1069,7 +1103,7 @@ where
                 &input_value,
             )?;
             let timestamp = now_timestamp();
-            let upload = if D::UPLOAD {
+            let upload = if D::UPLOAD && !cancellation_requested {
                 let transfer_id = ulid::Ulid::new().to_string();
                 let expires_at = (OffsetDateTime::now_utc() + time::Duration::minutes(15))
                     .format(&Rfc3339)
@@ -1119,7 +1153,7 @@ where
                     owner_connection_id: None,
                     owner_epoch: 0,
                     lease_expires_at_ms: None,
-                    cancellation_requested: false,
+                    cancellation_requested,
                     next_signal_sequence: 1,
                     signals: Vec::new(),
                     transfer: upload.as_ref().map(serde_json::to_value).transpose()?,
@@ -1164,7 +1198,9 @@ where
                     .clone()
                     .map(serde_json::from_value::<DurableOperationUpload>)
                     .transpose()?
-                    .filter(|upload| upload.state != "committed")
+                    .filter(|upload| {
+                        upload.state != "committed" && !created.record.cancellation_requested
+                    })
                     .map(|upload| operation_upload_grant(&service, &caller.session_key, &upload));
                 return Ok(AcceptedOperation {
                     kind: "accepted".to_owned(),
@@ -1187,9 +1223,46 @@ where
                 )
                 .await;
             record_ownership_event("claim", claimed.is_ok());
-            let claimed = claimed?;
+            let claimed = match claimed {
+                Ok(claimed) => claimed,
+                Err(error) => {
+                    let current = repository.get(&invocation_id).await?;
+                    if let Some(current) = current.filter(|current| {
+                        current.record.snapshot.state.is_terminal()
+                            || current
+                                .record
+                                .lease_expires_at_ms
+                                .is_some_and(|expiry| expiry > now_ms())
+                    }) {
+                        let transfer = current
+                            .record
+                            .transfer
+                            .clone()
+                            .map(serde_json::from_value::<DurableOperationUpload>)
+                            .transpose()?
+                            .filter(|upload| {
+                                upload.state != "committed"
+                                    && !current.record.cancellation_requested
+                            })
+                            .map(|upload| {
+                                operation_upload_grant(&service, &caller.session_key, &upload)
+                            });
+                        return Ok(AcceptedOperation {
+                            kind: "accepted".to_owned(),
+                            operation_ref: OperationRefData {
+                                id: invocation_id,
+                                service,
+                                operation: D::KEY.to_owned(),
+                            },
+                            snapshot: typed_snapshot(current.record.snapshot)?,
+                            transfer,
+                        });
+                    }
+                    return Err(error);
+                }
+            };
             let fence = OwnerFence::from(&claimed.record)?;
-            if D::UPLOAD {
+            if D::UPLOAD && !claimed.record.cancellation_requested {
                 let mut upload: DurableOperationUpload =
                     serde_json::from_value(claimed.record.transfer.clone().ok_or_else(|| {
                         ServerError::Nats("operation upload staging state is missing".to_owned())
@@ -1519,21 +1592,31 @@ where
                     transfer: Some(grant),
                 });
             }
-            durable_snapshot_update::<D>(
-                &repository,
-                &fence,
-                &mutation_gate,
-                &invocation_id,
-                SnapshotUpdate {
-                    state: OperationState::Running,
-                    progress: None,
-                    output: None,
-                    error: None,
-                    cancellation_requested: false,
-                },
-                None,
-            )
-            .await?;
+            if !claimed.record.cancellation_requested {
+                let running = durable_snapshot_update::<D>(
+                    &repository,
+                    &fence,
+                    &mutation_gate,
+                    &invocation_id,
+                    SnapshotUpdate {
+                        state: OperationState::Running,
+                        progress: None,
+                        output: None,
+                        error: None,
+                        cancellation_requested: false,
+                    },
+                    None,
+                )
+                .await;
+                if let Err(error) = running {
+                    let current = repository.get(&invocation_id).await?;
+                    if !current.is_some_and(|current| {
+                        current.record.cancellation_requested && fence.matches(&current.record)
+                    }) {
+                        return Err(error);
+                    }
+                }
+            }
             let claimed = repository.get(&invocation_id).await?.ok_or_else(|| {
                 ServerError::OperationNotFound {
                     operation_id: invocation_id.clone(),
@@ -3547,6 +3630,7 @@ mod tests {
                 context("start-cancellable-handler", PermissionAction::Invoke, None),
                 handler_cancel_id.clone(),
                 json!({"value": 1}),
+                None,
             )
             .await
             .unwrap();
@@ -3629,6 +3713,7 @@ mod tests {
                 context("start-owned-handler", PermissionAction::Invoke, None),
                 ownership_id.clone(),
                 json!({"value": 1}),
+                None,
             )
             .await
             .unwrap();
@@ -4094,7 +4179,6 @@ mod tests {
             completed
         );
 
-        assert_eq!(created.record.revision, 1);
         jetstream.delete_key_value(bucket).await.unwrap();
         jetstream.delete_object_store(object_bucket).await.unwrap();
         nats.stop().unwrap();
@@ -4203,6 +4287,7 @@ mod tests {
                 context("start-cleanup", PermissionAction::Invoke, None),
                 id.clone(),
                 json!({"value": 1}),
+                None,
             )
             .await
             .unwrap();
@@ -4246,7 +4331,288 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn interrupted_cancellation_recovers_without_running_business_handler() {
+    async fn cancelled_admission_verifies_both_permissions_before_reservation() {
+        use crate::client::authorization::{
+            own_context_fixture, AuthorizationVerificationCore, RequestVerificationInput,
+        };
+        use crate::service::request_loop::RequestHandler;
+        use crate::service::{AuthenticatedRouter, Router};
+        use trellis_protocol::{
+            sign_authorization_context, verify_authorization_context, AuthorizationContextPurpose,
+            AuthorizationVerificationPolicy, GrantSet, VerifiedAuthorizationContext,
+        };
+
+        // The same cryptographic request verifier used by native authorization,
+        // with signed first-party contexts. No allow/deny stub or raw targets.
+        #[derive(Clone)]
+        struct SignedValidator {
+            authority: Arc<VerifiedAuthorizationContext>,
+            issuer: trellis_protocol::AuthorizationIssuerKey,
+            policy: AuthorizationVerificationPolicy,
+            checked: Arc<std::sync::Mutex<Vec<PermissionAction>>>,
+        }
+        impl RequestValidator for SignedValidator {
+            fn validate<'a>(
+                &'a self,
+                subject: &'a str,
+                payload: &'a Bytes,
+                request: &'a RequestContext,
+            ) -> BoxFuture<'a, Result<RequestValidation, ServerError>> {
+                Box::pin(async move {
+                    let permission = request.required_permission.as_ref().unwrap();
+                    self.checked.lock().unwrap().push(permission.action);
+                    let required = [permission.permission_atom().unwrap()];
+                    let input = RequestVerificationInput {
+                        context: &self.authority,
+                        context_digest: request.authorization_context.as_deref().unwrap(),
+                        subject,
+                        payload,
+                        iat: request.iat.unwrap(),
+                        request_id: request.request_id.as_deref().unwrap(),
+                        reply_subject: request.reply_to.as_deref(),
+                        proof: request.proof.as_deref().unwrap(),
+                        policy: &self.policy,
+                        required_permissions: &required,
+                    };
+                    match AuthorizationVerificationCore::new().verify_request(input) {
+                        Ok(verified) => Ok(RequestValidation {
+                            allowed: true,
+                            caller: Some(verified.caller().clone()),
+                            inbox_prefix: Some(verified.caller().inbox_prefix.clone()),
+                        }),
+                        Err(error) => {
+                            let crate::client::authorization::AuthorizationVerificationError::Protocol(error) = error else { panic!("unexpected verification failure: {error:?}"); };
+                            assert!(matches!(error.as_ref(), trellis_protocol::ProtocolError::Authorization { code: trellis_protocol::AuthorizationErrorCode::PermissionDenied, .. }), "{error:?}");
+                            // Authenticate possession solely to authorize the
+                            // reply. The required permission remains denied.
+                            let possession = AuthorizationVerificationCore::new()
+                                .verify_request(RequestVerificationInput {
+                                    required_permissions: &[],
+                                    ..input
+                                })
+                                .unwrap();
+                            Ok(RequestValidation {
+                                allowed: false,
+                                caller: Some(possession.caller().clone()),
+                                inbox_prefix: Some(possession.caller().inbox_prefix.clone()),
+                            })
+                        }
+                    }
+                })
+            }
+            fn revalidate_current<'a>(
+                &'a self,
+                request: &'a RequestContext,
+            ) -> BoxFuture<'a, Result<bool, ServerError>> {
+                Box::pin(async move {
+                    let mut policy = self.policy.clone();
+                    policy.now_unix_seconds = now_ms() / 1_000;
+                    let signed = self.authority.signed_context();
+                    Ok(request.authorization_context.as_deref()
+                        == Some(signed.digest().unwrap().as_str())
+                        && verify_authorization_context(
+                            &self.issuer,
+                            signed,
+                            &policy,
+                            AuthorizationContextPurpose::Live,
+                        )
+                        .is_ok())
+                })
+            }
+        }
+
+        let source = tempfile::tempdir().unwrap();
+        trellis_bootstrap::generate_nats_bootstrap(&trellis_bootstrap::NatsBootstrapOptions::new(
+            source.path(),
+        ))
+        .unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut nats = trellis_local_nats::LocalNats::builder()
+            .binary(trellis_local_nats::NatsBinarySource::DownloadPinned)
+            .cache_dir(state.path().join("cache"))
+            .source(source.path())
+            .temporary_state()
+            .ephemeral_ports()
+            .output(trellis_local_nats::NatsOutput::Log {
+                path: state.path().join("nats.log"),
+                mirror: false,
+            })
+            .start()
+            .unwrap();
+        let client = async_nats::ConnectOptions::new()
+            .credentials_file(source.path().join("creds/trellis-auth.creds"))
+            .await
+            .unwrap()
+            .connect(nats.nats_url())
+            .await
+            .unwrap();
+        let jetstream = async_nats::jetstream::new(client.clone());
+        let repository = KvOperationRepository::new(
+            jetstream
+                .create_key_value(async_nats::jetstream::kv::Config {
+                    bucket: format!("trellis_cancel_auth_{}", ulid::Ulid::new()),
+                    history: 10,
+                    ..Default::default()
+                })
+                .await
+                .unwrap(),
+        );
+        let staging = BoundStoreResourceClient::new(
+            jetstream
+                .create_object_store(async_nats::jetstream::object_store::Config {
+                    bucket: format!("trellis_cancel_auth_staging_{}", ulid::Ulid::new()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap(),
+        );
+        let cleanups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        for actions in [
+            vec![PermissionAction::Invoke],
+            vec![PermissionAction::Cancel],
+            vec![PermissionAction::Invoke, PermissionAction::Cancel],
+        ] {
+            let fixture = own_context_fixture(1);
+            let mut unsigned = fixture.signed.unsigned.clone();
+            unsigned.grants = GrantSet::new(
+                actions
+                    .iter()
+                    .map(|action| {
+                        // Resolve ordinary generated route metadata through the SDK.
+                        context("metadata", *action, None)
+                            .required_permission
+                            .unwrap()
+                            .permission_atom()
+                            .unwrap()
+                    })
+                    .collect(),
+            );
+            let signed = sign_authorization_context(unsigned, &fixture.issuer).unwrap();
+            let policy = AuthorizationVerificationPolicy::new(
+                now_ms() / 1_000,
+                30,
+                86_400,
+                1_048_576,
+                1_024,
+            )
+            .unwrap();
+            let authority = verify_authorization_context(
+                &fixture.issuer_key,
+                &signed,
+                &policy,
+                AuthorizationContextPurpose::Live,
+            )
+            .unwrap();
+            let checked = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let validator = SignedValidator {
+                authority: Arc::new(authority),
+                issuer: fixture.issuer_key.clone(),
+                policy: policy.clone(),
+                checked: Arc::clone(&checked),
+            };
+            let mut router = Router::new();
+            let count = Arc::clone(&cleanups);
+            router.register_operation_provider::<TestOperation, _>(RuntimeOperationProvider::new(
+                OperationHandlerRuntime {
+                    service: "service".to_owned(),
+                    deployment_id: "deployment".to_owned(),
+                    executor_id: "owner".to_owned(),
+                    connection_id: "owner".to_owned(),
+                    repository: repository.clone(),
+                    nats: client.clone(),
+                    service_session_key: "session".to_owned(),
+                    staging: staging.clone(),
+                    validator: validator.clone(),
+                },
+                move |_context: RequestContext,
+                      _input,
+                      operation: OperationControl<TestOperation>| {
+                    let count = Arc::clone(&count);
+                    async move {
+                        assert_eq!(
+                            operation.cancellation().reason(),
+                            Some(OperationCancellationReason::Requested)
+                        );
+                        count.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    }
+                },
+            ));
+            let router = AuthenticatedRouter::new(router, validator);
+            let id = ulid::Ulid::new().to_string();
+            let payload = Bytes::from(serde_json::to_vec(&json!({"invocationId": id, "input": {"value": 1}, "cancellationRequested": true})).unwrap());
+            let digest = signed.digest().unwrap();
+            let request_id = ulid::Ulid::new().to_string();
+            let reply = format!("{}.reply", signed.unsigned.inbox_prefix);
+            let proof = fixture
+                .session
+                .create_request_proof(
+                    &digest,
+                    TestOperation::SUBJECT,
+                    &reply,
+                    &payload,
+                    policy.now_unix_seconds,
+                    &request_id,
+                )
+                .unwrap();
+            let result = router
+                .handle(
+                    TestOperation::SUBJECT,
+                    payload,
+                    RequestContext {
+                        subject: TestOperation::SUBJECT.to_owned(),
+                        session_key: Some(signed.unsigned.session_key.clone()),
+                        proof: Some(proof.as_str().to_owned()),
+                        authorization_context: Some(digest),
+                        iat: Some(policy.now_unix_seconds),
+                        request_id: Some(request_id),
+                        reply_to: Some(reply),
+                        ..Default::default()
+                    },
+                )
+                .await;
+            if actions.len() == 1 {
+                assert!(
+                    matches!(result, Err(ServerError::RequestDenied { .. })),
+                    "{result:?}"
+                );
+                assert!(
+                    repository.get(&id).await.unwrap().is_none(),
+                    "denial must precede ANY reservation"
+                );
+                assert_eq!(cleanups.load(Ordering::SeqCst), 0);
+                let expected = if actions[0] == PermissionAction::Invoke {
+                    vec![PermissionAction::Invoke, PermissionAction::Cancel]
+                } else {
+                    vec![PermissionAction::Invoke]
+                };
+                assert_eq!(*checked.lock().unwrap(), expected);
+            } else {
+                result.unwrap();
+                assert_eq!(
+                    *checked.lock().unwrap(),
+                    vec![PermissionAction::Invoke, PermissionAction::Cancel]
+                );
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        let record = repository.get(&id).await.unwrap().unwrap().record;
+                        if record.snapshot.state == OperationState::Cancelled {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                assert_eq!(cleanups.load(Ordering::SeqCst), 1);
+            }
+        }
+        nats.stop().unwrap();
+    }
+
+    #[tokio::test]
+    async fn interrupted_cancellation_recovers_through_handler_cleanup() {
         let source = tempfile::tempdir().unwrap();
         trellis_bootstrap::generate_nats_bootstrap(&trellis_bootstrap::NatsBootstrapOptions::new(
             source.path(),
@@ -4306,6 +4672,8 @@ mod tests {
             .claim(&id, "former-owner", past, past + 1_000)
             .await
             .unwrap();
+        let (cleanup_tx, cleanup_rx) = tokio::sync::oneshot::channel();
+        let cleanup_tx = Arc::new(std::sync::Mutex::new(Some(cleanup_tx)));
         let provider = RuntimeOperationProvider::<TestOperation, _, _>::new(
             OperationHandlerRuntime {
                 service: "service".to_owned(),
@@ -4318,10 +4686,17 @@ mod tests {
                 staging,
                 validator: Allow,
             },
-            |_context, _input, _control| async {
-                Err(ServerError::Nats(
-                    "business handler must not run".to_owned(),
-                ))
+            move |context: RequestContext, _input, control: OperationControl<TestOperation>| {
+                let cleanup_tx = Arc::clone(&cleanup_tx);
+                async move {
+                    assert!(context.resuming);
+                    assert_eq!(
+                        control.cancellation().reason(),
+                        Some(OperationCancellationReason::Requested)
+                    );
+                    cleanup_tx.lock().unwrap().take().unwrap().send(()).unwrap();
+                    Ok(())
+                }
             },
         );
         let requested = provider
@@ -4344,6 +4719,7 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(terminal.state, OperationState::Cancelled);
+        cleanup_rx.await.unwrap();
         let recovered = repository.get(&id).await.unwrap().unwrap().record;
         assert_eq!(
             recovered.owner_executor_id.as_deref(),

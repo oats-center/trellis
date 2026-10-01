@@ -167,6 +167,23 @@ durable progress. The handler's `signal` aborts on cancellation or ownership
 loss; await cleanup of side-effecting children before returning. Caller
 `operation.cancel()` returns terminal `Cancelled` only after this cleanup and
 the fenced terminal write. Stalled cleanup remains nonterminal and lease-renewed.
+Throwing, returning an error, or `op.defer()` does not acknowledge successful
+cleanup. Reconciliation or recovery re-enters the registered handler with its
+signal already aborted; check that signal and perform cleanup before business
+work. Return successfully only after cleanup is complete. Ownership loss also
+aborts the signal, but a stale executor cannot finalize cancellation.
+
+For an ordinary TypeScript operation, cancellation-first admission uses
+`.start(undefined, { invocationId, cancellationRequested: true })` with a
+caller-chosen ULID and the same frozen input on every retry. Both Invoke and
+Cancel authority are required before durable reservation. The cancellation
+intent is atomic with fresh admission, merges into an exact existing invocation,
+and cannot be cleared by a normal start replay. Terminal replays remain unchanged.
+Native cancellation-first admission also supports upload operations, without
+opening upload staging. Handler `transfer` is therefore optional: handle
+already-aborted cleanup before accessing it, and require a transfer handle on the
+ordinary upload branch. The TypeScript transfer-start builder does not expose
+the cancellation-first option because its result describes an actual transfer.
 
 Private queues are available as `service.jobs.<queue>`. Register handlers with
 `handle(...)`, create work with `create(...)`, and observe the returned job

@@ -184,6 +184,12 @@ export type OperationWaitOptions = {
 /** Options that identify an idempotent operation invocation. */
 export type OperationStartOptions = {
   invocationId?: string;
+  /**
+   * Admit cancellation intent atomically for an ordinary operation start.
+   * Requires Invoke and Cancel authority. Reuse the invocationId and frozen
+   * input when retrying; the provider enters cleanup with an aborted signal.
+   */
+  cancellationRequested?: boolean;
   /** Abort only automatic callback observation; not a business cancel. */
   observationSignal?: AbortSignal;
 };
@@ -379,7 +385,7 @@ export interface TransferOperationBuilder<
   ): TransferOperationBuilder<TDesc, TProgress, TOutput, TUpdate>;
   start(
     callbacks?: OperationObserverCallbacks<TProgress, TOutput, TUpdate>,
-    options?: OperationStartOptions,
+    options?: Omit<OperationStartOptions, "cancellationRequested">,
   ): AsyncResult<
     StartedTransfer<TDesc, TProgress, TOutput, TUpdate>,
     OperationControlError | UnexpectedError | TransferError
@@ -511,8 +517,16 @@ async function settleRequest<T>(
   }
 }
 
-function operationRequestBody(input: unknown, invocationId: string): JsonValue {
-  return { invocationId, input: input as JsonValue };
+function operationRequestBody(
+  input: unknown,
+  invocationId: string,
+  cancellationRequested = false,
+): JsonValue {
+  return {
+    invocationId,
+    input: input as JsonValue,
+    ...(cancellationRequested ? { cancellationRequested: true } : {}),
+  };
 }
 
 function encodeOperationInput(schema: unknown, value: unknown): JsonValue {
@@ -1225,6 +1239,7 @@ function invokeOperation<
   descriptor: TDesc,
   input: unknown,
   invocationId: string,
+  cancellationRequested = false,
 ): AsyncResult<
   InvokedOperation<TDesc, TProgress, TOutput, TUpdate>,
   OperationControlError | UnexpectedError
@@ -1236,6 +1251,7 @@ function invokeOperation<
         operationRequestBody(
           encodeOperationInput(descriptor.input, input),
           invocationId,
+          cancellationRequested,
         ),
       )
     );
@@ -1403,6 +1419,7 @@ function startObservedOperation<
       descriptor,
       input,
       options?.invocationId ?? ulid(),
+      options?.cancellationRequested,
     ).take();
     if (isErr(startedValue)) {
       return startedValue;
@@ -1462,7 +1479,7 @@ function startObservedTransfer<
   input: unknown,
   body: TransferBody,
   callbacks: OperationObserverCallbacks<TProgress, TOutput, TUpdate>,
-  options?: OperationStartOptions,
+  options?: Omit<OperationStartOptions, "cancellationRequested">,
 ): AsyncResult<
   StartedTransfer<TDesc, TProgress, TOutput, TUpdate>,
   OperationControlError | UnexpectedError | TransferError

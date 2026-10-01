@@ -336,9 +336,11 @@ async fn fabricated_delivery_is_rejected_and_replay_survives_process_boundaries(
         .await
         .expect("confirm source")
         .sequence;
+    // Publish acknowledgement precedes the broker's asynchronous consumer notification.
     let mut messages = consumer
-        .fetch()
+        .batch()
         .max_messages(1)
+        .expires(Duration::from_millis(500))
         .messages()
         .await
         .expect("fetch source");

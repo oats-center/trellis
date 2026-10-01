@@ -17,6 +17,8 @@ pub use core::{
     RequestVerificationInput, VerifiedAuthorizationEvent, VerifiedAuthorizationRequest,
     VerifiedCaller,
 };
+#[cfg(all(test, feature = "live-integration"))]
+pub(crate) use own_context::tests::test_support::own_context_fixture;
 pub use own_context::AuthorizationContextCache;
 pub(crate) use provider_cache::AuthorizationContextLease;
 pub use provider_cache::AuthorizationProviderCache;

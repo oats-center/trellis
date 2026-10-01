@@ -1,3 +1,4 @@
+import { UnexpectedError } from "@oatscenter/trellis";
 import type { OperationHandler } from "@oatscenter/trellis/service";
 import { participants } from "../../../trellis/index.js";
 import { recordActivity } from "../activity/index.ts";
@@ -5,7 +6,16 @@ import { recordActivity } from "../activity/index.ts";
 export const uploadEvidence: OperationHandler<
   typeof participants.Service.participant,
   "Evidence.Upload"
-> = async ({ input, op, transfer, client }) => {
+> = async ({ input, op, transfer, client, signal }) => {
+  if (signal.aborted) return;
+  if (!transfer) {
+    await op.fail(
+      new UnexpectedError({
+        cause: new Error("Active evidence upload requires a transfer"),
+      }),
+    ).orThrow();
+    return;
+  }
   const transferred = await transfer.completed().orThrow();
 
   await op.started().orThrow();

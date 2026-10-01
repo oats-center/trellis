@@ -399,7 +399,35 @@ where
         invocation_id: impl Into<String>,
         input: &D::Input,
     ) -> Result<OperationRef<'a, T, D>, TrellisClientError> {
-        let invocation_id = invocation_id.into();
+        self.start_invocation(invocation_id.into(), input, false)
+            .await
+    }
+
+    /// Admit or replay an invocation with durable cancellation requested.
+    ///
+    /// A previously absent invocation enters its handler for cleanup only. This
+    /// requires Invoke and Cancel authority and does not wait for cleanup; use
+    /// the returned reference's `wait()` to observe the terminal result.
+    pub async fn start_cancelled_with_invocation_id(
+        &self,
+        invocation_id: impl Into<String>,
+        input: &D::Input,
+    ) -> Result<OperationRef<'a, T, D>, TrellisClientError> {
+        if !D::CANCELABLE {
+            return Err(TrellisClientError::OperationProtocol(
+                "operation is not cancelable".to_owned(),
+            ));
+        }
+        self.start_invocation(invocation_id.into(), input, true)
+            .await
+    }
+
+    async fn start_invocation(
+        &self,
+        invocation_id: String,
+        input: &D::Input,
+        cancellation_requested: bool,
+    ) -> Result<OperationRef<'a, T, D>, TrellisClientError> {
         invocation_id.parse::<ulid::Ulid>().map_err(|_| {
             TrellisClientError::OperationProtocol(
                 "operation invocation id must be a ULID".to_owned(),
@@ -407,11 +435,14 @@ where
         })?;
         let body = serde_json::to_value(input)?;
         validate_operation_schema(D::INPUT_SCHEMA_JSON, &body, "operation input")?;
-        self.start_encoded(serde_json::json!({
+        let mut envelope = serde_json::json!({
             "invocationId": invocation_id,
             "input": body,
-        }))
-        .await
+        });
+        if cancellation_requested {
+            envelope["cancellationRequested"] = Value::Bool(true);
+        }
+        self.start_encoded(envelope).await
     }
 
     pub(crate) async fn start_encoded(
