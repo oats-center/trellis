@@ -50,6 +50,9 @@
   let catalogError = $state<string | null>(null);
   let editing = $state(false);
   let original = $state.raw<Binding | null>(null);
+  let draftPermissions = $state.raw<Permission[]>([]);
+  let draftPlatformPrivileges = $state.raw<string[]>([]);
+  let conflicted = $state(false);
   let participantId = $state("");
   let detail = $state.raw<Detail | null>(null);
   let detailLoading = $state(false);
@@ -66,12 +69,13 @@
 
   const available = $derived.by(() => {
     const permissions = new SvelteMap<string, Permission>();
-    for (const permission of [...detail?.requiredGrants.permissions ?? [], ...detail?.optionalBundles.flatMap((bundle) => bundle.permissions) ?? [], ...original?.grants.permissions ?? []]) {
+    for (const permission of [...detail?.requiredGrants.permissions ?? [], ...detail?.optionalBundles.flatMap((bundle) => bundle.permissions) ?? [], ...original?.grants.permissions ?? [], ...draftPermissions]) {
       permissions.set(permissionKey(permission), permission);
     }
     return [...permissions.values()];
   });
   const selectedPermissions = $derived(available.filter((permission) => selected.has(permissionKey(permission))));
+  const incompatible = $derived(selectedPermissions.filter((permission) => ![...detail?.requiredGrants.permissions ?? [], ...detail?.optionalBundles.flatMap((bundle) => bundle.permissions) ?? [], ...original?.grants.permissions ?? []].some((candidate) => permissionKey(candidate) === permissionKey(permission))));
   const previousKeys = $derived(new Set(original?.grants.permissions.map(permissionKey) ?? []));
   const added = $derived(selectedPermissions.filter((permission) => !previousKeys.has(permissionKey(permission))));
   const removed = $derived(original?.grants.permissions.filter((permission) => !selected.has(permissionKey(permission))) ?? []);
@@ -139,6 +143,9 @@
     const generation = ++editorGeneration;
     const key = scope.key;
     original = binding;
+    draftPermissions = [...binding?.grants.permissions ?? []];
+    draftPlatformPrivileges = [...binding?.platformPrivileges.filter((privilege) => privilege !== "trellis.auth::admin") ?? []];
+    conflicted = false;
     participantId = binding?.participantId ?? id;
     selected.clear();
     for (const permission of binding?.grants.permissions ?? []) selected.add(permissionKey(permission));
@@ -164,6 +171,33 @@
     }
   }
 
+  async function refreshDraft(): Promise<void> {
+    if (busy || detailLoading || !editing || !conflicted) return;
+    const target = { ownerKind, ownerId, participantId };
+    const key = scope.key;
+    const generation = ++editorGeneration;
+    const permissions = [...selectedPermissions];
+    detailLoading = true;
+    review = false;
+    try {
+      const response = await trellis.grantsGet(target).orThrow();
+      const participant = await trellis.participantsGet({ participantId: target.participantId, ...(response.binding ? { revision: response.binding.installedRevision } : {}) }).orThrow();
+      if (scope.key !== key || editorGeneration !== generation) return;
+      if (response.binding && protectedBinding(response.binding)) throw new Error("This grant is now protected bootstrap-administrator access. The draft cannot be saved.");
+      draftPermissions = permissions;
+      original = response.binding;
+      detail = participant.participant;
+      bindings = [...bindings.filter((binding) => binding.participantId !== target.participantId), ...response.binding ? [response.binding] : []];
+      editorError = null;
+      conflicted = false;
+      saved = "Latest grant version loaded. Your draft is preserved; review the changes again before saving.";
+    } catch (cause) {
+      if (scope.key === key && editorGeneration === generation) editorError = errorMessage(cause);
+    } finally {
+      if (scope.key === key && editorGeneration === generation) detailLoading = false;
+    }
+  }
+
   function applyPreset(key: string): void {
     editorError = null;
     review = false;
@@ -176,7 +210,7 @@
   }
 
   async function saveAccess(): Promise<void> {
-    if (busy || !detail || detailLoading || editorError || !review || catalogError || !canPerform(authority.authority, "grantsSet")) return;
+    if (busy || !detail || detailLoading || editorError || conflicted || incompatible.length || (original && protectedBinding(original)) || !review || catalogError || !canPerform(authority.authority, "grantsSet")) return;
     const key = ulid();
     const expiryMillis = expiry === "" ? null : new Date(expiry).getTime();
     if (expiryMillis !== null && !Number.isFinite(expiryMillis)) { editorError = "Enter a valid expiry date."; review = false; return; }
@@ -185,7 +219,7 @@
     const input: SetInput = {
       ownerKind, ownerId, participantId: detail.participantId, installedRevision: detail.revision,
       grants: { format: detail.requiredGrants.format, permissions: selectedPermissions },
-      platformPrivileges: [...original?.platformPrivileges.filter((privilege) => privilege !== "trellis.auth::admin") ?? [], ...platformAdmin ? ["trellis.auth::admin"] : []],
+      platformPrivileges: [...draftPlatformPrivileges, ...platformAdmin ? ["trellis.auth::admin"] : []],
       expiresAt, expectedRevision: original?.revision ?? 0n, idempotencyKey: key,
     };
     const intent = captureIntent<SetInput>({ operation: "grantsSet", input, targetId: ownerId, label: ownerLabel, idempotencyKey: key, scope: { routeKey: scope.key } });
@@ -201,7 +235,7 @@
       editing = false;
       saved = "Access saved. The permissions below are the server-confirmed grant.";
     } else if (outcome.kind === "unknown") { uncertain = true; error = "Result unknown. Refresh access to verify the grant before submitting another change."; }
-    else { editorError = errorMessage(outcome.error); review = false; }
+    else { editorError = errorMessage(outcome.error); conflicted = outcome.kind === "conflict"; review = false; }
   }
 
   async function revoke(): Promise<void> {
@@ -300,8 +334,10 @@
         </select>
       </label>
       {#if editorError}<Notice variant="error">{editorError}</Notice>{/if}
+      {#if conflicted}<Notice variant="warning">Another operator changed this grant. Your draft has not been saved. Refresh the latest version, then review your changes again.<button type="button" class="btn btn-outline btn-sm ml-2" disabled={busy || detailLoading} onclick={() => void refreshDraft()}>Refresh latest version and keep draft</button></Notice>{/if}
       {#if detailLoading}<LoadingState label="Loading installed permissions" />{:else if detail}
         <p class="trellis-metadata">Installed revision {String(detail.revision)} · Package <code>{detail.packageDigest}</code></p>
+        {#if incompatible.length}<Notice variant="error">Draft permissions are no longer available in the latest grant or installed participant. Remove them explicitly before saving: {incompatible.map(permissionLabel).join("; ")}</Notice>{/if}
         <div class="flex flex-wrap gap-3 items-end">
           <label class="form-control min-w-64"><span class="trellis-field-label">Apply permission preset</span><select class="select select-bordered select-sm mt-1" disabled={pending || !!catalogError} value="" onchange={(event) => applyPreset(event.currentTarget.value)}><option value="">Choose a capability group</option>{#each groups as group (group.groupKey)}<option value={group.groupKey}>{group.displayName} ({group.groupKey})</option>{/each}</select></label>
           <p class="trellis-field-help max-w-xl">Presets add the group's current permissions. Future group changes do not update this grant.</p>
@@ -317,7 +353,7 @@
         {/if}
         <fieldset disabled={pending} class="space-y-2"><legend class="trellis-field-label mb-2">Exact application permissions</legend>
           {#each available as permission (permissionKey(permission))}
-            <label class="flex gap-3 items-start"><input class="checkbox checkbox-sm mt-0.5" type="checkbox" checked={selected.has(permissionKey(permission))} onchange={(event) => { if (event.currentTarget.checked) selected.add(permissionKey(permission)); else selected.delete(permissionKey(permission)); review = false; }} /><span class="text-xs break-words">{permissionLabel(permission)}<span class="trellis-metadata block">{detail.requiredGrants.permissions.some((entry) => permissionKey(entry) === permissionKey(permission)) ? "Required by application; removing this may prevent it from connecting" : detail.optionalBundles.some((bundle) => bundle.permissions.some((entry) => permissionKey(entry) === permissionKey(permission))) ? "Optional" : "Existing permission outside current catalog, preserved until explicitly removed"}</span></span></label>
+            <label class="flex gap-3 items-start"><input class="checkbox checkbox-sm mt-0.5" type="checkbox" checked={selected.has(permissionKey(permission))} onchange={(event) => { if (event.currentTarget.checked) selected.add(permissionKey(permission)); else selected.delete(permissionKey(permission)); review = false; }} /><span class="text-xs break-words">{permissionLabel(permission)}<span class="trellis-metadata block">{detail.requiredGrants.permissions.some((entry) => permissionKey(entry) === permissionKey(permission)) ? "Required by application; removing this may prevent it from connecting" : detail.optionalBundles.some((bundle) => bundle.permissions.some((entry) => permissionKey(entry) === permissionKey(permission))) ? "Optional" : original?.grants.permissions.some((entry) => permissionKey(entry) === permissionKey(permission)) ? "Existing permission outside current catalog, preserved until explicitly removed" : "Draft permission unavailable; remove it before saving"}</span></span></label>
           {:else}<p class="trellis-field-help">This participant declares no application permissions.</p>{/each}
         </fieldset>
         <div class="border-t border-base-300 pt-3 space-y-3">
@@ -334,7 +370,7 @@
           {#if ownerKind === "user" && ownerId === authority.identity.principalId}<Notice variant="warning">You are editing your own access. Changes may end this connection or remove your ability to administer Trellis.</Notice>{/if}
           {#if ownerKind === "deployment"}<Notice variant="warning">This changes deployment access for its instances. Companion or delegated access is a separate relationship.</Notice>{/if}
           <label class="flex items-center gap-3 text-sm"><input class="checkbox checkbox-sm" type="checkbox" bind:checked={review} disabled={pending} />I reviewed these access changes.</label>
-          <button class="btn btn-outline btn-sm" type="button" disabled={busy || !review || !!editorError || !!catalogError || !canPerform(authority.authority, "grantsSet")} onclick={() => void saveAccess()}>{pending ? "Saving access…" : "Save access"}</button>
+          <button class="btn btn-outline btn-sm" type="button" disabled={busy || detailLoading || conflicted || incompatible.length > 0 || !review || !!editorError || !!catalogError || !canPerform(authority.authority, "grantsSet")} onclick={() => void saveAccess()}>{pending ? "Saving access…" : "Save access"}</button>
         </section>
       {/if}
     </section>

@@ -1024,6 +1024,140 @@ Deno.test("N11 last-page user grant revoke leaves first-page binding active", as
   }, browserRuntimeOptions());
 });
 
+Deno.test("user grant conflict refresh preserves the draft and requires renewed review", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const context = await launchProfile(runtime);
+    try {
+      const page = await context.newPage();
+      const errors = captureBrowserErrors(page);
+      await openConsoleAsRuntimeAdmin(page, runtime);
+      const participantId = "trellis.console";
+      const installed = await runtime.callAdminRpc("authParticipantsGet", {
+        participantId,
+      });
+      const created = await runtime.callAdminRpc("authUsersCreate", {
+        username: fixtureName("grant-conflict"),
+        name: "Grant conflict operator",
+        email: null,
+        image: null,
+        idempotencyKey: ulid(),
+      });
+      const target = {
+        ownerKind: "user",
+        ownerId: created.user.userId,
+        participantId,
+      };
+      const initial = await runtime.callAdminRpc("authGrantsSet", {
+        ...target,
+        installedRevision: installed.participant.revision,
+        grants: installed.participant.requiredGrants,
+        platformPrivileges: [],
+        expiresAt: null,
+        expectedRevision: 0n,
+        idempotencyKey: ulid(),
+      });
+      await page.goto(
+        `${runtime.trellisUrl}/console/admin/users/edit?userId=${
+          encodeURIComponent(created.user.userId)
+        }`,
+        { waitUntil: "domcontentloaded" },
+      );
+      await waitForConsoleShell(page);
+      await page.getByRole("button", { name: "Edit access", exact: true })
+        .click();
+      const permissions = page.getByRole("group", {
+        name: "Exact application permissions",
+      }).getByRole("checkbox");
+      await permissions.first().uncheck();
+      const draft = await permissions.evaluateAll((inputs) =>
+        inputs.map((input) => (input as HTMLInputElement).checked)
+      );
+      const expiry = new Date(Date.now() + 86_400_000).toISOString().slice(
+        0,
+        16,
+      );
+      await page.getByLabel("Expires at (local time)").fill(expiry);
+      await page.getByLabel("Trellis platform administration")
+        .check();
+      const review = page.getByLabel("I reviewed these access changes.");
+      await review.check();
+      const external = await runtime.callAdminRpc("authGrantsSet", {
+        ...target,
+        installedRevision: initial.binding.installedRevision,
+        grants: { format: initial.binding.grants.format, permissions: [] },
+        platformPrivileges: [],
+        expiresAt: null,
+        expectedRevision: initial.binding.revision,
+        idempotencyKey: ulid(),
+      });
+      const save = page.getByRole("button", {
+        name: "Save access",
+        exact: true,
+      });
+      await save.click();
+      const refresh = page.getByRole("button", {
+        name: "Refresh latest version and keep draft",
+        exact: true,
+      });
+      await refresh.waitFor({ state: "visible", timeout: 30_000 });
+      assertEquals(await save.isDisabled(), true);
+      const afterConflict = await runtime.callAdminRpc("authGrantsGet", target);
+      assertEquals(afterConflict.binding?.revision, external.binding.revision);
+      await refresh.click();
+      await page.getByText(
+        "Latest grant version loaded. Your draft is preserved",
+        { exact: false },
+      ).waitFor({ state: "visible", timeout: 30_000 });
+      assertEquals(
+        await permissions.evaluateAll((inputs) =>
+          inputs.map((input) => (input as HTMLInputElement).checked)
+        ),
+        draft,
+      );
+      assertEquals(
+        await page.getByLabel("Expires at (local time)").inputValue(),
+        expiry,
+      );
+      assertEquals(
+        await page.getByLabel("Trellis platform administration").isChecked(),
+        true,
+      );
+      assertEquals(await review.isChecked(), false);
+      assertEquals(await save.isDisabled(), true);
+      const afterRefresh = await runtime.callAdminRpc("authGrantsGet", target);
+      assertEquals(
+        afterRefresh.binding?.revision,
+        external.binding.revision,
+        "refresh must not resubmit the draft",
+      );
+      await review.check();
+      await save.click();
+      await page.getByText(
+        "Access saved. The permissions below are the server-confirmed grant.",
+        { exact: true },
+      ).waitFor({ state: "visible", timeout: 30_000 });
+      const final = await runtime.callAdminRpc("authGrantsGet", target);
+      const removed = installed.participant.requiredGrants.permissions[0];
+      assertEquals(
+        final.binding?.grants.permissions,
+        initial.binding.grants.permissions.filter((permission) =>
+          permission.action !== removed.action ||
+          String(permission.target) !== String(removed.target)
+        ),
+      );
+      assertEquals(final.binding?.platformPrivileges, ["trellis.auth::admin"]);
+      const expiryMillis = await page.evaluate(
+        (value) => new Date(value).getTime(),
+        expiry,
+      );
+      assertEquals(final.binding?.expiresAt, BigInt(expiryMillis));
+      assertNoBrowserErrors(errors);
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});
+
 Deno.test("B20 capability group second save uses the returned version", async () => {
   await withTrellisRuntime(async (runtime) => {
     const groupKey = fixtureName("b20-group");
