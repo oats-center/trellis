@@ -10,6 +10,9 @@ and this project adheres to
 
 ### Added
 
+- Console manages user profiles, local sign-in names, sign-in security, and
+  application-scoped access grants inline. Grant revision conflicts preserve the
+  draft while loading the latest version for renewed review.
 - Operations can reserve a caller-selected invocation with cancellation already
   requested. Cancellation survives replay and owner replacement, and cleanup
   must succeed before the operation becomes terminal.
@@ -26,6 +29,8 @@ and this project adheres to
 
 ### Fixed
 
+- Account-flow creation rechecks caller authorization inside its transaction,
+  and successful user updates replay lost-response retries without another edit.
 - Native Operation handlers can finish fenced cleanup after lease loss without
   deadlocking on pending control mutations.
 - Hard-security revocations retain caller-provided reasons in connection events
