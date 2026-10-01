@@ -379,11 +379,13 @@ Deno.test("browser owner retains work after timeout and serializes shutdown", as
   await handle.forceFlush();
   const firstShutdown = handle.shutdown();
   const secondShutdown = handle.shutdown();
-  await Promise.all([firstShutdown, secondShutdown]);
-  assertEquals(events, ["trace flush"]);
-  release();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assertEquals(events, ["trace flush"]);
+  try {
+    assertEquals(events, ["trace flush"]);
+  } finally {
+    release();
+    await Promise.all([firstShutdown, secondShutdown]);
+  }
+  assertEquals(events, ["trace flush", "trace shutdown", "metric shutdown"]);
 });
 
 Deno.test("browser owner coalesces a caller that stops waiting", async () => {
