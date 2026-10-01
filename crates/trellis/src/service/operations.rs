@@ -669,6 +669,7 @@ where
             let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(10));
             heartbeat.tick().await;
             let mut execution = Box::pin(handler(context, input, control));
+            let mut renewal_due = false;
             let mut cancellation_started = cancellation_requested.then(std::time::Instant::now);
             let outcome = loop {
                 tokio::select! {
@@ -800,9 +801,13 @@ where
                             }
                         }
                     }
-                    _ = heartbeat.tick() => {
+                    _ = heartbeat.tick(), if !renewal_due => {
+                        renewal_due = true;
+                    }
+                    guard = mutation_gate.lock(), if renewal_due => {
+                        renewal_due = false;
                         let renewed = {
-                            let _guard = mutation_gate.lock().await;
+                            let _guard = guard;
                             let now = now_ms();
                             repository.renew(&claimed.record.invocation_id, &fence.executor_id, fence.owner_epoch, now, now + 30_000).await
                         };

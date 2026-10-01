@@ -46,6 +46,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 op.started().await?;
                 println!("entered");
                 std::io::stdout().flush().expect("stdout");
+                if input.value == "pending-control" {
+                    // The real five-second CAS ACK timeout spans heartbeat ten.
+                    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+                    let error = op
+                        .progress(Update {
+                            value: "pending".to_owned(),
+                            nested: UpdateDetail {
+                                count: runtime_trellis::Int64(1),
+                                payload: vec![1].into(),
+                                extra: Default::default(),
+                            },
+                            extra: Default::default(),
+                        })
+                        .await
+                        .expect_err("withheld progress acknowledgement must time out");
+                    assert!(
+                        matches!(error, ServerError::Nats(ref message) if message.contains("timed out")),
+                        "{error}"
+                    );
+                    println!("control failed");
+                    std::io::stdout().flush().expect("stdout");
+                    cleanup.notified().await;
+                    op.complete(Value {
+                        value: "original".to_owned(),
+                        extra: Default::default(),
+                    }).await?;
+                    return Ok(());
+                }
                 assert_eq!(
                     op.cancellation().cancelled().await,
                     OperationCancellationReason::OwnershipLost

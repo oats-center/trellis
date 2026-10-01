@@ -385,7 +385,7 @@ function ensureCapture(): ReturnType<typeof startMetricCapture> {
   return sharedCapture;
 }
 
-Deno.test("TS service connection observes usable, suspended, resumed, and disposal against real NATS", async () => {
+Deno.test("TS service connection observes usable, authoritative terminal, and disposal against real NATS", async () => {
   const capture = ensureCapture();
   await withTrellisRuntime(async (runtime) => {
     const serviceName = `connection-owner-${Date.now()}`;
@@ -431,8 +431,11 @@ Deno.test("TS service connection observes usable, suspended, resumed, and dispos
       });
       await runtime.waitFor(async () => {
         await capture.flush();
-        return capture.total("trellis.auth.refresh.attempts", {
+        // A refresh attempt is recorded before its response is parsed; wait
+        // for the owner to process the terminal outcome before disposing it.
+        return capture.total("trellis.connection.transitions", {
           "trellis.participant.kind": "service",
+          "trellis.reason": "terminal",
         }) >= 1;
       }, { timeoutMs: 30_000 });
     } finally {
