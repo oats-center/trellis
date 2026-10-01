@@ -305,6 +305,7 @@ type AuthUserIdentitiesUnlinkRequestProviderId = string(min_length=1);
 type AuthUserIdentitiesUnlinkRequestSubject = string(min_length=1);
 type AuthUsersCreateRequestIdempotencyKey = string(min_length=1, max_length=256);
 type AuthUsersGetRequestUserId = string(min_length=1);
+type AuthUsername = string(min_length=1, max_length=254);
 type AuthUsersIdentityLinkCreateRequestAllowedProvidersItem = string(min_length=1);
 type AuthUsersIdentityLinkCreateRequestIdempotencyKey = string(min_length=1);
 type AuthUsersListRequestCursor = string(min_length=1);
@@ -2168,6 +2169,7 @@ model AuthConnectionsKickedEvent {
 }
 
 model AuthConnectionsListRequest {
+  principalId?: AuthSessionsListRequestPrincipalId;
   page?: CursorQuery;
   sessionId?: AuthConnectionsListRequestSessionId;
 }
@@ -2626,6 +2628,7 @@ model AuthSessionsRevokedEvent {
 }
 
 model AuthUserIdentitiesListRequest {
+  userId?: AuthUsersGetRequestUserId;
   page?: CursorQuery;
   providerId?: AuthUserIdentitiesListRequestProviderId;
 }
@@ -2633,6 +2636,7 @@ model AuthUserIdentitiesListRequest {
 type AuthUserIdentitiesListResponse = CursorPage<AuthUserIdentitiesListResponseentriesItem>;
 
 model AuthUserIdentitiesUnlinkRequest {
+  userId?: AuthUsersGetRequestUserId;
   idempotencyKey: AuthUserIdentitiesUnlinkRequestIdempotencyKey;
   providerId: AuthUserIdentitiesUnlinkRequestProviderId;
   subject: AuthUserIdentitiesUnlinkRequestSubject;
@@ -2663,6 +2667,7 @@ model AuthUsersGetResponse {
 }
 
 model AuthUsersIdentityLinkCreateRequest {
+  userId?: AuthUsersGetRequestUserId;
   allowedProviders: list<AuthUsersIdentityLinkCreateRequestAllowedProvidersItem>;
   idempotencyKey: AuthUsersIdentityLinkCreateRequestIdempotencyKey;
   returnTarget: string | null;
@@ -2710,6 +2715,7 @@ model AuthUsersResolveResponse {
 }
 
 model AuthUsersUpdateRequest {
+  username?: AuthUsername;
   email: string | null;
   expectedVersion: AuthUsersUpdateRequestExpectedVersion;
   idempotencyKey: AuthUsersUpdateRequestIdempotencyKey;
@@ -3349,6 +3355,8 @@ model AuthUsersCreateResponseuser {
 }
 
 model AuthUsersGetResponseuser {
+  bootstrapAdministrator: bool;
+  username: string | null;
   createdAt: AuthUsersGetResponseuserCreatedAt;
   disabledAt: AuthUsersGetResponseuserDisabledAt | null;
   email: string | null;
@@ -3428,6 +3436,8 @@ model AuthUsersResolveResponseuser1 {
 }
 
 model AuthUsersUpdateResponseuser {
+  bootstrapAdministrator: bool;
+  username: string | null;
   createdAt: AuthUsersUpdateResponseuserCreatedAt;
   disabledAt: AuthUsersUpdateResponseuserDisabledAt | null;
   email: string | null;

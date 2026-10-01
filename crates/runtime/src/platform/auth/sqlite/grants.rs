@@ -1346,7 +1346,7 @@ impl SqliteAuthorizationStore {
                 let items = ids.into_iter().take(limit as usize).map(|id| {
                     let (revision, binding) = load_installed_participant(connection, &id, None)?
                         .ok_or(AuthorizationStateError::StorageConflict)?;
-                    Ok(json!({
+                    let mut participant = json!({
                         "participantId": binding.participant_id,
                         "participantKind": binding.participant_kind,
                         "revision": revision,
@@ -1354,9 +1354,12 @@ impl SqliteAuthorizationStore {
                         "participantPath": binding.participant_path,
                         "participantDigest": binding.participant_digest,
                         "installedAt": binding.resolved_at,
-                        "companionParticipantId": binding.projection.companion_participant_id,
                         "companionRequired": binding.projection.companion_required,
-                    }))
+                    });
+                    if let Some(companion_id) = binding.projection.companion_participant_id {
+                        participant["companionParticipantId"] = json!(companion_id);
+                    }
+                    Ok(participant)
                 }).collect::<Result<Vec<_>, AuthorizationStateError>>()?;
                 Ok(json!({"items": items, "page": {"nextCursor": next_cursor}}))
             }).await

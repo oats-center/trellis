@@ -100,6 +100,32 @@ approve, reconcile, or materialized-authority RPC family.
 session RPCs are login-only; native service/device connections have no session
 row.
 
+### User Management
+
+`Auth.Users.Update` updates profile fields and account state with
+`expectedVersion`. Optional `username` renames an existing local login: the
+credential and local identity subject change atomically, while the principal ID
+and password remain unchanged. Usernames are normalized, uniqueness is enforced,
+and a conflicting username commits none of the accompanying profile changes.
+Accounts without a local login establish one through an account flow, not a
+profile update.
+
+`Auth.Users.PasswordReset.Create` accepts a target `userId` and returns a
+time-limited, one-use account-flow link. Creating the link does not itself
+change the password. Completing it changes the target account's credential and
+revokes its existing user sessions.
+
+`Auth.UserIdentities.List`, `Auth.UserIdentities.Unlink`, and
+`Auth.Users.IdentityLink.Create` accept optional `userId`. Omission targets the
+caller; targeting another user requires platform administration. Unlinking still
+enforces the last-sign-in-method and protected-administrator checks. An
+identity-link flow is bound to its selected target user, not the administrator
+who generated the link.
+
+`Auth.Connections.List` supports `principalId` to inspect only the selected
+principal's physical connections. User-session revocation and connection kicks
+remain separate actions.
+
 ## Authorization
 
 Administrative RPCs require `PlatformPrivilege::Admin` in the caller's current

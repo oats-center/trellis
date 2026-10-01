@@ -57,6 +57,7 @@ app Console {
     rpc Sessions.Me;
     rpc Sessions.Revoke;
     rpc UserIdentities.List;
+    rpc UserIdentities.Unlink;
     rpc Users.Create;
     rpc Users.Get;
     rpc Users.IdentityLink.Create;

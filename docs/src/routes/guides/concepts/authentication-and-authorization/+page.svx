@@ -49,6 +49,34 @@ application permissions. Capability approvals are policy inputs, not a second
 current GrantSet. Resource desires are hints, not approval; provisioning runs
 post-commit and exposes bindings only after validating actual configuration.
 
+## Managing users and access in Console
+
+The user edit screen keeps profile, access grants, sign-in methods, and active
+sessions together. Profile and access edits save separately because they are
+independent transactions.
+
+Administrators can rename an existing local username without changing the user
+ID or password. A username already used by another account is rejected without
+saving any of the accompanying profile edits. Users without a local username
+can establish a local sign-in method through a password-reset account flow.
+
+Generate a password-reset link for the selected user, then securely give that
+one-use, time-limited link to them. Generating the link does not reset their
+password; completing the flow does, and revokes their existing login sessions.
+Identity-link flows also target the selected user. Removing a sign-in method
+cannot remove the last method or bypass protected-administrator safeguards.
+
+Access grants select an installed participant revision and its concrete
+permissions. Capabilities explain related permissions; capability groups are
+one-time presets when editing an exact grant, not ongoing group memberships.
+Saving an exact snapshot replaces policy-based approval, and later changes to a
+group do not automatically update it. Platform administration is a separate
+privilege, not all application permissions. Service and device access belongs to
+their deployment; changing it can affect other instances in that deployment.
+
+End a session to revoke that login. Disconnect a connection to terminate a
+physical connection; these are distinct actions.
+
 ## Session keys
 
 Each live installation proves possession of its session key. The key identifies

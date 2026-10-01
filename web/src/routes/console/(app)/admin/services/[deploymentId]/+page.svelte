@@ -16,6 +16,7 @@
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import Panel from "$lib/components/Panel.svelte";
+  import AccessGrants from "$lib/components/AccessGrants.svelte";
   import StatusBadge from "$lib/components/StatusBadge.svelte";
   import { getTrellis } from "$lib/trellis";
 
@@ -213,23 +214,7 @@
         </dl>
       </Panel>
 
-      <Panel title="Grant binding">
-        {#if binding}
-          <dl class="grid grid-cols-[7rem_minmax(0,1fr)] gap-x-3 gap-y-2 text-sm">
-            <dt class="text-base-content/60">State</dt>
-            <dd><StatusBadge label={binding.state} status={binding.state === "active" ? "healthy" : "offline"} /></dd>
-            <dt class="text-base-content/60">Revision</dt><dd>{binding.revision}</dd>
-            <dt class="text-base-content/60">Installed</dt><dd>{binding.installedRevision}</dd>
-            <dt class="text-base-content/60">Permissions</dt><dd>{binding.grants.permissions.length}</dd>
-            <dt class="text-base-content/60">Privileges</dt><dd>{binding.platformPrivileges.join(", ") || "None"}</dd>
-          </dl>
-        {:else}
-          <EmptyState
-            title="No grant binding"
-            description="No grant binding exists for this deployment's current participant state."
-          />
-        {/if}
-      </Panel>
     </div>
   </div>
+  <AccessGrants ownerKind="deployment" ownerId={detail.deployment.deploymentId} ownerLabel={detail.deployment.displayName} participantId={participantId ?? undefined} disabled={detail.deployment.state !== "active"} />
 {/if}

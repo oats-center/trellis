@@ -1,4 +1,5 @@
 <script lang="ts">
+  import AccessGrants from "$lib/components/AccessGrants.svelte";
   import { ulid } from "ulid";
   import { isErr } from "@oatscenter/result";
   import { type apis } from "trellis-web-generated";
@@ -403,6 +404,9 @@
               <span class="badge badge-outline badge-sm">{selectedPendingReviews.length} pending review{selectedPendingReviews.length === 1 ? "" : "s"}</span>
               <span class="badge badge-outline badge-sm">{selectedActivations.length} activation{selectedActivations.length === 1 ? "" : "s"}</span>
               <span class="badge badge-outline badge-sm">{revokedActivationCount} revoked</span>
+            </div>
+            <div class="mt-4">
+              <AccessGrants ownerKind="deployment" ownerId={selectedDeployment.deploymentId} ownerLabel={selectedDeployment.displayName} participantId={selectedDeployment.participantId ?? undefined} disabled={selectedDeployment.state !== "active"} />
             </div>
 
             {#if selectedPendingReviews.length > 0}

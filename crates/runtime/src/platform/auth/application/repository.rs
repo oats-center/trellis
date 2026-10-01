@@ -281,6 +281,8 @@ pub(crate) struct ProvisionedInstanceMutation {
 /// Atomic external-identity unlink command.
 #[derive(Clone, Debug)]
 pub(crate) struct ProviderIdentityUnlink {
+    /// Verified actor to recheck at the transaction boundary.
+    pub actor: MutationActor,
     /// Provider key.
     pub provider: String,
     /// Provider-owned stable subject.
@@ -373,6 +375,8 @@ pub(crate) struct AccountCreation {
 /// Atomic user principal and profile replacement.
 #[derive(Clone, Debug)]
 pub(crate) struct UserAccountMutation {
+    /// Optional canonical local login name; never creates a credential.
+    pub username: Option<String>,
     /// Verified caller state to recheck in the write transaction.
     pub actor: MutationActor,
     /// Complete replacement principal.
@@ -489,6 +493,13 @@ pub(crate) trait AccountRepository: Send + Sync {
         &self,
         principal_id: &str,
     ) -> Result<Option<(PrincipalRecord, UserProfileRecord)>, AuthorizationStateError>;
+
+    /// List filtered user accounts after an optional exclusive stable-sort cursor.
+    /// Identify the protected first administrator without inferring it from grants.
+    async fn user_is_bootstrap_administrator(
+        &self,
+        principal_id: &str,
+    ) -> Result<bool, AuthorizationStateError>;
 
     /// List filtered user accounts after an optional exclusive stable-sort cursor.
     async fn list_user_accounts(

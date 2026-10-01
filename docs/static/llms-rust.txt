@@ -6,6 +6,18 @@ domain types, DI pattern, logging setup, or test framework.
 
 ## Generated Package
 
+Administrative Auth callers consume the generated `trellis.auth@v1` actions.
+`Users.Update` has optional `username` for an atomic local-login rename that
+preserves the principal ID and password; collisions roll back profile changes.
+`Users.PasswordReset.Create` targets `userId` and returns a time-limited, one-use
+account-flow link. `UserIdentities.List`, `UserIdentities.Unlink`, and
+`Users.IdentityLink.Create` accept optional `userId`; omission targets the caller,
+and another user's identities require platform administration. Last-method and
+protected-account safeguards remain. `Connections.List` accepts `principalId`.
+Declare these actions in native IDL and use generated request models/facades;
+capability-group presets saved through `Grants.Set` are exact snapshots, not live
+group memberships.
+
 Author native IDL and set `[package]`, `[sources]`, and `[generate.rust].output`
 in `trellis.toml`. `trellis generate` is offline after dependencies are
 available in the global validated source-package cache.
