@@ -1516,3 +1516,60 @@ Deno.test("parallel client and service shutdown is repeatable", async () => {
     }
   });
 });
+
+Deno.test("unkeyed job maintains progress across broker ACK windows and completes once", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: "unkeyed-progress-provider",
+      contract: participants.Provider.participant,
+    });
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.Provider.participant,
+      seed: identity.seed,
+    }).orThrow();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let starts = 0;
+    service.jobs.work.handle(async ({ job }) => {
+      starts += 1;
+      entered.resolve();
+      await release.promise;
+      return Result.ok(job.payload);
+    }, { concurrency: 2 });
+    const exit = service.wait();
+    try {
+      const payload = { value: "blocked across ACK windows" };
+      const job = await service.jobs.work.create(payload).orThrow();
+      await runtime.waitFor(() => starts > 0);
+      await entered.promise;
+      await runtime.waitFor(async () =>
+        (await job.get().orThrow()).state === "active"
+      );
+      const startedAt = performance.now();
+      // Three initial 250ms ACK windows, with a second worker able to redeliver.
+      const held = await runtime.waitFor(async () => {
+        const snapshot = await job.get().orThrow();
+        if (
+          snapshot.state !== "active" || snapshot.tries !== 1 || starts !== 1
+        ) return snapshot;
+        return performance.now() - startedAt >= 750 ? snapshot : false;
+      }, { timeoutMs: 3_000 });
+      assertEquals(held.state, "active");
+      assertEquals(held.tries, 1);
+      assertEquals(starts, 1);
+      assert(performance.now() - startedAt >= 750);
+
+      release.resolve();
+      const terminal = await job.wait().orThrow();
+      assertEquals(terminal.state, "completed");
+      assertEquals(terminal.result, payload);
+      assertEquals(terminal.tries, 1);
+      assertEquals(starts, 1);
+    } finally {
+      release.resolve();
+      await service.stop();
+      await exit;
+    }
+  });
+});

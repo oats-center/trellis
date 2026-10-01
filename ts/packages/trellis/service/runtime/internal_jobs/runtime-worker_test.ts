@@ -242,53 +242,6 @@ Deno.test("startQueueWorkerLoop skips terminal projected jobs before processing"
   assertEquals(handled, 0);
 });
 
-Deno.test("startQueueWorkerLoop maintains progress while unkeyed work runs", async () => {
-  let progressAcks = 0;
-  let acked = 0;
-  const job: Job = {
-    id: "job-long",
-    service: "svc",
-    type: "refresh",
-    state: "pending",
-    context: jobContext,
-    payload: {},
-    createdAt: "2024-01-01T00:00:00.000Z",
-    updatedAt: "2024-01-01T00:00:00.000Z",
-    tries: 0,
-    maxTries: 5,
-  };
-  const loop = await startQueueWorkerLoop({
-    manager: new JobManager({ nc: { publish: () => {} }, jobs: jobsBinding }),
-    consumer: {
-      consume: () =>
-        Promise.resolve((async function* () {
-          yield {
-            data: new TextEncoder().encode(JSON.stringify(createdEvent(job))),
-            subject: "trellis.work.svc.refresh",
-            ack: () => {
-              acked += 1;
-            },
-            nak: () => {},
-            inProgress: () => {
-              progressAcks += 1;
-            },
-          };
-        })()),
-    },
-    cancelSubscription: cancelSubscription(() => {}),
-    progressAckIntervalMs: 1,
-    handler: async () => {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      return {};
-    },
-  });
-
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  await loop.stop();
-  assertEquals(acked, 1);
-  assertEquals(progressAcks > 0, true);
-});
-
 Deno.test("startQueueWorkerLoop naks unexpected failures and continues", async () => {
   let acked = 0;
   let nacked = 0;
