@@ -2770,6 +2770,11 @@ pub mod trellis {
     pub struct AuthConnectionsListRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub page: Option<crate::__types::CursorQuery>,
+        #[serde(rename = "principalId")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub principal_id: Option<
+            crate::__types::trellis::AuthSessionsListRequestPrincipalId,
+        >,
         #[serde(rename = "sessionId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub session_id: Option<
@@ -23884,6 +23889,9 @@ pub mod trellis {
         pub provider_id: Option<
             crate::__types::trellis::AuthUserIdentitiesListRequestProviderId,
         >,
+        #[serde(rename = "userId")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub user_id: Option<crate::__types::trellis::AuthUsersGetRequestUserId>,
         #[serde(flatten)]
         pub extra: serde_json::Map<String, serde_json::Value>,
     }
@@ -24164,6 +24172,9 @@ pub mod trellis {
         #[serde(rename = "providerId")]
         pub provider_id: crate::__types::trellis::AuthUserIdentitiesUnlinkRequestProviderId,
         pub subject: crate::__types::trellis::AuthUserIdentitiesUnlinkRequestSubject,
+        #[serde(rename = "userId")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub user_id: Option<crate::__types::trellis::AuthUsersGetRequestUserId>,
         #[serde(flatten)]
         pub extra: serde_json::Map<String, serde_json::Value>,
     }
@@ -24274,6 +24285,40 @@ pub mod trellis {
         pub unlinked: bool,
         #[serde(flatten)]
         pub extra: serde_json::Map<String, serde_json::Value>,
+    }
+    #[derive(
+        Clone,
+        Debug,
+        PartialEq,
+        Eq,
+        PartialOrd,
+        Ord,
+        Hash,
+        serde::Serialize,
+        serde::Deserialize
+    )]
+    #[serde(transparent)]
+    pub struct AuthUsername(pub String);
+    impl std::ops::Deref for AuthUsername {
+        type Target = String;
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+    impl From<String> for AuthUsername {
+        fn from(value: String) -> Self {
+            Self(value)
+        }
+    }
+    impl AsRef<str> for AuthUsername {
+        fn as_ref(&self) -> &str {
+            self.0.as_ref()
+        }
+    }
+    impl std::fmt::Display for AuthUsername {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(self.as_ref())
+        }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthUsersCreateRequest {
@@ -24639,6 +24684,8 @@ pub mod trellis {
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthUsersGetResponseuser {
+        #[serde(rename = "bootstrapAdministrator")]
+        pub bootstrap_administrator: bool,
         #[serde(rename = "createdAt")]
         pub created_at: crate::__types::trellis::AuthUsersGetResponseuserCreatedAt,
         #[serde(rename = "disabledAt")]
@@ -24659,6 +24706,7 @@ pub mod trellis {
         pub updated_at: crate::__types::trellis::AuthUsersGetResponseuserUpdatedAt,
         #[serde(rename = "userId")]
         pub user_id: crate::__types::trellis::AuthUsersGetResponseuserUserId,
+        pub username: crate::__types::Nullable<String>,
         pub version: crate::__types::trellis::AuthUsersGetResponseuserVersion,
         #[serde(flatten)]
         pub extra: serde_json::Map<String, serde_json::Value>,
@@ -24911,6 +24959,9 @@ pub mod trellis {
         pub idempotency_key: crate::__types::trellis::AuthUsersIdentityLinkCreateRequestIdempotencyKey,
         #[serde(rename = "returnTarget")]
         pub return_target: crate::__types::Nullable<String>,
+        #[serde(rename = "userId")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub user_id: Option<crate::__types::trellis::AuthUsersGetRequestUserId>,
         #[serde(flatten)]
         pub extra: serde_json::Map<String, serde_json::Value>,
     }
@@ -26735,6 +26786,8 @@ pub mod trellis {
         pub state: crate::__types::trellis::AuthUsersUpdateRequestState,
         #[serde(rename = "userId")]
         pub user_id: crate::__types::trellis::AuthUsersUpdateRequestUserId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub username: Option<crate::__types::trellis::AuthUsername>,
         #[serde(flatten)]
         pub extra: serde_json::Map<String, serde_json::Value>,
     }
@@ -26885,6 +26938,8 @@ pub mod trellis {
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthUsersUpdateResponseuser {
+        #[serde(rename = "bootstrapAdministrator")]
+        pub bootstrap_administrator: bool,
         #[serde(rename = "createdAt")]
         pub created_at: crate::__types::trellis::AuthUsersUpdateResponseuserCreatedAt,
         #[serde(rename = "disabledAt")]
@@ -26905,6 +26960,7 @@ pub mod trellis {
         pub updated_at: crate::__types::trellis::AuthUsersUpdateResponseuserUpdatedAt,
         #[serde(rename = "userId")]
         pub user_id: crate::__types::trellis::AuthUsersUpdateResponseuserUserId,
+        pub username: crate::__types::Nullable<String>,
         pub version: crate::__types::trellis::AuthUsersUpdateResponseuserVersion,
         #[serde(flatten)]
         pub extra: serde_json::Map<String, serde_json::Value>,

@@ -132,6 +132,21 @@ package grants nothing by itself. Optional actions remain unavailable unless the
 binding and current optional evidence both permit them. Capability names are
 API-scoped; subjects and physical resource names are not grants.
 
+Console access editors save exact participant-scoped snapshots; capability groups
+are one-time permission presets, not ongoing memberships. Replacing a
+policy-approved grant with an exact grant changes its approval mode. Service and
+device grants are deployment-owned, separate from device user delegation.
+`Auth.Users.Update` accepts optional `username` to atomically rename an existing
+local credential and identity, preserving the user ID and password; uniqueness
+conflicts roll back the accompanying profile edits. Accounts without a local
+login establish one through an account flow. `Auth.Users.PasswordReset.Create`
+targets `userId` and returns a time-limited, one-use link; completing it revokes
+the target's existing sessions. `Auth.UserIdentities.List`,
+`Auth.UserIdentities.Unlink`, and `Auth.Users.IdentityLink.Create` accept optional
+`userId`; omission targets the caller, while cross-user actions require platform
+administration. Last-sign-in-method and protected-administrator checks remain.
+`Auth.Connections.List` accepts `principalId` to filter physical connections.
+
 The server resolves assignment, installed artifacts, grants, resources, online
 issuer, route JWT, inbox, and exact transports. Clients verify that response.
 The libraries own proofs, context verification, proactive refresh, and

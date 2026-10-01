@@ -287,6 +287,7 @@ export const AuthConnectionsListRequestCodec = codecs.recursive(() => codecs.nam
 		cursor: codecs.optional(codecs.string),
 		limit: codecs.optional(codecs.u32)
 	})),
+	principalId: codecs.optional(codecs.ref(() => AuthSessionsListRequestPrincipalIdCodec)),
 	sessionId: codecs.optional(codecs.ref(() => AuthConnectionsListRequestSessionIdCodec))
 })));
 export const AuthConnectionsListRequestCursorCodec = codecs.recursive(() => codecs.named("trellis.AuthConnectionsListRequestCursor", codecs.string));
@@ -2263,7 +2264,8 @@ export const AuthUserIdentitiesListRequestCodec = codecs.recursive(() => codecs.
 		cursor: codecs.optional(codecs.string),
 		limit: codecs.optional(codecs.u32)
 	})),
-	providerId: codecs.optional(codecs.ref(() => AuthUserIdentitiesListRequestProviderIdCodec))
+	providerId: codecs.optional(codecs.ref(() => AuthUserIdentitiesListRequestProviderIdCodec)),
+	userId: codecs.optional(codecs.ref(() => AuthUsersGetRequestUserIdCodec))
 })));
 export const AuthUserIdentitiesListRequestCursorCodec = codecs.recursive(() => codecs.named("trellis.AuthUserIdentitiesListRequestCursor", codecs.string));
 export const AuthUserIdentitiesListRequestLimitCodec = codecs.recursive(() => codecs.named("trellis.AuthUserIdentitiesListRequestLimit", codecs.i64));
@@ -2290,12 +2292,14 @@ export const AuthUserIdentitiesListResponseentriesItemSubjectCodec = codecs.recu
 export const AuthUserIdentitiesUnlinkRequestCodec = codecs.recursive(() => codecs.named("trellis.AuthUserIdentitiesUnlinkRequest", codecs.model({
 	idempotencyKey: codecs.ref(() => AuthUserIdentitiesUnlinkRequestIdempotencyKeyCodec),
 	providerId: codecs.ref(() => AuthUserIdentitiesUnlinkRequestProviderIdCodec),
-	subject: codecs.ref(() => AuthUserIdentitiesUnlinkRequestSubjectCodec)
+	subject: codecs.ref(() => AuthUserIdentitiesUnlinkRequestSubjectCodec),
+	userId: codecs.optional(codecs.ref(() => AuthUsersGetRequestUserIdCodec))
 })));
 export const AuthUserIdentitiesUnlinkRequestIdempotencyKeyCodec = codecs.recursive(() => codecs.named("trellis.AuthUserIdentitiesUnlinkRequestIdempotencyKey", codecs.string));
 export const AuthUserIdentitiesUnlinkRequestProviderIdCodec = codecs.recursive(() => codecs.named("trellis.AuthUserIdentitiesUnlinkRequestProviderId", codecs.string));
 export const AuthUserIdentitiesUnlinkRequestSubjectCodec = codecs.recursive(() => codecs.named("trellis.AuthUserIdentitiesUnlinkRequestSubject", codecs.string));
 export const AuthUserIdentitiesUnlinkResponseCodec = codecs.recursive(() => codecs.named("trellis.AuthUserIdentitiesUnlinkResponse", codecs.model({ unlinked: codecs.bool })));
+export const AuthUsernameCodec = codecs.recursive(() => codecs.named("trellis.AuthUsername", codecs.string));
 export const AuthUsersCreateRequestCodec = codecs.recursive(() => codecs.named("trellis.AuthUsersCreateRequest", codecs.model({
 	email: codecs.nullable(codecs.string),
 	idempotencyKey: codecs.ref(() => AuthUsersCreateRequestIdempotencyKeyCodec),
@@ -2334,6 +2338,7 @@ export const AuthUsersGetRequestCodec = codecs.recursive(() => codecs.named("tre
 export const AuthUsersGetRequestUserIdCodec = codecs.recursive(() => codecs.named("trellis.AuthUsersGetRequestUserId", codecs.string));
 export const AuthUsersGetResponseCodec = codecs.recursive(() => codecs.named("trellis.AuthUsersGetResponse", codecs.model({ user: codecs.ref(() => AuthUsersGetResponseuserCodec) })));
 export const AuthUsersGetResponseuserCodec = codecs.recursive(() => codecs.named("trellis.AuthUsersGetResponseuser", codecs.model({
+	bootstrapAdministrator: codecs.bool,
 	createdAt: codecs.ref(() => AuthUsersGetResponseuserCreatedAtCodec),
 	disabledAt: codecs.nullable(codecs.ref(() => AuthUsersGetResponseuserDisabledAtCodec)),
 	email: codecs.nullable(codecs.string),
@@ -2344,6 +2349,7 @@ export const AuthUsersGetResponseuserCodec = codecs.recursive(() => codecs.named
 	state: codecs.ref(() => AuthUsersGetResponseuserStateCodec),
 	updatedAt: codecs.ref(() => AuthUsersGetResponseuserUpdatedAtCodec),
 	userId: codecs.ref(() => AuthUsersGetResponseuserUserIdCodec),
+	username: codecs.nullable(codecs.string),
 	version: codecs.ref(() => AuthUsersGetResponseuserVersionCodec)
 })));
 export const AuthUsersGetResponseuserCreatedAtCodec = codecs.recursive(() => codecs.named("trellis.AuthUsersGetResponseuserCreatedAt", codecs.u64));
@@ -2361,7 +2367,8 @@ export const AuthUsersGetResponseuserVersionCodec = codecs.recursive(() => codec
 export const AuthUsersIdentityLinkCreateRequestCodec = codecs.recursive(() => codecs.named("trellis.AuthUsersIdentityLinkCreateRequest", codecs.model({
 	allowedProviders: codecs.list(codecs.ref(() => AuthUsersIdentityLinkCreateRequestAllowedProvidersItemCodec)),
 	idempotencyKey: codecs.ref(() => AuthUsersIdentityLinkCreateRequestIdempotencyKeyCodec),
-	returnTarget: codecs.nullable(codecs.string)
+	returnTarget: codecs.nullable(codecs.string),
+	userId: codecs.optional(codecs.ref(() => AuthUsersGetRequestUserIdCodec))
 })));
 export const AuthUsersIdentityLinkCreateRequestAllowedProvidersItemCodec = codecs.recursive(() => codecs.named("trellis.AuthUsersIdentityLinkCreateRequestAllowedProvidersItem", codecs.string));
 export const AuthUsersIdentityLinkCreateRequestIdempotencyKeyCodec = codecs.recursive(() => codecs.named("trellis.AuthUsersIdentityLinkCreateRequestIdempotencyKey", codecs.string));
@@ -2521,7 +2528,8 @@ export const AuthUsersUpdateRequestCodec = codecs.recursive(() => codecs.named("
 	image: codecs.nullable(codecs.string),
 	name: codecs.nullable(codecs.string),
 	state: codecs.ref(() => AuthUsersUpdateRequestStateCodec),
-	userId: codecs.ref(() => AuthUsersUpdateRequestUserIdCodec)
+	userId: codecs.ref(() => AuthUsersUpdateRequestUserIdCodec),
+	username: codecs.optional(codecs.ref(() => AuthUsernameCodec))
 })));
 export const AuthUsersUpdateRequestExpectedVersionCodec = codecs.recursive(() => codecs.named("trellis.AuthUsersUpdateRequestExpectedVersion", codecs.i64));
 export const AuthUsersUpdateRequestIdempotencyKeyCodec = codecs.recursive(() => codecs.named("trellis.AuthUsersUpdateRequestIdempotencyKey", codecs.string));
@@ -2529,6 +2537,7 @@ export const AuthUsersUpdateRequestStateCodec = codecs.recursive(() => codecs.na
 export const AuthUsersUpdateRequestUserIdCodec = codecs.recursive(() => codecs.named("trellis.AuthUsersUpdateRequestUserId", codecs.string));
 export const AuthUsersUpdateResponseCodec = codecs.recursive(() => codecs.named("trellis.AuthUsersUpdateResponse", codecs.model({ user: codecs.ref(() => AuthUsersUpdateResponseuserCodec) })));
 export const AuthUsersUpdateResponseuserCodec = codecs.recursive(() => codecs.named("trellis.AuthUsersUpdateResponseuser", codecs.model({
+	bootstrapAdministrator: codecs.bool,
 	createdAt: codecs.ref(() => AuthUsersUpdateResponseuserCreatedAtCodec),
 	disabledAt: codecs.nullable(codecs.ref(() => AuthUsersUpdateResponseuserDisabledAtCodec)),
 	email: codecs.nullable(codecs.string),
@@ -2539,6 +2548,7 @@ export const AuthUsersUpdateResponseuserCodec = codecs.recursive(() => codecs.na
 	state: codecs.ref(() => AuthUsersUpdateResponseuserStateCodec),
 	updatedAt: codecs.ref(() => AuthUsersUpdateResponseuserUpdatedAtCodec),
 	userId: codecs.ref(() => AuthUsersUpdateResponseuserUserIdCodec),
+	username: codecs.nullable(codecs.string),
 	version: codecs.ref(() => AuthUsersUpdateResponseuserVersionCodec)
 })));
 export const AuthUsersUpdateResponseuserCreatedAtCodec = codecs.recursive(() => codecs.named("trellis.AuthUsersUpdateResponseuserCreatedAt", codecs.u64));

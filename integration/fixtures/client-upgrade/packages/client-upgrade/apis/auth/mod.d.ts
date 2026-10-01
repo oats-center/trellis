@@ -801,5 +801,5 @@ declare const __api: {
 	readonly packageEvidence: unknown;
 };
 export declare const API: typeof __api;
-export declare const API_DIGEST: "gXd9NIBjIa49mInD88kcXFC5_pVuL7cvibchdpdXvKo";
+export declare const API_DIGEST: "6ZgF6NVoeg-IqbP1edXgzrsOa7YUiHxaroIR7IwHyYg";
 export {};

@@ -1684,7 +1684,10 @@ impl AuthRpcProcessor {
             if principal.state != PrincipalState::Active {
                 return Err(AuthorizationStateError::PrincipalInactive);
             }
-            Some(user_value(UserAccount { principal, profile }))
+            Some(
+                self.user_detail_value(UserAccount { principal, profile })
+                    .await?,
+            )
         } else {
             None
         };
@@ -1724,11 +1727,13 @@ impl AuthRpcProcessor {
         let input: Value = serde_json::from_slice(payload)
             .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
         let session_id = input.get("sessionId").and_then(Value::as_str);
+        let principal_id = input.get("principalId").and_then(Value::as_str);
         let entries = self
             .ephemeral
             .list_connection_presence(session_id)
             .await?
             .into_iter()
+            .filter(|connection| principal_id.is_none_or(|id| connection.principal_id == id))
             .map(connection_value)
             .collect::<Vec<_>>();
         paginate_values(entries, &input, "auth.Connections.List", &["/connectionId"])
@@ -2488,11 +2493,22 @@ impl AuthRpcProcessor {
         let input: Value = serde_json::from_slice(payload)
             .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
         let allowed_providers = required_string_array(&input, "allowedProviders")?;
+        let principal_id = input
+            .get("userId")
+            .and_then(Value::as_str)
+            .unwrap_or(&caller.principal_id);
+        if principal_id != caller.principal_id {
+            require_admin(caller)?;
+            self.service
+                .user(principal_id)
+                .await?
+                .ok_or(AuthorizationStateError::PrincipalMissing)?;
+        }
         self.create_rpc_account_flow(
             &input,
             caller,
             AccountFlowKind::IdentityLink,
-            &caller.principal_id,
+            principal_id,
             allowed_providers,
             "Auth.Users.IdentityLink.Create",
         )
@@ -2513,7 +2529,7 @@ impl AuthRpcProcessor {
             self.require_admin_for_admin_target(caller, principal_id)
                 .await?
         } else {
-            false
+            principal_id != caller.principal_id
         };
         let return_target = nullable_string(input, "returnTarget")?;
         let outcome = self
@@ -2583,10 +2599,21 @@ impl AuthRpcProcessor {
         let input: Value = serde_json::from_slice(payload)
             .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
         let provider = input.get("providerId").and_then(Value::as_str);
+        let principal_id = input
+            .get("userId")
+            .and_then(Value::as_str)
+            .unwrap_or(&caller.principal_id);
+        if principal_id != caller.principal_id {
+            require_admin(caller)?;
+            self.service
+                .user(principal_id)
+                .await?
+                .ok_or(AuthorizationStateError::PrincipalMissing)?;
+        }
         let entries = self
             .service
             .repository()
-            .list_provider_identities(&caller.principal_id)
+            .list_provider_identities(principal_id)
             .await?
             .into_iter()
             .filter(|identity| provider.is_none_or(|value| identity.provider == value))
@@ -2619,6 +2646,13 @@ impl AuthRpcProcessor {
         let input: Value = serde_json::from_slice(payload)
             .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
         let now = now_millis()?;
+        let principal_id = input
+            .get("userId")
+            .and_then(Value::as_str)
+            .unwrap_or(&caller.principal_id);
+        if principal_id != caller.principal_id {
+            require_admin(caller)?;
+        }
         let mut idempotency = rpc_idempotency(
             "Auth.UserIdentities.Unlink",
             &caller.principal_id,
@@ -2631,9 +2665,10 @@ impl AuthRpcProcessor {
             .service
             .repository()
             .unlink_provider_identity(ProviderIdentityUnlink {
+                actor: mutation_actor(caller),
                 provider: required_string(&input, "providerId")?.to_owned(),
                 provider_subject: required_string(&input, "subject")?.to_owned(),
-                principal_id: caller.principal_id.clone(),
+                principal_id: principal_id.to_owned(),
                 idempotency,
                 actions: Vec::new(),
             })
@@ -2652,7 +2687,28 @@ impl AuthRpcProcessor {
             .user(required_string(&input, "userId")?)
             .await?
             .ok_or(AuthorizationStateError::PrincipalMissing)?;
-        Ok(json!({ "user": user_value(account) }))
+        Ok(json!({ "user": self.user_detail_value(account).await? }))
+    }
+
+    async fn user_detail_value(
+        &self,
+        account: UserAccount,
+    ) -> Result<Value, AuthorizationStateError> {
+        let username = self
+            .service
+            .repository()
+            .get_local_credential(&account.principal.principal_id)
+            .await?
+            .map(|credential| credential.normalized_username);
+        let protected = self
+            .service
+            .repository()
+            .user_is_bootstrap_administrator(&account.principal.principal_id)
+            .await?;
+        let mut user = user_value(account);
+        user["username"] = json!(username);
+        user["bootstrapAdministrator"] = json!(protected);
+        Ok(user)
     }
 
     async fn users_resolve(&self, payload: &[u8]) -> Result<Value, AuthorizationStateError> {
@@ -2761,6 +2817,10 @@ impl AuthRpcProcessor {
         let outcome = self
             .service
             .update_user(UpdateUserInput {
+                username: input
+                    .get("username")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
                 actor: mutation_actor(validated),
                 principal_id: principal_id.to_owned(),
                 expected_version,
@@ -2787,7 +2847,7 @@ impl AuthRpcProcessor {
                 .await?
                 .ok_or(AuthorizationStateError::PrincipalMissing)?,
         };
-        Ok(json!({ "user": user_value(account) }))
+        Ok(json!({ "user": self.user_detail_value(account).await? }))
     }
 
     async fn require_admin_for_admin_target(

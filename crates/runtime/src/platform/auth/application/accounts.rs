@@ -121,6 +121,8 @@ pub struct CreateFederatedUserInput {
 /// Administrator input for an optimistic user-account replacement.
 #[derive(Clone, Debug)]
 pub struct UpdateUserInput {
+    /// Optional local login rename, normalized using the ordinary login rules.
+    pub username: Option<String>,
     /// Verified caller state to recheck in the write transaction.
     pub(crate) actor: MutationActor,
     /// Stable user principal ID.
@@ -966,6 +968,10 @@ where
         match self
             .repository
             .update_user_account(UserAccountMutation {
+                username: input
+                    .username
+                    .map(|name| normalize_username(&name))
+                    .transpose()?,
                 actor: input.actor,
                 principal: principal.clone(),
                 profile: profile.clone(),

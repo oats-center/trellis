@@ -13,6 +13,18 @@ runtimes, including Deno; JSR publication remains supported.
 
 ## Generate And Connect
 
+Administrative Auth callers use generated actions, not handwritten account
+endpoints. `Users.Update` accepts optional `username` for an atomic local-login
+rename, preserving the user ID and password and rejecting username collisions
+without partial profile changes. `Users.PasswordReset.Create` accepts target
+`userId` and returns a time-limited, one-use flow link. `UserIdentities.List`,
+`UserIdentities.Unlink`, and `Users.IdentityLink.Create` accept optional `userId`;
+cross-user actions require platform administration. Identity removal retains
+last-method and protected-account safeguards. `Connections.List` supports
+`principalId`. Declare the required actions in native IDL and use the generated
+participant's exact method names. Capability groups applied to `Grants.Set` are
+one-time presets; the saved grant is an exact permission snapshot.
+
 Author native IDL, run `trellis update` after dependency changes, and run
 `trellis generate` after IDL changes. Set `[package]`, `[sources]`, and
 `[generate.typescript].output` in `trellis.toml`.

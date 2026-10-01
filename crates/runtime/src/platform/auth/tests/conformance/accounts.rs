@@ -442,6 +442,7 @@ pub(super) async fn exercise_accounts(
     updated_profile.updated_at = NOW + 5;
     updated_profile.version = 2;
     let account_update = UserAccountMutation {
+        username: None,
         actor: mutation_actor.clone(),
         principal: disabled_user,
         profile: updated_profile,
@@ -475,6 +476,7 @@ pub(super) async fn exercise_accounts(
     assert_eq!(
         store
             .update_user_account(UserAccountMutation {
+                username: None,
                 actor: mutation_actor.clone(),
                 principal: disabled_user,
                 profile: rollback_profile,

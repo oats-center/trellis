@@ -675,6 +675,7 @@ export type AuthConnectionsListRequest = {
 		readonly limit?: number;
 		readonly [key: string]: unknown;
 	};
+	readonly principalId?: AuthSessionsListRequestPrincipalId;
 	readonly sessionId?: AuthConnectionsListRequestSessionId;
 	readonly [key: string]: unknown;
 };
@@ -5671,6 +5672,7 @@ export type AuthUserIdentitiesListRequest = {
 		readonly [key: string]: unknown;
 	};
 	readonly providerId?: AuthUserIdentitiesListRequestProviderId;
+	readonly userId?: AuthUsersGetRequestUserId;
 	readonly [key: string]: unknown;
 };
 export declare const AuthUserIdentitiesListRequestCodec: {
@@ -5748,6 +5750,7 @@ export type AuthUserIdentitiesUnlinkRequest = {
 	readonly idempotencyKey: AuthUserIdentitiesUnlinkRequestIdempotencyKey;
 	readonly providerId: AuthUserIdentitiesUnlinkRequestProviderId;
 	readonly subject: AuthUserIdentitiesUnlinkRequestSubject;
+	readonly userId?: AuthUsersGetRequestUserId;
 	readonly [key: string]: unknown;
 };
 export declare const AuthUserIdentitiesUnlinkRequestCodec: {
@@ -5776,6 +5779,11 @@ export type AuthUserIdentitiesUnlinkResponse = {
 export declare const AuthUserIdentitiesUnlinkResponseCodec: {
 	decode(value: unknown): AuthUserIdentitiesUnlinkResponse;
 	encode(value: AuthUserIdentitiesUnlinkResponse): unknown;
+};
+export type AuthUsername = string;
+export declare const AuthUsernameCodec: {
+	decode(value: unknown): AuthUsername;
+	encode(value: AuthUsername): unknown;
 };
 export type AuthUsersCreateRequest = {
 	readonly email: string | null;
@@ -5884,6 +5892,7 @@ export declare const AuthUsersGetResponseCodec: {
 	encode(value: AuthUsersGetResponse): unknown;
 };
 export type AuthUsersGetResponseuser = {
+	readonly bootstrapAdministrator: boolean;
 	readonly createdAt: AuthUsersGetResponseuserCreatedAt;
 	readonly disabledAt: AuthUsersGetResponseuserDisabledAt | null;
 	readonly email: string | null;
@@ -5894,6 +5903,7 @@ export type AuthUsersGetResponseuser = {
 	readonly state: AuthUsersGetResponseuserState;
 	readonly updatedAt: AuthUsersGetResponseuserUpdatedAt;
 	readonly userId: AuthUsersGetResponseuserUserId;
+	readonly username: string | null;
 	readonly version: AuthUsersGetResponseuserVersion;
 	readonly [key: string]: unknown;
 };
@@ -5947,6 +5957,7 @@ export type AuthUsersIdentityLinkCreateRequest = {
 	readonly allowedProviders: Array<AuthUsersIdentityLinkCreateRequestAllowedProvidersItem>;
 	readonly idempotencyKey: AuthUsersIdentityLinkCreateRequestIdempotencyKey;
 	readonly returnTarget: string | null;
+	readonly userId?: AuthUsersGetRequestUserId;
 	readonly [key: string]: unknown;
 };
 export declare const AuthUsersIdentityLinkCreateRequestCodec: {
@@ -6401,6 +6412,7 @@ export type AuthUsersUpdateRequest = {
 	readonly name: string | null;
 	readonly state: AuthUsersUpdateRequestState;
 	readonly userId: AuthUsersUpdateRequestUserId;
+	readonly username?: AuthUsername;
 	readonly [key: string]: unknown;
 };
 export declare const AuthUsersUpdateRequestCodec: {
@@ -6438,6 +6450,7 @@ export declare const AuthUsersUpdateResponseCodec: {
 	encode(value: AuthUsersUpdateResponse): unknown;
 };
 export type AuthUsersUpdateResponseuser = {
+	readonly bootstrapAdministrator: boolean;
 	readonly createdAt: AuthUsersUpdateResponseuserCreatedAt;
 	readonly disabledAt: AuthUsersUpdateResponseuserDisabledAt | null;
 	readonly email: string | null;
@@ -6448,6 +6461,7 @@ export type AuthUsersUpdateResponseuser = {
 	readonly state: AuthUsersUpdateResponseuserState;
 	readonly updatedAt: AuthUsersUpdateResponseuserUpdatedAt;
 	readonly userId: AuthUsersUpdateResponseuserUserId;
+	readonly username: string | null;
 	readonly version: AuthUsersUpdateResponseuserVersion;
 	readonly [key: string]: unknown;
 };

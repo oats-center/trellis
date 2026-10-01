@@ -126,6 +126,19 @@ impl AccountRepository for SqliteAuthorizationStore {
         .await
     }
 
+    async fn user_is_bootstrap_administrator(
+        &self,
+        principal_id: &str,
+    ) -> Result<bool, AuthorizationStateError> {
+        let principal_id = principal_id.to_owned();
+        self.run_read(move |connection| {
+            connection.query_row(
+                "SELECT 1 FROM auth_bootstrap_administrator WHERE singleton = 1 AND principal_id = ?1",
+                [principal_id], |_| Ok(()),
+            ).optional().map(|row| row.is_some()).map_err(sql_error)
+        }).await
+    }
+
     async fn update_user_account(
         &self,
         command: UserAccountMutation,
@@ -175,6 +188,37 @@ impl AccountRepository for SqliteAuthorizationStore {
                 ));
             }
             let principal_authorization_changed = current_principal.state != principal.state;
+            if let Some(username) = &command.username {
+                let credential = load_local_credential(&transaction, &principal.principal_id)?
+                    .ok_or_else(|| {
+                        AuthorizationStateError::InvalidRecord(
+                            "this user has no local login to rename".to_owned(),
+                        )
+                    })?;
+                if credential.normalized_username != *username {
+                    transaction
+                        .execute(
+                            "UPDATE auth_local_credentials SET normalized_username = ?1,
+                         updated_at = ?2, version = version + 1 WHERE principal_id = ?3",
+                            params![username, principal.updated_at, principal.principal_id],
+                        )
+                        .map_err(map_write_error)?;
+                    let changed = transaction
+                        .execute(
+                            "UPDATE auth_provider_identities SET provider_subject = ?1
+                         WHERE provider = 'local' AND principal_id = ?2 AND provider_subject = ?3",
+                            params![
+                                username,
+                                principal.principal_id,
+                                credential.normalized_username
+                            ],
+                        )
+                        .map_err(map_write_error)?;
+                    if changed != 1 {
+                        return Err(AuthorizationStateError::StorageConflict);
+                    }
+                }
+            }
             let principal_changed = transaction
                 .execute(
                     "UPDATE auth_principals SET state = ?1, updated_at = ?2, version = ?3,
@@ -1009,6 +1053,12 @@ impl AccountRepository for SqliteAuthorizationStore {
         }
         self.run(move |connection| {
             let transaction = connection.transaction().map_err(sql_error)?;
+            super::grants::require_current_actor(
+                &transaction,
+                &command.actor,
+                command.actor.principal_id != command.principal_id,
+                command.idempotency.created_at,
+            )?;
             if let Some(value) = sqlite_idempotency_replay(&transaction, &command.idempotency)? {
                 return Ok(IdempotentOutcome::Replayed(value));
             }

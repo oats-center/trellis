@@ -70,6 +70,7 @@ async fn user_update_rolls_back_when_real_outbox_constraint_fails() {
     let update_idempotency = idempotency('C', "account.update", "update-user", 'D');
     let error = repository
         .update_user_account(UserAccountMutation {
+            username: None,
             actor,
             principal: PrincipalRecord {
                 updated_at: NOW + 1,

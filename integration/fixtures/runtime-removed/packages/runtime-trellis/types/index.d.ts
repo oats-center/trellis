@@ -1491,6 +1491,8 @@ export type { AuthUserIdentitiesUnlinkRequestSubject } from "./_internal/p1.js";
 export { AuthUserIdentitiesUnlinkRequestSubjectCodec } from "./_internal/p1.js";
 export type { AuthUserIdentitiesUnlinkResponse } from "./_internal/p1.js";
 export { AuthUserIdentitiesUnlinkResponseCodec } from "./_internal/p1.js";
+export type { AuthUsername } from "./_internal/p1.js";
+export { AuthUsernameCodec } from "./_internal/p1.js";
 export type { AuthUsersCreateRequest } from "./_internal/p1.js";
 export { AuthUsersCreateRequestCodec } from "./_internal/p1.js";
 export type { AuthUsersCreateRequestIdempotencyKey } from "./_internal/p1.js";
