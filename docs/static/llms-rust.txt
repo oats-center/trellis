@@ -62,11 +62,19 @@ let mut service = connect(
 Trellis resolves deployment/instance assignment, installed package/participant
 evidence, exact grants, resources, signed context, route JWT, and endpoints
 server-side. Authorization state is process-memory-only and is refreshed
-proactively as SDK-owned maintenance. An identity-preserving refresh promotes
-the refreshed context in place without reconnecting a healthy socket; when
-refreshed authority offers transport capability the admitted attachment lacks,
-the client reports a retained upgrade and exposes an explicit refresh rather
-than adopting it automatically. There is no context-store parameter.
+proactively as SDK-owned maintenance. Renewing unchanged transport authority
+promotes context and routing credentials without replacing a healthy socket.
+Newly approved authority is adopted automatically on a readied successor; safe
+accepted work retains its receiving connection until it settles. No manual
+transport-refresh API, upgrade notification, or context-store parameter exists.
+Retain generated facades, still-bound resources, and job references across
+handoffs. While own revocation coverage is unavailable, fresh application IO
+either waits within its acquisition budget or reports unavailability.
+Guarded registry maintenance restores
+coverage and wakes calls without requiring a new socket. Watch migration keeps
+cached authority and existing leases, while actual revocation, reduced authority,
+and hard deadlines remain fail-closed. Raw NATS access is physical, not a logical
+generation-aware facade.
 
 Register generated providers before `service.run().await`. The service lifecycle
 supervises its request host and workers. `with_timeout_ms(...)` bounds

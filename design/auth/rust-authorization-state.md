@@ -85,5 +85,45 @@ session key, and proof; retries reuse the exact tuple.
 
 Auth's context KV and connection presence are rebuildable runtime indexes.
 Client/provider authorization caches are bounded process-memory state with
-lease-aware eviction and revocation-watch lifetime. No durable rollback floor,
-manifest state, route token, grant cache, or context cache exists.
+lease-aware eviction. Verified live and historical authorization is keyed by
+context digest; usability requires continuous revocation coverage, not continued
+attachment to the socket that first resolved it. Each coverage binding owns its
+exact watch and transport lease, not authority validity. No durable rollback
+floor, manifest state, route token, grant cache, or context cache exists.
+
+Bindings follow the exact retained published generation, including idle retained
+entries. Migration prepares and warms a successor watch while continuing to poll
+the old authoritative watch. The final compare-and-swap checks retained
+publication, guarded current signed authority and corrected clock, physical
+safety, cache lifecycle, and the exact entry/binding being replaced. The binding
+swap is synchronous; only then is the predecessor watch and lease released.
+Cached entries, borrowers, and verifier handles survive. A superseded
+preparation aborts and reconciles against the latest publication without waiting
+for the default API timeout. An absent publication or failed provisional setup
+does not invalidate healthy old coverage. Watch loss fails closed only for the
+binding that lost coverage; confirmed revocation from either watch is
+digest-global, including when observed before successor initialization.
+
+Fresh application acquisition requires usable installed own authority and a
+final signed-policy, corrected-clock, and physical fence. Coverage suspension
+blocks bounded application acquisition, while distinct guarded registry
+maintenance can reestablish own coverage on the exact safe published attachment.
+Maintenance still requires a valid unrevoked installed signed context and hard
+deadline; it does not publish application usability merely by acquiring a lease.
+A live session closes locally on authorization loss, but unusable caller
+coverage cannot sign a remote authorization-loss END.
+
+Own refresh carries the original verified preparation, exact attempt identity,
+clock, and CONNECT companions through retention and promotion; digest equality
+alone cannot substitute another preparation. Candidate coverage stays separate
+from installed own state until the guarded synchronous promotion. Failure,
+supersession, or cancellation releases only that attempt's resources, preserving
+healthy installed authority and independently borrowed entries. Warming first
+borrows one safe admitted carrier. No-safe-survivor recovery may instead open a
+private exact-candidate CONNECT stage for coverage only, with no application
+intake or default publication. Successful promotion lets ordinary adoption ready
+and publish the same warmed socket. Cancellation or logical close releases it;
+late completion cannot resurrect the stage. Equal-policy renewal needs no new
+socket; safe growth automatically adopts a ready successor. Accepted work keeps
+its receiving generation, safe predecessors drain after lease zero, and unsafe,
+revoked, or hard-expired generations are forcibly retired.

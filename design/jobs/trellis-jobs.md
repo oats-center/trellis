@@ -21,10 +21,12 @@ positive delays. Ordinary retryable handler failure uses delayed NAK and
 consumes that delivery budget. Final exhaustion is durably recorded by Jobs
 Runtime before source acknowledgement.
 
-Progress ACK maintenance is automatic for keyed and unkeyed handlers at one
-third of the effective broker acknowledgement wait. Keyed lease renewal is a
-separate fence; failure cancels local work and prevents stale completion. Job
-execution and side effects are at least once.
+Progress ACK maintenance is automatic for accepted keyed and unkeyed deliveries
+at one third of the effective broker acknowledgement wait. It covers preflight,
+handler execution, confirmed lifecycle publication, and source disposition on
+the receiving transport. Keyed lease renewal is a separate fence; failure
+cancels local work and prevents stale completion. Job execution and side effects
+are at least once.
 
 A keyed delivery that cannot acquire its active slot remains blocked before the
 handler starts. The worker maintains the broker delivery lease with progress

@@ -1,7 +1,7 @@
 # TypeScript libraries
 
-Application code imports runtime classes from `@oatscenter/trellis` and the `apis`
-and `participants` namespaces from its ordinary generated package. With
+Application code imports runtime classes from `@oatscenter/trellis` and the
+`apis` and `participants` namespaces from its ordinary generated package. With
 `[package]` and `[generate.typescript].output` in `trellis.toml`:
 
 ```ts
@@ -20,22 +20,23 @@ IDL and run `trellis generate`. Configure output with
 `[generate.typescript].output`. Each language gets one package, not one per API
 or participant.
 
-The generated ESM package contains executable `.js`, `.d.ts`, and `package.json`,
-at the source package version, with the published runtime dependency matching the CLI.
-It needs no consumer transpiler or Trellis CLI. Install it with ordinary package
-tooling, for example `npm install ./trellis`; Deno projects can map the package
-name to `./trellis/index.js` in their own imports. Generation creates no Deno
-configuration and never edits the consumer's manifest. Commit output when clones
-should build without regeneration or the Trellis source-package cache.
+The generated ESM package contains executable `.js`, `.d.ts`, and
+`package.json`, at the source package version, with the published runtime
+dependency matching the CLI. It needs no consumer transpiler or Trellis CLI.
+Install it with ordinary package tooling, for example `npm install ./trellis`;
+Deno projects can map the package name to `./trellis/index.js` in their own
+imports. Generation creates no Deno configuration and never edits the consumer's
+manifest. Commit output when clones should build without regeneration or the
+Trellis source-package cache.
 
-Use `@oatscenter/trellis/service` for service bootstrap in Node or Deno.
-Pass `participant` and the immutable provisioned identity `seed` to
+Use `@oatscenter/trellis/service` for service bootstrap in Node or Deno. Pass
+`participant` and the immutable provisioned identity `seed` to
 `TrellisService.connect(...)`; `name` is optional. Automatic telemetry can be
 disabled with `telemetry: false`, while `runtime` configures service logging,
 default request timeout, event stream selection, no-responder retry, and health
-heartbeat interval. Use
-the connected service's generated handlers and `kv`, `store`, and `jobs` handles.
-The browser-safe root does not expose native filesystem helpers.
+heartbeat interval. Use the connected service's generated handlers and `kv`,
+`store`, and `jobs` handles. The browser-safe root does not expose native
+filesystem helpers.
 
 Connected clients expose only the actions selected by their generated
 participant. RPCs return `Result`-style values; `.orThrow()` is convenient at an
@@ -57,56 +58,35 @@ migrations happen in SDK memory and do not rewrite stored bytes.
 
 Generated service participants expose declared jobs through `service.jobs`.
 Keyed capacity waits happen before handler execution and do not consume retry
-attempts; retryable handler errors do. See [Jobs: TypeScript](/guides/using-jobs-ts).
+attempts; retryable handler errors do. See
+[Jobs: TypeScript](/guides/using-jobs-ts).
 
-## Transport upgrade notifications
+## Automatic transport lifecycle
 
-A routine authorization refresh promotes the refreshed context in place on the
-existing physical attachment; it does not reconnect a healthy socket. When the
-newer authority safely covers the policy already admitted but offers additional
-transport capability, the connection reports a retained
-`transportUpgradeAvailable` observation instead of adopting it, and application
-code decides whether and when to pay for the wider policy:
+The connected client is one logical connection, even when its physical NATS
+connections change. Renewing unchanged transport authority promotes the new
+authorization context and routing credentials without replacing a healthy
+socket. Newly approved authority is adopted automatically: the SDK prepares a
+successor, makes its intake ready, and selects it for fresh work. There is no
+manual transport-refresh API or upgrade notification to handle.
 
-```ts
-const client = await TrellisClient.connect({
-  participant: participants.ordersApp.participant,
-  trellisUrl: "https://trellis.example.com",
-  auth: "browser",
-}).orThrow();
+Work already accepted on a safe connection continues without being restarted by
+the handoff. The SDK closes an old connection after its retained work and
+subscriptions release it. Revocation, reduced authority, physical failure, or a
+hard authorization deadline can instead interrupt affected work; automatic
+adoption does not bypass those checks.
 
-const stop = client.connection.subscribe((status) => {
-  if (status.phase === "connected" && status.transportUpgradeAvailable) {
-    console.log("A wider transport policy is available to adopt.");
-  }
-});
+Retain the connected client and its typed resource handles rather than
+rebuilding them after transport changes. Still-bound KV and Store handles, job
+references, and new calls select an eligible connection for each exchange;
+removed bindings remain invalid. Jobs and durable event intake keep bounded
+receiving capacity, and each delivery retains its receiving connection through
+disposition.
 
-// ... later, when the application accepts a real reconnect:
-try {
-  await client.connection.refreshTransport().orThrow();
-} catch (error) {
-  // connection_closed | authorization_unavailable | timeout | transport_error
-  console.warn("transport refresh failed", error);
-}
-
-stop();
-```
-
-`transportUpgradeAvailable` is a retained observation, not a phase: a disconnect
-clears it, and a successful replacement recomputes it from the actual admitted
-policy. A listener added later immediately receives the current retained status,
-so late subscribers do not miss an outstanding upgrade.
-
-`refreshTransport()` performs a real physical reconnect, so it can interrupt
-in-flight RPCs and ephemeral Live and Operation observations. Reconnecting
-automatically whenever an upgrade appears is not the default integration
-pattern; adopt the wider policy only when the application can tolerate the
-interruption, or let an otherwise necessary reconnect adopt it implicitly.
-
-A connected physical socket does not by itself mean the current application
-authorization is available. When a call needs authority the admitted attachment
-has not installed, it fails with the transport-class
-`transport_upgrade_required` error rather than an authorization denial: the
-credential is valid and the attachment has simply not adopted it. Call
-`refreshTransport()` and retry. The Rust client exposes the equivalent retained
-status and explicit refresh capability.
+A connected socket is not proof of usable application authorization. Fresh work
+cannot proceed while own revocation coverage is unavailable. Bounded
+acquisitions wait within their budget; immediate acquisitions report
+unavailability. Verified coverage recovery wakes waiting calls without requiring
+socket churn. Successful make-before-break watch migration preserves cached
+authority and existing authorization leases. Actual revocation still fails
+closed.

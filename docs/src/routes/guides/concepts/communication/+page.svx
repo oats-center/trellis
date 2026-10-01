@@ -24,7 +24,7 @@ loss.
 
 Events are typed facts. Ephemeral listeners are live-only; Consumers are durable.
 
-<span id="live observations-authorized-live-views"></span>
+<span id="live-observations-authorized-live-views"></span>
 
 ## Live observations
 

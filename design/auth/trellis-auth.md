@@ -86,10 +86,28 @@ authorization-context store.
 Each signed context also binds the exact transport policy compiled for it, so a
 client can compare the policy actually admitted on a physical attachment with
 current allowed policy without reimplementing the server's permission compiler.
-Renewing that policy never restarts a healthy attachment: an identity-preserving
-refresh promotes application authorization in place, a wider policy is a
-retained passive upgrade, and a reduction is enforced by server-directed
-disconnection of the affected physical attachment.
+One stable logical client owns generations with immutable admitted contexts and
+policies. Routine equal-policy authorization/routing renewal promotes in place
+without socket churn. Healthy safe growth automatically prepares and readies a
+successor before publishing it as the default, without application refresh calls
+or upgrade notifications. Accepted work retains its receiving generation; safe
+predecessors stop new intake and drain after their leases reach zero. Unsafe,
+revoked, or hard-expired generations are forcibly retired, alongside the
+server's physical-attachment enforcement. Admission identity remains historical
+evidence, not current application authority.
+
+Fresh public I/O requires usable installed own authority and a final
+signed-policy, clock, and physical-attachment fence. Temporary
+revocation-coverage loss suspends bounded acquisitions; a separate guarded
+registry-maintenance path can restore coverage on the exact safe published
+attachment without socket churn. Verified authority is digest-keyed; each
+replaceable coverage binding owns its watch and transport lease, not authority
+validity. Make-before-break migration preserves cached entries and borrowers.
+Own-refresh candidates remain private until exact attempt-fenced promotion. When
+no safe carrier survives, a private exact-candidate socket may warm coverage,
+but gains application intake and default publication only after promotion and
+normal readiness. See [Context Refresh](auth-protocol.md#context-refresh) and
+[Runtime Caches](rust-authorization-state.md#runtime-caches).
 
 ## Proofs And Transport
 

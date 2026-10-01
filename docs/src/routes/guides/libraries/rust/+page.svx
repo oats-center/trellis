@@ -9,8 +9,8 @@ Verify exact generated names and signatures in the generated crate and the
 
 ## Generated package
 
-Set `[package]` identity and `[generate.rust].output` in `trellis.toml`, then run
-`trellis generate`.
+Set `[package]` identity and `[generate.rust].output` in `trellis.toml`, then
+run `trellis generate`.
 
 ```toml
 [dependencies]
@@ -18,8 +18,8 @@ orders-trellis = { path = "trellis" }
 ```
 
 The generated package embeds exact participant/package evidence. Callers never
-supply participant IDs, semantic digests, deployments, instances,
-grants, resources, or transport endpoints as bootstrap assertions.
+supply participant IDs, semantic digests, deployments, instances, grants,
+resources, or transport endpoints as bootstrap assertions.
 
 ## Connect a service
 
@@ -48,13 +48,11 @@ Bootstrap proves the provisioned identity and a fresh session key. Trellis
 returns the server-owned assignment, exact installed participant/API evidence,
 current `GrantBinding`, resources, signed context, route JWT, and transports.
 The runtime verifies them before NATS CONNECT. Authorization state remains in
-process memory and is refreshed proactively as SDK-owned maintenance. An
-identity-preserving refresh promotes the refreshed context in place on the
-existing physical attachment; it does not reconnect a healthy socket. Where the
-refreshed authority offers transport capability the admitted attachment lacks,
-the client reports a retained upgrade status and exposes an explicit refresh
-rather than adopting it automatically. There is no authorization-context file
-or pending-authority wait.
+process memory and is refreshed proactively as SDK-owned maintenance. Renewing
+unchanged transport authority promotes the context and routing credentials in
+place without replacing a healthy socket. Newly approved transport authority is
+adopted automatically, with no manual refresh API or upgrade notification. There
+is no authorization-context file.
 
 ## Connect an app or agent
 
@@ -124,10 +122,10 @@ failures remain distinct call-error variants.
 ## Services and resources
 
 Generated service facades expose handler registration plus typed `kv`, `store`,
-`jobs`, State, transfer, and Consumer surfaces declared by the
-participant. Resources come from the connected runtime. Service code does not
-import the core SDK for bootstrap, call `Trellis.Bindings.Get`, construct raw
-resource handles, or pass binding payloads into constructors.
+`jobs`, State, transfer, and Consumer surfaces declared by the participant.
+Resources come from the connected runtime. Service code does not import the core
+SDK for bootstrap, call `Trellis.Bindings.Get`, construct raw resource handles,
+or pass binding payloads into constructors.
 
 Generated cursor-paginated RPCs add lazy `*_pages` and `*_items` fallible
 streams. Missing `next_cursor` is the only end signal; general pagination is
@@ -147,8 +145,29 @@ not consume retries, while `JobProcessError::retryable(error)` does. See
 Requests and events carry context digest, matching redundant session key, and a
 message-specific proof. Provider runtimes resolve and cache immutable signed
 contexts, recheck explicit revocation, and authorize the exact selected action.
-Reconnect performs proof-bound refresh once per disconnected episode.
 
+## Automatic transport lifecycle
+
+Keep the generated facade and its typed resource handles across transport
+changes. The SDK readies a successor before selecting it for fresh work;
+accepted work on a safe predecessor is not restarted merely because of the
+handoff. Old connections close when their retained work releases them.
+Revocation, reduced authority, physical failure, and hard authorization
+deadlines can interrupt affected work.
+
+Still-bound KV and Store handles and retained job references acquire transport
+per exchange. Removed resource bindings remain invalid. Jobs and durable event
+intake preserve bounded capacity across generations, and acknowledgements and
+attempt outcomes use the delivery's receiving connection. Raw NATS access is a
+physical connection, not a substitute for these logical, lifecycle-aware
+handles.
+
+Fresh application work cannot proceed when own revocation coverage is
+unavailable. Bounded acquisitions wait within their budget; immediate
+acquisitions report unavailability. Guarded registry maintenance can restore
+that coverage on an already admitted safe socket and wake waiting calls. Watch
+migration is make-before-break and preserves cached authority and existing
+leases; confirmed revocation remains fail-closed.
 
 ## Test against a real runtime
 
@@ -156,6 +175,6 @@ For live integration tests, use the published `trellis-testkit` crate. It is a
 development dependency that starts the released `trellis` and `trellis-server`
 executables out of process in a private sandbox, selects its loopback ports
 automatically, and returns `connect_options()` values for your generated service
-and caller participants. It needs no Trellis source checkout and no private crate
-patches. See [Test Trellis services](/guides/testing-trellis-services) and the
-[`trellis-testkit` Rustdoc](/api/rust/trellis_testkit/index.html).
+and caller participants. It needs no Trellis source checkout and no private
+crate patches. See [Test Trellis services](/guides/testing-trellis-services) and
+the [`trellis-testkit` Rustdoc](/api/rust/trellis_testkit/index.html).

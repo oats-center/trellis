@@ -80,8 +80,8 @@
           label: "Events",
         },
         {
-          href: "/guides/concepts/communication#feeds-authorized-live-views",
-          label: "Feeds",
+          href: "/guides/concepts/communication#live-observations-authorized-live-views",
+          label: "Live observations",
         },
         {
           href: "/guides/concepts/communication#cross-api-dependencies",
