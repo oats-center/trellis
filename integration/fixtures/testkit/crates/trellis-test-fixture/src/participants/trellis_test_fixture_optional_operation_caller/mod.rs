@@ -8,8 +8,7 @@ pub struct Participant;
 impl trellis_rs::generated::ParticipantDescriptor for Participant {
     const ID: &'static str = PARTICIPANT_ID;
     const PATH: &'static str = PARTICIPANT_PATH;
-    const KIND: trellis_rs::generated::ParticipantKind =
-        trellis_rs::generated::ParticipantKind::App;
+    const KIND: trellis_rs::generated::ParticipantKind = trellis_rs::generated::ParticipantKind::App;
     const COMPANION: Option<trellis_rs::generated::CompanionDescriptor> = None;
     const IMPLEMENTED_API_IDS: &'static [&'static str] = IMPLEMENTED_API_IDS;
     const EVENT_SUBSCRIBE_NEEDS: &'static [&'static str] = EVENT_SUBSCRIBE_NEEDS;
@@ -31,12 +30,11 @@ const PACKAGE_SOURCES: &[trellis_rs::generated::PackageSourceEvidence] = &[
         "package \"trellis-test-fixture\";\ndependency d0 \"trellis\" version \"0.100.0\" digest \"JiXmBn7sIt0wGALg2SJqFXuaCnlJo-qomcQ7g0bR7EU\";\n\nmodel Preview {\n  text: string;\n}\n\nmodel Status {\n  stage: string;\n}\n\nmodel Value {\n  value: string;\n}\n\napi echo@v1 {\n  title \"Testkit echo\";\n  description \"External Rust testkit acceptance fixture.\";\n  event Observed {\n    payload Value;\n  }\n  operation OptionalSilent {\n    input Value;\n    output Value;\n  }\n  operation Silent {\n    input Value;\n    output Value;\n  }\n  operation UpdateOnly {\n    input Value;\n    output Value;\n    update Preview;\n    signals {\n      Continue Value;\n    }\n  }\n  operation Upload {\n    input Value;\n    output Value;\n    upload;\n  }\n  operation Work {\n    input Value;\n    output Value;\n    progress Status;\n    update Preview;\n    signals {\n      Continue Value;\n    }\n  }\n  rpc Echo {\n    input Value;\n    output Value;\n  }\n  capabilities {\n    capability optionalSilent {\n      title \"Optional silent operation\";\n      description \"Partial lifecycle authorization acceptance.\";\n      consequence \"The caller can invoke and manage Silent.\";\n      allows {\n        operation OptionalSilent;\n      }\n    }\n    public {\n      allows {\n        operation Silent;\n        operation UpdateOnly;\n        operation Upload;\n        operation Work;\n        publish event Observed;\n        rpc Echo;\n        subscribe event Observed;\n      }\n    }\n  }\n}\n\nagent AgentCaller {\n  use echo {\n    operation Silent;\n    operation UpdateOnly;\n    operation Work;\n    rpc Echo;\n    subscribe event Observed;\n  }\n}\n\napp Caller {\n  use echo {\n    operation Silent;\n    operation UpdateOnly;\n    operation Upload;\n    operation Work;\n    rpc Echo;\n    subscribe event Observed;\n  }\n}\n\napp OperationAuthorizationCaller {\n  use echo {\n    operation OptionalSilent;\n  }\n}\n\napp OptionalOperationCaller {\n  use echo {\n    operation OptionalSilent;\n    optional capability optionalSilent;\n  }\n}\n\nservice Provider {\n  implements echo;\n}\n\napp RestrictedCaller {\n}\n\ndevice UnsupportedDevice {\n}\n\n",
     ),
 ];
-pub const PACKAGE_EVIDENCE: trellis_rs::generated::PackageEvidence =
-    trellis_rs::generated::PackageEvidence::from_generated(
-        "trellis-test-fixture",
-        "d3CzASgBL6i9OtBntLWsNOwTd_8M2pQjo_qHlpcavec",
-        PACKAGE_SOURCES,
-    );
+pub const PACKAGE_EVIDENCE: trellis_rs::generated::PackageEvidence = trellis_rs::generated::PackageEvidence::from_generated(
+    "trellis-test-fixture",
+    "d3CzASgBL6i9OtBntLWsNOwTd_8M2pQjo_qHlpcavec",
+    PACKAGE_SOURCES,
+);
 pub mod types {
     //! Generated wire type exports.
 }
@@ -53,26 +51,29 @@ impl Availability {
     pub fn from_runtime(snapshot: &trellis_rs::generated::AvailabilitySnapshot) -> Self {
         let _ = snapshot;
         Self {
-            action_trellis_test_fixture_echo_v1_operations_optional_silent: snapshot.allows_action(
-                trellis_rs::generated::OptionalAction::operation(
-                    "trellis-test-fixture.echo@v1",
-                    "OptionalSilent",
+            action_trellis_test_fixture_echo_v1_operations_optional_silent: snapshot
+                .allows_action(
+                    trellis_rs::generated::OptionalAction::operation(
+                        "trellis-test-fixture.echo@v1",
+                        "OptionalSilent",
+                    ),
                 ),
-            ),
-            trellis_test_fixture_echo_v1_optional_silent: snapshot.allows_action(
-                trellis_rs::generated::OptionalAction::operation(
-                    "trellis-test-fixture.echo@v1",
-                    "OptionalSilent",
+            trellis_test_fixture_echo_v1_optional_silent: snapshot
+                .allows_action(
+                    trellis_rs::generated::OptionalAction::operation(
+                        "trellis-test-fixture.echo@v1",
+                        "OptionalSilent",
+                    ),
                 ),
-            ),
         }
     }
 }
-const OPTIONAL_ACTIONS: &[trellis_rs::generated::OptionalAction] =
-    &[trellis_rs::generated::OptionalAction::operation(
+const OPTIONAL_ACTIONS: &[trellis_rs::generated::OptionalAction] = &[
+    trellis_rs::generated::OptionalAction::operation(
         "trellis-test-fixture.echo@v1",
         "OptionalSilent",
-    )];
+    ),
+];
 #[derive(Clone)]
 pub struct Client {
     inner: trellis_rs::generated::Client,
@@ -86,15 +87,19 @@ impl Client {
     pub fn availability(&self) -> Availability {
         Availability::from_runtime(&self.inner.availability())
     }
-    pub fn watch_availability(&self) -> futures_util::stream::BoxStream<'static, Availability> {
-        futures_util::StreamExt::boxed(futures_util::stream::unfold(
-            self.inner.watch_availability(),
-            |mut receiver| async move {
-                receiver.changed().await.ok()?;
-                let availability = Availability::from_runtime(&receiver.borrow());
-                Some((availability, receiver))
-            },
-        ))
+    pub fn watch_availability(
+        &self,
+    ) -> futures_util::stream::BoxStream<'static, Availability> {
+        futures_util::StreamExt::boxed(
+            futures_util::stream::unfold(
+                self.inner.watch_availability(),
+                |mut receiver| async move {
+                    receiver.changed().await.ok()?;
+                    let availability = Availability::from_runtime(&receiver.borrow());
+                    Some((availability, receiver))
+                },
+            ),
+        )
     }
     pub async fn connect(
         options: trellis_rs::client::UserConnectOptions<'_>,
@@ -106,6 +111,8 @@ impl Client {
     pub fn trellis_test_fixture_echo_v1(
         &self,
     ) -> crate::apis::trellis_test_fixture_echo_v1::Client {
-        crate::apis::trellis_test_fixture_echo_v1::Client::from_generated(self.inner.clone())
+        crate::apis::trellis_test_fixture_echo_v1::Client::from_generated(
+            self.inner.clone(),
+        )
     }
 }

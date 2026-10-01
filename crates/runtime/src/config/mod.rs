@@ -962,10 +962,11 @@ pub struct AuthorizationConfig {
 
 impl AuthorizationConfig {
     fn validate(&self) -> Result<(), ConfigError> {
-        for (field, path) in [("issuer_signing_seed_file", &self.issuer_signing_seed_file)] {
-            if path.as_os_str().is_empty() {
-                return Err(invalid_authorization(field, "must not be empty"));
-            }
+        if self.issuer_signing_seed_file.as_os_str().is_empty() {
+            return Err(invalid_authorization(
+                "issuer_signing_seed_file",
+                "must not be empty",
+            ));
         }
         if self.context_lifetime_seconds == 0 || self.context_lifetime_seconds > 3_600 {
             return Err(invalid_authorization(

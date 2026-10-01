@@ -15,8 +15,9 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.Echo";
         pub const KEY: &'static str = "echo.Echo";
         pub const SUBJECT: &'static str = "rpc.v1.echo.Echo";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] =
-            &["trellis-test-fixture.echo@v1::public"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis-test-fixture.echo@v1::public",
+        ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const DOWNLOAD: bool = false;
         pub const CURSOR_PAGINATION: bool = false;
@@ -48,8 +49,9 @@ pub mod operations {
         pub const DESCRIPTOR_NAME: &'static str = "operation.OptionalSilent";
         pub const KEY: &'static str = "echo.OptionalSilent";
         pub const SUBJECT: &'static str = "operations.v1.echo.OptionalSilent";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] =
-            &["trellis-test-fixture.echo@v1::optionalSilent"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis-test-fixture.echo@v1::optionalSilent",
+        ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const UPLOAD: bool = false;
     }
@@ -86,8 +88,9 @@ pub mod operations {
         pub const DESCRIPTOR_NAME: &'static str = "operation.Silent";
         pub const KEY: &'static str = "echo.Silent";
         pub const SUBJECT: &'static str = "operations.v1.echo.Silent";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] =
-            &["trellis-test-fixture.echo@v1::public"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis-test-fixture.echo@v1::public",
+        ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const UPLOAD: bool = false;
     }
@@ -126,8 +129,9 @@ pub mod operations {
         pub const DESCRIPTOR_NAME: &'static str = "operation.UpdateOnly";
         pub const KEY: &'static str = "echo.UpdateOnly";
         pub const SUBJECT: &'static str = "operations.v1.echo.UpdateOnly";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] =
-            &["trellis-test-fixture.echo@v1::public"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis-test-fixture.echo@v1::public",
+        ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const UPLOAD: bool = false;
     }
@@ -172,8 +176,9 @@ pub mod operations {
         pub const DESCRIPTOR_NAME: &'static str = "operation.Upload";
         pub const KEY: &'static str = "echo.Upload";
         pub const SUBJECT: &'static str = "operations.v1.echo.Upload";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] =
-            &["trellis-test-fixture.echo@v1::public"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis-test-fixture.echo@v1::public",
+        ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const UPLOAD: bool = true;
     }
@@ -213,8 +218,9 @@ pub mod operations {
         pub const DESCRIPTOR_NAME: &'static str = "operation.Work";
         pub const KEY: &'static str = "echo.Work";
         pub const SUBJECT: &'static str = "operations.v1.echo.Work";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] =
-            &["trellis-test-fixture.echo@v1::public"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis-test-fixture.echo@v1::public",
+        ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const UPLOAD: bool = false;
     }
@@ -259,15 +265,15 @@ pub mod events {
         pub const API_ID: &'static str = super::API_ID;
         pub const DESCRIPTOR_NAME: &'static str = "event.Observed";
         pub const KEY: &'static str = "echo.Observed";
-        pub const SUBJECT: &'static str =
-            "events.v1.dHJlbGxpcy10ZXN0LWZpeHR1cmUuZWNob0B2MQ.Observed";
-        pub const SUBSCRIBE_SUBJECT: &'static str =
-            "events.v1.dHJlbGxpcy10ZXN0LWZpeHR1cmUuZWNob0B2MQ.Observed";
-        pub const PUBLISH_CAPABILITIES: &'static [&'static str] =
-            &["trellis-test-fixture.echo@v1::public"];
+        pub const SUBJECT: &'static str = "events.v1.dHJlbGxpcy10ZXN0LWZpeHR1cmUuZWNob0B2MQ.Observed";
+        pub const SUBSCRIBE_SUBJECT: &'static str = "events.v1.dHJlbGxpcy10ZXN0LWZpeHR1cmUuZWNob0B2MQ.Observed";
+        pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[
+            "trellis-test-fixture.echo@v1::public",
+        ];
         pub const DELEGATED_PUBLISH: bool = true;
-        pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] =
-            &["trellis-test-fixture.echo@v1::public"];
+        pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[
+            "trellis-test-fixture.echo@v1::public",
+        ];
     }
     impl trellis_rs::generated::EventDescriptor for Observed {
         type Event = ObservedEvent;
@@ -298,7 +304,10 @@ impl Client {
     pub async fn echo(
         &self,
         input: &rpc::EchoInput,
-    ) -> Result<rpc::EchoOutput, trellis_rs::client::CallError<std::convert::Infallible>> {
+    ) -> Result<
+        rpc::EchoOutput,
+        trellis_rs::client::CallError<std::convert::Infallible>,
+    > {
         self.inner.call::<rpc::Echo>(input).await
     }
     pub fn optional_silent(
@@ -309,7 +318,9 @@ impl Client {
     pub fn silent(&self) -> trellis_rs::generated::Operation<'_, operations::Silent> {
         self.inner.operation::<operations::Silent>()
     }
-    pub fn update_only(&self) -> trellis_rs::generated::Operation<'_, operations::UpdateOnly> {
+    pub fn update_only(
+        &self,
+    ) -> trellis_rs::generated::Operation<'_, operations::UpdateOnly> {
         self.inner.operation::<operations::UpdateOnly>()
     }
     pub fn upload(&self) -> trellis_rs::generated::Operation<'_, operations::Upload> {
@@ -341,18 +352,18 @@ pub struct Provider<'a, P> {
     runtime: &'a mut trellis_rs::service::ConnectedServiceRuntime<P>,
 }
 impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
-    pub fn new(runtime: &'a mut trellis_rs::service::ConnectedServiceRuntime<P>) -> Self {
+    pub fn new(
+        runtime: &'a mut trellis_rs::service::ConnectedServiceRuntime<P>,
+    ) -> Self {
         Self { runtime }
     }
     pub fn register_echo<F, Fut>(&mut self, handler: F)
     where
-        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::EchoInput) -> Fut
-            + Send
-            + Sync
-            + 'static,
-        Fut: std::future::Future<Output = trellis_rs::service::HandlerResult<rpc::EchoOutput>>
-            + Send
-            + 'static,
+        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::EchoInput) -> Fut + Send
+            + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::EchoOutput>,
+            > + Send + 'static,
     {
         self.runtime.register_rpc::<rpc::Echo, _, _>(handler);
     }
@@ -364,13 +375,9 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
                 trellis_rs::service::OperationControl<
                     trellis_rs::generated::OperationAdapter<operations::OptionalSilent>,
                 >,
-            ) -> Fut
-            + Send
-            + Sync
-            + 'static,
+            ) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = Result<(), trellis_rs::service::ServerError>>
-            + Send
-            + 'static,
+            + Send + 'static,
     {
         self.runtime
             .register_operation_handler::<
@@ -387,13 +394,9 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
                 trellis_rs::service::OperationControl<
                     trellis_rs::generated::OperationAdapter<operations::Silent>,
                 >,
-            ) -> Fut
-            + Send
-            + Sync
-            + 'static,
+            ) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = Result<(), trellis_rs::service::ServerError>>
-            + Send
-            + 'static,
+            + Send + 'static,
     {
         self.runtime
             .register_operation_handler::<
@@ -410,13 +413,9 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
                 trellis_rs::service::OperationControl<
                     trellis_rs::generated::OperationAdapter<operations::UpdateOnly>,
                 >,
-            ) -> Fut
-            + Send
-            + Sync
-            + 'static,
+            ) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = Result<(), trellis_rs::service::ServerError>>
-            + Send
-            + 'static,
+            + Send + 'static,
     {
         self.runtime
             .register_operation_handler::<
@@ -433,13 +432,9 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
                 trellis_rs::service::OperationControl<
                     trellis_rs::generated::OperationAdapter<operations::Upload>,
                 >,
-            ) -> Fut
-            + Send
-            + Sync
-            + 'static,
+            ) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = Result<(), trellis_rs::service::ServerError>>
-            + Send
-            + 'static,
+            + Send + 'static,
     {
         self.runtime
             .register_operation_handler::<
@@ -456,13 +451,9 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
                 trellis_rs::service::OperationControl<
                     trellis_rs::generated::OperationAdapter<operations::Work>,
                 >,
-            ) -> Fut
-            + Send
-            + Sync
-            + 'static,
+            ) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = Result<(), trellis_rs::service::ServerError>>
-            + Send
-            + 'static,
+            + Send + 'static,
     {
         self.runtime
             .register_operation_handler::<
