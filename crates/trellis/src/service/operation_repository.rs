@@ -334,24 +334,131 @@ pub trait OperationRepository: Send + Sync {
 }
 
 /// Production JetStream KV implementation of [`OperationRepository`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct KvOperationRepository {
+    transport: RepositoryTransport,
+}
+
+#[derive(Clone)]
+enum RepositoryTransport {
+    Fixed {
+        store: Box<kv::Store>,
+        lease: Option<crate::client::TransportLease>,
+    },
+    Managed {
+        manager: crate::client::TransportGenerationManager,
+        bucket: String,
+        timeout_ms: u64,
+    },
+}
+
+impl std::fmt::Debug for KvOperationRepository {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("KvOperationRepository")
+            .finish_non_exhaustive()
+    }
+}
+
+/// One finite repository invocation, or the lifetime of an escaping watch.
+struct RepositoryStore {
     store: kv::Store,
+    _lease: Option<crate::client::TransportLease>,
 }
 
 impl KvOperationRepository {
     /// Use a pre-provisioned deployment operation KV bucket.
     #[must_use]
     pub fn new(store: kv::Store) -> Self {
-        Self { store }
+        Self {
+            transport: RepositoryTransport::Fixed {
+                store: Box::new(store),
+                lease: None,
+            },
+        }
+    }
+
+    pub(crate) fn managed(
+        manager: crate::client::TransportGenerationManager,
+        bucket: String,
+        timeout_ms: u64,
+    ) -> Self {
+        Self {
+            transport: RepositoryTransport::Managed {
+                manager,
+                bucket,
+                timeout_ms,
+            },
+        }
+    }
+
+    /// Bind accepted work to its receiving generation, never a later default.
+    /// Explicitly unmanaged repositories retain their original store.
+    pub(crate) async fn pinned(
+        &self,
+        lease: Option<&crate::client::TransportLease>,
+    ) -> Result<Self, ServerError> {
+        match &self.transport {
+            RepositoryTransport::Fixed { .. } => Ok(self.clone()),
+            RepositoryTransport::Managed { bucket, .. } => {
+                let lease = lease.ok_or_else(|| {
+                    ServerError::Nats(
+                        "operation repository is missing its accepting transport generation"
+                            .to_owned(),
+                    )
+                })?;
+                let store = async_nats::jetstream::new(lease.nats().clone())
+                    .get_key_value(bucket)
+                    .await
+                    .map_err(|error| ServerError::Nats(error.to_string()))?;
+                Ok(Self {
+                    transport: RepositoryTransport::Fixed {
+                        store: Box::new(store),
+                        lease: Some(lease.clone()),
+                    },
+                })
+            }
+        }
+    }
+
+    async fn store(&self) -> Result<RepositoryStore, ServerError> {
+        match &self.transport {
+            RepositoryTransport::Fixed { store, lease } => Ok(RepositoryStore {
+                store: (**store).clone(),
+                _lease: lease.clone(),
+            }),
+            RepositoryTransport::Managed {
+                manager,
+                bucket,
+                timeout_ms,
+            } => {
+                // Operation buckets are runtime-provisioned and authorized on
+                // each application generation, like operation staging buckets.
+                let lease = manager
+                    .acquire_for(
+                        &[],
+                        &[],
+                        std::time::Instant::now() + std::time::Duration::from_millis(*timeout_ms),
+                    )
+                    .await
+                    .map_err(|error| ServerError::Nats(error.to_string()))?;
+                let store = async_nats::jetstream::new(lease.nats().clone())
+                    .get_key_value(bucket)
+                    .await
+                    .map_err(|error| ServerError::Nats(error.to_string()))?;
+                Ok(RepositoryStore {
+                    store,
+                    _lease: Some(lease),
+                })
+            }
+        }
     }
 
     async fn load(
-        &self,
+        store: &kv::Store,
         invocation_id: &str,
     ) -> Result<Option<RevisionedOperationRecord>, ServerError> {
-        let Some(entry) = self
-            .store
+        let Some(entry) = store
             .entry(invocation_id)
             .await
             .map_err(|error| ServerError::Nats(error.to_string()))?
@@ -370,7 +477,8 @@ impl OperationRepository for KvOperationRepository {
         &self,
         invocation_id: &str,
     ) -> Result<Option<RevisionedOperationRecord>, ServerError> {
-        self.load(invocation_id).await
+        let guard = self.store().await?;
+        Self::load(&guard.store, invocation_id).await
     }
 
     async fn create(
@@ -378,14 +486,23 @@ impl OperationRepository for KvOperationRepository {
         record: DurableOperationRecord,
     ) -> Result<RevisionedOperationRecord, ServerError> {
         record.validate()?;
+        let guard = self.store().await?;
         let bytes = serde_json::to_vec(&record)?.into();
-        match self.store.create(record.invocation_id.clone(), bytes).await {
+        match guard
+            .store
+            .create(record.invocation_id.clone(), bytes)
+            .await
+        {
             Ok(revision) => Ok(RevisionedOperationRecord { record, revision }),
             Err(_) => {
                 for _ in 0..8 {
-                    let existing = self.load(&record.invocation_id).await?.ok_or_else(|| {
-                        ServerError::Nats("operation acceptance lost its KV create race".to_owned())
-                    })?;
+                    let existing = Self::load(&guard.store, &record.invocation_id)
+                        .await?
+                        .ok_or_else(|| {
+                            ServerError::Nats(
+                                "operation acceptance lost its KV create race".to_owned(),
+                            )
+                        })?;
                     if !existing.record.same_invocation(&record) {
                         return Err(ServerError::OperationIdempotencyConflict {
                             kind: "invocation",
@@ -402,7 +519,7 @@ impl OperationRepository for KvOperationRepository {
                     cancelled.revision += 1;
                     cancelled.cancellation_requested = true;
                     cancelled.snapshot.updated_at = record.snapshot.updated_at.clone();
-                    if let Ok(updated) = self
+                    if let Ok(updated) = Self::new(guard.store.clone())
                         .compare_record_exchange(existing.revision, cancelled)
                         .await
                     {
@@ -429,10 +546,13 @@ impl OperationRepository for KvOperationRepository {
                 "operation lease must expire in the future".to_owned(),
             ));
         }
+        let guard = self.store().await?;
         for _ in 0..8 {
-            let current = self.load(invocation_id).await?.ok_or_else(|| {
-                ServerError::Nats("operation invocation was not found".to_owned())
-            })?;
+            let current = Self::load(&guard.store, invocation_id)
+                .await?
+                .ok_or_else(|| {
+                    ServerError::Nats("operation invocation was not found".to_owned())
+                })?;
             if matches!(
                 current.record.snapshot.state,
                 OperationState::Completed | OperationState::Failed | OperationState::Cancelled
@@ -465,7 +585,7 @@ impl OperationRepository for KvOperationRepository {
             record.snapshot.revision = record.revision;
             record.validate()?;
             let bytes = serde_json::to_vec(&record)?.into();
-            if let Ok(revision) = self
+            if let Ok(revision) = guard
                 .store
                 .update(invocation_id, bytes, current.revision)
                 .await
@@ -491,10 +611,13 @@ impl OperationRepository for KvOperationRepository {
                 "operation lease must expire in the future".to_owned(),
             ));
         }
+        let guard = self.store().await?;
         for _ in 0..8 {
-            let current = self.load(invocation_id).await?.ok_or_else(|| {
-                ServerError::Nats("operation invocation was not found".to_owned())
-            })?;
+            let current = Self::load(&guard.store, invocation_id)
+                .await?
+                .ok_or_else(|| {
+                    ServerError::Nats("operation invocation was not found".to_owned())
+                })?;
             if current.record.owner_executor_id.as_deref() != Some(owner_executor_id)
                 || current.record.owner_epoch != owner_epoch
                 || current
@@ -512,7 +635,7 @@ impl OperationRepository for KvOperationRepository {
             record.revision += 1;
             record.snapshot.revision = record.revision;
             record.validate()?;
-            if let Ok(revision) = self
+            if let Ok(revision) = guard
                 .store
                 .update(
                     invocation_id,
@@ -534,8 +657,8 @@ impl OperationRepository for KvOperationRepository {
         expected_revision: u64,
         mut record: DurableOperationRecord,
     ) -> Result<RevisionedOperationRecord, ServerError> {
-        let current = self
-            .load(&record.invocation_id)
+        let guard = self.store().await?;
+        let current = Self::load(&guard.store, &record.invocation_id)
             .await?
             .ok_or_else(|| ServerError::Nats("operation invocation was not found".to_owned()))?;
         if current.revision != expected_revision
@@ -561,7 +684,7 @@ impl OperationRepository for KvOperationRepository {
         }
         record.snapshot.revision = record.revision;
         record.validate()?;
-        let revision = self
+        let revision = guard
             .store
             .update(
                 record.invocation_id.clone(),
@@ -587,8 +710,8 @@ impl OperationRepository for KvOperationRepository {
                 "operation owner fence rejected update".to_owned(),
             ));
         }
-        let current = self
-            .load(&record.invocation_id)
+        let guard = self.store().await?;
+        let current = Self::load(&guard.store, &record.invocation_id)
             .await?
             .ok_or_else(|| ServerError::Nats("operation invocation was not found".to_owned()))?;
         if current.revision != expected_revision
@@ -645,7 +768,7 @@ impl OperationRepository for KvOperationRepository {
                 .to_owned(),
             });
         }
-        let revision = self
+        let revision = guard
             .store
             .update(
                 record.invocation_id.clone(),
@@ -662,17 +785,17 @@ impl OperationRepository for KvOperationRepository {
         invocation_id: &str,
     ) -> Result<BoxStream<'static, Result<RevisionedOperationRecord, ServerError>>, ServerError>
     {
-        let watcher = self
+        let guard = self.store().await?;
+        let watcher = guard
             .store
             .watch(invocation_id)
             .await
             .map_err(|error| ServerError::Nats(error.to_string()))?;
-        let snapshot = self
-            .load(invocation_id)
+        let snapshot = Self::load(&guard.store, invocation_id)
             .await?
             .ok_or_else(|| ServerError::Nats("operation invocation was not found".to_owned()))?;
         let snapshot_revision = snapshot.revision;
-        Ok(Box::pin(
+        let stream = Box::pin(
             futures_util::stream::once(async move { Ok(snapshot) }).chain(watcher.filter_map(
                 move |entry| async move {
                     match entry {
@@ -689,11 +812,20 @@ impl OperationRepository for KvOperationRepository {
                     }
                 },
             )),
-        ))
+        );
+        // Carry the selected generation through the snapshot and all watch
+        // items. True EOF or dropping the stream releases it; an Err item does not.
+        Ok(
+            futures_util::stream::unfold((stream, guard), |(mut stream, guard)| async move {
+                stream.next().await.map(|item| (item, (stream, guard)))
+            })
+            .boxed(),
+        )
     }
 
     async fn list_nonterminal(&self) -> Result<Vec<RevisionedOperationRecord>, ServerError> {
-        let mut keys = self
+        let guard = self.store().await?;
+        let mut keys = guard
             .store
             .keys()
             .await
@@ -701,7 +833,7 @@ impl OperationRepository for KvOperationRepository {
         let mut records = Vec::new();
         while let Some(key) = keys.next().await {
             let key = key.map_err(|error| ServerError::Nats(error.to_string()))?;
-            if let Some(record) = self.load(&key).await? {
+            if let Some(record) = Self::load(&guard.store, &key).await? {
                 if !record.record.snapshot.state.is_terminal() {
                     records.push(record);
                 }

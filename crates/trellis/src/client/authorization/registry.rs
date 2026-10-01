@@ -7,9 +7,85 @@ use futures_util::StreamExt;
 use std::{future::Future, pin::Pin, time::Duration};
 
 use super::super::TrellisClientError;
+use super::own_context::OwnTransitionGuard;
 use super::types::AuthorizationRegistryBinding;
 
 pub(crate) const REVOCATION_PREFIX: &str = "revocation.";
+
+/// How one registry operation acquires its physical attachment lease.
+///
+/// Ordinary maintenance follows the exact published current generation. A scoped
+/// own-candidate coverage warm instead carries one already-acquired pinned source,
+/// so its cold read and initial revocation watch run on exactly that attachment
+/// and never re-select a survivor or a published/default socket.
+#[derive(Clone, Debug)]
+pub(crate) enum RegistryAttachment {
+    /// The exact published current generation (ordinary maintenance).
+    Published,
+    /// One scoped own-candidate coverage warm pinned to a single already-acquired
+    /// attachment under the candidate's own corrected clock.
+    PinnedOwnCandidate(PinnedOwnCandidateSource),
+}
+
+/// One pinned physical attachment for a scoped own-candidate coverage warm.
+///
+/// `lease` is the exact already-acquired generation lease, or `None` for a fixed
+/// unmanaged bootstrap attachment (which uses the reader's own socket).
+/// `clock_offset_ms` is the immutable server-clock offset captured from the exact
+/// prepared candidate, so verification recomputes a fresh corrected time at each
+/// use and a captured timestamp never freezes across the warm's awaits.
+#[derive(Clone)]
+pub(crate) struct PinnedOwnCandidateSource {
+    lease: Option<crate::client::TransportLease>,
+    clock_offset_ms: i64,
+}
+
+impl PinnedOwnCandidateSource {
+    /// A managed pinned source on one exact already-acquired attachment lease.
+    pub(crate) fn pinned(lease: crate::client::TransportLease, clock_offset_ms: i64) -> Self {
+        Self {
+            lease: Some(lease),
+            clock_offset_ms,
+        }
+    }
+
+    /// The fixed bootstrap attachment used when no generation manager is attached;
+    /// the reader's own socket carries the warm. Used only by component tests whose
+    /// provider has no generation manager.
+    #[cfg(test)]
+    pub(crate) fn fixed(clock_offset_ms: i64) -> Self {
+        Self {
+            lease: None,
+            clock_offset_ms,
+        }
+    }
+
+    /// The candidate's corrected "now" (Unix seconds) at the moment of the call.
+    pub(crate) fn corrected_now_seconds(&self) -> Result<i64, TrellisClientError> {
+        super::own_context::system_now_millis()?
+            .checked_add(self.clock_offset_ms)
+            .ok_or_else(|| TrellisClientError::Bootstrap("context time overflow".into()))
+            .map(|now| now.div_euclid(1000))
+    }
+
+    /// The immutable server-clock offset captured from the exact candidate.
+    pub(crate) fn clock_offset_ms(&self) -> i64 {
+        self.clock_offset_ms
+    }
+}
+
+impl std::fmt::Debug for PinnedOwnCandidateSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PinnedOwnCandidateSource")
+            .field(
+                "generation_id",
+                &self.lease.as_ref().map(|lease| lease.generation_id()),
+            )
+            .field("clock_offset_ms", &self.clock_offset_ms)
+            .finish()
+    }
+}
 
 pub(crate) struct RegistryWatchEntry {
     pub(crate) key: String,
@@ -28,6 +104,13 @@ pub(crate) struct RegistryWatch {
     subscription: Subscriber,
     subject: String,
     key: String,
+    /// Attachment lease for this watch's whole life: the watch never outlives its
+    /// socket, and releasing the lease lets a superseded generation be reclaimed.
+    _lease: Option<crate::client::TransportLease>,
+    /// Reader and digest that carry this coverage binding across a transport
+    /// replacement make-before-break.
+    reader: AuthorizationRegistryReader,
+    digest: String,
     initial_boundary: u64,
     delivered: u64,
     initialized: bool,
@@ -35,6 +118,175 @@ pub(crate) struct RegistryWatch {
     heartbeat_sleep: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
+impl RegistryWatch {
+    /// Subscribe to current-generation publication changes for this binding.
+    pub(crate) fn subscribe_publication(
+        &self,
+    ) -> Option<tokio::sync::watch::Receiver<Option<u64>>> {
+        self.reader.subscribe_publication()
+    }
+
+    /// The exact transport generation whose attachment this watch is leased on.
+    ///
+    /// `None` for a fixed (unmanaged) attachment that never hands over.
+    pub(crate) fn generation_id(&self) -> Option<u64> {
+        self._lease.as_ref().map(|lease| lease.generation_id())
+    }
+
+    /// This binding's registry reader, for a guarded replacement commit.
+    pub(crate) fn reader(&self) -> AuthorizationRegistryReader {
+        self.reader.clone()
+    }
+
+    /// Carry this coverage binding to the exact `expected` published generation.
+    ///
+    /// The replacement opens and initializes on the exact published attachment
+    /// for `expected` **while this authoritative watch stays observed and
+    /// leased**: the old watch's next event is selected concurrently with the
+    /// owned preparation future and with publication changes, so a genuine
+    /// revocation, error or end on the old binding is surfaced immediately, and
+    /// a publication superseding `expected` cancels the preparation rather than
+    /// waiting for a target that can no longer commit. Only a successor that
+    /// reaches its initialization barrier and then commits through `commit` —
+    /// which revalidates the authoritative provider binding under the manager's
+    /// publication guard — replaces the old binding, releasing the old exact
+    /// lease as the old watch is dropped; otherwise the healthy old binding
+    /// stays in force. A genuine successor revocation observed before its
+    /// initialization barrier is surfaced immediately through the same
+    /// digest-global reducer without installing the successor. Dropping the
+    /// preparation future destroys any provisional consumer and its exact lease.
+    pub(crate) async fn hand_over<F>(&mut self, expected: u64, commit: F) -> CoverageHandover
+    where
+        F: FnOnce(&mut RegistryWatch, Box<RegistryWatch>) -> bool,
+    {
+        let reader = self.reader.clone();
+        let digest = self.digest.clone();
+        let mut publication = self.subscribe_publication();
+        // Follow an already-published target immediately; a same-id renewal is a
+        // no-op and no published current is never a new target.
+        if let Some(receiver) = publication.as_ref() {
+            if *receiver.borrow() != Some(expected) {
+                return CoverageHandover::Superseded;
+            }
+        }
+        let prepare = prepare_replacement(reader, digest, expected);
+        tokio::pin!(prepare);
+        tokio::select! {
+            // Prefer the authoritative old binding's observation when both are
+            // ready: its loss must never be hidden behind successor setup.
+            biased;
+            event = futures_util::StreamExt::next(&mut *self) => {
+                CoverageHandover::Observed(event)
+            }
+            prepared = &mut prepare => match prepared {
+                Ok(PreparedReplacement::Revoked(event)) => {
+                    CoverageHandover::Observed(Some(Ok(event)))
+                }
+                Ok(PreparedReplacement::Ready(successor)) => {
+                    if commit(self, successor) {
+                        CoverageHandover::Retained
+                    } else {
+                        CoverageHandover::SetupFailed
+                    }
+                }
+                Err(_) => CoverageHandover::SetupFailed,
+            },
+            _ = publication_changed(&mut publication) => CoverageHandover::Superseded,
+        }
+    }
+}
+
+/// Wait for the next real publication-identity change on this connection.
+///
+/// Pending forever when there is no publication receiver, so an unmanaged
+/// binding's `select!` simply keeps observing its watch.
+pub(crate) async fn publication_changed(
+    publication: &mut Option<tokio::sync::watch::Receiver<Option<u64>>>,
+) {
+    match publication.as_mut() {
+        Some(receiver) => {
+            let _ = receiver.changed().await;
+        }
+        None => std::future::pending::<()>().await,
+    }
+}
+
+/// Outcome of a make-before-break coverage handover.
+///
+/// Distinguishes a retained successor from an authoritative observation on the
+/// old binding (including its end), and keeps replacement setup failure separate:
+/// a failed successor is neither revocation nor global cache loss.
+pub(crate) enum CoverageHandover {
+    /// The successor reached its initialization barrier and replaced the old
+    /// binding; the old exact lease was released and no observation applies.
+    Retained,
+    /// An authoritative observation for the terminal reducer: a genuine
+    /// revocation `Entry` (old binding, or an initialized successor's snapshot),
+    /// an old-watch error, or a binding-local end (`None`).
+    Observed(Option<Result<RegistryWatchEvent, TrellisClientError>>),
+    /// The successor could not be opened or initialized, or its guarded commit
+    /// was refused because the target, provider binding, or coverage was no
+    /// longer authoritative. The healthy old binding stays in force; this is
+    /// neither revocation nor global coverage loss, so the caller may pace a
+    /// bounded retry of the same target.
+    SetupFailed,
+    /// The published current changed away from the target that was being
+    /// prepared, or was replaced before preparation started. No provisional
+    /// watcher was installed; the caller must recompute the target and need not
+    /// wait out a retry interval.
+    Superseded,
+}
+
+/// Result of preparing a successor coverage watch.
+enum PreparedReplacement {
+    /// The successor reached its initialization barrier and can be installed.
+    Ready(Box<RegistryWatch>),
+    /// A genuine revocation `Entry` was observed *before* initialization. It is
+    /// digest-global evidence and must reach the reducer immediately, without
+    /// awaiting initialization or installing the successor.
+    Revoked(RegistryWatchEvent),
+}
+
+/// Open a replacement watch on the current attachment and drive it to its
+/// initialization barrier.
+///
+/// Owns the reader and digest so the caller can keep observing the authoritative
+/// old watch concurrently. Dropping this future (for example when the old watch
+/// yields first) drops any provisional consumer and its exact lease.
+async fn prepare_replacement(
+    reader: AuthorizationRegistryReader,
+    digest: String,
+    expected: u64,
+) -> Result<PreparedReplacement, TrellisClientError> {
+    let mut replacement = reader
+        .watch_revocation(&digest, Some(expected), RegistryAttachment::Published)
+        .await?;
+    match futures_util::StreamExt::next(&mut replacement).await {
+        Some(Ok(RegistryWatchEvent::Initialized)) => {
+            Ok(PreparedReplacement::Ready(Box::new(replacement)))
+        }
+        Some(Ok(RegistryWatchEvent::Entry(entry))) => {
+            // A genuine revocation observed before initialization is digest-global
+            // evidence and is surfaced immediately, without awaiting
+            // initialization or installing the successor; unusable provisional
+            // evidence is a setup failure that leaves the healthy old binding in
+            // force.
+            if super::provider_cache::genuine_revocation_at(&entry, &digest).is_some() {
+                Ok(PreparedReplacement::Revoked(RegistryWatchEvent::Entry(
+                    entry,
+                )))
+            } else {
+                Err(TrellisClientError::AuthorizationUnavailable(
+                    "authorization revocation evidence is unusable".into(),
+                ))
+            }
+        }
+        Some(Err(error)) => Err(error),
+        None => Err(TrellisClientError::AuthorizationUnavailable(
+            "authorization revocation watch ended during handoff".into(),
+        )),
+    }
+}
 impl futures_util::Stream for RegistryWatch {
     type Item = Result<RegistryWatchEvent, TrellisClientError>;
 
@@ -223,43 +475,146 @@ fn parse_delivery_sequences(reply: &str) -> Result<(u64, u64), &'static str> {
 #[derive(Clone)]
 pub(crate) struct AuthorizationRegistryReader {
     nats: async_nats::Client,
-    contexts: stream::Stream<()>,
     binding: AuthorizationRegistryBinding,
+    /// The connection's generation manager when attached. Registry I/O then
+    /// acquires the current generation's attachment, so reads and watches follow
+    /// a transport cutover instead of pinning the initial connection.
+    manager: Option<crate::client::TransportGenerationManager>,
 }
 
 impl AuthorizationRegistryReader {
     pub(crate) async fn open(
         nats: async_nats::Client,
         binding: &AuthorizationRegistryBinding,
+        manager: Option<crate::client::TransportGenerationManager>,
     ) -> Result<Self, TrellisClientError> {
         if binding.context_bucket.trim().is_empty() {
             return Err(TrellisClientError::Bootstrap(
                 "authorization registry bucket is empty".into(),
             ));
         }
-        let jetstream = jetstream::new(nats.clone());
-        let contexts = jetstream
-            .get_stream_no_info(format!("KV_{}", binding.context_bucket))
+        Ok(Self {
+            nats,
+            binding: binding.clone(),
+            manager,
+        })
+    }
+
+    /// Subscribe to the connection's publication-identity changes.
+    ///
+    /// Carries the published current generation id (`None` when there is none)
+    /// and changes only on a real identity change. `None` for a fixed
+    /// (unmanaged) attachment, which never hands over.
+    pub(crate) fn subscribe_publication(
+        &self,
+    ) -> Option<tokio::sync::watch::Receiver<Option<u64>>> {
+        self.manager
+            .as_ref()
+            .map(crate::client::TransportGenerationManager::subscribe_publication)
+    }
+
+    /// Run a guarded coverage commit against the exact published current generation.
+    ///
+    /// Delegates to the connection's generation manager so a caller can
+    /// revalidate its authoritative provider binding and perform its synchronous
+    /// binding swap while the manager's publication guard is held. Without a
+    /// manager there is no publication to guard, so replacement is unavailable.
+    pub(crate) fn commit_published_if_current(
+        &self,
+        transition: &OwnTransitionGuard<'_>,
+        expected: u64,
+        commit: impl FnOnce() -> bool,
+    ) -> Result<bool, TrellisClientError> {
+        self.manager
+            .as_ref()
+            .ok_or_else(|| {
+                TrellisClientError::TransportUnavailable(
+                    "coverage replacement requires a transport generation manager".into(),
+                )
+            })?
+            .commit_published_if_current(transition, expected, commit)
+    }
+
+    /// Whether the logical transport connection has latched a terminal cause.
+    ///
+    /// A terminal connection can never adopt another generation, so coverage
+    /// replacement stops retrying while the authoritative binding is still
+    /// observed to its own loss. `false` for a fixed (unmanaged) attachment.
+    pub(crate) fn transport_terminal(&self) -> bool {
+        self.manager
+            .as_ref()
+            .is_some_and(|manager| manager.terminal().is_some())
+    }
+
+    /// Acquire the exact attachment for one registry operation.
+    ///
+    /// Ordinary maintenance uses the manager's internal
+    /// [`TransportGenerationManager::acquire_published`] — the exact published
+    /// current generation, never a draining substitute, and with no CONNECT
+    /// routing-credential validation — because this is maintenance on an
+    /// already-admitted socket. A scoped own-candidate warm instead carries one
+    /// already-acquired [`RegistryAttachment::PinnedOwnCandidate`] source and is
+    /// used exactly as given: no survivor is re-selected and no published/default
+    /// socket is re-acquired. Without a manager the fixed bootstrap attachment is
+    /// used, so runtime-internal callers keep their existing behaviour.
+    ///
+    /// When `expected` is set the acquired lease must be exactly that published
+    /// generation, validated before any registry or consumer IO: a superseded
+    /// target is refused rather than silently served by a substitute attachment.
+    async fn attachment(
+        &self,
+        expected: Option<u64>,
+        attachment: RegistryAttachment,
+    ) -> Result<(Option<crate::client::TransportLease>, stream::Stream<()>), TrellisClientError>
+    {
+        let (lease, nats) = match &attachment {
+            RegistryAttachment::Published => match &self.manager {
+                Some(manager) => {
+                    let lease = manager.acquire_published()?;
+                    let nats = lease.nats().clone();
+                    (Some(lease), nats)
+                }
+                None => (None, self.nats.clone()),
+            },
+            RegistryAttachment::PinnedOwnCandidate(source) => {
+                let nats = source
+                    .lease
+                    .as_ref()
+                    .map(|lease| lease.nats().clone())
+                    .unwrap_or_else(|| self.nats.clone());
+                (source.lease.clone(), nats)
+            }
+        };
+        if let (Some(expected), Some(lease)) = (expected, lease.as_ref()) {
+            if lease.generation_id() != expected {
+                return Err(TrellisClientError::TransportUnavailable(
+                    "authorization registry target is no longer the published current attachment"
+                        .into(),
+                ));
+            }
+        }
+        let contexts = jetstream::new(nats)
+            .get_stream_no_info(format!("KV_{}", self.binding.context_bucket))
             .await
             .map_err(|error| {
                 TrellisClientError::AuthorizationUnavailable(format!(
                     "cannot open authorization registry: {error}"
                 ))
             })?;
-        Ok(Self {
-            nats,
-            contexts,
-            binding: binding.clone(),
-        })
+        Ok((lease, contexts))
     }
 
     pub(crate) async fn get_context(
         &self,
         digest: &str,
+        attachment: RegistryAttachment,
     ) -> Result<Option<Vec<u8>>, TrellisClientError> {
         validate_digest_key(digest)?;
+        // A finite read leases the current attachment for the operation only, so
+        // it follows a cutover and never pins a superseded generation.
+        let (_lease, contexts) = self.attachment(None, attachment).await?;
         let subject = format!("$KV.{}.{digest}", self.binding.context_bucket);
-        match self.contexts.direct_get_last_for_subject(&subject).await {
+        match contexts.direct_get_last_for_subject(&subject).await {
             Ok(message)
                 if message
                     .headers
@@ -281,20 +636,31 @@ impl AuthorizationRegistryReader {
     pub(crate) async fn watch_revocation(
         &self,
         digest: &str,
+        expected: Option<u64>,
+        attachment: RegistryAttachment,
     ) -> Result<RegistryWatch, TrellisClientError> {
         validate_digest_key(digest)?;
+        // The watch holds its attachment lease for the watch's whole life, so it
+        // cannot outlive its socket. It is acquired on the generation current at
+        // that time; moving an existing watch across a later cutover is performed
+        // by `hand_over`, which validates the exact `expected` lease before any
+        // consumer IO.
+        let (lease, contexts) = self.attachment(expected, attachment).await?;
+        let nats = lease
+            .as_ref()
+            .map(|lease| lease.nats().clone())
+            .unwrap_or_else(|| self.nats.clone());
         let subject = format!(
             "$KV.{}.{REVOCATION_PREFIX}{digest}",
             self.binding.context_bucket
         );
         let key = format!("{REVOCATION_PREFIX}{digest}");
-        let deliver_subject = self.nats.new_inbox();
+        let deliver_subject = nats.new_inbox();
         let consumer_name = format!(
             "TrellisAuth{}",
             deliver_subject.rsplit('.').next().unwrap_or_default()
         );
-        let mut consumer = self
-            .contexts
+        let mut consumer = contexts
             .create_consumer(jetstream::consumer::push::Config {
                 deliver_subject: deliver_subject.clone(),
                 name: Some(consumer_name),
@@ -314,16 +680,12 @@ impl AuthorizationRegistryReader {
                     "cannot create authorization revocation watch: {error}"
                 ))
             })?;
-        let subscription = self
-            .nats
-            .subscribe(deliver_subject)
-            .await
-            .map_err(|error| {
-                TrellisClientError::AuthorizationUnavailable(format!(
-                    "cannot consume authorization revocation watch: {error}"
-                ))
-            })?;
-        self.nats.flush().await.map_err(|error| {
+        let subscription = nats.subscribe(deliver_subject).await.map_err(|error| {
+            TrellisClientError::AuthorizationUnavailable(format!(
+                "cannot consume authorization revocation watch: {error}"
+            ))
+        })?;
+        nats.flush().await.map_err(|error| {
             TrellisClientError::AuthorizationUnavailable(format!(
                 "cannot establish authorization revocation watch: {error}"
             ))
@@ -334,10 +696,13 @@ impl AuthorizationRegistryReader {
             ))
         })?;
         Ok(RegistryWatch {
-            client: self.nats.clone(),
+            client: nats,
             subscription,
             subject,
             key,
+            _lease: lease,
+            reader: self.clone(),
+            digest: digest.to_owned(),
             initial_boundary: info
                 .delivered
                 .consumer_sequence

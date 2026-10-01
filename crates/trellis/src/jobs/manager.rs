@@ -184,7 +184,7 @@ pub enum TerminalPublishDecision {
 struct JobManagerInner<P, M> {
     publisher: P,
     bindings: JobsBinding,
-    meta: M,
+    meta: Arc<M>,
     key_coordinator: Option<Arc<dyn JobKeyCoordinator>>,
 }
 
@@ -203,6 +203,10 @@ impl<P, M> Clone for JobManager<P, M> {
 impl<P, M> JobManager<P, M> {
     #[doc = concat!("Trellis API operation `", stringify!(new), "`.")]
     pub fn new(publisher: P, bindings: JobsBinding, meta: M) -> Self {
+        Self::new_with_shared_meta(publisher, bindings, Arc::new(meta))
+    }
+
+    pub(crate) fn new_with_shared_meta(publisher: P, bindings: JobsBinding, meta: Arc<M>) -> Self {
         Self {
             inner: Arc::new(JobManagerInner {
                 publisher,
@@ -225,7 +229,7 @@ impl<P, M> JobManager<P, M> {
             inner: Arc::new(JobManagerInner {
                 publisher,
                 bindings,
-                meta,
+                meta: Arc::new(meta),
                 key_coordinator: Some(key_coordinator),
             }),
         }

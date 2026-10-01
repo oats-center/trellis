@@ -73,6 +73,8 @@ pub(crate) struct PendingCloseAck {
     pub reply: String,
     pub request_id: String,
     pub control: LiveControl,
+    /// Pins the receiving attachment until this request's signed handoff.
+    pub lease: crate::client::TransportLease,
 }
 
 /// One registered provider session with its source factory and cleanup hook.
@@ -111,9 +113,13 @@ pub(crate) struct ProviderSessionRecord {
     /// Last committed logical control and its cached semantic outcome.
     pub control_receipt: std::sync::Mutex<Option<CachedControl>>,
     /// Latest close acknowledgement, when a retry arrives while cleanup runs.
+    /// Replacing it releases the prior request's receiving-generation lease.
     pub pending_close_ack: std::sync::Mutex<Option<PendingCloseAck>>,
     /// Exactly one terminal frame is published per session.
     pub end_sent: AtomicBool,
+    /// The generation that accepted this session. Held for the session lifetime
+    /// so a superseded provider generation is not reaped underneath it.
+    pub _generation_lease: Option<crate::client::TransportLease>,
 }
 
 impl ProviderSessionRecord {
@@ -541,6 +547,7 @@ impl ProviderSessionRecord {
         self: &Arc<Self>,
         nats: &async_nats::Client,
         message: async_nats::Message,
+        lease: crate::client::TransportLease,
     ) {
         let Some(reply) = message.reply.clone() else {
             return;
@@ -583,6 +590,7 @@ impl ProviderSessionRecord {
                         reply: reply.to_string(),
                         request_id,
                         control,
+                        lease,
                     });
                 }
                 self.spawn_close_driver(nats.clone());
@@ -716,7 +724,7 @@ impl ProviderSessionRecord {
     }
 
     /// Spawn the one owned cleanup-then-ack driver for this session.
-    pub(crate) fn spawn_close_driver(self: &Arc<Self>, nats: async_nats::Client) {
+    pub(crate) fn spawn_close_driver(self: &Arc<Self>, _nats: async_nats::Client) {
         if self.cleanup_driver_started.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -724,17 +732,12 @@ impl ProviderSessionRecord {
         tokio::spawn(async move {
             let cleanup = record.run_owned_cleanup().await;
             let end = record.finish_closed(Instant::now(), cleanup).await;
-            record.publish_pending_close_ack(&nats, cleanup, &end).await;
+            record.publish_pending_close_ack(cleanup, &end).await;
         });
     }
 
     /// Publish the latest deferred close acknowledgement, if one is pending.
-    async fn publish_pending_close_ack(
-        &self,
-        nats: &async_nats::Client,
-        cleanup: CloseCleanupState,
-        end: &LiveEnd,
-    ) {
+    async fn publish_pending_close_ack(&self, cleanup: CloseCleanupState, end: &LiveEnd) {
         let Some(pending) = self
             .pending_close_ack
             .lock()
@@ -763,7 +766,9 @@ impl ProviderSessionRecord {
         let Ok(signed) = signed else {
             return;
         };
-        let _ = nats
+        let _ = pending
+            .lease
+            .nats()
             .publish_with_headers(pending.reply, signed, Bytes::from(body))
             .await;
     }

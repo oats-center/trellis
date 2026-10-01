@@ -59,7 +59,7 @@ impl AvailabilitySnapshot {
         ] {
             let names = candidate.resource_names(kind);
             for name in names {
-                let unchanged = previous.has_resource(kind, &name)
+                let unchanged = previous.has_installed_resource(kind, &name)
                     && candidate.same_binding(previous, kind, &name);
                 if !unchanged {
                     generations.insert((kind, name), next);
@@ -194,9 +194,10 @@ impl AvailabilitySnapshot {
     /// Test whether bootstrap installed a participant resource binding.
     #[doc(hidden)]
     pub fn has_resource(&self, kind: ResourceKind, name: &str) -> bool {
-        if !self.usable {
-            return false;
-        }
+        self.usable && self.has_installed_resource(kind, name)
+    }
+
+    fn has_installed_resource(&self, kind: ResourceKind, name: &str) -> bool {
         match kind {
             ResourceKind::State => self.permissions.iter().any(|permission| {
                 matches!(
@@ -574,6 +575,11 @@ where
 }
 
 /// Opaque authenticated transport used by generated clients.
+///
+/// Actions automatically acquire a physical generation that covers their granted
+/// transport requirements. Wider authorization is adopted without an application
+/// refresh call; work already in flight retains its admitted generation while it
+/// remains authorized.
 #[derive(Clone)]
 pub struct Client {
     client: Arc<crate::client::TrellisClient>,
@@ -602,33 +608,6 @@ impl Client {
         self.client
             .availability()
             .require_action(self.optional_actions, action)
-    }
-
-    /// Reject a generated action whose granted subjects are not yet admitted on
-    /// the current physical attachment.
-    ///
-    /// This is a transport condition, never a permission decision: an
-    /// ungranted requirement falls through to the ordinary server response.
-    fn ensure_transport(
-        &self,
-        publish: &[String],
-        subscribe: &[String],
-    ) -> Result<(), crate::client::TrellisClientError> {
-        if self
-            .client
-            .transport_requirement_missing(publish, subscribe)?
-        {
-            return Err(crate::client::TrellisClientError::TransportUpgradeRequired(
-                "the granted capability's transport subjects are not admitted on the current connection"
-                    .into(),
-            ));
-        }
-        Ok(())
-    }
-
-    /// The caller-owned response-inbox receive pattern for this connection.
-    fn response_inbox_pattern(&self) -> String {
-        format!("{}.>", self.client.inbox_prefix())
     }
 
     /// Connect using a durable user login session.
@@ -676,11 +655,10 @@ impl Client {
             .client
             .bound_key_subject("rpc", D::API_ID, D::KEY)
             .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))?;
-        self.ensure_transport(
-            std::slice::from_ref(&route),
-            &[self.response_inbox_pattern()],
-        )
-        .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))?;
+        // The runtime transport layer acquires an admitted generation for this
+        // exact route and inbox, waiting for automatic adoption when the
+        // capability is granted but not yet admitted. A route current authority
+        // does not grant falls through to the ordinary broker decision.
         let input = input.encode().map_err(|error| {
             crate::client::CallError::Protocol(crate::client::ProtocolError::new(error.to_string()))
         })?;
@@ -754,8 +732,6 @@ impl Client {
             D::API_ID,
             action_name(D::DESCRIPTOR_NAME),
         ))?;
-        let route = self.client.bound_key_subject("live", D::API_ID, D::KEY)?;
-        self.ensure_transport(&[route], &[self.response_inbox_pattern()])?;
         self.client.live::<D>(input).await
     }
 
@@ -775,41 +751,6 @@ impl Client {
         &self,
     ) -> Result<(), crate::client::TrellisClientError> {
         self.client.refresh_authorization_context().await.map(drop)
-    }
-
-    /// Whether renewed authorization offers transport capability this physical
-    /// attachment has not adopted yet.
-    ///
-    /// Retained while connected. Adopt it with [`Self::refresh_transport`].
-    #[must_use]
-    pub fn transport_upgrade_available(&self) -> bool {
-        self.client.transport_upgrade_available()
-    }
-
-    /// Observe the retained transport-authorization status; the current value
-    /// is delivered immediately, so a late listener still sees an outstanding
-    /// upgrade notice.
-    #[must_use]
-    pub fn watch_transport_authorization(
-        &self,
-    ) -> tokio::sync::watch::Receiver<crate::client::authorization::TransportAuthorizationStatus>
-    {
-        self.client.watch_transport_authorization()
-    }
-
-    /// Adopt the wider transport policy through one explicit reconnect.
-    ///
-    /// Concurrent callers share a single reconnect under one overall deadline.
-    /// This publishes ordinary transport lifecycle transitions and may
-    /// interrupt in-flight RPC or ephemeral observations.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::client::TrellisClientError`] when next-connect
-    /// authorization cannot be prepared or the replacement attachment is not
-    /// admitted in time.
-    pub async fn refresh_transport(&self) -> Result<(), crate::client::TrellisClientError> {
-        self.client.refresh_transport().await
     }
 
     /// Return the current immutable availability snapshot.
@@ -859,27 +800,11 @@ impl Client {
         let Some(binding) = availability.kv_binding(name).cloned() else {
             return Ok(None);
         };
-        // A granted bucket whose transport family is not admitted on this
-        // attachment must not be opened against NATS; report the pending
-        // condition so the caller can adopt it explicitly.
-        if self
-            .client
-            .resource_transport_missing(
-                crate::client::ResourceTransportKind::Kv,
-                &binding.bucket,
-                crate::client::ResourceTransportAction::Read,
-            )
-            .map_err(|error| crate::service::ServerError::Nats(error.to_string()))?
-        {
-            return Err(crate::service::ServerError::TransportUpgradeRequired(
-                format!(
-                    "kv resource '{name}' is granted but not admitted on the current connection"
-                ),
-            ));
-        }
-        let bucket = binding.bucket.clone();
+        // The logical handle owns no generation: each call acquires a suitable
+        // generation, so a resource granted after connect becomes usable without
+        // recreating the handle or an explicit refresh.
         crate::service::open_generated_kv(
-            &self.client.nats(),
+            self.client.transport_generations(),
             &self
                 .client
                 .participant_id()
@@ -888,13 +813,8 @@ impl Client {
             binding,
             codec,
             self.client.watch_availability(),
-            crate::client::ResourceTransportGate::new(
-                self.client.transport_state(),
-                crate::client::ResourceTransportKind::Kv,
-                bucket,
-            ),
+            self.client.timeout_ms(),
         )
-        .await
         .map(Some)
     }
 
@@ -908,24 +828,8 @@ impl Client {
         let Some(binding) = availability.store_binding(name).cloned() else {
             return Ok(None);
         };
-        if self
-            .client
-            .resource_transport_missing(
-                crate::client::ResourceTransportKind::Store,
-                &binding.name,
-                crate::client::ResourceTransportAction::Read,
-            )
-            .map_err(|error| crate::service::ServerError::Nats(error.to_string()))?
-        {
-            return Err(crate::service::ServerError::TransportUpgradeRequired(
-                format!(
-                    "store resource '{name}' is granted but not admitted on the current connection"
-                ),
-            ));
-        }
-        let bucket = binding.name.clone();
         crate::service::open_generated_store(
-            &self.client.nats(),
+            self.client.transport_generations(),
             &self
                 .client
                 .participant_id()
@@ -933,13 +837,8 @@ impl Client {
             name,
             binding,
             self.client.watch_availability(),
-            crate::client::ResourceTransportGate::new(
-                self.client.transport_state(),
-                crate::client::ResourceTransportKind::Store,
-                bucket,
-            ),
+            self.client.timeout_ms(),
         )
-        .await
         .map(Some)
     }
 
@@ -953,7 +852,6 @@ impl Client {
         let binding = availability.consumer_binding(D::NAME)?.clone();
         Some(crate::client::ConsumerHandle::from_generated(
             binding,
-            self.client.nats().clone(),
             self.clone(),
             self.client.watch_availability(),
         ))
@@ -1809,7 +1707,14 @@ mod tests {
             .resource_generation(ResourceKind::Kv, "records")
             .unwrap();
 
-        let unchanged = AvailabilitySnapshot::replacing(vec![], resources, &first);
+        let suspended = AvailabilitySnapshot::suspended(&first);
+        assert!(!suspended.has_kv_binding("records", &binding));
+        assert_eq!(
+            suspended.resource_generation(ResourceKind::Kv, "records"),
+            None
+        );
+        let unchanged = AvailabilitySnapshot::replacing(vec![], resources, &suspended);
+        assert!(unchanged.has_kv_binding("records", &binding));
         assert_eq!(
             unchanged.resource_generation(ResourceKind::Kv, "records"),
             Some(generation)

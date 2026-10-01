@@ -121,10 +121,20 @@ impl StateRuntime {
         })
     }
 
-    pub(crate) async fn run(self, stop: StopHandle) -> Result<(), RuntimeError> {
-        let router = self.router();
+    pub(crate) async fn run(
+        self,
+        stop: StopHandle,
+        mut live_owner: tokio::sync::watch::Receiver<
+            Option<trellis_rs::service::LiveProviderOwner>,
+        >,
+    ) -> Result<(), RuntimeError> {
+        let Some(owner) = super::await_live_owner(&mut live_owner, &stop).await else {
+            return Ok(());
+        };
+        let mut router = self.router();
+        router.set_live_owner(owner.clone());
         let loop_future = run_builtin_authenticated_router(
-            self.jetstream.client().clone(),
+            owner,
             API_ID,
             SUBJECTS,
             router,
@@ -744,9 +754,12 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         let directory = tempfile::tempdir().unwrap();
+        let cache = std::env::var_os("TRELLIS_CACHE_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| directory.path().join("cache"));
         let binary = trellis_local_nats::NatsServerBinary::resolve(
             &trellis_local_nats::NatsBinarySource::DownloadPinned,
-            Some(&directory.path().join("cache")),
+            Some(&cache),
         )
         .unwrap();
         let _server = Server(

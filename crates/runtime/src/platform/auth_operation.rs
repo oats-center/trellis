@@ -787,7 +787,7 @@ impl AuthOperationRuntime {
                 executor_id: ulid::Ulid::new().to_string(),
                 connection_id: ulid::Ulid::new().to_string(),
                 repository: trellis_rs::service::KvOperationRepository::new(store),
-                nats: client.clone(),
+                transport: trellis_rs::service::internal::OperationTransport::fixed(client.clone()),
                 service_session_key: "trellis-auth-runtime".to_owned(),
                 staging: trellis_rs::service::internal::BoundStoreResourceClient::new(staging),
                 validator: verifier.clone(),
@@ -841,12 +841,11 @@ impl AuthOperationRuntime {
         let Some(owner) = super::await_live_owner(&mut live_owner, &stop).await else {
             return Ok(());
         };
-        let observer_nats = owner.runtime_nats();
         let mut router = self.router;
-        router.set_live_owner(owner);
+        router.set_live_owner(owner.clone());
         tokio::select! {
             result = trellis_rs::service::internal::run_builtin_authenticated_router(
-                observer_nats,
+                owner,
                 "trellis.auth@v1",
                 &[
                     "operations.v1.Auth.DeviceUserAuthorities.Resolve",

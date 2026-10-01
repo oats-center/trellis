@@ -411,9 +411,12 @@ async fn nats_kv_repository_conforms() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
     let directory = tempfile::tempdir().unwrap();
+    let cache = std::env::var_os("TRELLIS_CACHE_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| directory.path().join("cache"));
     let binary = trellis_local_nats::NatsServerBinary::resolve(
         &trellis_local_nats::NatsBinarySource::DownloadPinned,
-        Some(&directory.path().join("cache")),
+        Some(&cache),
     )
     .unwrap();
     let server = Server {

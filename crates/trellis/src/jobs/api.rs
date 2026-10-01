@@ -2,8 +2,12 @@ use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 use std::future::Future;
 use std::marker::PhantomData;
+use std::sync::Arc;
+use std::time::Duration;
 
+use crate::client::{TransportGenerationManager, TransportLease};
 use crate::jobs::active_job::ActiveJob as RuntimeActiveJob;
+use crate::jobs::bindings::{JobsBinding, JobsQueueBinding};
 use crate::jobs::manager::{JobManager, TrellisJobMetaSource};
 use crate::jobs::projection::is_terminal;
 use crate::jobs::runtime_ref::NatsJobWaiter;
@@ -11,7 +15,6 @@ use crate::jobs::types::{Job, JobContext, JobLogEntry, JobProgress, JobState};
 use crate::jobs::TrellisJobEventPublisher;
 
 pub(super) type RuntimeJob = RuntimeActiveJob<TrellisJobEventPublisher, TrellisJobMetaSource>;
-type RuntimeJobManager = JobManager<TrellisJobEventPublisher, TrellisJobMetaSource>;
 
 /// Errors returned by the typed jobs API.
 #[derive(Debug, thiserror::Error)]
@@ -113,11 +116,15 @@ pub enum JobSubmitOutcome<TPayload, TResult> {
 }
 
 /// Handle for a created job.
+///
+/// Each read, wait, or cancellation acquires the currently published transport
+/// and retains that generation until the invocation completes or is dropped.
 pub struct JobRef<TPayload, TResult> {
     identity: JobIdentity,
     seed: Job,
-    waiter: NatsJobWaiter,
-    manager: RuntimeJobManager,
+    generations: TransportGenerationManager,
+    binding: JobsBinding,
+    queue: JobsQueueBinding,
     _types: PhantomData<fn() -> (TPayload, TResult)>,
 }
 
@@ -135,8 +142,9 @@ impl<TPayload, TResult> Clone for JobRef<TPayload, TResult> {
         Self {
             identity: self.identity.clone(),
             seed: self.seed.clone(),
-            waiter: self.waiter.clone(),
-            manager: self.manager.clone(),
+            generations: self.generations.clone(),
+            binding: self.binding.clone(),
+            queue: self.queue.clone(),
             _types: PhantomData,
         }
     }
@@ -149,16 +157,31 @@ where
 {
     pub(crate) fn from_runtime(
         seed: Job,
-        waiter: NatsJobWaiter,
-        manager: RuntimeJobManager,
+        generations: TransportGenerationManager,
+        binding: JobsBinding,
+        queue: JobsQueueBinding,
     ) -> Self {
         Self {
             identity: JobIdentity::from(&seed),
             seed,
-            waiter,
-            manager,
+            generations,
+            binding,
+            queue,
             _types: PhantomData,
         }
+    }
+
+    fn published_waiter(&self) -> Result<(TransportLease, NatsJobWaiter), JobsError> {
+        let lease = self
+            .generations
+            .acquire_application_published()
+            .map_err(jobs_message)?;
+        let waiter = NatsJobWaiter::new(
+            lease.nats().clone(),
+            self.queue.clone(),
+            Duration::from_secs(30),
+        );
+        Ok((lease, waiter))
     }
 
     #[doc = concat!("Trellis API operation `", stringify!(identity), "`.")]
@@ -168,24 +191,39 @@ where
 
     #[doc = concat!("Asynchronous Trellis API operation `", stringify!(get), "`.")]
     pub async fn get(&self) -> Result<JobSnapshot<TPayload, TResult>, JobsError> {
-        JobSnapshot::try_from(self.waiter.get(self.seed.clone()).await?)
+        let (_lease, waiter) = self.published_waiter()?;
+        JobSnapshot::try_from(waiter.get(self.seed.clone()).await?)
     }
 
     #[doc = concat!("Asynchronous Trellis API operation `", stringify!(wait), "`.")]
     pub async fn wait(&self) -> Result<TerminalJob<TPayload, TResult>, JobsError> {
-        self.waiter.wait_for_terminal(self.seed.clone()).await?;
-        self.get().await
+        let (_lease, waiter) = self.published_waiter()?;
+        waiter.wait_for_terminal(self.seed.clone()).await?;
+        JobSnapshot::try_from(waiter.get(self.seed.clone()).await?)
     }
 
     #[doc = concat!("Asynchronous Trellis API operation `", stringify!(cancel), "`.")]
     pub async fn cancel(&self) -> Result<JobSnapshot<TPayload, TResult>, JobsError> {
-        let current = self.waiter.get(self.seed.clone()).await?;
+        let (lease, waiter) = self.published_waiter()?;
+        let current = waiter.get(self.seed.clone()).await?;
         if is_terminal(current.state) {
             return JobSnapshot::try_from(current);
         }
-        self.manager.cancel(&current).await.map_err(jobs_message)?;
-        self.waiter.wait_for_terminal(current).await?;
-        self.get().await
+        let coordinator = crate::jobs::keys::NatsKeyCoordinator::open_for_service(
+            lease.nats().clone(),
+            &self.binding.namespace,
+        )
+        .await
+        .map_err(jobs_message)?;
+        let manager = JobManager::new_with_key_coordinator(
+            TrellisJobEventPublisher::new(lease.nats().clone()),
+            self.binding.clone(),
+            TrellisJobMetaSource,
+            Arc::new(coordinator),
+        );
+        manager.cancel(&current).await.map_err(jobs_message)?;
+        waiter.wait_for_terminal(current).await?;
+        JobSnapshot::try_from(waiter.get(self.seed.clone()).await?)
     }
 }
 

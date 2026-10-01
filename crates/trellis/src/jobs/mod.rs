@@ -118,7 +118,7 @@ impl JobEventPublisher for TrellisJobEventPublisher {
 
 /// Start a service-private job worker host using a connected Trellis client.
 pub(crate) async fn start_worker_host_from_client<MF, M, H, Fut, E>(
-    client: &TrellisClient,
+    client: std::sync::Arc<TrellisClient>,
     binding: JobsRuntimeBinding,
     instance_id: String,
     meta_factory: MF,
@@ -136,12 +136,11 @@ where
     Fut: Future<Output = Result<Value, JobProcessError<E>>> + Send + 'static,
     E: ToString + Send + 'static,
 {
-    let nats = client.nats().clone();
-    runtime_worker::start_worker_host_from_binding(
-        nats.clone(),
+    runtime_worker::start_worker_host_generation_following(
+        client,
         binding,
         instance_id,
-        move || TrellisJobEventPublisher { nats: nats.clone() },
+        TrellisJobEventPublisher::new,
         meta_factory,
         handler,
         options,

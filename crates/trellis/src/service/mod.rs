@@ -22,6 +22,7 @@ mod live_router;
 mod local_validator;
 mod operation_repository;
 mod operations;
+mod provider_ingress;
 #[doc(hidden)]
 mod publisher;
 #[doc(hidden)]
@@ -107,6 +108,8 @@ pub use transfer::{
 pub mod internal {
     #[cfg(feature = "runtime-internals")]
     pub use super::operations::OperationHandlerRuntime;
+    #[cfg(feature = "runtime-internals")]
+    pub use super::operations::OperationTransport;
     pub use super::request_loop::{
         dispatch_one, encode_error_reply, encode_success_reply, HandlerResponse, InboundRequest,
         OutboundReply, RequestHandler, ResponseStream,
@@ -120,7 +123,7 @@ pub mod internal {
     /// platform mode.
     #[cfg(feature = "runtime-internals")]
     pub async fn run_builtin_authenticated_router<V>(
-        nats: async_nats::Client,
+        owner: super::LiveProviderOwner,
         api_id: &str,
         subjects: &[&str],
         router: super::Router,
@@ -218,12 +221,17 @@ pub mod internal {
                 }
             }
         }
-        let subjects = bound.iter().map(String::as_str).collect::<Vec<_>>();
         // A live-capable router must be given its connection's provider owner
         // before it serves any traffic; fail loudly here instead of surfacing
         // the mistake to the first caller.
         router.require_live_owner()?;
-        let router = super::AuthenticatedRouter::new(router, validator);
-        super::runtime::run_multi_subject_service(nats, &subjects, router).await
+        let router = std::sync::Arc::new(super::AuthenticatedRouter::new(router, validator));
+        super::provider_ingress::run_provider_intake(
+            owner.client().transport_generations(),
+            bound.into(),
+            router,
+        )
+        .await
+        .map_err(|error| super::ServerError::Nats(error.to_string()))
     }
 }

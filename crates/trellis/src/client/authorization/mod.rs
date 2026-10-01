@@ -18,6 +18,7 @@ pub use core::{
     VerifiedCaller,
 };
 pub use own_context::AuthorizationContextCache;
+pub(crate) use own_context::{OwnTransitionGuard, PreparedOwnCandidate};
 pub(crate) use provider_cache::AuthorizationContextLease;
 pub use provider_cache::AuthorizationProviderCache;
 #[cfg(feature = "runtime-internals")]
@@ -26,14 +27,13 @@ pub(crate) use refresh::install_prepared_authorization;
 pub(crate) use refresh::refresh_until_materialized;
 pub(crate) use refresh::spawn_authorization_context_refresh_task;
 pub(crate) use refresh::AuthorizationRefreshRuntime;
-pub use transport::{
-    read_own_admission, TransportAuthorizationState, TransportAuthorizationStatus,
-};
-pub use transport::{resource_action_marker, ResourceTransportGate};
-pub(crate) use transport::{ResourceTransportAction, ResourceTransportKind};
+pub use transport::read_own_admission;
+pub use transport::resource_action_marker;
+pub(crate) use transport::{policy_covers, ResourceTransportAction, ResourceTransportKind};
 pub(super) use types::AuthorizationCredential;
 #[cfg(feature = "runtime-internals")]
 pub use types::AuthorizationRegistryBinding;
+pub(crate) use types::OwnTransportSnapshot;
 pub use types::{
     AuthorizationApiBinding, AuthorizationContextBundle, AuthorizationContextPolicy,
     AuthorizationInstallation, AuthorizationNativeTransport, AuthorizationRoutingMaterial,

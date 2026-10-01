@@ -16,22 +16,24 @@ mod proof;
 mod resources;
 mod subject;
 mod transfer;
+mod transport_generations;
 
 pub use auth::SessionAuth;
 pub(crate) use authorization::AuthorizationContextLease;
 #[cfg(any(test, feature = "runtime-internals"))]
 pub use authorization::AuthorizationRegistryBinding;
 pub use authorization::{canonical_trellis_origin, AuthorizationProviderCache};
+pub(crate) use authorization::{
+    resource_action_marker, ResourceTransportAction, ResourceTransportKind,
+};
 pub use authorization::{
     AuthorizationApiBinding, AuthorizationContextBundle, AuthorizationContextCache,
     AuthorizationContextPolicy, AuthorizationInstallation, AuthorizationNativeTransport,
     AuthorizationRoutingMaterial, AuthorizationRuntimeBinding, AuthorizationRuntimeTransports,
     AuthorizationVerificationCore, AuthorizationVerificationError, EventVerificationInput,
-    RequestVerificationInput, ResourceTransportGate, TransportAuthorizationState,
-    TransportAuthorizationStatus, VerifiedAuthorizationEvent, VerifiedAuthorizationRequest,
+    RequestVerificationInput, VerifiedAuthorizationEvent, VerifiedAuthorizationRequest,
     VerifiedCaller,
 };
-pub(crate) use authorization::{ResourceTransportAction, ResourceTransportKind};
 #[cfg(feature = "runtime-internals")]
 pub use authorization::{RuntimeAuthorizationIoCounters, RuntimeAuthorizationTrust};
 
@@ -81,6 +83,10 @@ pub use subject::SubjectError;
 pub use transfer::{
     download_transfer_grant_from_value, DownloadTransferDirection, DownloadTransferGrant, FileInfo,
     TransferCancellation, TransferGrantType, UploadTransferDirection, UploadTransferGrant,
+};
+pub(crate) use transport_generations::{
+    GenerationIntake, GenerationIntakeHandle, GenerationIntakeRetireReason, LogicalTerminalCause,
+    TransportGeneration, TransportGenerationManager, TransportLease,
 };
 #[cfg(test)]
 mod tests;

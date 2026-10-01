@@ -164,6 +164,27 @@ impl LiveProviderSlots {
             let _ = sender.send(Some(owner));
         }
     }
+
+    /// End every installed logical client even when child tasks retain owners.
+    pub(crate) async fn shutdown(&self) -> Result<(), RuntimeError> {
+        let owners: Vec<_> = self
+            .senders
+            .values()
+            .filter_map(|sender| sender.send_replace(None))
+            .collect();
+        // Poll every close before waiting for completion; one slow attachment
+        // must not leave the other roles' recovery loops running at scope end.
+        let results = futures_util::future::join_all(
+            owners
+                .iter()
+                .map(trellis_rs::service::LiveProviderOwner::shutdown_native_runtime),
+        )
+        .await;
+        for result in results {
+            result.map_err(|error| RuntimeError::Platform(error.to_string()))?;
+        }
+        Ok(())
+    }
 }
 
 /// Await one role's installed provider owner while honoring shutdown.

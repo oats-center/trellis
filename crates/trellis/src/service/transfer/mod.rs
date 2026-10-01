@@ -700,6 +700,7 @@ fn transfer_request_context(message: &async_nats::Message) -> RequestContext {
             .map(ToString::to_string),
         tracestate: optional_header(message.headers.as_ref(), "tracestate")
             .map(ToString::to_string),
+        transport: Default::default(),
     }
 }
 
@@ -1362,6 +1363,7 @@ mod tests {
             caller: None,
             traceparent: None,
             tracestate: None,
+            transport: Default::default(),
         };
 
         let error = validate_transfer_request(
@@ -1405,6 +1407,7 @@ mod tests {
             caller: None,
             traceparent: None,
             tracestate: None,
+            transport: Default::default(),
         };
 
         let error = validate_transfer_request(
@@ -1444,6 +1447,7 @@ mod tests {
             caller: None,
             traceparent: None,
             tracestate: None,
+            transport: Default::default(),
         };
 
         let error = validate_transfer_request(

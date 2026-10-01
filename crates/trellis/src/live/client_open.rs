@@ -12,7 +12,7 @@ use trellis_protocol::{
     PermissionAtom, OPEN_RESERVATION_MS,
 };
 
-use crate::client::{AuthorizationProviderCache, TrellisClientError};
+use crate::client::{AuthorizationProviderCache, TransportLease, TrellisClientError};
 
 use super::authority::{LiveAuthorityGuard, LiveGuardRequirement, PinnedPeerIdentity};
 use super::deadlines::{DeadlineAction, LiveDeadlines};
@@ -52,6 +52,8 @@ pub(crate) struct PreparedClientSession {
     pub deadline: tokio::time::Instant,
     /// Retained peer-provider authority established during verification.
     pub provider_guard: LiveAuthorityGuard,
+    /// The generation pinned for this observation's whole lifetime.
+    pub lease: TransportLease,
 }
 
 /// Outcome of one complete client open.
@@ -70,11 +72,18 @@ pub(crate) async fn open_client_session(
     client: &crate::client::TrellisClient,
     provider: &AuthorizationProviderCache,
     open: ClientOpen<'_>,
+    lease: TransportLease,
+    request_deadline: std::time::Instant,
 ) -> Result<PreparedClientSession, TrellisClientError> {
-    // The local reservation budget starts before the opening exchange and is
-    // never restarted by activation. The provider keeps its own independent
-    // allocation-relative deadline; no clock synchronization is assumed.
-    let deadline = tokio::time::Instant::now() + reservation_budget();
+    // The caller's transport budget started before acquisition, so the opening
+    // reservation is capped by it without resetting the caller's timeout: the
+    // acquisition time is charged against the same budget.
+    let request_deadline = tokio::time::Instant::from_std(request_deadline);
+    let caller_start = request_deadline
+        .checked_sub(Duration::from_millis(client.timeout_ms()))
+        .unwrap_or(request_deadline);
+    let reservation_deadline = request_deadline.min(caller_start + reservation_budget());
+    let deadline = reservation_deadline;
     let step_timeout = || {
         deadline
             .min(tokio::time::Instant::now() + Duration::from_millis(client.timeout_ms().max(1)))
@@ -93,13 +102,13 @@ pub(crate) async fn open_client_session(
         .map(ToString::to_string)
         .unwrap_or_default();
     let mut subscriber =
-        tokio::time::timeout_at(step_timeout(), client.nats().subscribe(reply.clone()))
+        tokio::time::timeout_at(step_timeout(), lease.nats().subscribe(reply.clone()))
             .await
             .map_err(|_| TrellisClientError::Timeout)?
             .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
     tokio::time::timeout_at(
         step_timeout(),
-        client
+        lease
             .nats()
             .publish_with_reply_and_headers(subject, reply, headers, open.body.clone()),
     )
@@ -113,7 +122,6 @@ pub(crate) async fn open_client_session(
         .ok_or(TrellisClientError::Timeout)?;
 
     verify_offer(
-        client,
         provider,
         &open,
         &request_id,
@@ -121,13 +129,13 @@ pub(crate) async fn open_client_session(
         deadline,
         &consumer,
         &consumer_digest,
+        lease,
     )
     .await
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn verify_offer(
-    client: &crate::client::TrellisClient,
     provider: &AuthorizationProviderCache,
     open: &ClientOpen<'_>,
     request_id: &str,
@@ -135,6 +143,7 @@ async fn verify_offer(
     deadline: tokio::time::Instant,
     consumer: &PinnedPeerIdentity,
     consumer_digest: &str,
+    transport_lease: TransportLease,
 ) -> Result<PreparedClientSession, TrellisClientError> {
     if response.status == Some(async_nats::StatusCode::NO_RESPONDERS) {
         return Err(crate::client::ServiceUnavailableError.into());
@@ -257,7 +266,7 @@ async fn verify_offer(
     verify_offer_claims(open, &offer, &selected, &peer, consumer, consumer_digest)?;
     let negotiated = trellis_protocol::negotiate_max_data_body_bytes(
         open.receive_max_payload_bytes,
-        client.nats().max_payload() as u64,
+        transport_lease.nats().max_payload() as u64,
     )
     .map_err(|error| TrellisClientError::LiveProtocol(error.to_string()))?;
     if offer.limits.max_data_body_bytes > negotiated {
@@ -290,6 +299,7 @@ async fn verify_offer(
         context_digest,
         deadline,
         provider_guard,
+        lease: transport_lease,
     })
 }
 
@@ -354,22 +364,27 @@ where
     let manager = client.live_manager().ok_or_else(|| {
         TrellisClientError::Bootstrap("live manager is unavailable for this connection".into())
     })?;
-    manager.is_available().map_err(|unavailable| {
-        TrellisClientError::AuthorizationUnavailable(format!(
-            "live manager unavailable: {unavailable:?}"
-        ))
-    })?;
     let permit = manager.clone().admit_consumer().map_err(|code| {
         TrellisClientError::LiveProtocol(format!("admission rejected: {code:?}"))
     })?;
+    // The observation pins the generation the opening exchange already acquired;
+    // its control and data pump use that exact physical attachment, so a loss of
+    // any other generation never affects this session.
+    let nats = prepared.lease.nats().clone();
     let core = Arc::new(ConsumerCore::new(
         prepared.offer.session_id.clone(),
         prepared.offer.session_kind,
     ));
     core.set_phase(ConsumerPhase::Prepared);
     let provider_guard = std::sync::Arc::new(prepared.provider_guard);
+    // One shared slot owns the consumer's provider-context guard: the running
+    // session keeps it, and the subscription clears it on the terminal outcome so
+    // a retained closed handle cannot pin provider evidence.
+    let provider_guard_slot: crate::live::subscription::ProviderGuardSlot = std::sync::Arc::new(
+        std::sync::Mutex::new(Some(std::sync::Arc::clone(&provider_guard))),
+    );
     let control = Arc::new(ConsumerControl {
-        nats: client.nats(),
+        nats: nats.clone(),
         auth: client.auth_handle(),
         contexts: client.authorization_contexts_handle()?,
         inbox_prefix: client.inbox_prefix().to_owned(),
@@ -377,11 +392,18 @@ where
         control_subject: prepared.offer.control_subject.clone(),
         pinned_session_key: prepared.peer.session_key.clone(),
         pinned_identity: prepared.peer.clone(),
-        provider_guard: provider_guard.clone(),
+        provider_guard: std::sync::Arc::clone(&provider_guard_slot),
         close_started: std::sync::atomic::AtomicBool::new(false),
         last_control_seq: std::sync::atomic::AtomicU64::new(0),
     });
     let cancellation = LiveCancellation::new();
+    // The pump owns an independent lease for its whole task lifetime, and the
+    // handle's close-work slot holds the other owner. An explicit close or drop
+    // atomically takes the slot into the exchange that owns it; the pump's
+    // terminal cleanup clears only a leftover slot, so it can never steal an
+    // in-flight exchange's lease.
+    let pump_lease = prepared.lease.clone();
+    let close_slot = Arc::new(std::sync::Mutex::new(Some(prepared.lease)));
     let pump = ConsumerPump::new(
         core.clone(),
         control.clone(),
@@ -391,13 +413,20 @@ where
         provider_guard.clone(),
         permit,
     );
-    let drain = pump.spawn(client.nats(), prepared.offer.data_subject.clone(), decode);
+    let drain = pump.spawn(
+        nats,
+        prepared.offer.data_subject.clone(),
+        pump_lease,
+        close_slot.clone(),
+        decode,
+    );
     Ok(crate::live::subscription::LiveSubscription::new(
         core,
         drain,
         control,
         cancellation,
-        provider_guard,
+        provider_guard_slot,
+        close_slot,
     ))
 }
 
@@ -538,6 +567,22 @@ pub(crate) struct ConsumerPump<T> {
     permit: Option<super::manager::ConsumerPermit>,
 }
 
+/// Holds the pump's own generation lease and, on task exit, clears only a
+/// leftover handle close-work slot. If an exchange already took the slot it
+/// owns its own lease, so this never steals that ownership.
+struct PumpLease {
+    slot: Arc<std::sync::Mutex<Option<TransportLease>>>,
+    _lease: TransportLease,
+}
+
+impl Drop for PumpLease {
+    fn drop(&mut self) {
+        if let Ok(mut slot) = self.slot.lock() {
+            slot.take();
+        }
+    }
+}
+
 impl<T> ConsumerPump<T> {
     /// Create one pump for a prepared session.
     #[must_use]
@@ -575,6 +620,8 @@ impl<T> ConsumerPump<T> {
         self,
         nats: async_nats::Client,
         data_subject: String,
+        lease: TransportLease,
+        close_slot: Arc<std::sync::Mutex<Option<TransportLease>>>,
         decode: F,
     ) -> tokio::task::JoinHandle<()>
     where
@@ -582,6 +629,13 @@ impl<T> ConsumerPump<T> {
         F: Fn(serde_json::Value) -> Result<Option<T>, TrellisClientError> + Send + 'static,
     {
         tokio::spawn(async move {
+            // The pump releases its independent lease and any leftover handle
+            // slot when this task ends, so a naturally terminal session frees
+            // the generation even while the application retains the handle.
+            let _pump_lease = PumpLease {
+                slot: close_slot,
+                _lease: lease,
+            };
             // Actual local cleanup completion is this task's exit, including
             // every early return and the aborted-by-Drop path.
             let _cleanup = PumpCleanup(Arc::clone(&self.core));

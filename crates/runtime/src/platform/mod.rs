@@ -404,6 +404,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         return Err(error);
     }
     let task_stop = stop.clone();
+    let state_live_owner = context.live_providers.receiver(LiveProviderRole::Platform);
     let sampler_store = auth_store.clone();
     let sampler_stop = stop.clone();
     // Telemetry samplers own their tasks and never own business lifetime.
@@ -414,15 +415,35 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         let samplers = samplers;
         let result = tokio::select! {
             result = portal_reconciliation_worker.run(task_stop.clone()) => {
+                tracing::info!(task = "portal_reconciliation_worker", success = result.is_ok(), error = ?result.as_ref().err(), stop_requested = task_stop.is_stopped(), "platform task completed");
                 result.map_err(|error| RuntimeError::Platform(error.to_string()))
             }
-            result = callout_runtime.run(task_stop.clone()) => result,
-            result = auth_rpc.run(task_stop.clone()) => result,
-            result = auth_operation.run(task_stop.clone()) => result,
-            result = auth_post_commit.run(task_stop.clone()) => result,
-            result = state.run(task_stop.clone()) => result,
-            result = authorization_contexts.clone().run_janitor(task_stop.clone()) => result,
+            result = callout_runtime.run(task_stop.clone()) => {
+                tracing::info!(task = "callout_runtime", success = result.is_ok(), error = ?result.as_ref().err(), stop_requested = task_stop.is_stopped(), "platform task completed");
+                result
+            },
+            result = auth_rpc.run(task_stop.clone()) => {
+                tracing::info!(task = "auth_rpc", success = result.is_ok(), error = ?result.as_ref().err(), stop_requested = task_stop.is_stopped(), "platform task completed");
+                result
+            },
+            result = auth_operation.run(task_stop.clone()) => {
+                tracing::info!(task = "auth_operation", success = result.is_ok(), error = ?result.as_ref().err(), stop_requested = task_stop.is_stopped(), "platform task completed");
+                result
+            },
+            result = auth_post_commit.run(task_stop.clone()) => {
+                tracing::info!(task = "auth_post_commit", success = result.is_ok(), error = ?result.as_ref().err(), stop_requested = task_stop.is_stopped(), "platform task completed");
+                result
+            },
+            result = state.run(task_stop.clone(), state_live_owner) => {
+                tracing::info!(task = "state", success = result.is_ok(), error = ?result.as_ref().err(), stop_requested = task_stop.is_stopped(), "platform task completed");
+                result
+            },
+            result = authorization_contexts.clone().run_janitor(task_stop.clone()) => {
+                tracing::info!(task = "authorization_contexts_janitor", success = result.is_ok(), error = ?result.as_ref().err(), stop_requested = task_stop.is_stopped(), "platform task completed");
+                result
+            },
             result = &mut validator_join => {
+                tracing::info!(task = "validator_cache", success = matches!(&result, Ok(Ok(()))), result = ?result, stop_requested = task_stop.is_stopped(), "platform task completed");
                 match result {
                     Ok(result) => result,
                     Err(error) => Err(RuntimeError::Platform(format!(
@@ -568,9 +589,12 @@ mod jetstream_identity_tests {
     #[tokio::test]
     async fn store_swap_cannot_reuse_persisted_platform_evidence() {
         let directory = tempfile::tempdir().unwrap();
+        let cache = std::env::var_os("TRELLIS_CACHE_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| directory.path().join("cache"));
         let binary = trellis_local_nats::NatsServerBinary::resolve(
             &trellis_local_nats::NatsBinarySource::DownloadPinned,
-            Some(&directory.path().join("cache")),
+            Some(&cache),
         )
         .unwrap();
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();

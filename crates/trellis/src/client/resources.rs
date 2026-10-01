@@ -462,7 +462,6 @@ pub trait ConsumerDescriptor: Send + Sync + 'static {
 #[derive(Clone)]
 pub struct ConsumerHandle<D> {
     binding: crate::service::EventConsumerResourceBinding,
-    nats: async_nats::Client,
     client: crate::generated::Client,
     availability: tokio::sync::watch::Receiver<crate::generated::AvailabilitySnapshot>,
     generation: u64,
@@ -482,7 +481,6 @@ impl<D: ConsumerDescriptor> fmt::Debug for ConsumerHandle<D> {
 impl<D: ConsumerDescriptor> ConsumerHandle<D> {
     pub(crate) fn from_generated(
         binding: crate::service::EventConsumerResourceBinding,
-        nats: async_nats::Client,
         client: crate::generated::Client,
         availability: tokio::sync::watch::Receiver<crate::generated::AvailabilitySnapshot>,
     ) -> Self {
@@ -492,7 +490,6 @@ impl<D: ConsumerDescriptor> ConsumerHandle<D> {
             .unwrap_or(0);
         Self {
             binding,
-            nats,
             client,
             availability,
             generation,
@@ -542,40 +539,95 @@ impl<D: ConsumerDescriptor> ConsumerHandle<D> {
             .await
     }
 
-    /// Open the pre-provisioned durable consumer and stream its messages.
+    /// Open the pre-provisioned durable consumer and stream leased messages.
+    ///
+    /// Polling starts each single-message pull on the current transport. An idle,
+    /// unpolled stream does not reserve deliveries or pin a transport. Each
+    /// delivered message retains its receiving transport through acknowledgement
+    /// and until the message is dropped, independently of the intake stream.
     pub async fn messages(
         &self,
     ) -> Result<
         BoxStream<
             'static,
-            Result<async_nats::jetstream::Message, Box<dyn std::error::Error + Send + Sync>>,
+            Result<super::EventMessage<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>>,
         >,
         crate::service::ServerError,
     > {
         self.ensure_current()?;
-        let stream = async_nats::jetstream::new(self.nats.clone())
-            .get_stream(&self.binding.stream)
-            .await
-            .map_err(|error| crate::service::ServerError::Nats(error.to_string()))?;
-        let consumer = stream
-            .get_consumer::<async_nats::jetstream::consumer::pull::Config>(
-                &self.binding.consumer_name,
-            )
-            .await
-            .map_err(|error| crate::service::ServerError::Nats(error.to_string()))?;
-        consumer
-            .messages()
-            .await
-            .map(|messages| {
-                messages
-                    .map(|message| {
-                        message.map_err(|error| {
-                            Box::new(error) as Box<dyn std::error::Error + Send + Sync>
+        let options = super::EventSubscribeOptions {
+            stream: Some(self.binding.stream.clone()),
+            mode: super::EventSubscriptionMode::Durable,
+            replay: super::EventReplayPolicy::New,
+            durable_name: Some(self.binding.consumer_name.clone()),
+        };
+        let generation = self.generation;
+        Ok(futures_util::stream::try_unfold(
+            (self.client.clone(), self.availability.clone(), options),
+            move |(client, availability, options)| async move {
+                loop {
+                    // Wait through temporary authorization suspension before
+                    // testing binding identity. Never issue consumer IO until
+                    // that identity is rechecked on the selected transport.
+                    let lease = match client
+                        .inner()
+                        .acquire_transport(&[], &[], client.inner().transport_deadline())
+                        .await
+                    {
+                        Ok(lease) => lease,
+                        Err(
+                            super::TrellisClientError::AuthorizationUnavailable(_)
+                            | super::TrellisClientError::TransportUnavailable(_)
+                            | super::TrellisClientError::Timeout,
+                        ) => {
+                            if let Some(cause) = client
+                                .inner()
+                                .transport_generations()
+                                .pace_or_terminal(std::time::Duration::from_millis(100))
+                                .await
+                            {
+                                return Err(Box::new(cause.client_error())
+                                    as Box<dyn std::error::Error + Send + Sync>);
+                            }
+                            continue;
+                        }
+                        Err(error) => {
+                            return Err(Box::new(error) as Box<dyn std::error::Error + Send + Sync>);
+                        }
+                    };
+                    if availability
+                        .borrow()
+                        .resource_generation(crate::generated::ResourceKind::Consumer, D::NAME)
+                        != Some(generation)
+                    {
+                        return Err(Box::new(crate::service::ServerError::ResourceUnavailable {
+                            resource_kind: "consumer".into(),
+                            resource_name: D::NAME.into(),
                         })
-                    })
-                    .boxed()
-            })
-            .map_err(|error| crate::service::ServerError::Nats(error.to_string()))
+                            as Box<dyn std::error::Error + Send + Sync>);
+                    }
+                    let mut batch = client
+                        .inner()
+                        .event_messages_with_transport(lease, options.clone(), None, Some(1))
+                        .await
+                        .map_err(|error| {
+                            Box::new(error) as Box<dyn std::error::Error + Send + Sync>
+                        })?;
+                    let message = batch.next().await;
+                    // A single-message pull is accounted once it delivers or
+                    // expires. Only the delivered message retains the old lease;
+                    // an idle stream must not keep a finished pull pinned.
+                    drop(batch);
+                    if let Some(message) = message {
+                        let message = message.map_err(|error| {
+                            Box::new(error) as Box<dyn std::error::Error + Send + Sync>
+                        })?;
+                        return Ok(Some((message, (client, availability, options))));
+                    }
+                }
+            },
+        )
+        .boxed())
     }
 
     fn ensure_current(&self) -> Result<(), crate::service::ServerError> {

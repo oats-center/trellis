@@ -442,6 +442,106 @@ where
     }
 }
 
+/// Generation-following transport for operation execution support traffic.
+///
+/// A service provider's accepted executions and control/observe calls pin the
+/// exact generation that accepted them; a runtime-internal provider (and unit
+/// tests) keeps one fixed connection.
+#[derive(Clone)]
+pub struct OperationTransport {
+    fixed: Option<async_nats::Client>,
+    manager: Option<crate::client::TransportGenerationManager>,
+    timeout_ms: u64,
+}
+
+impl OperationTransport {
+    /// A fixed connection with no generation following.
+    #[cfg(any(feature = "runtime-internals", test))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn fixed(nats: async_nats::Client) -> Self {
+        Self {
+            fixed: Some(nats),
+            manager: None,
+            timeout_ms: 30_000,
+        }
+    }
+
+    /// A generation-following transport for one connected service.
+    pub(crate) fn managed(
+        manager: crate::client::TransportGenerationManager,
+        timeout_ms: u64,
+    ) -> Self {
+        Self {
+            fixed: None,
+            manager: Some(manager),
+            timeout_ms,
+        }
+    }
+
+    /// The accepting generation's support connection for one request.
+    ///
+    /// A managed (connected service) request must carry the generation that
+    /// accepted it: routing its physical exchange to a different generation would
+    /// violate the accepted-execution pin. Only a fixed transport (runtime
+    /// internals, tests) has no generation to require.
+    async fn for_request(&self, context: &RequestContext) -> Result<SupportTransport, ServerError> {
+        match &self.manager {
+            None => Ok(SupportTransport {
+                nats: self
+                    .fixed
+                    .clone()
+                    .expect("fixed operation transport has a connection"),
+                lease: None,
+            }),
+            Some(_) => match context.transport.lease() {
+                Some(lease) => Ok(SupportTransport {
+                    nats: lease.nats().clone(),
+                    lease: Some(lease.clone()),
+                }),
+                None => Err(ServerError::Nats(
+                    "operation request is missing its accepting transport generation".to_owned(),
+                )),
+            },
+        }
+    }
+
+    /// A current-generation support connection for framework recovery.
+    async fn current(&self) -> Result<SupportTransport, ServerError> {
+        match &self.manager {
+            None => Ok(SupportTransport {
+                nats: self
+                    .fixed
+                    .clone()
+                    .expect("fixed operation transport has a connection"),
+                lease: None,
+            }),
+            Some(manager) => {
+                let lease = manager
+                    .acquire_for(
+                        &[],
+                        &[],
+                        std::time::Instant::now()
+                            + std::time::Duration::from_millis(self.timeout_ms),
+                    )
+                    .await
+                    .map_err(|error| ServerError::Nats(error.to_string()))?;
+                Ok(SupportTransport {
+                    nats: lease.nats().clone(),
+                    lease: Some(lease),
+                })
+            }
+        }
+    }
+}
+
+/// One resolved support connection and the lease that pins it, when managed.
+#[derive(Clone)]
+struct SupportTransport {
+    nats: async_nats::Client,
+    lease: Option<crate::client::TransportLease>,
+}
+
 pub(crate) struct RuntimeOperationProvider<D: OperationDescriptor, F, V> {
     service: String,
     provider_participant_id: String,
@@ -452,7 +552,7 @@ pub(crate) struct RuntimeOperationProvider<D: OperationDescriptor, F, V> {
     mutation_gate: Arc<Mutex<()>>,
     next_update_sequence: Arc<AtomicU64>,
     handler: Arc<F>,
-    nats: async_nats::Client,
+    transport: OperationTransport,
     service_session_key: String,
     staging: BoundStoreResourceClient,
     validator: V,
@@ -467,7 +567,7 @@ pub struct OperationHandlerRuntime<V> {
     pub executor_id: String,
     pub connection_id: String,
     pub repository: KvOperationRepository,
-    pub nats: async_nats::Client,
+    pub transport: OperationTransport,
     pub service_session_key: String,
     pub staging: BoundStoreResourceClient,
     pub validator: V,
@@ -498,7 +598,7 @@ where
             mutation_gate: Arc::new(Mutex::new(())),
             next_update_sequence: Arc::new(AtomicU64::new(1)),
             handler: Arc::new(handler),
-            nats: runtime.nats,
+            transport: runtime.transport,
             service_session_key: runtime.service_session_key,
             staging: runtime.staging,
             validator: runtime.validator,
@@ -559,7 +659,7 @@ where
         repository: KvOperationRepository,
         mutation_gate: Arc<Mutex<()>>,
         handler: Arc<F>,
-        nats: async_nats::Client,
+        support: SupportTransport,
         staging: BoundStoreResourceClient,
         publisher: Option<Arc<crate::client::TrellisClient>>,
         update_subject: String,
@@ -630,7 +730,8 @@ where
                     mutation_gate: Arc::clone(&mutation_gate),
                     witness: Arc::clone(&witness),
                 },
-                nats,
+                nats: support.nats,
+                _lease: support.lease,
                 staging,
                 publisher,
                 update_subject,
@@ -844,13 +945,23 @@ where
         let mutation_gate = Arc::clone(&self.mutation_gate);
         let handler = Arc::clone(&self.handler);
         let staging = self.staging.clone();
-        let nats = self.nats.clone();
+        let transport = self.transport.clone();
         let publisher = self.publisher.clone();
         let next_update_sequence = Arc::clone(&self.next_update_sequence);
         Box::pin(async move {
             let mut records = repository.list_nonterminal().await?;
             tokio::spawn(async move {
                 loop {
+                    // Recovery follows the current generation; the reclaimed
+                    // execution then pins the generation it resumes on.
+                    let support = match transport.current().await {
+                        Ok(support) => support,
+                        Err(error) => {
+                            tracing::warn!(%error, "operation recovery transport unavailable");
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            continue;
+                        }
+                    };
                     for record in records {
                         if record.record.deployment_id != deployment_id
                             || record.record.api_id != D::API_ID
@@ -895,13 +1006,20 @@ where
                         let service = service.clone();
                         let mutation_gate = Arc::clone(&mutation_gate);
                         let handler = Arc::clone(&handler);
-                        let nats = nats.clone();
+                        let support = support.clone();
                         let publisher = publisher.clone();
                         let update_subject =
                             operation_update_subject::<D>(&deployment_id, &operation_id);
                         let next_update_sequence = Arc::clone(&next_update_sequence);
                         let staging = staging.clone();
                         tokio::spawn(async move {
+                            let repository = match repository.pinned(support.lease.as_ref()).await {
+                                Ok(repository) => repository,
+                                Err(error) => {
+                                    tracing::warn!(%error, %operation_id, "operation recovery repository unavailable");
+                                    return;
+                                }
+                            };
                             let now = now_ms();
                             let claim = repository
                                 .claim_for_connection(
@@ -1007,7 +1125,7 @@ where
                                     repository,
                                     mutation_gate,
                                     handler,
-                                    nats,
+                                    support,
                                     staging,
                                     publisher,
                                     update_subject,
@@ -1021,6 +1139,7 @@ where
                             }
                         });
                     }
+                    drop(support);
                     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                     records = match repository.list_nonterminal().await {
                         Ok(records) => records,
@@ -1053,7 +1172,7 @@ where
         let repository = self.repository.clone();
         let mutation_gate = Arc::clone(&self.mutation_gate);
         let handler = Arc::clone(&self.handler);
-        let nats = self.nats.clone();
+        let transport = self.transport.clone();
         let publisher = self.publisher.clone();
         let service_session_key = self.service_session_key.clone();
         let staging = self.staging.clone();
@@ -1098,6 +1217,10 @@ where
                     });
                 }
             }
+            // Accepted executions pin the exact generation that accepted the
+            // start; support traffic stays on it until completion or real loss.
+            let support = transport.for_request(&context).await?;
+            let repository = repository.pinned(support.lease.as_ref()).await?;
             let caller = context.caller.as_ref().ok_or_else(|| {
                 ServerError::Nats("operation start is missing verified caller".to_owned())
             })?;
@@ -1312,7 +1435,7 @@ where
                         repository,
                         mutation_gate,
                         handler,
-                        nats.clone(),
+                        support.clone(),
                         staging.clone(),
                         publisher.clone(),
                         update_subject.clone(),
@@ -1362,9 +1485,13 @@ where
                 let progress_fence = fence.clone();
                 let progress_gate = Arc::clone(&mutation_gate);
                 let progress_operation_id = invocation_id.clone();
+                // The acknowledgement task below owns `support` (and its accepting
+                // generation lease) until the durable transfer completes, so the
+                // upload's physical exchange stays pinned to the accepting
+                // generation for its whole lifetime.
                 let completion =
                     super::transfer::spawn_upload_transfer_endpoint_with_progress_and_completion(
-                        nats.clone(),
+                        support.nats.clone(),
                         UploadTransferSession::new(plan, now_timestamp()),
                         staging.clone(),
                         validator,
@@ -1539,7 +1666,7 @@ where
                                                 repository_for_completion,
                                                 gate_for_completion,
                                                 handler,
-                                                nats.clone(),
+                                                support.clone(),
                                                 staging.clone(),
                                                 publisher.clone(),
                                                 update_subject.clone(),
@@ -1646,7 +1773,7 @@ where
                 repository,
                 mutation_gate,
                 handler,
-                nats,
+                support,
                 staging,
                 publisher,
                 update_subject,
@@ -1660,8 +1787,11 @@ where
 
     fn get(&self, context: RequestContext, operation_id: String) -> OperationSnapshotFuture<D> {
         let repository = self.repository.clone();
+        let transport = self.transport.clone();
         let deployment_id = self.deployment_id.clone();
         Box::pin(async move {
+            let support = transport.for_request(&context).await?;
+            let repository = repository.pinned(support.lease.as_ref()).await?;
             let record = repository
                 .get(&operation_id)
                 .await?
@@ -1678,8 +1808,11 @@ where
 
     fn wait(&self, context: RequestContext, operation_id: String) -> OperationSnapshotFuture<D> {
         let repository = self.repository.clone();
+        let transport = self.transport.clone();
         let deployment_id = self.deployment_id.clone();
         Box::pin(async move {
+            let support = transport.for_request(&context).await?;
+            let repository = repository.pinned(support.lease.as_ref()).await?;
             let mut watch = repository.watch(&operation_id).await?;
             while let Some(record) = watch.next().await {
                 let record = record?;
@@ -1706,18 +1839,23 @@ where
         operation_id: String,
     ) -> OperationLiveWatch<D::Progress, D::Update, D::Output> {
         let repository = self.repository.clone();
-        let nats = self.nats.clone();
+        let transport = self.transport.clone();
         let deployment_id = self.deployment_id.clone();
         let validator = self.validator.clone();
         let provider_participant_id = self.provider_participant_id.clone();
         let update_subject = operation_update_subject::<D>(&deployment_id, &operation_id);
         Box::pin(
             stream::once(async move {
-                let updates = nats
+                let support = transport.for_request(&context).await?;
+                let repository = repository.pinned(support.lease.as_ref()).await?;
+                let updates = support
+                    .nats
                     .subscribe(update_subject)
                     .await
                     .map_err(|error| ServerError::Nats(error.to_string()))?;
-                nats.flush()
+                support
+                    .nats
+                    .flush()
                     .await
                     .map_err(|error| ServerError::Nats(error.to_string()))?;
                 let record = repository.get(&operation_id).await?.ok_or_else(|| {
@@ -1740,6 +1878,7 @@ where
                     repository,
                     validator,
                     provider_participant_id,
+                    support.lease,
                 ))
             })
             .flat_map(|result| match result {
@@ -1752,6 +1891,7 @@ where
                     repository,
                     validator,
                     provider_participant_id,
+                    observation_lease,
                 )) => {
                     let update_deployment_id = deployment_id.clone();
                     let (terminal_tx, terminal_rx) = tokio::sync::oneshot::channel();
@@ -1795,6 +1935,7 @@ where
                                 update_deployment_id,
                                 validator,
                                 provider_participant_id,
+                                observation_lease,
                             ),
                             move |(
                                 mut updates,
@@ -1803,6 +1944,7 @@ where
                                 update_deployment_id,
                                 validator,
                                 provider_participant_id,
+                                observation_lease,
                             )| async move {
                                 loop {
                                     let message = updates.next().await?;
@@ -1942,6 +2084,7 @@ where
                                             update_deployment_id,
                                             validator,
                                             provider_participant_id,
+                                            observation_lease,
                                         ),
                                     ));
                                 }
@@ -1958,9 +2101,12 @@ where
 
     fn cancel(&self, context: RequestContext, operation_id: String) -> OperationSnapshotFuture<D> {
         let repository = self.repository.clone();
+        let transport = self.transport.clone();
         let gate = Arc::clone(&self.mutation_gate);
         let deployment_id = self.deployment_id.clone();
         Box::pin(async move {
+            let support = transport.for_request(&context).await?;
+            let repository = repository.pinned(support.lease.as_ref()).await?;
             let _guard = gate.lock().await;
             let current = repository.get(&operation_id).await?.ok_or_else(|| {
                 ServerError::OperationNotFound {
@@ -2005,9 +2151,12 @@ where
         input: Option<Value>,
     ) -> OperationSignalFuture<D> {
         let repository = self.repository.clone();
+        let transport = self.transport.clone();
         let gate = Arc::clone(&self.mutation_gate);
         let deployment_id = self.deployment_id.clone();
         Box::pin(async move {
+            let support = transport.for_request(&context).await?;
+            let repository = repository.pinned(support.lease.as_ref()).await?;
             let _guard = gate.lock().await;
             let current = repository.get(&operation_id).await?.ok_or_else(|| {
                 ServerError::OperationNotFound {
@@ -2164,6 +2313,8 @@ where
     operation_ref: OperationRefData,
     durable: DurableOperationControl,
     nats: async_nats::Client,
+    /// Pins the accepting generation for the accepted execution's lifetime.
+    _lease: Option<crate::client::TransportLease>,
     staging: BoundStoreResourceClient,
     publisher: Option<Arc<crate::client::TrellisClient>>,
     update_subject: String,
@@ -3194,6 +3345,7 @@ mod tests {
                 witness: Arc::new(TerminalWitness::default()),
             },
             nats,
+            _lease: None,
             staging,
             publisher: None,
             update_subject: operation_update_subject::<D>("deployment", id),
@@ -3223,7 +3375,10 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let mut nats = trellis_local_nats::LocalNats::builder()
             .binary(trellis_local_nats::NatsBinarySource::DownloadPinned)
-            .cache_dir(state.path().join("cache"))
+            .cache_dir(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target/trellis-test-cache"),
+            )
             .source(source.path())
             .temporary_state()
             .ephemeral_ports()
@@ -3330,7 +3485,7 @@ mod tests {
                 executor_id: "upload-executor".to_owned(),
                 connection_id: "upload-executor".to_owned(),
                 repository: repository.clone(),
-                nats: client.clone(),
+                transport: OperationTransport::fixed(client.clone()),
                 service_session_key: "session".to_owned(),
                 staging: staging.clone(),
                 validator: Allow,
@@ -3389,7 +3544,7 @@ mod tests {
             .contains(&mismatched_key.to_owned()));
 
         let id = ulid::Ulid::new().to_string();
-        let created = repository
+        repository
             .create(operation(
                 id.clone(),
                 TestOperation::API_ID,
@@ -3409,7 +3564,7 @@ mod tests {
                 executor_id: "executor-a".to_owned(),
                 connection_id: "executor-a".to_owned(),
                 repository: repository.clone(),
-                nats: client.clone(),
+                transport: OperationTransport::fixed(client.clone()),
                 service_session_key: "session".to_owned(),
                 staging: staging.clone(),
                 validator: Allow,
@@ -3612,7 +3767,7 @@ mod tests {
                 executor_id: "cancellation-executor".to_owned(),
                 connection_id: "cancellation-executor".to_owned(),
                 repository: repository.clone(),
-                nats: client.clone(),
+                transport: OperationTransport::fixed(client.clone()),
                 service_session_key: "session".to_owned(),
                 staging: staging.clone(),
                 validator: Allow,
@@ -3695,7 +3850,7 @@ mod tests {
                 executor_id: "ownership-a".to_owned(),
                 connection_id: "ownership-a".to_owned(),
                 repository: repository.clone(),
-                nats: client.clone(),
+                transport: OperationTransport::fixed(client.clone()),
                 service_session_key: "session".to_owned(),
                 staging: staging.clone(),
                 validator: Allow,
@@ -4202,7 +4357,10 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let mut nats = trellis_local_nats::LocalNats::builder()
             .binary(trellis_local_nats::NatsBinarySource::DownloadPinned)
-            .cache_dir(state.path().join("cache"))
+            .cache_dir(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target/trellis-test-cache"),
+            )
             .source(source.path())
             .temporary_state()
             .ephemeral_ports()
@@ -4254,7 +4412,7 @@ mod tests {
                 executor_id: "cleanup-owner".to_owned(),
                 connection_id: "cleanup-owner".to_owned(),
                 repository: repository.clone(),
-                nats: client,
+                transport: OperationTransport::fixed(client),
                 service_session_key: "session".to_owned(),
                 staging,
                 validator: Allow,
@@ -4347,7 +4505,10 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let mut nats = trellis_local_nats::LocalNats::builder()
             .binary(trellis_local_nats::NatsBinarySource::DownloadPinned)
-            .cache_dir(state.path().join("cache"))
+            .cache_dir(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target/trellis-test-cache"),
+            )
             .source(source.path())
             .temporary_state()
             .ephemeral_ports()
@@ -4407,7 +4568,7 @@ mod tests {
                 executor_id: "recovery-owner".to_owned(),
                 connection_id: "recovery-owner".to_owned(),
                 repository: repository.clone(),
-                nats: client,
+                transport: OperationTransport::fixed(client),
                 service_session_key: "session".to_owned(),
                 staging,
                 validator: Allow,
@@ -4467,7 +4628,10 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let nats = trellis_local_nats::LocalNats::builder()
             .binary(trellis_local_nats::NatsBinarySource::DownloadPinned)
-            .cache_dir(state.path().join("cache"))
+            .cache_dir(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target/trellis-test-cache"),
+            )
             .source(source.path())
             .temporary_state()
             .ephemeral_ports()

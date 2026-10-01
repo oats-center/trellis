@@ -182,6 +182,19 @@ pub(crate) struct CurrentContext {
     pub(crate) refresh_at: i64,
 }
 
+/// One exact promoted context read as a single immutable transport snapshot.
+///
+/// The digest and policy come from the same state snapshot, so a generation can
+/// build its CONNECT and its admitted policy from one correlated context rather
+/// than reading a mutable "current" context twice.
+#[derive(Clone, Debug)]
+pub(crate) struct OwnTransportSnapshot {
+    pub(crate) context_digest: String,
+    pub(crate) policy: trellis_protocol::TransportAuthorizationV1,
+    pub(crate) runtime: AuthorizationRuntimeBinding,
+    pub(crate) routing_jwt: String,
+}
+
 /// In-process own-context state.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CachedAuthorizationState {
