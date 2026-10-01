@@ -409,6 +409,7 @@ async fn users_edit_command(format: OutputFormat, args: &UserEditArgs) -> miette
             user_id: wire(&args.user_id)?,
             expected_version: wire(current.version)?,
             idempotency_key: wire(cli_idempotency_key())?,
+            username: None,
             extra: Default::default(),
         })
         .await
