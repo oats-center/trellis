@@ -1428,8 +1428,17 @@ mod nats_reply_permission_tests {
     async fn connect(url: &str, user: &str) -> (async_nats::Client, Errors) {
         let errors: Errors = Arc::new(Mutex::new(Vec::new()));
         let sink = errors.clone();
+        let inbox_prefix = match user {
+            "provider" => "_INBOX.sites".to_owned(),
+            "consumer" => format!(
+                "_INBOX.{}",
+                URL_SAFE_NO_PAD.encode(CONSUMER_CONNECTION.as_bytes())
+            ),
+            _ => panic!("unknown broker test user: {user}"),
+        };
         let client =
             async_nats::ConnectOptions::with_user_and_password(user.to_owned(), "pw".to_owned())
+                .custom_inbox_prefix(inbox_prefix)
                 .event_callback(move |event| {
                     let sink = sink.clone();
                     async move {
@@ -1440,6 +1449,15 @@ mod nats_reply_permission_tests {
                 .await
                 .expect("connect to broker");
         (client, errors)
+    }
+
+    async fn subscriptions_ready(client: &async_nats::Client) {
+        // async-nats flush only sends local buffers. A reply on this connection
+        // proves the broker processed the preceding SUB commands in wire order.
+        client
+            .request("$SYS.REQ.USER.INFO", Default::default())
+            .await
+            .expect("broker processed preceding subscriptions");
     }
 
     fn live_base() -> String {
@@ -1549,8 +1567,8 @@ mod nats_reply_permission_tests {
             .await
             .unwrap();
         let mut live = consumer.subscribe(live_subject()).await.unwrap();
-        provider.flush().await.unwrap();
-        consumer.flush().await.unwrap();
+        subscriptions_ready(&provider).await;
+        subscriptions_ready(&consumer).await;
 
         let reply = format!("{consumer_inbox}.r1");
         assert!(
@@ -1619,8 +1637,8 @@ mod nats_reply_permission_tests {
             .await
             .unwrap();
         let mut live = consumer.subscribe(live_subject()).await.unwrap();
-        provider.flush().await.unwrap();
-        consumer.flush().await.unwrap();
+        subscriptions_ready(&provider).await;
+        subscriptions_ready(&consumer).await;
 
         let reply = format!("{consumer_inbox}.count");
         consumer
@@ -1761,8 +1779,8 @@ mod nats_reply_permission_tests {
         let (provider, _provider_errors) = connect(&broker.url, "provider").await;
         let (consumer, consumer_errors) = connect(&broker.url, "consumer").await;
         let mut live = consumer.subscribe(live_subject()).await.unwrap();
-        provider.flush().await.unwrap();
-        consumer.flush().await.unwrap();
+        subscriptions_ready(&provider).await;
+        subscriptions_ready(&consumer).await;
         provider
             .publish(live_subject(), b"observe".to_vec().into())
             .await
