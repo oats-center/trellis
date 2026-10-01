@@ -282,7 +282,11 @@ pub(super) fn resolve_snapshot(
                 .iter()
                 .all(|atom| binding.grants.permissions().contains(atom)))
     {
-        return Err(AuthorizationStateError::NotAuthorized);
+        return Err(if pinned_older_revision && login_session_id.is_some() {
+            AuthorizationStateError::ParticipantDigestMismatch
+        } else {
+            AuthorizationStateError::NotAuthorized
+        });
     }
     if !authority.readiness {
         if authority
@@ -301,7 +305,15 @@ pub(super) fn resolve_snapshot(
                 resource.to_owned(),
             ));
         }
-        return Err(AuthorizationStateError::NotAuthorized);
+        // An otherwise valid login can outlive the app vocabulary its owner
+        // currently approves. Let clients renew sign-in instead of retrying a
+        // permanently incompatible pin. Current-revision denials and native
+        // identities retain their existing authorization errors.
+        return Err(if pinned_older_revision && login_session_id.is_some() {
+            AuthorizationStateError::ParticipantDigestMismatch
+        } else {
+            AuthorizationStateError::NotAuthorized
+        });
     }
     let mut selected_resources = Vec::new();
     for permission in authority.exact_grants.permissions() {

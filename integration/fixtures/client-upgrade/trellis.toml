@@ -1,0 +1,12 @@
+[package]
+name = "client-upgrade-fixture"
+version = "0.100.0"
+
+[sources]
+upgrade = "contract.trellis"
+
+[generate.typescript]
+output = "packages/client-upgrade"
+
+[dependencies]
+trellis = { package = "trellis", path = "../../../crates/runtime" }

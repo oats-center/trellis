@@ -741,6 +741,7 @@ pub use crate::__types::trellis::AuthUserIdentitiesUnlinkRequestIdempotencyKey;
 pub use crate::__types::trellis::AuthUserIdentitiesUnlinkRequestProviderId;
 pub use crate::__types::trellis::AuthUserIdentitiesUnlinkRequestSubject;
 pub use crate::__types::trellis::AuthUserIdentitiesUnlinkResponse;
+pub use crate::__types::trellis::AuthUsername;
 pub use crate::__types::trellis::AuthUsersCreateRequest;
 pub use crate::__types::trellis::AuthUsersCreateRequestIdempotencyKey;
 pub use crate::__types::trellis::AuthUsersCreateResponse;

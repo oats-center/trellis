@@ -109,6 +109,8 @@ const TRELLIS_PROJECTS: &[&str] = &[
     "web",
     "integration/fixtures/runtime",
     "integration/fixtures/runtime-removed",
+    "integration/fixtures/client-upgrade",
+    "integration/fixtures/client-upgrade-narrow",
     "integration/fixtures/testkit",
     "demos/ts/service",
     "demos/ts/device",

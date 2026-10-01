@@ -1,6 +1,6 @@
 //! Generated API `trellis.auth@v1`.
 pub const API_ID: &str = "trellis.auth@v1";
-pub const API_DIGEST: &str = "gXd9NIBjIa49mInD88kcXFC5_pVuL7cvibchdpdXvKo";
+pub const API_DIGEST: &str = "6ZgF6NVoeg-IqbP1edXgzrsOa7YUiHxaroIR7IwHyYg";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;

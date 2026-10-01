@@ -1,0 +1,18 @@
+{
+  "dependencies": {
+    "@oatscenter/trellis": "^0.100.0"
+  },
+  "description": "Generated Trellis APIs and participants.",
+  "exports": {
+    ".": {
+      "import": "./index.js",
+      "types": "./index.d.ts"
+    }
+  },
+  "name": "client-upgrade-fixture",
+  "private": true,
+  "sideEffects": false,
+  "trellisGenerated": true,
+  "type": "module",
+  "version": "0.100.0"
+}

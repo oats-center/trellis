@@ -742,6 +742,7 @@ export { AuthUserIdentitiesUnlinkRequestIdempotencyKeyCodec } from "./_internal/
 export { AuthUserIdentitiesUnlinkRequestProviderIdCodec } from "./_internal/p0.js";
 export { AuthUserIdentitiesUnlinkRequestSubjectCodec } from "./_internal/p0.js";
 export { AuthUserIdentitiesUnlinkResponseCodec } from "./_internal/p0.js";
+export { AuthUsernameCodec } from "./_internal/p0.js";
 export { AuthUsersCreateRequestCodec } from "./_internal/p0.js";
 export { AuthUsersCreateRequestIdempotencyKeyCodec } from "./_internal/p0.js";
 export { AuthUsersCreateResponseCodec } from "./_internal/p0.js";
