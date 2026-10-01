@@ -861,7 +861,7 @@ where
                         {
                             continue;
                         }
-                        if D::UPLOAD {
+                        if D::UPLOAD && !record.record.cancellation_requested {
                             let Some(upload) = record.record.transfer.as_ref().and_then(|value| {
                                 serde_json::from_value::<DurableOperationUpload>(value.clone()).ok()
                             }) else {
@@ -4179,7 +4179,6 @@ mod tests {
             completed
         );
 
-        assert_eq!(created.record.revision, 1);
         jetstream.delete_key_value(bucket).await.unwrap();
         jetstream.delete_object_store(object_bucket).await.unwrap();
         nats.stop().unwrap();

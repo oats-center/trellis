@@ -1603,6 +1603,229 @@ async fn cancellation_cleanup_failure_recovers_through_generated_client() {
     runtime.shutdown().await.expect("shutdown runtime");
 }
 
+/// Cancellation-first uploads recover cleanup without requiring staged bytes
+/// after the original provider runtime has stopped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelled_upload_recovers_after_provider_replacement() {
+    use trellis_rs::client::{CallError, OperationState, TrellisClientError};
+    use trellis_rs::service::{OperationCancellationReason, ServiceConnectOptions};
+
+    let mut runtime = TrellisTestRuntime::builder()
+        .start()
+        .await
+        .expect("start runtime");
+    let identity = runtime
+        .register_service::<ProviderParticipant>("provider")
+        .await
+        .expect("register provider once");
+    let business_calls = Arc::new(AtomicUsize::new(0));
+    let upload_calls = Arc::new(AtomicUsize::new(0));
+    let cleanup_attempts = Arc::new(AtomicUsize::new(0));
+    let (entered, mut entries) = tokio::sync::mpsc::unbounded_channel();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+
+    // Dropping this provider's own runtime stops its spawned recovery and
+    // execution tasks too, rather than leaving a survivor in the caller runtime.
+    let first_provider = {
+        let url = identity.trellis_url().to_owned();
+        let seed = identity.seed().to_owned();
+        let name = identity.name().to_owned();
+        let entered = entered.clone();
+        let business_calls = Arc::clone(&business_calls);
+        let upload_calls = Arc::clone(&upload_calls);
+        let cleanup_attempts = Arc::clone(&cleanup_attempts);
+        std::thread::spawn(move || {
+            let provider_runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .expect("create first provider runtime");
+            provider_runtime.block_on(async move {
+                let mut service = ProviderParticipant::connect(
+                    ServiceConnectOptions::new(&url, &seed).with_name(&name),
+                )
+                .await
+                .expect("connect first provider");
+                Provider::new(&mut service)
+                    .trellis_test_fixture_echo_v1()
+                    .register_echo(|_context, input| async move { Ok(input) });
+                Provider::new(&mut service)
+                    .trellis_test_fixture_echo_v1()
+                    .register_upload(move |context, input, operation| {
+                        let entered = entered.clone();
+                        let business_calls = Arc::clone(&business_calls);
+                        let upload_calls = Arc::clone(&upload_calls);
+                        let cleanup_attempts = Arc::clone(&cleanup_attempts);
+                        async move {
+                            let reason = operation.cancellation().reason();
+                            if reason.is_none() {
+                                business_calls.fetch_add(1, Ordering::SeqCst);
+                                operation.started().await?;
+                            }
+                            let upload = operation.upload().await?;
+                            if upload.is_some() {
+                                upload_calls.fetch_add(1, Ordering::SeqCst);
+                            }
+                            cleanup_attempts.fetch_add(1, Ordering::SeqCst);
+                            entered
+                                .send((context.resuming, reason, input.value, upload.is_none()))
+                                .unwrap();
+                            Err(ServerError::Nats("upload cleanup failed".to_owned()))
+                        }
+                    });
+                let mut task = tokio::spawn(async move { service.run().await });
+                tokio::select! {
+                    result = &mut task => panic!("first provider stopped unexpectedly: {result:?}"),
+                    _ = stopped => {}
+                }
+                task.abort();
+                assert!(task.await.unwrap_err().is_cancelled());
+            });
+        })
+    };
+
+    let caller_identity = runtime
+        .register_client::<CallerParticipant>("caller")
+        .await
+        .expect("register caller");
+    let caller = CallerClient::connect(caller_identity.connect_options())
+        .await
+        .expect("connect caller");
+    let api = caller.trellis_test_fixture_echo_v1();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let mut readiness = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            readiness.tick().await;
+            match api.echo(&value("provider-ready")).await {
+                Ok(reply) => {
+                    assert_eq!(reply.value, "provider-ready");
+                    break;
+                }
+                Err(CallError::ServiceUnavailable(_)) => {}
+                Err(error) => panic!("provider readiness RPC failed: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("first provider serves its generated RPC");
+    let input = value("cancelled-upload");
+    let operation = api
+        .upload()
+        .start_cancelled_with_invocation_id("01J00000000000000000000016", &input)
+        .await
+        .expect("admit cancellation-first upload");
+    let first = tokio::time::timeout(Duration::from_secs(20), entries.recv())
+        .await
+        .expect("first cleanup enters")
+        .unwrap();
+    assert_eq!(
+        first,
+        (
+            false,
+            Some(OperationCancellationReason::Requested),
+            input.value.clone(),
+            true,
+        )
+    );
+    assert!(matches!(
+        operation.upload(b"must not upload").await,
+        Err(TrellisClientError::OperationProtocol(message))
+            if message == "operation does not have an accepted transfer session"
+    ));
+    stop.send(()).expect("stop first provider");
+    tokio::task::spawn_blocking(move || first_provider.join().unwrap())
+        .await
+        .expect("join stopped first provider runtime");
+    assert_eq!(cleanup_attempts.load(Ordering::SeqCst), 1);
+
+    // Reconnect the same registration, not a fresh deployment or resource set.
+    let mut service = ProviderParticipant::connect(identity.connect_options())
+        .await
+        .expect("connect replacement provider using original identity");
+    Provider::new(&mut service)
+        .trellis_test_fixture_echo_v1()
+        .register_echo(|_context, input| async move { Ok(input) });
+    let release_cleanup = Arc::new(tokio::sync::Semaphore::new(0));
+    Provider::new(&mut service)
+        .trellis_test_fixture_echo_v1()
+        .register_upload({
+            let business_calls = Arc::clone(&business_calls);
+            let upload_calls = Arc::clone(&upload_calls);
+            let cleanup_attempts = Arc::clone(&cleanup_attempts);
+            let release_cleanup = Arc::clone(&release_cleanup);
+            move |context, input, operation| {
+                let entered = entered.clone();
+                let business_calls = Arc::clone(&business_calls);
+                let upload_calls = Arc::clone(&upload_calls);
+                let cleanup_attempts = Arc::clone(&cleanup_attempts);
+                let release_cleanup = Arc::clone(&release_cleanup);
+                async move {
+                    let reason = operation.cancellation().reason();
+                    if reason.is_none() {
+                        business_calls.fetch_add(1, Ordering::SeqCst);
+                        operation.started().await?;
+                    }
+                    let upload = operation.upload().await?;
+                    if upload.is_some() {
+                        upload_calls.fetch_add(1, Ordering::SeqCst);
+                    }
+                    cleanup_attempts.fetch_add(1, Ordering::SeqCst);
+                    entered
+                        .send((context.resuming, reason, input.value, upload.is_none()))
+                        .unwrap();
+                    release_cleanup.acquire().await.unwrap().forget();
+                    Ok(())
+                }
+            }
+        });
+    let task = tokio::spawn(async move { service.run().await });
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let mut readiness = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            readiness.tick().await;
+            match api.echo(&value("replacement-ready")).await {
+                Ok(reply) => {
+                    assert_eq!(reply.value, "replacement-ready");
+                    break;
+                }
+                Err(CallError::ServiceUnavailable(_)) => {}
+                Err(error) => panic!("replacement provider readiness RPC failed: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("replacement provider serves its generated RPC");
+    let recovered = tokio::time::timeout(Duration::from_secs(55), entries.recv())
+        .await
+        .expect("replacement automatically recovers cleanup after ordinary lease expiry")
+        .unwrap();
+    assert_eq!(
+        recovered,
+        (
+            true,
+            Some(OperationCancellationReason::Requested),
+            input.value,
+            true,
+        )
+    );
+    assert_eq!(
+        operation.get().await.unwrap().state,
+        OperationState::Pending
+    );
+    release_cleanup.add_permits(1);
+    let terminal = tokio::time::timeout(Duration::from_secs(20), operation.wait())
+        .await
+        .expect("replacement cleanup finishes")
+        .expect("original caller observes terminal cancellation");
+    assert_eq!(terminal.state, OperationState::Cancelled);
+    assert_eq!(cleanup_attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(business_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(upload_calls.load(Ordering::SeqCst), 0);
+    task.abort();
+    let _ = task.await;
+    runtime.shutdown().await.expect("shutdown runtime");
+}
+
 /// T11: generated distinct `progress`/`update` schemas deliver a live preview
 /// while the durable snapshot keeps only the declared progress status.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

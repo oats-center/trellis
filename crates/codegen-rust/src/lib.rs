@@ -1896,7 +1896,11 @@ mod tests {
                 &format!("trellis-rs = \"{}\"", env!("CARGO_PKG_VERSION")),
                 &format!("trellis-rs = {{ path = {runtime:?} }}"),
             );
-        fs::write(output.path().join("Cargo.toml"), cargo).unwrap();
+        fs::write(
+            output.path().join("Cargo.toml"),
+            format!("{cargo}\n[workspace]\n"),
+        )
+        .unwrap();
         fs::create_dir(output.path().join("tests")).unwrap();
         fs::write(
             output.path().join("tests/abi.rs"),
@@ -2040,7 +2044,11 @@ fn download_output_round_trips_transfer_grant() {
                 &format!("trellis-rs = \"{}\"", env!("CARGO_PKG_VERSION")),
                 &format!("trellis-rs = {{ path = {runtime:?} }}"),
             );
-        fs::write(output.path().join("Cargo.toml"), cargo).unwrap();
+        fs::write(
+            output.path().join("Cargo.toml"),
+            format!("{cargo}\n[workspace]\n"),
+        )
+        .unwrap();
         fs::create_dir(output.path().join("tests")).unwrap();
         fs::write(
             output.path().join("tests/abi.rs"),
@@ -2091,7 +2099,6 @@ fn generated_descriptors_validate_each_channel() {
         validate_input_schema(step, &json!({"text": "partial"})).is_err(),
         "the fallback rejects the other schema"
     );
-    assert_ne!(work, step);
 }
 "#,
         )

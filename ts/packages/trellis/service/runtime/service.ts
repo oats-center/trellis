@@ -150,6 +150,7 @@ import {
   type TerminalJob,
 } from "../../jobs.ts";
 import { parseSchema } from "../../codec.ts";
+import type { Codec } from "../../generated.ts";
 import { isJsonValue } from "../../participant_runtime/json.ts";
 import { ulid } from "ulid";
 import {
@@ -2179,8 +2180,20 @@ function subscribeToJobUpdates(args: {
               const envelope = decodeJobUpdateEnvelope(message.data);
               if (!envelope || envelope.jobId !== args.jobId) continue;
               if (!isJsonValue(envelope.update)) continue;
-              const parsed = parseSchema(args.updateSchema, envelope.update)
-                .take();
+              let parsed: unknown;
+              if (
+                typeof Reflect.get(args.updateSchema, "decode") === "function"
+              ) {
+                try {
+                  parsed = (args.updateSchema as Codec<unknown>).decode(
+                    envelope.update,
+                  );
+                } catch {
+                  continue;
+                }
+              } else {
+                parsed = parseSchema(args.updateSchema, envelope.update).take();
+              }
               if (isErr(parsed)) continue;
               const lifecycleAttempt = args.lifecycle.attempt({
                 service: args.service,
@@ -2544,7 +2557,20 @@ function createJobsFacade<
                               ),
                             ));
                           }
-                          if (!isJsonValue(value)) {
+                          let encoded = value;
+                          if (
+                            typeof Reflect.get(updateSchema, "encode") ===
+                              "function"
+                          ) {
+                            try {
+                              encoded = (updateSchema as Codec<unknown>).encode(
+                                value,
+                              );
+                            } catch (cause) {
+                              return Result.err(toUnexpectedError(cause));
+                            }
+                          }
+                          if (!isJsonValue(encoded)) {
                             return Result.err(
                               new ValidationError({
                                 errors: [{
@@ -2555,8 +2581,11 @@ function createJobsFacade<
                               }),
                             );
                           }
-                          const parsed = parseSchema(updateSchema, value)
-                            .take();
+                          const parsed =
+                            typeof Reflect.get(updateSchema, "encode") ===
+                                "function"
+                              ? encoded
+                              : parseSchema(updateSchema, encoded).take();
                           if (isErr(parsed)) return parsed;
                           updateSequence += 1;
                           try {

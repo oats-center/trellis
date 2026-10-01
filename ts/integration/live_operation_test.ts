@@ -137,12 +137,23 @@ Deno.test("an operation watch is fenced by its connection close", async () => {
         await op.acknowledgeSignal(accepted.sequence).orThrow();
       }
     });
-    const serviceExit = service.wait();
-    const caller = await runtime.connectClient({
-      name: "v3-operation-owner-caller",
-      contract: participants.Caller.participant,
-    });
+    const serviceExit = service.wait().then(
+      () => ({ kind: "stopped" as const }),
+      (error: unknown) => ({ kind: "failed" as const, error }),
+    );
+    let caller:
+      | Awaited<
+        ReturnType<
+          typeof runtime.connectClient<typeof participants.Caller.participant>
+        >
+      >
+      | undefined;
+    const failures: unknown[] = [];
     try {
+      caller = await runtime.connectClient({
+        name: "v3-operation-owner-caller",
+        contract: participants.Caller.participant,
+      });
       const handle = await caller.work({ value: "ownership" }).start()
         .orThrow();
       const subscription = await handle.live({ updates: true }).orThrow();
@@ -165,10 +176,20 @@ Deno.test("an operation watch is fenced by its connection close", async () => {
         "cancelled",
         "the terminal outcome is the bounded local cancellation",
       );
+    } catch (error) {
+      failures.push(error);
     } finally {
-      await caller.connection.close().catch(() => undefined);
-      await service.stop().catch(() => undefined);
-      await serviceExit.catch(() => undefined);
+      await caller?.connection.close().catch((error) => failures.push(error));
+      await service.stop().catch((error) => failures.push(error));
+      const exit = await serviceExit;
+      if (exit.kind === "failed") failures.push(exit.error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(
+        failures,
+        "Operation watch body or cleanup failed",
+      );
     }
   });
 });

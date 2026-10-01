@@ -1123,17 +1123,31 @@ export type OperationHandlerContext<
   TTransfer,
   TError extends BaseError,
   TUpdate = unknown,
-> = {
-  input: TInput;
-  op: OperationRuntimeHandle<TProgress, TOutput, TError, TUpdate>;
-  caller: SessionCaller;
-  /** Aborted when cancellation is requested or this executor loses ownership. */
-  signal: AbortSignal;
-  /** Whether this handler resumes an earlier invocation or reconciles durable state. */
-  resuming: boolean;
-  /** Last durably persisted progress available to a resumed handler. */
-  progress?: TProgress;
-} & (TTransfer extends undefined ? {} : { transfer: TTransfer });
+> =
+  & {
+    input: TInput;
+    op: OperationRuntimeHandle<TProgress, TOutput, TError, TUpdate>;
+    caller: SessionCaller;
+    /**
+     * Aborted when cancellation is requested or this executor loses ownership.
+     * Cancellation-first admission and cancellation recovery enter the handler
+     * with this signal already aborted. Perform cleanup before business work or
+     * accessing transfer, then return successfully to acknowledge cleanup.
+     * Throwing, returning an error, or deferring leaves cancellation nonterminal.
+     */
+    signal: AbortSignal;
+    /** Whether this handler resumes an earlier invocation or reconciles durable state. */
+    resuming: boolean;
+    /** Last durably persisted progress available to a resumed handler. */
+    progress?: TProgress;
+  }
+  & (TTransfer extends undefined ? {} : {
+    /**
+     * Absent during cancellation-first admission or cancellation-only recovery
+     * when staging was not opened. Handle aborted-signal cleanup before use.
+     */
+    transfer?: TTransfer;
+  });
 export type OperationRegistration<
   TInput,
   TProgress,
@@ -2908,8 +2922,11 @@ export class Trellis<
       ownerConnectionId: runtime.ownerConnectionId,
       ownerEpoch: runtime.ownerEpoch,
       leaseExpiresAt: runtime.leaseExpiresAt,
-      ...(runtime.cancelRequestedAt
-        ? { cancelRequestedAt: runtime.cancelRequestedAt }
+      ...(existing?.cancelRequestedAt || runtime.cancelRequestedAt
+        ? {
+          cancelRequestedAt: existing?.cancelRequestedAt ??
+            runtime.cancelRequestedAt,
+        }
         : {}),
       ...(runtime.transferGrant
         ? { transferGrant: runtime.transferGrant }
@@ -2952,6 +2969,7 @@ export class Trellis<
       : await store.replace(runtime.id, loadedValue.revision, record);
     const value = saved.take();
     if (isErr(value)) throw value.error;
+    runtime.cancelRequestedAt = record.cancelRequestedAt;
     runtime.revision = revision;
   }
 

@@ -1,0 +1,10 @@
+# IDL is slow to compile and we could/should cache the results.
+
+The cost is now explained: 95–99% is recompiling roughly 280 KB of IDL, not cryptography—even when the evidence was already accepted.
+- Debug: about 0.95–1.34 seconds per provider.
+- Release: about 143–258 ms.
+- Actual database work: about 0–8 ms.
+The fix moves compilation off the SQLite writer lock onto blocking workers, retaining transactional acceptance checks inside the lock. All ten concurrent bootstraps succeeded afterward; real TS-to-Rust integration passed in both debug and release.
+That fixes serialization, but repeated compilation remains wasteful. Cache reuse and bounded CPU concurrency deserve a separate design decision—not a security shortcut. I’m reviewing the patch before integrating it and running the combined gates.
+
+# related trellis isntall is *very* slow.

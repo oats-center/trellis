@@ -10,13 +10,13 @@ dependencies = []
 
 [packages.source]
 kind = "path"
-path = "./../../../crates/runtime"
+path = "../../../crates/runtime"
 
 [[packages]]
 name = "trellis-test-generated"
 version = "0.100.0"
 digest = "QPutfQUvQ2bXigsI9W8hFgSKq3qF7eZc1Bh5mIU8Tt0"
-distribution-digest = "sha256:5feb3ada5ee547136f01399040fde077ab5aff92f066e4c18cb7855eb7b6e882"
+distribution-digest = "sha256:cfa9967099dd06ff1936b0ec758d6a7c4ad7c86480b3740ec1d29b030d9f15d1"
 
 [[packages.dependencies]]
 name = "trellis"

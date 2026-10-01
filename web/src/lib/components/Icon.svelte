@@ -4,6 +4,7 @@
   import Bell from "lucide-svelte/icons/bell";
   import Box from "lucide-svelte/icons/box";
   import ChevronDown from "lucide-svelte/icons/chevron-down";
+  import Check from "lucide-svelte/icons/check";
   import Clipboard from "lucide-svelte/icons/clipboard";
   import Cpu from "lucide-svelte/icons/cpu";
   import Database from "lucide-svelte/icons/database";
@@ -35,6 +36,7 @@
     | "bell"
     | "box"
     | "chevronDown"
+    | "check"
     | "clipboard"
     | "close"
     | "cpu"
@@ -59,6 +61,7 @@
     | "pencil";
 
   const components = {
+    check: Check,
     activity: Activity,
     alert: TriangleAlert,
     arrowRight: ArrowRight,

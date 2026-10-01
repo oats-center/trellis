@@ -16,9 +16,10 @@ api echo@v1 {
   operation UpdateOnly { input Value; output Value; update Preview; signals { Continue Value; } }
   operation Silent { input Value; output Value; }
   operation OptionalSilent { input Value; output Value; }
+  operation Upload { input Value; output Value; upload; }
   event Observed { payload Value; }
   capabilities {
-    public { allows { rpc Echo; operation Work; operation UpdateOnly; operation Silent; publish event Observed; subscribe event Observed; } }
+    public { allows { rpc Echo; operation Work; operation UpdateOnly; operation Silent; operation Upload; publish event Observed; subscribe event Observed; } }
     capability optionalSilent {
       title "Optional silent operation";
       description "Partial lifecycle authorization acceptance.";
@@ -29,7 +30,7 @@ api echo@v1 {
 }
 
 service Provider { implements echo; }
-app Caller { use echo { rpc Echo; operation Work; operation UpdateOnly; operation Silent; subscribe event Observed; } }
+app Caller { use echo { rpc Echo; operation Work; operation UpdateOnly; operation Silent; operation Upload; subscribe event Observed; } }
 agent AgentCaller { use echo { rpc Echo; operation Work; operation UpdateOnly; operation Silent; subscribe event Observed; } }
 app RestrictedCaller {}
 app OptionalOperationCaller { use echo { operation OptionalSilent; optional capability optionalSilent; } }

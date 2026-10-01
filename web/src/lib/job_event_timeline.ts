@@ -66,6 +66,8 @@ export type JobTimelineStep = {
   timestamp: string;
   type: string;
   waits: JobTimelineWait[];
+  /** Elapsed time since the previous report, or the attempt start for the first. */
+  interval?: string;
   rawEvents: JobTimelineEvent[];
 };
 
@@ -229,6 +231,10 @@ export function buildJobTimeline(
     if (type === "progress") {
       execution ??= startSyntheticExecution(phases, event);
       const step = progressStep(event);
+      step.interval = elapsedLabel(
+        execution.steps.at(-1)?.timestamp ?? execution.startedAt,
+        event.timestamp,
+      );
       execution.steps.push(step);
       execution.rawEvents.push(event);
       currentStep = step;
@@ -346,9 +352,11 @@ function closeQueue(
 
 function progressStep(event: JobTimelineEvent): JobTimelineStep {
   const progress = event.progress;
-  const count = progress?.current !== undefined && progress.total !== undefined
-    ? `${progress.current}/${progress.total}`
-    : undefined;
+  const count =
+    progress?.current !== undefined && progress.total !== undefined &&
+      progress.total > 0
+      ? `Reported count: ${progress.current} of ${progress.total}`
+      : undefined;
   return {
     kind: "step",
     label: progress?.message ?? event.message ?? progress?.step ??

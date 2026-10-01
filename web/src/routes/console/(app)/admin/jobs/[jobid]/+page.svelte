@@ -76,6 +76,10 @@
   const errors = $derived(inspection?.errors ?? []);
   const related = $derived(inspection?.related ?? []);
   const timeline = $derived(inspection?.timeline ?? []);
+  const statusTimestamp = $derived(
+    timeline.findLast((event) => event.state === job?.state &&
+      ((event.previousState !== undefined && event.previousState !== event.state) || event.type === "created"))?.timestamp,
+  );
   const activeWaits = $derived(job?.state === "active" ? job.waitingOn ?? [] : []);
   const selectedTimeline = $derived.by(() => {
     const tryNumber = selectedAttempt?.try;
@@ -124,6 +128,15 @@
     concurrency: "Same concurrency key",
     wait: "Wait edge",
   } as const;
+  const triggerLabels: Record<string, string> = {
+    schedule: "Schedule",
+    operation: "Operation",
+    rpc: "RPC handler",
+    event: "Event handler",
+    manualReplay: "Administrator replay",
+    serviceCode: "Service code",
+    parentJob: "Parent job",
+  };
 
   function relatedReasonLabel(reason: string): string | null {
     if (reason === "trace") return relatedReasonLabels.trace;
@@ -456,7 +469,7 @@
 
 <section class="job-detail">
   {#if job}
-    <PageToolbar title={canShowJobName(job) ? job.type : "Job"} description={job.trigger?.kind ? `via ${job.trigger.kind}` : undefined}>
+    <PageToolbar title={canShowJobName(job) ? job.type : "Job"}>
       {#snippet eyebrowExtra()}
         {#if jobDeploymentId}
           <a class="job-deployment-link break-anywhere" href={resolve(`/admin/services/${encodeURIComponent(jobDeploymentId)}`)} title={jobDeploymentId}>
@@ -509,12 +522,16 @@
   {:else if !job}
     <EmptyState title="Job not found" description="No job exists for this id." />
   {:else}
+    {#snippet statusStrip()}
     <div class="stats-strip">
       <div class="stats-cell stats-cell-status">
         <span class="stats-cell-label">Status</span>
         <span class={["stats-cell-value tabular-nums font-semibold", job.state === "failed" || job.state === "dead" ? "status-failed" : job.state === "completed" ? "status-completed" : job.state === "active" || job.state === "retry" ? "status-active" : ""]}>
           {job.state}
         </span>
+        {#if statusTimestamp}
+          <span class="stats-cell-baseline tabular-nums">{formatDate(statusTimestamp)}</span>
+        {/if}
       </div>
       {#if activeWaits.length > 0}
         {@const firstWait = activeWaits[0]}
@@ -598,25 +615,6 @@
           <span class={["stats-cell-baseline", deadlinePast ? "text-error" : ""]}>{deadlinePast ? "overdue" : "wall clock"}</span>
         </div>
       {/if}
-      <div class="stats-cell">
-        <span class="stats-cell-label">Created</span>
-        <span class="stats-cell-value tabular-nums">{formatDate(job.createdAt)}</span>
-        <span class="stats-cell-baseline">submitted</span>
-      </div>
-      {#if job.startedAt}
-        <div class="stats-cell">
-          <span class="stats-cell-label">Started</span>
-          <span class="stats-cell-value tabular-nums">{formatDate(job.startedAt)}</span>
-          <span class="stats-cell-baseline">worker pickup</span>
-        </div>
-      {/if}
-      {#if job.completedAt}
-        <div class="stats-cell">
-          <span class="stats-cell-label">Completed</span>
-          <span class="stats-cell-value tabular-nums">{formatDate(job.completedAt)}</span>
-          <span class="stats-cell-baseline">terminal</span>
-        </div>
-      {/if}
       {#if job.errorDetail?.worker?.service}
         <div class="stats-cell" title="The worker instance that last failed this job">
           <span class="stats-cell-label">Last worker</span>
@@ -631,34 +629,26 @@
       {/if}
       {#if job.progress && !["completed", "failed", "dead", "cancelled", "dismissed", "expired", "skipped"].includes(job.state) && (job.progress.current !== undefined || job.progress.step !== undefined)}
         <div class="stats-cell">
-          <span class="stats-cell-label">Progress</span>
+          <span class="stats-cell-label">Reported progress</span>
           <span class="stats-cell-value tabular-nums">
-            {#if job.progress.current !== undefined && job.progress.total !== undefined}
-              {job.progress.current}/{job.progress.total}
-            {:else if job.progress.current !== undefined}
+            {#if job.progress.current !== undefined && job.progress.total !== undefined && job.progress.total > 0n}
+              {job.progress.current} of {job.progress.total}
+            {:else if job.progress.current !== undefined && job.progress.total === undefined}
               {job.progress.current}
             {:else}
-              {job.progress.step ?? UNSET}
+              {job.progress.step ?? job.progress.message ?? "No count reported"}
             {/if}
           </span>
           <span class="stats-cell-baseline">{job.progress.message ?? job.progress.step ?? "in flight"}</span>
         </div>
       {/if}
-      {#if job.concurrency?.key}
-        <div class="stats-cell">
-          <span class="stats-cell-label">Concurrency</span>
-          <span class="trellis-identifier stats-cell-value break-anywhere">{job.concurrency.key}</span>
-          {#if job.concurrency.staleTakeoverCount !== undefined && job.concurrency.staleTakeoverCount > 0n}
-            <span class="stats-cell-baseline text-warning">{job.concurrency.staleTakeoverCount} stale takeover{job.concurrency.staleTakeoverCount === 1n ? "" : "s"}</span>
-          {:else}
-            <span class="stats-cell-baseline">keyed</span>
-          {/if}
-        </div>
-      {/if}
     </div>
+    {/snippet}
 
     <div class="job-body">
       <div class="job-body-left">
+        {@render statusStrip()}
+        {@render identity()}
         <div class="job-io-grid">
           {#if showOutput}
             <Panel title="Output">
@@ -673,7 +663,7 @@
                     disabled={job.result === undefined || job.result === null}
                     onclick={() => void copyText("job-result", resultValue)}
                   >
-                    {copyFlash === "job-result" ? "Copied" : "Copy"}
+                    <Icon name={copyFlash === "job-result" ? "check" : "clipboard"} size={14} />
                   </button>
                 {/if}
               {/snippet}
@@ -713,8 +703,7 @@
                                   void copyText(`error-stack-${err.fingerprint}`, err.stack ?? "");
                                 }}
                               >
-                                <Icon name="clipboard" size={12} />
-                                <span>{copyFlash === `error-stack-${err.fingerprint}` ? "Copied" : "Copy"}</span>
+                                <Icon name={copyFlash === `error-stack-${err.fingerprint}` ? "check" : "clipboard"} size={12} />
                               </button>
                             </summary>
                             <pre class="error-stack" aria-label="Stack trace">{err.stack}</pre>
@@ -749,7 +738,7 @@
                 disabled={job.payload === undefined || job.payload === null}
                 onclick={() => void copyText("job-payload", payloadValue)}
               >
-                {copyFlash === "job-payload" ? "Copied" : "Copy"}
+                <Icon name={copyFlash === "job-payload" ? "check" : "clipboard"} size={14} />
               </button>
             {/snippet}
             {#if job.payload !== undefined && job.payload !== null}
@@ -760,6 +749,7 @@
           </Panel>
         </div>
 
+        {#snippet identity()}
         <Panel title="Identity">
           <dl class="identity-list">
             <div class="identity-row">
@@ -772,8 +762,7 @@
                   aria-label="Copy job id"
                   onclick={() => void copyText("identity-job-id", job.id)}
                 >
-                  <Icon name="clipboard" size={10} />
-                  <span>{copyFlash === "identity-job-id" ? "Copied" : "Copy"}</span>
+                  <Icon name={copyFlash === "identity-job-id" ? "check" : "clipboard"} size={12} />
                 </button>
               </dd>
             </div>
@@ -788,8 +777,7 @@
                     aria-label="Copy request id"
                     onclick={() => void copyText("identity-request-id", job.context.requestId)}
                   >
-                    <Icon name="clipboard" size={10} />
-                    <span>{copyFlash === "identity-request-id" ? "Copied" : "Copy"}</span>
+                    <Icon name={copyFlash === "identity-request-id" ? "check" : "clipboard"} size={12} />
                   </button>
                 </dd>
               </div>
@@ -805,46 +793,34 @@
                     aria-label="Copy trace id"
                     onclick={() => void copyText("identity-trace-id", job.context.traceId)}
                   >
-                    <Icon name="clipboard" size={10} />
-                    <span>{copyFlash === "identity-trace-id" ? "Copied" : "Copy"}</span>
+                    <Icon name={copyFlash === "identity-trace-id" ? "check" : "clipboard"} size={12} />
                   </button>
                 </dd>
               </div>
             {/if}
-            <div class="identity-row">
-              <dt>Trigger</dt>
-              <dd class="trellis-identifier break-anywhere">{job.trigger?.id ?? UNSET}</dd>
-            </div>
-            <div class="identity-row">
-              <dt>Concurrency</dt>
-              <dd class="trellis-identifier break-anywhere">{job.concurrency?.key ?? "unkeyed"}</dd>
-            </div>
-            <div class="identity-row">
-              <dt>Created</dt>
-              <dd class="tabular-nums">{formatDate(job.createdAt)}</dd>
-            </div>
-            <div class="identity-row">
-              <dt>Updated</dt>
-              <dd class="tabular-nums">{formatDate(job.updatedAt)}</dd>
-            </div>
-            {#if job.startedAt}
+            {#if job.trigger}
               <div class="identity-row">
-                <dt>Started</dt>
-                <dd class="tabular-nums">{formatDate(job.startedAt)}</dd>
+                <dt>Trigger</dt>
+                <dd class="break-anywhere">
+                  {triggerLabels[job.trigger.kind] ?? job.trigger.kind}
+                  {#if job.trigger.id}<div>Source ID: <span class="trellis-identifier">{job.trigger.id}</span></div>{/if}
+                  {#if job.trigger.subject}<div>Subject: <span class="trellis-identifier">{job.trigger.subject}</span></div>{/if}
+                  {#if job.trigger.operationId}<div>Operation ID: <span class="trellis-identifier">{job.trigger.operationId}</span></div>{/if}
+                  {#if job.trigger.parentJobId}<div>Parent job ID: <span class="trellis-identifier">{job.trigger.parentJobId}</span></div>{/if}
+                </dd>
               </div>
             {/if}
-            {#if job.completedAt}
-              <div class="identity-row">
-                <dt>Completed</dt>
-                <dd class="tabular-nums">{formatDate(job.completedAt)}</dd>
-              </div>
-            {/if}
-            {#if job.deadline}
-              <div class="identity-row">
-                <dt>Deadline</dt>
-                <dd class="tabular-nums">{formatDate(job.deadline)}</dd>
-              </div>
-            {/if}
+            <div class="identity-row">
+              <dt>Concurrency key</dt>
+              <dd class="flex flex-wrap items-center gap-2">
+                <span class="trellis-identifier break-anywhere">{job.concurrency?.key ?? "unkeyed"}</span>
+                {#if job.concurrency?.key}
+                  <button type="button" class="identity-copy" aria-label="Copy concurrency key" onclick={() => void copyText("identity-concurrency", job.concurrency?.key)}>
+                    <Icon name={copyFlash === "identity-concurrency" ? "check" : "clipboard"} size={12} />
+                  </button>
+                {/if}
+              </dd>
+            </div>
             {#if job.concurrency?.staleTakeoverCount !== undefined && job.concurrency.staleTakeoverCount > 0}
               <div class="identity-row">
                 <dt>Stale takeovers</dt>
@@ -853,6 +829,7 @@
             {/if}
           </dl>
         </Panel>
+        {/snippet}
 
         {#if activeWaits.length > 0}
           <Panel title="Current waits">
@@ -985,7 +962,25 @@
              {#snippet actions()}
                <span class="badge badge-ghost badge-sm">{selectedTimeline.length} events</span>
              {/snippet}
-             <JobEventTimeline events={selectedTimeline} />
+              <!-- Keyboard users need to focus the scrolling timeline. -->
+              <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+              <div class="timeline-scroll" tabindex="0" role="region" aria-label="Job execution timeline"
+                {@attach (node: HTMLDivElement) => {
+                  const resize = () => {
+                    let top = node.getBoundingClientRect().top;
+                    for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+                      top += parent.scrollTop;
+                    }
+                    node.style.setProperty("--timeline-height", `${Math.max(160, window.innerHeight - top - 16)}px`);
+                  };
+                  const observer = new ResizeObserver(resize);
+                  observer.observe(node);
+                  window.addEventListener("resize", resize);
+                  return () => { observer.disconnect(); window.removeEventListener("resize", resize); };
+                }}
+              >
+                <JobEventTimeline events={selectedTimeline} />
+              </div>
            </Panel>
          </div>
 
@@ -1068,6 +1063,12 @@
     .job-body {
       grid-template-columns: minmax(0, 2.2fr) minmax(16rem, 1fr);
       gap: 1rem;
+      align-items: start;
+    }
+    .timeline-scroll {
+      max-height: var(--timeline-height);
+      overflow-y: auto;
+      scrollbar-gutter: stable;
     }
   }
 
@@ -1077,7 +1078,6 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
     gap: 0.65rem 1rem;
-    margin-bottom: 0.85rem;
     padding: 0.75rem 1rem;
   }
 

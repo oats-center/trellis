@@ -10,6 +10,9 @@ and this project adheres to
 
 ### Added
 
+- Operations can reserve a caller-selected invocation with cancellation
+  already requested. Cancellation survives replay and owner replacement, and
+  cleanup must succeed before the operation becomes terminal.
 - Connections now expose a retained transport-upgrade notification and an
   explicit transport refresh instead of adopting wider authority silently. When
   renewable authority safely covers the admitted policy but offers additional
@@ -23,6 +26,10 @@ and this project adheres to
 
 ### Fixed
 
+- Hard-security revocations retain caller-provided reasons in connection events
+  when transport-policy reevaluation is already in flight.
+- TypeScript job updates encode and decode through their generated codecs, so
+  nested `int64` and bytes values round-trip through the typed update channel.
 - Service shutdown settles admitted Operation control requests before draining
   NATS and stops waiting when its transport is lost, preventing cancellation
   failures and shutdown hangs. Operation observations close with their caller

@@ -698,10 +698,13 @@ impl AuthPostCommitRuntime {
                 now,
             )?;
             event.predecessor_action_id = Some(action.action_id.clone());
-            self.repository
-                .enqueue_post_commit_actions(vec![event])
-                .await?;
-            self.kick_connection(&connection).await?;
+            if self
+                .repository
+                .enqueue_transport_reevaluation_event(&connection.context_digest, event)
+                .await?
+            {
+                self.kick_connection(&connection).await?;
+            }
         }
         Ok(())
     }

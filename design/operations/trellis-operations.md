@@ -14,15 +14,15 @@ sub-selection.
 Acceptance persists one deployment-scoped record before reply. The caller
 creates a stable invocation ULID. A digest binds Operation identity, canonical
 typed input, and initiating principal/participant. Repeating the same ID/digest
-returns the existing operation; different content conflicts.
-Callers may admit that same ID/input with `cancellationRequested: true`,
-requiring both Invoke and Cancel authority before any durable write. An absent
-invocation persists cancellation intent before owner admission; an existing
-matching nonterminal invocation merges it monotonically through CAS. Intent is
-not part of the business-input digest. Terminal replay is unchanged, and a late
-normal start cannot clear intent. The returned reference acknowledges admission,
-not completed cleanup. If normal admission wins the race, its single handler
-must join owned work and complete cancellation through the ordinary cleanup path.
+returns the existing operation; different content conflicts. Callers may admit
+that same ID/input with `cancellationRequested: true`, requiring both Invoke and
+Cancel authority before any durable write. An absent invocation persists
+cancellation intent before owner admission; an existing matching nonterminal
+invocation merges it monotonically through CAS. Intent is not part of the
+business-input digest. Terminal replay is unchanged, and a late normal start
+cannot clear intent. The returned reference acknowledges admission, not
+completed cleanup. If normal admission wins the race, its single handler must
+join owned work and complete cancellation through the ordinary cleanup path.
 
 The record retains input, creator, state/revision, durable progress, terminal
 output/error, cancellation request, ordered durable signals, executor lease
@@ -67,10 +67,10 @@ nonterminal without a forced timeout. Cancellation-requested recovery invokes
 the handler with Rust `Requested` or an aborted TypeScript signal already set to
 retry cleanup without starting new business work. Cleanup failure remains
 nonterminal; Rust `Ok(())` or a successful, non-deferred TypeScript return
-acknowledges successful cleanup before fenced cancellation finalization.
-Owner loss notifies the old
-handler, but epoch fencing cannot prevent overlap of arbitrary external side
-effects after lease expiry. Cleanup duration is recorded as operation telemetry.
+acknowledges successful cleanup before fenced cancellation finalization. Owner
+loss notifies the old handler, but epoch fencing cannot prevent overlap of
+arbitrary external side effects after lease expiry. Cleanup duration is recorded
+as operation telemetry.
 
 The observer is independent of durable execution: its lifetime is bound to the
 live session, its authority follows the current observer guard rather than the
