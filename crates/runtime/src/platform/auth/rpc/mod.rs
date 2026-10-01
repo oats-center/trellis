@@ -2656,19 +2656,19 @@ impl AuthRpcProcessor {
     }
 
     async fn users_resolve(&self, payload: &[u8]) -> Result<Value, AuthorizationStateError> {
-        let input: Value = serde_json::from_slice(payload)
+        let input: trellis_runtime_apis::types::AuthUsersResolveRequest =
+            serde_json::from_slice(payload)
+                .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
+        let selector: Value = serde_json::from_slice(&input.selector)
             .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
-        let selector = input.get("selector").ok_or_else(|| {
-            AuthorizationStateError::InvalidRecord("selector is required".to_owned())
-        })?;
         let principal_id = match selector.get("kind").and_then(Value::as_str) {
-            Some("user") => required_string(selector, "userId")?.to_owned(),
+            Some("user") => required_string(&selector, "userId")?.to_owned(),
             Some("provider") => self
                 .service
                 .repository()
                 .get_provider_identity(
-                    required_string(selector, "providerId")?,
-                    required_string(selector, "providerSubject")?,
+                    required_string(&selector, "providerId")?,
+                    required_string(&selector, "providerSubject")?,
                 )
                 .await?
                 .map(|identity| identity.principal_id)
