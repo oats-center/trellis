@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use rusqlite::{params, Connection, OptionalExtension, Row};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::super::application::repository::{
     AccountCreation, AccountFlowCreation, AccountRepository, FirstAdminCompletion,
@@ -541,6 +541,19 @@ impl AccountRepository for SqliteAuthorizationStore {
     ) -> Result<IdempotentOutcome<AccountFlowRecord>, AuthorizationStateError> {
         self.run(move |connection| {
             let transaction = connection.transaction().map_err(sql_error)?;
+            super::grants::require_current_actor(
+                &transaction,
+                &command.actor,
+                command.flow.target_principal_id.as_deref()
+                    != Some(command.actor.principal_id.as_str())
+                    || command
+                        .flow
+                        .payload
+                        .get("adminTarget")
+                        .and_then(Value::as_bool)
+                        == Some(true),
+                command.flow.created_at,
+            )?;
             if let Some(result) = sqlite_idempotency_replay(&transaction, &command.idempotency)? {
                 return Ok(IdempotentOutcome::Replayed(result));
             }
@@ -1819,7 +1832,9 @@ mod password_reset_action_tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::platform::auth::application::repository::{SessionCreation, SessionRepository};
+    use crate::platform::auth::application::repository::{
+        DeploymentRepository, OutboxRepository, SessionCreation, SessionRepository,
+    };
     use crate::platform::auth::domain::{NewSession, SessionRecord};
     use crate::platform::auth::{builtins, AccountFlowKind, IdempotencyResultRecord};
     use trellis_protocol::ParticipantKind;
@@ -1931,8 +1946,238 @@ mod password_reset_action_tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "nats-leases")]
     async fn password_reset_emits_one_event_per_session_and_replays_without_duplicates() {
+        use crate::platform::auth::application::{
+            CreateAccountFlowInput, CreateSessionInput, FirstAdminAuthorityTarget,
+            FirstAdminBinding, FirstAdminRegistration,
+        };
+        use crate::platform::auth::authority::{IssuanceConnection, IssuanceCredential};
+        use crate::platform::auth::context::{
+            AuthorizationContextIssueRequest, AuthorizationContextService,
+        };
+        use crate::platform::auth::{
+            AuthService, AuthServiceConfig, GrantOwnerKind, MutationActor,
+        };
+        use base64::Engine as _;
+        use trellis_local_nats::{
+            ManagedNatsServer, NatsBinarySource, NatsOutput, NatsServerBinary,
+        };
+        use trellis_protocol::PlatformPrivilege;
+
         let store = SqliteAuthorizationStore::open_in_memory().unwrap();
+        let service = AuthService::new(store.clone(), AuthServiceConfig::default()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let cache = std::env::var_os("TRELLIS_CACHE_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("trellis-account-flow-nats-cache"));
+        let source = std::env::var_os("TRELLIS_TEST_NATS_BIN")
+            .map(|path| NatsBinarySource::Path(path.into()))
+            .unwrap_or(NatsBinarySource::DownloadPinned);
+        let binary = NatsServerBinary::resolve(&source, Some(&cache)).unwrap();
+        let ports: Vec<_> = (0..3)
+            .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect();
+        let nats_port = ports[0].local_addr().unwrap().port();
+        let http_port = ports[1].local_addr().unwrap().port();
+        let ws_port = ports[2].local_addr().unwrap().port();
+        let config_path = dir.path().join("nats.conf");
+        std::fs::write(&config_path, format!(
+            "host: 127.0.0.1\nport: {nats_port}\nhttp_port: {http_port}\nwebsocket {{ host: 127.0.0.1, port: {ws_port}, no_tls: true }}\njetstream {{ store_dir: '{}' }}\n",
+            dir.path().join("jetstream").display(),
+        )).unwrap();
+        drop(ports);
+        let mut broker = ManagedNatsServer::start(
+            &binary,
+            &config_path,
+            nats_port,
+            http_port,
+            ws_port,
+            &dir.path().join("nats.pid"),
+            &NatsOutput::Log {
+                path: dir.path().join("nats.log"),
+                mirror: false,
+            },
+        )
+        .unwrap();
+        let nats = async_nats::connect(format!("nats://127.0.0.1:{nats_port}"))
+            .await
+            .unwrap();
+        let issuer_file = dir.path().join("issuer.seed");
+        std::fs::write(
+            &issuer_file,
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([42; 32]),
+        )
+        .unwrap();
+        let contexts = AuthorizationContextService::start(
+            std::sync::Arc::new(store.clone()),
+            nats,
+            crate::config::AuthorizationConfig {
+                issuer_signing_seed_file: issuer_file,
+                context_lifetime_seconds: 3_600,
+                refresh_lead_seconds: 60,
+                refresh_jitter_seconds: 0,
+                minimum_context_lifetime_seconds: 120,
+                maximum_bootstrap_jwt_lifetime_seconds: 300,
+                allowed_clock_skew_seconds: 0,
+                maximum_context_bytes: 1_048_576,
+                maximum_permissions: 16_384,
+                context_bucket: "ACCOUNT_FLOW_CONTEXTS".to_owned(),
+                registry_replicas: 1,
+            },
+            "http://127.0.0.1".to_owned(),
+            NOW / 1_000,
+            "APP".to_owned(),
+        )
+        .await
+        .unwrap();
+        // Install the real built-in providers selected by CLI context issuance.
+        for (index, provider) in [
+            builtins::auth_runtime_participant_binding(NOW).unwrap(),
+            builtins::events_runtime_participant_binding(NOW).unwrap(),
+            builtins::health_runtime_participant_binding(NOW).unwrap(),
+            builtins::jobs_runtime_participant_binding(NOW).unwrap(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let provider_id = provider.participant_id.clone();
+            store.put_participant_binding(provider).await.unwrap();
+            let deployment_id = format!("dep_flow_provider_{index}");
+            store
+                .create_deployment_profile(
+                    crate::platform::auth::application::repository::DeploymentProfileCreation {
+                        principal: PrincipalRecord {
+                            principal_id: deployment_id.clone(),
+                            kind: PrincipalKind::Service,
+                            state: PrincipalState::Active,
+                            created_at: NOW,
+                            updated_at: NOW,
+                            version: 1,
+                            disabled_at: None,
+                            revoked_at: None,
+                        },
+                        profile: crate::platform::auth::DeploymentProfileRecord {
+                            deployment_id,
+                            kind: PrincipalKind::Service,
+                            display_name: provider_id.clone(),
+                            participant_id: Some(provider_id),
+                            portal_id: None,
+                            review_mode: None,
+                            requires_device_delegation: false,
+                            expires_at: None,
+                            state: crate::platform::auth::DeploymentProfileState::Active,
+                            created_at: NOW,
+                            updated_at: NOW,
+                            version: 1,
+                        },
+                        idempotency: proof(
+                            &format!("provider.install.{index}"),
+                            "auth.deployment.create",
+                            &format!("provider-{index}"),
+                            NOW,
+                        ),
+                        actions: Vec::new(),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let participant = builtins::cli_participant_binding(NOW).unwrap();
+        let participant_id = participant.participant_id.clone();
+        let grants = participant.resolve().unwrap().required_grants.clone();
+        let installed_revision = store.put_participant_binding(participant).await.unwrap();
+        let bootstrap = service
+            .ensure_admin_account_flow(
+                "http://127.0.0.1",
+                &[FirstAdminAuthorityTarget {
+                    participant_id: participant_id.clone(),
+                    installed_revision,
+                }],
+                NOW,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let bootstrap_url = url::Url::parse(bootstrap.bootstrap_url.as_ref().unwrap()).unwrap();
+        let admin_token = bootstrap_url
+            .query_pairs()
+            .find(|(key, _)| key == "adminAccountToken")
+            .unwrap()
+            .1
+            .into_owned();
+        let admin = match service
+            .complete_first_admin(FirstAdminRegistration {
+                token: admin_token,
+                expected_flow_version: 1,
+                username: "flow-admin".to_owned(),
+                password: "account-flow-admin-password-123!".to_owned(),
+                display_name: None,
+                email: None,
+                image_url: None,
+                bindings: vec![FirstAdminBinding {
+                    participant_id: participant_id.clone(),
+                    installed_revision,
+                    grant_set: grants,
+                    platform_privileges: vec![PlatformPrivilege::Admin],
+                }],
+                authority_expires_at: None,
+                completed_at: NOW,
+                idempotency: proof("admin.complete", "auth.admin.complete", "admin", NOW),
+                actions: Vec::new(),
+            })
+            .await
+            .unwrap()
+        {
+            IdempotentOutcome::Applied(account) => account,
+            IdempotentOutcome::Replayed(_) => panic!("first creation must apply"),
+        };
+        let (_, session_key) = trellis_rs::auth::generate_session_keypair();
+        let session = match service
+            .create_session(CreateSessionInput {
+                principal_id: admin.principal.principal_id.clone(),
+                participant_id: participant_id.clone(),
+                participant_kind: ParticipantKind::App,
+                installed_revision,
+                session_public_key: session_key.clone(),
+                created_at: NOW,
+                idempotency: proof("admin.login", "auth.session.create", "admin-login", NOW),
+                actions: Vec::new(),
+            })
+            .await
+            .unwrap()
+        {
+            IdempotentOutcome::Applied(session) => session,
+            IdempotentOutcome::Replayed(_) => panic!("first login must apply"),
+        };
+        let bundle = contexts
+            .issue(
+                AuthorizationContextIssueRequest {
+                    connection: IssuanceConnection {
+                        credential: IssuanceCredential::Login(session.session_id.clone()),
+                        connection_id: ulid::Ulid::new().to_string(),
+                        session_public_key: session_key.clone(),
+                    },
+                    request_id: "admin-context".to_owned(),
+                    request_digest: trellis_protocol::digest_json(&json!("admin-context")).unwrap(),
+                },
+                NOW / 1_000,
+            )
+            .await
+            .unwrap();
+        let actor = MutationActor {
+            context_digest: trellis_protocol::parse_authorization_context(&bundle.context)
+                .unwrap()
+                .digest()
+                .unwrap(),
+            principal_id: admin.principal.principal_id.clone(),
+            participant_id,
+            owner_kind: GrantOwnerKind::User,
+            owner_id: admin.principal.principal_id.clone(),
+            grant_revision: 1,
+            login_session_id: Some(session.session_id.clone()),
+            session_public_key: session_key,
+        };
         let principal_id = "usr_reset_target";
         seed_user(&store, principal_id, "reset-target").await;
         let mut session_ids = Vec::new();
@@ -1987,29 +2232,28 @@ mod password_reset_action_tests {
         )
         .await;
 
-        let token = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-        let token_hash = crate::platform::auth::application::bearer_secret_digest(token).unwrap();
-        store
-            .create_account_flow(AccountFlowCreation {
-                flow: AccountFlowRecord {
-                    flow_id: "flow_reset".to_owned(),
-                    kind: AccountFlowKind::PasswordReset,
-                    token_hash: token_hash.clone(),
-                    target_principal_id: Some(principal_id.to_owned()),
-                    target_provider_id: None,
-                    return_location: None,
-                    payload: json!({ "requestedByPrincipalId": "usr_requester" }),
-                    state: AccountFlowState::Pending,
-                    created_at: NOW,
-                    expires_at: NOW + 300_000,
-                    consumed_at: None,
-                    version: 1,
-                },
-                idempotency: proof("seed.flow", "auth.account.flow.create", "flow_reset", NOW),
-                actions: Vec::new(),
-            })
+        let flow_input = CreateAccountFlowInput {
+            actor: actor.clone(),
+            kind: AccountFlowKind::PasswordReset,
+            target_principal_id: Some(principal_id.to_owned()),
+            target_provider_id: None,
+            return_location: None,
+            payload: json!({ "requestedByPrincipalId": actor.principal_id }),
+            created_at: NOW,
+            expires_at: NOW + 300_000,
+            idempotency: proof("seed.flow", "auth.account.flow.create", "flow_reset", NOW),
+            actions: Vec::new(),
+        };
+        let flow = match service
+            .create_account_flow(flow_input.clone())
             .await
-            .unwrap();
+            .unwrap()
+        {
+            IdempotentOutcome::Applied(flow) => flow,
+            IdempotentOutcome::Replayed(_) => panic!("first creation must apply"),
+        };
+        let token = flow.token.as_str();
+        let token_hash = crate::platform::auth::application::bearer_secret_digest(token).unwrap();
 
         let (hash, profile) =
             crate::platform::auth::account::hash_password("reset-password-1", None).unwrap();
@@ -2028,7 +2272,7 @@ mod password_reset_action_tests {
             token_hash: token_hash.clone(),
             expected_flow_version: 1,
             flow_kind: AccountFlowKind::PasswordReset,
-            requester_principal_id: Some("usr_requester".to_owned()),
+            requester_principal_id: Some(actor.principal_id.clone()),
             admin_target: false,
             expected_credential_version: Some(1),
             replacement: replacement.clone(),
@@ -2101,7 +2345,7 @@ mod password_reset_action_tests {
             let payload: serde_json::Value = serde_json::from_str(payload).unwrap();
             assert_eq!(payload["eventType"], "Auth.Sessions.Revoked");
             assert_eq!(payload["reason"], "password_reset");
-            assert_eq!(payload["revokedBy"], "usr_requester");
+            assert_eq!(payload["revokedBy"], actor.principal_id);
             assert!(payload["eventSubject"]
                 .as_str()
                 .is_some_and(|subject| !subject.is_empty()));
@@ -2164,6 +2408,137 @@ mod password_reset_action_tests {
             })
             .await
             .unwrap();
-        assert_eq!(action_count, 3, "replay commits no duplicate events");
+        assert_eq!(
+            action_count,
+            actions.len() as i64,
+            "replay commits no duplicate events"
+        );
+
+        let link_input = CreateAccountFlowInput {
+            kind: AccountFlowKind::IdentityLink,
+            idempotency: proof(
+                "seed.link",
+                "auth.account.flow.create",
+                "flow_link",
+                NOW + 1_000,
+            ),
+            created_at: NOW + 1_000,
+            ..flow_input.clone()
+        };
+        let link = match service
+            .create_account_flow(link_input.clone())
+            .await
+            .unwrap()
+        {
+            IdempotentOutcome::Applied(flow) => flow,
+            IdempotentOutcome::Replayed(_) => panic!("first creation must apply"),
+        };
+        let stored_link = store
+            .get_account_flow_by_hash(
+                &crate::platform::auth::application::bearer_secret_digest(&link.token).unwrap(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored_link.target_principal_id.as_deref(),
+            Some(principal_id)
+        );
+
+        // A validated caller captured before its login is revoked cannot create
+        // another user's bearer flow or replay a previously authorized creation.
+        let mut revoked_event = json!({
+            "eventType": "Auth.Sessions.Revoked", "eventId": "evt_flow_actor_revoked",
+            "occurredAt": (NOW + 2_000).to_string(), "sessionId": session.session_id,
+            "principalId": session.principal_id, "participantId": session.participant_id,
+            "reason": "logout", "revokedBy": actor.principal_id,
+        });
+        revoked_event["eventSubject"] = json!(crate::platform::auth::model::auth_event_subject::<
+            trellis_runtime_apis::apis::trellis_auth_v1::events::SessionsRevoked,
+        >(&revoked_event)
+        .unwrap());
+        let revoke_actions = [
+            (
+                crate::platform::auth::PostCommitActionKind::Event,
+                revoked_event,
+            ),
+            (
+                crate::platform::auth::PostCommitActionKind::Kick,
+                json!({
+                    "sessionId": session.session_id, "connections": [], "reason": "logout",
+                }),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(
+            |(index, (kind, payload))| crate::platform::auth::PostCommitActionRecord {
+                predecessor_action_id: None,
+                action_id: trellis_protocol::digest_json(&json!(["flow-actor-revoke", index]))
+                    .unwrap(),
+                kind,
+                payload,
+                created_at: NOW + 2_000,
+                attempts: 0,
+                next_attempt_at: NOW + 2_000,
+                claimed_until: None,
+                last_error: None,
+            },
+        )
+        .collect();
+        service
+            .revoke_session(
+                session.session_id,
+                1,
+                NOW + 2_000,
+                proof(
+                    "admin.revoke",
+                    "auth.session.revoke",
+                    "admin-revoke",
+                    NOW + 2_000,
+                ),
+                revoke_actions,
+            )
+            .await
+            .unwrap();
+        for kind in [
+            AccountFlowKind::PasswordReset,
+            AccountFlowKind::IdentityLink,
+        ] {
+            let request = format!("revoked-{kind:?}");
+            let idempotency = proof(&request, "auth.account.flow.create", &request, NOW + 2_000);
+            let result = service
+                .create_account_flow(CreateAccountFlowInput {
+                    kind,
+                    created_at: NOW + 2_000,
+                    idempotency: idempotency.clone(),
+                    ..flow_input.clone()
+                })
+                .await;
+            assert!(
+                matches!(result, Err(AuthorizationStateError::NotAuthorized)),
+                "revoked caller created {kind:?}"
+            );
+            assert!(store
+                .get_idempotency_result(
+                    &idempotency.purpose,
+                    &idempotency.signer_id,
+                    &idempotency.request_id,
+                )
+                .await
+                .unwrap()
+                .is_none());
+        }
+        for input in [flow_input.clone(), link_input] {
+            assert!(matches!(
+                service.create_account_flow(input).await,
+                Err(AuthorizationStateError::NotAuthorized)
+            ));
+        }
+        let count = store.run_read(|connection| {
+            connection.query_row("SELECT COUNT(*) FROM auth_account_flows WHERE kind IN ('password_reset', 'identity_link')", [], |row| row.get::<_, i64>(0)).map_err(sql_error)
+        }).await.unwrap();
+        assert_eq!(count, 2, "denied creations must not persist a bearer flow");
+        broker.stop().unwrap();
     }
 }

@@ -113,6 +113,8 @@ pub struct FirstAdminAccount {
 /// Service-owned single-use account-flow input.
 #[derive(Clone, Debug)]
 pub struct CreateAccountFlowInput {
+    /// Current caller authorization revalidated in the creation transaction.
+    pub(crate) actor: MutationActor,
     /// Password reset or identity-link purpose.
     pub kind: AccountFlowKind,
     /// Required-nullable target user principal.
@@ -670,6 +672,7 @@ where
         match self
             .repository
             .create_account_flow(AccountFlowCreation {
+                actor: input.actor,
                 flow,
                 idempotency: input.idempotency,
                 actions: input.actions,

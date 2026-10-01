@@ -2535,6 +2535,7 @@ impl AuthRpcProcessor {
         let outcome = self
             .service
             .create_account_flow(CreateAccountFlowInput {
+                actor: mutation_actor(caller),
                 kind,
                 target_principal_id: Some(principal_id.to_owned()),
                 target_provider_id: None,

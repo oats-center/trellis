@@ -394,6 +394,8 @@ pub(crate) struct UserAccountMutation {
 /// Atomic account-flow creation.
 #[derive(Clone, Debug)]
 pub(crate) struct AccountFlowCreation {
+    /// Caller authorization revalidated before creation or idempotency replay.
+    pub actor: MutationActor,
     /// New pending account flow.
     pub flow: AccountFlowRecord,
     /// Durable proof claim and replay result.
