@@ -186,6 +186,9 @@
                       >
                     </div>
                     <div class="step-evidence">
+                      {#if step.interval}
+                        <span>+{step.interval} {index === 0 ? "since attempt started" : "since previous report"}</span>
+                      {/if}
                       {#if step.detail}<span class="break-anywhere">{step.detail}</span>{/if}
                       <span class="event-type">{step.type}</span>
                     </div>

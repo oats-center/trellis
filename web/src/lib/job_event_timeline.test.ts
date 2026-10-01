@@ -85,7 +85,12 @@ Deno.test("buildJobTimeline creates an execution story and nests dependency wait
   if (execution.kind !== "execution") return;
   equal(execution.duration, "2.243s");
   equal(execution.steps.length, 3);
-  equal(execution.steps[1].detail, "ocr-page · 1/1");
+  equal(execution.steps[1].detail, "ocr-page · Reported count: 1 of 1");
+  deepEqual(execution.steps.map((step) => step.interval), [
+    "17ms",
+    "14ms",
+    "2.200s",
+  ]);
   equal(execution.steps[1].waits.length, 1);
   equal(execution.steps[1].waits[0].label, "AI API");
   equal(execution.steps[1].waits[0].duration, "2.190s");
@@ -96,6 +101,40 @@ Deno.test("buildJobTimeline creates an execution story and nests dependency wait
   if (outcome.kind !== "outcome") return;
   equal(outcome.label, "Completed");
   equal(outcome.duration, "2.243s");
+});
+
+Deno.test("work reports retain historical counts, omit zero totals, and restart intervals per attempt", () => {
+  const phases = buildJobTimeline([
+    event(1, "started", "active", 0),
+    event(2, "progress", "active", 100, {
+      progress: { message: "Identifying", current: 0n, total: 0n },
+    }),
+    event(3, "progress", "active", 1500, {
+      progress: { message: "Transcribing", current: 0n, total: 10n },
+    }),
+    event(4, "progress", "active", 3000, {
+      progress: { message: "Committed", current: 10n, total: 10n },
+    }),
+    event(5, "failed", "failed", 3100),
+    event(6, "retried", "retry", 3500, { tries: 2 }),
+    event(7, "started", "active", 4000, { tries: 2 }),
+    event(8, "progress", "active", 4200, {
+      tries: 2,
+      progress: { message: "Restarted" },
+    }),
+  ]);
+  const executions = phases.filter((phase) => phase.kind === "execution");
+  deepEqual(executions[0].steps.map((step) => step.detail), [
+    undefined,
+    "Reported count: 0 of 10",
+    "Reported count: 10 of 10",
+  ]);
+  deepEqual(executions[0].steps.map((step) => step.interval), [
+    "100ms",
+    "1.400s",
+    "1.500s",
+  ]);
+  equal(executions[1].steps[0].interval, "200ms");
 });
 
 Deno.test("buildJobTimeline keeps dependency waits without a preceding step at execution level", () => {
