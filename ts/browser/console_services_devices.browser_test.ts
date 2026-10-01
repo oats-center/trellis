@@ -79,12 +79,18 @@ Deno.test("B02 installed service resources render from real evidence", async () 
         await waitForConsoleShell(page);
         await waitForConsolePage(page);
 
-        await page.getByText("Resource evidence").first().waitFor({
+        const resourcePanel = page.locator("section").filter({
+          has: page.getByRole("heading", {
+            name: "Resource evidence",
+            exact: true,
+          }),
+        });
+        await resourcePanel.waitFor({
           state: "visible",
           timeout: 30_000,
         });
         assertEquals(
-          await page.locator("table tbody tr").count(),
+          await resourcePanel.locator("table tbody tr").count(),
           resourceCount,
           "expected one rendered row per materialized resource",
         );

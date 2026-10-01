@@ -74,8 +74,9 @@ Deno.test("B25 users list renders and exact edit reloads on query change", async
         state: "visible",
         timeout: 30_000,
       });
-      await page.getByLabel("Name").fill("Updated B25 Other");
-      await page.getByRole("button", { name: "Save user" }).click();
+      await page.getByLabel("Name", { exact: true }).fill("Updated B25 Other");
+      await page.getByRole("button", { name: "Save profile", exact: true })
+        .click();
       await page.getByText("Updated B25 Other").first().waitFor({
         state: "visible",
         timeout: 30_000,
@@ -91,7 +92,10 @@ Deno.test("B25 users list renders and exact edit reloads on query change", async
         state: "visible",
         timeout: 30_000,
       });
-      assertEquals(await page.getByLabel("Name").inputValue(), "Console B25");
+      assertEquals(
+        await page.getByLabel("Name", { exact: true }).inputValue(),
+        "Console B25",
+      );
       await page.goto(
         `${runtime.trellisUrl}/console/admin/users/edit?userId=${other.user.userId}`,
         {
@@ -100,7 +104,7 @@ Deno.test("B25 users list renders and exact edit reloads on query change", async
       );
       await waitForConsoleShell(page);
       assertEquals(
-        await page.getByLabel("Name").inputValue(),
+        await page.getByLabel("Name", { exact: true }).inputValue(),
         "Updated B25 Other",
       );
       assertNoBrowserErrors(errors);
@@ -142,20 +146,30 @@ Deno.test("B27 a disabled user stays disabled after a metadata edit", async () =
         true,
       );
       await main.getByRole("checkbox", { name: "Active" }).uncheck();
-      await main.getByRole("button", { name: "Save user" }).click();
+      await main.getByRole("button", { name: "Save profile", exact: true })
+        .click();
       await main.locator(".badge", { hasText: "disabled" }).waitFor({
         state: "visible",
         timeout: 30_000,
       });
-      await main.getByLabel("Name").fill("Console B27 edited");
-      await main.getByRole("button", { name: "Save user" }).click();
-      await main.getByRole("heading", { name: "Console B27 edited" }).waitFor({
+      await main.getByLabel("Name", { exact: true }).fill("Console B27 edited");
+      await main.getByRole("button", { name: "Save profile", exact: true })
+        .click();
+      await main.getByRole("heading", {
+        name: "Console B27 edited",
+        exact: true,
+        level: 1,
+      }).waitFor({
         state: "visible",
         timeout: 30_000,
       });
       await page.reload({ waitUntil: "domcontentloaded" });
       await waitForConsoleShell(page);
-      await main.getByRole("heading", { name: "Console B27 edited" }).waitFor({
+      await main.getByRole("heading", {
+        name: "Console B27 edited",
+        exact: true,
+        level: 1,
+      }).waitFor({
         state: "visible",
         timeout: 30_000,
       });
@@ -163,14 +177,13 @@ Deno.test("B27 a disabled user stays disabled after a metadata edit", async () =
         state: "visible",
         timeout: 30_000,
       });
-      // No fabricated global capability editor is present in the page body.
       assertEquals(
-        await main.getByText("Capability Groups", { exact: true }).count(),
-        0,
+        await main.getByLabel("Name", { exact: true }).inputValue(),
+        "Console B27 edited",
       );
       assertEquals(
-        await main.getByText("Capabilities", { exact: true }).count(),
-        0,
+        await main.getByRole("checkbox", { name: "Active" }).isChecked(),
+        false,
       );
     } finally {
       await context.close();
@@ -451,7 +464,7 @@ Deno.test("N09 a real user version conflict preserves the unsaved draft", async 
         },
       );
       await waitForConsoleShell(page);
-      await page.getByLabel("Name").fill("Operator draft");
+      await page.getByLabel("Name", { exact: true }).fill("Operator draft");
 
       const secondPage = await context.newPage();
       await secondPage.goto(
@@ -459,51 +472,59 @@ Deno.test("N09 a real user version conflict preserves the unsaved draft", async 
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(secondPage);
-      await secondPage.getByLabel("Name").fill("Concurrent edit");
-      await secondPage.getByRole("button", { name: "Save user" }).click();
+      await secondPage.getByLabel("Name", { exact: true }).fill(
+        "Concurrent edit",
+      );
+      await secondPage.getByRole("button", {
+        name: "Save profile",
+        exact: true,
+      }).click();
       await secondPage.getByText("Updated Concurrent edit.", { exact: true })
         .waitFor({
           state: "visible",
           timeout: 30_000,
         });
-      await page.getByRole("button", { name: "Save user" }).click();
+      await page.getByRole("button", { name: "Save profile", exact: true })
+        .click();
       await page.getByRole("button", { name: "Refresh version (keep draft)" })
         .waitFor({
           state: "visible",
           timeout: 30_000,
         });
       assertEquals(
-        await page.getByLabel("Name").inputValue(),
+        await page.getByLabel("Name", { exact: true }).inputValue(),
         "Operator draft",
       );
       await page.getByRole("button", { name: "Refresh version (keep draft)" })
         .click();
-      await page.getByRole("button", { name: "Save user" }).waitFor({
-        state: "visible",
-      });
+      await page.getByRole("button", { name: "Save profile", exact: true })
+        .waitFor({
+          state: "visible",
+        });
       assertEquals(
-        await page.getByLabel("Name").inputValue(),
+        await page.getByLabel("Name", { exact: true }).inputValue(),
         "Operator draft",
       );
-      await page.getByRole("button", { name: "Save user" }).click();
+      await page.getByRole("button", { name: "Save profile", exact: true })
+        .click();
       await page.getByText("Updated Operator draft.", { exact: true }).waitFor({
         state: "visible",
         timeout: 30_000,
       });
       await page.reload({ waitUntil: "domcontentloaded" });
       await waitForConsoleShell(page);
-      await page.getByLabel("Name").waitFor({
+      await page.getByLabel("Name", { exact: true }).waitFor({
         state: "visible",
         timeout: 30_000,
       });
       assertEquals(
-        await page.getByLabel("Name").inputValue(),
+        await page.getByLabel("Name", { exact: true }).inputValue(),
         "Operator draft",
       );
       await secondPage.reload({ waitUntil: "domcontentloaded" });
       await waitForConsoleShell(secondPage);
       assertEquals(
-        await secondPage.getByLabel("Name").inputValue(),
+        await secondPage.getByLabel("Name", { exact: true }).inputValue(),
         "Operator draft",
       );
     } finally {
