@@ -95,7 +95,7 @@ impl JobCancellationToken {
     pub fn cancel(&self) {
         let _ = self
             .cancelled
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |reason| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |reason| {
                 matches!(
                     reason,
                     CANCELLATION_NONE | CANCELLATION_DEADLINE | CANCELLATION_RETRY_EXHAUSTED
@@ -109,7 +109,7 @@ impl JobCancellationToken {
     pub fn cancel_for_shutdown(&self) {
         let _ = self
             .cancelled
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |reason| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |reason| {
                 (reason != CANCELLATION_LEASE_LOST).then_some(CANCELLATION_HOST_SHUTDOWN)
             });
         self.notify.notify_waiters();
