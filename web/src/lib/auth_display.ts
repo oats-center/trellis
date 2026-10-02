@@ -125,11 +125,18 @@ export function describeSessionPrincipal(
   record: SessionLike,
 ): { title: string; details: string } {
   const contract = contractLabel(record);
-  // The principal ID is the current authoritative description. `userNkey` is a
-  // legacy transport key and is never promoted to the primary label.
+  const principal =
+    "principalId" in record && typeof record.principalId === "string"
+      ? record.principalId
+      : null;
+  const participantKind =
+    "participantKind" in record && typeof record.participantKind === "string"
+      ? record.participantKind
+      : "";
   return {
-    title: record.principalId,
+    title: contract ?? participantKindLabel(participantKind),
     details: joinDetails([
+      principal,
       "connectionId" in record && typeof record.connectionId === "string"
         ? record.connectionId
         : null,

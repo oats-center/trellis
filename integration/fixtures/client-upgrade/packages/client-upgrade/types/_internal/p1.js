@@ -2424,6 +2424,7 @@ export const AuthUsersListResponseentriesItemCodec = codecs.recursive(() => code
 	state: codecs.ref(() => AuthUsersListResponseentriesItemStateCodec),
 	updatedAt: codecs.ref(() => AuthUsersListResponseentriesItemUpdatedAtCodec),
 	userId: codecs.ref(() => AuthUsersListResponseentriesItemUserIdCodec),
+	username: codecs.nullable(codecs.string),
 	version: codecs.ref(() => AuthUsersListResponseentriesItemVersionCodec)
 })));
 export const AuthUsersListResponseentriesItemCreatedAtCodec = codecs.recursive(() => codecs.named("trellis.AuthUsersListResponseentriesItemCreatedAt", codecs.u64));

@@ -152,6 +152,8 @@ pub struct UserAccount {
     pub principal: PrincipalRecord,
     /// Required user profile.
     pub profile: UserProfileRecord,
+    /// Canonical local sign-in username when one exists.
+    pub username: Option<String>,
 }
 
 impl<R> AuthService<R>
@@ -706,7 +708,7 @@ where
         };
         let identity = ProviderIdentityLink {
             provider: "local".to_owned(),
-            provider_subject: username,
+            provider_subject: username.clone(),
             principal_id: principal_id.clone(),
             linked_at: input.created_at,
             last_seen_at: input.created_at,
@@ -733,6 +735,7 @@ where
             IdempotentOutcome::Applied(_) => Ok(IdempotentOutcome::Applied(UserAccount {
                 principal,
                 profile,
+                username: Some(username.clone()),
             })),
             IdempotentOutcome::Replayed(value) => Ok(IdempotentOutcome::Replayed(value)),
         }
@@ -810,6 +813,9 @@ where
             IdempotentOutcome::Applied(_) => Ok(IdempotentOutcome::Applied(UserAccount {
                 principal,
                 profile,
+                username: credential
+                    .as_ref()
+                    .map(|credential| credential.normalized_username.clone()),
             })),
             IdempotentOutcome::Replayed(value) => Ok(IdempotentOutcome::Replayed(value)),
         }
@@ -871,6 +877,7 @@ where
             IdempotentOutcome::Applied(_) => Ok(IdempotentOutcome::Applied(UserAccount {
                 principal,
                 profile,
+                username: None,
             })),
             IdempotentOutcome::Replayed(value) => Ok(IdempotentOutcome::Replayed(value)),
         }
@@ -885,11 +892,17 @@ where
         &self,
         principal_id: &str,
     ) -> Result<Option<UserAccount>, AuthorizationStateError> {
-        Ok(self
-            .repository
-            .get_user_account(principal_id)
-            .await?
-            .map(|(principal, profile)| UserAccount { principal, profile }))
+        Ok(self.repository.get_user_account(principal_id).await?.map(
+            |UserAccount {
+                 principal,
+                 profile,
+                 username,
+             }| UserAccount {
+                principal,
+                profile,
+                username,
+            },
+        ))
     }
 
     /// List filtered user accounts after an exclusive stable-sort cursor.
@@ -911,7 +924,17 @@ where
             .list_user_accounts(cursor, state, search, limit)
             .await?
             .into_iter()
-            .map(|(principal, profile)| UserAccount { principal, profile })
+            .map(
+                |UserAccount {
+                     principal,
+                     profile,
+                     username,
+                 }| UserAccount {
+                    principal,
+                    profile,
+                    username,
+                },
+            )
             .collect())
     }
 

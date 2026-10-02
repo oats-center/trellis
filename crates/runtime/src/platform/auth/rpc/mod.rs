@@ -2695,19 +2695,12 @@ impl AuthRpcProcessor {
         &self,
         account: UserAccount,
     ) -> Result<Value, AuthorizationStateError> {
-        let username = self
-            .service
-            .repository()
-            .get_local_credential(&account.principal.principal_id)
-            .await?
-            .map(|credential| credential.normalized_username);
         let protected = self
             .service
             .repository()
             .user_is_bootstrap_administrator(&account.principal.principal_id)
             .await?;
         let mut user = user_value(account);
-        user["username"] = json!(username);
         user["bootstrapAdministrator"] = json!(protected);
         Ok(user)
     }
@@ -3292,6 +3285,7 @@ fn user_value(account: UserAccount) -> Value {
         "name": account.profile.display_name,
         "email": account.profile.email,
         "image": account.profile.image_url,
+        "username": account.username,
         "createdAt": account.principal.created_at,
         "updatedAt": account.profile.updated_at,
         "disabledAt": account.principal.disabled_at,

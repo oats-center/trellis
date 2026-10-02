@@ -34,11 +34,10 @@
     expiresAt: bigint;
   };
 
-  // Identity details belong to the current user's own profile: the current
-  // self-identity API cannot inspect another user, so this list does not
-  // fabricate counts, providers, or usernames.
+  // User listings prefer the operator-facing local username (or display name)
+  // over the stable principal/display identifier.
   function identityLabel(user: UserView): string {
-    return user.name?.trim() || user.email?.trim() || user.userId;
+    return user.username?.trim() || user.name?.trim() || user.email?.trim() || user.userId;
   }
 
   let loading = $state(true);

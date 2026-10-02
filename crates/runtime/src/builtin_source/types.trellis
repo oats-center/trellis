@@ -3394,6 +3394,7 @@ model AuthUsersListResponseentriesItem {
   state: AuthUsersListResponseentriesItemState;
   updatedAt: AuthUsersListResponseentriesItemUpdatedAt;
   userId: AuthUsersListResponseentriesItemUserId;
+  username: string | null;
   version: AuthUsersListResponseentriesItemVersion;
 }
 

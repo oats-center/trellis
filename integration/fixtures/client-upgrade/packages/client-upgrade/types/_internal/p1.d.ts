@@ -6100,6 +6100,7 @@ export type AuthUsersListResponseentriesItem = {
 	readonly state: AuthUsersListResponseentriesItemState;
 	readonly updatedAt: AuthUsersListResponseentriesItemUpdatedAt;
 	readonly userId: AuthUsersListResponseentriesItemUserId;
+	readonly username: string | null;
 	readonly version: AuthUsersListResponseentriesItemVersion;
 	readonly [key: string]: unknown;
 };

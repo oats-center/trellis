@@ -15,6 +15,7 @@ Deno.test("describeSessionPrincipal renders generated session identity", () => {
       lastAuthenticatedAt: 2n,
       participantId: "console",
       participantKind: "app",
+      contractDisplayName: "Trellis app",
       principalId: "usr_123",
       revokedAt: null,
       sessionId: "ses_app",
@@ -24,8 +25,8 @@ Deno.test("describeSessionPrincipal renders generated session identity", () => {
       version: 1n,
     }),
     {
-      title: "usr_123",
-      details: "ses_app",
+      title: "Trellis app",
+      details: "usr_123 • ses_app • Trellis app",
     },
   );
 });

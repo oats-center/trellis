@@ -665,7 +665,8 @@ untrack(() => {
                 </td>
                 <td class="min-w-0">
                   <a class="link link-hover block max-w-md truncate text-left trellis-identifier font-medium" href={resolve(jobRoute(job.id))}>{job.type}</a>
-                  <span class="trellis-metadata trellis-identifier block max-w-md truncate">{job.id} · {job.service}</span>
+                  <span class="trellis-metadata trellis-identifier block max-w-md truncate">{job.service}</span>
+                  <span class="trellis-metadata block max-w-md truncate text-base-content/60">{job.id}</span>
                 </td>
                 <td class="trellis-metadata trellis-identifier block max-w-xs truncate">{job.queueKey ?? "Unkeyed"}</td>
                 <td><StatusBadge label={jobStateLabel(job)} status={jobStateVariant(job)} /></td>

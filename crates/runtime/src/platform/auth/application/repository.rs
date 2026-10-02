@@ -494,7 +494,7 @@ pub(crate) trait AccountRepository: Send + Sync {
     async fn get_user_account(
         &self,
         principal_id: &str,
-    ) -> Result<Option<(PrincipalRecord, UserProfileRecord)>, AuthorizationStateError>;
+    ) -> Result<Option<UserAccount>, AuthorizationStateError>;
 
     /// List filtered user accounts after an optional exclusive stable-sort cursor.
     /// Identify the protected first administrator without inferring it from grants.
@@ -510,13 +510,13 @@ pub(crate) trait AccountRepository: Send + Sync {
         state: Option<&str>,
         search: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<(PrincipalRecord, UserProfileRecord)>, AuthorizationStateError>;
+    ) -> Result<Vec<UserAccount>, AuthorizationStateError>;
 
     /// Atomically replace one user principal and profile using optimistic versioning.
     async fn update_user_account(
         &self,
         command: UserAccountMutation,
-    ) -> Result<IdempotentOutcome<(PrincipalRecord, UserProfileRecord)>, AuthorizationStateError>;
+    ) -> Result<IdempotentOutcome<UserAccount>, AuthorizationStateError>;
 
     /// Load one user profile by principal ID.
     async fn get_user_profile(

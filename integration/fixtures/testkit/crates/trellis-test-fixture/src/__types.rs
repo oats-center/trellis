@@ -25497,6 +25497,7 @@ pub mod trellis {
         pub updated_at: crate::__types::trellis::AuthUsersListResponseentriesItemUpdatedAt,
         #[serde(rename = "userId")]
         pub user_id: crate::__types::trellis::AuthUsersListResponseentriesItemUserId,
+        pub username: crate::__types::Nullable<String>,
         pub version: crate::__types::trellis::AuthUsersListResponseentriesItemVersion,
         #[serde(flatten)]
         pub extra: serde_json::Map<String, serde_json::Value>,

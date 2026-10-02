@@ -11,6 +11,7 @@ use super::super::application::repository::{
 use super::super::application::validation::{
     validate_local_credential, validate_replacement_credential,
 };
+use super::super::application::UserAccount;
 use super::super::context::{
     revoke_sql_contexts, AuthorizationContextRevocationReason, AuthorizationContextSelector,
 };
@@ -62,7 +63,7 @@ impl AccountRepository for SqliteAuthorizationStore {
     async fn get_user_account(
         &self,
         principal_id: &str,
-    ) -> Result<Option<(PrincipalRecord, UserProfileRecord)>, AuthorizationStateError> {
+    ) -> Result<Option<UserAccount>, AuthorizationStateError> {
         let principal_id = principal_id.to_owned();
         self.run_read(move |connection| load_user_account(connection, &principal_id))
             .await
@@ -74,7 +75,7 @@ impl AccountRepository for SqliteAuthorizationStore {
         state: Option<&str>,
         search: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<(PrincipalRecord, UserProfileRecord)>, AuthorizationStateError> {
+    ) -> Result<Vec<UserAccount>, AuthorizationStateError> {
         let cursor = cursor.cloned();
         let state = state.map(str::to_owned);
         let search = search.map(str::to_owned);
@@ -84,14 +85,17 @@ impl AccountRepository for SqliteAuthorizationStore {
                     "SELECT p.principal_id, p.kind, p.state, p.created_at, p.updated_at,
                             p.version, p.disabled_at, p.revoked_at,
                             u.principal_id, u.display_name, u.email, u.image_url,
-                            u.created_at, u.updated_at, u.version
+                            u.created_at, u.updated_at, u.version,
+                            c.normalized_username
                      FROM auth_principals p
                      JOIN auth_user_profiles u ON u.principal_id = p.principal_id
+                     LEFT JOIN auth_local_credentials c ON c.principal_id = p.principal_id
                      WHERE p.kind = ?1
                        AND (?2 IS NULL OR p.state = ?2)
                        AND (?3 IS NULL OR instr(lower(p.principal_id), lower(?3)) > 0
                             OR instr(lower(coalesce(u.display_name, '')), lower(?3)) > 0
                             OR instr(lower(coalesce(u.email, '')), lower(?3)) > 0
+                            OR instr(lower(coalesce(c.normalized_username, '')), lower(?3)) > 0
                             OR EXISTS (
                                 SELECT 1 FROM auth_provider_identities identity
                                 WHERE identity.principal_id = p.principal_id
@@ -142,14 +146,16 @@ impl AccountRepository for SqliteAuthorizationStore {
     async fn update_user_account(
         &self,
         command: UserAccountMutation,
-    ) -> Result<IdempotentOutcome<(PrincipalRecord, UserProfileRecord)>, AuthorizationStateError>
-    {
+    ) -> Result<IdempotentOutcome<UserAccount>, AuthorizationStateError> {
         self.run(move |connection| {
             let transaction = connection.transaction().map_err(sql_error)?;
             let current_principal = load_principal(&transaction, &command.principal.principal_id)?
                 .ok_or(AuthorizationStateError::PrincipalMissing)?;
             let current_profile = load_user_profile(&transaction, &command.principal.principal_id)?
                 .ok_or(AuthorizationStateError::StorageConflict)?;
+            let current_username =
+                load_local_credential(&transaction, &command.principal.principal_id)?
+                    .map(|credential| credential.normalized_username);
             let target_is_admin = principal_has_accepted_admin_authority(
                 &transaction,
                 &command.principal.principal_id,
@@ -270,13 +276,22 @@ impl AccountRepository for SqliteAuthorizationStore {
                     principal.updated_at.div_euclid(1_000),
                 )?;
             }
+            command.idempotency.result = serde_json::json!({
+                "principal": command.principal,
+                "profile": command.profile,
+                "username": command.username.clone().or(current_username),
+            });
             insert_sql_idempotency_and_actions(
                 &transaction,
                 &command.idempotency,
                 &command.actions,
             )?;
             transaction.commit().map_err(sql_error)?;
-            Ok(IdempotentOutcome::Applied((principal, profile)))
+            Ok(IdempotentOutcome::Applied(UserAccount {
+                principal,
+                profile,
+                username: command.username.clone().or(current_username),
+            }))
         })
         .await
     }
@@ -1650,15 +1665,17 @@ pub(in crate::platform::auth) fn load_user_profile(
 pub(in crate::platform::auth) fn load_user_account(
     connection: &Connection,
     principal_id: &str,
-) -> Result<Option<(PrincipalRecord, UserProfileRecord)>, AuthorizationStateError> {
+) -> Result<Option<UserAccount>, AuthorizationStateError> {
     connection
         .query_row(
             "SELECT p.principal_id, p.kind, p.state, p.created_at, p.updated_at,
                 p.version, p.disabled_at, p.revoked_at,
                 u.principal_id, u.display_name, u.email, u.image_url,
-                u.created_at, u.updated_at, u.version
+                u.created_at, u.updated_at, u.version,
+                c.normalized_username
          FROM auth_principals p
          JOIN auth_user_profiles u ON u.principal_id = p.principal_id
+         LEFT JOIN auth_local_credentials c ON c.principal_id = p.principal_id
          WHERE p.principal_id = ?1 AND p.kind = ?2",
             params![principal_id, encode_enum(PrincipalKind::User)?],
             decode_user_account,
@@ -1669,9 +1686,9 @@ pub(in crate::platform::auth) fn load_user_account(
 
 pub(in crate::platform::auth) fn decode_user_account(
     row: &Row<'_>,
-) -> rusqlite::Result<(PrincipalRecord, UserProfileRecord)> {
-    Ok((
-        PrincipalRecord {
+) -> rusqlite::Result<UserAccount> {
+    Ok(UserAccount {
+        principal: PrincipalRecord {
             principal_id: row.get(0)?,
             kind: decode_enum(row.get::<_, String>(1)?)?,
             state: decode_enum(row.get::<_, String>(2)?)?,
@@ -1681,7 +1698,7 @@ pub(in crate::platform::auth) fn decode_user_account(
             disabled_at: row.get(6)?,
             revoked_at: row.get(7)?,
         },
-        UserProfileRecord {
+        profile: UserProfileRecord {
             principal_id: row.get(8)?,
             display_name: row.get(9)?,
             email: row.get(10)?,
@@ -1690,7 +1707,8 @@ pub(in crate::platform::auth) fn decode_user_account(
             updated_at: row.get(13)?,
             version: from_sql_version(row.get(14)?)?,
         },
-    ))
+        username: row.get(15)?,
+    })
 }
 
 pub(in crate::platform::auth) fn load_local_credential(

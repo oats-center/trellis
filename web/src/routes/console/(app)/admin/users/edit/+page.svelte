@@ -114,7 +114,7 @@
     if (targetUser.userId !== requestedUserId) return;
     const key = ulid();
     const intent = captureIntent<UpdateInput>({
-      operation: "usersUpdate", targetId: targetUser.userId, label: targetUser.name ?? targetUser.userId,
+      operation: "usersUpdate", targetId: targetUser.userId, label: targetUser.username ?? targetUser.name ?? targetUser.email ?? targetUser.userId,
       idempotencyKey: key,
       input: {
         userId: targetUser.userId,
@@ -141,7 +141,7 @@
     if (outcome.kind === "succeeded") {
       // Apply the returned record/version so a second save uses it.
       applyUser(outcome.value.user);
-      notifications.success(`Updated ${outcome.value.user.name ?? outcome.value.user.userId}.`, "Updated");
+      notifications.success(`Updated ${outcome.value.user.username ?? outcome.value.user.name ?? outcome.value.user.userId}.`, "Updated");
     } else if (outcome.kind === "unknown") {
       error = { message: "Outcome unknown; the update may have completed. Reload this user before submitting another change." };
     } else {
@@ -160,7 +160,7 @@
 </script>
 
 <section class="space-y-4">
-  <PageToolbar title={targetUser?.name ?? targetUser?.username ?? "Edit user"} description="Manage profile, application access, sign-in methods, and active sessions.">
+  <PageToolbar title={targetUser?.username ?? targetUser?.name ?? "Edit user"} description="Manage profile, application access, sign-in methods, and active sessions.">
     {#snippet actions()}
       <a class="btn btn-ghost btn-sm" href={resolve("/admin/users")}>Back to users</a>
     {/snippet}
@@ -204,7 +204,7 @@
         <p class="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-base-content/45">User</p>
         <div class="mt-1 flex min-w-0 flex-wrap items-end justify-between gap-3">
           <div class="min-w-0">
-            <h2 class="truncate text-base font-bold leading-tight">{targetUser.name ?? targetUser.userId}</h2>
+            <h2 class="truncate text-base font-bold leading-tight">{targetUser.username ?? targetUser.name ?? targetUser.userId}</h2>
             <p class="trellis-metadata mt-1">{targetUser.email ?? "No email"}</p>
             <p class="trellis-identifier mt-1 break-all text-base-content/60">{targetUser.userId}<CopyButton value={targetUser.userId} label="Copy user ID" /></p>
             {#if targetUser.bootstrapAdministrator}<p class="trellis-metadata mt-1">Protected bootstrap administrator</p>{/if}
@@ -274,7 +274,7 @@
       </div>
     </form>
     {#if dirty}<p class="trellis-field-help">Unsaved profile changes. Access and security actions save independently.</p>{/if}
-    <AccessGrants ownerId={targetUser.userId} ownerLabel={targetUser.name ?? targetUser.username ?? targetUser.userId} disabled={readOnly || savePending || loading} bootstrapAdministrator={targetUser.bootstrapAdministrator} />
-    <UserSecurity userId={targetUser.userId} userLabel={targetUser.name ?? targetUser.username ?? targetUser.userId} disabled={readOnly || savePending || loading} version={targetUser.version} />
+    <AccessGrants ownerId={targetUser.userId} ownerLabel={targetUser.username ?? targetUser.name ?? targetUser.userId} disabled={readOnly || savePending || loading} bootstrapAdministrator={targetUser.bootstrapAdministrator} />
+    <UserSecurity userId={targetUser.userId} userLabel={targetUser.username ?? targetUser.name ?? targetUser.userId} disabled={readOnly || savePending || loading} version={targetUser.version} />
   {/if}
 </section>

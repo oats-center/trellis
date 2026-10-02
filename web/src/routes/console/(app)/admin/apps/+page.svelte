@@ -16,12 +16,14 @@
   import { isErr } from "@oatscenter/result";
 
   type GrantBinding = apis.auth.GrantsListOutput["items"][number];
+  type GrantOwner = apis.auth.UsersListOutput["items"][number];
 
   const trellis = getTrellis();
 
   let loading = $state(true);
   let error = $state<string | null>(null);
   let identityGrants = $state.raw<GrantBinding[]>([]);
+  let ownerNames = $state.raw(new Map<string, string>());
 
   async function load() {
     loading = true;
@@ -40,6 +42,15 @@
       return;
     }
     identityGrants = [...result.items];
+    // A name lookup is auxiliary metadata; absence must not keep grants hidden.
+    const ownerResult = await traverseAll<GrantOwner>(async (pageRequest) => {
+      const response = await trellis.usersList({ page: catalogPage(pageRequest.cursor) }).take();
+      if (isErr(response)) throw response;
+      return { items: response.items, cursor: response.page.nextCursor };
+    });
+    if (ownerResult.complete) {
+      ownerNames = new Map(ownerResult.items.map((owner) => [owner.userId, owner.username?.trim() || owner.name?.trim() || owner.email?.trim() || owner.userId]));
+    }
   }
 
   onMount(load);
@@ -95,15 +106,15 @@
         <tbody>
           {#each identityGrants as entry (`${entry.ownerId}:${entry.participantId}`)}
             <tr>
-              <td class="trellis-identifier font-medium">{entry.ownerId}</td>
-              <td class="trellis-identifier">{entry.participantId}</td>
+              <td class="font-medium">{ownerNames.get(entry.ownerId) ?? entry.ownerId}</td>
+              <td>{entry.participantId}</td>
               <td>
                 <span class="badge badge-sm {entry.state === "active" ? "badge-success" : "badge-neutral"}">
                   {entry.state}
                 </span>
               </td>
-              <td class="trellis-identifier text-base-content/60">{entry.installedRevision}</td>
-              <td class="trellis-identifier text-base-content/60">{entry.revision}</td>
+              <td class="text-base-content/60">{entry.installedRevision}</td>
+              <td class="text-base-content/60">{entry.revision}</td>
               <td class="text-base-content/60">{formatDate(entry.updatedAt)}</td>
               <td class="text-right">
                 {#if entry.state === "active"}
