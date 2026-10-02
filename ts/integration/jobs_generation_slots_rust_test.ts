@@ -616,15 +616,19 @@ async function verifyJobsSlots(cancelOverlap: boolean): Promise<void> {
           [g2],
           "fresh post-reap outcome must publish once on its G2 receiving connection",
         );
-        assertEquals(
-          gate.connections().flatMap((connection) =>
-            connection.outboundContexts.filter((out) =>
-              out.subject.startsWith(`$JS.ACK.${stream}.${consumerName}.`) &&
-              out.subject.split(".")[5] === "6"
-            ).map(() => connection.id)
-          ),
-          [g2],
-          "fresh post-reap disposition must use its G2 receiving connection",
+        // Progress and terminal ACKs share the delivery's ACK subject.
+        const freshDispositionOwners = gate.connections().flatMap((
+          connection,
+        ) =>
+          connection.outboundContexts.filter((out) =>
+            out.subject.startsWith(`$JS.ACK.${stream}.${consumerName}.`) &&
+            out.subject.split(".")[5] === "6"
+          ).map(() => connection.id)
+        );
+        assert(
+          freshDispositionOwners.length > 0 &&
+            freshDispositionOwners.every((owner) => owner === g2),
+          "every fresh post-reap disposition must use its G2 receiving connection",
         );
         assertEquals(
           leg.lines.filter((line) => line.startsWith("JOB_STARTED ")).length,

@@ -65,7 +65,8 @@ Deno.test("TS retained Jobs refs get/wait/cancel after broker-confirmed G1 reap"
       );
     };
     try {
-      service.jobs.work.handle(async ({ job }) => {
+      // Retention spans authorization growth, not the work queue's 5s deadline.
+      service.jobs.keyedWork.handle(async ({ job }) => {
         const name = job.payload.value;
         started.push(name);
         if (name === "cancel") {
@@ -80,7 +81,7 @@ Deno.test("TS retained Jobs refs get/wait/cancel after broker-confirmed G1 reap"
         } else {
           await releases.get(name)!.promise;
         }
-        return Result.ok({ value: `result:${name}` });
+        return Result.ok({ key: job.payload.key, value: `result:${name}` });
       }, { concurrency: 2 });
       exited = service.wait().catch((error: unknown) => error);
       await runtime.waitFor(() =>
@@ -95,13 +96,14 @@ Deno.test("TS retained Jobs refs get/wait/cancel after broker-confirmed G1 reap"
       });
       const create = async (name: string) => {
         releases.set(name, Promise.withResolvers<void>());
-        return await service.jobs.work.create({ value: name }).orThrow();
+        return await service.jobs.keyedWork.create({ key: name, value: name })
+          .orThrow();
       };
       const a = await create("A");
       await runtime.waitFor(() => started.includes("A"));
       const g1 = gate.connections().find((connection) =>
         connection.deliveries.some((delivery) =>
-          delivery.subject.endsWith(".work")
+          delivery.subject.endsWith(".keyedWork")
         )
       )!.id;
       const [initial] = await attachments();
@@ -144,7 +146,7 @@ Deno.test("TS retained Jobs refs get/wait/cancel after broker-confirmed G1 reap"
       );
       const g2 = gate.connections().find((connection) =>
         connection.id !== g1 && connection.deliveries.some((delivery) =>
-          delivery.subject.endsWith(".work")
+          delivery.subject.endsWith(".keyedWork")
         )
       )!.id;
       assert(g2 !== g1);
@@ -155,9 +157,13 @@ Deno.test("TS retained Jobs refs get/wait/cancel after broker-confirmed G1 reap"
         "an already selected wait must not migrate",
       );
       releases.get("A")!.resolve();
-      assertEquals((await waiting as { result?: { value: string } }).result, {
-        value: "result:A",
-      });
+      assertEquals(
+        (await waiting as { result?: { key: string; value: string } }).result,
+        {
+          key: "A",
+          value: "result:A",
+        },
+      );
       waiting = undefined;
       releases.get("B")!.resolve();
       await runtime.waitFor(async () =>
@@ -183,7 +189,10 @@ Deno.test("TS retained Jobs refs get/wait/cancel after broker-confirmed G1 reap"
           g2,
         }),
       );
-      assertEquals((await b.wait().orThrow()).result, { value: "result:B" });
+      assertEquals((await b.wait().orThrow()).result, {
+        key: "B",
+        value: "result:B",
+      });
 
       // Created after G1 is absent: baseline caches cannot have terminal results.
       const f = await create("F");
@@ -196,18 +205,21 @@ Deno.test("TS retained Jobs refs get/wait/cancel after broker-confirmed G1 reap"
           `${eventPrefix}.${f.id}.completed`,
         );
         try {
-          await jsm.streams.getMessage(stream, {
+          const completed = await jsm.streams.getMessage(stream, {
             last_by_subj: `${eventPrefix}.${f.id}.completed`,
           });
-          return true;
+          return completed !== null;
         } catch {
           return false;
         }
       });
       const got = await f.get().orThrow();
       assertEquals(got.state, "completed");
-      assertEquals(got.result, { value: "result:F" });
-      assertEquals((await f.wait().orThrow()).result, { value: "result:F" });
+      assertEquals(got.result, { key: "F", value: "result:F" });
+      assertEquals((await f.wait().orThrow()).result, {
+        key: "F",
+        value: "result:F",
+      });
 
       const h = await create("H");
       await runtime.waitFor(() =>
@@ -220,9 +232,13 @@ Deno.test("TS retained Jobs refs get/wait/cancel after broker-confirmed G1 reap"
         )
       );
       releases.get("H")!.resolve();
-      assertEquals((await waiting as { result?: { value: string } }).result, {
-        value: "result:H",
-      });
+      assertEquals(
+        (await waiting as { result?: { key: string; value: string } }).result,
+        {
+          key: "H",
+          value: "result:H",
+        },
+      );
       waiting = undefined;
       const c = await create("cancel");
       await runtime.waitFor(() => started.includes("cancel"));
@@ -241,6 +257,7 @@ Deno.test("TS retained Jobs refs get/wait/cancel after broker-confirmed G1 reap"
       await runtime.waitFor(() => started.includes("fresh"));
       releases.get("fresh")!.resolve();
       assertEquals((await fresh.wait().orThrow()).result, {
+        key: "fresh",
         value: "result:fresh",
       });
       const final = admittedConnections(
