@@ -147,7 +147,7 @@ Deno.test("the unified web source is fully reverse proxied through Trellis", asy
       const diagnostics: string[] = [];
       const failedRequests: string[] = [];
       const captures: Promise<void>[] = [];
-      const failedModules = new Set<string>();
+      const failedAssets = new Set<string>();
       try {
         const page = await browser.newPage();
         const requests: string[] = [];
@@ -157,19 +157,34 @@ Deno.test("the unified web source is fully reverse proxied through Trellis", asy
           if (message.type() === "error") console.error(message.text());
         });
         page.on("requestfailed", (request) => {
-          if (failedRequests.length >= 20) return;
           const at = new Date().toISOString();
           const error = request.failure()?.errorText;
-          failedRequests.push(`${at} ${request.url()} ${error}`.slice(0, 2048));
+          if (failedRequests.length < 20) {
+            failedRequests.push(
+              `${at} ${request.url()} ${error}`.slice(0, 2048),
+            );
+          }
+          const url = new URL(request.url());
+          const resourceType = request.resourceType();
+          if (
+            url.origin === runtime.trellisUrl &&
+            (resourceType === "script" || resourceType === "stylesheet") &&
+            failedAssets.size < 8
+          ) {
+            failedAssets.add(url.href);
+          }
         });
         page.on("response", (response) => {
           if (response.status() < 400 || captures.length >= 8) return;
           const url = new URL(response.url());
-          const nodes = /^\/\.svelte-kit\/generated\/client\/nodes\/\d+\.js$/;
-          if (url.origin !== runtime.trellisUrl || !nodes.test(url.pathname)) {
+          const resourceType = response.request().resourceType();
+          if (
+            url.origin !== runtime.trellisUrl ||
+            (resourceType !== "script" && resourceType !== "stylesheet")
+          ) {
             return;
           }
-          failedModules.add(url.pathname + url.search);
+          if (failedAssets.size < 8) failedAssets.add(url.href);
           const at = new Date().toISOString();
           const type = response.headers()["content-type"];
           const prefix = `${at} proxied ${url} ${response.status()} ${type}`;
@@ -230,8 +245,11 @@ Deno.test("the unified web source is fully reverse proxied through Trellis", asy
         );
       } catch (cause) {
         await Promise.all(captures);
-        for (const path of failedModules) {
-          const url = new URL(path, upstream);
+        for (const asset of failedAssets) {
+          const assetUrl = new URL(asset);
+          const url = new URL(upstream);
+          url.pathname = assetUrl.pathname;
+          url.search = assetUrl.search;
           const at = new Date().toISOString();
           try {
             const response = await fetch(url, {
@@ -245,7 +263,9 @@ Deno.test("the unified web source is fully reverse proxied through Trellis", asy
               `${at} direct ${url} ${response.status} ${type}\n${text}`,
             );
           } catch (error) {
-            diagnostics.push(at + " direct " + url + " error: " + error);
+            diagnostics.push(
+              at + " direct " + url + " error: " + String(error).slice(0, 1024),
+            );
           }
         }
         console.error([...failedRequests, ...diagnostics].join("\n"));
