@@ -73,7 +73,7 @@ import {
 } from "../../participant_runtime/surface_names.ts";
 import {
   AsyncResult,
-  type BaseError,
+  BaseError,
   isErr,
   type MaybeAsync,
   Result,
@@ -2237,7 +2237,9 @@ function createJobRef<TPayload, TResult, TUpdate = unknown>(args: {
         }
         return Result.ok(await run(nc, observer ?? args.lifecycle, current));
       } catch (cause) {
-        return Result.err(toUnexpectedError(cause));
+        return Result.err(
+          cause instanceof BaseError ? cause : toUnexpectedError(cause),
+        );
       } finally {
         observer?.stop();
         lease?.release();
@@ -2400,6 +2402,7 @@ function createJobsFacade<
   nc: NatsConnection;
   contractJobs: TJobs;
   transport: TrellisTransportProvider;
+  acquireTimeoutMs: number;
   intakeOwner: Pick<
     TrellisServiceRuntimeFor<RuntimeApi>,
     "declareFrameworkIntake" | "retractFrameworkIntake"
@@ -2428,15 +2431,9 @@ function createJobsFacade<
     if (!(args.transport instanceof TransportGenerationManager)) {
       return undefined;
     }
-    const lease = await args.transport.acquirePublishedAttachment();
-    if (!lease) {
-      throw new TransportError({
-        code: "trellis.transport.unavailable",
-        message: "No admitted Trellis transport generation is available.",
-        hint: "Retry when the Trellis runtime connection is available.",
-      });
-    }
-    return lease;
+    return await args.transport.acquireCurrent({
+      deadlineMs: Date.now() + args.acquireTimeoutMs,
+    });
   };
   let activeHost: JobWorkerHostAdapter | undefined;
   let startupPromise:
@@ -3692,6 +3689,7 @@ export class TrellisServiceSession<
       nc,
       contractJobs,
       transport,
+      acquireTimeoutMs,
       intakeOwner: this.#runtime,
       client: handlerTrellis,
       jobsBinding: bindings.jobs,
