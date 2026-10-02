@@ -1132,10 +1132,10 @@ async function getStateEntry(
 function parseState(
   entry: KvEntry,
   derived: DerivedJobKey,
-): JobKeyState | undefined {
+): JobKeyState {
   const decoded = entry.json<unknown>();
   if (!isJobKeyState(decoded)) {
-    return undefined;
+    throw new Error(`Invalid keyed job state '${derived.kvKey}'`);
   }
   assertStateMatchesDerived(decoded, derived);
   return decoded;

@@ -24,8 +24,10 @@ already requested to reconcile earlier side effects. A creation-relative
 deadline uses the same cleanup path for previously started work. Cleanup errors
 leave work redeliverable; only successful cleanup permits terminal Dead or
 Expired settlement and source acknowledgement. Never-started expired work
-recovers and releases any owned key slot before Expired publication without
-running the handler. The janitor does not settle deadlines or execute
+recovers a fresh fence and confirms Expired publication before releasing its
+slot, without running the handler. Failed publication retains the reservation
+for redelivery; confirmed terminal redelivery reconciles any remaining slot
+before acknowledgement. The janitor does not settle deadlines or execute
 application cleanup.
 
 Progress ACK maintenance is automatic for accepted keyed and unkeyed deliveries
@@ -51,12 +53,18 @@ obligation for another delivery. A never-started displaced reservation needs no
 handler cleanup. Only its recovered owner can publish Stale after
 reconciliation; confirmed terminal settlement then removes the obligation.
 Release and renewal by an old token cannot mutate the replacement owner's slot.
+Stale-completion diagnostics are nonterminal and do not authorize
+acknowledgement; the displaced work redelivers until its cleanup obligation is
+settled. A recovered never-started reservation may transition directly from
+Pending to Stale with zero attempts, without manufacturing handler execution.
 
 Jobs retains stream-first durable lifecycle, stable IDs, queue/key coordination,
 projection, janitor, cancellation, progress, logs, result/error, dead jobs,
 replay/dismiss, and optional live typed updates. Live updates are transient; the
 durable lifecycle remains authoritative. Confirmed JetStream publication is
-required before acknowledging source work.
+required before acknowledging source work. Both Rust and TypeScript lifecycle
+publishers await the broker acknowledgement; typed live updates use core NATS
+without requiring a durable stream.
 
 Key paths compile to typed scalar accessors. Optional or nonscalar leaves are
 compile errors. Existing collision-safe key encoding and reject/coalesce/

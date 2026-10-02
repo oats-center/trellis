@@ -93,11 +93,15 @@ Job deadlines are creation-relative;
 retry defaults to five ordinary attempts delayed by 5s, 30s, 2m, and 10m. Broker
 redelivery is unlimited so execution owners can finish cleanup before Expired or
 Dead. Already-cancelled handlers must reconcile earlier side effects; cleanup
-errors preserve redelivery. Never-started expiration releases recovered key slots
-without running handlers. Ordinary queues use Block. At the coordinator boundary,
+errors preserve redelivery. Never-started expiration confirms terminal publication
+before releasing recovered key slots, without running handlers; terminal redelivery
+reconciles any remaining slot before acknowledgement. Ordinary queues use Block. At the coordinator boundary,
 fail-stale takeover preserves cleanup for the displaced job's recovered owner
-under a fresh fence; only that owner settles Stale. Jobs Summary
-is independent of Query pages. Capability approval is not an exact grant. Resource commitments are
+under a fresh fence; only that owner settles Stale. Ignored stale completions are
+nonterminal diagnostics and retain redelivery until cleanup settles. A never-started
+displaced reservation settles Pending to Stale without handler execution. Lifecycle
+publication awaits JetStream acknowledgement; typed live updates remain transient.
+Jobs Summary is independent of Query pages. Capability approval is not an exact grant. Resource commitments are
 approvals; desired capacities are hints, while observed bindings are the usable
 limits. Trellis neither adopts nor destroys foreign-owned physical resources.
 Removal detaches access without deleting new-version data, allowing compatible

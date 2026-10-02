@@ -223,11 +223,19 @@ positive ordered backoffs than total attempts.
 Broker redelivery is unlimited. Before business work, check `job.signal.aborted`:
 already-aborted job handlers must reconcile earlier side effects. Cleanup errors
 preserve redelivery; previously started work reaches Expired or Dead only after
-successful cleanup. Never-started expiration releases any recovered key slot
-without running the handler. Ordinary queues use Block, not an authored stale
+successful cleanup. Never-started expiration confirms terminal publication before
+releasing its recovered key slot, without running the handler. Publication failure
+retains the reservation; terminal redelivery reconciles remaining slots before
+acknowledgement. Ordinary queues use Block, not an authored stale
 policy. Coordinator fail-stale takeover preserves cleanup for a recovered owner
 with a fresh fence and `job.signal.reason === "stale-attempt"`; only that owner
 settles Stale, without mutating the replacement owner's slot.
+Ignored stale completions are nonterminal diagnostics and retain redelivery until
+cleanup settles. A never-started displaced reservation settles Pending to Stale
+without handler execution.
+
+Lifecycle publication awaits JetStream acknowledgement. Typed live updates remain
+transient and do not require a durable stream.
 
 ## Resources And Transactional Events
 

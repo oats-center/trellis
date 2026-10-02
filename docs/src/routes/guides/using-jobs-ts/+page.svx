@@ -47,19 +47,24 @@ acquired. Waiting workers maintain delivery progress without spending a retry or
 reaching max-delivery exhaustion. A `RetryJobError` returned by ordinary handler
 execution does consume the configured attempts and backoff schedule.
 
-Broker redelivery is unlimited so previously started work can finish cleanup after
-its creation-relative deadline or ordinary retry budget is exhausted. Before
-business work, check `job.signal.aborted`: an already-aborted handler invocation
-must reconcile earlier side effects and return success only when cleanup is
-complete. Cleanup errors keep the job redeliverable rather than terminalizing it.
-Never-started expired jobs release any recovered key slot without running the
-handler.
+Broker redelivery is unlimited so previously started work can finish cleanup
+after its creation-relative deadline or ordinary retry budget is exhausted.
+Before business work, check `job.signal.aborted`: an already-aborted handler
+invocation must reconcile earlier side effects and return success only when
+cleanup is complete. Cleanup errors keep the job redeliverable rather than
+terminalizing it. Never-started expired jobs confirm terminal publication before
+releasing their recovered key slot, without running the handler. Publication
+failure preserves the reservation for redelivery; terminal redelivery reconciles
+any remaining slot.
 
 Ordinary queues use the Block stale policy; stale-policy selection is not an
-authored option. At the coordinator boundary, fail-stale takeover only fences the
-old attempt. Its recovered owner must obtain a fresh slot and reconcile with
-`job.signal.reason === "stale-attempt"` before publishing terminal Stale. The new
-owner's fence is unaffected by the old token.
+authored option. At the coordinator boundary, fail-stale takeover only fences
+the old attempt. Its recovered owner must obtain a fresh slot and reconcile with
+`job.signal.reason === "stale-attempt"` before publishing terminal Stale. The
+new owner's fence is unaffected by the old token. An ignored stale completion is
+a nonterminal diagnostic, not final acknowledgement. The work redelivers until
+cleanup settles. A never-started displaced reservation settles directly from
+Pending to Stale without running its handler.
 
 Execution is at least once. Use stable job identity and idempotent side effects.
 Typed updates are transient; durable progress, logs, result/error, and dead

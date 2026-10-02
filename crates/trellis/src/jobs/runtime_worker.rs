@@ -1649,14 +1649,16 @@ fn ack_action_for_outcome<TResult>(
         Some(JobProcessOutcome::Retry { tries, .. }) => {
             WorkerAckAction::Nak(Duration::from_millis(retry_delay_ms(*tries, backoff_ms)))
         }
-        Some(JobProcessOutcome::Interrupted { .. }) => WorkerAckAction::Nak(Duration::from_secs(5)),
+        Some(JobProcessOutcome::Interrupted { .. })
+        | Some(JobProcessOutcome::StaleCompletionIgnored { .. }) => {
+            WorkerAckAction::Nak(Duration::from_secs(5))
+        }
         Some(JobProcessOutcome::Completed { .. })
         | Some(JobProcessOutcome::Cancelled { .. })
         | Some(JobProcessOutcome::Failed { .. })
         | Some(JobProcessOutcome::Expired { .. })
         | Some(JobProcessOutcome::Dead { .. })
         | Some(JobProcessOutcome::Stale { .. })
-        | Some(JobProcessOutcome::StaleCompletionIgnored { .. })
         | None => WorkerAckAction::Ack,
     }
 }
@@ -2427,6 +2429,292 @@ mod tests {
     use crate::jobs::events::{cancelled, completed, created, started, EventMeta};
     use crate::jobs::manager::JobProcessOutcome;
     use crate::jobs::types::{Job, JobContext, JobState};
+
+    #[tokio::test]
+    async fn stale_completion_redelivers_and_retries_cleanup_through_the_durable_consumer() {
+        use crate::jobs::bindings::{JobKeyConcurrencyBinding, JobKeyStalePolicy, JobsBinding};
+        use crate::jobs::keys::NatsKeyCoordinator;
+        use crate::jobs::{
+            JobEventHeaders, JobEventPublisher, TrellisJobEventPublisher, TrellisJobMetaSource,
+        };
+        use async_nats::jetstream::{consumer, stream};
+        use futures_util::StreamExt;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let source = tempfile::tempdir().unwrap();
+        trellis_bootstrap::generate_nats_bootstrap(&trellis_bootstrap::NatsBootstrapOptions::new(
+            source.path(),
+        ))
+        .unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut nats = trellis_local_nats::LocalNats::builder()
+            .binary(trellis_local_nats::NatsBinarySource::DownloadPinned)
+            .cache_dir(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target/trellis-test-cache"),
+            )
+            .source(source.path())
+            .temporary_state()
+            .ephemeral_ports()
+            .output(trellis_local_nats::NatsOutput::Log {
+                path: state.path().join("nats.log"),
+                mirror: false,
+            })
+            .start()
+            .unwrap();
+        let client = async_nats::ConnectOptions::new()
+            .credentials_file(source.path().join("creds/trellis-auth.creds"))
+            .await
+            .unwrap()
+            .connect(nats.nats_url())
+            .await
+            .unwrap();
+        let js = async_nats::jetstream::new(client.clone());
+        js.create_stream(stream::Config {
+            name: "JOBS".into(),
+            subjects: vec!["jobs.>".into()],
+            allow_direct: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let lifecycle = js.get_stream_no_info("JOBS").await.unwrap();
+        let kv = js
+            .create_key_value(async_nats::jetstream::kv::Config {
+                bucket: "JOBS_KEYS_documents".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let coordinator = Arc::new(
+            NatsKeyCoordinator::open_for_service(client.clone(), "documents")
+                .await
+                .unwrap(),
+        );
+        let queue = JobsQueueBinding {
+            queue_type: "work".into(),
+            publish_prefix: "jobs.work".into(),
+            updates_prefix: None,
+            work_subject: "jobs.work.*.created".into(),
+            consumer_name: "a".into(),
+            max_deliver: 2,
+            backoff_ms: vec![100],
+            ack_wait_ms: 1_000,
+            default_deadline_ms: None,
+            update: None,
+            key_concurrency: Some(JobKeyConcurrencyBinding {
+                key: vec!["/key".into()],
+                max_active: 1,
+                heartbeat_interval_ms: 30_000,
+                heartbeat_ttl_ms: 5_000,
+                stale_policy: JobKeyStalePolicy::FailStale,
+            }),
+            queue: Some(crate::jobs::bindings::JobQueueDepthBinding {
+                max_queued_per_key: 1,
+                when_full: crate::jobs::bindings::JobQueueWhenFull::Reject,
+            }),
+        };
+        let publisher = TrellisJobEventPublisher::new(client.clone());
+        let manager = crate::jobs::manager::JobManager::new_with_key_coordinator(
+            publisher.clone(),
+            JobsBinding {
+                service_name: "documents".into(),
+                namespace: "documents".into(),
+                queues: [("work".into(), queue.clone())].into(),
+            },
+            TrellisJobMetaSource,
+            coordinator.clone(),
+        );
+        let a = manager
+            .create("work", serde_json::json!({"key":"shared"}))
+            .await
+            .unwrap();
+        let headers = JobEventHeaders::from(&a.context);
+        // Lifecycle publication must report missing durable storage; live updates
+        // must still reach subscribers without a stream covering their subject.
+        assert!(publisher
+            .publish("unpersisted.lifecycle".into(), headers.clone(), Vec::new())
+            .await
+            .is_err());
+        let mut updates = client.subscribe("typed_updates.work").await.unwrap();
+        publisher
+            .publish_update("typed_updates.work".into(), headers, b"live".to_vec())
+            .await
+            .unwrap();
+        let update = tokio::time::timeout(Duration::from_secs(5), updates.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(update.payload.as_ref(), b"live");
+        updates.unsubscribe().await.unwrap();
+        let a_started = Arc::new(tokio::sync::Notify::new());
+        let b_started = Arc::new(tokio::sync::Notify::new());
+        let finish_a = Arc::new(tokio::sync::Notify::new());
+        let finish_b = Arc::new(tokio::sync::Notify::new());
+        let cleanups = Arc::new(AtomicUsize::new(0));
+        let mut consumers = Vec::new();
+        let mut tasks = Vec::new();
+        let cancellation = JobCancellationToken::new();
+        let key_hash = crate::jobs::keys::derive_job_key(&a.payload, &["/key".into()])
+            .unwrap()
+            .key_hash;
+        let key = crate::jobs::keys::coordination_key("documents", "work", &key_hash);
+        // Separate real durable subscriptions make the takeover order explicit;
+        // both run the unchanged production worker and key-coordination adapter.
+        for is_a in [true, false] {
+            if !is_a {
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    loop {
+                        let entry = kv.entry(key.clone()).await.unwrap().unwrap();
+                        let key_state: crate::jobs::keys::JobKeyState =
+                            serde_json::from_slice(&entry.value).unwrap();
+                        let expiry = time::OffsetDateTime::parse(
+                            &key_state.active[0].lease_expires_at,
+                            &time::format_description::well_known::Rfc3339,
+                        )
+                        .unwrap();
+                        if time::OffsetDateTime::now_utc() >= expiry {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .unwrap();
+            }
+            let job = if is_a {
+                a.clone()
+            } else {
+                manager
+                    .create("work", serde_json::json!({"key":"shared"}))
+                    .await
+                    .unwrap()
+            };
+            let mut binding = queue.clone();
+            binding.consumer_name = if is_a { "a" } else { "b" }.into();
+            binding.work_subject = format!("jobs.work.{}.created", job.id);
+            let consumer = lifecycle
+                .create_consumer(consumer::pull::Config {
+                    durable_name: Some(binding.consumer_name.clone()),
+                    filter_subject: binding.work_subject.clone(),
+                    ack_policy: consumer::AckPolicy::Explicit,
+                    max_deliver: -1,
+                    ack_wait: Duration::from_secs(1),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            consumers.push(consumer.clone());
+            let entered = if is_a {
+                a_started.clone()
+            } else {
+                b_started.clone()
+            };
+            let finished = if is_a {
+                finish_a.clone()
+            } else {
+                finish_b.clone()
+            };
+            let cleanup = cleanups.clone();
+            tasks.push(tokio::spawn(super::run_prepared_queue_worker_loop(
+                super::WorkerLoopResources {
+                    consumer,
+                    lifecycle_stream: js.get_stream_no_info("JOBS").await.unwrap(),
+                    queue: binding,
+                    manager: manager.clone(),
+                    cancellation: cancellation.clone(),
+                    cancellation_registry: Default::default(),
+                    key_coordinator: Some(coordinator.as_ref().clone()),
+                    _lease: None,
+                    retire: None,
+                    single_receive: false,
+                },
+                move |active| {
+                    let entered = entered.clone();
+                    let finished = finished.clone();
+                    let cleanup = cleanup.clone();
+                    async move {
+                        if active.cancellation_token().reason()
+                            == Some(super::JobCancellationReason::StaleAttempt)
+                        {
+                            if cleanup.fetch_add(1, Ordering::SeqCst) == 0 {
+                                return Err(
+                                    crate::jobs::manager::JobProcessError::<String>::retryable(
+                                        "cleanup interrupted".into(),
+                                    ),
+                                );
+                            }
+                        } else {
+                            entered.notify_one();
+                            finished.notified().await;
+                        }
+                        Ok(serde_json::json!({"key":"shared"}))
+                    }
+                },
+            )));
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                if is_a {
+                    a_started.notified()
+                } else {
+                    b_started.notified()
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let taken: crate::jobs::keys::JobKeyState =
+            serde_json::from_slice(&kv.entry(key.clone()).await.unwrap().unwrap().value).unwrap();
+        let b_token = taken.active[0].slot_token.clone();
+        finish_a.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event =
+                    super::latest_lifecycle_message(&lifecycle, &format!("jobs.work.{}.>", a.id))
+                        .await
+                        .unwrap()
+                        .unwrap();
+                let event: crate::jobs::JobEvent = serde_json::from_slice(&event.payload).unwrap();
+                if event.event_type == crate::jobs::JobEventType::StaleCompletionIgnored {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let unchanged: crate::jobs::keys::JobKeyState =
+            serde_json::from_slice(&kv.entry(key).await.unwrap().unwrap().value).unwrap();
+        assert_eq!(unchanged.active[0].slot_token, b_token);
+        finish_b.notify_one();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let event =
+                    super::latest_lifecycle_message(&lifecycle, &format!("jobs.work.{}.>", a.id))
+                        .await
+                        .unwrap()
+                        .unwrap();
+                let event: crate::jobs::JobEvent = serde_json::from_slice(&event.payload).unwrap();
+                if event.event_type == crate::jobs::JobEventType::Stale
+                    && consumers[0].info().await.unwrap().num_ack_pending == 0
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(cleanups.load(Ordering::SeqCst), 2);
+        cancellation.cancel_for_shutdown();
+        for task in tasks {
+            task.await.unwrap().unwrap();
+        }
+        nats.stop().unwrap();
+    }
 
     #[tokio::test]
     async fn retired_pending_pull_finishes_one_delivery_without_buffering_backlog() {

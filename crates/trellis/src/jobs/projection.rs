@@ -194,7 +194,9 @@ fn is_legal_transition(current: &Job, event: &JobEvent) -> bool {
                 && event.previous_state == Some(current.state)
         }
         JobEventType::Stale => {
-            current.state == JobState::Active && event.previous_state == Some(JobState::Active)
+            (current.state == JobState::Active
+                || (current.state == JobState::Pending && current.tries == 0 && event.tries == 0))
+                && event.previous_state == Some(current.state)
         }
         JobEventType::Heartbeat | JobEventType::StaleCompletionIgnored => {
             current.state == JobState::Active && event.previous_state == Some(JobState::Active)

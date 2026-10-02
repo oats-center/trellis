@@ -241,7 +241,10 @@ export function lifecycleWorkDecision(
   if (!latest) {
     return "process";
   }
-  return isTerminal(latest.state) ? "skip-ack" : "process";
+  // Only terminal lifecycle settlement, not an attempt diagnostic, finishes work.
+  return latest.eventType === latest.state && isTerminal(latest.state)
+    ? "skip-ack"
+    : "process";
 }
 
 export function ackActionForOutcome(
@@ -253,6 +256,7 @@ export function ackActionForOutcome(
   switch (outcome.outcome) {
     case "retry":
     case "interrupted":
+    case "stale_completion_ignored":
     case "deferred":
       return "nak";
     default:

@@ -763,12 +763,12 @@ where
                     "job deadline exceeded before execution",
                 )
             };
-            // No handler ran: remove the recovered reservation before making
-            // expiration terminal, so a crash cannot strand its key afterward.
-            self.run_terminal_cleanup(&terminal_cleanup, &terminal_at)
-                .await?;
             terminal.previous_state = Some(job.state);
             self.publish_queue_event(queue, &job.id, terminal.event_type, &terminal)
+                .await?;
+            // Keep the fenced reservation until settlement is durable. A
+            // terminal redelivery reconciles any slot left after publication.
+            self.run_terminal_cleanup(&terminal_cleanup, &terminal_at)
                 .await?;
             return Ok(if stale_attempt {
                 JobProcessOutcome::Stale { tries: 0 }
@@ -1171,7 +1171,7 @@ where
             update,
         };
         self.publisher()
-            .publish(
+            .publish_update(
                 format!("{updates_prefix}.{}", job.id),
                 JobEventHeaders::from(&job.context),
                 serde_json::to_vec(&envelope).map_err(JobUpdateError::Json)?,

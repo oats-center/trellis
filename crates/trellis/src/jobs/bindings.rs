@@ -52,7 +52,7 @@ pub struct JobsQueueBinding {
     /// Durable consumer name for the queue.
     #[doc = concat!("The `", stringify!(consumer_name), "` value.")]
     pub consumer_name: String,
-    /// Maximum delivery attempts before advisory-based dead-letter handling.
+    /// Maximum ordinary handler attempts; broker redelivery remains unlimited.
     #[doc = concat!("The `", stringify!(max_deliver), "` value.")]
     pub max_deliver: u64,
     /// Redelivery backoff schedule in milliseconds.
@@ -102,7 +102,7 @@ pub struct JobKeyConcurrencyBinding {
 #[serde(rename_all = "kebab-case")]
 #[doc = concat!("Public Trellis value set `", stringify!(JobKeyStalePolicy), "`.")]
 pub enum JobKeyStalePolicy {
-    /// Mark stale jobs before acquiring their expired slot.
+    /// Fence expired attempts while preserving displaced-job cleanup obligations.
     FailStale,
     /// Block later jobs while an active key slot is stale.
     Block,

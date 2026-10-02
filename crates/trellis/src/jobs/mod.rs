@@ -83,6 +83,7 @@ pub mod internal {
 }
 
 #[derive(Debug, Clone)]
+/// Publishes lifecycle events with JetStream confirmation and live updates over core NATS.
 pub struct TrellisJobEventPublisher {
     nats: async_nats::Client,
 }
@@ -98,6 +99,30 @@ impl JobEventPublisher for TrellisJobEventPublisher {
     type Error = String;
 
     fn publish(
+        &self,
+        subject: String,
+        headers: JobEventHeaders,
+        payload: Vec<u8>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        let nats = self.nats.clone();
+        async move {
+            let mut nats_headers = async_nats::HeaderMap::new();
+            nats_headers.insert("request-id", headers.request_id.as_str());
+            nats_headers.insert("traceparent", headers.traceparent.as_str());
+            if let Some(tracestate) = headers.tracestate.as_deref() {
+                nats_headers.insert("tracestate", tracestate);
+            }
+            async_nats::jetstream::new(nats)
+                .publish_with_headers(subject, nats_headers, payload.into())
+                .await
+                .map_err(|error| error.to_string())?
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+    }
+
+    fn publish_update(
         &self,
         subject: String,
         headers: JobEventHeaders,

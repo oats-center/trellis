@@ -721,50 +721,46 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
       }
     }
 
-    try {
-      // Zero Started events do not prove that a crashed worker never acquired
-      // a key. Recover its slot with a fresh fence before settling expiration.
-      if (
-        job.tries === 0 &&
-        ((initialDeadline !== undefined && initialDeadline <= 0 &&
-          !cancellation.isCancelled()) ||
-          cancellation.reason() === "stale-attempt")
-      ) {
-        const stale = cancellation.reason() === "stale-attempt";
-        if (lease) await this.#keyedHeartbeat(job, lease)();
-        await this.#releaseKeyedSlot(job, lease);
-        await this.#publishJobEvent(job.type, job.id, {
-          jobId: job.id,
-          service: job.service,
-          jobType: job.type,
-          eventType: stale ? "stale" : "expired",
-          state: stale ? "stale" : "expired",
-          previousState: job.state,
-          context: job.context,
-          tries: 0,
-          error: stale
-            ? "key reservation displaced before execution"
-            : "job deadline exceeded before execution",
-          timestamp: this.#meta().nowIso(),
-        });
-        if (stale) await this.cleanupQueuedKeyedJob(job);
-        return { outcome: stale ? "stale" : "expired", tries: 0 };
-      }
+    // Zero Started events do not prove that a crashed worker never acquired
+    // a key. Keep its recovered reservation until publication succeeds so a
+    // failed Started or terminal publication cannot strand admitted work.
+    if (
+      job.tries === 0 &&
+      ((initialDeadline !== undefined && initialDeadline <= 0 &&
+        !cancellation.isCancelled()) ||
+        cancellation.reason() === "stale-attempt")
+    ) {
+      const stale = cancellation.reason() === "stale-attempt";
+      if (lease) await this.#keyedHeartbeat(job, lease)();
       await this.#publishJobEvent(job.type, job.id, {
         jobId: job.id,
         service: job.service,
         jobType: job.type,
-        eventType: "started",
-        state: "active",
+        eventType: stale ? "stale" : "expired",
+        state: stale ? "stale" : "expired",
         previousState: job.state,
         context: job.context,
-        tries,
+        tries: 0,
+        error: stale
+          ? "key reservation displaced before execution"
+          : "job deadline exceeded before execution",
         timestamp: this.#meta().nowIso(),
       });
-    } catch (error) {
-      await this.#releaseKeyedSlotAfterPublishFailure(job, lease, error);
-      throw error;
+      await this.#releaseKeyedSlot(job, lease);
+      if (stale) await this.cleanupQueuedKeyedJob(job);
+      return { outcome: stale ? "stale" : "expired", tries: 0 };
     }
+    await this.#publishJobEvent(job.type, job.id, {
+      jobId: job.id,
+      service: job.service,
+      jobType: job.type,
+      eventType: "started",
+      state: "active",
+      previousState: job.state,
+      context: job.context,
+      tries,
+      timestamp: this.#meta().nowIso(),
+    });
 
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
     const deadlineDelay = job.deadline === undefined
@@ -1109,29 +1105,6 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
     return released.kind === "released" ? "released" : "staleCompletion";
   }
 
-  async #releaseKeyedSlotAfterPublishFailure(
-    job: Job<TPayload, TResult>,
-    lease: ActiveSlotLease | undefined,
-    publishError: unknown,
-  ): Promise<void> {
-    try {
-      await this.#releaseKeyedSlot(job, lease);
-    } catch (cleanupError) {
-      recordTrellisError(cleanupError, {
-        surface: "job",
-        direction: "worker",
-        operation: job.type,
-        phase: "keyed_slot_cleanup",
-      });
-      recordTrellisError(publishError, {
-        surface: "job",
-        direction: "worker",
-        operation: job.type,
-        phase: "publish",
-      });
-    }
-  }
-
   async #publishStaleCompletionIgnored(
     job: Job<TPayload, TResult>,
     tries: number,
@@ -1141,7 +1114,7 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
       service: job.service,
       jobType: job.type,
       eventType: "staleCompletionIgnored",
-      state: "stale",
+      state: "active",
       previousState: "active",
       context: job.context,
       tries,

@@ -1,6 +1,11 @@
-Jobs are service-private background execution. They are useful for work that should continue independently of a caller-facing request and may need retry, progress tracking, or dead-letter handling.
+Jobs are service-private background execution. They are useful for work that
+should continue independently of a caller-facing request and may need retry,
+progress tracking, or dead-letter handling.
 
-The Trellis jobs runtime provides a service-private job queue with retry, progress tracking, and dead-letter handling. Jobs use a stream-first architecture: JetStream is the source of truth, and the Jobs admin runtime keeps a SQL projection for queries.
+The Trellis jobs runtime provides a service-private job queue with retry,
+progress tracking, and dead-letter handling. Jobs use a stream-first
+architecture: JetStream is the source of truth, and the Jobs admin runtime keeps
+a SQL projection for queries.
 
 Job states include `pending`, `active`, `retry`, `completed`, `failed`,
 `cancelled`, `expired`, `skipped`, `stale`, `dead`, and `dismissed`.
@@ -13,8 +18,8 @@ owner can publish Stale after reconciliation under a fresh fence. This policy is
 not an authored queue option. Dead-lettered jobs can be replayed or dismissed by
 an operator.
 
-A keyed worker acquires the key slot before starting handler work. While capacity
-is unavailable, it maintains the broker delivery lease with progress
+A keyed worker acquires the key slot before starting handler work. While
+capacity is unavailable, it maintains the broker delivery lease with progress
 acknowledgements; this wait does not consume retry attempts or trigger
 max-delivery exhaustion. Retryable failures after the handler starts do consume
 the job's retry policy.
@@ -22,14 +27,22 @@ the job's retry policy.
 Broker redelivery is unlimited, independently of the ordinary execution-attempt
 budget. Previously started jobs reach Expired or Dead only after their execution
 owner reconciles earlier side effects with cancellation already requested.
-Cleanup errors preserve redelivery. Never-started expired jobs release any
-recovered key slot without running the handler. The janitor does not settle
-deadlines or perform application cleanup.
+Cleanup errors preserve redelivery. Never-started expired jobs confirm terminal
+publication before releasing their recovered key slot, without running the
+handler. Publication failure preserves the reservation; terminal redelivery
+reconciles any remaining slot before acknowledgement. Ignored stale completions
+are nonterminal diagnostics and retain redelivery until cleanup settles. A
+never-started displaced reservation can settle directly from Pending to Stale
+without handler execution. The janitor does not settle deadlines or perform
+application cleanup.
 
-Services process their own jobs via their own JetStream consumer. A central Jobs admin runtime handles global queries, janitor cleanup, and the SQL projection for the built-in Jobs API.
+Services process their own jobs via their own JetStream consumer. A central Jobs
+admin runtime handles global queries, janitor cleanup, and the SQL projection
+for the built-in Jobs API.
 
-`Jobs.Query` returns cursor pages. `Jobs.Summary` applies the same filters to all
-matching projected jobs and returns page-independent totals, state statistics,
-and optional groups.
+`Jobs.Query` returns cursor pages. `Jobs.Summary` applies the same filters to
+all matching projected jobs and returns page-independent totals, state
+statistics, and optional groups.
 
-Jobs are not visible to callers. Caller-observable async work should use an operation instead.
+Jobs are not visible to callers. Caller-observable async work should use an
+operation instead.

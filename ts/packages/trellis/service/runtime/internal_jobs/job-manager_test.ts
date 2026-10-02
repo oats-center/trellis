@@ -932,60 +932,6 @@ Deno.test("JobManager renews keyed leases independently from delivery progress",
   assertEquals(published.map(eventType), ["started", "completed"]);
 });
 
-Deno.test("JobManager releases acquired slot when started publish fails before handler", async () => {
-  let released = 0;
-  let handlerRan = false;
-  const coordinator: JobKeyCoordinator = {
-    ...unsupportedCoordinator(),
-    acquireActiveSlot: () =>
-      Promise.resolve({
-        kind: "acquired",
-        key: "tenant-a",
-        keyHash: "hash",
-        slotToken: "slot-1",
-        stale: [],
-        state: emptyKeyState(),
-      }),
-    releaseActiveSlot: () => {
-      released += 1;
-      return Promise.resolve({ kind: "released", state: emptyKeyState() });
-    },
-  };
-  const manager = new JobManager<{ tenant: string }, { ok: boolean }>({
-    nc: {
-      publish(subject) {
-        if (subject.endsWith(".started")) {
-          throw new Error("started publish failed");
-        }
-      },
-    },
-    jobs: keyedJobsBinding(),
-    keyCoordinator: coordinator,
-    meta: {
-      nextJobId: () => "unused",
-      nowIso: () => "2024-01-01T00:00:00.000Z",
-    },
-  });
-
-  await assertRejects(
-    () =>
-      manager.processWithHeartbeat(
-        keyedJob(),
-        new JobCancellationToken(),
-        () => Promise.resolve(),
-        () => {
-          handlerRan = true;
-          return Promise.resolve({ ok: true });
-        },
-        { instanceId: "worker-1" },
-      ),
-    Error,
-    "started publish failed",
-  );
-  assertEquals(released, 1);
-  assertEquals(handlerRan, false);
-});
-
 Deno.test("JobManager publishes staleCompletionIgnored when slot is lost", async () => {
   const published: PublishedMessage[] = [];
   const coordinator: JobKeyCoordinator = {
