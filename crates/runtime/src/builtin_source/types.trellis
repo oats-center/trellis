@@ -1920,7 +1920,7 @@ model InstalledParticipantDetail {
 
 model AuthOptionalBundle {
   id: AuthOptionalBundleId;
-  apiId: AuthOptionalBundleApiId;
+  apiId?: AuthOptionalBundleApiId;
   permissions: list<AuthPermissionAtom>;
 }
 

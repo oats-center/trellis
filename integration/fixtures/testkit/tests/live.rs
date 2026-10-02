@@ -22,6 +22,155 @@ use trellis_test_fixture::participants::trellis_test_fixture_unsupported_device:
 use trellis_test_fixture::types::Value;
 use trellis_testkit::{TrellisTestErrorKind, TrellisTestRuntime};
 
+/// Generated inspection and repeat CLI installation preserve both optional bundle kinds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn optional_bundles_decode_and_repeat_cli_install() {
+    use std::process::Stdio;
+    use trellis_rs::auth::{complete_local_login, connect_admin_client_async, AdminSessionState};
+    use trellis_rs::generated::ParticipantDescriptor;
+    use trellis_test_fixture::apis::trellis_auth_v1::Client as AuthClient;
+    use trellis_test_fixture::participants::trellis_test_fixture_optional_bundle_service::Participant;
+    use trellis_test_fixture::types::AuthParticipantsGetRequest;
+
+    let mut runtime = TrellisTestRuntime::builder()
+        .start()
+        .await
+        .expect("start runtime");
+    let cli = std::env::var_os("TRELLIS_TEST_CLI_BIN").expect("prebuilt CLI path");
+    let config_home = runtime.workdir().join("cli-profile");
+    let login_url_file = runtime.workdir().join("cli-login-url");
+    let mut login = tokio::process::Command::new(&cli)
+        .args([
+            "--format",
+            "json",
+            "login",
+            runtime.trellis_url(),
+            "--login-url-file",
+        ])
+        .arg(&login_url_file)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("start ordinary CLI login");
+    let login_url = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Ok(url) = std::fs::read_to_string(&login_url_file) {
+                break url;
+            }
+            assert!(
+                login.try_wait().unwrap().is_none(),
+                "CLI exited before login URL"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("CLI login URL deadline");
+    complete_local_login(
+        runtime.trellis_url(),
+        login_url.trim(),
+        runtime.admin_username(),
+        runtime.admin_password(),
+    )
+    .await
+    .expect("complete real portal login");
+    let logged_in = tokio::time::timeout(Duration::from_secs(30), login.wait_with_output())
+        .await
+        .expect("CLI login completion deadline")
+        .expect("wait for CLI login");
+    assert!(
+        logged_in.status.success(),
+        "CLI login: {}",
+        String::from_utf8_lossy(&logged_in.stderr)
+    );
+
+    let state: AdminSessionState = serde_json::from_slice(
+        &std::fs::read(config_home.join("trellis/admin-session.json"))
+            .expect("read the CLI's real login session"),
+    )
+    .expect("decode CLI login session");
+    let connected = connect_admin_client_async(&state)
+        .await
+        .expect("connect administrator");
+    let auth = AuthClient::from_generated(connected.clone());
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    for installation in ["initial", "repeat"] {
+        // Neither invocation supplies expected-revision. On repeat, the ordinary CLI
+        // must decode Participants.Get and use its revision before installing.
+        let output = tokio::time::timeout(
+            Duration::from_secs(30),
+            tokio::process::Command::new(&cli)
+                .args(["--format", "json", "participants", "install", "--source"])
+                .arg(source)
+                .args(["--participant", Participant::ID])
+                .env("XDG_CONFIG_HOME", &config_home)
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .expect("participant install deadline")
+        .expect("run participant install");
+        assert!(
+            output.status.success(),
+            "{installation} install: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let detail = auth
+        .participants_get(&AuthParticipantsGetRequest {
+            participant_id: Participant::ID.to_owned().into(),
+            revision: None,
+            extra: Default::default(),
+        })
+        .await
+        .expect("generated Participants.Get must decode both kinds");
+    let bundles = &detail.participant.optional_bundles;
+    let capability = bundles
+        .iter()
+        .find(|bundle| bundle.id.as_ref() == "trellis-test-fixture.echo@v1::optionalEcho")
+        .expect("compiled optional capability bundle");
+    assert_eq!(
+        capability.api_id.as_ref().map(AsRef::<str>::as_ref),
+        Some("trellis-test-fixture.echo@v1")
+    );
+    assert_eq!(capability.permissions.len(), 1);
+    assert_eq!(capability.permissions[0].action.as_ref(), "call");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&capability.permissions[0].target.0).unwrap(),
+        serde_json::json!({
+            "kind": "apiSurface", "api": "trellis-test-fixture.echo@v1", "surface": "rpc", "name": "OptionalEcho"
+        })
+    );
+    let resource = bundles
+        .iter()
+        .find(|bundle| bundle.id.as_ref() == "resource.cache")
+        .expect("compiled optional resource bundle");
+    assert!(resource.api_id.is_none(), "a resource has no owning API");
+    let actions: std::collections::BTreeSet<_> = resource
+        .permissions
+        .iter()
+        .map(|permission| permission.action.as_ref())
+        .collect();
+    assert_eq!(
+        actions,
+        std::collections::BTreeSet::from(["read", "write", "delete"])
+    );
+    for permission in &resource.permissions {
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&permission.target.0).unwrap(),
+            serde_json::json!({
+                "kind": "participantResource", "participant": Participant::ID, "resource": "kv", "name": "cache"
+            })
+        );
+    }
+    drop(auth);
+    drop(connected);
+    runtime.shutdown().await.expect("shutdown runtime");
+}
+
 /// A running provider service plus the count of executed Echo handlers.
 struct ProviderFixture {
     task: tokio::task::JoinHandle<Result<(), trellis_rs::service::ServiceRuntimeError>>,

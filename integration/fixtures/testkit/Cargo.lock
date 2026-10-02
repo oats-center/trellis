@@ -2694,6 +2694,7 @@ version = "0.100.0"
 dependencies = [
  "futures-util",
  "reqwest",
+ "serde_json",
  "tokio",
  "trellis-rs",
  "trellis-test-fixture",

@@ -15331,7 +15331,8 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthOptionalBundle {
         #[serde(rename = "apiId")]
-        pub api_id: crate::__types::trellis::AuthOptionalBundleApiId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub api_id: Option<crate::__types::trellis::AuthOptionalBundleApiId>,
         pub id: crate::__types::trellis::AuthOptionalBundleId,
         pub permissions: Vec<crate::__types::trellis::AuthPermissionAtom>,
         #[serde(flatten)]

@@ -3541,7 +3541,7 @@ export declare const AuthOperationSignalTargetSignalCodec: {
 	encode(value: AuthOperationSignalTargetSignal): unknown;
 };
 export type AuthOptionalBundle = {
-	readonly apiId: AuthOptionalBundleApiId;
+	readonly apiId?: AuthOptionalBundleApiId;
 	readonly id: AuthOptionalBundleId;
 	readonly permissions: Array<AuthPermissionAtom>;
 	readonly [key: string]: unknown;

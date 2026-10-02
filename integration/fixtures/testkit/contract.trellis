@@ -6,6 +6,7 @@ api echo@v1 {
   title "Testkit echo";
   description "External Rust testkit acceptance fixture.";
   rpc Echo { input Value; output Value; }
+  rpc OptionalEcho { input Value; output Value; }
   operation Work {
     input Value;
     output Value;
@@ -20,6 +21,12 @@ api echo@v1 {
   event Observed { payload Value; }
   capabilities {
     public { allows { rpc Echo; operation Work; operation UpdateOnly; operation Silent; operation Upload; publish event Observed; subscribe event Observed; } }
+    capability optionalEcho {
+      title "Optional echo";
+      description "Optional API bundle inspection acceptance.";
+      consequence "The caller can call OptionalEcho.";
+      allows { rpc OptionalEcho; }
+    }
     capability optionalSilent {
       title "Optional silent operation";
       description "Partial lifecycle authorization acceptance.";
@@ -36,3 +43,15 @@ app RestrictedCaller {}
 app OptionalOperationCaller { use echo { operation OptionalSilent; optional capability optionalSilent; } }
 app OperationAuthorizationCaller { use echo { operation OptionalSilent; } }
 device UnsupportedDevice {}
+
+service OptionalBundleService {
+  use echo { rpc OptionalEcho; optional capability optionalEcho; }
+  kv optional cache {
+    title "Optional cache";
+    description "Optional resource bundle inspection acceptance.";
+    schema Value;
+    version 1;
+    history 4;
+    ttl 0ms;
+  }
+}

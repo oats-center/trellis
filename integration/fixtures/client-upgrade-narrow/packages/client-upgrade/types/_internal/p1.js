@@ -1454,7 +1454,7 @@ export const AuthOperationSignalTargetKindCodec = codecs.recursive(() => codecs.
 export const AuthOperationSignalTargetOperationCodec = codecs.recursive(() => codecs.named("trellis.AuthOperationSignalTargetOperation", codecs.string));
 export const AuthOperationSignalTargetSignalCodec = codecs.recursive(() => codecs.named("trellis.AuthOperationSignalTargetSignal", codecs.string));
 export const AuthOptionalBundleCodec = codecs.recursive(() => codecs.named("trellis.AuthOptionalBundle", codecs.model({
-	apiId: codecs.ref(() => AuthOptionalBundleApiIdCodec),
+	apiId: codecs.optional(codecs.ref(() => AuthOptionalBundleApiIdCodec)),
 	id: codecs.ref(() => AuthOptionalBundleIdCodec),
 	permissions: codecs.list(codecs.ref(() => AuthPermissionAtomCodec))
 })));

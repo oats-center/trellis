@@ -1,6 +1,6 @@
 //! Generated API `trellis-test-fixture.echo@v1`.
 pub const API_ID: &str = "trellis-test-fixture.echo@v1";
-pub const API_DIGEST: &str = "exX3WVHrrATKVGasxaU1ZMyd03qgQlznRpRBElObEp0";
+pub const API_DIGEST: &str = "Z-1geDS-IRmFrqwmYNv22s4cngSs8rUvjF04y9-WmXY";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;
@@ -25,6 +25,38 @@ pub mod rpc {
     impl trellis_rs::generated::RpcDescriptor for Echo {
         type Input = EchoInput;
         type Output = EchoOutput;
+        type Error = std::convert::Infallible;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            let _ = value;
+            Ok(None)
+        }
+    }
+    pub type OptionalEchoInput = crate::__types::trellis_test_fixture::Value;
+    pub type OptionalEchoOutput = crate::__types::trellis_test_fixture::Value;
+    pub struct OptionalEcho;
+    impl OptionalEcho {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.OptionalEcho";
+        pub const KEY: &'static str = "echo.OptionalEcho";
+        pub const SUBJECT: &'static str = "rpc.v1.echo.OptionalEcho";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis-test-fixture.echo@v1::optionalEcho",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    impl trellis_rs::generated::RpcDescriptor for OptionalEcho {
+        type Input = OptionalEchoInput;
+        type Output = OptionalEchoOutput;
         type Error = std::convert::Infallible;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
@@ -292,6 +324,7 @@ pub mod lives {}
 pub fn register_rpc_metadata(router: &mut trellis_rs::service::Router) {
     let _ = router;
     router.register_rpc_metadata::<rpc::Echo>();
+    router.register_rpc_metadata::<rpc::OptionalEcho>();
 }
 #[derive(Clone)]
 pub struct Client {
@@ -309,6 +342,15 @@ impl Client {
         trellis_rs::client::CallError<std::convert::Infallible>,
     > {
         self.inner.call::<rpc::Echo>(input).await
+    }
+    pub async fn optional_echo(
+        &self,
+        input: &rpc::OptionalEchoInput,
+    ) -> Result<
+        rpc::OptionalEchoOutput,
+        trellis_rs::client::CallError<std::convert::Infallible>,
+    > {
+        self.inner.call::<rpc::OptionalEcho>(input).await
     }
     pub fn optional_silent(
         &self,
@@ -366,6 +408,16 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
             > + Send + 'static,
     {
         self.runtime.register_rpc::<rpc::Echo, _, _>(handler);
+    }
+    pub fn register_optional_echo<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::OptionalEchoInput) -> Fut
+            + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::OptionalEchoOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::OptionalEcho, _, _>(handler);
     }
     pub fn register_optional_silent<F, Fut>(&mut self, handler: F)
     where
