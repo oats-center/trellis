@@ -41,12 +41,10 @@ pub(super) fn resolve_snapshot(
         return Err(AuthorizationStateError::ParticipantMissing);
     }
     let participant_projection = participant.resolve()?;
-    // The participant revision is the credential's pin: it resolves the vocabulary
-    // that interprets present authority and the one current physical resource.
-    // A credential pinned to a non-current revision is evaluated against present
-    // owner authority projected onto its own vocabulary, so its effective grant is
-    // a reduction of that ceiling; the exact ceiling applies only when the
-    // credential runs the owner's current revision.
+    // The credential's participant revision pins the vocabulary used to interpret
+    // present authority. Older revisions project the owner's ceiling onto that
+    // vocabulary; exact approvals also retain their ceiling while unavailable
+    // resources narrow the effective grants.
     let pinned_older_revision = participant_revision != binding.installed_revision;
     let mut expiries = vec![binding.expires_at];
     let (
@@ -270,12 +268,10 @@ pub(super) fn resolve_snapshot(
             ),
         )?
     };
-    // An instance pinned to an older participant revision is evaluated against
-    // present deployment authority, so its effective grant is a projection of
-    // that ceiling. The exact ceiling only applies when the instance runs the
-    // deployment's current revision.
+    // Exact approvals and older-revision projections may narrow effective grants,
+    // but neither may introduce an atom outside the approved ceiling.
     if authority.exact_grants != binding.grants
-        && !(pinned_older_revision
+        && !((binding.approval_mode == super::ApprovalMode::Exact || pinned_older_revision)
             && authority
                 .exact_grants
                 .permissions()

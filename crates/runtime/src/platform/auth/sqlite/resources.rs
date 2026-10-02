@@ -22,6 +22,10 @@ use crate::platform::auth::{
 
 const DETACHED: &str = "detached";
 
+#[cfg(test)]
+#[path = "exact_resource_tests.rs"]
+mod exact_resource_tests;
+
 pub(in crate::platform::auth) fn reconcile_sql_resource_catalog(
     connection: &Connection,
     binding: &crate::platform::auth::GrantBinding,
@@ -683,7 +687,9 @@ impl SqliteAuthorizationStore {
                     evidence.actual.as_ref().map(encode_json).transpose()?,
                     encode_enum(evidence.state)?, evidence.materialized_at, evidence.error],
             ).map_err(map_write_error)?;
-            if actual.is_some() {
+            // Exact approvals are immutable ceilings, including resources still
+            // pending. Only capability approvals track materialized effective grants.
+            if actual.is_some() && binding.approval_mode == super::super::ApprovalMode::Capabilities {
                 // Reconciling at the binding's own revision interprets present
                 // materialization with the current declaration.
                 let resources = super::contexts::load_resource_bindings(
@@ -722,7 +728,7 @@ impl SqliteAuthorizationStore {
                     )?;
                     super::outbox::insert_sql_post_commit_actions(&transaction, &actions)?;
                 }
-            } else {
+            } else if actual.is_none() {
                 // A resource that failed to materialize narrows the owning
                 // grant's present transport policy, so re-evaluate its sockets.
                 super::outbox::insert_sql_post_commit_actions(

@@ -1024,7 +1024,7 @@ Deno.test("N11 last-page user grant revoke leaves first-page binding active", as
   }, browserRuntimeOptions());
 });
 
-Deno.test("user grant conflict refresh preserves the draft and requires renewed review", async () => {
+Deno.test("user grant draft errors are correctable while conflicts require explicit refresh", async () => {
   await withTrellisRuntime(async (runtime) => {
     const context = await launchProfile(runtime);
     try {
@@ -1047,7 +1047,7 @@ Deno.test("user grant conflict refresh preserves the draft and requires renewed 
         ownerId: created.user.userId,
         participantId,
       };
-      const initial = await runtime.callAdminRpc("authGrantsSet", {
+      let initial = await runtime.callAdminRpc("authGrantsSet", {
         ...target,
         installedRevision: installed.participant.revision,
         grants: installed.participant.requiredGrants,
@@ -1065,6 +1065,51 @@ Deno.test("user grant conflict refresh preserves the draft and requires renewed 
       await waitForConsoleShell(page);
       await page.getByRole("button", { name: "Edit access", exact: true })
         .click();
+      const expiryInput = page.getByLabel("Expires at (local time)");
+      const review = page.getByLabel("I reviewed these access changes.");
+      const save = page.getByRole("button", {
+        name: "Save access",
+        exact: true,
+      });
+      await expiryInput.fill("2000-01-01T00:00");
+      await review.check();
+      await save.click();
+      const expiryError = page.getByText(
+        "Choose an expiry in the future, or leave it empty for no expiry.",
+        { exact: true },
+      );
+      await expiryError.waitFor({ state: "visible" });
+      await review.check();
+      const correctedExpiry = new Date(Date.now() + 172_800_000)
+        .toISOString().slice(0, 16);
+      await expiryInput.fill(correctedExpiry);
+      await expiryError.waitFor({ state: "hidden" });
+      assertEquals(await review.isChecked(), false);
+      assertEquals(await save.isDisabled(), true);
+      await review.check();
+      await save.click();
+      await page.getByText(
+        "Access saved. The permissions below are the server-confirmed grant.",
+        { exact: true },
+      ).waitFor({ state: "visible", timeout: 30_000 });
+      const corrected = await runtime.callAdminRpc("authGrantsGet", target);
+      assertEquals(
+        corrected.binding?.grants.permissions,
+        initial.binding.grants.permissions,
+      );
+      assertEquals(
+        corrected.binding?.expiresAt,
+        BigInt(
+          await page.evaluate(
+            (value) => new Date(value).getTime(),
+            correctedExpiry,
+          ),
+        ),
+      );
+      if (!corrected.binding) throw new Error("Saved grant missing");
+      initial = { binding: corrected.binding };
+      await page.getByRole("button", { name: "Edit access", exact: true })
+        .click();
       const permissions = page.getByRole("group", {
         name: "Exact application permissions",
       }).getByRole("checkbox");
@@ -1079,7 +1124,6 @@ Deno.test("user grant conflict refresh preserves the draft and requires renewed 
       await page.getByLabel("Expires at (local time)").fill(expiry);
       await page.getByLabel("Trellis platform administration")
         .check();
-      const review = page.getByLabel("I reviewed these access changes.");
       await review.check();
       const external = await runtime.callAdminRpc("authGrantsSet", {
         ...target,
@@ -1090,10 +1134,6 @@ Deno.test("user grant conflict refresh preserves the draft and requires renewed 
         expectedRevision: initial.binding.revision,
         idempotencyKey: ulid(),
       });
-      const save = page.getByRole("button", {
-        name: "Save access",
-        exact: true,
-      });
       await save.click();
       const refresh = page.getByRole("button", {
         name: "Refresh latest version and keep draft",
@@ -1101,6 +1141,14 @@ Deno.test("user grant conflict refresh preserves the draft and requires renewed 
       });
       await refresh.waitFor({ state: "visible", timeout: 30_000 });
       assertEquals(await save.isDisabled(), true);
+      await expiryInput.fill(correctedExpiry);
+      await review.check();
+      assertEquals(
+        await save.isDisabled(),
+        true,
+        "draft edits must not clear a revision conflict",
+      );
+      await expiryInput.fill(expiry);
       const afterConflict = await runtime.callAdminRpc("authGrantsGet", target);
       assertEquals(afterConflict.binding?.revision, external.binding.revision);
       await refresh.click();

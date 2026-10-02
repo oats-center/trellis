@@ -26,6 +26,10 @@ and this project adheres to
 
 ### Fixed
 
+- Exact grant approvals retain pending resource permissions while issuance uses
+  only available permissions and keeps required-resource readiness retryable.
+- Correcting grant-draft expiry or permission errors allows review and saving
+  again without bypassing conflict or unknown-result recovery.
 - Account-flow creation rechecks caller authorization inside its transaction,
   and successful user updates replay lost-response retries without another edit.
 - Native Operation handlers can finish fenced cleanup after lease loss without
