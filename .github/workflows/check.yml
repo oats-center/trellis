@@ -591,6 +591,8 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
+          # Trusted executables require non-writable ancestors, including the runner home.
+          chmod go-w "$HOME"
           mkdir -p "$TESTKIT_EXECUTION_ROOT/nats"
           chmod 700 "$TESTKIT_EXECUTION_ROOT" "$TESTKIT_EXECUTION_ROOT/nats"
           bash scripts/acquire-test-nats.sh --dest "$TESTKIT_EXECUTION_ROOT/nats"
