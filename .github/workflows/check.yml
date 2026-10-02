@@ -345,7 +345,7 @@ jobs:
           set -euo pipefail
           bash scripts/acquire-test-nats.sh --dest /tmp/trellis-testkit-nats
           version="$(jq -r '.["nats-server"].version' crates/local-nats/nats-binaries.json)"
-          mkdir -p /tmp/trellis-nats-cache
+          install -d -m 700 /tmp/trellis-nats-cache
           cp /tmp/trellis-testkit-nats/nats-server "/tmp/trellis-nats-cache/nats-server-v${version}"
 
       - name: Check formatting
