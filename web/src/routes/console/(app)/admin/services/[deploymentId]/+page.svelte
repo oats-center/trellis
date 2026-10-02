@@ -206,7 +206,8 @@
           <dt class="text-base-content/60">State</dt>
           <dd><StatusBadge label={detail.deployment.state} status={detail.deployment.state === "active" ? "healthy" : "offline"} /></dd>
           <dt class="text-base-content/60">Deployment</dt>
-          <dd class="trellis-identifier truncate">{detail.deployment.deploymentId}</dd>
+          <dd class="truncate">{detail.deployment.displayName}</dd>
+            <dd class="trellis-identifier truncate text-xs text-base-content/60">{detail.deployment.deploymentId}</dd>
           <dt class="text-base-content/60">Participant</dt>
           <dd class="trellis-identifier truncate">{participantId ?? "Not installed"}</dd>
           <dt class="text-base-content/60">Version</dt><dd>{detail.deployment.version}</dd>

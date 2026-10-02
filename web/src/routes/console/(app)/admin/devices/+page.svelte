@@ -350,7 +350,7 @@
                   <div class="min-w-0">
                     <div class="flex items-center gap-2">
                       <span class={["h-2.5 w-2.5 rounded-full", deployment.state === "active" ? "bg-success" : "bg-base-content/30"]}></span>
-                      <span class="trellis-identifier truncate font-medium">{deployment.deploymentId}</span>
+                      <span class="truncate font-medium">{deployment.displayName}</span><span class="trellis-identifier block truncate text-xs text-base-content/50">{deployment.deploymentId}</span>
                     </div>
                     <div class="mt-1 text-xs text-base-content/60">{activeDevices.length}/{deploymentDeviceInstances.length} activated instances</div>
                     <div class="mt-1 flex flex-wrap gap-1">
@@ -383,7 +383,7 @@
                 <div class="rounded-box bg-primary/10 p-2.5 text-primary"><Icon name="phone" size={22} /></div>
                 <div class="min-w-0">
                   <div class="flex flex-wrap items-center gap-2">
-                    <h2 class="trellis-identifier truncate text-lg font-semibold">{selectedDeployment.deploymentId}</h2>
+                    <h2 class="truncate text-lg font-semibold">{selectedDeployment.displayName}</h2><p class="trellis-identifier truncate text-xs text-base-content/50">{selectedDeployment.deploymentId}</p>
                     <StatusBadge label={selectedDeployment.state} status={selectedDeployment.state === "active" ? "healthy" : "offline"} />
                   </div>
                   <div class="mt-1 flex flex-wrap gap-1 text-sm text-base-content/60">
@@ -481,7 +481,7 @@
                                 <span class="text-xs text-base-content/50">—</span>
                               {/if}
                             </td>
-                            <td class="trellis-identifier font-medium">{instance.instanceId}</td>
+                            <td class="font-medium">{instance.instanceId}</td>
                             <td class="trellis-identifier text-base-content/60">{instance.identityPublicKey ?? "—"}</td>
                             <td><StatusBadge label={instance.state} status={instanceStatus(instance.state)} /></td>
                             <td class="text-base-content/60">{formatDate(instance.createdAt)}</td>
@@ -506,8 +506,8 @@
                       <tbody>
                         {#each selectedActivations as activation (activationRowKey(activation))}
                           <tr>
-                            <td><div class="trellis-identifier font-medium">{activation.device.instanceId}</div></td>
-                            <td class="trellis-identifier text-base-content/60">{activation.device.principalId}</td>
+                            <td><div class="font-medium">{activation.device.instanceId}</div></td>
+                            <td class="text-base-content/60">{activation.device.principalId}</td>
                             <td><StatusBadge label={activation.device.delegationState} status={activationStatus(activation.device.delegationState)} /></td>
                             <td class="text-base-content/60">{formatDate(activation.device.createdAt)}</td>
                             <td class="text-base-content/60">{activation.device.delegationState === "revoked" ? formatDate(activation.device.updatedAt) : "—"}</td>
@@ -535,7 +535,7 @@
                             {#each selectedReviews as review (review.reviewId)}
                               <tr class={{ "bg-base-200/60": selectedReview?.reviewId === review.reviewId }}>
                                 <td><button class="trellis-identifier text-left hover:underline" onclick={() => (selectedReviewId = review.reviewId)}>{review.reviewId}</button></td>
-                                <td><div class="trellis-identifier">{review.instanceId}</div><div class="trellis-identifier text-xs text-base-content/60">{review.devicePrincipalId}</div></td>
+                                <td><div>{review.instanceId}</div><div class="text-xs text-base-content/60">{review.devicePrincipalId}</div></td>
                                 <td><StatusBadge label={review.state} status={reviewStatus(review.state)} /></td>
                                 <td class="text-base-content/60">{formatDate(review.requestedAt)}</td>
                                 <td>
@@ -555,13 +555,13 @@
                     {#if selectedReview}
                       <div class="space-y-3 text-sm">
                         <div class="flex items-center justify-between gap-3">
-                          <span class="trellis-identifier font-medium">{selectedReview.reviewId}</span>
+                          <span class="font-medium">{selectedReview.reviewId}</span>
                           <StatusBadge label={selectedReview.state} status={reviewStatus(selectedReview.state)} />
                         </div>
                         <div>
                           <p class="text-[0.65rem] font-semibold uppercase tracking-wider text-base-content/50">Instance</p>
-                          <p class="trellis-identifier">{selectedReview.instanceId}</p>
-                          <p class="trellis-identifier text-base-content/60">{selectedReview.devicePrincipalId}</p>
+                          <p>{selectedReview.instanceId}</p>
+                          <p class="text-base-content/60">{selectedReview.devicePrincipalId}</p>
                         </div>
                         <div class="grid grid-cols-2 gap-2 text-xs">
                           <div><span class="text-base-content/50">Requested</span><div>{formatDate(selectedReview.requestedAt)}</div></div>
