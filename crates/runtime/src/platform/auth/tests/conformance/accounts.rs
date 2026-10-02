@@ -277,7 +277,11 @@ pub(super) async fn exercise_accounts(
     );
     assert_eq!(
         store.get_user_account(&managed_user.principal_id).await?,
-        Some((managed_user.clone(), managed_profile.clone()))
+        Some(crate::platform::auth::UserAccount {
+            principal: managed_user.clone(),
+            profile: managed_profile.clone(),
+            username: None
+        })
     );
     assert_eq!(
         store
@@ -345,7 +349,11 @@ pub(super) async fn exercise_accounts(
                 actions: Vec::new(),
             })
             .await?;
-        matched_accounts.push((principal, profile));
+        matched_accounts.push(crate::platform::auth::UserAccount {
+            principal,
+            profile,
+            username: None,
+        });
     }
     assert_eq!(
         store
@@ -359,15 +367,15 @@ pub(super) async fn exercise_accounts(
     assert_eq!(
         first_equal_page
             .iter()
-            .map(|account| account.0.principal_id.clone())
+            .map(|account| account.principal.principal_id.clone())
             .collect::<Vec<_>>(),
         (0..10)
             .map(|index| format!("usr_noise_{index:03}"))
             .collect::<Vec<_>>()
     );
     let first_equal_cursor = (
-        first_equal_page[9].0.created_at,
-        first_equal_page[9].0.principal_id.clone(),
+        first_equal_page[9].principal.created_at,
+        first_equal_page[9].principal.principal_id.clone(),
     );
     let second_equal_page = store
         .list_user_accounts(Some(&first_equal_cursor), None, Some("equal sort key"), 10)
@@ -375,7 +383,7 @@ pub(super) async fn exercise_accounts(
     assert_eq!(
         second_equal_page
             .iter()
-            .map(|account| account.0.principal_id.clone())
+            .map(|account| account.principal.principal_id.clone())
             .collect::<Vec<_>>(),
         (10..20)
             .map(|index| format!("usr_noise_{index:03}"))
@@ -384,8 +392,16 @@ pub(super) async fn exercise_accounts(
     assert_eq!(
         store.list_user_accounts(None, None, None, 2).await?,
         vec![
-            (managed_user.clone(), managed_profile.clone()),
-            (managed_user_b.clone(), managed_profile_b.clone()),
+            crate::platform::auth::UserAccount {
+                principal: managed_user.clone(),
+                profile: managed_profile.clone(),
+                username: None
+            },
+            crate::platform::auth::UserAccount {
+                principal: managed_user_b.clone(),
+                profile: managed_profile_b.clone(),
+                username: None
+            },
         ]
     );
     assert_eq!(
@@ -398,8 +414,16 @@ pub(super) async fn exercise_accounts(
             )
             .await?,
         vec![
-            (managed_user_b, managed_profile_b),
-            (user.clone(), profile.clone()),
+            crate::platform::auth::UserAccount {
+                principal: managed_user_b,
+                profile: managed_profile_b,
+                username: None
+            },
+            crate::platform::auth::UserAccount {
+                principal: user.clone(),
+                profile: profile.clone(),
+                username: Some("companion".to_owned())
+            },
         ]
     );
 
@@ -450,19 +474,22 @@ pub(super) async fn exercise_accounts(
         idempotency: proof(104, "account.update"),
         actions: vec![account_update_action.clone()],
     };
-    let (mut disabled_user, updated_profile) =
-        match store.update_user_account(account_update.clone()).await? {
-            IdempotentOutcome::Applied(account) => account,
-            IdempotentOutcome::Replayed(_) => unreachable!(),
-        };
-    assert_eq!(disabled_user.disabled_at, Some(NOW + 5));
-    let persisted_disabled_account = (disabled_user.clone(), updated_profile.clone());
+    let account = match store.update_user_account(account_update.clone()).await? {
+        IdempotentOutcome::Applied(account) => account,
+        IdempotentOutcome::Replayed(_) => unreachable!(),
+    };
+    assert_eq!(account.principal.disabled_at, Some(NOW + 5));
+    let persisted_disabled_account = account.clone();
+    let mut disabled_user = account.principal.clone();
+    let updated_profile = account.profile.clone();
     let mut malformed_replay = account_update.clone();
     malformed_replay.principal.version = 99;
     malformed_replay.actions[0].payload = json!({ "different": true });
     assert_eq!(
         store.update_user_account(malformed_replay).await?,
-        IdempotentOutcome::Replayed(account_update.idempotency.result.clone())
+        IdempotentOutcome::Replayed(
+            json!({ "principal": account.principal, "profile": account.profile, "username": account.username })
+        )
     );
 
     disabled_user.state = PrincipalState::Active;
@@ -502,6 +529,54 @@ pub(super) async fn exercise_accounts(
         )
         .await?
         .is_none());
+    let mut renamed_principal = user.clone();
+    renamed_principal.updated_at = NOW + 7;
+    renamed_principal.version = 2;
+    let mut renamed_profile = profile.clone();
+    renamed_profile.updated_at = NOW + 7;
+    renamed_profile.version = 2;
+    let rename = UserAccountMutation {
+        username: Some("renamed-companion".to_owned()),
+        actor: mutation_actor.clone(),
+        principal: renamed_principal,
+        profile: renamed_profile,
+        expected_version: 1,
+        idempotency: proof(108, "account.rename"),
+        actions: Vec::new(),
+    };
+    let renamed = match store.update_user_account(rename.clone()).await? {
+        IdempotentOutcome::Applied(account) => account,
+        IdempotentOutcome::Replayed(_) => unreachable!(),
+    };
+    assert_eq!(renamed.username.as_deref(), Some("renamed-companion"));
+    assert_eq!(
+        store.get_user_account(&user.principal_id).await?,
+        Some(renamed.clone())
+    );
+    assert_eq!(
+        store
+            .list_user_accounts(None, None, Some("renamed-companion"), 2)
+            .await?,
+        vec![renamed.clone()]
+    );
+    assert!(store
+        .get_local_credential_by_username("companion")
+        .await?
+        .is_none());
+    assert_eq!(
+        store
+            .get_local_credential_by_username("renamed-companion")
+            .await?
+            .unwrap()
+            .principal_id,
+        user.principal_id
+    );
+    assert_eq!(
+        store.update_user_account(rename).await?,
+        IdempotentOutcome::Replayed(json!({
+            "principal": renamed.principal, "profile": renamed.profile, "username": renamed.username,
+        }))
+    );
     store
         .revoke_grant_binding(
             mutation_actor.clone(),

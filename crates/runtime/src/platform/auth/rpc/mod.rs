@@ -1675,19 +1675,16 @@ impl AuthRpcProcessor {
             None => None,
         };
         let user = if validated.principal_kind == PrincipalKind::User {
-            let (principal, profile) = self
+            let account = self
                 .service
                 .repository()
                 .get_user_account(&validated.principal_id)
                 .await?
                 .ok_or(AuthorizationStateError::PrincipalMissing)?;
-            if principal.state != PrincipalState::Active {
+            if account.principal.state != PrincipalState::Active {
                 return Err(AuthorizationStateError::PrincipalInactive);
             }
-            Some(
-                self.user_detail_value(UserAccount { principal, profile })
-                    .await?,
-            )
+            Some(self.user_detail_value(account).await?)
         } else {
             None
         };

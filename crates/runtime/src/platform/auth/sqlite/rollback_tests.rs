@@ -107,7 +107,11 @@ async fn user_update_rolls_back_when_real_outbox_constraint_fails() {
             .get_user_account(&principal.principal_id)
             .await
             .expect("read user after failed update"),
-        Some((principal, profile))
+        Some(crate::platform::auth::UserAccount {
+            principal,
+            profile,
+            username: None
+        })
     );
     assert!(repository
         .get_idempotency_result(

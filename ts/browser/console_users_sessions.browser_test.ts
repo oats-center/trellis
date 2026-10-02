@@ -21,12 +21,14 @@ import {
 Deno.test("B25 users list renders and exact edit reloads on query change", async () => {
   await withTrellisRuntime(async (runtime) => {
     await runtime.ensureAdmin();
+    const username = `ct-b25-${crypto.randomUUID().slice(0, 8)}`;
+    const otherUsername = `ct-b25-other-${crypto.randomUUID().slice(0, 8)}`;
     const created = await runtime.callAdminRpc("authUsersCreate", {
       email: "ct-b25@example.com",
       idempotencyKey: crypto.randomUUID(),
       image: null,
       name: "Console B25",
-      username: `ct-b25-${crypto.randomUUID().slice(0, 8)}`,
+      username,
     });
     const userId = created.user.userId;
     assertExists(userId);
@@ -35,7 +37,7 @@ Deno.test("B25 users list renders and exact edit reloads on query change", async
       idempotencyKey: crypto.randomUUID(),
       image: null,
       name: "Console B25 Other",
-      username: `ct-b25-other-${crypto.randomUUID().slice(0, 8)}`,
+      username: otherUsername,
     });
 
     const context = await launchProfile(runtime);
@@ -58,7 +60,11 @@ Deno.test("B25 users list renders and exact edit reloads on query change", async
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
-      await page.getByText("Console B25").first().waitFor({
+      await page.getByRole("heading", {
+        name: username,
+        exact: true,
+        level: 1,
+      }).waitFor({
         state: "visible",
         timeout: 30_000,
       });
@@ -70,17 +76,22 @@ Deno.test("B25 users list renders and exact edit reloads on query change", async
         (document.querySelector("main") ?? document.body).append(link);
         link.click();
       }, other.user.userId);
-      await page.getByText("Console B25 Other").first().waitFor({
+      await page.getByRole("heading", {
+        name: otherUsername,
+        exact: true,
+        level: 1,
+      }).waitFor({
         state: "visible",
         timeout: 30_000,
       });
       await page.getByLabel("Name", { exact: true }).fill("Updated B25 Other");
       await page.getByRole("button", { name: "Save profile", exact: true })
         .click();
-      await page.getByText("Updated B25 Other").first().waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
+      await page.getByText(`Updated ${otherUsername}.`, { exact: true })
+        .waitFor({
+          state: "visible",
+          timeout: 30_000,
+        });
       await page.goto(
         `${runtime.trellisUrl}/console/admin/users/edit?userId=${userId}`,
         {
@@ -88,7 +99,11 @@ Deno.test("B25 users list renders and exact edit reloads on query change", async
         },
       );
       await waitForConsoleShell(page);
-      await page.getByText("Console B25").first().waitFor({
+      await page.getByRole("heading", {
+        name: username,
+        exact: true,
+        level: 1,
+      }).waitFor({
         state: "visible",
         timeout: 30_000,
       });
@@ -103,6 +118,11 @@ Deno.test("B25 users list renders and exact edit reloads on query change", async
         },
       );
       await waitForConsoleShell(page);
+      await page.getByRole("heading", {
+        name: otherUsername,
+        exact: true,
+        level: 1,
+      }).waitFor({ state: "visible" });
       assertEquals(
         await page.getByLabel("Name", { exact: true }).inputValue(),
         "Updated B25 Other",
@@ -117,12 +137,13 @@ Deno.test("B25 users list renders and exact edit reloads on query change", async
 Deno.test("B27 a disabled user stays disabled after a metadata edit", async () => {
   await withTrellisRuntime(async (runtime) => {
     await runtime.ensureAdmin();
+    const username = `ct-b27-${crypto.randomUUID().slice(0, 8)}`;
     const created = await runtime.callAdminRpc("authUsersCreate", {
       email: "ct-b27@example.com",
       idempotencyKey: crypto.randomUUID(),
       image: null,
       name: "Console B27",
-      username: `ct-b27-${crypto.randomUUID().slice(0, 8)}`,
+      username,
     });
     const userId = created.user.userId;
 
@@ -152,21 +173,21 @@ Deno.test("B27 a disabled user stays disabled after a metadata edit", async () =
         state: "visible",
         timeout: 30_000,
       });
+      await page.getByText(`Updated ${username}.`, { exact: true }).waitFor({
+        state: "hidden",
+      });
       await main.getByLabel("Name", { exact: true }).fill("Console B27 edited");
       await main.getByRole("button", { name: "Save profile", exact: true })
         .click();
-      await main.getByRole("heading", {
-        name: "Console B27 edited",
-        exact: true,
-        level: 1,
-      }).waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
+      await page.getByText(`Updated ${username}.`, { exact: true })
+        .waitFor({
+          state: "visible",
+          timeout: 30_000,
+        });
       await page.reload({ waitUntil: "domcontentloaded" });
       await waitForConsoleShell(page);
       await main.getByRole("heading", {
-        name: "Console B27 edited",
+        name: username,
         exact: true,
         level: 1,
       }).waitFor({
@@ -257,7 +278,7 @@ Deno.test("B28 user creation rotates the one-time setup receipt", async () => {
       await waitForConsoleShell(page);
       await page.getByLabel("Search users").fill(username);
       await page.getByLabel("Search users").press("Enter");
-      await page.getByText("Console B28", { exact: true }).waitFor({
+      await page.getByText(username, { exact: true }).waitFor({
         state: "visible",
         timeout: 30_000,
       });
@@ -287,7 +308,7 @@ Deno.test("a one-time password reset receipt is one-time and clears on close", a
       await waitForConsoleShell(page);
       await page.getByLabel("Search users").fill(created.user.userId);
       await page.getByLabel("Search users").press("Enter");
-      const row = page.locator(".users-row", { hasText: "Console N07" });
+      const row = page.locator(".users-row", { hasText: created.user.userId });
       await row.waitFor({ state: "visible", timeout: 30_000 });
       await row.locator("summary").click();
       await row.getByRole("button", { name: "Create reset link" }).click();
@@ -371,11 +392,11 @@ Deno.test("N07 a real setup denial is recovered by a permission change without a
           waitUntil: "domcontentloaded",
         });
         await waitForConsoleShell(page);
-        await page.getByLabel("Search users").fill(targetName);
+        await page.getByLabel("Search users").fill(targetId);
         await page.getByLabel("Search users").press("Enter");
       };
       await search();
-      const rows = page.locator(".users-row", { hasText: targetName });
+      const rows = page.locator(".users-row", { hasText: targetId });
       await rows.first().waitFor({ state: "visible", timeout: 30_000 });
       assertEquals(await rows.count(), 1, "exactly one target user exists");
 
@@ -415,7 +436,7 @@ Deno.test("N07 a real setup denial is recovered by a permission change without a
       // carrying the changed privilege. No local permission refresh is a
       // dispatch prerequisite.
       await search();
-      const retryRows = page.locator(".users-row", { hasText: targetName });
+      const retryRows = page.locator(".users-row", { hasText: targetId });
       await retryRows.first().waitFor({ state: "visible", timeout: 30_000 });
       await retryRows.locator("summary").click();
       await retryRows.getByRole("button", { name: "Create reset link" })
@@ -430,7 +451,7 @@ Deno.test("N07 a real setup denial is recovered by a permission change without a
       // Still exactly one created account: the retry was a setup operation
       // for the same user, never another create.
       await search();
-      const finalRows = page.locator(".users-row", { hasText: targetName });
+      const finalRows = page.locator(".users-row", { hasText: targetId });
       await finalRows.first().waitFor({ state: "visible", timeout: 30_000 });
       assertEquals(await finalRows.count(), 1);
       assertEquals(
@@ -446,12 +467,13 @@ Deno.test("N07 a real setup denial is recovered by a permission change without a
 
 Deno.test("N09 a real user version conflict preserves the unsaved draft", async () => {
   await withTrellisRuntime(async (runtime) => {
+    const username = `ct-n09-${crypto.randomUUID().slice(0, 8)}`;
     const created = await runtime.callAdminRpc("authUsersCreate", {
       email: null,
       idempotencyKey: crypto.randomUUID(),
       image: null,
       name: "Original name",
-      username: `ct-n09-${crypto.randomUUID().slice(0, 8)}`,
+      username,
     });
     const context = await launchProfile(runtime);
     try {
@@ -479,11 +501,24 @@ Deno.test("N09 a real user version conflict preserves the unsaved draft", async 
         name: "Save profile",
         exact: true,
       }).click();
-      await secondPage.getByText("Updated Concurrent edit.", { exact: true })
+      await secondPage.getByText(`Updated ${username}.`, {
+        exact: true,
+      })
         .waitFor({
           state: "visible",
           timeout: 30_000,
         });
+      await secondPage.reload({ waitUntil: "domcontentloaded" });
+      await waitForConsoleShell(secondPage);
+      await secondPage.getByRole("heading", {
+        name: username,
+        exact: true,
+        level: 1,
+      }).waitFor({ state: "visible" });
+      assertEquals(
+        await secondPage.getByLabel("Name", { exact: true }).inputValue(),
+        "Concurrent edit",
+      );
       await page.getByRole("button", { name: "Save profile", exact: true })
         .click();
       await page.getByRole("button", { name: "Refresh version (keep draft)" })
@@ -507,10 +542,11 @@ Deno.test("N09 a real user version conflict preserves the unsaved draft", async 
       );
       await page.getByRole("button", { name: "Save profile", exact: true })
         .click();
-      await page.getByText("Updated Operator draft.", { exact: true }).waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
+      await page.getByText(`Updated ${username}.`, { exact: true })
+        .waitFor({
+          state: "visible",
+          timeout: 30_000,
+        });
       await page.reload({ waitUntil: "domcontentloaded" });
       await waitForConsoleShell(page);
       await page.getByLabel("Name", { exact: true }).waitFor({

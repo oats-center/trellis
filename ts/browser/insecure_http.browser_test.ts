@@ -81,10 +81,15 @@ Deno.test("a plaintext HTTP console signs in and reads a real RPC result", async
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
-      await page.getByText("Plaintext HTTP User").first().waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
+      await page.getByRole("heading", { name: username, exact: true, level: 1 })
+        .waitFor({
+          state: "visible",
+          timeout: 30_000,
+        });
+      assertEquals(
+        await page.getByLabel("Name", { exact: true }).inputValue(),
+        "Plaintext HTTP User",
+      );
       assertNoBrowserErrors(errors);
     } finally {
       await context.close();

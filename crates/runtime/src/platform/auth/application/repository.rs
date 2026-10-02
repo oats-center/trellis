@@ -7,7 +7,8 @@ use super::super::{
     DeviceProvisioningSecretRecord, DeviceRecord, GrantBindingReplacement, IdempotencyResultRecord,
     LocalCredentialRecord, LoginPortalRecord, LoginSettingsRecord, MutationActor,
     PortalRouteRecord, PostCommitActionRecord, PrincipalRecord, ProviderIdentityLink,
-    ProvisionedIdentityRecord, RuntimeInstanceRecord, SessionRecord, UserProfileRecord,
+    ProvisionedIdentityRecord, RuntimeInstanceRecord, SessionRecord, UserAccount,
+    UserProfileRecord,
 };
 
 /// Atomic deployment-profile creation.

@@ -145,7 +145,7 @@ impl AccountRepository for SqliteAuthorizationStore {
 
     async fn update_user_account(
         &self,
-        command: UserAccountMutation,
+        mut command: UserAccountMutation,
     ) -> Result<IdempotentOutcome<UserAccount>, AuthorizationStateError> {
         self.run(move |connection| {
             let transaction = connection.transaction().map_err(sql_error)?;
@@ -276,10 +276,15 @@ impl AccountRepository for SqliteAuthorizationStore {
                     principal.updated_at.div_euclid(1_000),
                 )?;
             }
+            let account = UserAccount {
+                principal,
+                profile,
+                username: command.username.or(current_username),
+            };
             command.idempotency.result = serde_json::json!({
-                "principal": command.principal,
-                "profile": command.profile,
-                "username": command.username.clone().or(current_username),
+                "principal": account.principal,
+                "profile": account.profile,
+                "username": account.username,
             });
             insert_sql_idempotency_and_actions(
                 &transaction,
@@ -287,11 +292,7 @@ impl AccountRepository for SqliteAuthorizationStore {
                 &command.actions,
             )?;
             transaction.commit().map_err(sql_error)?;
-            Ok(IdempotentOutcome::Applied(UserAccount {
-                principal,
-                profile,
-                username: command.username.clone().or(current_username),
-            }))
+            Ok(IdempotentOutcome::Applied(account))
         })
         .await
     }

@@ -798,6 +798,9 @@ where
             identity.as_ref(),
         )?;
         input.idempotency.result = json!({ "principalId": principal_id });
+        let username = credential
+            .as_ref()
+            .map(|credential| credential.normalized_username.clone());
         match self
             .repository
             .create_user_account(AccountCreation {
@@ -813,9 +816,7 @@ where
             IdempotentOutcome::Applied(_) => Ok(IdempotentOutcome::Applied(UserAccount {
                 principal,
                 profile,
-                username: credential
-                    .as_ref()
-                    .map(|credential| credential.normalized_username.clone()),
+                username,
             })),
             IdempotentOutcome::Replayed(value) => Ok(IdempotentOutcome::Replayed(value)),
         }
@@ -892,17 +893,7 @@ where
         &self,
         principal_id: &str,
     ) -> Result<Option<UserAccount>, AuthorizationStateError> {
-        Ok(self.repository.get_user_account(principal_id).await?.map(
-            |UserAccount {
-                 principal,
-                 profile,
-                 username,
-             }| UserAccount {
-                principal,
-                profile,
-                username,
-            },
-        ))
+        self.repository.get_user_account(principal_id).await
     }
 
     /// List filtered user accounts after an exclusive stable-sort cursor.
@@ -919,23 +910,9 @@ where
         limit: usize,
     ) -> Result<Vec<UserAccount>, AuthorizationStateError> {
         super::validation::validate_account_list(cursor, limit)?;
-        Ok(self
-            .repository
+        self.repository
             .list_user_accounts(cursor, state, search, limit)
-            .await?
-            .into_iter()
-            .map(
-                |UserAccount {
-                     principal,
-                     profile,
-                     username,
-                 }| UserAccount {
-                    principal,
-                    profile,
-                    username,
-                },
-            )
-            .collect())
+            .await
     }
 
     /// Atomically replace a user lifecycle and profile.
@@ -950,7 +927,11 @@ where
     ) -> Result<IdempotentOutcome<UserAccount>, AuthorizationStateError> {
         super::validation::validate_idempotency_and_actions(&input.idempotency, &input.actions)?;
         super::super::domain::require_protocol_timestamp("updatedAt", input.updated_at)?;
-        let (current_principal, current_profile) = self
+        let UserAccount {
+            principal: current_principal,
+            profile: current_profile,
+            ..
+        } = self
             .repository
             .get_user_account(&input.principal_id)
             .await?
@@ -983,27 +964,19 @@ where
             "principalId": input.principal_id,
             "version": version,
         });
-        match self
-            .repository
+        self.repository
             .update_user_account(UserAccountMutation {
                 username: input
                     .username
                     .map(|name| normalize_username(&name))
                     .transpose()?,
                 actor: input.actor,
-                principal: principal.clone(),
-                profile: profile.clone(),
+                principal,
+                profile,
                 expected_version: input.expected_version,
                 idempotency: input.idempotency,
                 actions: input.actions,
             })
-            .await?
-        {
-            IdempotentOutcome::Applied(_) => Ok(IdempotentOutcome::Applied(UserAccount {
-                principal,
-                profile,
-            })),
-            IdempotentOutcome::Replayed(value) => Ok(IdempotentOutcome::Replayed(value)),
-        }
+            .await
     }
 }
