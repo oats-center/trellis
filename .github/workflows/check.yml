@@ -552,6 +552,8 @@ jobs:
     needs: [install, wasm, portal, build]
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 45
+    env:
+      TESTKIT_EXECUTION_ROOT: ${{ github.workspace }}/.local/ci/testkit-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -577,35 +579,38 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: check-runtime-binaries
-          path: ${{ runner.temp }}/runtime-binaries
+          path: ${{ env.TESTKIT_EXECUTION_ROOT }}/runtime-binaries
 
       - name: Stage runtime binaries
         run: |
           set -euo pipefail
           mkdir -p target/debug
-          tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
+          tar -xzf "$TESTKIT_EXECUTION_ROOT/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
 
       - name: Acquire the pinned NATS executable
-        # Stage under /tmp: the server rejects a --local-nats binary whose parent
-        # directory is group/world writable without the sticky bit, and the
-        # self-hosted runner's $RUNNER_TEMP and $HOME are world writable.
-        run: bash scripts/acquire-test-nats.sh --dest /tmp/trellis-testkit-nats
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$TESTKIT_EXECUTION_ROOT/nats"
+          chmod 700 "$TESTKIT_EXECUTION_ROOT" "$TESTKIT_EXECUTION_ROOT/nats"
+          bash scripts/acquire-test-nats.sh --dest "$TESTKIT_EXECUTION_ROOT/nats"
 
       - name: Run the prebuilt testkit live binary with a host probe
         id: testkit-live
         env:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
-          TRELLIS_TEST_NATS_BIN: /tmp/trellis-testkit-nats/nats-server
+          TRELLIS_TEST_NATS_BIN: ${{ env.TESTKIT_EXECUTION_ROOT }}/nats/nats-server
           RUST_BACKTRACE: "1"
         run: |
           set +e
-          diagnostics="$GITHUB_WORKSPACE/target/testkit-diagnostics-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          umask 077
+          diagnostics="$TESTKIT_EXECUTION_ROOT/diagnostics"
           mkdir -p "$diagnostics" || exit 1
           testkit_tmp="$(mktemp -d "$diagnostics/runtime.XXXXXX")" || exit 1
           chmod 700 "$testkit_tmp" || exit 1
           echo "Testkit execution temp root: $testkit_tmp"
-          probe_log="$RUNNER_TEMP/host-probe.log"
+          probe_log="$TESTKIT_EXECUTION_ROOT/host-probe.log"
           : > "$probe_log"
           (
             while true; do
@@ -637,10 +642,11 @@ jobs:
           if [ "$status" -ne 0 ]; then
             # This private temp root belongs only to the native execution above.
             for owner in "$testkit_tmp"/trellis-testkit-*/.trellis-testkit-owner; do
-              [ -f "$owner" ] || continue
+              [ -f "$owner" ] && [ ! -L "$owner" ] || continue
               sandbox="${owner%/.trellis-testkit-owner}"
               log="$sandbox/state/trellis/log/nats-server.log"
               [ -f "$log" ] && [ ! -L "$log" ] || continue
+              [ "$(realpath -e -- "$log")" = "$(realpath -e -- "$testkit_tmp")/${sandbox##*/}/state/trellis/log/nats-server.log" ] || continue
               destination="$diagnostics/nats/${sandbox##*/}"
               mkdir -p "$destination" && cp -- "$log" "$destination/nats-server.log"
               echo "===== NATS CHILD LOG ($log; PID in NATS log prefix) ====="
@@ -654,7 +660,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: testkit-nats-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
-          path: target/testkit-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}/nats/**/nats-server.log
+          path: ${{ env.TESTKIT_EXECUTION_ROOT }}/diagnostics/nats/**/nats-server.log
+          include-hidden-files: true
           retention-days: 3
           if-no-files-found: warn
 
