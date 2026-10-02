@@ -197,38 +197,6 @@ Deno.test(
       });
 
       const emitters = new Set<() => void>();
-      const emitLoop = async (
-        emit: (frame: {
-          runId: string;
-          streamId: string;
-          sourceGeneration: bigint;
-          index: bigint;
-          payload: Uint8Array;
-          padding: string;
-        }) => void,
-        streamId: string,
-        signal: AbortSignal,
-      ) => {
-        let index = 1n;
-        while (!signal.aborted) {
-          emit({
-            runId: "receipt-run",
-            streamId,
-            sourceGeneration: 1n,
-            index,
-            payload: new Uint8Array(),
-            padding: "",
-          });
-          index += 1n;
-          await new Promise<void>((resolve) => {
-            const timer = setTimeout(resolve, 250);
-            emitters.add(() => {
-              clearTimeout(timer);
-              resolve();
-            });
-          });
-        }
-      };
 
       // The unrelated route (`probe_aux.Pulse`) is installed FIRST, so it
       // registers as an unrelated-route live provider before the Watch
@@ -236,7 +204,7 @@ Deno.test(
       await subject.handlePulse(async ({ emit, signal }) => {
         let index = 1n;
         while (!signal.aborted) {
-          emit({ value: String(index) });
+          await emit({ value: String(index) }).orThrow();
           index += 1n;
           await new Promise<void>((resolve) => {
             const timer = setTimeout(resolve, 250);
@@ -250,7 +218,25 @@ Deno.test(
       // The Watch route under test: installed at readiness, never offered a
       // session on the original generation.
       await subject.handleWatch(async ({ emit, signal }) => {
-        await emitLoop(emit as never, "watch", signal);
+        let index = 1n;
+        while (!signal.aborted) {
+          await emit({
+            runId: "receipt-run",
+            streamId: "watch",
+            sourceGeneration: 1n,
+            index,
+            payload: new Uint8Array(),
+            padding: "",
+          }).orThrow();
+          index += 1n;
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, 250);
+            emitters.add(() => {
+              clearTimeout(timer);
+              resolve();
+            });
+          });
+        }
       });
 
       const caller = await runtime.connectClient({

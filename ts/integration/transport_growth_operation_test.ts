@@ -68,12 +68,15 @@ async function withOperationProviderLeg(
     },
     stdin: "piped",
     stdout: "piped",
-    stderr: "inherit",
+    stderr: "piped",
   }).spawn();
   const lines: string[] = [];
   let output = "";
+  let stderrOutput = "";
+  let observedStatus: Deno.CommandStatus | undefined;
   let exited = false;
   const status = child.status.then((result) => {
+    observedStatus = result;
     exited = true;
     return result;
   });
@@ -94,7 +97,7 @@ async function withOperationProviderLeg(
     while (true) {
       const chunk = await reader.read();
       if (chunk.done) break;
-      output += chunk.value;
+      output = (output + chunk.value).slice(-16_384);
       buffer += chunk.value;
       const parts = buffer.split("\n");
       buffer = parts.pop() ?? "";
@@ -107,6 +110,21 @@ async function withOperationProviderLeg(
     if (tail.length > 0) lines.push(tail);
   })();
   const drainSettled = drain.catch(() => {});
+  const stderrDrain = (async () => {
+    const reader = child.stderr.pipeThrough(new TextDecoderStream())
+      .getReader();
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      stderrOutput = (stderrOutput + chunk.value).slice(-16_384);
+      console.error(
+        chunk.value.trimEnd().split("\n").map((line) =>
+          `[Rust operation provider pid=${child.pid} stderr] ${line}`
+        ).join("\n"),
+      );
+    }
+  })();
+  const stderrDrainSettled = stderrDrain.catch(() => {});
   const deadline = Date.now() + deadlineMs;
   const remainingMs = (): number => Math.max(0, deadline - Date.now());
 
@@ -203,6 +221,20 @@ async function withOperationProviderLeg(
         `Rust operation provider leg failed: ${output}`,
       );
     }
+  } catch (cause) {
+    // Snapshot only what was observed before cleanup; awaiting a pending status
+    // here would hang on a provider still waiting for a harness command.
+    throw new Error(
+      `${cause instanceof Error ? cause.message : String(cause)}\n` +
+        `Rust operation provider pid=${child.pid}; pre-cleanup exit status: ${
+          observedStatus === undefined
+            ? "not yet observed"
+            : JSON.stringify(observedStatus)
+        }\nstdout tail:\n${output || "<empty>"}\nstderr tail:\n${
+          stderrOutput || "<empty>"
+        }`,
+      { cause },
+    );
   } finally {
     await closeStdin();
     if (!exited) {
@@ -212,7 +244,7 @@ async function withOperationProviderLeg(
         // the process may have exited between the check and the signal.
       }
     }
-    await Promise.allSettled([status, drainSettled]);
+    await Promise.allSettled([status, drainSettled, stderrDrainSettled]);
   }
 }
 

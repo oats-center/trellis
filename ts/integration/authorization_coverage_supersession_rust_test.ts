@@ -703,7 +703,9 @@ Deno.test("Rust retained peer coverage supersedes pending G2 setup before its IN
   }, {
     interruptibleNativeProxy: true,
     authorization: {
-      contextLifetimeSeconds: 76,
+      // Grant growth drives this proof, not expiry. The production lifetime leaves
+      // reuse margin above the 46-second minimum after the 30-second clock skew.
+      contextLifetimeSeconds: 300,
       refreshLeadSeconds: 15,
       refreshJitterSeconds: 0,
       minimumContextLifetimeSeconds: 46,
