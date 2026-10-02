@@ -533,15 +533,20 @@ impl AuthPostCommitRuntime {
                 "post-commit kick target is required".to_owned(),
             ));
         };
+        let mut first_error = None;
         for connection in connections {
-            self.kick_with_event(
-                &connection,
-                Some(action.action_id.clone()),
-                payload.get("reason").and_then(Value::as_str),
-            )
-            .await?;
+            if let Err(error) = self
+                .kick_with_event(
+                    &connection,
+                    Some(action.action_id.clone()),
+                    payload.get("reason").and_then(Value::as_str),
+                )
+                .await
+            {
+                first_error.get_or_insert(error);
+            }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Record the authenticated connection lifecycle event for one attachment
@@ -687,6 +692,7 @@ impl AuthPostCommitRuntime {
                 }
             }
         }
+        let mut first_error = None;
         for connection in kicked {
             let mut event = super::auth::connection_event_action::<
                 trellis_runtime_apis::apis::trellis_auth_v1::events::ConnectionsKicked,
@@ -703,10 +709,12 @@ impl AuthPostCommitRuntime {
                 .enqueue_transport_reevaluation_event(&connection.context_digest, event)
                 .await?
             {
-                self.kick_connection(&connection).await?;
+                if let Err(error) = self.kick_connection(&connection).await {
+                    first_error.get_or_insert(error);
+                }
             }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     async fn kick_connection(

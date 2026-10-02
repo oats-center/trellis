@@ -157,6 +157,25 @@ pub(in crate::platform::auth) fn reconcile_sql_resource_catalog(
                     ],
                 )
                 .map_err(map_write_error)?;
+            if resource.physical_id
+                == super::super::resources::physical_id(resource.resource_kind, &id)
+            {
+                let payload = reconcile_action_payload(&id, binding.revision, resource.revision);
+                actions.push(PostCommitActionRecord {
+                    predecessor_action_id: None,
+                    action_id: trellis_protocol::digest_json(
+                        &json!({"resourceVerification": payload, "requestId": ulid::Ulid::new().to_string()}),
+                    )
+                    .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?,
+                    kind: PostCommitActionKind::ResourceReconcile,
+                    payload,
+                    created_at: now,
+                    attempts: 0,
+                    next_attempt_at: now,
+                    claimed_until: None,
+                    last_error: None,
+                });
+            }
             continue;
         }
         let revision = current
@@ -299,6 +318,72 @@ fn same_hard_commitment(left: &ResourceCommitment, right: &ResourceCommitment) -
 }
 
 impl SqliteAuthorizationStore {
+    /// Verify retained ready resources against their providers after a runtime restart.
+    pub(crate) async fn enqueue_ready_resource_verifications(
+        &self,
+        now: i64,
+    ) -> Result<(), AuthorizationStateError> {
+        self.run(move |connection| {
+            let transaction = connection.transaction().map_err(sql_error)?;
+            let mut statement = transaction
+                .prepare("SELECT resource_id FROM auth_resources WHERE state = 'ready'")
+                .map_err(sql_error)?;
+            let ids = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(sql_error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(sql_error)?;
+            drop(statement);
+            for id in ids {
+                let Some(catalog) = load_resource(&transaction, &id)? else {
+                    continue;
+                };
+                // Imported provider identities are verified by their owning
+                // subsystem, not by this catalog's deterministic provisioner.
+                if catalog.physical_id
+                    != super::super::resources::physical_id(
+                        catalog.resource_kind,
+                        &catalog.resource_id,
+                    )
+                {
+                    continue;
+                }
+                let Some(binding) = load_grant_binding(
+                    &transaction,
+                    catalog.owner_kind,
+                    &catalog.owner_id,
+                    &catalog.participant_id,
+                )?
+                else {
+                    continue;
+                };
+                if binding.state != GrantBindingState::Active
+                    || binding.revision != catalog.binding_revision
+                {
+                    continue;
+                }
+                let payload = reconcile_action_payload(&id, binding.revision, catalog.revision);
+                let action = PostCommitActionRecord {
+                    predecessor_action_id: None,
+                    action_id: trellis_protocol::digest_json(
+                        &json!({"resourceVerification": payload, "at": now}),
+                    )
+                    .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?,
+                    kind: PostCommitActionKind::ResourceReconcile,
+                    payload,
+                    created_at: now,
+                    attempts: 0,
+                    next_attempt_at: now,
+                    claimed_until: None,
+                    last_error: None,
+                };
+                super::outbox::insert_sql_post_commit_actions(&transaction, &[action])?;
+            }
+            transaction.commit().map_err(sql_error)
+        })
+        .await
+    }
+
     pub(crate) async fn job_namespace_has_other_resources(
         &self,
         resource_id: String,
@@ -561,7 +646,10 @@ impl SqliteAuthorizationStore {
             };
             if catalog.revision != payload.catalog_revision
                 || catalog.binding_revision != payload.binding_revision
-                || catalog.state != ResourceCatalogState::Pending
+                || !matches!(
+                    catalog.state,
+                    ResourceCatalogState::Pending | ResourceCatalogState::Ready
+                )
             {
                 return Ok(None);
             }
@@ -639,12 +727,23 @@ impl SqliteAuthorizationStore {
             let Some(binding) = load_grant_binding(&transaction, catalog.owner_kind, &catalog.owner_id, &catalog.participant_id)? else { return Ok(()) };
             if catalog.revision != payload.catalog_revision
                 || catalog.binding_revision != payload.binding_revision
-                || catalog.state != ResourceCatalogState::Pending
-                || catalog.readiness_reason.as_deref() != Some("reconciling")
+                || !matches!(catalog.state, ResourceCatalogState::Pending | ResourceCatalogState::Ready)
+                || (catalog.state == ResourceCatalogState::Pending
+                    && catalog.readiness_reason.as_deref() != Some("reconciling"))
                 || binding.revision != payload.binding_revision
                 || binding.state != GrantBindingState::Active
             {
                 return Ok(());
+            }
+            // Broker verification may recreate a missing resource without
+            // changing its authority. Keep unchanged ready evidence stable so
+            // verification cannot invalidate an issuance snapshot by itself.
+            if catalog.state == ResourceCatalogState::Ready
+                && actual.is_some()
+                && catalog.actual == actual
+                && reason.is_none()
+            {
+                return transaction.commit().map_err(sql_error);
             }
             let failure_scope =
                 crate::platform::auth::transport_attachments::TransportReevaluateScope::Grant {

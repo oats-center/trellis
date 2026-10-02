@@ -81,7 +81,7 @@ pub(super) fn require_current_actor(
         || current.binding.owner_id != context.owner_id
         || current.participant.participant_id != context.participant_id
         || current.binding.revision != context.grant_revision
-        || current.binding.installed_revision != context.installed_revision
+        || current.participant_revision != context.installed_revision
         || current.session_public_key != context.session_public_key
         || current.login_session_id != context.login_session_id
     {
@@ -913,6 +913,9 @@ pub(in crate::platform::auth) fn replace_grant_binding(
         last_error: None,
     };
     let mut actions = vec![event];
+    actions.extend(super::resources::reconcile_sql_resource_catalog(
+        connection, &binding, now,
+    )?);
     if revoked_contexts.is_empty() {
         // Pure growth revokes nothing, so no other path enqueues reevaluation.
         // Enqueue it here so the passive change hint still reaches live
@@ -930,9 +933,6 @@ pub(in crate::platform::auth) fn replace_grant_binding(
             )?,
         );
     }
-    actions.extend(super::resources::reconcile_sql_resource_catalog(
-        connection, &binding, now,
-    )?);
     Ok((binding, actions))
 }
 

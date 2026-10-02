@@ -321,6 +321,10 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         now,
     )
     .await?;
+    auth_store
+        .enqueue_ready_resource_verifications(now)
+        .await
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     // Startup provisioning enqueues post-commit resource reconciliation for the
     // reserved provider deployments. That reconciliation can rewrite resource
     // evidence and the grant binding (and therefore the issuance snapshot token)
