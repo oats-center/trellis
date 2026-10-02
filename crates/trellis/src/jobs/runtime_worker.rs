@@ -1526,48 +1526,15 @@ async fn stream_work_decision(
     publish_prefix: &str,
     work: &mut Job,
 ) -> Result<ProjectedWorkDecision, RuntimeWorkerError> {
-    if exact_terminal_lifecycle_event_exists(lifecycle_stream, publish_prefix, work).await? {
-        return Ok(ProjectedWorkDecision::SkipAck);
-    }
-
-    let subject = format!("{publish_prefix}.{}.*", work.id);
-    let latest = match latest_lifecycle_message(lifecycle_stream, &subject).await {
-        Ok(Some(message)) => message,
-        Ok(None) => return Ok(ProjectedWorkDecision::Process),
-        Err(error) => {
-            return Err(RuntimeWorkerError::LifecycleRead {
-                stream: JOBS_STREAM.to_string(),
-                subject,
-                details: error,
-            });
-        }
-    };
-
-    let latest = serde_json::from_slice::<JobEvent>(&latest.payload).map_err(|error| {
-        RuntimeWorkerError::LifecycleDecode {
-            stream: JOBS_STREAM.to_string(),
-            subject: subject.clone(),
-            details: error.to_string(),
-        }
-    })?;
-
-    let decision = lifecycle_work_decision(Some(&latest), work);
-    if latest.service == work.service
-        && latest.job_type == work.job_type
-        && latest.job_id == work.id
-    {
-        work.tries = latest.tries;
-        work.state = latest.state;
-    }
-    Ok(decision)
-}
-
-async fn exact_terminal_lifecycle_event_exists(
-    lifecycle_stream: &stream::Stream<()>,
-    publish_prefix: &str,
-    work: &Job,
-) -> Result<bool, RuntimeWorkerError> {
+    // Compare durable state transitions by broker sequence, not timestamps or
+    // the existence of historical terminal events. Retried opens a new run;
+    // diagnostics and other observation-only events cannot reset its state.
+    let mut subjects = Vec::new();
     for event_type in [
+        JobEventType::Created,
+        JobEventType::Retried,
+        JobEventType::Started,
+        JobEventType::Retry,
         JobEventType::Completed,
         JobEventType::Failed,
         JobEventType::Cancelled,
@@ -1577,10 +1544,23 @@ async fn exact_terminal_lifecycle_event_exists(
         JobEventType::Dead,
         JobEventType::Dismissed,
     ] {
-        let bound_subject = format!("{publish_prefix}.{}.{}", work.id, event_type.as_token());
-        let canonical_subject =
-            job_event_subject(&work.service, &work.job_type, &work.id, event_type);
-        for subject in [bound_subject, canonical_subject] {
+        subjects.push(format!(
+            "{publish_prefix}.{}.{}",
+            work.id,
+            event_type.as_token()
+        ));
+        subjects.push(job_event_subject(
+            &work.service,
+            &work.job_type,
+            &work.id,
+            event_type,
+        ));
+    }
+    subjects.sort();
+    subjects.dedup();
+    let identity = &*work;
+    let transitions =
+        futures_util::future::try_join_all(subjects.into_iter().map(|subject| async move {
             let Some(message) = latest_lifecycle_message(lifecycle_stream, &subject)
                 .await
                 .map_err(|error| RuntimeWorkerError::LifecycleRead {
@@ -1589,7 +1569,7 @@ async fn exact_terminal_lifecycle_event_exists(
                     details: error,
                 })?
             else {
-                continue;
+                return Ok(None);
             };
             let event = serde_json::from_slice::<JobEvent>(&message.payload).map_err(|error| {
                 RuntimeWorkerError::LifecycleDecode {
@@ -1598,15 +1578,27 @@ async fn exact_terminal_lifecycle_event_exists(
                     details: error.to_string(),
                 }
             })?;
-            if event.service == work.service
-                && event.job_type == work.job_type
-                && event.job_id == work.id
+            if event.service == identity.service
+                && event.job_type == identity.job_type
+                && event.job_id == identity.id
             {
-                return Ok(true);
+                Ok(Some((message.sequence, event)))
+            } else {
+                Ok(None)
             }
-        }
-    }
-    Ok(false)
+        }))
+        .await?;
+    let Some((_, latest)) = transitions
+        .into_iter()
+        .flatten()
+        .max_by_key(|(sequence, _)| *sequence)
+    else {
+        return Ok(ProjectedWorkDecision::Process);
+    };
+    let decision = lifecycle_work_decision(Some(&latest), work);
+    work.tries = latest.tries;
+    work.state = latest.state;
+    Ok(decision)
 }
 
 fn lifecycle_work_decision(latest: Option<&JobEvent>, work: &Job) -> ProjectedWorkDecision {

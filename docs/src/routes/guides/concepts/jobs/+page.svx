@@ -36,6 +36,12 @@ never-started displaced reservation can settle directly from Pending to Stale
 without handler execution. The janitor does not settle deadlines or perform
 application cleanup.
 
+Workers read execution state and attempt counts from durable state-changing events
+in broker stream-sequence order. Diagnostics, heartbeats, logs, and progress cannot
+override completed settlement or reset attempts. `Retried` opens a new run under
+the same job ID: older terminal events remain in history but do not settle the new
+retry or dead-letter replay.
+
 Services process their own jobs via their own JetStream consumer. A central Jobs
 admin runtime handles global queries, janitor cleanup, and the SQL projection
 for the built-in Jobs API.

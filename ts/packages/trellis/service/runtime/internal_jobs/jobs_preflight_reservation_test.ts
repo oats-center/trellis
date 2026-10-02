@@ -78,7 +78,8 @@ Deno.test("Jobs reserves the initial delivery during a slow lifecycle query", as
     assert(created);
     const createdBody = created.string();
     const decode = new TextDecoder();
-    const requestSubject = `$JS.API.DIRECT.GET.JOBS.${prefix}.${job.id}.*`;
+    const requestSubject =
+      `$JS.API.DIRECT.GET.JOBS.${prefix}.${job.id}.created`;
     const requests: {
       connectionId: number;
       subject: string;
@@ -229,7 +230,11 @@ Deno.test("Jobs reserves the initial delivery during a slow lifecycle query", as
     assert(progress.every((ack) => ack.connectionId === receipt.connectionId));
     assertEquals(handlers, 0, "no handler may bypass held initial preflight");
     await hold.release();
-    await deadline(handlerEntered.promise, 5_000);
+    await deadline(handlerEntered.promise, 5_000).catch((cause) => {
+      throw new Error("Handler did not enter after releasing lifecycle read", {
+        cause,
+      });
+    });
     // Handler return is not the end of receipt ownership: the real final
     // lifecycle publication must be confirmed before the source ACK.
     hold = gate.armResponseHold(
@@ -237,7 +242,12 @@ Deno.test("Jobs reserves the initial delivery during a slow lifecycle query", as
       receipt.connectionId,
     );
     handlerRelease.resolve();
-    await deadline(hold.held, 5_000);
+    await deadline(hold.held, 5_000).catch((cause) => {
+      throw new Error(
+        "Final durable publication acknowledgement was not intercepted",
+        { cause },
+      );
+    });
     const finalHeldAt = performance.now();
     const progressBeforeFinalHold = acks.filter((ack) =>
       ack.subject === receipt.reply && ack.body === "+WPI"
@@ -308,7 +318,7 @@ Deno.test("Jobs reserves the initial delivery during a slow lifecycle query", as
     assert(stoppedCreated);
     const stoppedBody = stoppedCreated.string();
     hold = gate.armResponseHold(
-      `$JS.API.DIRECT.GET.JOBS.${prefix}.${stoppedJob.id}.*`,
+      `$JS.API.DIRECT.GET.JOBS.${prefix}.${stoppedJob.id}.created`,
       receipt.connectionId,
       (body) => decode.decode(body) === stoppedBody,
     );

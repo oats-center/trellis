@@ -58,6 +58,13 @@ acknowledgement; the displaced work redelivers until its cleanup obligation is
 settled. A recovered never-started reservation may transition directly from
 Pending to Stale with zero attempts, without manufacturing handler execution.
 
+Workers resolve execution state and attempt counts from durable state-changing
+events ordered by broker stream sequence, not timestamps or the latest arbitrary
+event. Diagnostics, heartbeats, logs, and progress cannot supersede terminal
+settlement or reset attempts. `Retried` opens a new run under the same job ID
+and supersedes older terminal events; retry and dead-letter replay preserve that
+history rather than deleting it.
+
 Jobs retains stream-first durable lifecycle, stable IDs, queue/key coordination,
 projection, janitor, cancellation, progress, logs, result/error, dead jobs,
 replay/dismiss, and optional live typed updates. Live updates are transient; the

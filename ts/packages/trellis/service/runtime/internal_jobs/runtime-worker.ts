@@ -114,7 +114,7 @@ type DirectMessageReader = {
   getMessage(
     stream: string,
     query: { last_by_subj: string },
-  ): Promise<{ data: Uint8Array } | null>;
+  ): Promise<{ data: Uint8Array; seq: number } | null>;
 };
 
 type StartNatsConnectionDeps = {
@@ -834,7 +834,11 @@ function getQueueBinding(
   return queue;
 }
 
-/** @internal Reads durable lifecycle using the receiving attachment's direct reader. */
+/**
+ * @internal Reads the newest execution-state transition by broker sequence.
+ * Explicit retries supersede earlier settlements; observation-only events cannot
+ * replace authoritative state or attempt counts.
+ */
 export async function getLatestLifecycleEvent(
   direct: DirectMessageReader,
   stream: string,
@@ -842,13 +846,42 @@ export async function getLatestLifecycleEvent(
   job: Job,
 ): Promise<JobEvent | undefined> {
   try {
-    const msg = await direct.getMessage(stream, {
-      last_by_subj: `${publishPrefix}.${job.id}.*`,
-    });
-    if (!msg) {
-      return undefined;
+    const transitions = await Promise.all([
+      "created",
+      "retried",
+      "started",
+      "retry",
+      "completed",
+      "failed",
+      "cancelled",
+      "expired",
+      "skipped",
+      "stale",
+      "dead",
+      "dismissed",
+    ].map(async (type) => {
+      try {
+        const msg = await direct.getMessage(stream, {
+          last_by_subj: `${publishPrefix}.${job.id}.${type}`,
+        });
+        if (!msg) return undefined;
+        const event = parseWorkPayloadEvent(msg.data);
+        return event?.jobId === job.id && event.service === job.service &&
+            event.jobType === job.type
+          ? { seq: msg.seq, event }
+          : undefined;
+      } catch (error) {
+        if (isMessageNotFoundError(error)) return undefined;
+        throw error;
+      }
+    }));
+    let newest: { seq: number; event: JobEvent } | undefined;
+    for (const transition of transitions) {
+      if (transition && (!newest || transition.seq > newest.seq)) {
+        newest = transition;
+      }
     }
-    return parseWorkPayloadEvent(msg.data);
+    return newest?.event;
   } catch (error) {
     if (isMessageNotFoundError(error)) {
       return undefined;

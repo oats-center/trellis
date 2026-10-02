@@ -13,6 +13,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ))
     .await?;
 
+    if std::env::var_os("TRELLIS_REPLAY_WORK").is_some() {
+        use std::io::Write;
+        let failed = Arc::new(AtomicUsize::new(0));
+        let dead = Arc::new(AtomicUsize::new(0));
+        let mut provider = Provider::new(&mut service);
+        provider
+            .register_replay_work(move |job| {
+                let failed = Arc::clone(&failed);
+                let dead = Arc::clone(&dead);
+                async move {
+                    if job.cancellation_token().reason()
+                        == Some(JobCancellationReason::RetryExhausted)
+                    {
+                        println!("cleanup {}", job.payload().value);
+                        std::io::stdout().flush().expect("stdout");
+                        return Ok(job.payload().clone());
+                    }
+                    let count = if job.payload().value == "retry" {
+                        failed.fetch_add(1, Ordering::SeqCst) + 1
+                    } else {
+                        dead.fetch_add(1, Ordering::SeqCst) + 1
+                    };
+                    println!("execute {} {count}", job.payload().value);
+                    std::io::stdout().flush().expect("stdout");
+                    if job.payload().value == "retry" && count == 1 {
+                        Err(JobProcessError::Failed("first run failed"))
+                    } else if job.payload().value == "replay" && count <= 2 {
+                        Err(JobProcessError::Retryable("first run exhausted"))
+                    } else {
+                        Ok(job.payload().clone())
+                    }
+                }
+            })
+            .await?;
+        for value in ["retry", "replay"] {
+            let job = provider
+                .submit_replay_work(Value {
+                    value: value.into(),
+                    extra: Default::default(),
+                })
+                .await?;
+            println!("submitted {value} {}", job.identity().id);
+            std::io::stdout().flush()?;
+        }
+        service.run().await?;
+        return Ok(());
+    }
+
     if std::env::var_os("TRELLIS_PRE_STARTED_WORK").is_some() {
         use std::io::Write;
         let stop = Arc::new(tokio::sync::Notify::new());

@@ -391,6 +391,7 @@ Deno.test(
         for (const job of [a, c]) {
           assert(
             gate.connection(g1)!.outboundContexts.some((out) =>
+              out.subject.startsWith("trellis.jobs.") &&
               out.subject.endsWith(`.${job.id}.completed`)
             ),
             "survivor jobs must publish their terminal result on receiving G1",
@@ -408,6 +409,7 @@ Deno.test(
         assert(
           !gate.connections().some((connection) =>
             connection.outboundContexts.some((out) =>
+              out.subject.startsWith("trellis.jobs.") &&
               out.subject.endsWith(`.${b.id}.completed`)
             )
           ),

@@ -119,6 +119,7 @@ Deno.test("TS retained Jobs refs get/wait/cancel after broker-confirmed G1 reap"
           requiredServerIds: [originals[0].server],
         });
       const eventPrefix = gate.connection(g1)!.outboundContexts.find((out) =>
+        out.subject.startsWith("trellis.jobs.") &&
         out.subject.endsWith(`.${a.id}.started`)
       )!.subject.split(".").slice(0, -2).join(".");
       // Observe before growth: this finite wait must remain selected on G1.

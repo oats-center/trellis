@@ -154,6 +154,12 @@ without handler execution.
 Native lifecycle publication awaits JetStream acknowledgement. Typed live updates
 remain transient and do not require a durable stream.
 
+Execution state and attempt counts come from durable state-changing events in
+broker stream-sequence order, not the latest arbitrary event. Diagnostics,
+heartbeats, logs, and progress cannot override terminal settlement or attempts.
+Retried opens a new run under the same job ID; older terminal events remain in
+history but cannot settle a later retry or dead-letter replay.
+
 Operation get, watch, signal, and cancel remain bound to the creator principal
 plus participant across reconnects rather than to one session key. A durable
 Operation's watcher is a separate live session: it reconciles the current

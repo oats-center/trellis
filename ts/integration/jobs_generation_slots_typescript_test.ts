@@ -214,6 +214,7 @@ Deno.test("TS managed Jobs keeps two slots and receiving ownership across publis
       await runtime.waitFor(() => started.includes("D"));
       assert(
         gate.connection(g1)!.outboundContexts.some((out) =>
+          out.subject.startsWith("trellis.jobs.") &&
           out.subject.endsWith(`.${a.id}.completed`)
         ),
         "A terminal publication must use G1",
@@ -242,6 +243,7 @@ Deno.test("TS managed Jobs keeps two slots and receiving ownership across publis
       );
       assert(
         gate.connection(g2)!.outboundContexts.some((out) =>
+          out.subject.startsWith("trellis.jobs.") &&
           out.subject.endsWith(`.${b.id}.completed`)
         ),
         "B terminal publication must use G2",
@@ -309,6 +311,7 @@ Deno.test("TS managed Jobs keeps two slots and receiving ownership across publis
       // Read durable terminal events independently of the facade's result tracking.
       for (const [name, ref] of [["F", f], ["G", submitted.ref]] as const) {
         const terminal = gate.connection(g2)!.outboundContexts.filter((out) =>
+          out.subject.startsWith("trellis.jobs.") &&
           out.subject.endsWith(`.${ref.id}.completed`)
         );
         assertEquals(terminal.length, 1);
@@ -332,6 +335,7 @@ Deno.test("TS managed Jobs keeps two slots and receiving ownership across publis
       }).orThrow();
       await runtime.waitFor(() =>
         gate.connection(g2)!.outboundContexts.some((out) =>
+          out.subject.startsWith("trellis.jobs.") &&
           out.subject.endsWith(`.${updating.id}.completed`)
         )
       );
