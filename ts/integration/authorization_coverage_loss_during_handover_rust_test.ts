@@ -271,6 +271,7 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
       console.log(JSON.stringify(events.at(-1)));
     };
     try {
+      record("fixture-child", { pid: child.pid });
       await marker("TRANSPORT_GROWTH_ADVANCE_OK");
       // Open the peer shortly before the subject's actual persisted refresh
       // deadline. Its first refresh then falls after the timeout/loss experiment,
@@ -305,6 +306,31 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
         item.participantId === participants.LiveProbeCaller.participant.identity
       );
       assert(peer, "the ordinary observer must be admitted");
+      const peerDatabase = createClient({
+        url: `file:${
+          join(runtime.workdir, "trellis", "trellis.sqlite.platform")
+        }`,
+      });
+      try {
+        const timing = await peerDatabase.execute({
+          sql:
+            "SELECT issued_at, refresh_at, expires_at FROM auth_authorization_contexts WHERE context_digest = ?",
+          args: [peer.contextDigest],
+        });
+        assert(
+          timing.rows[0],
+          "the admitted peer has persisted context timing",
+        );
+        record("peer-context-timing", {
+          contextDigest: peer.contextDigest,
+          issuedAt: Number(timing.rows[0]?.issued_at) * 1000,
+          refreshAt: Number(timing.rows[0]?.refresh_at) * 1000,
+          expiresAt: Number(timing.rows[0]?.expires_at) * 1000,
+          subjectRefreshAt,
+        });
+      } finally {
+        peerDatabase.close();
+      }
       const controlContexts = new Set<string>();
       controls = privileged.subscribe("live.v1.route.>", {
         callback: (_error, message) => {
@@ -485,6 +511,7 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
       const infoRequests = new Map<string, number>();
       let replacementConnection: number | undefined;
       let replacementHeld: Awaited<typeof hold.held> | undefined;
+      let candidatesLogged = 0;
       const arm = () => {
         replacementHeld = undefined;
         hold = gate.armResponseHold(
@@ -494,6 +521,31 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
             const info = JSON.parse(
               new TextDecoder().decode(body),
             ) as ConsumerInfo;
+            if (candidatesLogged++ < 8) {
+              record("replacement-info-candidate", {
+                pid: child.pid,
+                consumer: info,
+                samePeer:
+                  info.config?.filter_subject === old.config.filter_subject,
+                sockets: gate.connections().filter((connection) =>
+                  connection.subs.some((sub) =>
+                    sub.subject === info.config?.deliver_subject
+                  )
+                ).map((connection) => ({
+                  id: connection.id,
+                  closed: connection.closed,
+                  watchIngress: connection.subs.some((sub) =>
+                    sub.subject === watchSubject
+                  ),
+                  requestedInfo: connection.outboundContexts.some((outbound) =>
+                    outbound.subject ===
+                      `$JS.API.CONSUMER.INFO.${info.stream_name}.${info.name}`
+                  ),
+                  recentRequests: connection.outboundContexts.slice(-8),
+                })),
+                childLines: lines.slice(-8),
+              });
+            }
             if (
               !info.push_bound || info.name === old.name ||
               info.config?.filter_subject !== old.config.filter_subject
@@ -578,6 +630,7 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
       );
       await privileged.flush();
       arm();
+      record("replacement-growth-requested", { pid: child.pid });
       await runtime.contracts.apply({
         deployment: "coverage-subject",
         contract: subjectContract,
@@ -828,6 +881,22 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
       }
       await send("CLOSE");
       await marker("TRANSPORT_GROWTH_CLOSED");
+    } catch (cause) {
+      record("fixture-failure", {
+        pid: child.pid,
+        cause: String(cause),
+        childLines: lines.slice(-12),
+        sockets: gate.connections().map((connection) => ({
+          id: connection.id,
+          closed: connection.closed,
+          watchIngress: connection.subs.filter((sub) =>
+            sub.subject.endsWith(".Watch")
+          ),
+          recentRequests: connection.outboundContexts.slice(-12),
+          recentDeliveries: connection.deliveries.slice(-8),
+        })),
+      });
+      throw cause;
     } finally {
       controls?.unsubscribe();
       creates?.unsubscribe();

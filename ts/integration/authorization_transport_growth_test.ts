@@ -149,14 +149,14 @@ Deno.test(
       await subject.handleWatch(async ({ emit, signal }) => {
         let index = 1n;
         while (!signal.aborted) {
-          emit({
+          await emit({
             runId: "growth-run",
             streamId: "growth",
             sourceGeneration: 1n,
             index,
             payload: new Uint8Array(),
             padding: "",
-          });
+          }).orThrow();
           index += 1n;
           await new Promise((resolve) => {
             const timer = setTimeout(resolve, 1_000);
@@ -273,7 +273,7 @@ Deno.test(
           ),
           "the logical connection identity must stay stable across growth",
         );
-        void feed.close();
+        await feed.close();
         await feedTask;
 
         // 19. A newly opened observation works.

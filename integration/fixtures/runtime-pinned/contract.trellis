@@ -71,6 +71,7 @@ service Provider {
     retry { attempts 2; backoff [250ms]; }
   }
   job keyedWork { title "Keyed work"; description "Runtime keyed queue acceptance."; payload KeyedValue; result KeyedValue; key_concurrency { path key; policy queue; } }
+  job preStartedWork { title "Pre-started work"; description "Key acquisition crash recovery."; payload KeyedValue; result KeyedValue; deadline 5s; key_concurrency { path key; policy queue; } }
   kv records { title "Records"; description "Rust KV acceptance values."; schema ResourceValue; version 1; history 4; ttl 0ms; }
   kv optional extras { title "Extras"; description "Optional Rust KV acceptance values approved after connect."; schema ResourceValue; version 1; history 4; ttl 0ms; }
   store files { title "Files"; description "Runtime fixture transfer files."; ttl 0; desired_max_object 1MiB; desired_max_total 8MiB; }
