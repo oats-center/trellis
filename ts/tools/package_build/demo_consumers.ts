@@ -207,7 +207,26 @@ try {
             // SDK: the synchronous close receipt, the once-resolving `closed`
             // promise, and async-disposal ownership.
             {
-              const feed = await caller.auditFeed({}).orThrow();
+              // Assignments is mounted before AuditFeed in the ordinary demo
+              // entrypoint. Its first successful RPC is not Feed readiness.
+              const feed = await runtime.waitFor(async () => {
+                if (exited) {
+                  throw new Error(
+                    `${engine} demo service exited (${
+                      (await serviceStatus).code
+                    })`,
+                  );
+                }
+                const response = await caller.auditFeed({});
+                if (response.isOk()) return response.orThrow();
+                if (
+                  "code" in response.error &&
+                  response.error.code === "trellis.request.unavailable"
+                ) {
+                  return false;
+                }
+                throw response.error;
+              }, { timeoutMs: 30_000 });
               const receipt = await feed.close().orThrow();
               assertEquals(
                 typeof receipt.cleanup,

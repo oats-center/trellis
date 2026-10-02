@@ -111,7 +111,6 @@ pub(crate) struct LiveAuthorityCandidate {
 pub(crate) struct LiveAuthorityGuard {
     cache: AuthorizationProviderCache,
     lease: RwLock<AuthorizationContextLease>,
-    expected_epoch: RwLock<u64>,
     digest: RwLock<String>,
     /// Whether this guard tracks the connection's own refreshable authority.
     tracks_local: bool,
@@ -132,8 +131,7 @@ impl LiveAuthorityGuard {
         digest: &str,
         requirement: LiveGuardRequirement,
     ) -> Result<Self, LiveAuthorityLost> {
-        let expected_epoch = cache.epoch();
-        let lease = retain_live_lease(cache, digest, expected_epoch).await?;
+        let lease = retain_live_lease(cache, digest).await?;
         let identity = pinned_identity(&lease);
         let tracks_local = cache.current_local_context_digest().as_deref() == Some(digest);
         let (permission, peer) = match requirement {
@@ -154,7 +152,6 @@ impl LiveAuthorityGuard {
         Ok(Self {
             cache: cache.clone(),
             lease: RwLock::new(lease),
-            expected_epoch: RwLock::new(expected_epoch),
             digest: RwLock::new(digest.to_owned()),
             tracks_local,
             identity,
@@ -188,11 +185,9 @@ impl LiveAuthorityGuard {
     /// Adopt a newer local context on the same physical attachment; peer
     /// replacements are accepted only through the signed Live evidence path.
     pub(crate) async fn reconcile(&self) -> Result<(), LiveAuthorityLost> {
-        let expected = *self
-            .expected_epoch
-            .read()
-            .map_err(|_| LiveAuthorityLost::CoverageUnknown)?;
-        if self.tracks_local && expected == self.cache.epoch() {
+        // Validity follows coverage, not the transport epoch: adopt a newer local
+        // context only when the retained digest differs.
+        if self.tracks_local {
             let current = self.cache.current_local_context_digest();
             let changed = {
                 let retained = self
@@ -202,7 +197,7 @@ impl LiveAuthorityGuard {
                 current.as_deref() != Some(retained.as_str())
             };
             if changed {
-                return self.rebind(expected).await;
+                return self.rebind().await;
             }
         }
         self.check_now()
@@ -219,19 +214,23 @@ impl LiveAuthorityGuard {
     /// Returns the precise [`LiveAuthorityLost`] when the replacement coverage is
     /// unavailable or does not preserve the pinned identity or permission.
     pub(crate) async fn rebind_current_epoch(&self) -> Result<(), LiveAuthorityLost> {
-        let generation = self.cache.epoch();
-        let expected = *self
-            .expected_epoch
-            .read()
-            .map_err(|_| LiveAuthorityLost::CoverageUnknown)?;
-        if generation == expected {
+        // Re-bind only when the retained coverage is gone; a transport replacement
+        // alone never invalidates covered authority.
+        let covered = {
+            let lease = self
+                .lease
+                .read()
+                .map_err(|_| LiveAuthorityLost::CoverageUnknown)?;
+            self.cache.live_guard_entry_is_covered(&lease)
+        };
+        if covered {
             return self.reconcile().await;
         }
-        self.rebind(generation).await
+        self.rebind().await
     }
 
     /// Retain, validate and install coverage for `generation`, releasing the predecessor on success.
-    async fn rebind(&self, generation: u64) -> Result<(), LiveAuthorityLost> {
+    async fn rebind(&self) -> Result<(), LiveAuthorityLost> {
         let digest = if self.tracks_local {
             self.cache
                 .current_local_context_digest()
@@ -245,7 +244,7 @@ impl LiveAuthorityGuard {
         if digest.is_empty() {
             return Err(LiveAuthorityLost::CoverageLost);
         }
-        let lease = retain_live_lease(&self.cache, &digest, generation).await?;
+        let lease = retain_live_lease(&self.cache, &digest).await?;
         let identity = pinned_identity(&lease);
         if identity != self.identity {
             return Err(LiveAuthorityLost::IdentityChanged);
@@ -269,9 +268,6 @@ impl LiveAuthorityGuard {
             drop(slot);
             drop(old);
         }
-        if let Ok(mut epoch) = self.expected_epoch.write() {
-            *epoch = generation;
-        }
         if let Ok(mut stored) = self.digest.write() {
             *stored = digest;
         }
@@ -287,24 +283,13 @@ impl LiveAuthorityGuard {
     ///
     /// Returns the precise [`LiveAuthorityLost`] reason, never a lossy boolean.
     pub(crate) fn check_now(&self) -> Result<(), LiveAuthorityLost> {
-        let expected_epoch = *self
-            .expected_epoch
-            .read()
-            .map_err(|_| LiveAuthorityLost::CoverageUnknown)?;
         let lease = self
             .lease
             .read()
             .map_err(|_| LiveAuthorityLost::CoverageUnknown)?;
-        let health = self
-            .cache
-            .health()
-            .map_err(|_| LiveAuthorityLost::TransportUnavailable)?;
-        if !health.healthy {
-            return Err(LiveAuthorityLost::TransportUnavailable);
-        }
-        if self.cache.epoch() != expected_epoch || lease.epoch() != expected_epoch {
-            return Err(LiveAuthorityLost::EpochChanged);
-        }
+        // Coverage — concrete current watch evidence — is the authority; the
+        // baseline transport's connectedness/epoch is not. The Live socket's own
+        // lifetime is lease-owned separately.
         if !self.cache.live_guard_entry_is_covered(&lease) {
             return Err(LiveAuthorityLost::CoverageLost);
         }
@@ -352,11 +337,7 @@ impl LiveAuthorityGuard {
         &self,
         digest: &str,
     ) -> Result<LiveAuthorityCandidate, LiveAuthorityLost> {
-        let expected_epoch = *self
-            .expected_epoch
-            .read()
-            .map_err(|_| LiveAuthorityLost::CoverageUnknown)?;
-        let lease = retain_live_lease(&self.cache, digest, expected_epoch).await?;
+        let lease = retain_live_lease(&self.cache, digest).await?;
         let identity = pinned_identity(&lease);
         if identity != self.identity {
             return Err(LiveAuthorityLost::IdentityChanged);
@@ -391,13 +372,8 @@ impl LiveAuthorityGuard {
         &self,
         candidate: LiveAuthorityCandidate,
     ) -> Result<(), LiveAuthorityLost> {
-        let expected_epoch = *self
-            .expected_epoch
-            .read()
-            .map_err(|_| LiveAuthorityLost::CoverageUnknown)?;
-        if self.cache.epoch() != expected_epoch || candidate.lease.epoch() != expected_epoch {
-            return Err(LiveAuthorityLost::EpochChanged);
-        }
+        // A transport replacement never invalidates an identity-and-permission
+        // preserving replacement; only the pinned identity can.
         if candidate.identity != self.identity {
             return Err(LiveAuthorityLost::IdentityChanged);
         }
@@ -561,10 +537,9 @@ impl LiveAuthorityGuard {
 async fn retain_live_lease(
     cache: &AuthorizationProviderCache,
     digest: &str,
-    expected_epoch: u64,
 ) -> Result<AuthorizationContextLease, LiveAuthorityLost> {
     cache
-        .retain_live_guard_lease(digest, expected_epoch)
+        .retain_live_guard_lease(digest)
         .await
         .map_err(|error| match error {
             TrellisClientError::AuthorizationUnavailable(_) => LiveAuthorityLost::CoverageLost,

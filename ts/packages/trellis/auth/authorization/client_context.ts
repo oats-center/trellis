@@ -26,6 +26,7 @@ export class AuthorizationContextCache {
     verified: VerifiedAuthorizationContext;
     runtime?: AuthorizationRuntimeBinding;
     routing: AuthorizationRoutingMaterial;
+    clockOffsetMs: number;
     commitAdditional?: () => void;
   };
 
@@ -53,7 +54,7 @@ export class AuthorizationContextCache {
       runtime,
       installAdditional,
     );
-    return this.promote(verified.contextDigest, shouldInstall);
+    return this.promote(verified, shouldInstall);
   }
 
   /** Verify and retain one private refresh candidate without exposing it to application use. */
@@ -68,6 +69,7 @@ export class AuthorizationContextCache {
     ) => void | (() => void) | Promise<void | (() => void)> = () => {},
   ): Promise<VerifiedAuthorizationContext> {
     const operation = ++this.#operation;
+    const clockOffsetMs = this.#clockOffsetMs;
     const verificationPolicy = authorizationContextVerificationPolicy(
       bundle.policy,
       nowUnixSeconds,
@@ -109,6 +111,7 @@ export class AuthorizationContextCache {
       verified,
       runtime: installedRuntime,
       routing: nextRouting,
+      clockOffsetMs,
       commitAdditional: typeof commitAdditional === "function"
         ? commitAdditional
         : undefined,
@@ -118,17 +121,29 @@ export class AuthorizationContextCache {
 
   /** Promote only the exact prepared candidate after transport admission and own coverage. */
   promote(
-    expectedDigest: string,
+    origin: VerifiedAuthorizationContext,
     shouldInstall: () => boolean = () => true,
   ): VerifiedAuthorizationContext {
     const candidate = this.#candidate;
     if (
       !candidate || candidate.operation !== this.#operation ||
-      candidate.verified.contextDigest !== expectedDigest || !shouldInstall()
+      candidate.verified !== origin || !shouldInstall()
+    ) {
+      throw new Error("authorization candidate changed before promotion");
+    }
+    // Eligibility can synchronously invalidate or supersede this preparation.
+    if (
+      this.#candidate !== candidate || candidate.operation !== this.#operation
     ) {
       throw new Error("authorization candidate changed before promotion");
     }
     candidate.commitAdditional?.();
+    // Fence the installed cache after the last reentrant callback.
+    if (
+      this.#candidate !== candidate || candidate.operation !== this.#operation
+    ) {
+      throw new Error("authorization candidate changed before promotion");
+    }
     this.#bundle = candidate.bundle;
     this.#verified = candidate.verified;
     this.#runtime = candidate.runtime;
@@ -144,8 +159,8 @@ export class AuthorizationContextCache {
   }
 
   /** Drop a private candidate that became unusable before promotion. */
-  invalidateCandidate(digest: string): boolean {
-    if (this.#candidate?.verified.contextDigest === digest) {
+  invalidateCandidate(origin: VerifiedAuthorizationContext): boolean {
+    if (this.#candidate?.verified === origin) {
       this.#candidate = undefined;
       return true;
     }
@@ -159,6 +174,39 @@ export class AuthorizationContextCache {
 
   hasCandidate(): boolean {
     return this.#candidate !== undefined;
+  }
+
+  /** Read the candidate for local revocation handling. @internal */
+  candidateVerified(): VerifiedAuthorizationContext | undefined {
+    return this.#candidate?.verified;
+  }
+
+  /** Capture only the exact still-current preparation. @internal */
+  candidateSnapshot(origin: VerifiedAuthorizationContext): Readonly<{
+    verified: VerifiedAuthorizationContext;
+    runtime: AuthorizationRuntimeBinding | undefined;
+    routing: Readonly<AuthorizationRoutingMaterial>;
+    clockOffsetMs: number;
+    isCurrent: () => boolean;
+  }> {
+    const candidate = this.#candidate;
+    if (
+      !candidate || candidate.verified !== origin ||
+      candidate.operation !== this.#operation
+    ) throw new Error("authorization candidate changed before retention");
+    return Object.freeze({
+      verified: origin,
+      get runtime() {
+        return candidate.runtime
+          ? structuredClone(candidate.runtime)
+          : undefined;
+      },
+      routing: Object.freeze(structuredClone(candidate.routing)),
+      clockOffsetMs: candidate.clockOffsetMs,
+      isCurrent: () =>
+        this.#candidate === candidate &&
+        candidate.operation === this.#operation,
+    });
   }
 
   transportRuntimeBinding(): AuthorizationRuntimeBinding {

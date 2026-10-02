@@ -2,6 +2,7 @@ import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { assert, assertEquals } from "@std/assert";
 import { Value } from "typebox/value";
 import { TypedKV } from "../packages/trellis/kv.ts";
+import { fixedTransportProvider } from "../packages/trellis/transport/generations.ts";
 import {
   type KvOutboxRecord,
   KvOutboxRecordSchema,
@@ -18,6 +19,7 @@ Deno.test("NATS KV outbox claims recover with CAS-fenced completion", async () =
       ),
     });
     try {
+      const transport = fixedTransportProvider(nats);
       const bucket = "outbox_claims";
       const representation = {
         codec: {
@@ -28,9 +30,9 @@ Deno.test("NATS KV outbox claims recover with CAS-fenced completion", async () =
         version: 1,
         migrations: {},
       };
-      const kv = await TypedKV.open(nats, bucket, representation, {})
+      const kv = await TypedKV.open(transport, bucket, representation, {})
         .orThrow();
-      const other = await TypedKV.open(nats, bucket, representation, {
+      const other = await TypedKV.open(transport, bucket, representation, {
         bindOnly: true,
       }).orThrow();
       const repositories = [kv, other].map((store) =>
@@ -50,7 +52,7 @@ Deno.test("NATS KV outbox claims recover with CAS-fenced completion", async () =
       ))).flat();
       assertEquals(claims.length, 1);
       assertEquals(await repositories[1].claimDue(1, now), []);
-      const reopened = await TypedKV.open(nats, bucket, representation, {
+      const reopened = await TypedKV.open(transport, bucket, representation, {
         bindOnly: true,
       }).orThrow();
       const recovered = new NatsKvOutboxRepository(reopened);

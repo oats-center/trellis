@@ -153,11 +153,6 @@ where
     /// An optional generated action is not present in the installed availability snapshot.
     #[error("optional action unavailable: {0}")]
     AuthorizationUnavailable(String),
-    /// A generated action is granted by current authority but not yet admitted
-    /// on the current transport attachment. Distinct from permission denial and
-    /// from [`Self::AuthorizationUnavailable`].
-    #[error("transport upgrade required: {0}")]
-    TransportUpgradeRequired(String),
 }
 
 impl<E> CallError<E>
@@ -190,9 +185,6 @@ where
             }
             TrellisClientError::AuthorizationUnavailable(message) => {
                 Self::AuthorizationUnavailable(message)
-            }
-            TrellisClientError::TransportUpgradeRequired(message) => {
-                Self::TransportUpgradeRequired(message)
             }
             error => Self::Transport(TransportError::new(error.to_string())),
         }
@@ -314,12 +306,11 @@ pub enum TrellisClientError {
     #[error("authorization evidence unavailable: {0}")]
     AuthorizationUnavailable(String),
 
-    /// A granted capability's broker subjects are not yet admitted on the
-    /// current physical attachment. This is a transport condition, not a
-    /// permission denial: the application may adopt it with an explicit
-    /// transport refresh.
-    #[error("transport upgrade required: {0}")]
-    TransportUpgradeRequired(String),
+    /// No admitted physical transport could serve the request: the logical
+    /// connection is closed, no generation is reachable, or automatic transport
+    /// adoption did not complete. Distinct from authorization unavailability.
+    #[error("transport unavailable: {0}")]
+    TransportUnavailable(String),
 
     #[error("service bootstrap error: {0}")]
     Bootstrap(String),

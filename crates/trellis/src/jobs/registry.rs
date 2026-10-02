@@ -51,15 +51,24 @@ pub struct WorkerHeartbeatOptions {
 impl WorkerHeartbeatHandle {
     /// Stop the heartbeat task and swallow expected cancellation shutdown.
     #[doc = concat!("Asynchronous Trellis API operation `", stringify!(stop), "`.")]
-    pub async fn stop(self) -> Result<(), ServiceRegistryError> {
+    pub async fn stop(mut self) -> Result<(), ServiceRegistryError> {
         self.task.abort();
-        match self.task.await {
+        match (&mut self.task).await {
             Ok(result) => result,
             Err(error) if error.is_cancelled() => Ok(()),
             Err(error) => Err(ServiceRegistryError::HeartbeatTask {
                 details: error.to_string(),
             }),
         }
+    }
+}
+
+impl Drop for WorkerHeartbeatHandle {
+    fn drop(&mut self) {
+        // RAII: a heartbeat handle dropped without `stop` (a failed or cancelled
+        // multi-queue startup, or a host dropped without shutdown) must not
+        // leave a publishing heartbeat task running.
+        self.task.abort();
     }
 }
 
@@ -207,6 +216,61 @@ pub async fn start_worker_heartbeat_loop(
     nats: async_nats::Client,
     options: WorkerHeartbeatOptions,
 ) -> Result<WorkerHeartbeatHandle, ServiceRegistryError> {
+    start_heartbeat_loop(options, move |subject_service, heartbeat| {
+        let nats = nats.clone();
+        async move { publish_worker_heartbeat_for_subject(nats, &subject_service, &heartbeat).await }
+    })
+    .await
+}
+
+/// Each logical-host heartbeat is fresh work, not an accepted job's support
+/// traffic: pin the published usable attachment only for this publication.
+pub(crate) async fn start_managed_worker_heartbeat_loop(
+    manager: crate::client::TransportGenerationManager,
+    options: WorkerHeartbeatOptions,
+) -> Result<WorkerHeartbeatHandle, ServiceRegistryError> {
+    start_heartbeat_loop(options, move |subject_service, heartbeat| {
+        let manager = manager.clone();
+        async move {
+            let lease = match manager.acquire_application_published() {
+                Ok(lease) => lease,
+                Err(error) => {
+                    // Coverage or transport recovery must not destroy the logical
+                    // host's timer. No fresh traffic is emitted while unavailable.
+                    tracing::debug!(%error, "worker heartbeat waits for usable published transport");
+                    return Ok(());
+                }
+            };
+            publish_worker_heartbeat_for_subject(
+                lease.nats().clone(),
+                &subject_service,
+                &heartbeat,
+            )
+            .await?;
+            // publish() only queues the bytes; keep the lease through broker flush.
+            lease.nats().flush().await.map_err(|error| {
+                ServiceRegistryError::PublishWorkerHeartbeat {
+                    subject: worker_heartbeat_subject(
+                        &subject_service,
+                        &heartbeat.job_type,
+                        &heartbeat.instance_id,
+                    ),
+                    details: error.to_string(),
+                }
+            })
+        }
+    })
+    .await
+}
+
+async fn start_heartbeat_loop<F, Fut>(
+    options: WorkerHeartbeatOptions,
+    publish: F,
+) -> Result<WorkerHeartbeatHandle, ServiceRegistryError>
+where
+    F: Fn(String, WorkerHeartbeat) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<(), ServiceRegistryError>> + Send,
+{
     let WorkerHeartbeatOptions {
         service,
         subject_service,
@@ -216,7 +280,7 @@ pub async fn start_worker_heartbeat_loop(
         version,
         interval,
     } = options;
-    let publish = move |nats: async_nats::Client, timestamp: String| {
+    let publish = move |timestamp: String| {
         let heartbeat = new_worker_heartbeat(
             &service,
             &job_type,
@@ -225,17 +289,16 @@ pub async fn start_worker_heartbeat_loop(
             version.clone(),
             timestamp,
         );
-        let subject_service = subject_service.clone();
-        async move { publish_worker_heartbeat_for_subject(nats, &subject_service, &heartbeat).await }
+        publish(subject_service.clone(), heartbeat)
     };
 
-    publish(nats.clone(), now_timestamp_string()).await?;
+    publish(now_timestamp_string()).await?;
 
     let task = tokio::spawn(async move {
         let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
         loop {
             ticker.tick().await;
-            publish(nats.clone(), now_timestamp_string()).await?;
+            publish(now_timestamp_string()).await?;
         }
     });
 

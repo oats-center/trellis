@@ -3,9 +3,8 @@
  *
  * Covers the two reduction cases that must hold against real broker state:
  *
- * F3 — rights that were offered but never adopted can be withdrawn without
- *      touching any socket, while a connection that *did* adopt them is
- *      removed.
+ * F3 — withdrawing grown rights closes the wider generation while preserving
+ *      the original safe attachment and its accepted work.
  * F4 — revocation reaches an uncooperative raw NATS client that neither reads
  *      change hints nor closes itself, for both user and native principals.
  *
@@ -15,10 +14,7 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { Result } from "@oatscenter/trellis";
-import { wsconnect } from "@nats-io/nats-core";
-import { connect, type NatsConnection } from "@nats-io/transport-node";
-import { credsAuthenticator } from "@nats-io/nats-core";
-import { join } from "@std/path";
+import { type NatsConnection, wsconnect } from "@nats-io/nats-core";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { participants as webParticipants } from "trellis-web-generated";
@@ -56,9 +52,20 @@ type Runtime = Parameters<Parameters<typeof withTrellisRuntime>[0]>[0];
 /** One admitted attachment as reported by the production admin surface. */
 type Attachment = {
   runtimeConnectionId: string;
+  /** Per-physical-attachment identity, distinct across generations. */
+  connectionId: string;
   contextDigest: string;
   participantId: string;
+  connectedAt: bigint;
 };
+
+/**
+ * The server-side pending-admission window (the Auth Callout's
+ * `ADMISSION_PENDING_MS`) during which a written attachment record is not yet
+ * considered confirmed. A retained attachment must outlive this window before
+ * enforcement can rely on it.
+ */
+const PENDING_ADMISSION_MS = 60_000;
 
 /** Reads the admitted attachments for one participant. */
 async function attachmentsFor(
@@ -127,28 +134,16 @@ async function setPermissions(
   });
 }
 
-/** Opens a privileged ordinary connection for observation. */
-async function platformConnection(runtime: Runtime): Promise<NatsConnection> {
-  return await connect({
-    servers: runtime.natsUrl,
-    authenticator: credsAuthenticator(
-      await Deno.readFile(
-        join(runtime.workdir, "nats/creds/trellis-auth.creds"),
-      ),
-    ),
-  });
-}
-
 /**
- * F3 — an offered-but-unadopted grant can be withdrawn harmlessly.
+ * F3 — a grown grant can be withdrawn, closing only the wider generation.
  *
  * The Provider deployment starts with `records` approved and its optional
- * `extras` KV declined. Approving `extras` grows the desired authority while
- * the admitted attachment keeps only `records`; withdrawing it again must
- * clear the retained notice, keep `records` working, and never replace the
- * attachment. A second connection that *did* adopt `extras` is removed.
+ * `extras` KV declined. Approving `extras` is adopted automatically on a wider
+ * generation under the same logical connection; withdrawing it again must
+ * close that generation immediately, keep `records` working on the original
+ * attachment, and keep the logical connection identity stable.
  */
-Deno.test("F3 an unadopted grant withdraws without touching the socket", async () => {
+Deno.test("F3 a reduction closes the wider generation and keeps the original", async () => {
   await withTrellisRuntime(async (runtime) => {
     const contract = participants.Provider.participant;
     await runtime.contracts.install({ contract });
@@ -170,11 +165,53 @@ Deno.test("F3 an unadopted grant withdraws without touching the socket", async (
       seed: instance.seed,
     }).orThrow();
     const serviceExit = service.wait().catch((error: unknown) => error);
+    let closeCaller: (() => Promise<unknown>) | undefined;
+    const retainedAbort = new AbortController();
     try {
-      await service.handleEcho(({ input }) => Result.ok(input));
+      // A genuinely covered RPC accepted on the original generation and held
+      // across the reduction: real accepted work whose lease keeps the healthy
+      // original alive, so survivor reuse is proven by work, not by a pin.
+      let releaseHeld: (() => void) | undefined;
+      const heldGate = new Promise<void>((resolve) => {
+        releaseHeld = resolve;
+      });
+      let heldEntered = false;
+      await service.handleEcho(({ input }) => {
+        if (input.value === "held") {
+          heldEntered = true;
+          return heldGate.then(() => Result.ok(input));
+        }
+        return Result.ok(input);
+      });
+      let feeds = 0;
+      await service.handleWatch(async ({ emit, signal }) => {
+        const feed = ++feeds;
+        let frame = 0;
+        while (!signal.aborted) {
+          await emit({ value: `feed-${feed}-${++frame}` }).orThrow();
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      });
+      const caller = await runtime.connectClient({
+        name: "reduction-caller",
+        contract: participants.Caller.participant,
+        timeout: 120_000,
+      });
+      closeCaller = () => caller.connection.close();
       const records = service.kv.records;
       assert(records, "the required KV must be bound");
       await records.put("before", { value: "before" });
+      // Generic RPC intake on the original generation before any growth.
+      assertEquals(await caller.echo({ value: "before" }).orThrow(), {
+        value: "before",
+      });
+      // A live observation accepted on the original generation, kept across the
+      // growth and the reduction to prove retained continuity.
+      const retainedFeed = await caller.watch({}, {
+        signal: retainedAbort.signal,
+      }).orThrow();
+      const retained = retainedFeed[Symbol.asyncIterator]();
+      assert((await retained.next()).value?.value?.startsWith("feed-"));
 
       const participantId = contract.identity;
       const [before] = await waitForAttachmentCount(runtime, participantId, 1);
@@ -184,7 +221,12 @@ Deno.test("F3 an unadopted grant withdraws without touching the socket", async (
         ),
       );
 
-      // Offer `extras` without adopting it: D grows, A does not.
+      // Hold one RPC accepted on the original generation across the reduction.
+      const held = caller.echo({ value: "held" });
+      await runtime.waitFor(() => heldEntered, { timeoutMs: 30_000 });
+
+      // Grow `extras`: it is adopted automatically on a wider generation under
+      // the same logical connection.
       await runtime.contracts.apply({ contract });
       const extras = await runtime.waitFor(() => service.kv.extras ?? false, {
         timeoutMs: 60_000,
@@ -192,24 +234,29 @@ Deno.test("F3 an unadopted grant withdraws without touching the socket", async (
       assertEquals(
         await records.get("before").orThrow(),
         { value: "before" },
-        "the adopted resource keeps working while the new one is pending",
+        "the adopted resource keeps working across the growth",
       );
-      const pending = await extras.get("missing");
-      assert(pending.isErr());
-      assertEquals(
-        (pending.error as { code?: string }).code,
-        "transport_upgrade_required",
+      await extras.put("grown", { value: "grown" });
+      assertEquals(await extras.get("grown").orThrow(), { value: "grown" });
+      const grownAttachments = await attachmentsFor(runtime, participantId);
+      assert(
+        grownAttachments.length >= 2 &&
+          grownAttachments.every((item) =>
+            item.runtimeConnectionId === before.runtimeConnectionId
+          ),
+        "growth must adopt a wider generation on the same logical connection",
       );
+      assert(
+        new Set(grownAttachments.map((item) => item.connectionId)).size >= 2,
+        "the wider generation is a distinct physical attachment",
+      );
+      const grownPhysical = grownAttachments.find((item) =>
+        item.connectionId !== before.connectionId
+      );
+      assert(grownPhysical, "the wider generation has its own attachment");
 
-      const [stillOne] = await attachmentsFor(runtime, participantId);
-      assertEquals(
-        stillOne.runtimeConnectionId,
-        before.runtimeConnectionId,
-        "growing authority must not replace the attachment",
-      );
-
-      // Withdraw the unadopted grant by narrowing the binding back to the
-      // permissions the attachment actually adopted.
+      // Withdraw the grown grant by narrowing the binding back to the
+      // permissions the original attachment adopted.
       const binding = await grantBinding(runtime, participantId);
       const recordsOnly = binding.grants.permissions.filter((atom) =>
         adoptedKeys.has(atomKey(atom))
@@ -220,23 +267,86 @@ Deno.test("F3 an unadopted grant withdraws without touching the socket", async (
       );
       await setPermissions(runtime, binding, recordsOnly);
 
-      // The retained notice clears and the original socket is untouched.
-      await runtime.waitFor(
-        () => service.connection.status.transportUpgradeAvailable === false,
-        { timeoutMs: 60_000 },
+      // The wider generation closes immediately; the *exact original physical
+      // attachment* survives under the same logical connection. `runtimeConnectionId`
+      // is the logical identity and cannot prove this, so assert the per-physical
+      // `connectionId` from the authoritative broker inventory.
+      const survived = await runtime.waitFor(async () => {
+        const items = await attachmentsFor(runtime, participantId);
+        return items.length === 1 ? items : undefined;
+      }, { timeoutMs: 60_000 });
+      assertEquals(
+        survived[0].connectionId,
+        before.connectionId,
+        "the original physical attachment must survive the reduction",
+      );
+      assert(
+        !survived.some((item) =>
+          item.connectionId === grownPhysical.connectionId
+        ),
+        "the wider physical attachment must be gone from broker inventory",
       );
       assertEquals(
         await records.get("before").orThrow(),
         { value: "before" },
         "adopted authority survives the withdrawal",
       );
-      const [after] = await attachmentsFor(runtime, participantId);
+      // The covered RPC accepted on the original generation completes on that
+      // same healthy original after the wider one is forced away.
+      releaseHeld?.();
       assertEquals(
-        after.runtimeConnectionId,
-        before.runtimeConnectionId,
-        "withdrawing an unadopted grant must not replace the attachment",
+        await held.orThrow(),
+        { value: "held" },
+        "covered accepted work must complete on the reused original",
       );
+      // The original generation is reactivated after the reduction; its generic
+      // RPC intake must have been reinstalled before publication, so a fresh
+      // call is served rather than timing out into a drained generation.
+      const afterReduction = await runtime.waitFor(async () => {
+        const r = await caller.echo({ value: "after-reduction" });
+        return r.isOk() ? r.orThrow() : undefined;
+      }, { timeoutMs: 60_000, intervalMs: 1_000 });
+      assertEquals(afterReduction, { value: "after-reduction" });
+      // Fresh live intake works on the reactivated survivor: its generic
+      // live-open subscription was reinstalled on the same provider. The
+      // reduction re-issues the provider's authorization context, so bound the
+      // wait for intake to serve under the converged context.
+      const freshAbort = new AbortController();
+      const freshFeed = await runtime.waitFor(async () => {
+        try {
+          return await caller.watch({}, { signal: freshAbort.signal })
+            .orThrow();
+        } catch {
+          return undefined;
+        }
+      }, { timeoutMs: 90_000, intervalMs: 1_000 });
+      const fresh = freshFeed[Symbol.asyncIterator]();
+      const freshFrame = (await fresh.next()).value?.value;
+      assert(
+        typeof freshFrame === "string" && freshFrame.startsWith("feed-"),
+        "a fresh live observation must open on the reactivated survivor",
+      );
+      assertEquals(feeds, 2, "the fresh live observation opens a new feed");
+      // A reduction revokes the *original* authorization context the retained
+      // observation was accepted under, so that accepted session must end with a
+      // bounded authorization error rather than keep streaming under withdrawn
+      // authority. This is the distinct live failure a reduction has (a growth
+      // leaves the accepted context intact).
+      let retainedEnded = false;
+      try {
+        const next = await retained.next();
+        retainedEnded = next.done === true || next.value === undefined;
+      } catch {
+        retainedEnded = true;
+      }
+      assert(
+        retainedEnded,
+        "a retained observation must end when the reduction revokes its context",
+      );
+      freshAbort.abort();
     } finally {
+      retainedAbort.abort();
+      await closeCaller?.().catch(() => undefined);
       await service.connection.close().catch(() => undefined);
       await serviceExit;
     }
@@ -248,7 +358,9 @@ Deno.test("F3 an unadopted grant withdraws without touching the socket", async (
  *
  * The raw client is admitted through the production Auth Callout on a real
  * user login and never processes Trellis change hints, so only server-side
- * enforcement can remove it. After an administrative reduction the broker must
+ * enforcement can remove it. It must first survive broker inventory
+ * reconciliation and its pending-admission window while remaining represented
+ * in `Auth.Connections.List`; after an administrative reduction the broker must
  * drop the old attachment, and a fresh connection must not regain the removed
  * permission.
  */
@@ -307,12 +419,34 @@ Deno.test("F4 revocation removes an uncooperative raw user attachment", async ()
         raw.contextDigest !== observed.contextDigest,
         "the raw connection is its own logical connection",
       );
-      await runtime.waitFor(async () => {
+      const admitted = await runtime.waitFor(async () => {
         const items = await attachmentsFor(runtime, participantId);
-        return items.some((item) =>
+        return items.find((item) =>
           item.runtimeConnectionId === raw.connectionId
-        );
+        ) ?? false;
       }, { timeoutMs: 60_000 });
+
+      // Keep the raw attachment alive across broker inventory reconciliation
+      // and its pending-admission window: a record that confirmation could not
+      // yet settle must still be tracked so later enforcement can reach it.
+      // Every poll re-asserts that the socket is still open and still
+      // represented, so a spurious drop keeps failing until this bounded wait
+      // expires rather than surfacing silently at the reduction below.
+      const rawSocket = rawNats;
+      await runtime.waitFor(async () => {
+        assert(
+          !rawSocket.isClosed(),
+          "the raw socket must stay connected across reconciliation",
+        );
+        assert(
+          (await attachmentsFor(runtime, participantId)).some((item) =>
+            item.runtimeConnectionId === raw.connectionId
+          ),
+          "the raw attachment must stay represented across reconciliation",
+        );
+        return Date.now() - Number(admitted.connectedAt) >=
+          PENDING_ADMISSION_MS;
+      }, { timeoutMs: PENDING_ADMISSION_MS + 30_000, intervalMs: 5_000 });
 
       // Strip the caller's binding to a single retained atom.
       const binding = await grantBinding(runtime, participantId);
@@ -404,73 +538,6 @@ Deno.test("F4 revocation removes a native service attachment", async () => {
           (await attachmentsFor(runtime, participantId)).every((item) =>
             item.runtimeConnectionId !== admitted.runtimeConnectionId
           ),
-        { timeoutMs: 60_000 },
-      );
-    } finally {
-      await service.connection.close().catch(() => undefined);
-      await serviceExit;
-    }
-  });
-});
-
-/**
- * F7 — explicit transport refresh coalesces and never strands the owner.
- *
- * Concurrent public refresh calls must produce one shared reconnect rather
- * than one per call, and closing the logical connection during a refresh must
- * not resurrect it afterwards.
- */
-Deno.test("F7 concurrent transport refresh performs one shared replacement", async () => {
-  await withTrellisRuntime(async (runtime) => {
-    const contract = participants.Provider.participant;
-    await runtime.contracts.install({ contract });
-    const requested = await runtime.contracts.requestApply({ contract });
-    if (requested.status !== "approval_required") return;
-    await runtime.contracts.approveApply(requested.pendingId, {
-      excludeResources: ["extras"],
-    });
-    const instance = await runtime.services.createInstance({
-      name: "refresh-provider",
-      contract,
-    });
-    const service = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
-      participant: contract,
-      name: "refresh-provider",
-      seed: instance.seed,
-    }).orThrow();
-    const serviceExit = service.wait().catch((error: unknown) => error);
-    try {
-      const participantsSeen = new Set<string>();
-      const refresh = () => {
-        const status = service.connection.status;
-        participantsSeen.add(status.phase);
-        return service.connection.refreshTransport();
-      };
-      // One shared replacement, however many callers ask at once.
-      await Promise.all([refresh(), refresh(), refresh()]).then((results) => {
-        for (const result of results) {
-          assertEquals(
-            result.isOk(),
-            true,
-            "every caller observes the shared result",
-          );
-        }
-      });
-      await runtime.waitFor(
-        () => service.connection.status.phase === "connected",
-        { timeoutMs: 60_000 },
-      );
-      await service.handleEcho(({ input }) => Result.ok(input));
-
-      // Closing during a refresh must not resurrect the connection.
-      const pending = service.connection.refreshTransport();
-      await service.connection.close();
-      // Closing during a refresh settles the pending refresh as a value; it
-      // must not leave the logical connection reconnecting afterwards.
-      await pending;
-      await runtime.waitFor(
-        () => service.connection.status.phase !== "connected",
         { timeoutMs: 60_000 },
       );
     } finally {

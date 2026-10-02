@@ -70,7 +70,10 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
     let state = tempfile::tempdir().unwrap();
     let mut nats = trellis_local_nats::LocalNats::builder()
         .binary(trellis_local_nats::NatsBinarySource::DownloadPinned)
-        .cache_dir(state.path().join("cache"))
+        .cache_dir(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/trellis-test-cache"),
+        )
         .source(source.path())
         .temporary_state()
         .ephemeral_ports()

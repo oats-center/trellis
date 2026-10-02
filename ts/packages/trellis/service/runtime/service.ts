@@ -1,4 +1,4 @@
-import { jetstream } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import {
   headers as natsHeaders,
   type MsgHdrs,
@@ -8,20 +8,12 @@ import {
 import type { StoreError } from "../../errors/index.ts";
 import {
   installConnectionAvailability,
-  installConnectionTransportUpgrade,
-  replaceTransportAttachment,
-  sameTransportServers,
+  observeTrellisConnection,
   type TrellisAvailability,
 } from "../../connection.ts";
 import {
-  readOwnAdmission,
-  type ResourceTransportCheck,
-  resourceTransportCheck,
-  type TransportAuthorizationGate,
   TransportAuthorizationState,
-  transportUpgradeRequiredError,
 } from "../../auth/authorization/transport_state.ts";
-import { TransportRefreshError } from "../../errors/TransportRefreshError.ts";
 import { TypedKV } from "../../kv.ts";
 import {
   type StoreOperationError,
@@ -44,8 +36,19 @@ import {
   AuthorizationProviderCache,
   startAuthorizationContextRefresh,
 } from "../../auth/authorization_context.ts";
-import { installAuthorizationRefresh } from "../../auth/authorization/install_refresh.ts";
+import {
+  type AuthorizationCandidateSnapshot,
+  installAuthorizationRefresh,
+} from "../../auth/authorization/install_refresh.ts";
 import { TrellisHttpError } from "../../auth/http_error.ts";
+import { transportAuthorizationDigestWasm } from "../../auth/protocol_wasm.ts";
+import {
+  fixedTransportProvider,
+  TransportGenerationManager,
+  type TransportGenerationPrepared,
+  type TransportLease,
+  type TrellisTransportProvider,
+} from "../../transport/generations.ts";
 import type { InferSchemaType } from "../../participant.ts";
 import type {
   PermissionAtom,
@@ -103,6 +106,7 @@ import type {
   OperationTransferContextOf,
   OperationUpdateOf,
   PreparedTrellisEvent,
+  ProviderGenerationAttachment,
   RpcHandlerContext,
   RpcHandlerErrorOf,
 } from "../../session.ts";
@@ -121,8 +125,8 @@ import {
   type ProviderRuntime,
 } from "../../provider.ts";
 import {
-  DEFAULT_RUNTIME_MAX_RECONNECT_ATTEMPTS,
   DEFAULT_SERVICE_RUNTIME_WAIT_ON_FIRST_CONNECT,
+  GENERATION_MAX_RECONNECT_ATTEMPTS,
   selectRuntimeTransportServers,
 } from "../../runtime_transport.ts";
 import { serviceRuntimeLogger } from "./logger.ts";
@@ -158,7 +162,14 @@ import {
   JobProcessError as InternalJobProcessError,
   prepareJobSubmission,
 } from "./internal_jobs/job-manager.ts";
-import { startNatsWorkerHostFromBinding } from "./internal_jobs/runtime-worker.ts";
+import {
+  getLatestLifecycleEvent,
+  type JobReceivingSession,
+  startNatsWorkerHostFromBinding,
+  type StartNatsWorkerHostOptions,
+} from "./internal_jobs/runtime-worker.ts";
+import { startManagedJobWorkerHost } from "./internal_jobs/managed-worker.ts";
+import { ActiveJobCancellationRegistry } from "./internal_jobs/cancellation-registry.ts";
 import {
   createNatsJobKeyCoordinator,
   normalizeJobKeyPolicy,
@@ -399,6 +410,57 @@ const trellisServiceConstructorToken: unique symbol = Symbol(
   "TrellisService.constructorToken",
 );
 
+/**
+ * Internal provider-ingress handle carried on a connected service session.
+ *
+ * Lets the service runtime install and retire per-generation provider intake
+ * without widening the public `TrellisServiceSession` surface. @internal
+ */
+export const SERVICE_PROVIDER_INGRESS: unique symbol = Symbol(
+  "trellis.service.providerIngress",
+);
+
+/**
+ * Logical transport lifetime of a connected service.
+ *
+ * Installed after the generation manager exists. Its `closed()` resolves when
+ * the logical connection ends (explicit close or an authoritative terminal
+ * failure), not when one physical generation is reaped. @internal
+ */
+export const SERVICE_TRANSPORT_LIFETIME: unique symbol = Symbol(
+  "trellis.service.transportLifetime",
+);
+
+/** Logical transport lifetime surface used by the service wait loop. @internal */
+type ServiceTransportLifetime = {
+  closed(): Promise<void | Error>;
+};
+
+/** @internal */
+export type ServiceProviderIngress = {
+  install(target: {
+    id: number;
+    nc: NatsConnection;
+    contextDigest: string;
+    lease?: () => TransportLease;
+    /**
+     * Push each owning ingress's concrete cleanup scope into the manager before
+     * async work, so cleanup is never a fallible late lookup. @internal
+     */
+    registerDisposal?: (handle: ProviderGenerationAttachment) => boolean;
+  }): Promise<void>;
+  /** Stop generic intake on a superseded generation. */
+  retireIntake(id: number): void;
+};
+
+/** One Trellis surface that owns per-generation provider ingress. @internal */
+type ProviderIngressOwner = {
+  installProviderIngress(
+    target: Parameters<ServiceProviderIngress["install"]>[0],
+  ): Promise<ProviderGenerationAttachment>;
+  retireProviderIngress(id: number): void;
+};
+
 export abstract class StoreHandle {
   abstract readonly binding: ResourceBindingStore;
 
@@ -415,10 +477,12 @@ export abstract class StoreHandle {
 
 class InternalStoreHandle extends StoreHandle {
   readonly binding: ResourceBindingStore;
-  readonly #nc: NatsConnection;
+  readonly #transport: TrellisTransportProvider;
+  readonly #acquireTimeoutMs: number;
 
   constructor(
-    nc: NatsConnection,
+    transport: TrellisTransportProvider,
+    acquireTimeoutMs: number,
     binding: ResourceBindingStore,
     token: typeof storeHandleConstructorToken,
   ) {
@@ -428,16 +492,18 @@ class InternalStoreHandle extends StoreHandle {
         "StoreHandle instances are created by TrellisService",
       );
     }
-    this.#nc = nc;
+    this.#transport = transport;
+    this.#acquireTimeoutMs = acquireTimeoutMs;
     this.binding = binding;
   }
 
   open(): AsyncResult<TypedStore, StoreError> {
-    return TypedStore.open(this.#nc, this.binding.name, {
+    return TypedStore.open(this.#transport, this.binding.name, {
       ttlMs: this.binding.ttlMs,
       maxObjectBytes: this.binding.maxObjectBytes,
       maxTotalBytes: this.binding.maxTotalBytes,
       bindOnly: true,
+      acquireTimeoutMs: this.#acquireTimeoutMs,
     });
   }
 
@@ -453,15 +519,16 @@ class InternalStoreHandle extends StoreHandle {
 }
 
 function openServiceKvBindings<TKv extends ParticipantKvMetadata>(args: {
-  nc: NatsConnection;
+  /** Logical transport provider the handle acquires a generation from. */
+  transport: TrellisTransportProvider;
+  /** Budget for acquiring a generation on a finite resource operation. */
+  acquireTimeoutMs: number;
   /**
    * Current resource bindings, re-read on every access so a resource that
    * materializes after connect becomes usable on the same attachment.
    */
   bindings: () => Readonly<Record<string, ResourceBindingKV>>;
   contractKv: TKv;
-  /** Per-bucket transport-admission check for operations on that bucket. */
-  transport?: (bucket: string) => ResourceTransportCheck | undefined;
 }): ServiceKvFacade<TKv> {
   const handles = new Map<
     string,
@@ -480,7 +547,7 @@ function openServiceKvBindings<TKv extends ParticipantKvMetadata>(args: {
         const cached = handles.get(alias);
         if (cached && cached.bucket === binding.bucket) return cached.handle;
         const handle = TypedKV.bind(
-          args.nc,
+          args.transport,
           binding.bucket,
           metadata.schema,
           {
@@ -489,7 +556,7 @@ function openServiceKvBindings<TKv extends ParticipantKvMetadata>(args: {
             maxValueBytes: binding.maxValueBytes,
             bindOnly: true,
             isCurrent: () => args.bindings()[alias]?.bucket === binding.bucket,
-            transport: args.transport?.(binding.bucket),
+            acquireTimeoutMs: args.acquireTimeoutMs,
           },
         ) as TypedKV<unknown>;
         handles.set(alias, { bucket: binding.bucket, handle });
@@ -1218,7 +1285,7 @@ export type ConnectedTrellisService<
 /**
  * @internal Shared by Trellis-owned service bootstrap paths.
  */
-export async function createConnectedService<
+export function createConnectedService<
   TOwnedApi extends RuntimeApi,
   TTrellisApi extends RuntimeApi,
   TJobs extends ParticipantJobsMetadata = ParticipantJobsMetadata,
@@ -1227,6 +1294,14 @@ export async function createConnectedService<
   name: string;
   auth: SessionAuth;
   nc: NatsConnection;
+  /**
+   * Logical transport provider owning this service's physical generations.
+   * When present, outbound work and provider ingress follow the current
+   * generation instead of one fixed `nc`. @internal
+   */
+  transport?: TrellisTransportProvider;
+  /** Current admitted physical connection, falling back to the initial `nc`. @internal */
+  activeNats?: () => NatsConnection;
   inboxPrefix: string;
   contextDigest: string | (() => string);
   operationConnectionId: string;
@@ -1251,20 +1326,12 @@ export async function createConnectedService<
    * (RPC, Live, events, operations) and every resource check consults it.
    * @internal
    */
-  transportGate?: TransportAuthorizationGate;
-  /** Transport-admission check for one bound resource. @internal */
-  resourceTransportCheck?: (
-    kind: "kv" | "store",
-    name: string,
-  ) => ResourceTransportCheck | undefined;
   availability: TrellisAvailability;
   healthIdentity?: {
     instanceId: string;
     deploymentId: string;
   };
   authorizationProviderCache?: AuthorizationProviderCache;
-  /** Explicit physical-attachment replacement owned by the service runtime. @internal */
-  refreshTransport?: () => AsyncResult<void, TransportRefreshError>;
   /** Additional raw-transport hook for application-level bookkeeping. @internal */
   onTransportEvent?: (event: unknown) => void;
   /** Process-local connection handle started before the transport connected. @internal */
@@ -1272,22 +1339,40 @@ export async function createConnectedService<
 }): Promise<TrellisServiceSession<TOwnedApi, TTrellisApi, TJobs, TKv>> {
   const resolvedLog = resolveServiceLogger(args.runtime.log);
   const liveBindings = args.liveBindings ?? (() => args.bindings);
-  const connection = observeNatsTrellisConnection({
-    kind: "service",
-    nc: args.nc,
-    availability: args.availability,
-    refreshTransport: args.refreshTransport,
-    onTransportEvent: (event) => {
-      args.authorizationProviderCache?.observeTransportEvent(event);
-      args.onTransportEvent?.(event);
-    },
-    log: false,
-    lifecycleLog: {
-      log: resolvedLog,
-      context: { service: args.name },
-    },
-    ...(args.telemetry ? { telemetry: args.telemetry } : {}),
-  });
+  // Resource handles follow the logical connection's current generation; a
+  // runtime without a generation manager wraps its single connection.
+  const serviceTransport: TrellisTransportProvider = args.transport ??
+    fixedTransportProvider(args.nc);
+  const acquireTimeoutMs = args.runtime.timeout ?? 30_000;
+  const onTransportEvent = (event: unknown) => {
+    args.authorizationProviderCache?.observeTransportEvent(event);
+    args.onTransportEvent?.(event);
+  };
+  const connection = args.transport
+    ? observeTrellisConnection({
+      kind: "service",
+      transport: args.transport,
+      availability: args.availability,
+      onTransportEvent,
+      log: false,
+      lifecycleLog: {
+        log: resolvedLog,
+        context: { service: args.name },
+      },
+      ...(args.telemetry ? { telemetry: args.telemetry } : {}),
+    })
+    : observeNatsTrellisConnection({
+      kind: "service",
+      nc: args.nc,
+      availability: args.availability,
+      onTransportEvent,
+      log: false,
+      lifecycleLog: {
+        log: resolvedLog,
+        context: { service: args.name },
+      },
+      ...(args.telemetry ? { telemetry: args.telemetry } : {}),
+    });
   const currentApi = (args.runtime.trellisApi ?? args.runtime.api) as
     & TOwnedApi
     & TTrellisApi;
@@ -1319,7 +1404,9 @@ export async function createConnectedService<
       },
       operationDeploymentId: args.healthIdentity?.deploymentId,
       operationConnectionId: args.operationConnectionId,
-      ...(args.transportGate ? { transportGate: args.transportGate } : {}),
+      // The operation runtime owns per-generation start/reconcile intake through
+      // the same generation provider as the outbound framework surfaces.
+      ...(args.transport ? { transport: args.transport } : {}),
     },
   );
 
@@ -1347,7 +1434,7 @@ export async function createConnectedService<
       },
       apiBindings: args.apiBindings,
       ephemeralEventNeeds: args.ephemeralEventNeeds ?? new Set(),
-      ...(args.transportGate ? { transportGate: args.transportGate } : {}),
+      ...(args.transport ? { transport: args.transport } : {}),
       connection,
     },
   );
@@ -1404,66 +1491,91 @@ export async function createConnectedService<
     publishIntervalMs: args.runtime.health?.publishIntervalMs ?? 30_000,
   });
   health.add("nats", () => ({
-    status: args.nc.isClosed() ? "failed" : "ok",
-    ...(args.nc.isClosed() ? { summary: "NATS connection closed" } : {}),
+    status: serviceTransport.isClosed() ||
+        serviceTransport.currentNats().isClosed()
+      ? "failed"
+      : "ok",
+    ...(serviceTransport.isClosed()
+      ? { summary: "NATS connection closed" }
+      : {}),
   }));
 
   const heartbeatEnabled = args.healthIdentity !== undefined;
   let healthPublishTimer: ReturnType<typeof setInterval> | undefined;
-  let publishingHeartbeat = false;
-  const publishHealthHeartbeat = async (): Promise<void> => {
-    if (!args.healthIdentity || publishingHeartbeat) {
-      return;
+  const healthPublishingAbort = new AbortController();
+  let publishingHeartbeat: Promise<void> | undefined;
+  const publishHealthHeartbeat = (): Promise<void> => {
+    if (!args.healthIdentity || healthPublishingAbort.signal.aborted) {
+      return Promise.resolve();
     }
-
-    publishingHeartbeat = true;
-    try {
-      await publishHealthHeartbeatSample({
-        nc: args.nc,
-        identity: {
-          sessionKey: args.auth.sessionKey,
-          participantKind: "service",
-          contractId: health.contractId,
-          contractDigest: health.contractDigest,
-          deploymentId: args.healthIdentity.deploymentId,
-          instanceId: health.instanceId,
-        },
-        sample: await health.sample(),
-      });
-    } catch (error) {
-      resolvedLog.warn(
-        { error },
-        "Failed to build or publish health heartbeat",
-      );
-    } finally {
-      publishingHeartbeat = false;
-    }
+    if (publishingHeartbeat) return publishingHeartbeat;
+    const identity = args.healthIdentity;
+    publishingHeartbeat = (async () => {
+      let lease: TransportLease | undefined;
+      try {
+        lease = await serviceTransport.acquireCurrent({
+          signal: healthPublishingAbort.signal,
+          deadlineMs: Date.now() + acquireTimeoutMs,
+        });
+        if (healthPublishingAbort.signal.aborted) return;
+        const sample = await health.sample();
+        if (healthPublishingAbort.signal.aborted) return;
+        // Pin the admitted generation through sampling and the JetStream PubAck.
+        await publishHealthHeartbeatSample({
+          nc: lease.nc,
+          identity: {
+            sessionKey: args.auth.sessionKey,
+            participantKind: "service",
+            contractId: health.contractId,
+            contractDigest: health.contractDigest,
+            deploymentId: identity.deploymentId,
+            instanceId: health.instanceId,
+          },
+          sample,
+        });
+      } catch (error) {
+        resolvedLog.warn(
+          { error },
+          "Failed to build or publish health heartbeat",
+        );
+      } finally {
+        lease?.release();
+        publishingHeartbeat = undefined;
+      }
+    })();
+    return publishingHeartbeat;
   };
   const stopHealthPublishing = (): Promise<void> => {
+    healthPublishingAbort.abort();
     if (healthPublishTimer !== undefined) {
       clearInterval(healthPublishTimer);
       healthPublishTimer = undefined;
     }
-    return Promise.resolve();
+    // Already-published work finishes its PubAck before service teardown; stop
+    // cancels pending admission and never acquires a replacement generation.
+    return publishingHeartbeat ?? Promise.resolve();
   };
 
   const kv = openServiceKvBindings({
-    nc: args.nc,
+    transport: serviceTransport,
+    acquireTimeoutMs,
     bindings: () => liveBindings().kv ?? {},
     contractKv: args.contractKv,
-    transport: args.resourceTransportCheck
-      ? (bucket) => args.resourceTransportCheck!("kv", bucket)
-      : undefined,
   });
 
   const operationTransfer = new ServiceTransfer({
     name: args.name,
-    nc: args.nc,
+    transport: serviceTransport,
     auth: args.auth,
     stores: Object.fromEntries(
       Object.entries(args.bindings.store ?? {}).map(([alias, binding]) => [
         alias,
-        new InternalStoreHandle(args.nc, binding, storeHandleConstructorToken),
+        new InternalStoreHandle(
+          serviceTransport,
+          acquireTimeoutMs,
+          binding,
+          storeHandleConstructorToken,
+        ),
       ]),
     ),
     ...(args.healthIdentity
@@ -1489,6 +1601,8 @@ export async function createConnectedService<
     health,
     stopHealthPublishing,
     connection,
+    serviceTransport,
+    acquireTimeoutMs,
     trellisServiceConstructorToken,
   ]) as TrellisServiceSession<TOwnedApi, TTrellisApi, TJobs, TKv>;
   resources.handlerResources = {
@@ -1499,14 +1613,18 @@ export async function createConnectedService<
   resources.transfer = operationTransfer;
 
   if (heartbeatEnabled) {
-    await publishHealthHeartbeat();
+    // Generation 1 activates after construction, so admission must not block it.
+    void publishHealthHeartbeat();
     healthPublishTimer = setInterval(() => {
       void publishHealthHeartbeat();
     }, health.publishIntervalMs);
-    void args.nc.closed().then(stopHealthPublishing, stopHealthPublishing);
+    void serviceTransport.closed().then(
+      stopHealthPublishing,
+      stopHealthPublishing,
+    );
   }
 
-  return service;
+  return Promise.resolve(service);
 }
 
 type RegisteredJobHandler<TPayload, TResult> = (
@@ -1802,7 +1920,7 @@ function jobLifecycleKey(
 
 function subjectMatchesLifecycleEvent(
   subject: string,
-  queueBinding: ResourceBindingJobsQueue,
+  queueBinding: Pick<ResourceBindingJobsQueue, "publishPrefix">,
   event: InternalJobEvent,
 ): boolean {
   const prefix = `${queueBinding.publishPrefix}.`;
@@ -1910,7 +2028,10 @@ type JobLifecycleWaiter<TPayload, TResult> = {
 };
 
 type JobLifecycleTracker = {
-  watch(queueBinding: ResourceBindingJobsQueue): void;
+  watch(
+    queueBinding: ResourceBindingJobsQueue | JobsQueueBinding,
+    jobId?: string,
+  ): void;
   seed<TPayload, TResult>(snapshot: JobSnapshot<TPayload, TResult>): void;
   get<TPayload, TResult>(args: {
     service: string;
@@ -1962,26 +2083,35 @@ function createJobLifecycleTracker(nc: NatsConnection): JobLifecycleTracker {
   };
 
   return {
-    watch(queueBinding) {
+    watch(queueBinding, jobId) {
       if (subscriptions.has(queueBinding.publishPrefix)) return;
 
-      const subscription = nc.subscribe(`${queueBinding.publishPrefix}.*.*`);
+      const subscription = nc.subscribe(
+        `${queueBinding.publishPrefix}.${jobId ?? "*"}.*`,
+      );
       subscriptions.set(queueBinding.publishPrefix, subscription);
       void (async () => {
-        for await (const msg of subscription) {
-          const event = parseJobLifecycleEvent(msg.data);
-          if (
-            !event || !subjectMatchesLifecycleEvent(
-              msg.subject,
-              queueBinding,
-              event,
-            )
-          ) {
-            continue;
+        try {
+          for await (const msg of subscription) {
+            const event = parseJobLifecycleEvent(msg.data);
+            if (
+              !event || !subjectMatchesLifecycleEvent(
+                msg.subject,
+                queueBinding,
+                event,
+              )
+            ) {
+              continue;
+            }
+            apply(event);
           }
-          apply(event);
+        } finally {
+          // A per-call observer cannot remain pending after its socket closes.
+          if (jobId !== undefined) this.stop();
         }
-      })();
+      })().catch(() => {
+        if (jobId !== undefined) this.stop();
+      });
     },
     seed<TPayload, TResult>(snapshot: JobSnapshot<TPayload, TResult>) {
       const key = jobLifecycleKey(snapshot.service, snapshot.type, snapshot.id);
@@ -2056,11 +2186,63 @@ function createJobRef<TPayload, TResult, TUpdate = unknown>(args: {
   queueBinding: JobsQueueBinding;
   seed: JobSnapshot<TPayload, TResult>;
   lifecycle: JobLifecycleTracker;
+  acquireTransport?: () => Promise<TransportLease | undefined>;
   updates?: (
     options?: JobUpdatesOptions,
   ) => AsyncResult<JobUpdateSubscription<TUpdate>, BaseError>;
 }): JobRef<TPayload, TResult, TUpdate> {
   args.lifecycle.seed(args.seed);
+
+  const exchange = <T>(
+    observe: boolean,
+    run: (
+      nc: NatsConnection,
+      lifecycle: JobLifecycleTracker,
+      current: JobSnapshot<TPayload, TResult>,
+    ) => Promise<T>,
+  ): AsyncResult<T, BaseError> =>
+    AsyncResult.from((async () => {
+      let lease: TransportLease | undefined;
+      let observer: JobLifecycleTracker | undefined;
+      try {
+        lease = await args.acquireTransport?.();
+        const nc = lease?.nc ?? args.nc;
+        let current = args.seed;
+        if (lease) {
+          if (observe) {
+            observer = createJobLifecycleTracker(nc);
+            observer.seed(args.seed);
+            observer.watch(args.queueBinding, args.seed.id);
+            await nc.flush();
+          }
+          const jsm = await jetstreamManager(nc);
+          const event = await getLatestLifecycleEvent(
+            jsm.direct,
+            "JOBS",
+            args.queueBinding.publishPrefix,
+            args.seed,
+          );
+          if (event) {
+            current = snapshotFromLifecycleEvent(
+              args.seed,
+              event as InternalJobEvent<TPayload, TResult>,
+            );
+          }
+        } else {
+          current = args.lifecycle.get<TPayload, TResult>({
+            service: args.seed.service,
+            jobType: args.queueType,
+            id: args.seed.id,
+          }) ?? args.seed;
+        }
+        return Result.ok(await run(nc, observer ?? args.lifecycle, current));
+      } catch (cause) {
+        return Result.err(toUnexpectedError(cause));
+      } finally {
+        observer?.stop();
+        lease?.release();
+      }
+    })());
 
   return new JobRef<TPayload, TResult, TUpdate>(
     {
@@ -2070,61 +2252,38 @@ function createJobRef<TPayload, TResult, TUpdate = unknown>(args: {
     },
     {
       get: () =>
-        AsyncResult.ok(
-          args.lifecycle.get<TPayload, TResult>({
-            service: args.seed.service,
-            jobType: args.queueType,
-            id: args.seed.id,
-          }) ?? args.seed,
-        ),
+        exchange(false, (_nc, _lifecycle, current) => Promise.resolve(current)),
       wait: () =>
-        AsyncResult.from(
-          (async () => {
-            try {
-              return Result.ok(await args.lifecycle.wait(args.seed));
-            } catch (cause) {
-              return Result.err(toUnexpectedError(cause));
-            }
-          })(),
-        ),
+        exchange(true, (_nc, lifecycle, current) => lifecycle.wait(current)),
       cancel: () =>
-        AsyncResult.from(
-          Promise.resolve().then(() => {
-            const current = args.lifecycle.get<TPayload, TResult>({
-              service: args.seed.service,
-              jobType: args.queueType,
-              id: args.seed.id,
-            }) ?? args.seed;
-            if (isTerminalJobState(current.state)) {
-              return Result.ok(current);
-            }
+        exchange(false, async (nc, lifecycle, current) => {
+          if (isTerminalJobState(current.state)) {
+            return current;
+          }
 
-            const event: InternalJobEvent<TPayload, TResult> = {
-              jobId: args.seed.id,
-              service: current.service,
-              jobType: args.queueType,
-              eventType: "cancelled",
-              state: "cancelled",
-              previousState: current.state,
-              context: current.context,
-              tries: current.tries,
-              error: "cancelled",
-              timestamp: new Date().toISOString(),
-            };
+          const event: InternalJobEvent<TPayload, TResult> = {
+            jobId: args.seed.id,
+            service: current.service,
+            jobType: args.queueType,
+            eventType: "cancelled",
+            state: "cancelled",
+            previousState: current.state,
+            context: current.context,
+            tries: current.tries,
+            error: "cancelled",
+            timestamp: new Date().toISOString(),
+          };
 
-            try {
-              args.nc.publish(
-                `${args.queueBinding.publishPrefix}.${args.seed.id}.cancelled`,
-                new TextEncoder().encode(JSON.stringify(event)),
-                { headers: headersFromJobContext(event.context) },
-              );
-            } catch (cause) {
-              return Result.err(toUnexpectedError(cause));
-            }
-
-            return Result.ok(args.lifecycle.apply(event) ?? current);
-          }),
-        ),
+          nc.publish(
+            `${args.queueBinding.publishPrefix}.${args.seed.id}.cancelled`,
+            new TextEncoder().encode(JSON.stringify(event)),
+            { headers: headersFromJobContext(event.context) },
+          );
+          if (args.acquireTransport) await nc.flush();
+          return args.acquireTransport
+            ? snapshotFromLifecycleEvent(current, event)
+            : lifecycle.apply(event) ?? current;
+        }),
       updates: args.updates,
     },
   );
@@ -2233,13 +2392,18 @@ function createNoopJobWorkerHost(): JobWorkerHostAdapter {
 
 function createJobsFacade<
   TJobs extends ParticipantJobsMetadata,
-  TClient extends Pick<HandlerTrellis<RuntimeApi>, "transportUpgradeRequired">,
+  TClient,
 >(args: {
   serviceName: string;
   contractId?: string;
   contractDigest?: string;
   nc: NatsConnection;
   contractJobs: TJobs;
+  transport: TrellisTransportProvider;
+  intakeOwner: Pick<
+    TrellisServiceRuntimeFor<RuntimeApi>,
+    "declareFrameworkIntake" | "retractFrameworkIntake"
+  >;
   client: TClient;
   jobsBinding?: ResourceBindingJobs;
   workStream?: string;
@@ -2260,11 +2424,28 @@ function createJobsFacade<
     jobs: jobsBinding,
     keyCoordinator,
   });
+  const acquireSubmissionTransport = async () => {
+    if (!(args.transport instanceof TransportGenerationManager)) {
+      return undefined;
+    }
+    const lease = await args.transport.acquirePublishedAttachment();
+    if (!lease) {
+      throw new TransportError({
+        code: "trellis.transport.unavailable",
+        message: "No admitted Trellis transport generation is available.",
+        hint: "Retry when the Trellis runtime connection is available.",
+      });
+    }
+    return lease;
+  };
   let activeHost: JobWorkerHostAdapter | undefined;
   let startupPromise:
     | Promise<Result<JobWorkerHostAdapter, BaseError>>
     | undefined;
   let stopPromise: Promise<Result<void, BaseError>> | undefined;
+  const startupCancellation = new AbortController();
+  const startingHosts = new Set<{ stop(reason?: unknown): Promise<void> }>();
+  const cancellationRegistry = new ActiveJobCancellationRegistry();
 
   for (const queueType of Object.keys(args.contractJobs ?? {})) {
     const queueBinding = jobsBinding?.queues[queueType];
@@ -2293,6 +2474,7 @@ function createJobsFacade<
       updates,
       create: (payload) =>
         AsyncResult.from((async () => {
+          let lease: TransportLease | undefined;
           try {
             if (!jobsBinding) {
               return Result.err(
@@ -2308,22 +2490,20 @@ function createJobsFacade<
               ));
             }
 
-            if (
-              await args.client.transportUpgradeRequired?.({
-                publish: [`${queueBinding.publishPrefix}.>`],
-              })
-            ) {
-              return Result.err(
-                transportUpgradeRequiredError({
-                  queue: queueType,
-                  subject: queueBinding.publishPrefix,
-                }),
-              );
-            }
-
-            const created = await manager.create(queueType, payload);
+            lease = await acquireSubmissionTransport();
+            const submissionManager = lease
+              ? manager.withTransport(
+                jetstream(lease.nc),
+                createNatsJobKeyCoordinator(lease.nc),
+              )
+              : manager;
+            const created = await submissionManager.create(queueType, payload);
             return Result.ok(createJobRef({
               nc: args.nc,
+              acquireTransport:
+                args.transport instanceof TransportGenerationManager
+                  ? acquireSubmissionTransport
+                  : undefined,
               queueType,
               jobsBinding,
               queueBinding,
@@ -2332,14 +2512,20 @@ function createJobsFacade<
               updates: (options) => updates(created.id, options),
             }));
           } catch (cause) {
-            if (cause instanceof JobNotEnqueuedError) {
+            if (
+              cause instanceof JobNotEnqueuedError ||
+              cause instanceof TransportError
+            ) {
               return Result.err(cause);
             }
             return Result.err(toUnexpectedError(cause));
+          } finally {
+            lease?.release();
           }
         })()),
       submit: (payload) =>
         AsyncResult.from((async () => {
+          let lease: TransportLease | undefined;
           try {
             if (!jobsBinding) {
               return Result.err(
@@ -2355,26 +2541,24 @@ function createJobsFacade<
               ));
             }
 
-            if (
-              await args.client.transportUpgradeRequired?.({
-                publish: [`${queueBinding.publishPrefix}.>`],
-              })
-            ) {
-              return Result.err(
-                transportUpgradeRequiredError({
-                  queue: queueType,
-                  subject: queueBinding.publishPrefix,
-                }),
-              );
-            }
-
-            const outcome = await manager.submit(queueType, payload);
+            lease = await acquireSubmissionTransport();
+            const submissionManager = lease
+              ? manager.withTransport(
+                jetstream(lease.nc),
+                createNatsJobKeyCoordinator(lease.nc),
+              )
+              : manager;
+            const outcome = await submissionManager.submit(queueType, payload);
             if (outcome.kind === "accepted") {
               return Result.ok({
                 kind: "accepted",
                 key: outcome.key,
                 ref: createJobRef({
                   nc: args.nc,
+                  acquireTransport:
+                    args.transport instanceof TransportGenerationManager
+                      ? acquireSubmissionTransport
+                      : undefined,
                   queueType,
                   jobsBinding,
                   queueBinding,
@@ -2391,6 +2575,10 @@ function createJobsFacade<
                 replaced: outcome.replaced,
                 ref: createJobRef({
                   nc: args.nc,
+                  acquireTransport:
+                    args.transport instanceof TransportGenerationManager
+                      ? acquireSubmissionTransport
+                      : undefined,
                   queueType,
                   jobsBinding,
                   queueBinding,
@@ -2402,7 +2590,10 @@ function createJobsFacade<
             }
             return Result.ok(outcome);
           } catch (cause) {
+            if (cause instanceof TransportError) return Result.err(cause);
             return Result.err(toUnexpectedError(cause));
+          } finally {
+            lease?.release();
           }
         })()),
       handle: (handler, options) => {
@@ -2444,6 +2635,7 @@ function createJobsFacade<
       }
 
       startupPromise = (async () => {
+        startupCancellation.signal.throwIfAborted();
         const selectedQueues = [...handlers.keys()];
         if (selectedQueues.length === 0) {
           const host = createNoopJobWorkerHost();
@@ -2471,6 +2663,8 @@ function createJobsFacade<
             const updateSchema = args.contractJobs[queueType]?.updateSchema;
             const workerUpdates = (
               jobId: string,
+              nc: NatsConnection,
+              lifecycle: JobLifecycleTracker,
               options?: JobUpdatesOptions,
             ) => {
               if (!updateSchema) {
@@ -2481,7 +2675,7 @@ function createJobsFacade<
                 ));
               }
               return subscribeToJobUpdates({
-                nc: args.nc,
+                nc,
                 active: updateSubscriptions,
                 lifecycle,
                 service: args.serviceName,
@@ -2498,10 +2692,7 @@ function createJobsFacade<
               );
             }
 
-            const host = await startNatsWorkerHostFromBinding<unknown>({
-              jobs: jobsBinding,
-              workStream,
-            }, {
+            const workerOptions: StartNatsWorkerHostOptions<unknown> = {
               nats: args.nc,
               instanceId: `${args.serviceName}-worker`,
               queueTypes: [queueType],
@@ -2516,18 +2707,35 @@ function createJobsFacade<
                   jobType: job.type,
                   id: job.id,
                 })),
-              handler: async (job: InternalActiveJob<unknown, unknown>) => {
+              handler: async (
+                job: InternalActiveJob<unknown, unknown>,
+                session: JobReceivingSession<unknown>,
+              ) => {
+                const receivingNc = session.nc ?? args.nc;
+                const receivingLifecycle =
+                  args.transport instanceof TransportGenerationManager
+                    ? createJobLifecycleTracker(receivingNc)
+                    : lifecycle;
+                if (receivingLifecycle !== lifecycle) {
+                  receivingLifecycle.watch(queueBinding);
+                }
                 let updateSequence = 0;
                 let attemptActive = true;
                 const publicJob = new PublicActiveJob(
                   createJobRef({
-                    nc: args.nc,
+                    nc: receivingNc,
                     queueType,
                     jobsBinding,
                     queueBinding,
                     seed: job.job() as JobSnapshot<unknown, unknown>,
-                    lifecycle,
-                    updates: (options) => workerUpdates(job.job().id, options),
+                    lifecycle: receivingLifecycle,
+                    updates: (options) =>
+                      workerUpdates(
+                        job.job().id,
+                        receivingNc,
+                        receivingLifecycle,
+                        options,
+                      ),
                   }),
                   job.job().payload,
                   job.context(),
@@ -2589,7 +2797,7 @@ function createJobsFacade<
                           if (isErr(parsed)) return parsed;
                           updateSequence += 1;
                           try {
-                            args.nc.publish(
+                            receivingNc.publish(
                               `${queueBinding.updatesPrefix}.${job.job().id}`,
                               new TextEncoder().encode(JSON.stringify({
                                 jobId: job.job().id,
@@ -2637,6 +2845,9 @@ function createJobsFacade<
                   );
                 } finally {
                   attemptActive = false;
+                  if (receivingLifecycle !== lifecycle) {
+                    receivingLifecycle.stop();
+                  }
                 }
                 if (isErr(handled)) {
                   const annotatedError = annotateHandlerBoundaryError(
@@ -2652,8 +2863,30 @@ function createJobsFacade<
                 }
                 return handled;
               },
-            });
-            hosts.push(host);
+            };
+            startupCancellation.signal.throwIfAborted();
+            if (args.transport instanceof TransportGenerationManager) {
+              const host = startManagedJobWorkerHost({
+                jobs: jobsBinding,
+                workStream,
+              }, {
+                ...workerOptions,
+                transport: args.transport,
+                intakeOwner: args.intakeOwner,
+                queueType,
+                cancellationRegistry,
+              });
+              hosts.push(host);
+              startingHosts.add(host);
+              await host.ready;
+            } else {
+              const host = await startNatsWorkerHostFromBinding({
+                jobs: jobsBinding,
+                workStream,
+              }, workerOptions);
+              hosts.push(host);
+              startingHosts.add(host);
+            }
           }
         } catch (cause) {
           const stopResults = await Promise.allSettled(
@@ -2668,6 +2901,12 @@ function createJobsFacade<
             return Result.err(
               toUnexpectedError(new AggregateError([cause, ...stopErrors])),
             );
+          }
+          if (
+            startupCancellation.signal.aborted &&
+            cause === startupCancellation.signal.reason
+          ) {
+            return Result.ok(createNoopJobWorkerHost());
           }
           return Result.err(toUnexpectedError(cause));
         }
@@ -2684,6 +2923,7 @@ function createJobsFacade<
         return Result.ok(activeHost);
       })().finally(() => {
         startupPromise = undefined;
+        startingHosts.clear();
       });
 
       return AsyncResult.from(startupPromise);
@@ -2693,9 +2933,16 @@ function createJobsFacade<
         return AsyncResult.from(stopPromise);
       }
       stopPromise = (async () => {
+        startupCancellation.abort();
+        const stoppingStartupHosts = Promise.allSettled(
+          [...startingHosts].map((host) =>
+            host.stop(startupCancellation.signal.reason)
+          ),
+        );
         const startup = startupPromise;
         if (startup) {
           const started = await startup;
+          await stoppingStartupHosts;
           if (isErr(started)) {
             return Result.ok(undefined);
           }
@@ -2814,11 +3061,21 @@ export function connectTrellisServiceWithRuntimeDeps<
       authorizationContexts.setServerClockOffsetMs(
         bootstrap.serverClockOffsetMs,
       );
+      const inboxPrefix = `_INBOX.${bootstrap.connectInfo.connectionId}`;
       await authorizationContexts.install(
         bootstrap.connectInfo.authorizationContext,
         {
           bootstrapJwt: bootstrap.connectInfo.jwt,
           bootstrapJwtExpiresAt: bootstrap.connectInfo.jwtExpiresAt,
+        },
+        authorizationContexts.correctedNowSeconds(),
+        () => true,
+        {
+          connectionId: bootstrap.connectInfo.connectionId,
+          loginSessionId: null,
+          participantId: bootstrap.connectInfo.participantId,
+          inboxPrefix,
+          transports: bootstrap.connectInfo.transports,
         },
       );
       const verifiedContext = authorizationContexts.current();
@@ -2835,33 +3092,138 @@ export function connectTrellisServiceWithRuntimeDeps<
           "service authorization context is missing its deployment assignment",
         );
       }
-      const { authenticator, inboxPrefix } = await sessionAuth
-        .natsConnectOptions({
-          inboxPrefix: `_INBOX.${bootstrap.connectInfo.connectionId}`,
-          contextDigest: () =>
-            authorizationContexts.transportCurrent().contextDigest,
-          jwt: () => authorizationContexts.nextConnectRoutingJwt(),
-          authorizationUsable: () =>
-            authorizationProviderCache?.transportUsable() ?? true,
-        });
-
       let nc: NatsConnection | undefined;
-      let appliedTransportServers: string[] | undefined;
+      let initialPrepared: TransportGenerationPrepared | undefined;
       let authorizationProviderCache: AuthorizationProviderCache | undefined;
       let stopContextRefresh: (() => void) | undefined;
       const connectionTelemetry = startConnectionTelemetry("service");
+      /**
+       * Logical provider core handoff: installed on each admitted generation by
+       * the generation manager, never re-registered by application code.
+       */
+      let serviceFacade: ServiceProviderIngress | undefined;
+      /**
+       * Capture immutable CONNECT material for the newest desired service
+       * context. Generation 1 and every automatic generation use this one path
+       * so a candidate can only CONNECT with the exact context it reports.
+       */
+      const prepareServiceConnect = async (
+        verified: AuthorizationCandidateSnapshot["verified"],
+        runtime: AuthorizationCandidateSnapshot["runtime"],
+        routingJwt: string,
+      ): Promise<TransportGenerationPrepared> => {
+        if (!runtime) {
+          throw new Error("authorization runtime metadata is unavailable");
+        }
+        const policy = verified.context.transportAuthorization;
+        const servers = selectRuntimeTransportServers(runtime.transports);
+        const policyDigest = await transportAuthorizationDigestWasm(policy);
+        const {
+          authenticator: preparedAuthenticator,
+          inboxPrefix: preparedInbox,
+        } = await sessionAuth.natsConnectOptions({
+          inboxPrefix: `_INBOX.${bootstrap.connectInfo.connectionId}`,
+          contextDigest: () => verified.contextDigest,
+          jwt: () => routingJwt,
+          authorizationUsable: () =>
+            authorizationProviderCache?.transportUsable() ?? true,
+        });
+        return {
+          contextDigest: verified.contextDigest,
+          policy,
+          policyDigest,
+          connect: {
+            servers,
+            authenticators: Array.isArray(preparedAuthenticator)
+              ? preparedAuthenticator
+              : [preparedAuthenticator],
+            inboxPrefix: preparedInbox,
+            maxReconnectAttempts: GENERATION_MAX_RECONNECT_ATTEMPTS,
+            waitOnFirstConnect: DEFAULT_SERVICE_RUNTIME_WAIT_ON_FIRST_CONNECT,
+          },
+        };
+      };
+      const prepareServiceGeneration = (): Promise<
+        TransportGenerationPrepared | undefined
+      > => {
+        try {
+          return prepareServiceConnect(
+            authorizationContexts.current(),
+            authorizationContexts.runtimeBinding(),
+            authorizationContexts.routingJwt(),
+          );
+        } catch {
+          authorizationContexts.requestRefresh();
+          return Promise.resolve(undefined);
+        }
+      };
+      const generationManager = new TransportGenerationManager({
+        kind: "service",
+        nowSeconds: () => authorizationContexts.correctedNowSeconds(),
+        desiredPolicy: () => {
+          // Installed own authority the provider cache has withdrawn as unusable
+          // (revoked or suspended) must not drive generation reconciliation or a
+          // normal default connection: the retained signed bytes are
+          // known-unusable. The existing healthy carrier and accepted work stay
+          // intact while a private refresh candidate is verified and promoted;
+          // promotion schedules adoption through `authorizationPromoted`.
+          if (!authorizationProviderCache?.ownUsable()) return undefined;
+          try {
+            return authorizationContexts.current().context
+              .transportAuthorization;
+          } catch {
+            return undefined;
+          }
+        },
+        prepare: prepareServiceGeneration,
+        open: (connect) =>
+          runtimeDeps.connect({
+            servers: connect.servers,
+            maxReconnectAttempts: connect.maxReconnectAttempts ??
+              GENERATION_MAX_RECONNECT_ATTEMPTS,
+            ignoreAuthErrorAbort: true,
+            waitOnFirstConnect: connect.waitOnFirstConnect ??
+              DEFAULT_SERVICE_RUNTIME_WAIT_ON_FIRST_CONNECT,
+            inboxPrefix: connect.inboxPrefix,
+            authenticator: connect.authenticators,
+          }),
+        onPreActivate: async (generation) => {
+          await serviceFacade?.install({
+            id: generation.id,
+            nc: generation.nc,
+            contextDigest: generation.contextDigest,
+            // Lease the exact admitted candidate directly; a lookup-by-id would
+            // miss it because it is not yet published as the default.
+            lease: () => generation.lease(),
+            // Push each owning ingress's cleanup scope into the manager before
+            // any install async work.
+            registerDisposal: (handle) => generation.registerDisposal(handle),
+          });
+        },
+        onDrain: (generation) => {
+          serviceFacade?.retireIntake(generation.id);
+        },
+        onActivate: () => {
+          // Recompute the admitted-transport gate from the new default.
+          void applyServiceAdmission().catch(() => undefined);
+        },
+        log: bootstrapLog,
+      });
       try {
         const natsStartedAt = performance.now();
-        appliedTransportServers = selectRuntimeTransportServers(
-          bootstrap.connectInfo.transports,
-        );
+        initialPrepared = await prepareServiceGeneration();
+        if (!initialPrepared) {
+          throw new Error("no current authorization context to connect with");
+        }
         nc = await runtimeDeps.connect({
-          servers: appliedTransportServers,
-          maxReconnectAttempts: DEFAULT_RUNTIME_MAX_RECONNECT_ATTEMPTS,
+          servers: initialPrepared.connect.servers,
+          maxReconnectAttempts: initialPrepared.connect.maxReconnectAttempts ??
+            GENERATION_MAX_RECONNECT_ATTEMPTS,
           ignoreAuthErrorAbort: true,
-          waitOnFirstConnect: DEFAULT_SERVICE_RUNTIME_WAIT_ON_FIRST_CONNECT,
-          inboxPrefix,
-          authenticator,
+          waitOnFirstConnect: initialPrepared.connect.waitOnFirstConnect ??
+            DEFAULT_SERVICE_RUNTIME_WAIT_ON_FIRST_CONNECT,
+          inboxPrefix: initialPrepared.connect.inboxPrefix,
+          authenticator: initialPrepared.connect.authenticators,
         });
         const connectedNats = nc;
         authorizationProviderCache = await AuthorizationProviderCache.attach(
@@ -2873,7 +3235,11 @@ export function connectTrellisServiceWithRuntimeDeps<
         authorizationProviderCache.start();
         await authorizationProviderCache.waitReady();
         await authorizationProviderCache.retainOwnContext();
-        void connectedNats.closed().then(
+        // The provider cache is a logical-connection resource, not a property of
+        // the first physical generation. The initial attachment may be reaped on
+        // a rollover; stopping the cache then would block every later
+        // authenticator, so bind its lifetime to the logical transport.
+        void generationManager.closed().then(
           () => {
             stopContextRefresh?.();
             authorizationProviderCache?.stop();
@@ -2921,51 +3287,24 @@ export function connectTrellisServiceWithRuntimeDeps<
         authorizationProviderCache,
       };
       const transportState = new TransportAuthorizationState();
-      const serviceTransportGate: TransportAuthorizationGate = {
-        status: () => transportState.status(),
-        admittedPolicy: () => transportState.admittedPolicy(),
-        allowedPolicy: () => transportState.allowedPolicy(),
-        nowSeconds: () => authorizationContexts.correctedNowSeconds(),
-      };
       let liveResourceBindings: ResourceBindings = bootstrap.binding.resources;
       const applyServiceAdmission = async (): Promise<void> => {
-        const digest = authorizationContexts.storedContextDigest();
-        if (digest === undefined) return;
-        const policy = authorizationContexts.current().context
-          .transportAuthorization;
-        const own = await readOwnAdmission(nc, 5_000);
+        if (authorizationContexts.storedContextDigest() === undefined) return;
+        const generation = generationManager.currentGeneration();
+        if (!generation || !generation.ready) {
+          transportState.markDisconnected();
+          return;
+        }
+        // The admitted-transport projection tracks the current generation's exact
+        // verified admission rather than a fresh broker read of one socket.
         await transportState.recordAdmission({
-          contextDigest: own?.contextDigest ?? digest,
-          policy,
-          allowed: policy,
+          contextDigest: generation.contextDigest,
+          policy: generation.admittedPolicy,
+          allowed:
+            authorizationContexts.current().context.transportAuthorization,
           nowUnixSeconds: authorizationContexts.correctedNowSeconds(),
         });
       };
-      const refreshServiceTransport = (): AsyncResult<
-        void,
-        TransportRefreshError
-      > =>
-        AsyncResult.from(
-          (async () => {
-            if (nc.isClosed()) {
-              return Result.err(TransportRefreshError.connectionClosed());
-            }
-            const timeoutMs = 30_000;
-            try {
-              await replaceTransportAttachment(nc, timeoutMs);
-              await authorizationProviderCache.waitReady({ timeoutMs });
-              await authorizationProviderCache.retainOwnContext();
-              await applyServiceAdmission();
-              return Result.ok(undefined);
-            } catch (error) {
-              return Result.err(
-                error instanceof TransportRefreshError
-                  ? error
-                  : TransportRefreshError.fromTransport(error),
-              );
-            }
-          })(),
-        );
 
       try {
         const contractRuntime = getParticipantRuntime(args.participant);
@@ -3008,8 +3347,6 @@ export function connectTrellisServiceWithRuntimeDeps<
           contractEventConsumers: contractRuntime.eventConsumers,
           apiBindings: bootstrap.binding.apiBindings,
           ephemeralEventNeeds: participantEphemeralEventNeeds(args.participant),
-          refreshTransport: refreshServiceTransport,
-          transportGate: serviceTransportGate,
           onTransportEvent: (event) => {
             const type = (event as { type?: unknown } | null)?.type;
             if (
@@ -3024,8 +3361,6 @@ export function connectTrellisServiceWithRuntimeDeps<
           runtime,
           bindings: bootstrap.binding.resources,
           liveBindings: () => liveResourceBindings,
-          resourceTransportCheck: (kind, name) =>
-            resourceTransportCheck(serviceTransportGate, kind, name),
           availability: participantAvailability(
             args.participant,
             bootstrap.binding.apiBindings,
@@ -3037,25 +3372,40 @@ export function connectTrellisServiceWithRuntimeDeps<
             deploymentId: verifiedContext.context.deploymentId,
           },
           authorizationProviderCache,
+          transport: generationManager,
+          // The initial heartbeat may run before generation 1 is activated, so
+          // fall back to the connection that was just admitted.
+          activeNats: () => {
+            try {
+              return generationManager.currentNats();
+            } catch {
+              return nc;
+            }
+          },
         });
+        serviceFacade = service[SERVICE_PROVIDER_INGRESS];
+        if (!initialPrepared) {
+          throw new Error("missing prepared service generation");
+        }
+        await generationManager.initialize(nc, initialPrepared);
+        // Bind the logical cache to the manager's published current transport
+        // only after the initial generation is adopted: its first retained
+        // publication pins existing fixed-mode coverage to that exact
+        // generation, even though the socket identity is unchanged.
+        authorizationProviderCache.followTransport(generationManager);
+        service[SERVICE_TRANSPORT_LIFETIME] = generationManager;
         let installedAvailability = participantAvailability(
           args.participant,
           bootstrap.binding.apiBindings,
           bootstrap.binding.resources,
           verifiedContext.context.grants.permissions,
         );
-        transportState.onStatusChanged((status) =>
-          installConnectionTransportUpgrade(
-            service.connection,
-            status === "upgrade_available",
-          )
-        );
         await applyServiceAdmission();
-        authorizationProviderCache.onOwnInvalidated(() => {
+        authorizationProviderCache.onOwnInvalidated((reason) => {
           transitionConnectionAvailability(
             service.connection,
             false,
-            "coverage_lost",
+            reason,
           );
           installConnectionAvailability(
             service.connection,
@@ -3156,27 +3506,31 @@ export function connectTrellisServiceWithRuntimeDeps<
             }
           },
           onRefresh: async (context) => {
-            // Routine renewal must not disturb the live attachment: only
-            // reconfigure the retained connect pool when it actually changed.
-            const refreshedServers = selectRuntimeTransportServers(
-              authorizationContexts.transportRuntimeBinding().transports,
-            );
-            if (
-              !sameTransportServers(refreshedServers, appliedTransportServers)
-            ) {
-              appliedTransportServers = refreshedServers;
-              nc.setServers(refreshedServers);
-            }
             await installAuthorizationRefresh({
               provider: authorizationProviderCache,
-              contextDigest: context.contextDigest,
+              origin: context,
+              prepareConnect: (snapshot) =>
+                prepareServiceConnect(
+                  snapshot.verified,
+                  snapshot.runtime,
+                  snapshot.routing.bootstrapJwt,
+                ),
+              onPromoted: () => generationManager.authorizationPromoted(),
             });
             await transportState.recompute(
               context.context.transportAuthorization,
               authorizationContexts.correctedNowSeconds(),
             );
+            // The generation manager opens a new generation when the promoted
+            // policy needs it; routine renewal leaves the attachment untouched.
           },
-          onTerminalFailure: async () => {
+          onTerminalFailure: async (error) => {
+            // The authorization controller only reports an authoritative
+            // terminal cause; carry the typed error into the logical lifetime so
+            // `closed()` preserves it instead of a bare close.
+            await generationManager.terminate(toUnexpectedError(error)).catch(
+              () => undefined,
+            );
             if (!nc.isClosed()) await nc.close();
           },
         });
@@ -3243,6 +3597,8 @@ export class TrellisServiceSession<
   readonly #nc: NatsConnection;
   readonly #handlerTrellis: Trellis<TTrellisApi, TKv, TJobs>;
   declare readonly [PROVIDER_CALLER]: ProviderCaller;
+  declare readonly [SERVICE_PROVIDER_INGRESS]: ServiceProviderIngress;
+  declare [SERVICE_TRANSPORT_LIFETIME]: ServiceTransportLifetime;
   /** Event lifecycle surface for service startup listeners and publishers. */
   readonly event: ActiveEventFacade<TTrellisApi>;
   readonly kv: ServiceKvFacade<TKv>;
@@ -3279,6 +3635,8 @@ export class TrellisServiceSession<
     health: ServiceHealthRuntime,
     stopHealthPublishing: () => Promise<void>,
     connection: TrellisConnection,
+    transport: TrellisTransportProvider,
+    acquireTimeoutMs: number,
     token: typeof trellisServiceConstructorToken,
   ) {
     if (token !== trellisServiceConstructorToken) {
@@ -3293,6 +3651,21 @@ export class TrellisServiceSession<
     Object.defineProperty(this, PROVIDER_CALLER, {
       value: providerCaller,
     });
+    Object.defineProperty(this, SERVICE_PROVIDER_INGRESS, {
+      value: {
+        // Both the outbound framework surfaces and the operation runtime own
+        // per-generation intake on the same generation.
+        install: async (target) => {
+          const outbound = providerCaller as ProviderIngressOwner;
+          await outbound.installProviderIngress(target);
+          await this.#runtime.installProviderIngress(target);
+        },
+        retireIntake: (id) => {
+          (providerCaller as ProviderIngressOwner).retireProviderIngress(id);
+          this.#runtime.retireProviderIngress(id);
+        },
+      } satisfies ServiceProviderIngress,
+    });
     this.event = event;
     this.kv = kv;
     this.store = Object.fromEntries(
@@ -3300,7 +3673,12 @@ export class TrellisServiceSession<
         [alias, binding],
       ) => [
         alias,
-        new InternalStoreHandle(nc, binding, storeHandleConstructorToken),
+        new InternalStoreHandle(
+          transport,
+          acquireTimeoutMs,
+          binding,
+          storeHandleConstructorToken,
+        ),
       ]),
     );
     this.#operationTransfer = operationTransfer;
@@ -3313,6 +3691,8 @@ export class TrellisServiceSession<
       contractDigest: health.contractDigest,
       nc,
       contractJobs,
+      transport,
+      intakeOwner: this.#runtime,
       client: handlerTrellis,
       jobsBinding: bindings.jobs,
       workStream: bindings.jobs?.workStream,
@@ -3724,8 +4104,14 @@ export class TrellisServiceSession<
   async wait(): Promise<void> {
     this.#waitPromise ??= (async () => {
       try {
-        await this.#managedJobWorkers.start().orThrow();
-        const closed = await this.#nc.closed();
+        if (!this.#stopPromise) {
+          await this.#managedJobWorkers.start().orThrow();
+        }
+        // Supervise the logical connection: an authoritative terminal failure of
+        // the logical transport must stop the service. A single physical
+        // generation being reaped is not a stop.
+        const closed = await (this[SERVICE_TRANSPORT_LIFETIME]?.closed() ??
+          this.#nc.closed());
         if (closed instanceof Error) {
           throw closed;
         }

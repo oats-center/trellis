@@ -7,12 +7,15 @@ import {
 import {
   headers as natsHeaders,
   type Msg,
-  type NatsConnection,
   type Subscription,
 } from "@nats-io/nats-core";
 import { ulid } from "ulid";
 import { sha256 } from "@noble/hashes/sha256";
 import { base64urlEncode } from "../../auth/utils.ts";
+import type {
+  TransportLease,
+  TrellisTransportProvider,
+} from "../../transport/generations.ts";
 
 import type { PermissionAtom } from "../../participant_runtime/api.ts";
 import {
@@ -94,7 +97,8 @@ export type InitiateDownloadArgs = {
 
 type ServiceTransferOpts = {
   name: string;
-  nc: NatsConnection;
+  /** Logical transport used to pin one generation per transfer session. */
+  transport: TrellisTransportProvider;
   auth: TrellisAuth;
   stores: Record<string, TransferStoreHandle>;
   /**
@@ -115,7 +119,7 @@ export type StoredTransfer = {
 
 export class ServiceTransfer {
   readonly #name: string;
-  readonly #nc: NatsConnection;
+  readonly #transport: TrellisTransportProvider;
   readonly #auth: TrellisAuth;
   readonly #stores: Record<string, TransferStoreHandle>;
   readonly #operationStagingBucket: string | undefined;
@@ -125,7 +129,7 @@ export class ServiceTransfer {
 
   constructor(opts: ServiceTransferOpts) {
     this.#name = opts.name;
-    this.#nc = opts.nc;
+    this.#transport = opts.transport;
     this.#auth = opts.auth;
     this.#stores = opts.stores;
     this.#operationStagingBucket = opts.operationStagingBucket;
@@ -171,48 +175,87 @@ export class ServiceTransfer {
       this.#auth.sessionKey.slice(0, 16)
     }.${transferId}`;
     const expiresAtMs = Date.now() + args.expiresInMs;
-    const queue = new AsyncChunkQueue();
-    const subscription = this.#nc.subscribe(subject);
-    const putPromise = storeValue.put(key, queue, {
-      ...(args.contentType ? { contentType: args.contentType } : {}),
-      ...(args.metadata ? { metadata: args.metadata } : {}),
-    });
+    // A transfer session pins one generation for its subscription lifetime so a
+    // rollover never moves an active upload between sockets.
+    let lease: TransportLease;
+    try {
+      lease = await this.#transport.acquireFor(
+        { subscribe: [subject] },
+        { deadlineMs: expiresAtMs },
+      );
+    } catch (cause) {
+      return Result.err(
+        new TransferError({ operation: "initiateUpload", cause }),
+      );
+    }
+    // Adoption must never extend the granted lifetime: the session runs only for
+    // whatever remains of the original window.
+    const remainingMs = expiresAtMs - Date.now();
+    if (remainingMs <= 0) {
+      lease.release();
+      return Result.err(
+        new TransferError({
+          operation: "initiateUpload",
+          context: { reason: "expired" },
+        }),
+      );
+    }
 
-    const session: UploadSession = {
-      kind: "upload",
-      subject,
-      transferId,
-      sessionKey: args.sessionKey,
-      permission: args.permission,
-      requiredCapabilities: args.requiredCapabilities,
-      expiresAtMs,
-      store: storeValue,
-      key,
-      ...(maxBytes !== undefined ? { maxBytes } : {}),
-      ...(args.contentType ? { contentType: args.contentType } : {}),
-      ...(args.metadata ? { metadata: args.metadata } : {}),
-      ...(args.onProgress ? { onProgress: args.onProgress } : {}),
-      ...(args.onComplete ? { onComplete: args.onComplete } : {}),
-      ...(args.onError ? { onError: args.onError } : {}),
-      ...(args.onStored ? { onStored: args.onStored } : {}),
-      subscription,
-      timeoutId: setTimeout(
-        () => this.#expireUploadSession(subject),
-        args.expiresInMs,
-      ),
-      queue,
-      putPromise,
-      cancellation: new AbortController(),
-      committing: false,
-      nextSeq: 0,
-      receivedBytes: 0,
-      hasher: sha256.create(),
-    };
+    // Establishment is transactional: any failure releases the pinned lease and
+    // tears down whatever subscription was already opened.
+    let subscription: Subscription | undefined;
+    let session: UploadSession;
+    try {
+      const queue = new AsyncChunkQueue();
+      subscription = lease.nc.subscribe(subject);
+      const putPromise = storeValue.put(key, queue, {
+        ...(args.contentType ? { contentType: args.contentType } : {}),
+        ...(args.metadata ? { metadata: args.metadata } : {}),
+      });
+      session = {
+        kind: "upload",
+        subject,
+        transferId,
+        sessionKey: args.sessionKey,
+        permission: args.permission,
+        requiredCapabilities: args.requiredCapabilities,
+        expiresAtMs,
+        store: storeValue,
+        lease,
+        key,
+        ...(maxBytes !== undefined ? { maxBytes } : {}),
+        ...(args.contentType ? { contentType: args.contentType } : {}),
+        ...(args.metadata ? { metadata: args.metadata } : {}),
+        ...(args.onProgress ? { onProgress: args.onProgress } : {}),
+        ...(args.onComplete ? { onComplete: args.onComplete } : {}),
+        ...(args.onError ? { onError: args.onError } : {}),
+        ...(args.onStored ? { onStored: args.onStored } : {}),
+        subscription,
+        timeoutId: setTimeout(
+          () => this.#expireUploadSession(subject),
+          remainingMs,
+        ),
+        queue,
+        putPromise,
+        cancellation: new AbortController(),
+        committing: false,
+        nextSeq: 0,
+        receivedBytes: 0,
+        hasher: sha256.create(),
+      };
+    } catch (cause) {
+      subscription?.unsubscribe();
+      lease.release();
+      return Result.err(
+        new TransferError({ operation: "initiateUpload", cause }),
+      );
+    }
 
     this.#uploadSessions.set(subject, session);
     this.#runUploadSession(session);
 
     if (!this.#uploadSessions.has(subject)) {
+      lease.release();
       return Result.err(
         new TransferError({
           operation: "initiateUpload",
@@ -428,35 +471,75 @@ export class ServiceTransfer {
       this.#auth.sessionKey.slice(0, 16)
     }.${transferId}`;
     const expiresAtMs = Date.now() + args.expiresInMs;
-    const subscription = this.#nc.subscribe(subject);
-    const session: DownloadSession = {
-      kind: "download",
-      subject,
-      transferId,
-      sessionKey: args.sessionKey,
-      permission: args.permission,
-      requiredCapabilities: [...(args.requiredCapabilities ?? [])],
-      inboxPrefix: args.inboxPrefix,
-      expiresAtMs,
-      store: storeValue,
-      key: args.key,
-      info: downloadInfo,
-      subscription,
-      pendingOffset: 0,
-      nextSeq: 0,
-      sentBytes: 0,
-      hasher: sha256.create(),
-      cancellation: new AbortController(),
-      timeoutId: setTimeout(
-        () => this.#cleanupDownloadSession(subject),
-        args.expiresInMs,
-      ),
-    };
+    // A transfer session pins one generation for its subscription lifetime so a
+    // rollover never moves an active download between sockets.
+    let lease: TransportLease;
+    try {
+      lease = await this.#transport.acquireFor(
+        { subscribe: [subject] },
+        { deadlineMs: expiresAtMs },
+      );
+    } catch (cause) {
+      return Result.err(
+        new TransferError({ operation: "initiateDownload", cause }),
+      );
+    }
+    // Adoption must never extend the granted lifetime: the session runs only for
+    // whatever remains of the original window.
+    const remainingMs = expiresAtMs - Date.now();
+    if (remainingMs <= 0) {
+      lease.release();
+      return Result.err(
+        new TransferError({
+          operation: "initiateDownload",
+          context: { reason: "expired" },
+        }),
+      );
+    }
+
+    // Establishment is transactional: any failure releases the pinned lease and
+    // tears down whatever subscription was already opened.
+    let subscription: Subscription | undefined;
+    let session: DownloadSession;
+    try {
+      subscription = lease.nc.subscribe(subject);
+      session = {
+        kind: "download",
+        subject,
+        transferId,
+        sessionKey: args.sessionKey,
+        permission: args.permission,
+        requiredCapabilities: [...(args.requiredCapabilities ?? [])],
+        inboxPrefix: args.inboxPrefix,
+        expiresAtMs,
+        store: storeValue,
+        lease,
+        key: args.key,
+        info: downloadInfo,
+        subscription,
+        pendingOffset: 0,
+        nextSeq: 0,
+        sentBytes: 0,
+        hasher: sha256.create(),
+        cancellation: new AbortController(),
+        timeoutId: setTimeout(
+          () => this.#cleanupDownloadSession(subject),
+          remainingMs,
+        ),
+      };
+    } catch (cause) {
+      subscription?.unsubscribe();
+      lease.release();
+      return Result.err(
+        new TransferError({ operation: "initiateDownload", cause }),
+      );
+    }
 
     this.#downloadSessions.set(subject, session);
     this.#runDownloadSession(session);
 
     if (!this.#downloadSessions.has(subject)) {
+      lease.release();
       return Result.err(
         new TransferError({
           operation: "initiateDownload",
@@ -540,7 +623,9 @@ export class ServiceTransfer {
         }),
       );
     }
-    const store = await TypedStore.open(this.#nc, bucket, { bindOnly: true });
+    const store = await TypedStore.open(this.#transport, bucket, {
+      bindOnly: true,
+    });
     const value = store.take();
     if (isErr(value)) {
       return Result.err(
@@ -918,7 +1003,7 @@ export class ServiceTransfer {
     }
     if (Date.now() >= session.expiresAtMs) {
       publishError(
-        this.#nc,
+        session.lease.nc,
         reply,
         new TransferError({ operation: "get", context: { reason: "expired" } }),
       );
@@ -945,7 +1030,7 @@ export class ServiceTransfer {
       authenticatedValue.sessionKey !== session.sessionKey
     ) {
       publishError(
-        this.#nc,
+        session.lease.nc,
         reply,
         new TransferError({
           operation: "get",
@@ -1136,6 +1221,7 @@ export class ServiceTransfer {
     clearTimeout(session.timeoutId);
     session.cancellation.abort();
     session.subscription.unsubscribe();
+    session.lease.release();
     this.#uploadSessions.delete(subject);
   }
 
@@ -1147,6 +1233,7 @@ export class ServiceTransfer {
     clearTimeout(session.timeoutId);
     session.cancellation.abort();
     session.subscription.unsubscribe();
+    session.lease.release();
     void session.reader?.cancel().catch(() => undefined);
     this.#downloadSessions.delete(subject);
   }

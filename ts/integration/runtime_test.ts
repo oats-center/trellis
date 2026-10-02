@@ -1,5 +1,9 @@
 import { jetstreamManager } from "@nats-io/jetstream";
-import { credsAuthenticator, headers as natsHeaders } from "@nats-io/nats-core";
+import {
+  credsAuthenticator,
+  deadline,
+  headers as natsHeaders,
+} from "@nats-io/nats-core";
 import { connect } from "@nats-io/transport-node";
 import { isErr, Result } from "@oatscenter/trellis";
 import { TransportError } from "@oatscenter/trellis/errors";
@@ -85,6 +89,18 @@ Deno.test("service wait rejects an unrequested transport close but accepts stop"
     const healthyExit = healthy.wait();
     await healthy.stop();
     await healthyExit;
+
+    const stopped = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.Provider.participant,
+      seed: identity.seed,
+    }).orThrow();
+    stopped.jobs.work.handle(({ job }) =>
+      Promise.resolve(Result.ok(job.payload))
+    );
+    await stopped.stop();
+    await stopped.wait();
+    await stopped.wait();
   });
 });
 
@@ -636,8 +652,8 @@ Deno.test("generated runtime workflows", async (t) => {
             (await operation.get().orThrow()).state === "running"
           );
           const cancellation = operation.cancel().orThrow();
-          await cancellationObserved.promise;
-          assert(await lateCompletionRejected.promise);
+          await deadline(cancellationObserved.promise, 10_000);
+          assert(await deadline(lateCompletionRejected.promise, 10_000));
           assertEquals((await operation.get().orThrow()).state, "running");
           cancellationCleanup.resolve();
           assertEquals((await cancellation).state, "cancelled");
@@ -699,8 +715,8 @@ Deno.test("generated runtime workflows", async (t) => {
                 seed: sibling.seed,
               }).orThrow();
               const siblingExit = siblingService.wait().catch((error) => error);
-              siblingService.handleWork(({ op }) =>
-                Promise.resolve(op.defer())
+              siblingService.handleWork(({ op, signal }) =>
+                Promise.resolve(signal.aborted ? undefined : op.defer())
               );
               try {
                 if (Deno.env.get("TRELLIS_TRACE_AUTH") === "1") {
@@ -1417,6 +1433,7 @@ Deno.test("generated runtime workflows", async (t) => {
         },
       );
     } finally {
+      cancellationCleanup.resolve();
       await service.stop();
       const error = await serviceExit;
       assertEquals(error, undefined);

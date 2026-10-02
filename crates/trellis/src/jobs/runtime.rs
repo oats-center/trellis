@@ -17,16 +17,30 @@ const FILTERED_REOPEN_DELAY: Duration = Duration::from_millis(250);
 ///
 /// This keeps NATS and JetStream details inside the Trellis library while Jobs
 /// subsystem services work with Jobs-domain operations.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct JobsRuntime {
     nats: async_nats::Client,
+    /// The logical client, when this facade belongs to a consented service. A
+    /// built-in Jobs provider has no logical client and stays on its own
+    /// connection.
+    client: Option<std::sync::Arc<TrellisClient>>,
+}
+
+impl std::fmt::Debug for JobsRuntime {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("JobsRuntime")
+            .field("has_logical_client", &self.client.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl JobsRuntime {
     /// Create a Jobs runtime facade from a connected Trellis client.
-    pub(crate) fn from_client(client: &TrellisClient) -> Self {
+    pub(crate) fn from_client(client: std::sync::Arc<TrellisClient>) -> Self {
         Self {
             nats: client.nats().clone(),
+            client: Some(client),
         }
     }
 
@@ -34,7 +48,25 @@ impl JobsRuntime {
     #[cfg(feature = "runtime-internals")]
     #[doc(hidden)]
     pub fn from_nats(nats: async_nats::Client) -> Self {
-        Self { nats }
+        Self { nats, client: None }
+    }
+
+    /// Acquire a generation lease for one transport operation, returning the
+    /// client to run it on and the lease that pins it. A facade without a logical
+    /// client stays on its own connection with no lease.
+    async fn lease_transport(
+        &self,
+    ) -> Result<(async_nats::Client, Option<crate::client::TransportLease>), String> {
+        match &self.client {
+            Some(client) => {
+                let lease = client
+                    .acquire_transport(&[], &[], client.transport_deadline())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok((lease.nats().clone(), Some(lease)))
+            }
+            None => Ok((self.nats.clone(), None)),
+        }
     }
 
     /// Open a new-only ephemeral consumer for `Jobs.Watch`.
@@ -43,7 +75,8 @@ impl JobsRuntime {
         stream_name: &str,
         filter_subject: &str,
     ) -> Result<JobsRuntimeMessageStream, String> {
-        let stream = jetstream::new(self.nats.clone())
+        let (nats, lease) = self.lease_transport().await?;
+        let stream = jetstream::new(nats)
             .get_stream(stream_name)
             .await
             .map_err(|error| error.to_string())?;
@@ -62,9 +95,9 @@ impl JobsRuntime {
             .messages()
             .await
             .map_err(|error| error.to_string())?;
-        Ok(Box::pin(messages.map(|message| {
+        Ok(Box::pin(messages.map(move |message| {
             message
-                .map(JobsRuntimeMessage::new)
+                .map(|inner| JobsRuntimeMessage::new(inner, lease.clone()))
                 .map_err(|error| error.to_string())
         })))
     }
@@ -89,7 +122,8 @@ impl JobsRuntime {
         if let Some(tracestate) = headers.tracestate.as_deref() {
             nats_headers.insert("tracestate", tracestate);
         }
-        jetstream::new(self.nats.clone())
+        let (nats, _lease) = self.lease_transport().await?;
+        jetstream::new(nats)
             .publish_with_headers(subject, nats_headers, payload.into())
             .await
             .map_err(|error| error.to_string())?
@@ -208,7 +242,8 @@ impl JobsRuntime {
         consumer_name: &str,
         filter_subject: &str,
     ) -> Result<JobsRuntimeMessageStream, String> {
-        let jetstream = jetstream::new(self.nats.clone());
+        let (nats, lease) = self.lease_transport().await?;
+        let jetstream = jetstream::new(nats);
         let stream = jetstream
             .get_stream(stream_name)
             .await
@@ -237,16 +272,17 @@ impl JobsRuntime {
             .messages()
             .await
             .map_err(|error| error.to_string())?;
-        Ok(Box::pin(messages.map(|message| {
+        Ok(Box::pin(messages.map(move |message| {
             message
-                .map(JobsRuntimeMessage::new)
+                .map(|inner| JobsRuntimeMessage::new(inner, lease.clone()))
                 .map_err(|error| error.to_string())
         })))
     }
 
     /// Read a raw payload by stream sequence.
     pub async fn raw_payload(&self, stream_name: &str, sequence: u64) -> Result<Bytes, String> {
-        let jetstream = jetstream::new(self.nats.clone());
+        let (nats, _lease) = self.lease_transport().await?;
+        let jetstream = jetstream::new(nats);
         let stream = jetstream
             .get_stream(stream_name)
             .await
@@ -277,11 +313,20 @@ pub type JobsRuntimeMessageStream =
 /// Message delivered by a Jobs runtime stream consumer.
 pub struct JobsRuntimeMessage {
     inner: async_nats::jetstream::Message,
+    /// The lease that pins the receiving generation until the delivery is acked,
+    /// terminated, or dropped.
+    _lease: Option<crate::client::TransportLease>,
 }
 
 impl JobsRuntimeMessage {
-    fn new(inner: async_nats::jetstream::Message) -> Self {
-        Self { inner }
+    fn new(
+        inner: async_nats::jetstream::Message,
+        lease: Option<crate::client::TransportLease>,
+    ) -> Self {
+        Self {
+            inner,
+            _lease: lease,
+        }
     }
 
     /// Return the message subject.

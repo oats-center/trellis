@@ -54,12 +54,13 @@ Deno.test("D4 manager fencing reaches every registered session and a late one", 
     fence: () => fenced.push(id),
     close: () => Promise.resolve(),
   });
-  live.registerSession(session("a"));
-  live.registerSession(session("b"));
+  const owner = {};
+  live.registerSession("a", session("a"), owner, "route");
+  live.registerSession("b", session("b"), owner, "route");
   live.suspend();
   assertEquals(fenced.sort(), ["a", "b"], "suspend fences every session");
   // A registration racing a suspended generation is fenced immediately.
-  live.registerSession(session("late"));
+  live.registerSession("late", session("late"), owner, "route");
   assertEquals(fenced.includes("late"), true);
   const generation = live.generation();
   live.resume();
@@ -67,5 +68,92 @@ Deno.test("D4 manager fencing reaches every registered session and a late one", 
     live.generation(),
     generation,
     "resume keeps the generation after a fence",
+  );
+});
+
+Deno.test("D5 session ownership spans active, terminal, and owner-loss windows", () => {
+  const live = new LiveSessionManager();
+  const session = { fence: () => {}, close: () => Promise.resolve() };
+  const owner = { provider: "owner" };
+  const survivor = { provider: "survivor" };
+  const unregisterOwner = live.registerProvider(owner, "live.route.A");
+  live.registerProvider(survivor, "live.route.A");
+
+  assertEquals(
+    live.ownerOf("s1"),
+    undefined,
+    "a never-offered session has no authoritative provider",
+  );
+
+  const deregister = live.registerSession(
+    "s1",
+    session,
+    owner,
+    "live.route.A",
+  );
+  assertEquals(live.ownerOf("s1"), owner, "the registering provider owns it");
+
+  live.insertReceipt({
+    sessionId: "s1",
+    ownerConnectionId: "owner-connection",
+    ownerSessionKey: "owner-session",
+    baseSubject: "live.watch",
+    reason: "complete",
+    cleanup: "complete",
+    finalSeq: "1",
+    receivedSeq: "0",
+    consumedSeq: "0",
+  });
+  deregister();
+  assertEquals(
+    live.ownerOf("s1"),
+    owner,
+    "the owner stays authoritative through the terminal receipt window",
+  );
+
+  // The physical owner is disposed: the retained receipt still has exactly one
+  // live responder rather than every provider falling silent.
+  unregisterOwner();
+  assertEquals(
+    live.ownerOf("s1"),
+    survivor,
+    "ownership fails over to a surviving provider for a retained receipt",
+  );
+
+  assertEquals(
+    live.ownerOf("never-offered"),
+    undefined,
+    "a genuinely unknown session keeps the signed unknown-session contract",
+  );
+});
+
+Deno.test("D6 owner failover stays on the session's exact route", () => {
+  const live = new LiveSessionManager();
+  const session = { fence: () => {}, close: () => Promise.resolve() };
+  const owner = { provider: "owner" };
+  const sameRoute = { provider: "same-route" };
+  // Registered first, but on a different route: it never receives this
+  // session's control frame and must never be elected.
+  live.registerProvider({ provider: "unrelated" }, "live.route.B");
+  live.registerProvider(sameRoute, "live.route.A");
+  const unregisterOwner = live.registerProvider(owner, "live.route.A");
+
+  live.registerSession("s1", session, owner, "live.route.A");
+  live.insertReceipt({
+    sessionId: "s1",
+    ownerConnectionId: "owner-connection",
+    ownerSessionKey: "owner-session",
+    baseSubject: "live.route.A",
+    reason: "complete",
+    cleanup: "complete",
+    finalSeq: "1",
+    receivedSeq: "0",
+    consumedSeq: "0",
+  });
+  unregisterOwner();
+  assertEquals(
+    live.ownerOf("s1"),
+    sameRoute,
+    "failover elects only a provider on the session's exact route",
   );
 });

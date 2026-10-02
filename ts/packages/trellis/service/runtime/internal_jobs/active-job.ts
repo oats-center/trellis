@@ -15,6 +15,8 @@ export class ActiveJobRuntimeError extends Error {
 
 export type ActiveJobRuntimeMetadata = {
   redeliveryCount: number;
+  /** @internal The receiving worker owns automatic delivery progress maintenance. */
+  progressAckManaged?: boolean;
 };
 
 import type { JobCancellationReason } from "../../../jobs.ts";

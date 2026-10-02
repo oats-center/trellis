@@ -28,7 +28,6 @@ export type PinnedPeerIdentity = {
 
 /** Why a retained live authority is no longer usable. */
 export type LiveAuthorityLost =
-  | "transport_unavailable"
   | "epoch_changed"
   | "coverage_lost"
   | "revoked"
@@ -99,11 +98,6 @@ function grantAllows(
 /** Map one authority loss into its bounded terminal outcome. */
 export function authorityLostEnd(lost: LiveAuthorityLost): LiveEnd {
   switch (lost) {
-    case "transport_unavailable":
-      return new LiveEnd(
-        "disconnected",
-        new LiveStreamError("disconnected", "local transport is not usable"),
-      );
     case "epoch_changed":
       return new LiveEnd(
         "disconnected",
@@ -195,7 +189,7 @@ export class LiveAuthorityGuard {
     digest: string,
     requirement: LiveGuardRequirement,
   ): Promise<LiveAuthorityGuard> {
-    const epoch = cache.connectionGeneration();
+    const epoch = cache.cacheEpoch();
     const lease = await retainLease(cache, digest, epoch);
     try {
       const identity = identityOf(lease.verified.context);
@@ -247,7 +241,7 @@ export class LiveAuthorityGuard {
   async reconcile(): Promise<LiveAuthorityLost | undefined> {
     if (!this.#tracksLocal) return this.checkNow();
     const cache = this.#cache;
-    const generation = cache.connectionGeneration();
+    const generation = cache.cacheEpoch();
     const localDigest = cache.currentLocalContextDigest();
     if (localDigest === undefined) return this.checkNow();
     if (generation === this.#epoch && localDigest === this.#digest) {
@@ -267,7 +261,7 @@ export class LiveAuthorityGuard {
    * the guard reporting the precise loss.
    */
   async rebindCurrentGeneration(): Promise<LiveAuthorityLost | undefined> {
-    const generation = this.#cache.connectionGeneration();
+    const generation = this.#cache.cacheEpoch();
     if (generation === this.#epoch) return this.checkNow();
     return await this.#rebind(generation);
   }
@@ -325,14 +319,18 @@ export class LiveAuthorityGuard {
   checkNow(): LiveAuthorityLost | undefined {
     const lease = this.#lease;
     if (!lease) return "coverage_lost";
-    if (!this.#cache.health().healthy) return "transport_unavailable";
-    if (this.#cache.connectionGeneration() !== this.#epoch) {
-      return "epoch_changed";
-    }
+    // The lease's own coverage is authoritative for this session. A global
+    // default/old-transport availability signal is not consulted here at all:
+    // a physical loss of this session's own transport is owned by its delivery
+    // and control path, and the cache epoch/coverage checks below already cover
+    // verifier stop/reset. Only genuine loss of this binding ends the session.
     const coverage = this.#cache.liveLeaseCoverage(lease);
     if (coverage === "revoked") return "revoked";
     if (coverage === "epoch") return "epoch_changed";
     if (coverage === "lost") return "coverage_lost";
+    if (this.#cache.cacheEpoch() !== this.#epoch) {
+      return "epoch_changed";
+    }
     const context = lease.verified.context;
     const now = this.#cache.liveNowSeconds();
     if (
@@ -399,7 +397,7 @@ export class LiveAuthorityGuard {
     candidate: LiveAuthorityGuard,
   ): LiveAuthorityLost | undefined {
     if (
-      this.#cache.connectionGeneration() !== this.#epoch ||
+      this.#cache.cacheEpoch() !== this.#epoch ||
       candidate.#epoch !== this.#epoch
     ) {
       return "epoch_changed";
@@ -453,10 +451,10 @@ async function retainLease(
   try {
     return await cache.retainLiveLease(digest, epoch);
   } catch {
-    if (!cache.health().healthy) {
-      throw new LiveAuthorityGuardError("transport_unavailable");
-    }
-    if (cache.connectionGeneration() !== epoch) {
+    // No global transport-health veto: retention fails on verifier reset
+    // (`epoch_changed`) or on loss of the exact retained coverage
+    // (`coverage_lost`). This binding's own transport loss is owned elsewhere.
+    if (cache.cacheEpoch() !== epoch) {
       throw new LiveAuthorityGuardError("epoch_changed");
     }
     throw new LiveAuthorityGuardError("coverage_lost");

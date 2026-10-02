@@ -160,17 +160,10 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             else {
                 return Ok(());
             };
-            let api_nats = owner.runtime_nats();
             let mut router = router;
-            router.set_live_owner(owner);
-            run_builtin_authenticated_router(
-                api_nats,
-                JOBS_API_ID,
-                JOBS_SUBJECTS,
-                router,
-                validator,
-            )
-            .await
+            router.set_live_owner(owner.clone());
+            run_builtin_authenticated_router(owner, JOBS_API_ID, JOBS_SUBJECTS, router, validator)
+                .await
         };
         tokio::pin!(api_loop);
         let result = {

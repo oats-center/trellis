@@ -415,7 +415,9 @@ pub enum RuntimeError {
         source: Box<LeaseError>,
     },
     /// A selected singleton owner lease is already held.
-    #[error("runtime owner lease {key:?} for {subsystem} is already held; owner {owner_id} cannot start: {source}")]
+    #[error(
+        "runtime owner lease {key:?} for {subsystem} is already held; owner {owner_id} cannot start: {source}"
+    )]
     OwnerHeld {
         /// Selected subsystem owner group.
         subsystem: SubsystemName,
@@ -744,7 +746,29 @@ async fn run_owned(
         platform_verifier: Arc::new(tokio::sync::OnceCell::new()),
         live_providers: crate::platform::LiveProviderSlots::new(),
     };
-    let mut handles = start_subsystems(&context).await?;
+    let primary = supervise_owned(&context, ownership, stop).await;
+    // HTTP and subsystem parents are now stopped. Their detached ingress tasks
+    // can still retain clients, so end native logical ownership before runtime
+    // ownership and the managed broker are released.
+    let provider_shutdown = tokio::time::timeout(
+        SUBSYSTEM_SHUTDOWN_TIMEOUT,
+        context.live_providers.shutdown(),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        Err(RuntimeError::Platform(
+            "built-in provider transport shutdown timed out".into(),
+        ))
+    });
+    preserve_run_primary(primary, provider_shutdown)
+}
+
+async fn supervise_owned(
+    context: &RuntimeContext,
+    ownership: &mut RuntimeOwnership,
+    stop: Option<crate::shutdown::StopHandle>,
+) -> Result<(), RuntimeError> {
+    let mut handles = start_subsystems(context).await?;
     let root_stop = StopHandle::new();
     // Only components selected by the runtime mode report ready; others are
     // absent rather than failed. Readiness is written here from the real
@@ -806,7 +830,7 @@ async fn run_owned(
     // released instead of the process being terminated with its lease held.
     let mut signalled_during_bootstrap = false;
     let bootstrap_result: Result<(), RuntimeError> = tokio::select! {
-        result = bootstrap_live_providers(&context) => result,
+        result = bootstrap_live_providers(context) => result,
         result = server.as_mut() => result.map_err(RuntimeError::from),
         () = shutdown.as_mut() => {
             signalled_during_bootstrap = true;

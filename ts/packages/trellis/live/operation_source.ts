@@ -1,4 +1,5 @@
 import { LIVE_VERSION } from "./client_open.ts";
+import type { ProviderAuthorityPort } from "./provider.ts";
 
 /** Identity for one Operation-watch live source. */
 export type OperationLiveSource = {
@@ -25,6 +26,12 @@ export type OperationWatchOpen = {
 export type OperationWatchSourceSession = {
   emit: (value: unknown) => Promise<void>;
   signal: AbortSignal;
+  /**
+   * The session's live caller-authority port, replaced in place on an
+   * identity-preserving caller refresh, so a durable watch follows the caller's
+   * renewed authority instead of expiring with its opening digest.
+   */
+  callerAuthority: () => ProviderAuthorityPort;
 };
 
 /** Parse a live Operation-watch open. A missing observation is a protocol error. */

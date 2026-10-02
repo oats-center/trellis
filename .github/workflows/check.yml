@@ -85,6 +85,7 @@ jobs:
             ts/packages/trellis-testkit/trellis
             integration/fixtures/runtime/crates/runtime-trellis
             integration/fixtures/runtime/packages/runtime-trellis
+            integration/fixtures/runtime-pinned/packages/runtime-trellis
             demos/rust/service/trellis
             demos/rust/device/trellis
             demos/ts/service/trellis
@@ -268,7 +269,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist/runtime-binaries/fixtures dist/runtime-binaries/examples
           cp target/release/trellis target/release/trellis-server target/debug/trellis-testkit-live dist/runtime-binaries/
-          for bin in trellis-runtime-acceptance caller resources events live_probe live_probe_caller empty_watch operation_lease_loss; do
+          for bin in trellis-runtime-acceptance caller resources events live_probe live_probe_caller empty_watch operation_lease_loss device_companion transport_growth_subject transport_growth_operation; do
             cp "target/debug/${bin}" dist/runtime-binaries/fixtures/
           done
           cp target/debug/examples/health_watch dist/runtime-binaries/examples/
@@ -337,16 +338,12 @@ jobs:
           path: ts/packages/trellis/auth/protocol_wasm
 
       - name: Prime the pinned NATS cache
-        # The transport broker tests start a real nats-server and resolve it from
-        # TRELLIS_CACHE_DIR (or ~/.cache/trellis); otherwise the first one
-        # downloads it while its siblings wait on the install lock, which can
-        # outlast their 30s delivery bound on a loaded runner.
-        run: |
-          set -euo pipefail
-          bash scripts/acquire-test-nats.sh --dest /tmp/trellis-testkit-nats
-          version="$(jq -r '.["nats-server"].version' crates/local-nats/nats-binaries.json)"
-          install -d -m 700 /tmp/trellis-nats-cache
-          cp /tmp/trellis-testkit-nats/nats-server "/tmp/trellis-nats-cache/nats-server-v${version}"
+        # Resolve through the real component so trellis-local-nats creates its
+        # private cache and retains the checksum-verified archive needed for
+        # reuse. Do not precreate a public directory or copy only the binary.
+        env:
+          TRELLIS_CACHE_DIR: ${{ github.workspace }}/target/trellis-nats-cache
+        run: cargo test --manifest-path Cargo.toml -p trellis-runtime --lib platform::auth::ephemeral::tests::nats_kv_repository_conforms -- --exact
 
       - name: Check formatting
         run: |
@@ -357,7 +354,7 @@ jobs:
 
       - name: Test Rust workspace
         env:
-          TRELLIS_CACHE_DIR: /tmp/trellis-nats-cache
+          TRELLIS_CACHE_DIR: ${{ github.workspace }}/target/trellis-nats-cache
         run: cargo test --manifest-path Cargo.toml --workspace
 
   typescript:
@@ -771,6 +768,10 @@ jobs:
           set -euo pipefail
           mkdir -p target/debug
           tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
+
+      - name: Prepare web development server
+        working-directory: web
+        run: deno run -A --frozen @sveltejs/kit sync
 
       - name: Test built-in UI hosting
         working-directory: ts

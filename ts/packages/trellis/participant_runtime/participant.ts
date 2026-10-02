@@ -645,7 +645,7 @@ export function participantAvailability(
     // presence alone answers a different question, and admitted transport
     // authority is deliberately not consulted here: a granted capability that
     // the current attachment has not adopted is still available at the
-    // application level and fails on use with transport_upgrade_required.
+    // application level; using it waits for automatic transport adoption.
     const routeBound = selection.api.identity in apiBindings;
     for (const capability of selection.optionalCapabilities) {
       const bundle = participant.optionalGrants[capability];

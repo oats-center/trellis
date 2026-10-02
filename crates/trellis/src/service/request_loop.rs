@@ -267,6 +267,64 @@ impl RequestHandler for Router {
     }
 }
 
+/// Forward every request-handler call through one shared handler, so overlapping
+/// provider generations can dispatch into the same logical service core.
+impl<T> RequestHandler for std::sync::Arc<T>
+where
+    T: RequestHandler + ?Sized,
+{
+    fn handler_service_name(&self) -> Option<&str> {
+        (**self).handler_service_name()
+    }
+
+    fn handler_contract_id(&self) -> Option<&str> {
+        (**self).handler_contract_id()
+    }
+
+    fn handler_contract_digest(&self) -> Option<&str> {
+        (**self).handler_contract_digest()
+    }
+
+    fn route_token(&self, subject: &str) -> Option<&'static str> {
+        (**self).route_token(subject)
+    }
+
+    fn is_unary_rpc_route(&self, subject: &str) -> bool {
+        (**self).is_unary_rpc_route(subject)
+    }
+
+    fn is_live_route(&self, subject: &str) -> bool {
+        (**self).is_live_route(subject)
+    }
+
+    fn handle<'a>(
+        &'a self,
+        subject: &'a str,
+        payload: Bytes,
+        context: RequestContext,
+    ) -> BoxFuture<'a, Result<Bytes, ServerError>> {
+        (**self).handle(subject, payload, context)
+    }
+
+    fn handle_frames<'a>(
+        &'a self,
+        subject: &'a str,
+        payload: Bytes,
+        context: RequestContext,
+    ) -> BoxFuture<'a, Result<Vec<Bytes>, ServerError>> {
+        (**self).handle_frames(subject, payload, context)
+    }
+
+    fn handle_response<'a>(
+        &'a self,
+        subject: &'a str,
+        payload: Bytes,
+        context: RequestContext,
+    ) -> BoxFuture<'a, Result<HandlerResponse, ServerError>> {
+        (**self).handle_response(subject, payload, context)
+    }
+}
+
 impl<V> RequestHandler for AuthenticatedRouter<V>
 where
     V: RequestValidator + 'static,
@@ -397,6 +455,7 @@ pub fn decode_nats_request(message: &async_nats::Message) -> InboundRequest {
             caller: None,
             traceparent,
             tracestate,
+            transport: Default::default(),
         },
     }
 }
@@ -1056,25 +1115,40 @@ fn panic_to_server_error(panic: Box<dyn Any + Send>) -> ServerError {
     ServerError::Nats(format!("request handler panicked: {message}"))
 }
 
-/// Run an inbound NATS request loop until the subscriber closes.
-pub(crate) async fn run_nats_request_loop<H>(
+/// Run an inbound NATS request loop until every subscription ends or `retire`
+/// resolves.
+///
+/// Retirement uses the upstream subscription drain: it stops the broker from
+/// delivering new messages on every subscription, then keeps polling so every
+/// already-delivered message is accepted and handled. Independently-accepted
+/// handler futures are never cancelled by a sibling failure; the first failure is
+/// reported only after all of them have run to completion.
+pub(crate) async fn run_nats_request_loop_until<H, R>(
     client: async_nats::Client,
-    subscriber: impl futures_util::Stream<Item = async_nats::Message>,
+    subscribers: Vec<async_nats::Subscriber>,
     handler: H,
+    pin: super::router::GenerationPin,
+    retire: R,
 ) -> Result<(), ServerError>
 where
     H: RequestHandler,
+    R: std::future::Future<Output = ()>,
 {
-    let mut subscriber = Box::pin(subscriber);
+    let mut stream = futures_util::stream::select_all(subscribers);
+    tokio::pin!(retire);
+    let mut retired = false;
+    let mut first_error: Option<ServerError> = None;
 
     let mut in_flight = FuturesUnordered::new();
     loop {
         tokio::select! {
-            message = subscriber.next() => {
+            message = stream.next() => {
                 let Some(message) = message else {
+                    tracing::info!(retired, in_flight = in_flight.len(), connection_state = ?client.connection_state(), "service request subscriptions exhausted");
                     break;
                 };
-                let request = decode_nats_request(&message);
+                let mut request = decode_nats_request(&message);
+                request.context.transport = pin.clone();
                 let client = &client;
                 let handler = &handler;
                 in_flight.push(async move {
@@ -1096,18 +1170,41 @@ where
                 });
             }
             result = in_flight.next(), if !in_flight.is_empty() => {
-                if let Some(result) = result {
-                    result?;
+                // One callback failing must not cancel its accepted siblings.
+                if let Some(Err(error)) = result {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
                 }
+            }
+            () = &mut retire, if !retired => {
+                tracing::info!(in_flight = in_flight.len(), connection_state = ?client.connection_state(), "service request retirement requested");
+                retired = true;
+                // Stop new broker deliveries on every subscription via the
+                // upstream drain, then keep polling so every message the broker
+                // already delivered is accepted and handled before the loop ends.
+                let taken = std::mem::take(&mut stream);
+                let mut subscribers: Vec<async_nats::Subscriber> = taken.into_iter().collect();
+                for subscriber in subscribers.iter_mut() {
+                    let _ = subscriber.drain().await;
+                }
+                stream = futures_util::stream::select_all(subscribers);
             }
         }
     }
 
     while let Some(result) = in_flight.next().await {
-        result?;
+        if let Err(error) = result {
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+        }
     }
 
-    Ok(())
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -1373,6 +1470,7 @@ mod tests {
             caller: None,
             traceparent: Some(TRACEPARENT.to_string()),
             tracestate: None,
+            transport: Default::default(),
         }
     }
 

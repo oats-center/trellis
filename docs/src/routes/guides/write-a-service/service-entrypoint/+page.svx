@@ -15,7 +15,10 @@ import type { RpcHandler } from "@oatscenter/trellis/service";
 import { participants } from "orders-trellis";
 
 /** Returns an example order receipt; this walkthrough does not persist orders. */
-export const createOrder: RpcHandler<typeof participants.acmeOrdersService.participant, "Orders.Create"> = (
+export const createOrder: RpcHandler<
+  typeof participants.acmeOrdersService.participant,
+  "Orders.Create"
+> = (
   { input },
 ) => Result.ok({ orderId: crypto.randomUUID(), customerId: input.customerId });
 ```
@@ -68,15 +71,18 @@ interface, not a Trellis requirement. Pass the same typed options from a file,
 secret manager, CLI parser, or application configuration system if preferred.
 
 `connect()` proves the provisioned identity, verifies the server-owned installed
-participant and GrantBinding, and resolves Trellis resources. `handleOrdersCreate()`
-registers the provider. `wait()` supervises the running service; `stop()` closes
-its resources. Authorization contexts and route credentials remain in process
-memory and are refreshed proactively as SDK-owned maintenance. An
-identity-preserving refresh promotes the refreshed context in place on the
-existing physical attachment; it does not reconnect a healthy socket. Where the
-refreshed authority offers transport capability the admitted attachment lacks,
-the connection reports a retained upgrade status and exposes an explicit refresh
-rather than adopting it automatically.
+participant and GrantBinding, and resolves Trellis resources.
+`handleOrdersCreate()` registers the provider. `wait()` supervises the running
+service; `stop()` closes its resources. Authorization contexts and route
+credentials remain in process memory and are refreshed proactively as SDK-owned
+maintenance. Renewal of unchanged transport authority does not replace a healthy
+socket. The SDK adopts newly approved authority automatically, moving fresh
+intake to a ready successor while safe accepted work finishes on its receiving
+connection. Retain the service and its resource handles across these changes; no
+manual transport refresh is required. `wait()` supervises the logical service,
+not an individual socket. Reduced or revoked authority can interrupt affected
+work. While own coverage is unavailable, fresh application traffic either waits
+within its acquisition budget or reports unavailability.
 
 The shared `/service` entrypoint supports Node-compatible native runtimes,
 including Deno. For Rust, use the generated facade described in
@@ -113,11 +119,11 @@ trellis svc "$TRELLIS_DEPLOYMENT" provision --format json
 Provisioning prints private identity material; retain it securely, not in source
 control or logs.
 
-| Example environment variable          | Value                                                    |
-| ------------------------------------- | -------------------------------------------------------- |
-| `TRELLIS_URL`                         | Runtime HTTP URL, for example `http://127.0.0.1:8080`    |
-| `TRELLIS_DEPLOYMENT`                  | Created `deployment.deploymentId`                        |
-| `TRELLIS_IDENTITY_SEED`               | Provision response `instanceSeed`                        |
+| Example environment variable | Value                                                 |
+| ---------------------------- | ----------------------------------------------------- |
+| `TRELLIS_URL`                | Runtime HTTP URL, for example `http://127.0.0.1:8080` |
+| `TRELLIS_DEPLOYMENT`         | Created `deployment.deploymentId`                     |
+| `TRELLIS_IDENTITY_SEED`      | Provision response `instanceSeed`                     |
 
 Deployment, instance, participant, grant, resource, and transport data are
 resolved by Trellis during bootstrap; do not duplicate them in service config.

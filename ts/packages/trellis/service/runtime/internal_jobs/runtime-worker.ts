@@ -1,4 +1,8 @@
-import { jetstream, jetstreamManager } from "@nats-io/jetstream";
+import {
+  jetstream,
+  JetStreamError,
+  jetstreamManager,
+} from "@nats-io/jetstream";
 import type { ConsumerInfo, JsMsg } from "@nats-io/jetstream";
 import type { NatsConnection, Subscription } from "@nats-io/nats-core";
 
@@ -12,6 +16,7 @@ import {
   JobCancellationToken,
   type JobManager,
   JobProcessError,
+  startAutoHeartbeat,
 } from "./job-manager.ts";
 import { isTerminal, jobFromWorkEvent } from "./projection.ts";
 import type { Job, JobEvent } from "./types.ts";
@@ -75,13 +80,8 @@ type WorkMessageLike = {
   inProgress(): void | Promise<void>;
 };
 
-type ConsumerMessagesLike = AsyncIterable<WorkMessageLike> & {
-  stop?: () => void;
-  close?: () => Promise<void | Error> | void;
-};
-
 type WorkerConsumerLike = {
-  consume(): Promise<ConsumerMessagesLike>;
+  next(): Promise<WorkMessageLike | null>;
 };
 
 type CancelMessageLike = {
@@ -96,7 +96,7 @@ type CancelSubscriptionLike = AsyncIterable<CancelMessageLike> & {
 type ConsumerInfoLike = unknown;
 
 type StartNatsConsumerDeps = {
-  nats: Pick<NatsConnection, "subscribe">;
+  nats: Pick<NatsConnection, "subscribe" | "flush">;
   jsm: {
     consumers: {
       info(stream: string, consumer: string): Promise<ConsumerInfoLike>;
@@ -131,7 +131,7 @@ function isCustomNatsRuntimeDeps(
   return args.jsm !== undefined && args.js !== undefined;
 }
 
-type StartNatsWorkerHostOptions<TResult> =
+export type StartNatsWorkerHostOptions<TResult> =
   & StartNatsRuntimeDeps
   & {
     instanceId: string;
@@ -156,20 +156,33 @@ type StartNatsWorkerHostOptions<TResult> =
     validateResult?: (
       args: ResultValidationArgs<TResult>,
     ) => Promise<void> | void;
-    handler: (job: ActiveJob<unknown, TResult>) => Promise<TResult>;
+    handler: (
+      job: ActiveJob<unknown, TResult>,
+      session: JobReceivingSession<TResult>,
+    ) => Promise<TResult>;
   };
 
-type StartQueueWorkerLoopOptions<TResult> = {
-  manager: JobManager<unknown, TResult>;
-  consumer: WorkerConsumerLike;
-  cancelSubscription: CancelSubscriptionLike;
-  hostCancellation?: JobCancellationToken;
-  getProjectedJob?: (
+/** @internal Immutable transport inputs retained until a bounded receive and its disposition settle. */
+export type JobReceivingSession<TResult> = {
+  readonly nc?: NatsConnection;
+  readonly manager: JobManager<unknown, TResult>;
+  readonly consumer: WorkerConsumerLike;
+  readonly physicalLoss?: AbortSignal;
+  /** Releases the receiving source's ownership; implementations must be idempotent. */
+  release(): void | Promise<void>;
+  readonly getProjectedJob?: (
     job: Job<unknown, TResult>,
   ) => Promise<Job<unknown, TResult> | undefined>;
-  getLatestLifecycleEvent?: (
+  readonly getLatestLifecycleEvent?: (
     job: Job<unknown, TResult>,
   ) => Promise<JobEvent | undefined>;
+};
+
+type StartQueueWorkerLoopOptions<TResult> = {
+  /** Shutdown aborts acquisition only; factories reject with the signal reason or AbortError. */
+  acquireSession(signal: AbortSignal): Promise<JobReceivingSession<TResult>>;
+  cancellationRegistry: ActiveJobCancellationRegistry;
+  hostCancellation?: JobCancellationToken;
   payloadSchema?: SchemaRef;
   validatePayload?: (
     args: PayloadValidationArgs<TResult>,
@@ -178,43 +191,35 @@ type StartQueueWorkerLoopOptions<TResult> = {
   validateResult?: (
     args: ResultValidationArgs<TResult>,
   ) => Promise<void> | void;
-  handler: (job: ActiveJob<unknown, TResult>) => Promise<TResult>;
+  handler: (
+    job: ActiveJob<unknown, TResult>,
+    session: JobReceivingSession<TResult>,
+  ) => Promise<TResult>;
   instanceId?: string;
   deferralBackoffMs?: number;
   backoffMs?: number[];
   progressAckIntervalMs?: number;
 };
 
-function toWorkerConsumer(
+/** @internal Converts a native consumer to one broker-bounded receiving slot input. */
+export function toWorkerConsumer(
   consumer: {
-    consume(): Promise<
-      AsyncIterable<JsMsg> & {
-        stop?: () => void;
-        close?: () => Promise<void | Error> | void;
-      }
-    >;
+    next(options: { expires: number }): Promise<JsMsg | null>;
   },
 ): WorkerConsumerLike {
   return {
-    async consume(): Promise<ConsumerMessagesLike> {
-      const messages = await consumer.consume();
+    async next(): Promise<WorkMessageLike | null> {
+      const msg = await consumer.next({ expires: 1_000 });
+      if (!msg) return null;
       return {
-        stop: messages.stop?.bind(messages),
-        close: messages.close?.bind(messages),
-        async *[Symbol.asyncIterator]() {
-          for await (const msg of messages) {
-            yield {
-              data: msg.data,
-              subject: msg.subject,
-              info: {
-                redeliveryCount: Math.max(0, msg.info.deliveryCount - 1),
-              },
-              ack: msg.ack.bind(msg),
-              nak: msg.nak.bind(msg),
-              inProgress: msg.working.bind(msg),
-            };
-          }
+        data: msg.data,
+        subject: msg.subject,
+        info: {
+          redeliveryCount: Math.max(0, msg.info.deliveryCount - 1),
         },
+        ack: msg.ack.bind(msg),
+        nak: msg.nak.bind(msg),
+        inProgress: msg.working.bind(msg),
       };
     },
   };
@@ -271,29 +276,68 @@ async function cleanupTerminalKeyState(
   }
 }
 
-export async function startQueueWorkerLoop<TResult>(
+/** @internal Owns cancellation observation independently of receiving slots or source retirement. */
+export async function startJobCancellationCoverage(
+  nats: Pick<NatsConnection, "subscribe" | "flush">,
+  subject: string,
+  registry: ActiveJobCancellationRegistry,
+  signal?: AbortSignal,
+): Promise<{ stop(): Promise<void> }> {
+  signal?.throwIfAborted();
+  const subscription = nats.subscribe(
+    subject,
+  ) as Subscription as CancelSubscriptionLike;
+  let failure: unknown;
+  const task = (async () => {
+    for await (const msg of subscription) {
+      const event = parseWorkPayloadEvent(msg.data);
+      if (event?.eventType === "cancelled") {
+        registry.cancel(`${event.service}.${event.jobType}.${event.jobId}`);
+      }
+    }
+  })().catch((error) => {
+    failure = error;
+  });
+  const aborted = Promise.withResolvers<never>();
+  const abort = () => aborted.reject(signal?.reason);
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
+    await Promise.race([nats.flush(), aborted.promise]);
+    signal?.throwIfAborted();
+  } catch (error) {
+    subscription.unsubscribe();
+    await task;
+    throw error;
+  } finally {
+    signal?.removeEventListener("abort", abort);
+  }
+  return {
+    async stop() {
+      subscription.unsubscribe();
+      await task;
+      if (failure !== undefined) throw failure;
+    },
+  };
+}
+
+/** Starts one sequential slot; stop accounts its outstanding receive before releasing its source. */
+export function startQueueWorkerLoop<TResult>(
   options: StartQueueWorkerLoopOptions<TResult>,
 ): Promise<{ stop(): Promise<void> }> {
-  const registry = new ActiveJobCancellationRegistry();
+  const registry = options.cancellationRegistry;
+  const acquisition = new AbortController();
   const activeTokens = new Set<JobCancellationToken>();
-  const messages = await options.consumer.consume();
+  let stopping = false;
   const hostCancellation = options.hostCancellation;
-  const stopConsuming = () => {
-    if (typeof messages.stop === "function") {
-      messages.stop();
-    }
-    if (typeof messages.close === "function") {
-      void messages.close();
-    }
-  };
   const cancelActiveForShutdown = () => {
     for (const token of activeTokens) {
       token.cancelForShutdown();
     }
   };
   const hostAbortHandler = () => {
+    stopping = true;
+    acquisition.abort();
     cancelActiveForShutdown();
-    stopConsuming();
   };
   hostCancellation?.signal.addEventListener("abort", hostAbortHandler);
   if (hostCancellation?.signal.aborted) {
@@ -301,75 +345,106 @@ export async function startQueueWorkerLoop<TResult>(
   }
 
   const workTask = (async () => {
-    for await (const msg of messages) {
-      const disposition = async (action: "ack" | "nak", delay?: number) => {
-        let outcome = "error";
-        try {
-          if (action === "ack") await msg.ack();
-          else await msg.nak(delay);
-          outcome = "ok";
-        } finally {
-          recordCatalogCounter("trellis.delivery.dispositions", 1, {
-            "trellis.family": "job",
-            "trellis.action": action,
-            "trellis.outcome": outcome,
-          });
-        }
-      };
+    while (!stopping) {
+      let session: JobReceivingSession<TResult>;
       try {
-        const event = parseWorkPayloadEvent(msg.data);
-        if (!event) {
-          await disposition("ack");
-          continue;
-        }
-        const job = jobFromWorkEvent(event) as
-          | Job<unknown, TResult>
-          | undefined;
-        if (!job) {
-          await disposition("ack");
-          continue;
-        }
-        const key = `${job.service}.${job.type}.${job.id}`;
-        if (hostCancellation?.isHostShutdown()) {
-          await disposition("nak");
-          continue;
-        }
-        const latestLifecycle = options.getLatestLifecycleEvent
-          ? await options.getLatestLifecycleEvent(job)
-          : undefined;
-        if (hostCancellation?.isHostShutdown()) {
-          await disposition("nak");
-          continue;
-        }
-        if (lifecycleWorkDecision(latestLifecycle) === "skip-ack") {
-          await cleanupTerminalKeyState(options.manager, job);
-          registry.clearPending(key);
-          await disposition("ack");
-          continue;
-        }
-        if (!latestLifecycle) {
-          const projected = options.getProjectedJob
-            ? await options.getProjectedJob(job)
-            : undefined;
-          if (hostCancellation?.isHostShutdown()) {
+        session = await options.acquireSession(acquisition.signal);
+      } catch (error) {
+        if (
+          stopping && (error === acquisition.signal.reason ||
+            (error instanceof DOMException && error.name === "AbortError"))
+        ) break;
+        throw error;
+      }
+      let retryReceive = false;
+      const token = new JobCancellationToken();
+      const physicalLossHandler = () => token.cancelForLeaseLoss();
+      let guard: ReturnType<typeof registry.register> | undefined;
+      let stopProgressAcks: (() => void) | undefined;
+      try {
+        if (stopping) continue;
+        // A slot remains reserved until its broker pull expires or its delivery
+        // is accounted for. Never cancel the outstanding receive on shutdown.
+        const msg = await session.consumer.next();
+        if (!msg) continue;
+        session.physicalLoss?.addEventListener("abort", physicalLossHandler);
+        if (session.physicalLoss?.aborted) physicalLossHandler();
+        if (stopping) token.cancelForShutdown();
+        activeTokens.add(token);
+        const heartbeat = async () => {
+          await msg.inProgress();
+        };
+        stopProgressAcks = startAutoHeartbeat(
+          heartbeat,
+          options.progressAckIntervalMs ?? 1_000,
+          physicalLossHandler,
+        );
+        const disposition = async (action: "ack" | "nak", delay?: number) => {
+          let outcome = "error";
+          try {
+            if (action === "ack") await msg.ack();
+            else await msg.nak(delay);
+            outcome = "ok";
+          } finally {
+            recordCatalogCounter("trellis.delivery.dispositions", 1, {
+              "trellis.family": "job",
+              "trellis.action": action,
+              "trellis.outcome": outcome,
+            });
+          }
+        };
+        try {
+          if (stopping) {
             await disposition("nak");
             continue;
           }
-          if (projectedWorkDecision(projected, job) === "skip-ack") {
-            await cleanupTerminalKeyState(options.manager, job);
+          const event = parseWorkPayloadEvent(msg.data);
+          if (!event) {
+            await disposition("ack");
+            continue;
+          }
+          const job = jobFromWorkEvent(event) as
+            | Job<unknown, TResult>
+            | undefined;
+          if (!job) {
+            await disposition("ack");
+            continue;
+          }
+          const key = `${job.service}.${job.type}.${job.id}`;
+          guard = registry.register(key, token);
+          if (stopping || token.isLeaseLost()) {
+            await disposition("nak");
+            continue;
+          }
+          const latestLifecycle = session.getLatestLifecycleEvent
+            ? await session.getLatestLifecycleEvent(job)
+            : undefined;
+          if (stopping || token.isLeaseLost()) {
+            await disposition("nak");
+            continue;
+          }
+          if (lifecycleWorkDecision(latestLifecycle) === "skip-ack") {
+            await cleanupTerminalKeyState(session.manager, job);
             registry.clearPending(key);
             await disposition("ack");
             continue;
           }
-        }
+          if (!latestLifecycle) {
+            const projected = session.getProjectedJob
+              ? await session.getProjectedJob(job)
+              : undefined;
+            if (stopping || token.isLeaseLost()) {
+              await disposition("nak");
+              continue;
+            }
+            if (projectedWorkDecision(projected, job) === "skip-ack") {
+              await cleanupTerminalKeyState(session.manager, job);
+              registry.clearPending(key);
+              await disposition("ack");
+              continue;
+            }
+          }
 
-        const token = new JobCancellationToken();
-        if (hostCancellation?.isHostShutdown()) {
-          token.cancelForShutdown();
-        }
-        activeTokens.add(token);
-        const guard = registry.register(key, token);
-        try {
           const currentJob = latestLifecycle
             ? {
               ...job,
@@ -379,12 +454,10 @@ export async function startQueueWorkerLoop<TResult>(
             : job;
           let outcome;
           do {
-            outcome = await options.manager.processWithHeartbeat(
+            outcome = await session.manager.processWithHeartbeat(
               currentJob,
               token,
-              async () => {
-                await msg.inProgress();
-              },
+              heartbeat,
               async (activeJob) => {
                 try {
                   await options.validatePayload?.({
@@ -396,7 +469,7 @@ export async function startQueueWorkerLoop<TResult>(
                     error instanceof Error ? error.message : String(error),
                   );
                 }
-                return await options.handler(activeJob);
+                return await options.handler(activeJob, session);
               },
               {
                 latestState: latestLifecycle?.state,
@@ -404,6 +477,7 @@ export async function startQueueWorkerLoop<TResult>(
                 redeliveryCount: msg.info?.redeliveryCount,
                 instanceId: options.instanceId,
                 progressAckIntervalMs: options.progressAckIntervalMs,
+                progressAckManaged: true,
               },
               {
                 validateResult: options.validateResult
@@ -417,7 +491,6 @@ export async function startQueueWorkerLoop<TResult>(
               },
             );
             if (outcome.outcome === "deferred") {
-              await msg.inProgress();
               await new Promise((resolve) =>
                 setTimeout(resolve, options.progressAckIntervalMs ?? 1_000)
               );
@@ -426,7 +499,7 @@ export async function startQueueWorkerLoop<TResult>(
           const ackAction = ackActionForOutcome(outcome);
           if (ackAction === "ack") {
             if (outcome.outcome === "expired" || outcome.outcome === "dead") {
-              await cleanupTerminalKeyState(options.manager, job);
+              await cleanupTerminalKeyState(session.manager, job);
             }
             await disposition("ack");
           } else if (outcome?.outcome === "deferred") {
@@ -437,26 +510,67 @@ export async function startQueueWorkerLoop<TResult>(
               retryDelayMs(outcome?.tries ?? 1, options.backoffMs),
             );
           }
-        } finally {
-          guard.dispose();
-          activeTokens.delete(token);
+        } catch (error) {
+          recordTrellisError(error, {
+            surface: "job",
+            direction: "worker",
+            phase: "queue_loop",
+            messagingSystem: "nats",
+          });
+          try {
+            await disposition("nak", options.deferralBackoffMs ?? 1_000);
+          } catch (nakError) {
+            recordTrellisError(nakError, {
+              surface: "job",
+              direction: "worker",
+              phase: "queue_loop_nak",
+              messagingSystem: "nats",
+            });
+          }
         }
       } catch (error) {
+        // Managed sessions can reacquire a fresh consumer after the installed
+        // library's finite-pull heartbeat timeout or broker no-responders status.
+        // Configuration, permission and missing-resource errors remain terminal;
+        // fixed hosts keep their existing failure reporting.
+        retryReceive = session.physicalLoss !== undefined &&
+          !session.physicalLoss.aborted && error instanceof JetStreamError &&
+          (error.message === "heartbeats missed" ||
+            ("code" in error && error.code === 503));
+        if (!session.physicalLoss?.aborted && !retryReceive) throw error;
         recordTrellisError(error, {
           surface: "job",
           direction: "worker",
-          phase: "queue_loop",
+          phase: "queue_receive",
           messagingSystem: "nats",
         });
+      } finally {
         try {
-          await disposition("nak", options.deferralBackoffMs ?? 1_000);
-        } catch (nakError) {
-          recordTrellisError(nakError, {
-            surface: "job",
-            direction: "worker",
-            phase: "queue_loop_nak",
-            messagingSystem: "nats",
-          });
+          // The receipt is accounted for. Detach its maintenance and cancellation
+          // before release can dispose a drained, replaced receiving source.
+          stopProgressAcks?.();
+          guard?.dispose();
+          activeTokens.delete(token);
+          session.physicalLoss?.removeEventListener(
+            "abort",
+            physicalLossHandler,
+          );
+        } finally {
+          await session.release();
+        }
+      }
+      if (retryReceive && !stopping) {
+        // Release the settled receive before backoff. Shutdown wakes this wait
+        // immediately and the next loop always reacquires published authority.
+        const wake = Promise.withResolvers<void>();
+        const abort = () => wake.resolve();
+        acquisition.signal.addEventListener("abort", abort, { once: true });
+        const timer = setTimeout(abort, 100);
+        try {
+          if (!acquisition.signal.aborted) await wake.promise;
+        } finally {
+          clearTimeout(timer);
+          acquisition.signal.removeEventListener("abort", abort);
         }
       }
     }
@@ -466,35 +580,17 @@ export async function startQueueWorkerLoop<TResult>(
     workFailure = error;
   });
 
-  const cancelTask = (async () => {
-    for await (const msg of options.cancelSubscription) {
-      const event = parseWorkPayloadEvent(msg.data);
-      if (!event || event.eventType !== "cancelled") {
-        continue;
-      }
-      registry.cancel(`${event.service}.${event.jobType}.${event.jobId}`);
-    }
-  })();
-  let cancelFailure: unknown;
-  const observedCancelTask = cancelTask.catch((error) => {
-    cancelFailure = error;
-  });
-
-  return {
+  return Promise.resolve({
     async stop(): Promise<void> {
-      options.cancelSubscription.unsubscribe();
-      cancelActiveForShutdown();
-      stopConsuming();
-      await Promise.all([observedWorkTask, observedCancelTask]);
+      hostAbortHandler();
+      await observedWorkTask;
       hostCancellation?.signal.removeEventListener("abort", hostAbortHandler);
-      const failures = [workFailure, cancelFailure].filter((error) =>
-        error !== undefined
-      );
+      const failures = [workFailure].filter((error) => error !== undefined);
       if (failures.length > 0) {
         throw new WorkerLoopStopError(failures);
       }
     },
-  };
+  });
 }
 
 export async function startNatsWorkerHostFromBinding<TResult>(
@@ -543,13 +639,11 @@ export async function startNatsWorkerHostFromBinding<TResult>(
     : [];
 
   const workers: Array<{ stop(): Promise<void> }> = [];
-  for (const queueType of queueTypes) {
-    const queue = getQueueBinding(binding, queueType);
-    for (
-      let workerIndex = 0;
-      workerIndex < queueConcurrency[queueType]!;
-      workerIndex += 1
-    ) {
+  const registry = new ActiveJobCancellationRegistry();
+  const coverages: Array<{ stop(): Promise<void> }> = [];
+  try {
+    for (const queueType of queueTypes) {
+      const queue = getQueueBinding(binding, queueType);
       const jsm = isCustomNatsRuntimeDeps(options)
         ? options.jsm
         : await jetstreamManager(options.nats);
@@ -565,18 +659,25 @@ export async function startNatsWorkerHostFromBinding<TResult>(
         },
       };
       const info = await getConsumerInfo(jsm, binding.workStream, queue);
-      const consumer = js.consumers.getConsumerFromInfo(info);
-      const cancelSubscription = options.nats.subscribe(
-        `${queue.publishPrefix}.*.cancelled`,
-      ) as Subscription as CancelSubscriptionLike;
+      coverages.push(
+        await startJobCancellationCoverage(
+          options.nats,
+          `${queue.publishPrefix}.*.cancelled`,
+          registry,
+        ),
+      );
       const direct = jsm.direct;
-
-      workers.push(
-        await startQueueWorkerLoop({
+      for (
+        let workerIndex = 0;
+        workerIndex < queueConcurrency[queueType]!;
+        workerIndex += 1
+      ) {
+        const consumer = js.consumers.getConsumerFromInfo(info);
+        const session: JobReceivingSession<TResult> = {
+          nc: isCustomNatsRuntimeDeps(options) ? undefined : options.nats,
           manager: options.manager,
           consumer,
-          cancelSubscription,
-          hostCancellation: cancellation,
+          release() {},
           getProjectedJob: options.getProjectedJob,
           getLatestLifecycleEvent: options.getLatestLifecycleEvent ??
             (direct
@@ -588,18 +689,42 @@ export async function startNatsWorkerHostFromBinding<TResult>(
                   job,
                 )
               : undefined),
-          payloadSchema: queue.payload,
-          validatePayload: options.validatePayload,
-          resultSchema: queue.result,
-          validateResult: options.validateResult,
-          handler: options.handler,
-          instanceId: options.instanceId,
-          deferralBackoffMs: queue.backoffMs[0] ?? 1_000,
-          backoffMs: queue.backoffMs,
-          progressAckIntervalMs: progressAckIntervalMs(queue),
-        }),
-      );
+        };
+
+        workers.push(
+          await startQueueWorkerLoop({
+            acquireSession: () => Promise.resolve(session),
+            cancellationRegistry: registry,
+            hostCancellation: cancellation,
+            payloadSchema: queue.payload,
+            validatePayload: options.validatePayload,
+            resultSchema: queue.result,
+            validateResult: options.validateResult,
+            handler: options.handler,
+            instanceId: options.instanceId,
+            deferralBackoffMs: queue.backoffMs[0] ?? 1_000,
+            backoffMs: queue.backoffMs,
+            progressAckIntervalMs: progressAckIntervalMs(queue),
+          }),
+        );
+      }
     }
+  } catch (error) {
+    cancellation.cancelForShutdown();
+    const settled = await Promise.allSettled([
+      ...workers.map((worker) => worker.stop()),
+      ...heartbeatLoops.map((loop) => loop.stop()),
+    ]);
+    const coverageSettled = await Promise.allSettled(
+      coverages.map((coverage) => coverage.stop()),
+    );
+    const failures = [...settled, ...coverageSettled]
+      .filter((result): result is PromiseRejectedResult =>
+        result.status === "rejected"
+      )
+      .map((result) => result.reason);
+    if (failures.length) throw new WorkerHostStopError([error, ...failures]);
+    throw error;
   }
 
   return {
@@ -612,7 +737,10 @@ export async function startNatsWorkerHostFromBinding<TResult>(
         ...workers.map((worker) => worker.stop()),
         ...heartbeatLoops.map((loop) => loop.stop()),
       ]);
-      const failures = results
+      const coverageResults = await Promise.allSettled(
+        coverages.map((coverage) => coverage.stop()),
+      );
+      const failures = [...results, ...coverageResults]
         .filter((result): result is PromiseRejectedResult =>
           result.status === "rejected"
         )
@@ -646,15 +774,16 @@ export function progressAckIntervalMs(queue: JobsQueueBinding): number {
   return Math.max(1, Math.floor(wait / 3));
 }
 
-async function getConsumerInfo(
+/** @internal Reads the provisioned consumer without starting a receive. */
+export async function getConsumerInfo<T>(
   jsm: {
     consumers: {
-      info(stream: string, consumer: string): Promise<ConsumerInfoLike>;
+      info(stream: string, consumer: string): Promise<T>;
     };
   },
   stream: string,
   queue: JobsQueueBinding,
-): Promise<ConsumerInfoLike> {
+): Promise<T> {
   try {
     return await jsm.consumers.info(stream, queue.consumerName);
   } catch (error) {
@@ -697,7 +826,8 @@ function getQueueBinding(
   return queue;
 }
 
-async function getLatestLifecycleEvent(
+/** @internal Reads durable lifecycle using the receiving attachment's direct reader. */
+export async function getLatestLifecycleEvent(
   direct: DirectMessageReader,
   stream: string,
   publishPrefix: string,

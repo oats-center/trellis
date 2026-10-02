@@ -1,6 +1,5 @@
 use async_nats::header::HeaderMap;
 use async_nats::jetstream::{self, consumer, AckKind};
-use async_nats::ConnectOptions;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use bytes::Bytes;
@@ -11,7 +10,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use std::marker::PhantomData;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use tokio::task::JoinHandle;
@@ -255,6 +254,10 @@ impl EventSubscribeOptions {
 #[derive(Debug)]
 pub struct EventMessage<T> {
     message: jetstream::Message,
+    /// The generation lease that admitted this delivery. Retained on the delivery
+    /// itself until it is dropped, so an un-acked message keeps its receiving
+    /// generation alive even if the originating stream is dropped first.
+    _lease: Option<crate::client::TransportLease>,
     _event: PhantomData<fn() -> T>,
 }
 
@@ -421,14 +424,6 @@ struct CompanionBootstrapAuthorization {
     participant_id: String,
     login_session_id: String,
     required: bool,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct NatsConnectToken {
-    format: &'static str,
-    context_digest: String,
-    routing_jwt: String,
 }
 
 #[derive(Clone, Debug)]
@@ -646,21 +641,29 @@ async fn publish_prepared_event(
     nats: &async_nats::Client,
     auth: &SessionAuth,
     context_digest: &str,
-    timeout_ms: u64,
+    deadline: Instant,
     event: &PreparedTrellisEvent,
 ) -> Result<(), TrellisClientError> {
     let jetstream = jetstream::new(nats.clone());
     let headers = signed_event_headers(auth, context_digest, event)?;
+    let publish_remaining = deadline.saturating_duration_since(Instant::now());
+    if publish_remaining.is_zero() {
+        return Err(TrellisClientError::Timeout);
+    }
     let publish = async {
         jetstream
             .publish_with_headers(event.subject().to_string(), headers, event.payload_bytes())
             .await
     };
-    let ack = timeout(std::time::Duration::from_millis(timeout_ms), publish)
+    let ack = timeout(publish_remaining, publish)
         .await
         .map_err(|_| TrellisClientError::Timeout)?
         .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
-    timeout(std::time::Duration::from_millis(timeout_ms), ack)
+    let ack_remaining = deadline.saturating_duration_since(Instant::now());
+    if ack_remaining.is_zero() {
+        return Err(TrellisClientError::Timeout);
+    }
+    timeout(ack_remaining, ack)
         .await
         .map_err(|_| TrellisClientError::Timeout)?
         .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
@@ -687,17 +690,32 @@ async fn publish_health_heartbeat(
 }
 
 fn spawn_health_heartbeat_task(
-    nats: async_nats::Client,
+    manager: crate::client::TransportGenerationManager,
     timeout_ms: u64,
     config: HealthHeartbeatConfig,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        let subject = health_heartbeat_subject(&config);
         let mut interval =
             tokio::time::interval(std::time::Duration::from_millis(config.publish_interval_ms));
         interval.tick().await;
         loop {
             interval.tick().await;
-            if let Err(error) = publish_health_heartbeat(&nats, timeout_ms, &config).await {
+            // The heartbeat follows the current generation and never pins one
+            // forever: each publish acquires a suitable generation and releases
+            // it when the publish completes.
+            let deadline = Instant::now() + std::time::Duration::from_millis(timeout_ms);
+            let lease = match manager
+                .acquire_for(std::slice::from_ref(&subject), &[], deadline)
+                .await
+            {
+                Ok(lease) => lease,
+                Err(error) => {
+                    tracing::warn!(%error, "failed to acquire transport for health heartbeat");
+                    continue;
+                }
+            };
+            if let Err(error) = publish_health_heartbeat(lease.nats(), timeout_ms, &config).await {
                 tracing::warn!(%error, "failed to publish health heartbeat");
             }
         }
@@ -716,6 +734,7 @@ struct AuthorizationProviderHandle {
 async fn attach_authorization_provider(
     nats: async_nats::Client,
     authorization_contexts: Arc<AuthorizationContextCache>,
+    generations: Option<crate::client::TransportGenerationManager>,
 ) -> Result<AuthorizationProviderHandle, TrellisClientError> {
     let registry_binding = match authorization_contexts.bundle() {
         Ok(bundle) => bundle.authorization_registry.clone(),
@@ -725,6 +744,7 @@ async fn attach_authorization_provider(
         nats.clone(),
         &registry_binding,
         authorization_contexts.clone(),
+        generations,
     )
     .await
     {
@@ -774,110 +794,13 @@ async fn attach_authorization_provider(
     })
 }
 
-async fn connect_authorized_nats(
-    auth: Arc<SessionAuth>,
-    authorization_contexts: Arc<AuthorizationContextCache>,
-    timeout_ms: u64,
-    refresh_before_connect: bool,
-    live_slot: std::sync::Arc<
-        std::sync::Mutex<Option<std::sync::Weak<crate::live::manager::LiveSessionManager>>>,
-    >,
-    transport: crate::client::authorization::TransportAuthorizationState,
-    admission_triggers: Option<tokio::sync::mpsc::UnboundedSender<()>>,
-) -> Result<async_nats::Client, TrellisClientError> {
-    if refresh_before_connect {
-        authorization_contexts.refresh(&auth).await?;
-    }
-    let runtime = authorization_contexts.runtime_binding()?;
-    let key_pair = Arc::new(auth.nkey_pair()?);
-    let session_nkey = key_pair.public_key();
-    let contexts = authorization_contexts.clone();
-    let event_contexts = contexts.clone();
-    let next_transport = transport.clone();
-    let next_triggers = admission_triggers.clone();
-    let options = ConnectOptions::with_auth_callback(move |nonce| {
-        let contexts = contexts.clone();
-        let key_pair = key_pair.clone();
-        let session_nkey = session_nkey.clone();
-        async move {
-            let (routing_jwt, context_digest) = contexts
-                .next_connect_credentials()
-                .map_err(async_nats::AuthError::new)?;
-            let mut credentials = async_nats::Auth::new();
-            credentials.nkey = Some(session_nkey);
-            credentials.jwt = None;
-            credentials.signature =
-                Some(key_pair.sign(&nonce).map_err(async_nats::AuthError::new)?);
-            credentials.token = Some(
-                serde_json::to_string(&NatsConnectToken {
-                    format: "trellis.nats-connect-token.v2",
-                    context_digest,
-                    routing_jwt,
-                })
-                .map_err(async_nats::AuthError::new)?,
-            );
-            Ok(credentials)
-        }
-    })
-    .connection_timeout(Duration::from_millis(timeout_ms))
-    .event_callback(move |event| {
-        let contexts = event_contexts.clone();
-        let live_slot = live_slot.clone();
-        let transport = next_transport.clone();
-        let triggers = next_triggers.clone();
-        async move {
-            if matches!(event, async_nats::Event::Disconnected) {
-                transport.mark_disconnected();
-                contexts.suspend();
-                contexts.request_coverage_reconciliation();
-                if let Ok(slot) = live_slot.lock() {
-                    if let Some(live) = slot.as_ref().and_then(std::sync::Weak::upgrade) {
-                        live.suspend();
-                    }
-                }
-                tracing::info!(
-                    context_digest = contexts.retained_context_digest().ok(),
-                    "suspended authorization installation after NATS disconnect"
-                );
-            }
-            if matches!(event, async_nats::Event::Connected) {
-                contexts.request_coverage_reconciliation();
-                if let Ok(slot) = live_slot.lock() {
-                    if let Some(live) = slot.as_ref().and_then(std::sync::Weak::upgrade) {
-                        live.resume();
-                    }
-                }
-                if let Some(triggers) = &triggers {
-                    let _ = triggers.send(());
-                }
-            }
-            if matches!(
-                event,
-                async_nats::Event::ServerError(async_nats::ServerError::AuthorizationViolation)
-            ) {
-                contexts.suspend();
-                contexts.request_refresh();
-                tracing::info!(
-                    "requested authorization refresh after broker authentication rejection"
-                );
-            }
-            tracing::debug!(event = ?event, "observed NATS client event");
-        }
-    })
-    .custom_inbox_prefix(runtime.inbox_prefix);
-    let native = runtime.transports.native.ok_or_else(|| {
-        TrellisClientError::AuthorizationUnavailable(
-            "bootstrap did not offer a native NATS transport".into(),
-        )
-    })?;
-    options
-        .connect(native.nats_servers)
-        .await
-        .map_err(|error| TrellisClientError::NatsConnect(error.to_string()))
-}
-
-pub(crate) async fn apply_native_runtime_refresh(
-    nats: &async_nats::Client,
+/// Validate that a refreshed native runtime keeps the stable session binding.
+///
+/// Managed transport generations capture the candidate's runtime when they open,
+/// so an in-place renewal never mutates the original baseline socket (which may
+/// already have been reaped). This is a pure check: no `set_server_pool` or
+/// reconnect is issued against the original generation.
+pub(crate) fn validate_native_runtime_refresh(
     previous: &AuthorizationRuntimeBinding,
     refreshed: &AuthorizationRuntimeBinding,
 ) -> Result<(), TrellisClientError> {
@@ -890,42 +813,7 @@ pub(crate) async fn apply_native_runtime_refresh(
             "refreshed native runtime changed stable session binding".into(),
         ));
     }
-    if previous.transports == refreshed.transports {
-        return Ok(());
-    }
-    let native = refreshed.transports.native.as_ref().ok_or_else(|| {
-        TrellisClientError::AuthorizationUnavailable(
-            "bootstrap did not offer a native NATS transport".into(),
-        )
-    })?;
-    nats.set_server_pool(native.nats_servers.as_slice())
-        .await
-        .map_err(|error| TrellisClientError::NatsConnect(error.to_string()))
-}
-
-/// Read the broker's authenticated admission and record it as policy `A`.
-///
-/// The first read on a physical generation establishes `A` from the context the
-/// CONNECT actually presented, and a simultaneous renewal therefore never
-/// attributes the newer policy to an attachment that has not adopted it.
-async fn apply_transport_admission(
-    nats: &async_nats::Client,
-    contexts: &AuthorizationContextCache,
-    transport: &crate::client::authorization::TransportAuthorizationState,
-) {
-    let now = contexts.corrected_now_seconds().unwrap_or(0);
-    let Ok(policy) = contexts.current_transport_policy() else {
-        transport.mark_disconnected();
-        return;
-    };
-    let own =
-        crate::client::authorization::read_own_admission(nats, std::time::Duration::from_secs(5))
-            .await;
-    let digest = own
-        .and_then(|own| own.context_digest)
-        .or_else(|| contexts.stored_context_digest().ok())
-        .unwrap_or_default();
-    let _ = transport.record_admission(digest, policy.clone(), Some(policy), now);
+    Ok(())
 }
 
 /// Connection options for a user/session-key principal.
@@ -982,13 +870,9 @@ pub struct TrellisClient {
     health_heartbeat_task: Option<JoinHandle<()>>,
     authorization_contexts: Option<Arc<AuthorizationContextCache>>,
     applied_native_authorization: Arc<tokio::sync::Mutex<AppliedNativeAuthorization>>,
-    /// Retained admitted-versus-renewed transport authorization for this
-    /// logical connection.
-    transport: crate::client::authorization::TransportAuthorizationState,
-    /// Coalesces concurrent explicit transport-refresh callers onto one
-    /// reconnect.
-    transport_refresh: tokio::sync::Mutex<()>,
-    admission_task: Option<JoinHandle<()>>,
+    /// Automatic transport generations that own this logical connection's
+    /// physical NATS attachments for finite request and publish work.
+    generations: crate::client::TransportGenerationManager,
     authorization_context_refresh_task: Option<JoinHandle<()>>,
     companion: Option<Arc<TrellisClient>>,
     /// Process-local connection state registration for telemetry gauges.
@@ -1045,6 +929,34 @@ impl TrellisClient {
 
     pub(crate) fn nats(&self) -> async_nats::Client {
         self.nats.clone()
+    }
+
+    /// The generation manager that owns this logical connection's physical
+    /// attachments. Bound resources acquire a suitable generation per call
+    /// through it instead of pinning the initial attachment.
+    pub(crate) fn transport_generations(&self) -> crate::client::TransportGenerationManager {
+        self.generations.clone()
+    }
+
+    /// The default per-call transport deadline shared by acquisition and the
+    /// exchange it guards.
+    pub(crate) fn transport_deadline(&self) -> Instant {
+        Instant::now() + Duration::from_millis(self.timeout_ms)
+    }
+
+    /// Acquire one admitted generation lease for physical work.
+    ///
+    /// Callers hold the lease through completion/error/drop; the deadline
+    /// covers generation acquisition and the exchange it guards.
+    pub(crate) async fn acquire_transport(
+        &self,
+        publish: &[String],
+        subscribe: &[String],
+        deadline: Instant,
+    ) -> Result<crate::client::TransportLease, TrellisClientError> {
+        self.generations
+            .acquire_for(publish, subscribe, deadline)
+            .await
     }
 
     /// Return the cloneable session signer for owned live controls.
@@ -1197,25 +1109,15 @@ impl TrellisClient {
         let identity = Arc::new(SessionAuth::from_seed_base64url(identity_seed)?);
         let (session_seed, _) = crate::auth::generate_session_keypair();
         let auth = SessionAuth::from_seed_base64url(&session_seed)?;
-        let companion_credential = match (companion_descriptor, companion_installation_seed) {
-            (Some(descriptor), Some(seed)) => {
-                Some(super::authorization::NativeCompanionCredential {
-                    participant_id: descriptor.id,
-                    installation: Arc::new(SessionAuth::from_seed_base64url(seed)?),
-                })
-            }
-            (Some(_), None) => {
-                return Err(TrellisClientError::Bootstrap(
-                    "device companion installation seed is required".into(),
-                ))
-            }
-            (None, Some(_)) => {
-                return Err(TrellisClientError::Bootstrap(
-                    "device descriptor has no companion".into(),
-                ))
-            }
-            (None, None) => None,
-        };
+        // A device companion is never part of the native bootstrap request. The
+        // server returns a durable companion assignment from an active device
+        // delegation, and the companion then connects through the ordinary user
+        // login path after this native connection is established.
+        if companion_descriptor.is_none() && companion_installation_seed.is_some() {
+            return Err(TrellisClientError::Bootstrap(
+                "device descriptor has no companion".into(),
+            ));
+        }
         let contexts = Arc::new(AuthorizationContextCache::new(
             trellis_url,
             participant_id.to_owned(),
@@ -1226,7 +1128,6 @@ impl TrellisClient {
                 identity,
                 package_evidence,
                 participant_path,
-                companion: companion_credential,
             },
             name.map(str::to_owned),
         )?);
@@ -1258,7 +1159,7 @@ impl TrellisClient {
                 trellis_protocol::AuthorizationPrincipalKind::User => {
                     return Err(TrellisClientError::Bootstrap(
                         "native connection requires a service or device credential".into(),
-                    ))
+                    ));
                 }
             },
             deployment_id: context.unsigned.deployment_id.ok_or_else(|| {
@@ -1285,11 +1186,21 @@ impl TrellisClient {
             authorization.resource_runtime,
         ));
         if let Some(companion) = authorization.companion {
+            if companion_descriptor
+                .is_none_or(|descriptor| descriptor.id != companion.participant_id.as_str())
+            {
+                return Err(TrellisClientError::Bootstrap(
+                    "device bootstrap companion does not match its descriptor".into(),
+                ));
+            }
             let seed = companion_installation_seed.ok_or_else(|| {
                 TrellisClientError::Bootstrap(
-                    "device bootstrap returned a companion without its installation seed".into(),
+                    "device companion installation seed is required".into(),
                 )
             })?;
+            // The companion is an ordinary App/Agent user login: only the durable
+            // assignment comes from device bootstrap, and the user-connect path
+            // derives its own runtime session key and authorization context.
             match Self::connect_user(UserConnectOptions::new(
                 trellis_url,
                 timeout_ms,
@@ -1307,13 +1218,33 @@ impl TrellisClient {
                 }
                 Err(error) => return Err(error),
             }
+        } else if companion_descriptor.is_some_and(|descriptor| descriptor.required) {
+            return Err(TrellisClientError::Bootstrap(
+                "required device companion is unavailable".into(),
+            ));
         }
-        if let Err(error) = publish_health_heartbeat(&connected.nats, timeout_ms, &heartbeat).await
+        let heartbeat_subject = health_heartbeat_subject(&heartbeat);
+        match connected
+            .acquire_transport(
+                std::slice::from_ref(&heartbeat_subject),
+                &[],
+                connected.transport_deadline(),
+            )
+            .await
         {
-            tracing::warn!(%error, "failed to publish initial health heartbeat");
+            Ok(lease) => {
+                if let Err(error) =
+                    publish_health_heartbeat(lease.nats(), timeout_ms, &heartbeat).await
+                {
+                    tracing::warn!(%error, "failed to publish initial health heartbeat");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "failed to acquire transport for initial health heartbeat")
+            }
         }
         connected.health_heartbeat_task = Some(spawn_health_heartbeat_task(
-            connected.nats.clone(),
+            connected.generations.clone(),
             timeout_ms,
             heartbeat,
         ));
@@ -1395,39 +1326,32 @@ impl TrellisClient {
         let live_slot = std::sync::Arc::new(std::sync::Mutex::new(
             None::<std::sync::Weak<crate::live::manager::LiveSessionManager>>,
         ));
-        let transport = crate::client::authorization::TransportAuthorizationState::new();
-        // One actual-admission read per physical generation: the callback
-        // signals each successful CONNECT and this task records the policy that
-        // generation actually admitted.
-        let (admission_triggers, mut admission_requests) =
-            tokio::sync::mpsc::unbounded_channel::<()>();
-        let nats = connect_authorized_nats(
+        // The generation manager owns every physical attachment: the initial
+        // one here, and any wider one automatic adoption opens later. The
+        // baseline lease keeps the initial framework-loop attachment alive until
+        // provider/live intake migrates to the current generation.
+        let (generations, baseline_lease) = crate::client::TransportGenerationManager::connect(
             auth.clone(),
             authorization_contexts.clone(),
             timeout_ms,
-            false,
             live_slot.clone(),
-            transport.clone(),
-            Some(admission_triggers),
         )
         .await?;
-        apply_transport_admission(&nats, &authorization_contexts, &transport).await;
-        let admission_nats = nats.clone();
-        let admission_contexts = authorization_contexts.clone();
-        let admission_transport = transport.clone();
-        let admission_task = tokio::spawn(async move {
-            while admission_requests.recv().await.is_some() {
-                apply_transport_admission(
-                    &admission_nats,
-                    &admission_contexts,
-                    &admission_transport,
-                )
-                .await;
-            }
-        });
+        let nats = baseline_lease.nats().clone();
+        // The baseline attachment is not pinned for the connection lifetime: its
+        // framework-loop attachment migrates to the current generation through
+        // the established attachment contract, so the initial generation is
+        // reclaimed once superseded. Retain the baseline generation's immutable
+        // identity for the live manager's initial owner-control attachment
+        // before `drop` releases the bootstrap hold here.
+        let baseline_generation_id = baseline_lease.generation_id();
+        let baseline_generation = baseline_lease.weak_generation();
+        drop(baseline_lease);
 
         let live = crate::live::manager::LiveSessionManager::new(
             nats.clone(),
+            baseline_generation_id,
+            baseline_generation,
             auth.clone(),
             authorization_contexts.clone(),
             authorization_contexts.runtime_binding()?.connection_id,
@@ -1435,8 +1359,12 @@ impl TrellisClient {
         if let Ok(mut slot) = live_slot.lock() {
             *slot = Some(std::sync::Arc::downgrade(&live));
         }
-        let provider =
-            attach_authorization_provider(nats.clone(), authorization_contexts.clone()).await?;
+        let provider = attach_authorization_provider(
+            nats.clone(),
+            authorization_contexts.clone(),
+            Some(generations.clone()),
+        )
+        .await?;
         let applied_native_authorization =
             Arc::new(tokio::sync::Mutex::new(applied_native_authorization));
         let authorization_context_refresh_task = Some(
@@ -1447,7 +1375,7 @@ impl TrellisClient {
                     nats: nats.clone(),
                     applied_native_authorization: applied_native_authorization.clone(),
                     provider: provider.provider.clone(),
-                    transport: transport.clone(),
+                    generations: generations.clone(),
                 },
             ),
         );
@@ -1466,9 +1394,7 @@ impl TrellisClient {
                 crate::telemetry::lifecycle::ConnectionRegistration::start(kind),
             ),
             applied_native_authorization,
-            transport,
-            transport_refresh: tokio::sync::Mutex::new(()),
-            admission_task: Some(admission_task),
+            generations,
             authorization_context_refresh_task,
             companion: None,
             live: Some(live),
@@ -1537,7 +1463,7 @@ impl TrellisClient {
                 nats: self.nats.clone(),
                 applied_native_authorization: self.applied_native_authorization.clone(),
                 provider: self.authorization_provider.clone(),
-                transport: self.transport.clone(),
+                generations: self.generations.clone(),
             },
         )
         .await?;
@@ -1557,126 +1483,6 @@ impl TrellisClient {
             .as_ref()
             .expect("connected clients always retain authorization context state")
             .watch_availability()
-    }
-
-    /// Whether renewed authorization offers transport capability the current
-    /// physical attachment has not adopted yet.
-    ///
-    /// Retained while connected and cleared on leaving the connected state. It
-    /// is a notification only: nothing is adopted until the application calls
-    /// [`Self::refresh_transport`] or a real reconnect otherwise occurs.
-    #[must_use]
-    pub fn transport_upgrade_available(&self) -> bool {
-        self.transport.status()
-            == crate::client::authorization::TransportAuthorizationStatus::UpgradeAvailable
-    }
-
-    /// Observe the retained transport-authorization status.
-    ///
-    /// The current value is available immediately, so a listener registered
-    /// later still sees an outstanding upgrade notice.
-    #[must_use]
-    pub fn watch_transport_authorization(
-        &self,
-    ) -> tokio::sync::watch::Receiver<crate::client::authorization::TransportAuthorizationStatus>
-    {
-        self.transport.watch()
-    }
-
-    /// Adopt the wider transport policy through one explicit reconnect.
-    ///
-    /// Concurrent callers share a single reconnect under one overall deadline.
-    /// A still-valid socket is left alone when preparation fails before the
-    /// break, and the reconnect is never hidden as maintenance: ordinary
-    /// disconnected/reconnecting/connected lifecycle transitions are published
-    /// and in-flight ephemeral work may be interrupted.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TrellisClientError::AuthorizationUnavailable`] when next-connect
-    /// authorization cannot be prepared or the replacement attachment is
-    /// unauthorized, and [`TrellisClientError::Timeout`] when it is not admitted
-    /// within the connection timeout.
-    pub async fn refresh_transport(&self) -> Result<(), TrellisClientError> {
-        let contexts = self.authorization_contexts.clone().ok_or_else(|| {
-            TrellisClientError::Bootstrap("authorization context unavailable".into())
-        })?;
-        let _guard = self.transport_refresh.lock().await;
-        // Prepare fresh next-connect material before breaking a healthy socket.
-        contexts.refresh(&self.auth).await?;
-        let connects_before = self
-            .nats
-            .statistics()
-            .connects
-            .load(std::sync::atomic::Ordering::Acquire);
-        self.nats
-            .force_reconnect()
-            .await
-            .map_err(|error| TrellisClientError::NatsConnect(error.to_string()))?;
-        tokio::time::timeout(std::time::Duration::from_millis(self.timeout_ms), async {
-            while self
-                .nats
-                .statistics()
-                .connects
-                .load(std::sync::atomic::Ordering::Acquire)
-                <= connects_before
-            {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
-            self.nats.flush().await
-        })
-        .await
-        .map_err(|_| TrellisClientError::Timeout)?
-        .map_err(|error| TrellisClientError::NatsConnect(error.to_string()))?;
-        apply_transport_admission(&self.nats, &contexts, &self.transport).await;
-        if self.transport.status()
-            == crate::client::authorization::TransportAuthorizationStatus::Unavailable
-        {
-            return Err(TrellisClientError::AuthorizationUnavailable(
-                "replacement transport attachment is not authorized".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    /// Return the retained transport-authorization state of this connection.
-    pub(crate) fn transport_state(
-        &self,
-    ) -> crate::client::authorization::TransportAuthorizationState {
-        self.transport.clone()
-    }
-
-    /// Whether a granted capability is missing from the admitted policy.
-    ///
-    /// Returns `true` only when the requirement is granted by current authority
-    /// and absent from the admitted policy, so an ungranted requirement falls
-    /// through to the ordinary server decision.
-    pub(crate) fn transport_requirement_missing(
-        &self,
-        publish: &[String],
-        subscribe: &[String],
-    ) -> Result<bool, TrellisClientError> {
-        let now = self
-            .authorization_contexts
-            .as_ref()
-            .and_then(|contexts| contexts.corrected_now_seconds().ok())
-            .unwrap_or(0);
-        self.transport.requires_upgrade(publish, subscribe, now)
-    }
-
-    /// Whether a granted resource operation is not yet admitted on this socket.
-    ///
-    /// A granted-but-unadopted resource must never open or operate against NATS,
-    /// so a caller reports the pending transport condition instead of provoking
-    /// a broker permission violation.
-    pub(crate) fn resource_transport_missing(
-        &self,
-        kind: crate::client::ResourceTransportKind,
-        bucket: &str,
-        action: crate::client::ResourceTransportAction,
-    ) -> Result<bool, TrellisClientError> {
-        let marker = crate::client::authorization::resource_action_marker(kind, bucket, action);
-        self.transport_requirement_missing(&[marker], &[])
     }
 
     /// One request transport attempt with a caller span and catalog metrics.
@@ -1703,10 +1509,20 @@ impl TrellisClient {
             "trellis.route" = route,
             "otel.kind" = "client",
         );
+        // One deadline covers both generation acquisition and the exchange, so
+        // adoption latency is charged against the caller's actual budget.
+        let deadline = Instant::now() + Duration::from_millis(self.timeout_ms);
         let result = async {
-            // Create the exact reply inbox before signing so the proof binds the
-            // reply subject the response arrives on.
-            let nats = self.nats();
+            // Acquire one admitted generation for the whole exchange and create
+            // the exact reply inbox on that same generation before signing, so
+            // the proof binds the reply subject the response arrives on.
+            let publish = [subject.to_owned()];
+            let subscribe = [format!("{}.>", self.inbox_prefix)];
+            let lease = self
+                .generations
+                .acquire_for(&publish, &subscribe, deadline)
+                .await?;
+            let nats = lease.nats();
             let reply = nats.new_inbox();
             let mut headers = self.signed_headers(subject, &reply, &payload)?;
             // Untrusted diagnostic metadata only; never part of the proof.
@@ -1728,8 +1544,12 @@ impl TrellisClient {
                 .headers(headers)
                 .payload(payload);
 
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(TrellisClientError::Timeout);
+            }
             let future = nats.send_request(subject.to_string(), request);
-            let message = timeout(std::time::Duration::from_millis(self.timeout_ms), future)
+            let message = timeout(remaining, future)
                 .await
                 .map_err(|_| TrellisClientError::Timeout)?
                 .map_err(TrellisClientError::from)?;
@@ -1765,7 +1585,7 @@ impl TrellisClient {
             | TrellisClientError::ServiceUnavailable(_)
             | TrellisClientError::BootstrapHttp { .. }
             | TrellisClientError::AuthorizationUnavailable(_)
-            | TrellisClientError::TransportUpgradeRequired(_) => "unavailable",
+            | TrellisClientError::TransportUnavailable(_) => "unavailable",
             TrellisClientError::RpcError(_) => "declared_error",
             TrellisClientError::TransferCancelled => "cancelled",
             TrellisClientError::Base64(_)
@@ -1877,28 +1697,8 @@ impl TrellisClient {
         D: EventDescriptor,
     {
         let subject = self.descriptor_subject(D::SUBJECT);
-        self.ensure_transport_subjects(std::slice::from_ref(&subject), &[])?;
         let prepared = prepare_event::<D>(event)?.with_subject(subject);
         self.publish_prepared(&prepared).await
-    }
-
-    /// Reject a publisher/subscriber whose granted subject family is not yet
-    /// admitted on the current physical attachment.
-    ///
-    /// This never masks a real denial: a requirement that is not granted by
-    /// current authority falls through to the ordinary server decision.
-    pub(crate) fn ensure_transport_subjects(
-        &self,
-        publish: &[String],
-        subscribe: &[String],
-    ) -> Result<(), TrellisClientError> {
-        if self.transport_requirement_missing(publish, subscribe)? {
-            return Err(TrellisClientError::TransportUpgradeRequired(
-                "the granted capability's transport subjects are not admitted on the current connection"
-                    .into(),
-            ));
-        }
-        Ok(())
     }
 
     /// Publish an event that was already prepared, preserving its subject, payload, and message id.
@@ -1909,7 +1709,6 @@ impl TrellisClient {
         let event = event
             .clone()
             .with_subject(self.descriptor_subject(event.subject()));
-        self.ensure_transport_subjects(&[event.subject().to_owned()], &[])?;
         let route = crate::telemetry::instruments::route_token(
             crate::telemetry::instruments::RouteFamily::Event,
             event.descriptor_identity(),
@@ -1922,16 +1721,17 @@ impl TrellisClient {
             ],
             "cancelled",
         );
+        // One deadline covers generation acquisition and the publish/ack.
+        let deadline = Instant::now() + Duration::from_millis(self.timeout_ms);
         let result = async {
+            let publish = [event.subject().to_owned()];
+            let lease = self
+                .generations
+                .acquire_for(&publish, &[], deadline)
+                .await?;
             let context_digest = self.authorization_context_digest()?;
-            publish_prepared_event(
-                &self.nats(),
-                &self.auth,
-                &context_digest,
-                self.timeout_ms,
-                &event,
-            )
-            .await
+            publish_prepared_event(lease.nats(), &self.auth, &context_digest, deadline, &event)
+                .await
         }
         .await;
         observation.finish(if result.is_ok() { "ok" } else { "error" });
@@ -1951,7 +1751,6 @@ impl TrellisClient {
             return self.subscribe_live::<D>().await;
         }
 
-        self.ensure_transport_subjects(&[], &[self.descriptor_subject(D::SUBSCRIBE_SUBJECT)])?;
         let messages = self.subscribe_messages::<D>(options).await?;
         let stream = stream::try_unfold(messages, |mut messages| async move {
             match messages.next().await {
@@ -1975,26 +1774,31 @@ impl TrellisClient {
         D: EventDescriptor,
         D::Event: Send + 'static,
     {
+        // Pin one generation for the whole subscription lifetime, charging the
+        // subscription setup against the same deadline as acquisition.
+        let deadline = self.transport_deadline();
+        let subscribe = [self.descriptor_subject(D::SUBSCRIBE_SUBJECT)];
+        let lease = self.acquire_transport(&[], &subscribe, deadline).await?;
         let subscriber = timeout(
-            std::time::Duration::from_millis(self.timeout_ms),
-            self.nats()
-                .subscribe(self.descriptor_subject(D::SUBSCRIBE_SUBJECT)),
+            deadline.saturating_duration_since(Instant::now()),
+            lease.nats().subscribe(subscribe[0].clone()),
         )
         .await
         .map_err(|_| TrellisClientError::Timeout)?
         .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
 
-        let stream = stream::try_unfold(subscriber, |mut subscriber| async move {
-            match subscriber.next().await {
-                Some(message) => {
-                    let value: Value = serde_json::from_slice(&message.payload)?;
-                    let event = D::Event::decode(value)
-                        .map_err(|error| TrellisClientError::Codec(error.to_string()))?;
-                    Ok(Some((event, subscriber)))
+        let stream =
+            stream::try_unfold((lease, subscriber), |(lease, mut subscriber)| async move {
+                match subscriber.next().await {
+                    Some(message) => {
+                        let value: Value = serde_json::from_slice(&message.payload)?;
+                        let event = D::Event::decode(value)
+                            .map_err(|error| TrellisClientError::Codec(error.to_string()))?;
+                        Ok(Some((event, (lease, subscriber))))
+                    }
+                    None => Ok(None),
                 }
-                None => Ok(None),
-            }
-        });
+            });
 
         Ok(Box::pin(stream) as BoxStream<'static, Result<D::Event, TrellisClientError>>)
     }
@@ -2026,7 +1830,24 @@ impl TrellisClient {
         max_messages: Option<usize>,
     ) -> Result<BoxStream<'static, Result<EventMessage<T>, TrellisClientError>>, TrellisClientError>
     {
-        let jetstream = jetstream::new(self.nats());
+        // Framework intake reacquires on each bounded batch. A received delivery
+        // keeps its exact attachment until its handler and disposition finish.
+        let lease = self
+            .acquire_transport(&[], &[], self.transport_deadline())
+            .await?;
+        self.event_messages_with_transport(lease, options, filter_subject, max_messages)
+            .await
+    }
+
+    pub(crate) async fn event_messages_with_transport<T: Send + 'static>(
+        &self,
+        lease: crate::client::TransportLease,
+        options: EventSubscribeOptions,
+        filter_subject: Option<String>,
+        max_messages: Option<usize>,
+    ) -> Result<BoxStream<'static, Result<EventMessage<T>, TrellisClientError>>, TrellisClientError>
+    {
+        let jetstream = jetstream::new(lease.nats().clone());
         let stream_name = options.stream.as_deref().unwrap_or(DEFAULT_EVENT_STREAM);
         if options.mode == EventSubscriptionMode::Durable && options.durable_name.is_none() {
             return Err(TrellisClientError::EventSubscriptionProtocol(
@@ -2071,30 +1892,41 @@ impl TrellisClient {
             }
         };
 
-        let mut request = consumer.stream().expires(std::time::Duration::from_secs(1));
-        if let Some(max_messages) = max_messages {
-            request = request.max_messages_per_batch(max_messages);
-        }
-        let messages = timeout(
-            std::time::Duration::from_millis(self.timeout_ms),
-            request.messages(),
-        )
-        .await
-        .map_err(|_| TrellisClientError::Timeout)?
-        .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+        let messages: BoxStream<'static, Result<jetstream::Message, TrellisClientError>> =
+            if let Some(max_messages) = max_messages {
+                let batch = timeout(
+                    Duration::from_millis(self.timeout_ms),
+                    consumer
+                        .batch()
+                        .max_messages(max_messages)
+                        .expires(Duration::from_secs(1))
+                        .messages(),
+                )
+                .await
+                .map_err(|_| TrellisClientError::Timeout)?
+                .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+                Box::pin(batch.map(|message| {
+                    message.map_err(|error| TrellisClientError::NatsRequest(error.to_string()))
+                }))
+            } else {
+                let messages = timeout(
+                    Duration::from_millis(self.timeout_ms),
+                    consumer.stream().expires(Duration::from_secs(1)).messages(),
+                )
+                .await
+                .map_err(|_| TrellisClientError::Timeout)?
+                .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+                Box::pin(messages.map(|message| {
+                    message.map_err(|error| TrellisClientError::NatsRequest(error.to_string()))
+                }))
+            };
 
-        let stream = stream::try_unfold(messages, |mut messages| async move {
-            match messages.next().await {
-                Some(Ok(message)) => {
-                    let event_message = EventMessage {
-                        message,
-                        _event: PhantomData,
-                    };
-                    Ok(Some((event_message, messages)))
-                }
-                Some(Err(error)) => Err(TrellisClientError::NatsRequest(error.to_string())),
-                None => Ok(None),
-            }
+        let stream = messages.map(move |message| {
+            message.map(|message| EventMessage {
+                message,
+                _lease: Some(lease.clone()),
+                _event: PhantomData,
+            })
         });
 
         Ok(Box::pin(stream)
@@ -2127,13 +1959,24 @@ impl TrellisClient {
             .encode()
             .map_err(|error| TrellisClientError::Codec(error.to_string()))?;
         let base_subject = self.bound_key_subject("live", D::API_ID, D::KEY)?;
+        // Pin one generation for the whole observation: the opening exchange and
+        // the data/control pump all use this exact physical attachment.
+        let deadline = self.transport_deadline();
+        let lease = self
+            .acquire_transport(
+                std::slice::from_ref(&base_subject),
+                &[format!("{}.>", self.inbox_prefix)],
+                deadline,
+            )
+            .await?;
+        let receive_max_payload_bytes = lease.nats().max_payload() as u64;
         let open_id = trellis_protocol::generate_nonce()
             .map_err(|error| TrellisClientError::LiveProtocol(error.to_string()))?;
         let body = serde_json::json!({
             "format": trellis_protocol::LIVE_VERSION,
             "type": "open",
             "openId": open_id,
-            "receiveMaxPayloadBytes": self.nats.max_payload() as u64,
+            "receiveMaxPayloadBytes": receive_max_payload_bytes,
             "input": encoded,
         });
         let action_name = D::KEY.split_once('.').map_or(D::KEY, |(_, action)| action);
@@ -2154,12 +1997,17 @@ impl TrellisClient {
             publish_subject: &base_subject,
             body: Bytes::from(serde_json::to_vec(&body)?),
             open_id,
-            receive_max_payload_bytes: self.nats.max_payload() as u64,
+            receive_max_payload_bytes,
             permission,
         };
-        let prepared =
-            crate::live::client_open::open_client_session(self, &self.authorization_provider, open)
-                .await?;
+        let prepared = crate::live::client_open::open_client_session(
+            self,
+            &self.authorization_provider,
+            open,
+            lease,
+            deadline,
+        )
+        .await?;
         crate::live::client_open::install_live_handle::<D>(self, prepared).await
     }
 
@@ -2222,15 +2070,26 @@ impl TrellisClient {
     }
 }
 
-impl Drop for TrellisClient {
-    fn drop(&mut self) {
-        if let Some(task) = self.health_heartbeat_task.take() {
+impl TrellisClient {
+    #[cfg(feature = "runtime-internals")]
+    pub(crate) async fn shutdown_native_runtime(&self) -> Result<(), TrellisClientError> {
+        {
+            let contexts = self.authorization_contexts.as_ref().ok_or_else(|| {
+                TrellisClientError::Bootstrap("runtime provider authorization unavailable".into())
+            })?;
+            let transition = contexts.lock_own_transition()?;
+            self.generations.close_runtime(&transition);
+        }
+        self.stop_background_tasks();
+        self.generations.wait_stopped().await;
+        Ok(())
+    }
+
+    fn stop_background_tasks(&self) {
+        if let Some(task) = self.health_heartbeat_task.as_ref() {
             task.abort();
         }
-        if let Some(task) = self.authorization_context_refresh_task.take() {
-            task.abort();
-        }
-        if let Some(task) = self.admission_task.take() {
+        if let Some(task) = self.authorization_context_refresh_task.as_ref() {
             task.abort();
         }
         if let Some(live) = self.live.as_ref() {
@@ -2238,6 +2097,14 @@ impl Drop for TrellisClient {
         }
         let _ = self.authorization_provider_stop.send(());
         self.authorization_provider_task.abort();
+    }
+}
+
+impl Drop for TrellisClient {
+    fn drop(&mut self) {
+        self.stop_background_tasks();
+        // Stop automatic adoption and release every physical generation.
+        self.generations.close();
     }
 }
 
@@ -2252,13 +2119,6 @@ impl OperationTransport for TrellisClient {
             return Ok(subject.to_owned());
         }
         self.bound_key_subject("operation", api_id, operation)
-    }
-
-    fn ensure_operation_transport(&self, subject: &str) -> Result<(), TrellisClientError> {
-        // A finite Operation action publishes its bound route and receives the
-        // reply on this caller's own inbox family, exactly like an RPC.
-        let inbox = format!("{}.>", self.inbox_prefix());
-        self.ensure_transport_subjects(&[subject.to_owned()], &[inbox])
     }
 
     async fn request_json_value(

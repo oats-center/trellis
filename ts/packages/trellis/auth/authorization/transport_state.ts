@@ -3,7 +3,6 @@ import {
   TRANSPORT_AUTHORIZATION_FORMAT_V1,
   type TransportAuthorizationV1,
 } from "../protocol_wasm.ts";
-import { TransportError } from "../../errors/TransportError.ts";
 
 /**
  * Retained transport-authorization status for one logical connection.
@@ -29,15 +28,23 @@ const ADMISSION_NAME_PREFIX = "trellis.auth.v1:";
  * Returns `undefined` for any name that is not a well-formed Trellis admission
  * marker, so a foreign or malformed name is never mistaken for admitted
  * authority.
+ * The complete marker requires nonempty opaque digest and server fields,
+ * no whitespace, and a canonical positive decimal u64 client ID.
  */
 export function admissionContextDigest(
   authenticatedUser: string,
 ): string | undefined {
   if (!authenticatedUser.startsWith(ADMISSION_NAME_PREFIX)) return undefined;
   const remainder = authenticatedUser.slice(ADMISSION_NAME_PREFIX.length);
-  const separator = remainder.indexOf(":");
-  if (separator <= 0) return undefined;
-  return remainder.slice(0, separator);
+  const fields = remainder.split(":");
+  const [digest, serverId, clientId] = fields;
+  if (
+    fields.length !== 3 || !digest || !serverId ||
+    /[\p{White_Space}\uFEFF]/u.test(remainder) ||
+    !/^[1-9][0-9]*$/u.test(clientId) ||
+    BigInt(clientId) > 18446744073709551615n
+  ) return undefined;
+  return digest;
 }
 
 /** Result of one bounded own-user-information read. */
@@ -219,107 +226,7 @@ export async function admittedPolicyCovers(
   return relation !== "reduction_required";
 }
 
-/**
- * Distinct runtime failure for a granted capability whose broker subjects are
- * not yet admitted on the current attachment.
- *
- * This is not `permission_denied`: the application grant exists, only the
- * physical attachment has not adopted it yet. It never triggers a reconnect.
- */
-export function transportUpgradeRequiredError(
-  context: Record<string, unknown>,
-): TransportError {
-  return new TransportError({
-    code: "transport_upgrade_required",
-    message:
-      "This operation requires transport authority not yet admitted on the current connection.",
-    hint:
-      "Adopt the granted capability with connection.refreshTransport(), then retry.",
-    context,
-  });
-}
-
 /** Canonicalize a subject-pattern list to the sorted, unique policy form. */
 function canonicalPatterns(patterns: readonly string[] | undefined): string[] {
   return [...new Set(patterns ?? [])].sort();
-}
-
-/**
- * Read-only admitted-transport view used by request boundaries.
- *
- * Exposes A, the newest valid application policy D, and the retained status so
- * a boundary can tell "the grant exists but the attachment has not adopted it"
- * apart from a genuine permission failure. @internal
- */
-export type TransportAuthorizationGate = {
-  status(): TransportAuthorizationStatus;
-  admittedPolicy(): TransportAuthorizationV1 | undefined;
-  allowedPolicy(): TransportAuthorizationV1 | undefined;
-  nowSeconds(): number;
-};
-
-/**
- * Whether `required` is a granted capability the current attachment has not
- * adopted yet.
- *
- * Returns false when transport authority is unavailable or the requirement is
- * not granted at all, so the caller falls through to the ordinary server
- * decision rather than masking a real denial.
- */
-export async function requiresTransportUpgrade(
-  gate: TransportAuthorizationGate,
-  required: { publish?: readonly string[]; subscribe?: readonly string[] },
-): Promise<boolean> {
-  if (gate.status() !== "upgrade_available") return false;
-  const admitted = gate.admittedPolicy();
-  const allowed = gate.allowedPolicy();
-  if (!admitted || !allowed) return false;
-  const now = gate.nowSeconds();
-  if (await admittedPolicyCovers(admitted, required, now)) return false;
-  return await admittedPolicyCovers(allowed, required, now);
-}
-
-/**
- * Bounded transport-admission check for one resource operation.
- *
- * Returns the transport failure when the operation is granted by the newest
- * application policy but absent from the admitted attachment, and `undefined`
- * when the operation may proceed (or is not a transport problem). @internal
- */
-export type ResourceTransportCheck = (
-  action: "read" | "write",
-) => Promise<TransportError | undefined>;
-
-/**
- * Build the transport check for one KV or Store bucket.
- *
- * Reads and writes are distinguished by the same subjects the runtime compiler
- * grants per resource action: KV reads by the direct-get grant, KV writes by the
- * bucket subject grant; Store reads by the stream-info grant, Store writes by
- * the object put/subject grant. The mapping is pinned by the shared
- * resource-grant fixture so it cannot drift from the compiler silently.
- * @internal
- */
-export function resourceTransportCheck(
-  gate: TransportAuthorizationGate,
-  kind: "kv" | "store",
-  bucket: string,
-): ResourceTransportCheck {
-  const subjects = kind === "kv"
-    ? {
-      read: [`$JS.API.DIRECT.GET.KV_${bucket}`],
-      write: [`$KV.${bucket}.>`],
-    }
-    : {
-      read: [`$JS.API.STREAM.INFO.OBJ_${bucket}`],
-      write: [`$O.${bucket}.C.>`],
-    };
-  return async (action) => {
-    const blocked = await requiresTransportUpgrade(gate, {
-      publish: subjects[action],
-    });
-    return blocked
-      ? transportUpgradeRequiredError({ resource: bucket, kind, action })
-      : undefined;
-  };
 }

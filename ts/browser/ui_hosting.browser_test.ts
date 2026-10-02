@@ -101,11 +101,24 @@ Deno.test("configured UI directories serve both applications", async () => {
 });
 
 Deno.test("the unified web source is fully reverse proxied through Trellis", async () => {
+  const upstream = "http://127.0.0.1:5173";
   const vite = startVite(fromFileUrl(new URL("../../web/", import.meta.url)));
+  const viteStatus = vite.status;
+  const viteOutput = { stdout: "", stderr: "" };
+  const outputDrained = Promise.all(
+    (["stdout", "stderr"] as const).map(async (name) => {
+      for await (
+        const chunk of vite[name].pipeThrough(new TextDecoderStream())
+      ) {
+        viteOutput[name] += chunk;
+      }
+    }),
+  );
+  let runtimeOutput = "";
   try {
-    await waitForUrl("http://127.0.0.1:5173/login", vite);
+    await waitForUrl(`${upstream}/login`, vite);
     const runtime = await startTrellisRuntime({
-      webSource: { proxy: "http://127.0.0.1:5173" },
+      webSource: { proxy: upstream },
       trellis: {
         command: {
           cmd: prebuiltServer(),
@@ -115,6 +128,10 @@ Deno.test("the unified web source is fully reverse proxied through Trellis", asy
     });
     try {
       const browser = await chromium.launch({ headless: true });
+      const diagnostics: string[] = [];
+      const failedRequests: string[] = [];
+      const captures: Promise<void>[] = [];
+      const failedModules = new Set<string>();
       try {
         const page = await browser.newPage();
         const requests: string[] = [];
@@ -122,6 +139,32 @@ Deno.test("the unified web source is fully reverse proxied through Trellis", asy
         page.on("pageerror", (error) => console.error(error));
         page.on("console", (message) => {
           if (message.type() === "error") console.error(message.text());
+        });
+        page.on("requestfailed", (request) => {
+          if (failedRequests.length >= 20) return;
+          const at = new Date().toISOString();
+          const error = request.failure()?.errorText;
+          failedRequests.push(`${at} ${request.url()} ${error}`.slice(0, 2048));
+        });
+        page.on("response", (response) => {
+          if (response.status() < 400 || captures.length >= 8) return;
+          const url = new URL(response.url());
+          const nodes = /^\/\.svelte-kit\/generated\/client\/nodes\/\d+\.js$/;
+          if (url.origin !== runtime.trellisUrl || !nodes.test(url.pathname)) {
+            return;
+          }
+          failedModules.add(url.pathname + url.search);
+          const at = new Date().toISOString();
+          const type = response.headers()["content-type"];
+          const prefix = `${at} proxied ${url} ${response.status()} ${type}`;
+          captures.push(
+            response.body().then((body) => {
+              const text = new TextDecoder().decode(body.subarray(0, 4096));
+              diagnostics.push(`${prefix}\n${text}`);
+            }).catch((error) => {
+              diagnostics.push(prefix + "\n" + String(error).slice(0, 1024));
+            }),
+          );
         });
         page.on("request", (request) => requests.push(request.url()));
         page.on("websocket", (socket) => sockets.push(socket.url()));
@@ -169,25 +212,64 @@ Deno.test("the unified web source is fully reverse proxied through Trellis", asy
         assert(
           !sockets.some((url) => new URL(url).host === "127.0.0.1:5173"),
         );
+      } catch (cause) {
+        await Promise.all(captures);
+        for (const path of failedModules) {
+          const url = new URL(path, upstream);
+          const at = new Date().toISOString();
+          try {
+            const response = await fetch(url, {
+              redirect: "manual",
+              signal: AbortSignal.timeout(5000),
+            });
+            const type = response.headers.get("content-type");
+            const body = new Uint8Array(await response.arrayBuffer());
+            const text = new TextDecoder().decode(body.subarray(0, 4096));
+            diagnostics.push(
+              `${at} direct ${url} ${response.status} ${type}\n${text}`,
+            );
+          } catch (error) {
+            diagnostics.push(at + " direct " + url + " error: " + error);
+          }
+        }
+        console.error([...failedRequests, ...diagnostics].join("\n"));
+        throw cause;
       } finally {
+        await Promise.all(captures);
         await browser.close();
       }
+    } catch (cause) {
+      runtimeOutput = runtime.controlPlaneOutput();
+      throw cause;
     } finally {
       await runtime.stop();
     }
+  } catch (cause) {
+    throw new Error(
+      `${cause instanceof Error ? cause.message : String(cause)}\n` +
+        `Vite stdout:\n${viteOutput.stdout}\n` +
+        `Vite stderr:\n${viteOutput.stderr}\n` +
+        `Trellis runtime:\n${runtimeOutput}`,
+      { cause },
+    );
   } finally {
-    try {
-      vite.kill("SIGTERM");
-    } catch (error) {
-      if (
-        !(error instanceof Deno.errors.NotFound) &&
-        !(error instanceof TypeError &&
-          error.message === "Child process has already terminated")
-      ) throw error;
-    }
-    await vite.status;
+    terminateVite(vite);
+    await viteStatus;
+    await outputDrained;
   }
 });
+
+function terminateVite(vite: Deno.ChildProcess): void {
+  try {
+    vite.kill("SIGTERM");
+  } catch (cause) {
+    if (
+      !(cause instanceof Deno.errors.NotFound) &&
+      !(cause instanceof TypeError &&
+        cause.message === "Child process has already terminated")
+    ) throw cause;
+  }
+}
 
 function prebuiltServer(): string {
   const server = Deno.env.get("TRELLIS_TEST_SERVER_BIN");
@@ -207,8 +289,8 @@ function startVite(
     args: ["run", "-A", "vite", "dev"],
     cwd,
     env,
-    stdout: "inherit",
-    stderr: "inherit",
+    stdout: "piped",
+    stderr: "piped",
   }).spawn();
 }
 

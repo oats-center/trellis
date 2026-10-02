@@ -5,7 +5,11 @@ import { JetStreamApiCodes } from "@nats-io/jetstream";
 
 import type { Codec } from "./generated.ts";
 import { KVError, TransportError, ValidationError } from "./errors/index.ts";
-import type { ResourceTransportCheck } from "./auth/authorization/transport_state.ts";
+import type {
+  TransportLease,
+  TransportRequirement,
+  TrellisTransportProvider,
+} from "./transport/generations.ts";
 import { decodeSubject, escapeKvKey } from "./helpers.ts";
 import { recordCatalogDuration } from "./telemetry/metrics.ts";
 
@@ -14,6 +18,8 @@ const KV_ENVELOPE_FORMAT = 1;
 const KV_ENVELOPE_HEADER_BYTES = 9;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
+/** Default budget for acquiring a transport generation for one KV operation. */
+const DEFAULT_RESOURCE_ACQUIRE_TIMEOUT_MS = 30_000;
 
 declare const resourceRevisionBrand: unique symbol;
 
@@ -68,8 +74,11 @@ export type KvOpenOptions<T = unknown> = Readonly<{
   replicas?: number;
   migrations?: ResourceMigrations<T>;
   isCurrent?: () => boolean;
-  /** Transport-admission check for operations on this bucket. @internal */
-  transport?: ResourceTransportCheck;
+  /**
+   * Budget for acquiring a transport generation on a finite operation.
+   * Defaults to 30 seconds.
+   */
+  acquireTimeoutMs?: number;
 }>;
 
 /** Failures a KV read operation can report. */
@@ -273,43 +282,51 @@ async function decodeEntry<T>(
 }
 
 export class TypedKV<T> {
-  #kv?: KV;
-  #opener?: () => Promise<KV>;
+  readonly #transport: TrellisTransportProvider;
+  readonly #options: KvOpenOptions<T>;
+  readonly #acquireTimeoutMs: number;
+  /**
+   * One generation-local backend per physical connection.
+   *
+   * Keyed by the connection object so a public handle keeps working across an
+   * automatic generation adoption without sharing an adapter between a drained
+   * generation and its replacement.
+   */
+  readonly #adapters = new WeakMap<NatsConnection, KV>();
 
   private constructor(
+    transport: TrellisTransportProvider,
     readonly name: string,
     readonly representation: KvRepresentation<T>,
     readonly migrations: ResourceMigrations<T>,
     readonly isCurrent: () => boolean,
-    readonly transport?: ResourceTransportCheck,
-    opener?: () => Promise<KV>,
-    materialized?: KV,
+    options: KvOpenOptions<T>,
   ) {
-    this.#kv = materialized;
-    this.#opener = opener;
+    this.#transport = transport;
+    this.#options = options;
+    this.#acquireTimeoutMs = options.acquireTimeoutMs ??
+      DEFAULT_RESOURCE_ACQUIRE_TIMEOUT_MS;
   }
 
-  /** Opens or creates a typed KV bucket. */
+  /** Opens or creates a typed KV bucket on the current generation. */
   static open<T>(
-    nats: NatsConnection,
+    transport: TrellisTransportProvider,
     name: string,
     representation: KvRepresentation<T>,
     options: KvOpenOptions<T> = {},
   ): AsyncResult<TypedKV<T>, KVError> {
     return AsyncResult.from((async () => {
+      const handle = new TypedKV(
+        transport,
+        name,
+        representation,
+        options.migrations ?? {},
+        options.isCurrent ?? (() => true),
+        options,
+      );
       try {
-        const kv = await openKv(nats, name, options);
-        return Result.ok(
-          new TypedKV(
-            name,
-            representation,
-            options.migrations ?? {},
-            options.isCurrent ?? (() => true),
-            options.transport,
-            undefined,
-            kv,
-          ),
-        );
+        await handle.#materialize();
+        return Result.ok(handle);
       } catch (cause) {
         return Result.err(kvError("open", undefined, cause));
       }
@@ -319,42 +336,83 @@ export class TypedKV<T> {
   /**
    * Binds a typed KV bucket without opening it.
    *
-   * The backing bucket is opened lazily on first operation, after the transport
-   * check admits that operation, so a resource whose broker subjects are not yet
-   * adopted never performs an unauthorized NATS request during refresh.
+   * The backing bucket is materialized against the generation acquired for the
+   * first operation, after that operation's exact transport requirement is
+   * admitted, so a resource whose broker subjects are not yet adopted never
+   * performs an unauthorized NATS request.
    * @internal
    */
   static bind<T>(
-    nats: NatsConnection,
+    transport: TrellisTransportProvider,
     name: string,
     representation: KvRepresentation<T>,
     options: KvOpenOptions<T> = {},
   ): TypedKV<T> {
     return new TypedKV(
+      transport,
       name,
       representation,
       options.migrations ?? {},
       options.isCurrent ?? (() => true),
-      options.transport,
-      () => openKv(nats, name, options),
+      options,
     );
   }
 
-  /** The opened NATS KV handle; throws until first materialization. */
-  get kv(): KV {
-    if (!this.#kv) {
-      throw new Error("KV resource binding is not yet materialized");
-    }
-    return this.#kv;
+  /** Exact broker subjects one KV action needs on its generation. */
+  #requirement(action: "read" | "write"): TransportRequirement {
+    return action === "read"
+      ? { publish: [`$JS.API.DIRECT.GET.KV_${this.name}`] }
+      : { publish: [`$KV.${this.name}.>`] };
   }
 
-  async #backing(): Promise<KV> {
-    let kv = this.#kv;
+  /**
+   * Acquire a generation covering `action`, or the current generation for an
+   * unclassified open.
+   */
+  #lease(action?: "read" | "write"): Promise<TransportLease> {
+    return this.#transport.acquireFor(
+      action === undefined ? {} : this.#requirement(action),
+      { deadlineMs: Date.now() + this.#acquireTimeoutMs },
+    );
+  }
+
+  /** Return the generation-local backend for `nc`, opening it once per nc. */
+  async #adapter(nc: NatsConnection): Promise<KV> {
+    let kv = this.#adapters.get(nc);
     if (!kv) {
-      kv = await this.#opener!();
-      this.#kv = kv;
+      kv = await openKv(nc, this.name, this.#options);
+      this.#adapters.set(nc, kv);
     }
     return kv;
+  }
+
+  /**
+   * Acquire a generation and its backend for one finite operation.
+   *
+   * The caller must invoke `release` in a `finally` once the exchange ends. A
+   * backend that fails to open releases the generation before rethrowing.
+   */
+  async #acquire(
+    action?: "read" | "write",
+  ): Promise<{ kv: KV; release: () => void }> {
+    const lease = await this.#lease(action);
+    try {
+      const kv = await this.#adapter(lease.nc);
+      return { kv, release: () => lease.release() };
+    } catch (cause) {
+      lease.release();
+      throw cause;
+    }
+  }
+
+  /** Eagerly open the bucket against the current generation. */
+  async #materialize(): Promise<void> {
+    const lease = await this.#lease();
+    try {
+      await this.#adapter(lease.nc);
+    } finally {
+      lease.release();
+    }
   }
 
   /** Returns the current value, or `undefined` when absent or deleted. */
@@ -377,14 +435,19 @@ export class TypedKV<T> {
     return AsyncResult.from((async () => {
       try {
         this.#assertCurrent();
-        const blocked = await this.#admission("read");
-        if (blocked) return Result.err(blocked);
-        const entry = await (await this.#backing()).get(escapeKvKey(key));
-        return entry
-          ? await decodeEntry(this.representation, this.migrations, entry)
-          : Result.ok(undefined);
+        const acquired = await this.#acquire("read");
+        try {
+          const entry = await acquired.kv.get(escapeKvKey(key));
+          return entry
+            ? await decodeEntry(this.representation, this.migrations, entry)
+            : Result.ok(undefined);
+        } finally {
+          acquired.release();
+        }
       } catch (cause) {
-        return Result.err(kvError("get", key, cause));
+        return Result.err(
+          cause instanceof TransportError ? cause : kvError("get", key, cause),
+        );
       }
     })());
   }
@@ -398,21 +461,28 @@ export class TypedKV<T> {
       AsyncResult.from((async () => {
         try {
           this.#assertCurrent();
-          const blocked = await this.#admission("write");
-          if (blocked) return Result.err(blocked);
-          const revision = await (await this.#backing()).create(
-            escapeKvKey(key),
-            encodeResourceValue(this.representation, value),
-          );
-          return Result.ok({
-            key,
-            value,
-            revision: revisionFromBackend(revision),
-            timestamp: new Date(),
-            operation: "put",
-          });
+          const acquired = await this.#acquire("write");
+          try {
+            const revision = await acquired.kv.create(
+              escapeKvKey(key),
+              encodeResourceValue(this.representation, value),
+            );
+            return Result.ok({
+              key,
+              value,
+              revision: revisionFromBackend(revision),
+              timestamp: new Date(),
+              operation: "put",
+            });
+          } finally {
+            acquired.release();
+          }
         } catch (cause) {
-          return Result.err(kvError("create", key, cause));
+          return Result.err(
+            cause instanceof TransportError
+              ? cause
+              : kvError("create", key, cause),
+          );
         }
       })()));
   }
@@ -423,21 +493,28 @@ export class TypedKV<T> {
       AsyncResult.from((async () => {
         try {
           this.#assertCurrent();
-          const blocked = await this.#admission("write");
-          if (blocked) return Result.err(blocked);
-          const revision = await (await this.#backing()).put(
-            escapeKvKey(key),
-            encodeResourceValue(this.representation, value),
-          );
-          return Result.ok({
-            key,
-            value,
-            revision: revisionFromBackend(revision),
-            timestamp: new Date(),
-            operation: "put",
-          });
+          const acquired = await this.#acquire("write");
+          try {
+            const revision = await acquired.kv.put(
+              escapeKvKey(key),
+              encodeResourceValue(this.representation, value),
+            );
+            return Result.ok({
+              key,
+              value,
+              revision: revisionFromBackend(revision),
+              timestamp: new Date(),
+              operation: "put",
+            });
+          } finally {
+            acquired.release();
+          }
         } catch (cause) {
-          return Result.err(kvError("put", key, cause));
+          return Result.err(
+            cause instanceof TransportError
+              ? cause
+              : kvError("put", key, cause),
+          );
         }
       })()));
   }
@@ -452,22 +529,29 @@ export class TypedKV<T> {
       AsyncResult.from((async () => {
         try {
           this.#assertCurrent();
-          const blocked = await this.#admission("write");
-          if (blocked) return Result.err(blocked);
-          const nextRevision = await (await this.#backing()).update(
-            escapeKvKey(key),
-            encodeResourceValue(this.representation, value),
-            revision,
-          );
-          return Result.ok({
-            key,
-            value,
-            revision: revisionFromBackend(nextRevision),
-            timestamp: new Date(),
-            operation: "put",
-          });
+          const acquired = await this.#acquire("write");
+          try {
+            const nextRevision = await acquired.kv.update(
+              escapeKvKey(key),
+              encodeResourceValue(this.representation, value),
+              revision,
+            );
+            return Result.ok({
+              key,
+              value,
+              revision: revisionFromBackend(nextRevision),
+              timestamp: new Date(),
+              operation: "put",
+            });
+          } finally {
+            acquired.release();
+          }
         } catch (cause) {
-          return Result.err(kvError("replace", key, cause));
+          return Result.err(
+            cause instanceof TransportError
+              ? cause
+              : kvError("replace", key, cause),
+          );
         }
       })()));
   }
@@ -481,15 +565,22 @@ export class TypedKV<T> {
       AsyncResult.from((async () => {
         try {
           this.#assertCurrent();
-          const blocked = await this.#admission("write");
-          if (blocked) return Result.err(blocked);
-          await (await this.#backing()).delete(
-            escapeKvKey(key),
-            revision === undefined ? {} : { previousSeq: revision },
-          );
-          return Result.ok(undefined);
+          const acquired = await this.#acquire("write");
+          try {
+            await acquired.kv.delete(
+              escapeKvKey(key),
+              revision === undefined ? {} : { previousSeq: revision },
+            );
+            return Result.ok(undefined);
+          } finally {
+            acquired.release();
+          }
         } catch (cause) {
-          return Result.err(kvError("delete", key, cause));
+          return Result.err(
+            cause instanceof TransportError
+              ? cause
+              : kvError("delete", key, cause),
+          );
         }
       })()));
   }
@@ -502,28 +593,35 @@ export class TypedKV<T> {
       AsyncResult.from((async () => {
         try {
           this.#assertCurrent();
-          const blocked = await this.#admission("read");
-          if (blocked) return Result.err(blocked);
-          const history = await (await this.#backing()).history({
-            key: escapeKvKey(key),
-          });
-          const entries: TypedKvEntry<T>[] = [];
-          for await (const entry of history) {
-            this.#assertCurrent();
-            const decoded = await decodeEntry(
-              this.representation,
-              this.migrations,
-              entry,
-            );
-            if (decoded.isErr()) return decoded;
-            entries.push(decoded.unwrapOrElse(() => {
-              throw new Error("KV history decode unexpectedly failed");
-            }));
+          const acquired = await this.#acquire("read");
+          try {
+            const history = await acquired.kv.history({
+              key: escapeKvKey(key),
+            });
+            const entries: TypedKvEntry<T>[] = [];
+            for await (const entry of history) {
+              this.#assertCurrent();
+              const decoded = await decodeEntry(
+                this.representation,
+                this.migrations,
+                entry,
+              );
+              if (decoded.isErr()) return decoded;
+              entries.push(decoded.unwrapOrElse(() => {
+                throw new Error("KV history decode unexpectedly failed");
+              }));
+            }
+            entries.sort((left, right) => left.revision - right.revision);
+            return Result.ok(entries);
+          } finally {
+            acquired.release();
           }
-          entries.sort((left, right) => left.revision - right.revision);
-          return Result.ok(entries);
         } catch (cause) {
-          return Result.err(kvError("history", key, cause));
+          return Result.err(
+            cause instanceof TransportError
+              ? cause
+              : kvError("history", key, cause),
+          );
         }
       })()));
   }
@@ -536,12 +634,19 @@ export class TypedKV<T> {
       AsyncResult.from((async () => {
         try {
           this.#assertCurrent();
-          const blocked = await this.#admission("read");
-          if (blocked) return Result.err(blocked);
-          const watcher = await (await this.#backing()).watch({
-            key: escapeKvKey(key),
-            include: "history",
-          });
+          // A watcher is a pinned observation: it holds its generation until the
+          // iteration ends so a rollover cannot retire the backend underneath it.
+          const acquired = await this.#acquire("read");
+          let watcher;
+          try {
+            watcher = await acquired.kv.watch({
+              key: escapeKvKey(key),
+              include: "history",
+            });
+          } catch (cause) {
+            acquired.release();
+            throw cause;
+          }
           const representation = this.representation;
           const migrations = this.migrations;
           const isCurrent = this.isCurrent;
@@ -556,11 +661,16 @@ export class TypedKV<T> {
                 }
               } finally {
                 watcher.stop();
+                acquired.release();
               }
             },
           });
         } catch (cause) {
-          return Result.err(kvError("watch", key, cause));
+          return Result.err(
+            cause instanceof TransportError
+              ? cause
+              : kvError("watch", key, cause),
+          );
         }
       })()));
   }
@@ -573,20 +683,33 @@ export class TypedKV<T> {
       AsyncResult.from((async () => {
         try {
           this.#assertCurrent();
-          const blocked = await this.#admission("read");
-          if (blocked) return Result.err(blocked);
-          const keys = await (await this.#backing()).keys(filter);
+          // The key iterator holds its generation until it is exhausted so a
+          // rollover cannot retire the backend mid-listing.
+          const acquired = await this.#acquire("read");
+          let keys: AsyncIterable<string>;
+          try {
+            keys = await acquired.kv.keys(filter);
+          } catch (cause) {
+            acquired.release();
+            throw cause;
+          }
           return Result.ok({
             async *[Symbol.asyncIterator]() {
               try {
                 yield* keys;
               } catch (cause) {
                 throw kvError("keys", undefined, cause);
+              } finally {
+                acquired.release();
               }
             },
           });
         } catch (cause) {
-          return Result.err(kvError("keys", undefined, cause));
+          return Result.err(
+            cause instanceof TransportError
+              ? cause
+              : kvError("keys", undefined, cause),
+          );
         }
       })()));
   }
@@ -597,13 +720,18 @@ export class TypedKV<T> {
       AsyncResult.from((async () => {
         try {
           this.#assertCurrent();
-          const blocked = await this.#admission("read");
-          if (blocked) return Result.err(blocked);
-          return Result.ok({
-            values: (await (await this.#backing()).status()).values,
-          });
+          const acquired = await this.#acquire("read");
+          try {
+            return Result.ok({ values: (await acquired.kv.status()).values });
+          } finally {
+            acquired.release();
+          }
         } catch (cause) {
-          return Result.err(kvError("status", undefined, cause));
+          return Result.err(
+            cause instanceof TransportError
+              ? cause
+              : kvError("status", undefined, cause),
+          );
         }
       })()));
   }
@@ -642,13 +770,6 @@ export class TypedKV<T> {
         );
       }
     })());
-  }
-
-  /** Return the transport failure when `action` is not yet admitted. */
-  async #admission(
-    action: "read" | "write",
-  ): Promise<TransportError | undefined> {
-    return await this.transport?.(action);
   }
 
   #assertCurrent(): void {

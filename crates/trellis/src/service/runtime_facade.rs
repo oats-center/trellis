@@ -18,9 +18,8 @@ use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use trellis_protocol::event_patterns_overlap;
 
 pub use super::core_bootstrap::CoreBootstrapBinding;
-use super::resources::{validate_kv_binding, validate_store_binding, ResourceRuntimeClient};
+use super::resources::{validate_kv_binding, validate_store_binding};
 use super::resources::{KvHandle, KvResourceHandle, StoreHandle, StoreResourceHandle};
-use super::runtime::run_multi_subject_service;
 use super::transfer::{
     spawn_download_transfer_endpoint, spawn_upload_transfer_endpoint_with_completion,
     spawn_upload_transfer_endpoint_with_progress,
@@ -302,7 +301,9 @@ pub enum ServiceRuntimeError {
     },
 
     /// A bound durable listener count must be at least one.
-    #[error("event consumer group '{group}' has invalid listener concurrency {concurrency}; expected >= 1")]
+    #[error(
+        "event consumer group '{group}' has invalid listener concurrency {concurrency}; expected >= 1"
+    )]
     InvalidEventListenerConcurrency {
         /// Event consumer group name.
         group: String,
@@ -529,24 +530,19 @@ impl ServiceHandle {
     {
         let binding = self.kv_binding(name)?;
         validate_kv_binding(self.service_name(), name, binding)?;
-        ensure_resource_transport_admitted(
-            self.client(),
-            crate::client::ResourceTransportKind::Kv,
-            name,
-            &binding.bucket,
-        )?;
-        let client = self.client().nats().open_kv(binding).await?;
+        // The logical handle owns no generation: every KV call acquires a
+        // suitable generation for this resource's exact subject family.
+        let client = crate::service::resources::backend::BoundKvResourceClient::managed(
+            self.client().transport_generations(),
+            binding.clone(),
+            self.client().timeout_ms(),
+        );
         Ok(KvResourceHandle::from_generated(
             name,
             binding.clone(),
             codec,
             client,
             self.client.watch_availability(),
-            Some(crate::client::ResourceTransportGate::new(
-                self.client().transport_state(),
-                crate::client::ResourceTransportKind::Kv,
-                binding.bucket.clone(),
-            )),
         ))
     }
 
@@ -594,8 +590,15 @@ impl ServiceHandle {
             .map_err(|error| JobsError::Message {
                 message: error.to_string(),
             })?;
+        let lease = self
+            .client()
+            .transport_generations()
+            .acquire_application_published()
+            .map_err(|error| JobsError::Message {
+                message: error.to_string(),
+            })?;
         let key_coordinator = crate::jobs::keys::NatsKeyCoordinator::open_for_service(
-            self.client().nats().clone(),
+            lease.nats().clone(),
             &binding.jobs.namespace,
         )
         .await
@@ -603,7 +606,7 @@ impl ServiceHandle {
             message: error.to_string(),
         })?;
         let manager = JobManager::new_with_key_coordinator(
-            TrellisJobEventPublisher::new(self.client().nats().clone()),
+            TrellisJobEventPublisher::new(lease.nats().clone()),
             binding.jobs,
             TrellisJobMetaSource,
             Arc::new(key_coordinator),
@@ -622,12 +625,12 @@ impl ServiceHandle {
             .ok_or_else(|| JobsError::Message {
                 message: format!("missing jobs queue binding '{}'", D::QUEUE_TYPE),
             })?;
-        let waiter = crate::jobs::runtime_ref::NatsJobWaiter::new(
-            self.client().nats().clone(),
+        Ok(JobRef::from_runtime(
+            job,
+            self.client().transport_generations(),
+            manager.bindings().clone(),
             queue,
-            Duration::from_secs(30),
-        );
-        Ok(JobRef::from_runtime(job, waiter, manager))
+        ))
     }
 
     /// Start a descriptor-backed event listener.
@@ -669,24 +672,19 @@ impl ServiceHandle {
     pub async fn store_client(&self, name: &str) -> Result<StoreHandle, ServerError> {
         let binding = self.store_binding(name)?;
         validate_store_binding(self.service_name(), name, binding)?;
-        ensure_resource_transport_admitted(
-            self.client(),
-            crate::client::ResourceTransportKind::Store,
-            name,
-            &binding.name,
-        )?;
-        let client = self.client().nats().open_store(binding).await?;
+        // The logical handle owns no generation: every store call acquires a
+        // suitable generation for this resource's exact subject family.
+        let client = crate::service::resources::backend::BoundStoreResourceClient::managed(
+            self.client().transport_generations(),
+            binding.clone(),
+            self.client().timeout_ms(),
+        );
         Ok(StoreResourceHandle::new(
             self.service_name(),
             name,
             binding.clone(),
             client,
             self.client.watch_availability(),
-            Some(crate::client::ResourceTransportGate::new(
-                self.client().transport_state(),
-                crate::client::ResourceTransportKind::Store,
-                binding.name.clone(),
-            )),
         ))
     }
 
@@ -988,24 +986,19 @@ impl<C> ConnectedServiceRuntime<C> {
     {
         let binding = self.kv_binding(name)?;
         validate_kv_binding(self.service_name(), name, binding)?;
-        ensure_resource_transport_admitted(
-            self.client(),
-            crate::client::ResourceTransportKind::Kv,
-            name,
-            &binding.bucket,
-        )?;
-        let client = self.client().nats().open_kv(binding).await?;
+        // The logical handle owns no generation: every KV call acquires a
+        // suitable generation for this resource's exact subject family.
+        let client = crate::service::resources::backend::BoundKvResourceClient::managed(
+            self.client().transport_generations(),
+            binding.clone(),
+            self.client().timeout_ms(),
+        );
         Ok(KvResourceHandle::from_generated(
             name,
             binding.clone(),
             codec,
             client,
             self.client.watch_availability(),
-            Some(crate::client::ResourceTransportGate::new(
-                self.client().transport_state(),
-                crate::client::ResourceTransportKind::Kv,
-                binding.bucket.clone(),
-            )),
         ))
     }
 
@@ -1035,7 +1028,7 @@ impl<C> ConnectedServiceRuntime<C> {
 
     /// Return the Jobs-domain transport used by Trellis infrastructure services.
     pub fn jobs_runtime(&self) -> crate::jobs::JobsRuntime {
-        crate::jobs::JobsRuntime::from_client(self.client())
+        crate::jobs::JobsRuntime::from_client(std::sync::Arc::clone(self.client()))
     }
 
     /// Return the Event Log domain transport used by Trellis infrastructure.
@@ -1049,11 +1042,17 @@ impl<C> ConnectedServiceRuntime<C> {
             return Ok(repository.clone());
         }
         let bucket = format!("trellis_operations_{}", self.provider_deployment_id);
-        let store = async_nats::jetstream::new(self.client.nats())
-            .get_key_value(bucket)
+        // Validate provisioned metadata at connect, but do not retain this
+        // initial socket in the logical repository cached by the service.
+        async_nats::jetstream::new(self.client.nats())
+            .get_key_value(&bucket)
             .await
             .map_err(|error| ServerError::Nats(error.to_string()))?;
-        Ok(super::KvOperationRepository::new(store))
+        Ok(super::KvOperationRepository::managed(
+            self.client.transport_generations(),
+            bucket,
+            self.client.timeout_ms(),
+        ))
     }
 
     /// Submit a typed service-private job for generated participant code.
@@ -1110,7 +1109,7 @@ impl<C> ConnectedServiceRuntime<C> {
             });
         }
         let host = start_worker_host_from_client(
-            self.client(),
+            Arc::clone(self.client()),
             binding,
             ulid::Ulid::new().to_string(),
             |_, _| TrellisJobMetaSource,
@@ -1170,24 +1169,19 @@ impl<C> ConnectedServiceRuntime<C> {
     pub async fn store_client(&self, name: &str) -> Result<StoreHandle, ServerError> {
         let binding = self.store_binding(name)?;
         validate_store_binding(self.service_name(), name, binding)?;
-        ensure_resource_transport_admitted(
-            self.client(),
-            crate::client::ResourceTransportKind::Store,
-            name,
-            &binding.name,
-        )?;
-        let client = self.client().nats().open_store(binding).await?;
+        // The logical handle owns no generation: every store call acquires a
+        // suitable generation for this resource's exact subject family.
+        let client = crate::service::resources::backend::BoundStoreResourceClient::managed(
+            self.client().transport_generations(),
+            binding.clone(),
+            self.client().timeout_ms(),
+        );
         Ok(StoreResourceHandle::new(
             self.service_name(),
             name,
             binding.clone(),
             client,
             self.client.watch_availability(),
-            Some(crate::client::ResourceTransportGate::new(
-                self.client().transport_state(),
-                crate::client::ResourceTransportKind::Store,
-                binding.name.clone(),
-            )),
         ))
     }
 
@@ -1295,7 +1289,10 @@ impl<C> ConnectedServiceRuntime<C> {
                         .operation_repository
                         .clone()
                         .expect("connected service operation repository"),
-                    nats: self.client.nats().clone(),
+                    transport: super::operations::OperationTransport::managed(
+                        self.client.transport_generations(),
+                        self.client.timeout_ms(),
+                    ),
                     service_session_key: self.client.auth().session_key.clone(),
                     staging: self
                         .operation_staging
@@ -1320,6 +1317,11 @@ impl<C> ConnectedServiceRuntime<C> {
     }
 
     /// Run registered subjects using the default NATS request loop.
+    ///
+    /// Generic provider intake follows the connection's current transport
+    /// generation: a new generation is fully subscribed before the superseded
+    /// one stops accepting new requests, and every accepted callback drains on
+    /// the generation that accepted it.
     pub async fn run(self) -> Result<(), ServiceRuntimeError> {
         self.router.recover_operations().await?;
         // A live-capable router must be given its connection's provider owner
@@ -1329,22 +1331,21 @@ impl<C> ConnectedServiceRuntime<C> {
             .require_live_owner()
             .map_err(ServiceRuntimeError::from)?;
         let mut event_failures = self.event_failure_receiver;
-        let subjects = self.registered_subjects.into_iter().collect::<Vec<_>>();
+        let subjects: std::sync::Arc<[String]> = self
+            .registered_subjects
+            .into_iter()
+            .collect::<Vec<_>>()
+            .into();
         let job_hosts = self.job_hosts;
-        let host = bootstrap_service_host(
+        let manager = self.client.transport_generations();
+        let host = std::sync::Arc::new(bootstrap_service_host(
             &self.service_name,
             self.binding.bootstrap_binding(),
             self.router,
             self.auth,
-        );
-        let serve = async {
-            if subjects.is_empty() {
-                std::future::pending::<()>().await;
-            }
-            let subject_refs = subjects.iter().map(String::as_str).collect::<Vec<_>>();
-            run_multi_subject_service(self.client.nats().clone(), &subject_refs, host)
-                .await
-                .map_err(ServiceRuntimeError::from)
+        ));
+        let serve = async move {
+            super::provider_ingress::run_provider_intake(manager, subjects, host).await
         };
         let run = async {
             if job_hosts.is_empty() {
@@ -1412,48 +1413,32 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
         );
         runtime.event_subscribe_needs = C::EVENT_SUBSCRIBE_NEEDS;
         runtime.operation_repository = Some(runtime.operation_repository().await?);
-        let staging = async_nats::jetstream::new(runtime.client.nats().clone())
-            .get_object_store(format!(
-                "trellis_operation_staging_{}",
-                runtime.provider_deployment_id
-            ))
+        let staging_bucket = format!(
+            "trellis_operation_staging_{}",
+            runtime.provider_deployment_id
+        );
+        // Validate the runtime-provisioned staging bucket on the initial
+        // generation, then acquire a suitable generation per staging call so
+        // staging follows cutover instead of pinning one.
+        async_nats::jetstream::new(runtime.client.nats().clone())
+            .get_object_store(&staging_bucket)
             .await
             .map_err(|error| {
                 ServiceRuntimeError::Server(Box::new(ServerError::Nats(error.to_string())))
             })?;
-        runtime.operation_staging = Some(super::resources::backend::BoundStoreResourceClient::new(
-            staging,
-        ));
+        runtime.operation_staging = Some(
+            super::resources::backend::BoundStoreResourceClient::managed_current(
+                runtime.client.transport_generations(),
+                staging_bucket,
+                runtime.client.timeout_ms(),
+            ),
+        );
         for name in runtime.resources.store.keys().cloned().collect::<Vec<_>>() {
             let handle = runtime.store_client(&name).await?;
             runtime.store_handles.insert(name, handle);
         }
         Ok(runtime)
     }
-}
-
-/// Reject a resource open whose granted transport family is not admitted on
-/// the current physical attachment.
-///
-/// A granted-but-unadopted resource must never be opened against NATS: that
-/// would turn a pending transport adoption into a broker permission violation.
-/// The caller reports the pending condition and retries after an explicit
-/// transport refresh.
-fn ensure_resource_transport_admitted(
-    client: &TrellisClient,
-    kind: crate::client::ResourceTransportKind,
-    name: &str,
-    bucket: &str,
-) -> Result<(), ServerError> {
-    if client
-        .resource_transport_missing(kind, bucket, crate::client::ResourceTransportAction::Read)
-        .map_err(|error| ServerError::Nats(error.to_string()))?
-    {
-        return Err(ServerError::TransportUpgradeRequired(format!(
-            "resource '{name}' is granted but not admitted on the current connection"
-        )));
-    }
-    Ok(())
 }
 
 fn parse_bootstrap_binding(
@@ -1845,6 +1830,31 @@ async fn run_durable_event_pull_loop(
 ) -> Result<(), ServiceRuntimeError> {
     let mut replay = false;
     let mut original_consumer_opened = false;
+    // Transient transport recovery is paced by the logical connection, not an
+    // arbitrary per-loop window: the durable intake keeps consuming while a
+    // usable generation returns, and stops only on an authoritative logical
+    // terminal cause. Application errors and a missing durable consumer keep
+    // their own fail-fast paths below.
+    let manager = client.transport_generations();
+    let mut settle_failure = false;
+    // A message-settle transport failure (ack/nak/term/progress) enters the same
+    // paced recovery instead of tearing down the service runtime; a permanent
+    // protocol failure still propagates. Application handler failures are handled
+    // inline below and never re-run here.
+    macro_rules! settle {
+        ($label:lifetime, $operation:expr) => {
+            match $operation {
+                Ok(value) => value,
+                Err(error) => {
+                    if durable_event_transport_error_is_retryable(&error) {
+                        settle_failure = true;
+                        break $label;
+                    }
+                    return Err(error.into());
+                }
+            }
+        };
+    }
     loop {
         let is_replay = replay;
         replay = !replay;
@@ -1871,6 +1881,19 @@ async fn run_durable_event_pull_loop(
                 tokio::time::sleep(Duration::from_millis(DURABLE_EVENT_CONSUMER_RETRY_MS)).await;
                 continue;
             }
+            // A revoked or refreshing authorization context and a recovering
+            // transport generation are transient for a durable intake loop: it
+            // must keep consuming rather than tear down the whole service runtime,
+            // and stops only on an authoritative logical terminal cause.
+            Err(error) if durable_event_transport_error_is_retryable(&error) => {
+                if let Some(cause) = manager
+                    .pace_or_terminal(Duration::from_millis(DURABLE_EVENT_CONSUMER_RETRY_MS))
+                    .await
+                {
+                    return Err(cause.client_error().into());
+                }
+                continue;
+            }
             Err(error) => return Err(error.into()),
         };
         if !is_replay {
@@ -1878,11 +1901,11 @@ async fn run_durable_event_pull_loop(
         }
         let mut messages = messages.take(1);
 
-        loop {
-            let result = match tokio::time::timeout(Duration::from_secs(1), messages.next()).await {
-                Ok(Some(result)) => result,
-                Ok(None) => break,
-                Err(_) => break,
+        'batch: loop {
+            // The bounded pull owns its subscription until the broker completes
+            // delivery or expiry; a local timer must not abandon an issued pull.
+            let Some(result) = messages.next().await else {
+                break;
             };
             let message = match result {
                 Ok(message) => message,
@@ -1895,6 +1918,15 @@ async fn run_durable_event_pull_loop(
                 {
                     tokio::time::sleep(Duration::from_millis(DURABLE_EVENT_CONSUMER_RETRY_MS))
                         .await;
+                    break;
+                }
+                Err(error) if durable_event_transport_error_is_retryable(&error) => {
+                    if let Some(cause) = manager
+                        .pace_or_terminal(Duration::from_millis(DURABLE_EVENT_CONSUMER_RETRY_MS))
+                        .await
+                    {
+                        return Err(cause.client_error().into());
+                    }
                     break;
                 }
                 Err(error) => return Err(error.into()),
@@ -1912,7 +1944,7 @@ async fn run_durable_event_pull_loop(
                 if envelope.resource_id != config.resource_id
                     || envelope.original_record_sequence == 0
                 {
-                    message.term().await?;
+                    settle!('batch, message.term().await);
                     continue;
                 }
                 let inspected = match crate::generated::Client::from_client(Arc::clone(&client))
@@ -1932,7 +1964,7 @@ async fn run_durable_event_pull_loop(
                             .or_else(|| config.backoff.last())
                             .copied()
                             .unwrap_or(config.ack_wait);
-                        message.nak_after(delay).await?;
+                        settle!('batch, message.nak_after(delay).await);
                         continue;
                     }
                 };
@@ -1944,9 +1976,12 @@ async fn run_durable_event_pull_loop(
                         .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
                 });
                 if projected_generation.is_none_or(|generation| generation < envelope.generation) {
-                    message
-                        .nak_after(Duration::from_millis(DURABLE_EVENT_CONSUMER_RETRY_MS))
-                        .await?;
+                    settle!(
+                        'batch,
+                        message
+                            .nak_after(Duration::from_millis(DURABLE_EVENT_CONSUMER_RETRY_MS))
+                            .await
+                    );
                     continue;
                 }
                 if projected_generation != Some(envelope.generation)
@@ -1955,7 +1990,7 @@ async fn run_durable_event_pull_loop(
                         Some("replayPending" | "replaying")
                     )
                 {
-                    message.ack().await?;
+                    settle!('batch, message.ack().await);
                     continue;
                 }
             }
@@ -1974,7 +2009,7 @@ async fn run_durable_event_pull_loop(
                 });
             let Some(registration) = registration else {
                 tracing::warn!(subject = %message.subject(), "No registered event handler; retaining message for redelivery");
-                message.nak_after(Duration::from_secs(5)).await?;
+                settle!('batch, message.nak_after(Duration::from_secs(5)).await);
                 continue;
             };
             let mut replay_headers = HeaderMap::new();
@@ -2040,10 +2075,11 @@ async fn run_durable_event_pull_loop(
                                     "error"
                                 });
                             }
+                            settle!('batch, result);
                         }
                         super::EventVerificationFailure::Rejected(_) => {
                             if let Some(envelope) = &replay_envelope {
-                                message.ack_progress().await?;
+                                settle!('batch, message.ack_progress().await);
                                 let report = ConsumerDeliveryReport {
                                     resource_id: config.resource_id.clone(),
                                     source_stream: config
@@ -2077,7 +2113,7 @@ async fn run_durable_event_pull_loop(
                                         "error"
                                     });
                                 }
-                                result?;
+                                settle!('batch, result);
                             } else {
                                 let result = message.term().await;
                                 for observation in observations.drain(..) {
@@ -2087,6 +2123,7 @@ async fn run_durable_event_pull_loop(
                                         "error"
                                     });
                                 }
+                                settle!('batch, result);
                             }
                         }
                     }
@@ -2140,13 +2177,25 @@ async fn run_durable_event_pull_loop(
                 let result = loop {
                     tokio::select! {
                         result = &mut future => break result,
-                        _ = progress.tick() => message.ack_progress().await?,
+                        _ = progress.tick() => {
+                            // A progress-ack transport failure must never drop the
+                            // in-flight handler: it is already-accepted work. Record
+                            // the recovery need and keep waiting for the handler to
+                            // finish before the batch is re-opened.
+                            if let Err(error) = message.ack_progress().await {
+                                if durable_event_transport_error_is_retryable(&error) {
+                                    settle_failure = true;
+                                } else {
+                                    return Err(error.into());
+                                }
+                            }
+                        }
                     }
                 };
                 if result.is_err() {
                     let error = result.err().map(|error| error.to_string());
                     if delivery >= config.max_deliver {
-                        message.ack_progress().await?;
+                        settle!('batch, message.ack_progress().await);
                         let report = ConsumerDeliveryReport {
                             resource_id: config.resource_id.clone(),
                             source_stream: if is_replay {
@@ -2173,11 +2222,16 @@ async fn run_durable_event_pull_loop(
                                 .await;
                         let reported = report_result.is_ok();
                         if reported {
-                            if let Err(error) = message.ack().await {
+                            let ack = message.ack().await;
+                            if let Err(error) = ack {
                                 for earlier in completed.drain(..) {
                                     earlier.finish("ok");
                                 }
                                 observation.finish("error");
+                                if durable_event_transport_error_is_retryable(&error) {
+                                    settle_failure = true;
+                                    break 'batch;
+                                }
                                 return Err(error.into());
                             }
                         } else if let Err(error) = report_result {
@@ -2201,6 +2255,7 @@ async fn run_durable_event_pull_loop(
                         earlier.finish("ok");
                     }
                     observation.finish(if result.is_ok() { "retry" } else { "error" });
+                    settle!('batch, result);
                     handled = false;
                     break;
                 }
@@ -2213,7 +2268,7 @@ async fn run_durable_event_pull_loop(
                 continue;
             }
             if let Some(envelope) = &replay_envelope {
-                message.ack_progress().await?;
+                settle!('batch, message.ack_progress().await);
                 let report = ConsumerDeliveryReport {
                     resource_id: config.resource_id.clone(),
                     source_stream: config
@@ -2243,7 +2298,21 @@ async fn run_durable_event_pull_loop(
             for observation in completed {
                 observation.finish(if ack.is_ok() { "ok" } else { "error" });
             }
-            ack?;
+            settle!('batch, ack);
+        }
+
+        // A settle that failed on the transport is a paced recovery condition:
+        // re-open the durable consumer on the current generation and let the
+        // broker redeliver the unacknowledged message. A permanent error already
+        // returned; only an authoritative logical terminal ends the loop.
+        if settle_failure {
+            settle_failure = false;
+            if let Some(cause) = manager
+                .pace_or_terminal(Duration::from_millis(DURABLE_EVENT_CONSUMER_RETRY_MS))
+                .await
+            {
+                return Err(cause.client_error().into());
+            }
         }
     }
 }
@@ -2317,6 +2386,34 @@ fn missing_durable_event_consumer_is_retryable(
     original_consumer_opened: bool,
 ) -> bool {
     is_missing_durable_event_consumer_error(error) && (is_replay || !original_consumer_opened)
+}
+
+/// Whether a durable event intake error is a transient transport condition.
+///
+/// A revoked or refreshing authorization context, a suspended transport, a
+/// recovering generation, and a raw NATS transport/request failure are all
+/// transient for a generation-following intake loop: it must keep consuming
+/// rather than tear down the whole service runtime. Such a recoverable outage is
+/// paced indefinitely until the logical connection latches an authoritative
+/// terminal cause; individual operation callers retain their own deadlines.
+///
+/// The class matches the client's transport-`unavailable` outcome
+/// classification. Non-transport errors stay terminal: an uninstalled bootstrap
+/// context, protocol/codec failures, and a misconfigured subscription. A
+/// missing or paused durable consumer has its own guard and is not folded in.
+fn durable_event_transport_error_is_retryable(error: &TrellisClientError) -> bool {
+    if is_missing_durable_event_consumer_error(error) {
+        return false;
+    }
+    matches!(
+        error,
+        TrellisClientError::AuthorizationUnavailable(_)
+            | TrellisClientError::TransportUnavailable(_)
+            | TrellisClientError::Nats(_)
+            | TrellisClientError::NatsConnect(_)
+            | TrellisClientError::NatsRequest(_)
+            | TrellisClientError::Timeout
+    )
 }
 
 #[cfg(test)]

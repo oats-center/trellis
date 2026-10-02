@@ -400,11 +400,10 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             else {
                 return Ok(());
             };
-            let api_nats = owner.runtime_nats();
             let mut router = router;
-            router.set_live_owner(owner);
+            router.set_live_owner(owner.clone());
             run_builtin_authenticated_router(
-                api_nats,
+                owner,
                 events::API_ID,
                 EVENTS_SUBJECTS,
                 router,

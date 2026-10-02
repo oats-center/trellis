@@ -416,187 +416,20 @@ impl CalloutProcessor {
             );
             return Ok(());
         }
-        self.close_retained_attachment(&connection, "disconnected")
-            .await
+        close_retained_attachment(
+            &self.ephemeral,
+            &self.repository,
+            &connection,
+            "disconnected",
+        )
+        .await
     }
 
     /// Converges retained attachment records with authoritative broker
     /// inventory. Unreachable servers stay visible; only a successful inventory
     /// read proves an attachment absent.
     async fn reconcile(&self) -> Result<(), AuthorizationStateError> {
-        use std::collections::{BTreeSet, HashMap};
-
-        let now = now_millis()?;
-        let retained = self.ephemeral.list_connection_presence(None).await?;
-        let retained_physical: HashMap<(String, String), ()> = retained
-            .iter()
-            .map(|record| ((record.server_id.clone(), record.client_id.clone()), ()))
-            .collect();
-
-        let mut servers: BTreeSet<String> = retained
-            .iter()
-            .map(|record| record.server_id.clone())
-            .collect();
-        match super::auth::transport_attachments::discover_servers(&self.system_client).await {
-            Ok(discovered) => servers.extend(discovered),
-            Err(error) => {
-                tracing::warn!(%error, "attachment reconciliation could not discover servers")
-            }
-        }
-
-        let mut observed: HashMap<(String, u64), String> = HashMap::new();
-        let mut answered: BTreeSet<String> = BTreeSet::new();
-        for server_id in &servers {
-            match super::auth::transport_attachments::paginate_connz(&self.system_client, server_id)
-                .await
-            {
-                Ok(connections) => {
-                    answered.insert(server_id.clone());
-                    for connection in connections {
-                        if connection.is_callout_owned() {
-                            if let Some(user) = connection.authorized_user {
-                                observed.insert((server_id.clone(), connection.cid), user);
-                            }
-                        }
-                    }
-                }
-                Err(error) => tracing::warn!(
-                    server_id = %server_id,
-                    %error,
-                    "attachment reconciliation could not read broker inventory"
-                ),
-            }
-        }
-
-        for record in &retained {
-            let Ok(cid) = record.client_id.parse::<u64>() else {
-                continue;
-            };
-            match observed.get(&(record.server_id.clone(), cid)) {
-                Some(user) if record.matches_disconnect_user(user) => {
-                    if record.attachment_state == AuthAttachmentState::Pending
-                        || now.saturating_sub(record.last_seen_at) >= RECONCILE_INTERVAL_MS
-                    {
-                        let mut confirmed = record.clone();
-                        confirmed.attachment_state = AuthAttachmentState::Confirmed;
-                        confirmed.pending_deadline = None;
-                        confirmed.last_seen_at = now;
-                        if let Err(error) = self
-                            .ephemeral
-                            .replace_connection_presence(record.storage_revision, confirmed)
-                            .await
-                        {
-                            tracing::debug!(
-                                %error,
-                                "attachment confirmation raced with another writer"
-                            );
-                        }
-                    }
-                }
-                Some(_) => {
-                    tracing::warn!(
-                        server_id = %record.server_id,
-                        cid,
-                        "retained attachment identity no longer matches its socket"
-                    );
-                    self.request_untracked_kick(&record.server_id, cid).await?;
-                    self.close_retained_attachment(record, "reconciled_identity_mismatch")
-                        .await?;
-                }
-                None => match record.attachment_state {
-                    AuthAttachmentState::Pending => {
-                        if record
-                            .pending_deadline
-                            .is_some_and(|deadline| deadline <= now)
-                        {
-                            self.close_retained_attachment(record, "reconciled_unregistered")
-                                .await?;
-                        }
-                    }
-                    AuthAttachmentState::Confirmed => {
-                        if answered.contains(&record.server_id)
-                            && self.attachment_absent(&record.server_id, cid).await?
-                        {
-                            self.close_retained_attachment(record, "reconciled_absent")
-                                .await?;
-                        }
-                    }
-                },
-            }
-        }
-
-        for (server_id, cid) in observed.keys() {
-            if retained_physical.contains_key(&(server_id.clone(), cid.to_string())) {
-                continue;
-            }
-            self.request_untracked_kick(server_id, *cid).await?;
-        }
-        Ok(())
-    }
-
-    async fn attachment_absent(
-        &self,
-        server_id: &str,
-        cid: u64,
-    ) -> Result<bool, AuthorizationStateError> {
-        match super::auth::transport_attachments::connz(
-            &self.system_client,
-            server_id,
-            0,
-            Some(cid),
-        )
-        .await
-        {
-            Ok((connections, _)) => Ok(connections.is_empty()),
-            Err(error) => {
-                tracing::warn!(
-                    server_id = %server_id,
-                    cid,
-                    %error,
-                    "attachment absence could not be proven"
-                );
-                Ok(false)
-            }
-        }
-    }
-
-    async fn request_untracked_kick(
-        &self,
-        server_id: &str,
-        cid: u64,
-    ) -> Result<(), AuthorizationStateError> {
-        let outcome =
-            super::auth::transport_attachments::request_kick(&self.system_client, server_id, cid)
-                .await?;
-        tracing::warn!(
-            server_id = %server_id,
-            cid,
-            ?outcome,
-            "kicked untracked callout-owned NATS attachment"
-        );
-        Ok(())
-    }
-
-    async fn close_retained_attachment(
-        &self,
-        connection: &AuthConnectionPresence,
-        reason: &str,
-    ) -> Result<(), AuthorizationStateError> {
-        self.ephemeral
-            .delete_connection_presence(&connection.connection_id, connection.storage_revision)
-            .await?;
-        let now = now_millis()?;
-        self.repository
-            .enqueue_post_commit_actions(vec![super::auth::connection_event_action::<
-                trellis_runtime_apis::apis::trellis_auth_v1::events::ConnectionsClosed,
-            >(
-                connection,
-                "Auth.Connections.Closed",
-                "closed",
-                Some(reason),
-                now,
-            )?])
-            .await
+        reconcile_retained_attachments(&self.ephemeral, &self.system_client, &self.repository).await
     }
 
     #[tracing::instrument(
@@ -986,6 +819,215 @@ impl CalloutProcessor {
         );
         authorize_result
     }
+}
+
+/// Converges retained attachment records with authoritative broker inventory.
+///
+/// A server that does not answer leaves its records retained. When broad
+/// inventory does not report a cid, the owning server's targeted `CONNZ(cid)`
+/// probe is consulted once a pending admission has waited out its deadline: a
+/// missing connection proves absence and retires the record, an exact
+/// authenticated marker confirms it, and a different identity now holding the
+/// cid is kicked and the stale record closed. Missing or unavailable evidence
+/// is never treated as absence, so a live socket cannot become untracked
+/// merely because confirmation could not be obtained.
+async fn reconcile_retained_attachments<E: AuthEphemeralRepository>(
+    ephemeral: &E,
+    system_client: &async_nats::Client,
+    repository: &super::auth::SqliteAuthorizationStore,
+) -> Result<(), AuthorizationStateError> {
+    use std::collections::{BTreeSet, HashMap};
+
+    let now = now_millis()?;
+    let retained = ephemeral.list_connection_presence(None).await?;
+    let retained_physical: HashMap<(String, String), ()> = retained
+        .iter()
+        .map(|record| ((record.server_id.clone(), record.client_id.clone()), ()))
+        .collect();
+
+    let mut servers: BTreeSet<String> = retained
+        .iter()
+        .map(|record| record.server_id.clone())
+        .collect();
+    match super::auth::transport_attachments::discover_servers(system_client).await {
+        Ok(discovered) => servers.extend(discovered),
+        Err(error) => {
+            tracing::warn!(%error, "attachment reconciliation could not discover servers")
+        }
+    }
+
+    let mut observed: HashMap<(String, u64), String> = HashMap::new();
+    let mut answered: BTreeSet<String> = BTreeSet::new();
+    for server_id in &servers {
+        match super::auth::transport_attachments::paginate_connz(system_client, server_id).await {
+            Ok(connections) => {
+                answered.insert(server_id.clone());
+                for connection in connections {
+                    if connection.is_callout_owned() {
+                        if let Some(user) = connection.authorized_user {
+                            observed.insert((server_id.clone(), connection.cid), user);
+                        }
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(
+                server_id = %server_id,
+                %error,
+                "attachment reconciliation could not read broker inventory"
+            ),
+        }
+    }
+
+    for record in &retained {
+        let Ok(cid) = record.client_id.parse::<u64>() else {
+            continue;
+        };
+        let evidence = match observed.get(&(record.server_id.clone(), cid)) {
+            // Broad inventory is authoritative and always actionable.
+            Some(user) => AttachmentMarkerEvidence::Present(Some(user.clone())),
+            // Broad inventory did not report this cid. It only proves anything
+            // once the owning server answered and a pending admission has
+            // waited out its deadline; the targeted probe then confirms the
+            // exact attachment, proves absence, or reports the different
+            // identity now holding the cid.
+            None => {
+                let past_pending = match record.attachment_state {
+                    AuthAttachmentState::Pending => record
+                        .pending_deadline
+                        .is_some_and(|deadline| deadline <= now),
+                    AuthAttachmentState::Confirmed => true,
+                };
+                if past_pending && answered.contains(&record.server_id) {
+                    probe_attachment(system_client, &record.server_id, cid).await
+                } else {
+                    AttachmentMarkerEvidence::Unknown
+                }
+            }
+        };
+        match evidence {
+            AttachmentMarkerEvidence::Present(Some(user))
+                if record.matches_disconnect_user(&user) =>
+            {
+                if record.attachment_state == AuthAttachmentState::Pending
+                    || now.saturating_sub(record.last_seen_at) >= RECONCILE_INTERVAL_MS
+                {
+                    let mut confirmed = record.clone();
+                    confirmed.attachment_state = AuthAttachmentState::Confirmed;
+                    confirmed.pending_deadline = None;
+                    confirmed.last_seen_at = now;
+                    if let Err(error) = ephemeral
+                        .replace_connection_presence(record.storage_revision, confirmed)
+                        .await
+                    {
+                        tracing::debug!(
+                            %error,
+                            "attachment confirmation raced with another writer"
+                        );
+                    }
+                }
+            }
+            AttachmentMarkerEvidence::Present(_) => {
+                tracing::warn!(
+                    server_id = %record.server_id,
+                    cid,
+                    "retained attachment identity no longer matches its socket"
+                );
+                request_untracked_kick(system_client, &record.server_id, cid).await?;
+                close_retained_attachment(
+                    ephemeral,
+                    repository,
+                    record,
+                    "reconciled_identity_mismatch",
+                )
+                .await?;
+            }
+            AttachmentMarkerEvidence::Absent => {
+                close_retained_attachment(ephemeral, repository, record, "reconciled_absent")
+                    .await?;
+            }
+            AttachmentMarkerEvidence::Unknown => {}
+        }
+    }
+
+    for (server_id, cid) in observed.keys() {
+        if retained_physical.contains_key(&(server_id.clone(), cid.to_string())) {
+            continue;
+        }
+        request_untracked_kick(system_client, server_id, *cid).await?;
+    }
+    Ok(())
+}
+
+/// Authenticated-marker evidence for one retained attachment's cid.
+enum AttachmentMarkerEvidence {
+    /// The owning server proved no connection exists at this cid.
+    Absent,
+    /// A connection exists at this cid; the broker's authenticated user field,
+    /// when it reported one.
+    Present(Option<String>),
+    /// Evidence could not be obtained; never treated as absence.
+    Unknown,
+}
+
+async fn probe_attachment(
+    system_client: &async_nats::Client,
+    server_id: &str,
+    cid: u64,
+) -> AttachmentMarkerEvidence {
+    match super::auth::transport_attachments::connz(system_client, server_id, 0, Some(cid)).await {
+        Ok((connections, _)) => match connections.into_iter().next() {
+            Some(connection) => AttachmentMarkerEvidence::Present(connection.authorized_user),
+            None => AttachmentMarkerEvidence::Absent,
+        },
+        Err(error) => {
+            tracing::warn!(
+                server_id = %server_id,
+                cid,
+                %error,
+                "attachment identity could not be probed"
+            );
+            AttachmentMarkerEvidence::Unknown
+        }
+    }
+}
+
+async fn request_untracked_kick(
+    system_client: &async_nats::Client,
+    server_id: &str,
+    cid: u64,
+) -> Result<(), AuthorizationStateError> {
+    let outcome =
+        super::auth::transport_attachments::request_kick(system_client, server_id, cid).await?;
+    tracing::warn!(
+        server_id = %server_id,
+        cid,
+        ?outcome,
+        "kicked untracked callout-owned NATS attachment"
+    );
+    Ok(())
+}
+
+async fn close_retained_attachment<E: AuthEphemeralRepository>(
+    ephemeral: &E,
+    repository: &super::auth::SqliteAuthorizationStore,
+    connection: &AuthConnectionPresence,
+    reason: &str,
+) -> Result<(), AuthorizationStateError> {
+    ephemeral
+        .delete_connection_presence(&connection.connection_id, connection.storage_revision)
+        .await?;
+    let now = now_millis()?;
+    repository
+        .enqueue_post_commit_actions(vec![super::auth::connection_event_action::<
+            trellis_runtime_apis::apis::trellis_auth_v1::events::ConnectionsClosed,
+        >(
+            connection,
+            "Auth.Connections.Closed",
+            "closed",
+            Some(reason),
+            now,
+        )?])
+        .await
 }
 
 fn connection_id(
@@ -1383,5 +1425,262 @@ mod tests {
         let code = callout_denial_code(&AuthorizationStateError::Storage(secret.to_owned()));
         assert_eq!(code, "internal_error");
         assert!(!code.contains(secret));
+    }
+
+    /// Resolves the pinned NATS binary, preferring the shared cache so a
+    /// prepared machine never needs a network fetch to run the live test.
+    #[cfg(feature = "nats-leases")]
+    fn pinned_nats_binary() -> std::path::PathBuf {
+        use trellis_local_nats::{NatsBinarySource, NatsServerBinary};
+        if let Some(home) = std::env::var_os("HOME") {
+            let candidate = std::path::PathBuf::from(home)
+                .join(".cache/trellis")
+                .join(format!(
+                    "nats-server-v{}",
+                    trellis_local_nats::pinned_version().expect("pinned nats version")
+                ));
+            if candidate.is_file() {
+                if let Ok(path) =
+                    NatsServerBinary::resolve(&NatsBinarySource::Path(candidate), None)
+                {
+                    return path;
+                }
+            }
+        }
+        let cache = std::env::temp_dir().join("trellis-callout-reconcile-nats-cache");
+        std::fs::create_dir_all(&cache).expect("private nats cache dir");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o700))
+                .expect("private nats cache permissions");
+        }
+        NatsServerBinary::resolve(&NatsBinarySource::DownloadPinned, Some(&cache))
+            .expect("resolve pinned nats-server")
+    }
+
+    #[cfg(feature = "nats-leases")]
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("bind ephemeral port")
+            .local_addr()
+            .expect("local addr")
+            .port()
+    }
+
+    /// A valid retained attachment for one server/client, already past its
+    /// pending-admission deadline.
+    #[cfg(feature = "nats-leases")]
+    fn retained_attachment(server_id: &str, cid: u64, now: i64) -> AuthConnectionPresence {
+        use base64::Engine as _;
+        use trellis_protocol::TransportAuthorizationV1;
+        let session_key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            ed25519_dalek::SigningKey::from_bytes(&[7_u8; 32])
+                .verifying_key()
+                .to_bytes(),
+        );
+        AuthConnectionPresence {
+            storage_revision: 0,
+            format: "trellis.auth-connection-presence.v2".to_owned(),
+            connection_id: trellis_protocol::digest_json(&serde_json::json!({
+                "serverId": server_id,
+                "clientId": cid,
+            }))
+            .expect("connection id digest"),
+            runtime_connection_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned(),
+            session_key,
+            login_session_id: Some("01ARZ3NDEKTSV4RRFFQ69G5FAW".to_owned()),
+            principal_id: "usr_reconcile".to_owned(),
+            principal_kind: trellis_protocol::AuthorizationPrincipalKind::User,
+            participant_id: "app-reconcile".to_owned(),
+            deployment_id: None,
+            instance_id: None,
+            context_digest: trellis_protocol::digest_json(&serde_json::json!("context"))
+                .expect("context digest"),
+            transport_authorization_digest: TransportAuthorizationV1 {
+                format: TRANSPORT_AUTHORIZATION_FORMAT_V1.to_owned(),
+                account: nkeys::KeyPair::new_account().public_key(),
+                publish_allow: vec!["rpc.v1.Example".to_owned()],
+                subscribe_allow: vec!["_INBOX.>".to_owned()],
+                response: None,
+                hard_expires_at: None,
+            }
+            .digest()
+            .expect("transport authorization digest"),
+            attachment_state: AuthAttachmentState::Pending,
+            pending_deadline: Some(now - 1_000),
+            server_id: server_id.to_owned(),
+            client_id: cid.to_string(),
+            user_nkey: "UDUMMYRECONCILE".to_owned(),
+            remote_address: Some("127.0.0.1".to_owned()),
+            connected_at: now,
+            last_seen_at: now,
+            version: 2,
+        }
+    }
+
+    /// Reconciliation only acts on authoritative evidence from a real broker:
+    /// a record whose owning server did not answer inventory stays tracked (so
+    /// a live socket cannot become untracked and escape later enforcement), an
+    /// answered server reporting no such connection retires the record, and an
+    /// answered server reporting a different authenticated identity at the
+    /// same cid kicks that socket and closes the stale record.
+    #[cfg(feature = "nats-leases")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconciliation_retains_attachments_whose_server_did_not_answer() {
+        use crate::platform::auth::transport_attachments::{connz, discover_servers};
+        use crate::platform::auth::SqliteAuthorizationStore;
+        use trellis_local_nats::{ManagedNatsServer, NatsOutput};
+
+        let binary = pinned_nats_binary();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config_path = dir.path().join("nats.conf");
+        let nats_port = free_port();
+        let http_port = free_port();
+        let ws_port = free_port();
+        let config = format!(
+            "port: {nats_port}\nhttp_port: {http_port}\n\
+             websocket {{ port: {ws_port}, no_tls: true }}\n\
+             jetstream {{ store_dir: \"{store}\" }}\n\
+             accounts {{\n\
+               SYS {{\n\
+                 users: [ {{ user: \"sys\", password: \"pw\" }} ]\n\
+               }}\n\
+               APP {{\n\
+                 users: [ {{ user: \"app\", password: \"pw\" }} ]\n\
+                 jetstream: enabled\n\
+               }}\n\
+             }}\n\
+             system_account: SYS\n",
+            store = dir.path().join("jetstream").display(),
+        );
+        std::fs::write(&config_path, config).expect("write broker config");
+        let mut server = ManagedNatsServer::start(
+            &binary,
+            &config_path,
+            nats_port,
+            http_port,
+            ws_port,
+            &dir.path().join("nats.pid"),
+            &NatsOutput::Log {
+                path: dir.path().join("nats.log"),
+                mirror: false,
+            },
+        )
+        .expect("start broker");
+        let url = format!("nats://127.0.0.1:{nats_port}");
+        let system =
+            async_nats::ConnectOptions::with_user_and_password("sys".to_owned(), "pw".to_owned())
+                .connect(&url)
+                .await
+                .expect("connect system account");
+        let app =
+            async_nats::ConnectOptions::with_user_and_password("app".to_owned(), "pw".to_owned())
+                .connect(&url)
+                .await
+                .expect("connect trellis account");
+        let ephemeral = NatsAuthEphemeralRepository::ensure(app.clone())
+            .await
+            .expect("open ephemeral repository");
+        let repository =
+            SqliteAuthorizationStore::open_in_memory().expect("open sqlite auth store");
+        let real_server = discover_servers(&system)
+            .await
+            .expect("discover servers")
+            .into_iter()
+            .next()
+            .expect("one broker identity");
+        let now = now_millis().expect("current time");
+
+        // The server answered inventory and reports no such connection, so
+        // absence is proven and the record retires.
+        let absent = retained_attachment(&real_server, 999_999, now);
+        let revision = ephemeral
+            .put_connection_presence(absent.clone())
+            .await
+            .expect("record absent attachment");
+        let mut absent = absent;
+        absent.storage_revision = revision;
+        reconcile_retained_attachments(&ephemeral, &system, &repository)
+            .await
+            .expect("reconcile with authoritative absence");
+        assert!(
+            !ephemeral
+                .list_connection_presence(None)
+                .await
+                .expect("list attachments")
+                .iter()
+                .any(|record| record.connection_id == absent.connection_id),
+            "authoritative broker absence must retire the record"
+        );
+
+        // No server answers for this record's identity, so absence is unknown.
+        let unreachable = retained_attachment("UNKNOWN_SERVER_IDENTITY", 42, now);
+        let revision = ephemeral
+            .put_connection_presence(unreachable.clone())
+            .await
+            .expect("record unreachable attachment");
+        let mut unreachable = unreachable;
+        unreachable.storage_revision = revision;
+        reconcile_retained_attachments(&ephemeral, &system, &repository)
+            .await
+            .expect("reconcile with unavailable inventory");
+        assert!(
+            ephemeral
+                .list_connection_presence(None)
+                .await
+                .expect("list attachments")
+                .iter()
+                .any(|record| record.connection_id == unreachable.connection_id),
+            "an attachment whose server did not answer inventory must be retained"
+        );
+
+        // The same server/cid is now held by a different authenticated
+        // identity. That socket must be kicked and the stale record closed,
+        // not retained forever.
+        let (inventory, _) = connz(&system, &real_server, 0, None)
+            .await
+            .expect("read broker inventory");
+        let app_cid = inventory
+            .iter()
+            .find(|connection| connection.authorized_user.as_deref() == Some("app"))
+            .expect("the app socket is inventoried")
+            .cid;
+        let mismatched = retained_attachment(&real_server, app_cid, now);
+        let revision = ephemeral
+            .put_connection_presence(mismatched.clone())
+            .await
+            .expect("record mismatched attachment");
+        let mut mismatched = mismatched;
+        mismatched.storage_revision = revision;
+        reconcile_retained_attachments(&ephemeral, &system, &repository)
+            .await
+            .expect("reconcile with a mismatched identity");
+        assert!(
+            !ephemeral
+                .list_connection_presence(None)
+                .await
+                .expect("list attachments")
+                .iter()
+                .any(|record| record.connection_id == mismatched.connection_id),
+            "a mismatched identity must retire the stale record"
+        );
+        let mut kicked = false;
+        for _ in 0..50 {
+            let (connections, _) = connz(&system, &real_server, 0, Some(app_cid))
+                .await
+                .expect("probe kicked socket");
+            if connections.is_empty() {
+                kicked = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            kicked,
+            "the socket holding the mismatched identity must be kicked"
+        );
+
+        server.stop().expect("stop broker");
     }
 }

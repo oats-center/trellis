@@ -99,6 +99,54 @@ const runtimeOptions = {
   },
 };
 
+Deno.test("connection close synchronously cancels active and prepared Live consumers", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    let starts = 0;
+    const { service, exit } = await startProvider(
+      runtime,
+      async ({ emit, signal }) => {
+        starts += 1;
+        await emit({ value: "active" }).orThrow();
+        if (!signal.aborted) {
+          await new Promise<void>((resolve) =>
+            signal.addEventListener("abort", () => resolve(), { once: true })
+          );
+        }
+      },
+    );
+    const client = await runtime.connectClient({
+      name: "live-close-owner-caller",
+      contract: participants.Caller.participant,
+    });
+    try {
+      const active = await client.watch({}).orThrow();
+      assertEquals((await active.next()).done, false);
+      const prepared = await client.watch({}).orThrow();
+      const closing = client.connection.close();
+      // A resolved local end must win immediately, without waiting for physical
+      // transport closure or authorization-registry teardown to notify consumers.
+      for (const handle of [active, prepared]) {
+        const end = await Promise.race([
+          handle.closed,
+          Promise.resolve(undefined),
+        ]);
+        assertEquals(end?.reason, "cancelled");
+        assertEquals(await handle.next(), { done: true, value: undefined });
+      }
+      await closing;
+      assertEquals(
+        starts,
+        1,
+        "the prepared consumer never activates its source",
+      );
+    } finally {
+      await client.connection.close();
+      await service.stop();
+      assertEquals(await exit, undefined);
+    }
+  }, runtimeOptions);
+});
+
 Deno.test("L19/L20 prepared return never starts a provider source", async () => {
   const metricsCapture = ensureCapture();
   await withTrellisRuntime(async (runtime) => {
@@ -260,6 +308,16 @@ Deno.test("L28 cancelling a blocked source settles provider cleanup", async () =
       const handle = await client.watch({}).orThrow();
       const iterator = handle[Symbol.asyncIterator]();
       await iterator.next();
+      const [receipt, concurrentReceipt] = await Promise.all([
+        handle.close().orThrow(),
+        handle.close().orThrow(),
+      ]);
+      assertEquals(receipt.remote, "confirmed");
+      assertEquals(receipt.cleanup, "complete");
+      assertEquals(receipt.end.reason, "cancelled");
+      assertEquals(concurrentReceipt, receipt);
+      assertEquals(await handle.close().orThrow(), receipt);
+      assertEquals(await iterator.next(), { done: true, value: undefined });
       await iterator.return?.();
       await runtime.waitFor(() => cleanups === 1, { timeoutMs: 10_000 });
       await metricsCapture.flush();

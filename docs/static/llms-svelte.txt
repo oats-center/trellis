@@ -89,6 +89,14 @@ the typed client with `trellisApp.getTrellis()` and connection status with
 `trellisApp.getConnection()`. The connection accessor returns a Svelte-reactive
 `SvelteTrellisConnection`.
 
+Keep this logical app owner across automatic transport handoffs. Equal-policy
+renewal keeps a healthy socket; newly approved authority is adopted on a ready
+successor without a manual refresh method or upgrade flag. Do not recreate the
+client or add an effect that reconnects it on each authorization refresh. Safe
+accepted work continues on its receiving connection. While own authorization
+coverage is unavailable, fresh calls either wait within their acquisition budget
+or report unavailability.
+
 Use Svelte context, not module-global mutable state, for app-scoped Trellis
 clients. `@oatscenter/trellis-svelte` owns the app context created by
 `createTrellisApp(...)`.

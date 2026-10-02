@@ -42,17 +42,11 @@ pub(crate) enum AuthorizationCredential {
         identity: std::sync::Arc<super::super::SessionAuth>,
         package_evidence: crate::generated::PackageEvidence,
         participant_path: &'static str,
-        companion: Option<NativeCompanionCredential>,
     },
     User {
         login_session_id: String,
         installation: std::sync::Arc<super::super::SessionAuth>,
     },
-}
-
-pub(crate) struct NativeCompanionCredential {
-    pub(crate) participant_id: &'static str,
-    pub(crate) installation: std::sync::Arc<super::super::SessionAuth>,
 }
 
 /// NATS-backed context and revocation registry binding from the server.
@@ -186,6 +180,19 @@ pub(crate) struct CurrentContext {
     pub(crate) not_before: i64,
     pub(crate) expires_at: i64,
     pub(crate) refresh_at: i64,
+}
+
+/// One exact promoted context read as a single immutable transport snapshot.
+///
+/// The digest and policy come from the same state snapshot, so a generation can
+/// build its CONNECT and its admitted policy from one correlated context rather
+/// than reading a mutable "current" context twice.
+#[derive(Clone, Debug)]
+pub(crate) struct OwnTransportSnapshot {
+    pub(crate) context_digest: String,
+    pub(crate) policy: trellis_protocol::TransportAuthorizationV1,
+    pub(crate) runtime: AuthorizationRuntimeBinding,
+    pub(crate) routing_jwt: String,
 }
 
 /// In-process own-context state.

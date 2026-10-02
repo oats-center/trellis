@@ -1,7 +1,9 @@
+use futures_util::StreamExt as _;
 use runtime_trellis::participants::runtime_trellis_provider::{
     types::ResourceValue, Participant, Provider,
 };
 use std::io::Write as _;
+use std::time::{Duration, Instant};
 use trellis_rs::client::{UserConnectOptions, UserSessionCredentials};
 use trellis_rs::service::{KvResourceReadError, ServiceConnectOptions, StoreListOptions};
 
@@ -12,6 +14,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .try_init();
     if std::env::var_os("TRELLIS_STATE_ACCEPTANCE").is_some() {
         return state_acceptance().await;
+    }
+    if std::env::var_os("TRELLIS_RESOURCE_GROWTH").is_some() {
+        return resource_growth().await;
     }
     let url = std::env::var("TRELLIS_URL")?;
     let identity = std::env::var("TRELLIS_IDENTITY_SEED")?;
@@ -253,6 +258,105 @@ async fn state_acceptance() -> Result<(), Box<dyn std::error::Error>> {
     assert!(state.get().await?.is_none());
 
     println!("rust state complete");
+    std::io::stdout().flush()?;
+    Ok(())
+}
+
+/// A service that keeps its required resource working while a resource approved
+/// after connect becomes usable on the same logical handle without any explicit
+/// transport refresh.
+async fn resource_growth() -> Result<(), Box<dyn std::error::Error>> {
+    let url = std::env::var("TRELLIS_URL")?;
+    let identity = std::env::var("TRELLIS_IDENTITY_SEED")?;
+    let mut runtime = Participant::connect(ServiceConnectOptions::new(&url, &identity)).await?;
+    let client = Provider::new(&mut runtime).client();
+
+    let records = client.records().await?;
+    records
+        .put(
+            "keep",
+            &ResourceValue {
+                value: "keep".into(),
+                extra: Default::default(),
+            },
+        )
+        .await?;
+    assert_eq!(
+        records.get("keep").await?.expect("required resource").value,
+        "keep"
+    );
+    assert!(
+        client.extras().await?.is_none(),
+        "a declined optional resource must not be bound"
+    );
+    println!("rust resource growth connected");
+    std::io::stdout().flush()?;
+
+    // The optional resource was approved after connect. Its logical handle must
+    // become usable without an explicit refresh: the grown call acquires a
+    // suitable generation on its own deadline.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let extras = loop {
+        if let Some(extras) = client.extras().await? {
+            break extras;
+        }
+        if Instant::now() >= deadline {
+            return Err("optional resource never became available".into());
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    extras
+        .put(
+            "grown",
+            &ResourceValue {
+                value: "grown".into(),
+                extra: Default::default(),
+            },
+        )
+        .await?;
+    assert_eq!(
+        extras.get("grown").await?.expect("grown resource").value,
+        "grown"
+    );
+    // The managed KV watch opens on a suitable generation and keeps its lease
+    // for the whole stream while delivering updates.
+    let mut watch = extras.watch("grown").await?;
+    extras
+        .put(
+            "grown",
+            &ResourceValue {
+                value: "grown-updated".into(),
+                extra: Default::default(),
+            },
+        )
+        .await?;
+    let watch_deadline = Instant::now() + Duration::from_secs(30);
+    let mut watched = false;
+    while Instant::now() < watch_deadline {
+        match tokio::time::timeout(Duration::from_secs(5), watch.next()).await {
+            Ok(Some(Ok(entry))) => {
+                if entry.key == "grown"
+                    && entry
+                        .value
+                        .as_ref()
+                        .is_some_and(|value| value.value == "grown-updated")
+                {
+                    watched = true;
+                    break;
+                }
+            }
+            Ok(Some(Err(error))) => return Err(format!("kv watch error: {error}").into()),
+            Ok(None) => break,
+            Err(_) => continue,
+        }
+    }
+    assert!(watched, "the managed KV watch must deliver updates");
+    drop(watch);
+    assert_eq!(
+        records.get("keep").await?.expect("required resource").value,
+        "keep"
+    );
+    println!("rust resource growth complete");
     std::io::stdout().flush()?;
     Ok(())
 }

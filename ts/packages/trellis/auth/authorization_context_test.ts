@@ -12,7 +12,7 @@ import {
   InMemoryMetricExporter,
   MeterProvider,
   PeriodicExportingMetricReader,
-} from "npm:@opentelemetry/sdk-metrics@^2.7.0";
+} from "@opentelemetry/sdk-metrics";
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 
 import vectors from "../../../../integration/fixtures/protocol/authorization-context/vectors.json" with {
@@ -37,6 +37,11 @@ import {
 import type { PermissionAtom } from "./protocol_wasm.ts";
 import { createAuth } from "./session_auth.ts";
 import { refreshAuthorizationContextWithMetadata } from "./authorization/refresh.ts";
+import { installAuthorizationRefresh } from "./authorization/install_refresh.ts";
+import { NatsTestContainer } from "../../trellis-testkit/src/nats_container.ts";
+import { Kvm } from "@nats-io/kv";
+import { jetstreamManager } from "@nats-io/jetstream";
+import { waitFor } from "../../trellis-testkit/src/wait.ts";
 import {
   base64urlDecode,
   base64urlEncode,
@@ -63,12 +68,14 @@ Deno.test("user refresh binds a fresh runtime key under the installation proof",
       },
       runtime: { auth: runtime },
       cache,
-      fetch: async (_input, init) => {
+      fetch: (_input, init) => {
         body = JSON.parse(String(init?.body));
-        return new Response(JSON.stringify({ code: "login_not_found" }), {
-          status: 401,
-          headers: { "content-type": "application/json" },
-        });
+        return Promise.resolve(
+          new Response(JSON.stringify({ code: "login_not_found" }), {
+            status: 401,
+            headers: { "content-type": "application/json" },
+          }),
+        );
       },
     })
   );
@@ -144,10 +151,10 @@ Deno.test("authorization refresh can use native bootstrap", async () => {
     },
     runtime: { auth },
     cache: value,
-    refresh: async (shouldInstall) => {
+    refresh: (shouldInstall) => {
       assert(shouldInstall());
       refreshed();
-      return value.current();
+      return Promise.resolve(value.current());
     },
   });
 
@@ -374,10 +381,10 @@ function providerNats(registry: Registry): NatsConnection {
         await new Promise<void>((resolve) => wake = resolve);
         return { done: true, value: undefined as never };
       },
-      return: async (): Promise<IteratorResult<TestStatus>> => {
+      return: (): Promise<IteratorResult<TestStatus>> => {
         done = true;
         wake?.();
-        return { done: true, value: undefined as never };
+        return Promise.resolve({ done: true, value: undefined as never });
       },
       [Symbol.asyncIterator]() {
         return iterator;
@@ -519,9 +526,9 @@ function providerNats(registry: Registry): NatsConnection {
                 ? { done: true, value: undefined }
                 : { done: false, value };
             },
-            return: async () => {
+            return: () => {
               close();
-              return { done: true, value: undefined };
+              return Promise.resolve({ done: true, value: undefined });
             },
             [Symbol.asyncIterator]: () => iterator,
           };
@@ -779,6 +786,159 @@ Deno.test("authorization context installs additional state in the same commit", 
   );
 });
 
+Deno.test("delayed promotion cannot publish a signed-identical successor's companion material", async () => {
+  const value = await installedCache();
+  const installed = value.current();
+  const generation = value.generation();
+  let commits = 0;
+  const origin = await value.prepare(
+    bundle(),
+    { bootstrapJwt: "route-A", bootstrapJwtExpiresAt: 2_000 },
+    policy.nowUnixSeconds,
+    undefined,
+    runtimeBinding(),
+    () => () => commits += 1,
+  );
+  const successorRuntime = {
+    ...runtimeBinding(),
+    transports: { native: { natsServers: ["nats://127.0.0.1:4223"] } },
+  };
+  const successor = await value.prepare(
+    bundle(),
+    { bootstrapJwt: "route-B", bootstrapJwtExpiresAt: 2_000 },
+    policy.nowUnixSeconds,
+    undefined,
+    successorRuntime,
+    () => () => commits += 1,
+  );
+  assertEquals(origin.contextDigest, successor.contextDigest);
+  assertThrows(() => value.promote(origin));
+  assert(value.current() === installed);
+  assertEquals(value.routingJwt(), "route");
+  assertEquals(value.runtimeBinding(), runtimeBinding());
+  assertEquals(value.generation(), generation);
+  assertEquals(commits, 0);
+
+  assert(value.promote(successor) === successor);
+  assert(value.current() === successor);
+  assertEquals(value.routingJwt(), "route-B");
+  assertEquals(value.runtimeBinding(), successorRuntime);
+  assertEquals(commits, 1);
+
+  let prepared: typeof successor | undefined;
+  const returned = await value.install(
+    bundle(),
+    { bootstrapJwt: "route-C", bootstrapJwtExpiresAt: 2_000 },
+    policy.nowUnixSeconds,
+    undefined,
+    runtimeBinding(),
+    (verified) => {
+      prepared = verified;
+    },
+  );
+  assert(returned === prepared);
+  assert(value.current() === returned);
+  assertEquals(value.routingJwt(), "route-C");
+});
+
+for (const callback of ["eligibility", "commit"] as const) {
+  for (const change of ["invalidate", "supersede"] as const) {
+    Deno.test(`promotion rejects ${callback} callback ${change} without replacing installed authorization`, async () => {
+      const value = await installedCache();
+      const installed = value.current();
+      const installedBundle = value.bundle();
+      const generation = value.generation();
+      const [, signed] = await signedContext("01JY0000000000000000000002");
+      const nextBundle = { ...bundle(), context: JSON.parse(signed) };
+      const nextRuntime = {
+        ...runtimeBinding(),
+        connectionId: "01JY0000000000000000000002",
+        transports: { native: { natsServers: ["nats://127.0.0.1:4223"] } },
+      };
+      let successor:
+        | ReturnType<AuthorizationContextCache["prepare"]>
+        | undefined;
+      let eligibilityCalls = 0;
+      let commits = 0;
+      const origin = await value.prepare(
+        nextBundle,
+        { bootstrapJwt: "route-A", bootstrapJwtExpiresAt: 2_000 },
+        policy.nowUnixSeconds,
+        undefined,
+        nextRuntime,
+        () => () => {
+          commits += 1;
+          if (callback === "commit") reenter();
+        },
+      );
+      function reenter() {
+        if (change === "invalidate") {
+          assert(value.invalidateCandidate(origin));
+        } else {
+          successor = value.prepare(
+            nextBundle,
+            { bootstrapJwt: "route-B", bootstrapJwtExpiresAt: 2_000 },
+            policy.nowUnixSeconds,
+            undefined,
+            nextRuntime,
+          );
+        }
+      }
+      assertThrows(() =>
+        value.promote(origin, () => {
+          eligibilityCalls += 1;
+          if (callback === "eligibility") reenter();
+          return true;
+        })
+      );
+      assertEquals(eligibilityCalls, 1);
+      assertEquals(commits, callback === "commit" ? 1 : 0);
+      assert(value.current() === installed);
+      assertEquals(value.bundle(), installedBundle);
+      assertEquals(value.routingJwt(), "route");
+      assertEquals(value.runtimeBinding(), runtimeBinding());
+      assertEquals(value.generation(), generation);
+      if (successor) {
+        const latest = await successor;
+        assertEquals(latest.contextDigest, origin.contextDigest);
+        assert(value.promote(latest) === latest);
+        assert(value.current() === latest);
+        assertEquals(value.routingJwt(), "route-B");
+        assertEquals(value.runtimeBinding(), nextRuntime);
+      } else {
+        assert(!value.hasCandidate());
+      }
+    });
+  }
+}
+
+Deno.test("install rejects commit callback invalidation and retains installed authorization", async () => {
+  const value = await installedCache();
+  const installed = value.current();
+  const installedBundle = value.bundle();
+  const generation = value.generation();
+  await assertRejects(() =>
+    value.install(
+      bundle(),
+      { bootstrapJwt: "route-rejected", bootstrapJwtExpiresAt: 2_000 },
+      policy.nowUnixSeconds,
+      undefined,
+      {
+        ...runtimeBinding(),
+        transports: { native: { natsServers: ["nats://127.0.0.1:4223"] } },
+      },
+      (verified) => () => {
+        assert(value.invalidateCandidate(verified));
+      },
+    )
+  );
+  assert(value.current() === installed);
+  assertEquals(value.bundle(), installedBundle);
+  assertEquals(value.routingJwt(), "route");
+  assertEquals(value.runtimeBinding(), runtimeBinding());
+  assertEquals(value.generation(), generation);
+});
+
 Deno.test("provider resolves a cold context once and reuses the verified hot entry", async () => {
   const registry: Registry = {
     contexts: new Map([[chain.contextDigest, chain.contextCanonicalJson]]),
@@ -797,23 +957,6 @@ Deno.test("provider resolves a cold context once and reuses the verified hot ent
   }
   await registry.watchClosed;
   assertEquals(registry.watchCloses, 1);
-});
-
-Deno.test("provider reconnect resolves a fresh context and revocation watch", async () => {
-  const registry: Registry = {
-    contexts: new Map([[chain.contextDigest, chain.contextCanonicalJson]]),
-    reads: [],
-  };
-  const value = await provider(registry);
-  try {
-    await value.resolveContext(chain.contextDigest);
-    value.observeTransportEvent({ type: "disconnect" });
-    value.observeTransportEvent({ type: "reconnect" });
-    await value.resolveContext(chain.contextDigest);
-    assertEquals(value.ioCounters().contextGets, 2);
-  } finally {
-    value.stop();
-  }
 });
 
 Deno.test("provider coalesces one pending context resolution", async () => {
@@ -836,7 +979,7 @@ Deno.test("provider coalesces one pending context resolution", async () => {
   }
 });
 
-Deno.test("provider discards a pending resolution from an old connection generation", async () => {
+Deno.test("provider discards a pending resolution from a reset verifier epoch", async () => {
   let release = () => {};
   const registry: Registry = {
     contexts: new Map([[chain.contextDigest, chain.contextCanonicalJson]]),
@@ -849,8 +992,10 @@ Deno.test("provider discards a pending resolution from an old connection generat
     while (!registry.reads.includes(chain.contextDigest)) {
       await Promise.resolve();
     }
-    value.observeTransportEvent({ type: "disconnect" });
-    value.observeTransportEvent({ type: "reconnect" });
+    // Only a verifier stop/reset (a new cache epoch) discards in-flight work; a
+    // mere transport switch does not.
+    value.stop();
+    value.start();
     release();
     await assertRejects(
       () => stale,
@@ -982,6 +1127,358 @@ Deno.test("provider observes revocation after watch initialization", async () =>
     assertEquals(result.error.code, "PermissionDenied");
   } finally {
     value.stop();
+  }
+});
+
+Deno.test("provider authorization hints retain one trailing refresh from a real broker burst", async () => {
+  const workdir = await Deno.makeTempDir({ dir: Deno.env.get("TMPDIR") });
+  const server = await NatsTestContainer.start(workdir);
+  const installed = await installedCache();
+  await new Kvm(server.nc).create("contexts");
+  const value = await AuthorizationProviderCache.attach(
+    server.nc,
+    installed.bundle().authorizationRegistry,
+    "_INBOX.hint-burst",
+    installed,
+  );
+  const triggered: number[] = [];
+  const unregister = installed.registerRefreshRequest(() => {
+    triggered.push(performance.now());
+  });
+  value.start();
+  try {
+    await server.nc.flush();
+    const sent = performance.now();
+    server.nc.publish(
+      "_INBOX.hint-burst._trellis.authorization",
+      utf8(JSON.stringify({ format: "trellis.authorization-change.v1" })),
+    );
+    await waitFor(() => triggered.length === 1, { timeoutMs: 500 });
+    assert(
+      triggered[0] - sent < 500,
+      "the first received hint must refresh promptly",
+    );
+    const burstSent = performance.now();
+    for (let i = 0; i < 20; i++) {
+      server.nc.publish(
+        "_INBOX.hint-burst._trellis.authorization",
+        utf8(JSON.stringify({ format: "trellis.authorization-change.v1" })),
+      );
+    }
+    await server.nc.flush();
+    // Observe a quiet part of the pacing window, not infrastructure readiness.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assertEquals(
+      triggered.length,
+      1,
+      "the burst must not bypass refresh pacing",
+    );
+    await waitFor(() => triggered.length === 2, { timeoutMs: 1_200 });
+    assert(
+      triggered[1] - triggered[0] >= 1_000,
+      "refresh triggers must be at least one real second apart",
+    );
+    assert(
+      triggered[1] - burstSent < 1_200,
+      "a received throttled hint must retain a bounded trailing refresh",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1_050));
+    assertEquals(
+      triggered.length,
+      2,
+      "one burst must produce only one trailing refresh",
+    );
+  } finally {
+    value.stop();
+    unregister();
+    await server.stop();
+    await Deno.remove(workdir, { recursive: true });
+  }
+});
+
+Deno.test("provider stop cancels real-broker trailing hints across restart", async () => {
+  const workdir = await Deno.makeTempDir({ dir: Deno.env.get("TMPDIR") });
+  const server = await NatsTestContainer.start(workdir);
+  const installed = await installedCache();
+  await new Kvm(server.nc).create("contexts");
+  const value = await AuthorizationProviderCache.attach(
+    server.nc,
+    installed.bundle().authorizationRegistry,
+    "_INBOX.hint-stop",
+    installed,
+  );
+  const triggered: number[] = [];
+  const unregister = installed.registerRefreshRequest(() => {
+    triggered.push(performance.now());
+  });
+  value.start();
+  try {
+    await server.nc.flush();
+    server.nc.publish(
+      "_INBOX.hint-stop._trellis.authorization",
+      utf8(JSON.stringify({ format: "trellis.authorization-change.v1" })),
+    );
+    await waitFor(() => triggered.length === 1, { timeoutMs: 500 });
+    server.nc.publish(
+      "_INBOX.hint-stop._trellis.authorization",
+      utf8(JSON.stringify({ format: "trellis.authorization-change.v1" })),
+    );
+    await server.nc.flush();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assertEquals(triggered.length, 1);
+    value.stop();
+    value.start();
+    await server.nc.flush();
+    const sent = performance.now();
+    server.nc.publish(
+      "_INBOX.hint-stop._trellis.authorization",
+      utf8(JSON.stringify({ format: "trellis.authorization-change.v1" })),
+    );
+    await waitFor(() => triggered.length === 2, { timeoutMs: 500 });
+    assert(
+      triggered[1] - sent < 500,
+      "restart must accept a fresh first hint promptly",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1_050));
+    assertEquals(
+      triggered.length,
+      2,
+      "a stopped lifecycle must not refresh the restarted cache",
+    );
+    server.nc.publish(
+      "_INBOX.hint-stop._trellis.authorization",
+      utf8(JSON.stringify({ format: "trellis.authorization-change.v1" })),
+    );
+    await waitFor(() => triggered.length === 3, { timeoutMs: 500 });
+    server.nc.publish(
+      "_INBOX.hint-stop._trellis.authorization",
+      utf8(JSON.stringify({ format: "trellis.authorization-change.v1" })),
+    );
+    await server.nc.flush();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assertEquals(triggered.length, 3);
+    value.stop();
+    await new Promise((resolve) => setTimeout(resolve, 1_050));
+    assertEquals(triggered.length, 3, "stop must discard pending hint work");
+  } finally {
+    value.stop();
+    unregister();
+    await server.stop();
+    await Deno.remove(workdir, { recursive: true });
+  }
+});
+
+Deno.test("provider applies revocation state before notifying live coverage", async () => {
+  const workdir = await Deno.makeTempDir({ dir: Deno.env.get("TMPDIR") });
+  const server = await NatsTestContainer.start(workdir);
+  const installed = await installedCache();
+  const kv = await new Kvm(server.nc).create("contexts");
+  await kv.put(chain.contextDigest, utf8(chain.contextCanonicalJson));
+  const value = await AuthorizationProviderCache.attach(
+    server.nc,
+    installed.bundle().authorizationRegistry,
+    "_INBOX.test",
+    installed,
+    { now: () => policy.nowUnixSeconds },
+  );
+  value.start();
+  try {
+    await value.resolveContext(chain.contextDigest);
+    const lease = await value.retainLiveLease(
+      chain.contextDigest,
+      value.cacheEpoch(),
+    );
+    const observed: string[] = [];
+    const unsubscribe = value.subscribeLiveChanges(() => {
+      // This is the retained-live-guard wake path: the listener re-checks its
+      // synchronous coverage. It must already observe the revocation, or it
+      // would read stale covered state and never be notified again.
+      observed.push(value.liveLeaseCoverage(lease));
+    });
+    await kv.put(
+      `revocation.${chain.contextDigest}`,
+      utf8(JSON.stringify({ revokedAt: 1_150 })),
+    );
+    await waitFor(() => observed.length > 0, { timeoutMs: 5_000 });
+    assertEquals(observed[0], "revoked");
+    assertEquals(value.liveLeaseCoverage(lease), "revoked");
+    unsubscribe();
+    value.releaseLiveLease(lease);
+  } finally {
+    value.stop();
+    await server.stop();
+    await Deno.remove(workdir, { recursive: true });
+  }
+});
+
+Deno.test("own refresh fences signed-identical preparations and attempt-owned pins on real registry coverage", async () => {
+  const workdir = await Deno.makeTempDir({ dir: Deno.env.get("TMPDIR") });
+  const server = await NatsTestContainer.start(workdir);
+  const installed = await installedCache();
+  const kv = await new Kvm(server.nc).create("contexts");
+  await kv.put(chain.contextDigest, utf8(chain.contextCanonicalJson));
+  const value = await AuthorizationProviderCache.attach(
+    server.nc,
+    installed.bundle().authorizationRegistry,
+    "_INBOX.test",
+    installed,
+    { now: () => policy.nowUnixSeconds },
+  );
+  value.start();
+  const invalidations: string[] = [];
+  value.onOwnInvalidated((reason) => invalidations.push(reason));
+  try {
+    await value.retainOwnContext();
+    const a = await installed.prepare(bundle(), {
+      bootstrapJwt: "route-A",
+      bootstrapJwtExpiresAt: 2_000,
+    });
+    const attemptA = Object.freeze({
+      origin: a,
+      cacheEpoch: value.cacheEpoch(),
+    });
+    await value.retainOwnCandidate(attemptA);
+    const b = await installed.prepare(bundle(), {
+      bootstrapJwt: "route-B",
+      bootstrapJwtExpiresAt: 2_000,
+    });
+    assertEquals(a.contextDigest, b.contextDigest);
+    await assertRejects(() => value.retainOwnCandidate(attemptA));
+    assertThrows(() => value.promoteOwnCandidate(attemptA));
+    value.releaseCandidate(attemptA);
+    await installAuthorizationRefresh({ provider: value, origin: b });
+    assertEquals(installed.routingJwt(), "route-B");
+
+    const inFlightOrigin = await installed.prepare(bundle(), {
+      bootstrapJwt: "in-flight-A",
+      bootstrapJwtExpiresAt: 2_000,
+    });
+    const inFlightAttempt = Object.freeze({
+      origin: inFlightOrigin,
+      cacheEpoch: value.cacheEpoch(),
+    });
+    const retaining = value.retainOwnCandidate(inFlightAttempt);
+    const rejected = assertRejects(() => retaining);
+    // Starting prepare advances the operation before the awaited lease resolves.
+    const successor = await installed.prepare(bundle(), {
+      bootstrapJwt: "in-flight-B",
+      bootstrapJwtExpiresAt: 2_000,
+    });
+    await rejected;
+    value.releaseCandidate(inFlightAttempt);
+    await installAuthorizationRefresh({ provider: value, origin: successor });
+    assertEquals(installed.routingJwt(), "in-flight-B");
+
+    // Both attempts retain the very same prepared instance and cache entry.
+    // A's late failure cannot steal B's pin or invalidate their shared origin.
+    const origin = await installed.prepare(bundle(), {
+      bootstrapJwt: "route-C",
+      bootstrapJwtExpiresAt: 2_000,
+    });
+    const first = Object.freeze({ origin, cacheEpoch: value.cacheEpoch() });
+    const second = Object.freeze({ origin, cacheEpoch: value.cacheEpoch() });
+    await value.retainOwnCandidate(first);
+    await value.retainOwnCandidate(second);
+    value.releaseCandidate(first);
+    assertThrows(() => value.promoteOwnCandidate(first));
+    value.promoteOwnCandidate(second);
+    assertEquals(installed.routingJwt(), "route-C");
+
+    // An abandoned, borrowed candidate must keep its real revocation coverage.
+    const [digest, context] = await signedContext(
+      "borrowed-abandoned-candidate",
+    );
+    await kv.put(digest, utf8(context));
+    const borrowed = await value.retainLiveLease(digest, value.cacheEpoch());
+    try {
+      const candidate = await installed.prepare(
+        { ...bundle(), context: JSON.parse(context) },
+        { bootstrapJwt: "abandoned", bootstrapJwtExpiresAt: 2_000 },
+        undefined,
+        undefined,
+        { ...runtimeBinding(), connectionId: "borrowed-abandoned-candidate" },
+      );
+      const failed = Object.freeze({
+        origin: candidate,
+        cacheEpoch: value.cacheEpoch(),
+      });
+      await value.retainOwnCandidate(failed);
+      installed.invalidateCandidate(candidate);
+      assertThrows(() => value.promoteOwnCandidate(failed));
+      value.releaseCandidate(failed);
+      assertEquals(value.liveLeaseCoverage(borrowed), "covered");
+      assertEquals(installed.routingJwt(), "route-C");
+      assertEquals(value.ownUsable(), true);
+      const manager = await jetstreamManager(server.nc);
+      const consumers = await manager.consumers.list("KV_contexts").next();
+      const watch = consumers.find((consumer) =>
+        consumer.config.filter_subject === `$KV.contexts.revocation.${digest}`
+      );
+      assert(watch, "candidate has real revocation coverage");
+      assert(await manager.consumers.delete("KV_contexts", watch.name));
+      await waitFor(() => value.liveLeaseCoverage(borrowed) === "lost");
+      assertEquals(installed.routingJwt(), "route-C");
+      assertEquals(value.ownUsable(), true);
+      const own = await value.retainLiveLease(
+        chain.contextDigest,
+        value.cacheEpoch(),
+      );
+      assertEquals(value.liveLeaseCoverage(own), "covered");
+      value.releaseLiveLease(own);
+      assertEquals(invalidations, []);
+    } finally {
+      value.releaseLiveLease(borrowed);
+    }
+
+    const [revokedDigest, revokedContext] = await signedContext(
+      "private-revoked-candidate",
+    );
+    await kv.put(revokedDigest, utf8(revokedContext));
+    const revokedLease = await value.retainLiveLease(
+      revokedDigest,
+      value.cacheEpoch(),
+    );
+    try {
+      const candidate = await installed.prepare(
+        { ...bundle(), context: JSON.parse(revokedContext) },
+        { bootstrapJwt: "revoked-candidate", bootstrapJwtExpiresAt: 2_000 },
+        undefined,
+        undefined,
+        { ...runtimeBinding(), connectionId: "private-revoked-candidate" },
+      );
+      const attempt = Object.freeze({
+        origin: candidate,
+        cacheEpoch: value.cacheEpoch(),
+      });
+      await value.retainOwnCandidate(attempt);
+      await kv.put(
+        `revocation.${revokedDigest}`,
+        utf8(JSON.stringify({ revokedAt: 1_150 })),
+      );
+      await waitFor(
+        () =>
+          value.liveLeaseCoverage(revokedLease) === "revoked" &&
+          !installed.hasCandidate(),
+        { timeoutMs: 5_000 },
+      );
+      assertThrows(() => value.promoteOwnCandidate(attempt));
+      value.releaseCandidate(attempt);
+      assertEquals(installed.routingJwt(), "route-C");
+      assertEquals(value.ownUsable(), true);
+      const own = await value.retainLiveLease(
+        chain.contextDigest,
+        value.cacheEpoch(),
+      );
+      assertEquals(value.liveLeaseCoverage(own), "covered");
+      value.releaseLiveLease(own);
+      assertEquals(invalidations, []);
+    } finally {
+      value.releaseLiveLease(revokedLease);
+    }
+  } finally {
+    value.stop();
+    await server.stop();
+    await Deno.remove(workdir, { recursive: true });
   }
 });
 
@@ -1503,14 +2000,19 @@ Deno.test("provider coverage gauge follows the retained own and peer installatio
   metrics.setGlobalMeterProvider(coverageMeterProvider);
   const installed = await installedCache();
   const [peerDigest, peerContext] = await signedContext("peer-connection");
-  const registry: Registry = {
-    contexts: new Map([
-      [chain.contextDigest, chain.contextCanonicalJson],
-      [peerDigest, peerContext],
-    ]),
-    reads: [],
-  };
-  const value = await provider(registry, undefined, installed);
+  const workdir = await Deno.makeTempDir({ dir: Deno.env.get("TMPDIR") });
+  const server = await NatsTestContainer.start(workdir);
+  const kv = await new Kvm(server.nc).create("contexts");
+  await kv.put(chain.contextDigest, utf8(chain.contextCanonicalJson));
+  await kv.put(peerDigest, utf8(peerContext));
+  const value = await AuthorizationProviderCache.attach(
+    server.nc,
+    installed.bundle().authorizationRegistry,
+    "_INBOX.test",
+    installed,
+    { now: () => policy.nowUnixSeconds },
+  );
+  value.start();
   const coverage = async () => {
     await coverageMeterProvider.forceFlush();
     const points = coverageExporter.getMetrics().at(-1)?.scopeMetrics
@@ -1546,24 +2048,26 @@ Deno.test("provider coverage gauge follows the retained own and peer installatio
       "peer:covered": 1,
       "peer:unavailable": 0,
     });
-    value.observeTransportEvent({ type: "disconnect" });
-    assertEquals(await coverage(), {
-      "own:covered": 0,
-      "own:unavailable": 1,
-      "peer:covered": 0,
-      "peer:unavailable": 0,
+    const peer = await value.retainLiveLease(peerDigest, value.cacheEpoch());
+    await kv.put(
+      `revocation.${peerDigest}`,
+      utf8(JSON.stringify({ revokedAt: 1_150 })),
+    );
+    await waitFor(() => value.liveLeaseCoverage(peer) === "revoked", {
+      timeoutMs: 5_000,
     });
-    value.observeTransportEvent({ type: "reconnect" });
-    await value.waitReady();
-    await value.retainOwnContext();
     assertEquals(await coverage(), {
       "own:covered": 1,
       "own:unavailable": 0,
       "peer:covered": 0,
-      "peer:unavailable": 0,
+      "peer:unavailable": 1,
     });
+    assertEquals(value.ownUsable(), true);
+    value.releaseLiveLease(peer);
   } finally {
     value.stop();
+    await server.stop();
+    await Deno.remove(workdir, { recursive: true });
     await coverageMeterProvider.shutdown();
     metrics.disable();
   }

@@ -665,13 +665,18 @@ pub(in crate::platform::auth) fn replace_grant_binding(
             "grant contains a permission outside the installed participant definitions".to_owned(),
         ));
     }
+    // Approval validation is fenced by the persisted binding revision the
+    // materialization was reconciled at; reconcile then advances the catalog to
+    // this replacement's revision before issuance observes it.
     let resources = super::contexts::load_resource_bindings(
         connection,
         binding.owner_kind,
         &binding.owner_id,
         &binding.participant_id,
-        binding.installed_revision,
-        binding.installed_revision,
+        &binding.approved_resources,
+        current
+            .as_ref()
+            .map_or(binding.revision, |current| current.revision),
         &participant.projection,
     )?;
     let authority = super::super::policy::resolve_authority(
@@ -3536,6 +3541,59 @@ app Client { use access { rpc A; rpc Public; } }
         }
     }
 
+    /// Materializes the fixture `cache` KV as the present `auth_resources` row
+    /// for the owner at the persisted binding revision the approval fences on.
+    async fn materialize_cache(
+        store: &SqliteAuthorizationStore,
+        owner_id: &str,
+        participant_id: &str,
+        binding_revision: u64,
+        now: i64,
+    ) {
+        let resource_id = crate::platform::auth::resources::resource_id(
+            GrantOwnerKind::User,
+            owner_id,
+            participant_id,
+            trellis_protocol::ParticipantResourceKind::Kv,
+            "cache",
+        );
+        store
+            .run({
+                let owner_id = owner_id.to_owned();
+                let participant_id = participant_id.to_owned();
+                move |connection| {
+                    connection
+                        .execute(
+                            "INSERT INTO auth_resources (resource_id, owner_kind, owner_id, \
+                             participant_id, kind, local_name, commitment_json, physical_id, \
+                             actual_json, state, readiness_reason, binding_revision, revision, \
+                             created_at, updated_at)
+                             VALUES (?1, 'user', ?2, ?3, 'kv', 'cache', \
+                             '{\"history\":1,\"ttlMs\":300000}', 'resource-cache', \
+                             '{\"kind\":\"kv\",\"history\":1,\"ttl_ms\":300000,\"max_value_bytes\":null}', \
+                             'ready', NULL, ?4, 1, ?5, ?5)
+                             ON CONFLICT(resource_id) DO UPDATE SET
+                                 state = 'ready',
+                                 physical_id = excluded.physical_id,
+                                 actual_json = excluded.actual_json,
+                                 binding_revision = excluded.binding_revision,
+                                 updated_at = excluded.updated_at",
+                            rusqlite::params![
+                                resource_id,
+                                owner_id,
+                                participant_id,
+                                binding_revision,
+                                now
+                            ],
+                        )
+                        .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn repeated_browser_replacement_retains_resource_grants() {
         const NOW: i64 = 1_700_000_000_000;
@@ -3588,29 +3646,7 @@ app Companion {
             .unwrap();
         let approved_resources =
             crate::platform::auth::policy::participant_resource_commitments(&participant).unwrap();
-        let resource_evidence: super::super::super::ResourceBindingEvidence =
-            serde_json::from_value(json!({
-            "resourceKind": "kv",
-            "localName": "cache",
-            "bindingId": "resource-cache",
-            "ownerParticipantId": participant_id,
-            "providerIdentity": {"kind": "kv", "bucket": "resource-cache"},
-            "actual": {"kind": "kv", "history": 1, "ttl_ms": 300000, "max_value_bytes": null},
-            "state": "available",
-            "materializedAt": NOW,
-            "error": null,
-            }))
-            .unwrap();
-        store
-            .replace_resource_bindings(
-                GrantOwnerKind::User,
-                actor.principal_id.clone(),
-                participant_id.clone(),
-                1,
-                vec![resource_evidence.clone()],
-            )
-            .await
-            .unwrap();
+        materialize_cache(&store, &actor.principal_id, &participant_id, 1, NOW).await;
         let ceiling =
             crate::platform::auth::policy::participant_delegation_ceiling(&participant).unwrap();
         let replacement = GrantBindingReplacement {
@@ -3742,16 +3778,14 @@ app Companion {
             &BTreeMap::new(),
         )
         .unwrap();
-        store
-            .replace_resource_bindings(
-                GrantOwnerKind::User,
-                binding.owner_id.clone(),
-                binding.participant_id.clone(),
-                binding.installed_revision,
-                vec![resource_evidence.clone()],
-            )
-            .await
-            .unwrap();
+        materialize_cache(
+            &store,
+            &binding.owner_id,
+            &binding.participant_id,
+            binding.revision,
+            NOW,
+        )
+        .await;
         store
             .set_portal_grant_binding(
                 GrantBindingReplacement {
@@ -3910,16 +3944,14 @@ app Companion {
             expires_at: None,
             provenance: None,
         };
-        store
-            .replace_resource_bindings(
-                GrantOwnerKind::User,
-                portal_binding.owner_id.clone(),
-                portal_binding.participant_id.clone(),
-                portal_binding.installed_revision,
-                vec![resource_evidence],
-            )
-            .await
-            .unwrap();
+        materialize_cache(
+            &store,
+            &portal_binding.owner_id,
+            &portal_binding.participant_id,
+            portal_binding.revision,
+            NOW,
+        )
+        .await;
         let applied = store
             .apply_companion_activation_decision(Some(aggregate_replacement), None, command.clone())
             .await

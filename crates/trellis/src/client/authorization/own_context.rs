@@ -24,6 +24,73 @@ struct PreparedInstallation {
     server_clock_offset_ms: i64,
     authorization: Option<serde_json::Value>,
     availability: crate::generated::AvailabilitySnapshot,
+    /// Stable identity of this exact prepared candidate instance.
+    ///
+    /// Two independently prepared candidates can be signed-identical (same
+    /// context digest) yet carry different route/clock companion material. This
+    /// handle is allocated fresh per preparation, survives clones of the prepared
+    /// installation, and is compared by pointer identity, so a private stage can
+    /// prove the instance it opened against is still the installed candidate. It
+    /// is deliberately distinct from the provider cache's per-attempt pending pin.
+    instance: Arc<()>,
+}
+
+/// Exact identity of one freshly prepared private own candidate.
+///
+/// Returned by [`AuthorizationContextCache::prepare`] so the installer threads
+/// the *originating* instance through coverage preparation and promotion. Two
+/// independently prepared candidates can be signed-identical (same context
+/// digest) yet carry different companion route/clock material; the instance
+/// pointer, not the digest, is what fences a replaced candidate.
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedOwnCandidate {
+    /// Signed context digest this candidate was prepared for.
+    pub(crate) context_digest: String,
+    /// Exact prepared instance identity, compared by pointer.
+    pub(crate) instance: Arc<()>,
+}
+
+/// Outcome of one internal authorization-context refresh request.
+#[derive(Clone, Debug)]
+pub(crate) struct AuthorizationRefreshOutcome {
+    /// Whether the effective runtime binding changed across the request.
+    pub(crate) runtime_changed: bool,
+    /// The exact private candidate this request prepared, when it prepared one.
+    ///
+    /// `None` for an in-place install (a promotion) and when the installed
+    /// context changed underneath the request so nothing was prepared. A caller
+    /// that required a preparation must fail closed rather than adopt whatever
+    /// candidate happens to occupy the slot later.
+    pub(crate) prepared: Option<PreparedOwnCandidate>,
+}
+
+/// One exact freshly prepared own candidate read as an immutable transport
+/// snapshot for own-coverage initialization.
+///
+/// Only the private prepared candidate is exposed: never the promoted
+/// installation, and never a retained predecessor policy that may already be
+/// revoked. The candidate's signed policy and own corrected clock decide whether
+/// an already-admitted generation may carry the candidate's initial coverage.
+#[derive(Clone, Debug)]
+pub(crate) struct OwnCandidateTransportSnapshot {
+    pub(crate) context_digest: String,
+    pub(crate) policy: trellis_protocol::TransportAuthorizationV1,
+    pub(crate) runtime: AuthorizationRuntimeBinding,
+    pub(crate) routing_jwt: String,
+    pub(crate) not_before: i64,
+    pub(crate) expires_at: i64,
+    pub(crate) corrected_now_seconds: i64,
+    /// Immutable server-clock offset captured from the exact prepared instance.
+    ///
+    /// The warm path threads this offset rather than a captured "now", so
+    /// signature and window verification recompute a fresh corrected time at each
+    /// use and a timestamp never freezes across an await.
+    pub(crate) server_clock_offset_ms: i64,
+    /// Captured CONNECT route-credential expiry (Unix seconds) for the new-socket
+    /// admission path. Reuse of an already-admitted carrier never revalidates it.
+    pub(crate) routing_jwt_expires_at: i64,
+    /// Exact prepared instance this snapshot was read from, for pointer identity.
+    pub(crate) instance: Arc<()>,
 }
 
 /// Process-local context, route credential, and refresh scheduling for one connection.
@@ -219,6 +286,7 @@ impl AuthorizationContextCache {
                 server_clock_offset_ms,
                 authorization,
                 availability,
+                instance: Arc::new(()),
             });
             tracing::info!(
                 context_digest = verified.context_digest(),
@@ -258,12 +326,31 @@ impl AuthorizationContextCache {
         self.replace_installation(installation, true)
     }
 
+    /// Prepare a private candidate and return its exact identity.
+    ///
+    /// The replace and the identity read share one own-transition guard, so
+    /// there is no unlock gap in which an independently prepared, signed-identical
+    /// replacement could become the current candidate: the returned instance
+    /// belongs to the candidate this call actually prepared.
     pub(crate) fn prepare(
         &self,
         installation: AuthorizationInstallation,
-    ) -> Result<String, TrellisClientError> {
-        self.replace_installation(installation, false)?;
-        self.candidate_digest()
+    ) -> Result<PreparedOwnCandidate, TrellisClientError> {
+        let transition = self.lock_own_transition()?;
+        self.replace_installation_locked(&transition, installation, false)?;
+        let candidate = self
+            .candidate
+            .read()
+            .map_err(|_| TrellisClientError::Bootstrap("context candidate lock poisoned".into()))?;
+        let prepared = candidate.as_ref().ok_or_else(|| {
+            TrellisClientError::AuthorizationUnavailable(
+                "authorization candidate is unavailable".into(),
+            )
+        })?;
+        Ok(PreparedOwnCandidate {
+            context_digest: prepared.current.context_digest.clone(),
+            instance: prepared.instance.clone(),
+        })
     }
 
     pub(crate) fn candidate_digest(&self) -> Result<String, TrellisClientError> {
@@ -324,10 +411,19 @@ impl AuthorizationContextCache {
         ))
     }
 
+    /// Promote the exact prepared candidate instance while the caller holds the
+    /// own-installation transition.
+    ///
+    /// `expected_instance` is the pointer identity of the prepared instance the
+    /// caller warmed coverage against. An independently prepared signed-identical
+    /// replacement shares the digest but carries fresh companion route/clock
+    /// material, so digest equality alone must never substitute it: promotion
+    /// fails closed unless the exact instance still matches.
     pub(crate) fn promote_locked(
         &self,
         _transition: &OwnTransitionGuard<'_>,
         expected_digest: &str,
+        expected_instance: &Arc<()>,
     ) -> Result<(), TrellisClientError> {
         let now = {
             let candidate = self.candidate.read().map_err(|_| {
@@ -341,6 +437,11 @@ impl AuthorizationContextCache {
             if prepared.current.context_digest != expected_digest {
                 return Err(TrellisClientError::AuthorizationUnavailable(
                     "authorization candidate changed before promotion".into(),
+                ));
+            }
+            if !Arc::ptr_eq(&prepared.instance, expected_instance) {
+                return Err(TrellisClientError::AuthorizationUnavailable(
+                    "authorization candidate instance changed before promotion".into(),
                 ));
             }
             system_now_millis()?
@@ -362,6 +463,11 @@ impl AuthorizationContextCache {
                     "authorization candidate changed before promotion".into(),
                 ));
             }
+            if !Arc::ptr_eq(&prepared.instance, expected_instance) {
+                return Err(TrellisClientError::AuthorizationUnavailable(
+                    "authorization candidate instance changed before promotion".into(),
+                ));
+            }
             prepared
         };
         if prepared.current.not_before > now || prepared.current.expires_at <= now {
@@ -377,6 +483,7 @@ impl AuthorizationContextCache {
             server_clock_offset_ms,
             authorization,
             availability,
+            instance: _,
         } = prepared;
         let mut state = self
             .state
@@ -408,6 +515,32 @@ impl AuthorizationContextCache {
     pub fn clear(&self) -> Result<(), TrellisClientError> {
         let transition = self.lock_own_transition()?;
         self.clear_locked(&transition)
+    }
+
+    /// Discard the installed context only when it still matches `expected_digest`,
+    /// invoking `on_cleared` while the own-transition guard is still held.
+    ///
+    /// Holding the guard across the callback linearizes the conditional clear
+    /// with a terminal-latch publication: a public refresh that promotes a new
+    /// context must take the same guard, so it can neither interleave between the
+    /// digest check and the clear nor invalidate the latched terminal. Returns
+    /// whether the context was actually cleared.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrellisClientError::Bootstrap`] when the state lock is poisoned.
+    pub fn clear_if_installed(
+        &self,
+        expected_digest: &str,
+        on_cleared: impl FnOnce(),
+    ) -> Result<bool, TrellisClientError> {
+        let transition = self.lock_own_transition()?;
+        if self.stored_context_digest().ok().as_deref() != Some(expected_digest) {
+            return Ok(false);
+        }
+        self.clear_locked(&transition)?;
+        on_cleared();
+        Ok(true)
     }
 
     fn clear_locked(&self, _transition: &OwnTransitionGuard<'_>) -> Result<(), TrellisClientError> {
@@ -595,30 +728,84 @@ impl AuthorizationContextCache {
             })
     }
 
-    /// Return the signed transport policy of the installed application context.
-    ///
-    /// This is the newest valid application policy `D`; it is not a claim about
-    /// what the broker admitted on the current physical attachment.
-    pub(crate) fn current_transport_policy(
+    /// Read installed application authority and its clock under the own transition.
+    /// Suspended coverage is retryable; invalid signed authority is not. Already
+    /// admitted sockets do not need a still-valid CONNECT credential.
+    pub(crate) fn application_transport_locked(
         &self,
-    ) -> Result<trellis_protocol::TransportAuthorizationV1, TrellisClientError> {
-        let context = trellis_protocol::parse_authorization_context(&self.bundle()?.context)
+        transition: &OwnTransitionGuard<'_>,
+    ) -> Result<Option<(trellis_protocol::TransportAuthorizationV1, i64)>, TrellisClientError> {
+        let snapshot = self.maintenance_transport_locked(transition)?;
+        Ok(self.availability.borrow().is_usable().then_some(snapshot))
+    }
+
+    /// Read installed signed authority and its clock for admitted-socket maintenance.
+    /// Coverage may be suspended, but the signed window, revocation evidence, and
+    /// corrected clock must remain valid under the own-installation transition.
+    pub(crate) fn maintenance_transport_locked(
+        &self,
+        _transition: &OwnTransitionGuard<'_>,
+    ) -> Result<(trellis_protocol::TransportAuthorizationV1, i64), TrellisClientError> {
+        let state = self
+            .state
+            .read()
+            .map_err(|_| TrellisClientError::Bootstrap("context cache lock poisoned".into()))?;
+        let current = state.current.as_ref().ok_or_else(|| {
+            TrellisClientError::Bootstrap("authorization context is not installed".into())
+        })?;
+        let now = system_now_millis()?
+            .checked_add(state.server_clock_offset_ms)
+            .ok_or_else(|| TrellisClientError::Bootstrap("context time overflow".into()))?
+            .div_euclid(1000);
+        if current.not_before > now || current.expires_at <= now {
+            return Err(TrellisClientError::Bootstrap(
+                "authorization context expired".into(),
+            ));
+        }
+        if self
+            .revoked_digest
+            .lock()
+            .map_err(|_| {
+                TrellisClientError::AuthorizationUnavailable(
+                    "revocation cache lock poisoned".into(),
+                )
+            })?
+            .as_deref()
+            == Some(current.context_digest.as_str())
+        {
+            return Err(TrellisClientError::AuthorizationUnavailable(
+                "authorization context is revoked".into(),
+            ));
+        }
+        let context = trellis_protocol::parse_authorization_context(&current.bundle.context)
             .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
-        Ok(context.unsigned.transport_authorization)
+        Ok((context.unsigned.transport_authorization, now))
     }
 
     /// Renew through the credential's proof-bound native bootstrap or user refresh route.
     pub async fn refresh(&self, auth: &SessionAuth) -> Result<bool, TrellisClientError> {
         super::refresh::refresh(self, auth, true)
             .await
-            .map(|(_, changed)| changed)
+            .map(|outcome| outcome.runtime_changed)
     }
 
+    /// Prepare a private candidate and return its exact identity.
+    ///
+    /// Fails closed when the installed context changed while the request waited,
+    /// so nothing was prepared; a caller must never adopt whatever candidate a
+    /// concurrent operation left in the slot.
     pub(crate) async fn prepare_refresh(
         &self,
         auth: &SessionAuth,
-    ) -> Result<(String, bool), TrellisClientError> {
-        super::refresh::refresh(self, auth, false).await
+    ) -> Result<PreparedOwnCandidate, TrellisClientError> {
+        super::refresh::refresh(self, auth, false)
+            .await?
+            .prepared
+            .ok_or_else(|| {
+                TrellisClientError::AuthorizationUnavailable(
+                    "authorization refresh prepared no candidate".into(),
+                )
+            })
     }
 
     pub(crate) async fn lock_refresh(&self) -> tokio::sync::MutexGuard<'_, ()> {
@@ -636,16 +823,6 @@ impl AuthorizationContextCache {
     /// retries with the next verified snapshot. It never waits for refresh
     /// completion or for the explicit transport-refresh owner, which would be
     /// waiting on the very admission this attempt is authenticating.
-    pub(crate) fn next_connect_credentials(&self) -> Result<(String, String), TrellisClientError> {
-        match self.transport_credentials() {
-            Ok(credentials) => Ok(credentials),
-            Err(error) => {
-                self.request_refresh();
-                Err(error)
-            }
-        }
-    }
-
     pub(crate) fn request_coverage_reconciliation(&self) {
         self.request_reconciliation(false);
     }
@@ -679,101 +856,77 @@ impl AuthorizationContextCache {
     }
 
     pub(crate) fn refresh_delay(&self) -> Result<std::time::Duration, TrellisClientError> {
-        let now = self.corrected_now_seconds()?;
-        let state = self.state_snapshot()?;
-        let Some(current) = state.current.as_ref() else {
+        let Some(remaining) = self.refresh_remaining_seconds()? else {
             return Ok(std::time::Duration::from_secs(1));
+        };
+        Ok(std::time::Duration::from_secs(
+            u64::try_from(remaining.max(5)).map_err(|_| {
+                TrellisClientError::Bootstrap("context refresh delay overflow".into())
+            })?,
+        ))
+    }
+
+    /// Coverage retries must not postpone an already-due credential renewal.
+    pub(crate) fn credential_refresh_due(&self) -> Result<bool, TrellisClientError> {
+        Ok(self
+            .refresh_remaining_seconds()?
+            .is_none_or(|remaining| remaining <= 0))
+    }
+
+    fn refresh_remaining_seconds(&self) -> Result<Option<i64>, TrellisClientError> {
+        let state = self.state_snapshot()?;
+        let now = system_now_millis()?
+            .checked_add(state.server_clock_offset_ms)
+            .ok_or_else(|| TrellisClientError::Bootstrap("context time overflow".into()))?
+            .div_euclid(1000);
+        let Some(current) = state.current.as_ref() else {
+            return Ok(None);
         };
         let route_refresh = state.routing.as_ref().map_or(now, |route| {
             route
                 .bootstrap_jwt_expires_at
                 .saturating_sub(i64::from(current.bundle.policy.refresh_lead_seconds))
         });
-        Ok(std::time::Duration::from_secs(
-            u64::try_from(
-                current
-                    .refresh_at
-                    .min(route_refresh)
-                    .saturating_sub(now)
-                    .max(5),
-            )
-            .map_err(|_| TrellisClientError::Bootstrap("context refresh delay overflow".into()))?,
+        Ok(Some(
+            current.refresh_at.min(route_refresh).saturating_sub(now),
         ))
     }
 
-    pub(crate) fn transport_credentials(&self) -> Result<(String, String), TrellisClientError> {
-        let candidate = {
-            let candidate = self.candidate.read().map_err(|_| {
-                TrellisClientError::Bootstrap("context candidate lock poisoned".into())
-            })?;
-            candidate.as_ref().map(|candidate| {
-                (
-                    candidate.routing.bootstrap_jwt.clone(),
-                    candidate.routing.bootstrap_jwt_expires_at,
-                    candidate.current.context_digest.clone(),
-                    candidate.current.not_before,
-                    candidate.current.expires_at,
-                    candidate.server_clock_offset_ms,
-                )
-            })
-        };
-        if let Some((jwt, jwt_expires_at, digest, not_before, expires_at, offset)) = candidate {
-            let now = system_now_millis()?
-                .checked_add(offset)
-                .ok_or_else(|| TrellisClientError::Bootstrap("context time overflow".into()))?
-                .div_euclid(1000);
-            if jwt_expires_at <= now || not_before > now || expires_at <= now {
-                return Err(TrellisClientError::Bootstrap(
-                    "authorization candidate credential expired".into(),
-                ));
-            }
-            if self.is_revoked(&digest) {
-                return Err(TrellisClientError::AuthorizationUnavailable(
-                    "authorization candidate is revoked".into(),
-                ));
-            }
-            return Ok((jwt, digest));
-        }
-        let (routing_jwt, routing_expires_at, digest, not_before, expires_at, offset) = {
-            let state = self
-                .state
-                .read()
-                .map_err(|_| TrellisClientError::Bootstrap("context cache lock poisoned".into()))?;
-            let current = state.current.as_ref().ok_or_else(|| {
-                TrellisClientError::Bootstrap("authorization context is not installed".into())
-            })?;
-            let routing = state.routing.as_ref().ok_or_else(|| {
-                TrellisClientError::Bootstrap("authorization routing JWT unavailable".into())
-            })?;
-            (
-                routing.bootstrap_jwt.clone(),
-                routing.bootstrap_jwt_expires_at,
-                current.context_digest.clone(),
-                current.not_before,
-                current.expires_at,
-                state.server_clock_offset_ms,
-            )
-        };
+    /// Validate the promoted context's routing credential and return it with the
+    /// exact digest it belongs to.
+    fn validated_promoted_transport(
+        &self,
+        state: &CachedAuthorizationState,
+    ) -> Result<(String, String), TrellisClientError> {
+        let current = state.current.as_ref().ok_or_else(|| {
+            TrellisClientError::Bootstrap("authorization context is not installed".into())
+        })?;
+        let routing = state.routing.as_ref().ok_or_else(|| {
+            TrellisClientError::Bootstrap("authorization routing JWT unavailable".into())
+        })?;
         let now = system_now_millis()?
-            .checked_add(offset)
+            .checked_add(state.server_clock_offset_ms)
             .ok_or_else(|| TrellisClientError::Bootstrap("context time overflow".into()))?
             .div_euclid(1000);
-        if routing_expires_at <= now {
+        if routing.bootstrap_jwt_expires_at <= now {
             return Err(TrellisClientError::Bootstrap(
                 "authorization routing JWT expired".into(),
             ));
         }
-        if not_before > now || expires_at <= now {
+        if current.not_before > now || current.expires_at <= now {
             return Err(TrellisClientError::Bootstrap(
                 "authorization context expired".into(),
             ));
         }
-        if self.is_revoked(&digest) {
+        if self.is_revoked(&current.context_digest) {
             return Err(TrellisClientError::AuthorizationUnavailable(
                 "authorization context is revoked".into(),
             ));
         }
-        Ok((routing_jwt, digest))
+        Ok((
+            routing.bootstrap_jwt.clone(),
+            current.context_digest.clone(),
+        ))
     }
 
     pub(crate) fn runtime_binding(
@@ -840,6 +993,131 @@ impl AuthorizationContextCache {
             .read()
             .map(|state| state.clone())
             .map_err(|_| TrellisClientError::Bootstrap("context cache lock poisoned".into()))
+    }
+
+    /// Read the promoted context's digest, transport policy, runtime, and route
+    /// credential from one snapshot so a transport generation correlates its
+    /// CONNECT credential with the policy it records as admitted.
+    pub(crate) fn own_transport_snapshot(
+        &self,
+    ) -> Result<super::types::OwnTransportSnapshot, TrellisClientError> {
+        let state = self.state_snapshot()?;
+        let (routing_jwt, context_digest) = self.validated_promoted_transport(&state)?;
+        let current = state.current.ok_or_else(|| {
+            TrellisClientError::AuthorizationUnavailable("authorization context unavailable".into())
+        })?;
+        let context = trellis_protocol::parse_authorization_context(&current.bundle.context)
+            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
+        let runtime = state.runtime.ok_or_else(|| {
+            TrellisClientError::AuthorizationUnavailable("authorization runtime unavailable".into())
+        })?;
+        Ok(super::types::OwnTransportSnapshot {
+            context_digest,
+            policy: context.unsigned.transport_authorization,
+            runtime,
+            routing_jwt,
+        })
+    }
+
+    /// Read the freshly prepared own candidate as one coherent transport snapshot
+    /// for own-coverage initialization and promotion.
+    ///
+    /// The caller holds the own-installation transition (a checked API
+    /// requirement: taking it again would deadlock on the non-reentrant lock).
+    /// `expected_instance` must be the exact prepared instance this operation
+    /// created, so an independently prepared, signed-identical replacement with
+    /// fresh route/clock companion material is never substituted for it.
+    ///
+    /// Only the private prepared candidate for `expected_digest` and
+    /// `expected_instance` is exposed: the promoted installation and any retained
+    /// predecessor policy are never used, because the retained policy may be the
+    /// already-revoked predecessor. Fails closed when no matching candidate is
+    /// prepared, the candidate is the locally revoked digest, the candidate's
+    /// signed validity window is not current under its own corrected clock, or its
+    /// identity no longer matches this connection. Reads and validates only; never
+    /// mutates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrellisClientError::AuthorizationUnavailable`] for a missing,
+    /// changed, revoked, or expired candidate, and
+    /// [`TrellisClientError::Bootstrap`] when the candidate cannot be parsed or its
+    /// identity does not match this connection.
+    pub(crate) fn own_candidate_transport_snapshot_locked(
+        &self,
+        _transition: &OwnTransitionGuard<'_>,
+        expected_digest: &str,
+        expected_instance: &Arc<()>,
+    ) -> Result<OwnCandidateTransportSnapshot, TrellisClientError> {
+        self.own_candidate_snapshot(expected_digest, expected_instance)
+    }
+
+    fn own_candidate_snapshot(
+        &self,
+        expected_digest: &str,
+        expected_instance: &Arc<()>,
+    ) -> Result<OwnCandidateTransportSnapshot, TrellisClientError> {
+        let candidate = self
+            .candidate
+            .read()
+            .map_err(|_| TrellisClientError::Bootstrap("context candidate lock poisoned".into()))?;
+        let prepared = candidate.as_ref().ok_or_else(|| {
+            TrellisClientError::AuthorizationUnavailable(
+                "authorization candidate is unavailable".into(),
+            )
+        })?;
+        if prepared.current.context_digest != expected_digest {
+            return Err(TrellisClientError::AuthorizationUnavailable(
+                "authorization candidate changed before coverage initialization".into(),
+            ));
+        }
+        if !Arc::ptr_eq(expected_instance, &prepared.instance) {
+            return Err(TrellisClientError::AuthorizationUnavailable(
+                "authorization candidate instance changed before coverage initialization".into(),
+            ));
+        }
+        if self.is_revoked(expected_digest) {
+            return Err(TrellisClientError::AuthorizationUnavailable(
+                "authorization candidate is revoked".into(),
+            ));
+        }
+        let now = system_now_millis()?
+            .checked_add(prepared.server_clock_offset_ms)
+            .ok_or_else(|| TrellisClientError::Bootstrap("context time overflow".into()))?
+            .div_euclid(1000);
+        if prepared.current.not_before > now || prepared.current.expires_at <= now {
+            return Err(TrellisClientError::AuthorizationUnavailable(
+                "authorization candidate is no longer current".into(),
+            ));
+        }
+        let signed =
+            trellis_protocol::parse_authorization_context(&prepared.current.bundle.context)
+                .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
+        let context = &signed.unsigned;
+        if context.connection_id != self.connection_id
+            || context.session_key != self.session_key
+            || context.participant_id != self.participant_id
+            || prepared.runtime.connection_id != context.connection_id
+            || prepared.runtime.login_session_id != context.login_session_id
+            || prepared.runtime.participant_id != context.participant_id
+            || prepared.runtime.inbox_prefix != context.inbox_prefix
+        {
+            return Err(TrellisClientError::Bootstrap(
+                "authorization candidate does not match this connection".into(),
+            ));
+        }
+        Ok(OwnCandidateTransportSnapshot {
+            context_digest: prepared.current.context_digest.clone(),
+            policy: context.transport_authorization.clone(),
+            runtime: prepared.runtime.clone(),
+            routing_jwt: prepared.routing.bootstrap_jwt.clone(),
+            not_before: prepared.current.not_before,
+            expires_at: prepared.current.expires_at,
+            corrected_now_seconds: now,
+            server_clock_offset_ms: prepared.server_clock_offset_ms,
+            routing_jwt_expires_at: prepared.routing.bootstrap_jwt_expires_at,
+            instance: prepared.instance.clone(),
+        })
     }
 
     pub(crate) fn availability(&self) -> crate::generated::AvailabilitySnapshot {
@@ -1044,6 +1322,54 @@ pub(crate) mod tests {
     use self::test_support::{installation, own_context_fixture};
 
     #[test]
+    fn maintenance_accepts_suspended_signed_authority_but_rejects_revocation() {
+        let fixture = own_context_fixture(1);
+        let cache = &fixture.cache;
+        let transition = cache.lock_own_transition().unwrap();
+        assert!(cache
+            .application_transport_locked(&transition)
+            .unwrap()
+            .is_some());
+        cache.suspend_locked(&transition);
+        let (policy, _) = cache.maintenance_transport_locked(&transition).unwrap();
+        assert_eq!(policy, fixture.signed.unsigned.transport_authorization);
+        assert!(cache
+            .application_transport_locked(&transition)
+            .unwrap()
+            .is_none());
+
+        cache.mark_revoked(&fixture.digest);
+        assert!(matches!(
+            cache.maintenance_transport_locked(&transition),
+            Err(TrellisClientError::AuthorizationUnavailable(message))
+                if message == "authorization context is revoked"
+        ));
+        assert!(cache.application_transport_locked(&transition).is_err());
+    }
+
+    #[test]
+    fn maintenance_rejects_invalid_signed_windows_and_corrected_clock_overflow() {
+        // Move the corrected clock, not the installed signed window: the signed
+        // transport policy has no hard expiry and cannot replace context validity.
+        for (offset_ms, expected) in [
+            (-3_600_000, "authorization context expired"),
+            (7_200_000, "authorization context expired"),
+            (i64::MAX, "context time overflow"),
+        ] {
+            let fixture = own_context_fixture(1);
+            let cache = &fixture.cache;
+            let transition = cache.lock_own_transition().unwrap();
+            cache.suspend_locked(&transition);
+            cache.state.write().unwrap().server_clock_offset_ms = offset_ms;
+            assert!(matches!(
+                cache.maintenance_transport_locked(&transition),
+                Err(TrellisClientError::Bootstrap(message)) if message == expected
+            ));
+            assert!(cache.application_transport_locked(&transition).is_err());
+        }
+    }
+
+    #[test]
     fn candidate_promotion_completes_without_recursive_state_lock() {
         let fixture = own_context_fixture(1);
         let cache = fixture.cache.clone();
@@ -1059,7 +1385,7 @@ pub(crate) mod tests {
                 test_support::now_seconds(),
             ))
             .unwrap();
-        assert_ne!(candidate, installed);
+        assert_ne!(candidate.context_digest, installed);
         assert_eq!(
             cache.retained_context_digest().unwrap(),
             installed,
@@ -1069,14 +1395,18 @@ pub(crate) mod tests {
         // Run promotion under a watchdog: a recursive state lock would block a
         // synchronous guard and never complete this call.
         let cache_for_thread = cache.clone();
-        let expected = candidate.clone();
+        let expected = candidate.context_digest.clone();
+        // The exact identity this preparation returned must be what the promotion
+        // validates; an independently prepared signed-identical replacement would
+        // not match.
+        let expected_instance = candidate.instance.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         let thread = std::thread::spawn(move || {
             let transition = cache_for_thread
                 .lock_own_transition()
                 .map_err(|error| error.to_string())?;
             let result = cache_for_thread
-                .promote_locked(&transition, &expected)
+                .promote_locked(&transition, &expected, &expected_instance)
                 .map_err(|error| error.to_string());
             let _ = tx.send(result);
             Ok::<(), String>(())
@@ -1087,8 +1417,108 @@ pub(crate) mod tests {
             Err(_) => panic!("candidate promotion did not complete"),
         }
         let _ = thread.join();
-        assert_eq!(cache.retained_context_digest().unwrap(), candidate);
-        assert_eq!(cache.context_digest().unwrap(), candidate);
+        assert_eq!(
+            cache.retained_context_digest().unwrap(),
+            candidate.context_digest
+        );
+        assert_eq!(cache.context_digest().unwrap(), candidate.context_digest);
         assert!(cache.candidate_digest().is_err());
+    }
+
+    /// The exact identity returned by `prepare` fences both source selection and
+    /// the guarded promotion: an independently prepared signed-identical
+    /// replacement shares the digest but carries fresh companion route material,
+    /// so it is never substituted for the originating instance, and the promotion
+    /// that does succeed retains the second candidate's route material.
+    #[test]
+    fn candidate_instance_identity_is_exact_not_digest_equality() {
+        let fixture = own_context_fixture(1);
+        let cache = fixture.cache.clone();
+        let now = test_support::now_seconds();
+        // Same signed context (identical digest) with different companion route
+        // material, prepared as two independent instances.
+        let prepared = |route: &str| {
+            let mut installation = installation(
+                &fixture.issuer,
+                &fixture.session,
+                &fixture.connection_id,
+                2,
+                now,
+            );
+            installation.routing.bootstrap_jwt = route.to_owned();
+            installation
+        };
+        // Use the exact identity each preparation returned; never re-read the
+        // slot, which is exactly the digest-only substitution this fences.
+        let first = cache.prepare(prepared("route-jwt-superseded")).unwrap();
+        let second = cache.prepare(prepared("route-jwt-live")).unwrap();
+        assert_eq!(
+            first.context_digest, second.context_digest,
+            "signed-identical candidates share a digest"
+        );
+        assert!(
+            !Arc::ptr_eq(&first.instance, &second.instance),
+            "each prepared candidate is a distinct instance"
+        );
+
+        // Holding the real own-installation transition, the superseded instance is
+        // rejected even though the digest still matches, and the live instance is
+        // accepted with the live companion route material.
+        let transition = cache.lock_own_transition().unwrap();
+        assert!(
+            cache
+                .own_candidate_transport_snapshot_locked(
+                    &transition,
+                    &first.context_digest,
+                    &first.instance,
+                )
+                .is_err(),
+            "a superseded prepared instance must not be accepted by digest alone"
+        );
+        assert!(
+            cache
+                .own_candidate_transport_snapshot_locked(
+                    &transition,
+                    &second.context_digest,
+                    &first.instance,
+                )
+                .is_err(),
+            "a mismatched instance identity must be rejected"
+        );
+        let live = cache
+            .own_candidate_transport_snapshot_locked(
+                &transition,
+                &second.context_digest,
+                &second.instance,
+            )
+            .unwrap();
+        assert_eq!(live.context_digest, second.context_digest);
+        assert_eq!(live.routing_jwt, "route-jwt-live");
+
+        // The guarded promotion uses the same exact identity: the superseded
+        // candidate's returned instance is refused, the second succeeds, and the
+        // promoted installation retains the second companion route.
+        assert!(
+            cache
+                .promote_locked(&transition, &second.context_digest, &first.instance)
+                .is_err(),
+            "promotion must reject a replaced candidate's originating identity"
+        );
+        assert!(
+            cache.candidate_digest_locked(&transition).is_ok(),
+            "a refused promotion leaves the candidate private"
+        );
+        cache
+            .promote_locked(&transition, &second.context_digest, &second.instance)
+            .unwrap();
+        assert_eq!(
+            cache.own_transport_snapshot().unwrap().routing_jwt,
+            "route-jwt-live",
+            "the promoted installation retains the candidate's companion route"
+        );
+        assert!(
+            cache.candidate_digest_locked(&transition).is_err(),
+            "a successful promotion consumes the private candidate"
+        );
     }
 }

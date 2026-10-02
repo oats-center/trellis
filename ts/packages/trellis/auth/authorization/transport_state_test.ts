@@ -4,11 +4,8 @@ import {
   admissionContextDigest,
   admittedPolicyCovers,
   readOwnAdmission,
-  requiresTransportUpgrade,
-  resourceTransportCheck,
   TransportAuthorizationState,
   type TransportAuthorizationStatus,
-  transportUpgradeRequiredError,
 } from "./transport_state.ts";
 import {
   TRANSPORT_AUTHORIZATION_FORMAT_V1,
@@ -38,6 +35,37 @@ Deno.test("admission names parse only Trellis callout markers", () => {
     undefined,
   );
   assertEquals(admissionContextDigest("trellis.auth.v1:has:server:42"), "has");
+  assertEquals(
+    admissionContextDigest(
+      "trellis.auth.v1:opaque-digest:srv-A:18446744073709551615",
+    ),
+    "opaque-digest",
+  );
+  for (
+    const malformed of [
+      "trellis.auth.v1:digest:",
+      "trellis.auth.v1:digest:SERVER",
+      "trellis.auth.v1:digest::7",
+      "trellis.auth.v1:digest:SERVER:",
+      "trellis.auth.v1:digest:SERVER:abc",
+      "trellis.auth.v1:digest:SERVER:0",
+      "trellis.auth.v1:digest:SERVER:07",
+      "trellis.auth.v1:digest:SERVER:+7",
+      "trellis.auth.v1:digest:SERVER:-7",
+      "trellis.auth.v1:digest:SERVER:7.0",
+      "trellis.auth.v1:digest:SERVER:18446744073709551616",
+      "trellis.auth.v1:digest:SERVER:7:",
+      "trellis.auth.v1:digest:SERVER:7:extra",
+      "trellis.auth.v1:di gest:SERVER:7",
+      "trellis.auth.v1:digest:SER VER:7",
+      "trellis.auth.v1:digest:SER\u{85}VER:7",
+      "trellis.auth.v1:digest:SER\u{feff}VER:7",
+      "trellis.auth.v1:digest:SERVER:7 ",
+      "trellis.auth.v1:digest:SERVER:7\n",
+    ]
+  ) {
+    assertEquals(admissionContextDigest(malformed), undefined, malformed);
+  }
 });
 
 Deno.test("transport status compares admitted A against newest allowed D", async () => {
@@ -128,92 +156,4 @@ Deno.test("admitted policy coverage follows exact NATS wildcard containment", as
     await admittedPolicyCovers(wide, { subscribe: ["x"] }, 1_000),
     false,
   );
-});
-
-Deno.test("upgrade-required failure carries the distinct runtime code", () => {
-  const error = transportUpgradeRequiredError({ method: "Orders.Get" });
-  assertEquals(error.code, "transport_upgrade_required");
-});
-
-Deno.test("boundary gate separates granted-but-unadopted from denied", async () => {
-  const state = new TransportAuthorizationState();
-  const gate = {
-    status: () => state.status(),
-    admittedPolicy: () => state.admittedPolicy(),
-    allowedPolicy: () => state.allowedPolicy(),
-    nowSeconds: () => 1_000,
-  };
-  await state.recordAdmission({
-    contextDigest: "d1",
-    policy: policy({ publishAllow: ["rpc.v1.Orders.Get"] }),
-    allowed: policy({
-      publishAllow: ["rpc.v1.Orders.Get", "rpc.v1.Users.Get"],
-    }),
-    nowUnixSeconds: 1_000,
-  });
-  assertEquals(state.status(), "upgrade_available");
-  // Granted by the newest policy but absent from the admitted attachment.
-  assertEquals(
-    await requiresTransportUpgrade(gate, { publish: ["rpc.v1.Users.Get"] }),
-    true,
-  );
-  // Already admitted: no upgrade needed.
-  assertEquals(
-    await requiresTransportUpgrade(gate, { publish: ["rpc.v1.Orders.Get"] }),
-    false,
-  );
-  // Granted by nobody: an ordinary denial, not a transport upgrade.
-  assertEquals(
-    await requiresTransportUpgrade(gate, { publish: ["rpc.v1.Secret.Get"] }),
-    false,
-  );
-});
-
-Deno.test("resource transport markers match the server-compiled grants", async () => {
-  type Fixture = {
-    bucket: string;
-    readPublish: string[];
-    writePublish: string[];
-  };
-  const fixture = JSON.parse(
-    await Deno.readTextFile(
-      new URL(
-        "../../../../../integration/fixtures/protocol/resource-grants/vectors.json",
-        import.meta.url,
-      ),
-    ),
-  ) as Record<"kv" | "store", Fixture>;
-
-  for (const kind of ["kv", "store"] as const) {
-    const { bucket, readPublish, writePublish } = fixture[kind];
-    const canonical = (subjects: string[]) => [...new Set(subjects)].sort();
-    const state = new TransportAuthorizationState();
-    await state.recordAdmission({
-      contextDigest: "d1",
-      policy: policy({ publishAllow: canonical(readPublish) }),
-      allowed: policy({
-        publishAllow: canonical([...readPublish, ...writePublish]),
-      }),
-      nowUnixSeconds: 1_000,
-    });
-    assertEquals(state.status(), "upgrade_available");
-    const check = resourceTransportCheck(
-      {
-        status: () => state.status(),
-        admittedPolicy: () => state.admittedPolicy(),
-        allowedPolicy: () => state.allowedPolicy(),
-        nowSeconds: () => 1_000,
-      },
-      kind,
-      bucket,
-    );
-
-    assertEquals(await check("read"), undefined, `${kind} read is admitted`);
-    const write = await check("write");
-    assertEquals(
-      write?.code,
-      "transport_upgrade_required",
-      `${kind} write must await adoption`,
-    );
-  }
 });

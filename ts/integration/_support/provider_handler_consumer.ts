@@ -128,13 +128,6 @@ export async function publishPreparedThroughClient(
   await client.publishPrepared(prepared).orThrow();
 }
 
-/** Adopts a wider transport attachment through the public connection API. */
-export async function refreshHandlerConnection(
-  client: ServiceHandlerClient<ProviderContract>,
-): Promise<void> {
-  await client.connection.refreshTransport().orThrow();
-}
-
 /**
  * Exercises the canonical handler client through flat calls, availability, a
  * bound resource, and prepared publish without the registration surface.

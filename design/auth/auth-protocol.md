@@ -115,16 +115,25 @@ Clients refresh proactively before expiry, and during actual recovery when
 needed. Fresh native bootstrap uses the context returned by bootstrap.
 
 A renewable authorization context and routing credential are not a lease on a
-physical NATS connection. An identity-preserving refresh validates and retains
-the new context on the current attachment, then promotes it in place. It does
-not reconnect a healthy socket. Next-connect credentials and endpoint selections
-are kept current independently of the policy already admitted on that socket. If
-current authority safely covers the admitted policy but offers additional
-transport capabilities, the SDK exposes a retained upgrade notification. Only an
-explicit application request or an otherwise necessary physical reconnect adopts
-the wider policy. Removed admitted authority is enforced by server-directed
-disconnection of the affected physical attachment. A refresh that fails leaves a
-still-valid predecessor untouched and retries with bounded backoff.
+physical NATS connection. Routine equal-policy renewal validates and retains the
+new context, then promotes application authorization in place without socket
+churn. Next-connect credentials and endpoints stay current independently of the
+immutable policy admitted on each physical generation. Healthy safe policy
+growth automatically prepares, readies, and publishes a successor; it requires
+neither an application transport-refresh API nor an upgrade notification. A
+failed refresh leaves a still-valid predecessor untouched and retries with
+bounded backoff.
+
+Own refresh retains the original verified preparation, exact attempt identity,
+corrected clock, and CONNECT companions throughout coverage warming and
+promotion. Retaining a candidate does not replace installed own authority;
+rejection or cancellation releases only that attempt's resources. Warming
+borrows a safe admitted carrier when one exists. With no safe survivor, recovery
+may open a private exact-candidate CONNECT stage solely to warm revocation
+coverage. It admits no application intake and is not published as the default
+before successful authority promotion and normal readiness. Ordinary adoption
+then uses that same warmed socket. Cancellation or logical close releases the
+private stage, and a late completion cannot resurrect it.
 
 ## Signed Authorization Context
 
@@ -244,9 +253,10 @@ currently allowed policy **D** for the same account: `A <= D` when every
 published and subscribed subject A permits is also permitted by D, A's response
 allowance is absent or covered by D's with at least the same count and duration,
 and A's hard deadline is no later than D's (`null` is infinity). `A <= D` and
-`D <= A` is `current`; only `A <= D` is a passive `upgrade_available`; otherwise
-the socket requires `reduction_required`. A changed target account always
-requires a new physical attachment.
+`D <= A` is `current`; only `A <= D` is `upgrade_available`; otherwise the
+socket requires `reduction_required`. These remain classifier wire labels, not a
+public passive upgrade interface: safe growth drives automatic successor
+adoption. A changed target account always requires a new physical attachment.
 
 Subject containment is decided against the NATS grammar the compiler emits
 (literal tokens, `*` matching exactly one token, and terminal `>` matching one
@@ -265,6 +275,28 @@ deadline comes from that named signed policy. Because a named context is
 immutable historical evidence, its later ordinary expiration does not invalidate
 the attachment, and it is not reused as current application authorization after
 expiry. A hard security revocation of its provenance remains server-enforced.
+
+### Generation Lifecycle And Coverage
+
+One stable logical client owns physical generations with immutable admitted
+context and policy. A successor is readied before default publication, and new
+intake stops on its predecessor. Accepted work retains its receiving generation;
+safe predecessors drain after intake is accounted for and transport leases reach
+zero. Unsafe, revoked, or hard-expired generations are forcibly retired rather
+than kept alive by leases. Broker admission identity is historical evidence,
+never current application authority.
+
+Fresh public I/O requires usable installed own authority and a final fence over
+the current signed policy, corrected clock, and physical attachment. Temporary
+revocation-coverage loss suspends bounded acquisitions; it does not itself
+revoke the digest. A distinct guarded registry-maintenance path can restore own
+coverage on the exact safe published attachment without forcing a new socket or
+admitting application work while suspended. Cached verification is digest-keyed,
+while usability requires continuous revocation coverage. Coverage bindings
+migrate make-before-break to the exact published generation; watch loss is
+binding-local and fail-closed, while confirmed revocation is digest-global. See
+[Runtime Caches](rust-authorization-state.md#runtime-caches) for the handover
+boundary.
 
 ## Live Observation Sessions
 
@@ -295,6 +327,11 @@ overwrites another route's requirement. Data publish and control subscribe
 authority is connection-scoped transport permission, not proof of sender
 identity, and a legitimately reachable subject does not make an unsigned or
 foreign-signed frame trusted.
+
+Authorization loss fences the local live session. A provider whose signing guard
+has lost the caller's revocation coverage cannot sign an authorization-loss END
+for that session; local closure does not promise that a signed remote END was
+sent.
 
 ## Errors
 

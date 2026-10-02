@@ -1,133 +1,558 @@
-import type { NatsConnection } from "@nats-io/nats-core";
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { AckPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
+import { deadline } from "@nats-io/nats-core";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { join } from "@std/path";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 
+import { NatsTestContainer } from "../../../../trellis-testkit/src/nats_container.ts";
+import { ActiveJobCancellationRegistry } from "./cancellation-registry.ts";
 import { JobManager, JobProcessError } from "./job-manager.ts";
-import type { JobKeyCoordinator, JobKeyState } from "./key-coordinator.ts";
+import {
+  createNatsJobKeyCoordinator,
+  deriveJobKey,
+  type JobKeyState,
+} from "./key-coordinator.ts";
 import {
   ackActionForOutcome,
+  getLatestLifecycleEvent,
   JobsConsumerMissingError,
-  JobsInfrastructureMissingError,
   progressAckIntervalMs,
   startNatsWorkerHostFromBinding,
   startQueueWorkerLoop,
+  toWorkerConsumer,
 } from "./runtime-worker.ts";
-import type { Job, JobContext } from "./types.ts";
+import type { Job, JobEvent } from "./types.ts";
 
-const jobContext: JobContext = {
-  requestId: "request-1",
-  traceId: "0123456789abcdef0123456789abcdef",
-  traceparent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
-};
+// Production worker kernel and adapters, with case-owned authenticated NATS.
+// Full resource provisioning and generation handoff belong to live integration.
+async function withBroker(
+  run: (fixture: Awaited<ReturnType<typeof brokerFixture>>) => Promise<void>,
+  keyed = false,
+) {
+  const workdir = await Deno.makeTempDir({ prefix: "jobs-worker-" });
+  let nats: NatsTestContainer | undefined;
+  let fixture: Awaited<ReturnType<typeof brokerFixture>> | undefined;
+  try {
+    nats = await NatsTestContainer.start(workdir);
+    fixture = await brokerFixture(nats, keyed, workdir);
+    await run(fixture);
+  } finally {
+    try {
+      await Promise.all(fixture?.workers.map((worker) => worker.stop()) ?? []);
+    } finally {
+      await nats?.stop();
+      await Deno.remove(workdir, { recursive: true });
+    }
+  }
+}
 
-const jobsBinding = {
-  serviceName: "svc",
-  namespace: "svc",
-  queues: {
-    refresh: {
-      queueType: "refresh",
-      publishPrefix: "trellis.jobs.svc.refresh",
-      workSubject: "trellis.work.svc.refresh",
-      consumerName: "svc-refresh",
-      payload: { schema: "RefreshPayload" },
-      maxDeliver: 5,
-      backoffMs: [1],
-      ackWaitMs: 1_000,
-    },
-  },
-};
-
-const keyedJobsBinding = {
-  serviceName: "svc",
-  namespace: "svc",
-  queues: {
-    sync: {
-      queueType: "sync",
-      publishPrefix: "trellis.jobs.svc.sync",
-      workSubject: "trellis.work.svc.sync",
-      consumerName: "svc-sync",
-      payload: { schema: "SyncPayload" },
-      maxDeliver: 5,
-      backoffMs: [2_500],
-      ackWaitMs: 1_000,
-      keyConcurrency: {
-        key: ["/tenant"],
-        maxActive: 1,
-        heartbeatIntervalMs: 30_000,
-        heartbeatTtlMs: 120_000,
-        stalePolicy: "fail-stale" as const,
-      },
-      queue: { maxQueuedPerKey: 0, whenFull: "reject" as const },
-    },
-  },
-};
-
-Deno.test("startNatsWorkerHostFromBinding uses implementation concurrency", async () => {
-  let workers = 0;
-  const host = await startNatsWorkerHostFromBinding(
-    { jobs: jobsBinding, workStream: "JOBS_WORK" },
-    {
-      nats: {
-        subscribe: () => cancelSubscription(() => {}) as never,
-      },
-      jsm: {
-        consumers: { info: () => Promise.resolve({ config: {} }) },
-      },
-      js: {
-        consumers: {
-          getConsumerFromInfo: () => ({
-            consume: () => {
-              workers += 1;
-              return Promise.resolve((async function* () {})());
-            },
-          }),
+async function brokerFixture(
+  nats: NatsTestContainer,
+  keyed: boolean,
+  workdir: string,
+) {
+  const nc = nats.nc;
+  const js = jetstream(nc);
+  const jsm = await jetstreamManager(nc);
+  const prefix = "trellis.jobs.svc.refresh";
+  const queue = {
+    queueType: "refresh",
+    publishPrefix: prefix,
+    workSubject: `${prefix}.*.created`,
+    consumerName: "worker",
+    payload: { schema: "RefreshPayload" },
+    maxDeliver: 2,
+    backoffMs: [100],
+    ackWaitMs: 100,
+    ...(keyed
+      ? {
+        keyConcurrency: {
+          key: ["/tenant"],
+          maxActive: 1,
+          heartbeatIntervalMs: 30_000,
+          heartbeatTtlMs: 120_000,
+          stalePolicy: "fail-stale" as const,
         },
-      },
-      instanceId: "worker-1",
-      queueConcurrency: { refresh: 3 },
-      manager: new JobManager({ nc: { publish: () => {} }, jobs: jobsBinding }),
-      handler: () => Promise.resolve({}),
+        queue: { maxQueuedPerKey: 2, whenFull: "reject" as const },
+      }
+      : {}),
+  };
+  const binding = {
+    workStream: "JOBS",
+    jobs: {
+      serviceName: "svc",
+      namespace: "svc",
+      queues: { refresh: queue },
     },
-  );
-
-  assertEquals(workers, 3);
-  assertEquals(host.workerCount(), 3);
-  await host.stop();
-});
-
-Deno.test("startNatsWorkerHostFromBinding rejects invalid implementation concurrency", async () => {
-  await assertRejects(
-    () =>
-      startNatsWorkerHostFromBinding(
-        { jobs: jobsBinding, workStream: "JOBS_WORK" },
+  };
+  await jsm.streams.add({
+    name: "JOBS",
+    subjects: [`${prefix}.>`],
+    allow_direct: true,
+  });
+  await jsm.consumers.add("JOBS", {
+    durable_name: "worker",
+    ack_policy: AckPolicy.Explicit,
+    ack_wait: 100_000_000,
+    max_deliver: 2,
+    filter_subjects: [`${prefix}.*.created`, `${prefix}.*.retried`],
+  });
+  const kvm = new Kvm(nc);
+  const projection = await kvm.create("WORKER_PROJECTION");
+  const keys = keyed ? await kvm.create("JOBS_KEYS_svc") : undefined;
+  const manager = new JobManager({
+    nc: js,
+    jobs: binding.jobs,
+    keyCoordinator: keyed ? createNatsJobKeyCoordinator(nc) : undefined,
+  });
+  const workers: Array<{ stop(): Promise<void> }> = [];
+  const encode = (value: unknown) =>
+    new TextEncoder().encode(JSON.stringify(value));
+  const lifecycle = (job: Job) =>
+    getLatestLifecycleEvent(jsm.direct, "JOBS", prefix, job);
+  const projected = async (job: Job): Promise<Job | undefined> => {
+    const entry = await projection.get(job.id);
+    return entry ? JSON.parse(entry.string()) : undefined;
+  };
+  const event = async (
+    job: Job,
+    eventType: JobEvent["eventType"],
+    state: JobEvent["state"],
+  ) => {
+    await js.publish(
+      `${prefix}.${job.id}.${eventType}`,
+      encode(
         {
-          nats: {
-            subscribe: () => cancelSubscription(() => {}) as never,
-          },
-          jsm: {
-            consumers: { info: () => Promise.resolve({ config: {} }) },
-          },
-          js: {
-            consumers: {
-              getConsumerFromInfo: () => {
-                throw new Error("consumer should not be built");
-              },
-            },
-          },
-          instanceId: "worker-1",
-          queueConcurrency: { refresh: 0 },
-          manager: new JobManager({
-            nc: { publish: () => {} },
-            jobs: jobsBinding,
-          }),
-          handler: () => Promise.resolve({}),
-        },
+          jobId: job.id,
+          service: job.service,
+          jobType: job.type,
+          context: job.context,
+          payload: job.payload,
+          maxTries: job.maxTries,
+          tries: 0,
+          timestamp: new Date().toISOString(),
+          eventType,
+          state,
+          ...(eventType === "retried" ? { previousState: "failed" } : {}),
+        } satisfies JobEvent,
       ),
-    Error,
-    "expected a positive integer",
-  );
-});
+    );
+  };
+  const keyState = async (payload: unknown) => {
+    assert(keys);
+    const derived = await deriveJobKey({
+      service: "svc",
+      jobType: "refresh",
+      payload,
+      template: ["/tenant"],
+    });
+    const entry = await keys.get(derived.kvKey);
+    assert(entry);
+    return JSON.parse(entry.string()) as JobKeyState;
+  };
+  const completed = async (job: Job) => {
+    const msg = await jsm.direct.getMessage("JOBS", {
+      last_by_subj: `${prefix}.${job.id}.completed`,
+    });
+    assert(msg);
+    return JSON.parse(msg.string()) as JobEvent;
+  };
+  const settled = () =>
+    waitFor(async () => {
+      const info = await jsm.consumers.info("JOBS", "worker");
+      return info.num_pending === 0 && info.num_ack_pending === 0;
+    });
+  const host = async (
+    handler: Parameters<typeof startNatsWorkerHostFromBinding>[1]["handler"],
+    concurrency = 1,
+  ) => {
+    const worker = await startNatsWorkerHostFromBinding(binding, {
+      nats: nc,
+      manager,
+      instanceId: "worker",
+      handler,
+      queueConcurrency: { refresh: concurrency },
+      getProjectedJob: projected,
+    });
+    workers.push(worker);
+    return worker;
+  };
+  const slot = async (
+    handler: Parameters<typeof startQueueWorkerLoop>[0]["handler"],
+    readLifecycle = true,
+    readProjection = projected,
+  ) => {
+    const consumer = toWorkerConsumer(await js.consumers.get("JOBS", "worker"));
+    const worker = await startQueueWorkerLoop({
+      cancellationRegistry: new ActiveJobCancellationRegistry(),
+      acquireSession: () =>
+        Promise.resolve({
+          manager,
+          consumer,
+          getProjectedJob: readProjection,
+          getLatestLifecycleEvent: readLifecycle ? lifecycle : undefined,
+          release() {},
+        }),
+      handler,
+      backoffMs: [100],
+      deferralBackoffMs: 1_000,
+      progressAckIntervalMs: progressAckIntervalMs(queue),
+    });
+    workers.push(worker);
+    return worker;
+  };
+  return {
+    nats,
+    workdir,
+    nc,
+    js,
+    jsm,
+    binding,
+    manager,
+    projection,
+    keys,
+    encode,
+    event,
+    keyState,
+    completed,
+    settled,
+    host,
+    slot,
+    workers,
+  };
+}
 
-Deno.test("ackActionForOutcome naks keyed deferred work", () => {
+async function waitFor(predicate: () => Promise<boolean>): Promise<void> {
+  const until = performance.now() + 5_000;
+  while (performance.now() < until) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("worker broker state did not converge within 5 seconds");
+}
+
+Deno.test("terminal projected work is acknowledged without handler execution", () =>
+  withBroker(async (f) => {
+    const job = await f.manager.create("refresh", {});
+    await f.projection.put(job.id, f.encode({ ...job, state: "cancelled" }));
+    await f.slot(
+      () => Promise.reject(new Error("terminal work executed")),
+      false,
+    );
+    await f.settled();
+    const info = await f.jsm.streams.info("JOBS", {
+      subjects_filter:
+        `${f.binding.jobs.queues.refresh.publishPrefix}.${job.id}.started`,
+    });
+    assertEquals(
+      info.state.messages,
+      1,
+      "only the original creation is retained",
+    );
+  }));
+
+Deno.test("latest durable lifecycle wins over a stale terminal projection", () =>
+  withBroker(async (f) => {
+    const job = await f.manager.create("refresh", {});
+    await f.projection.put(job.id, f.encode({ ...job, state: "cancelled" }));
+    await f.event(job, "started", "active");
+    await f.host(() => Promise.resolve({ refreshed: true }));
+    await f.settled();
+    assertEquals((await f.completed(job)).result, { refreshed: true });
+  }));
+
+Deno.test("progress acknowledgements prevent redelivery during a held handler", () =>
+  withBroker(async (f) => {
+    const job = await f.manager.create("refresh", {});
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    try {
+      await f.host(async () => {
+        entered.resolve();
+        await release.promise;
+        return { held: true };
+      });
+      await deadline(entered.promise, 5_000);
+      const competitor = await f.js.consumers.get("JOBS", "worker");
+      const receive = competitor.next({ expires: 1_000 });
+      const since = performance.now();
+      await waitFor(() => Promise.resolve(performance.now() - since > 350));
+      assertEquals(
+        (await f.jsm.consumers.info("JOBS", "worker")).delivered.consumer_seq,
+        1,
+        "held job must not be redelivered across multiple ack waits",
+      );
+      release.resolve();
+      assertEquals(
+        await receive,
+        null,
+        "competing pull must not receive the held job",
+      );
+      await f.settled();
+      assertEquals((await f.completed(job)).tries, 1);
+    } finally {
+      release.resolve();
+    }
+  }));
+
+Deno.test("a real projection outage NAKs work and the slot processes later deliveries", () =>
+  withBroker(async (f) => {
+    const job = await f.manager.create("refresh", {});
+    const readerConnection = await connect({
+      servers: f.nats.natsUrl,
+      authenticator: credsAuthenticator(
+        await Deno.readFile(
+          join(f.workdir, "nats", f.nats.manifest.paths.creds.trellisService),
+        ),
+      ),
+    });
+    let projection = await new Kvm(readerConnection).open("WORKER_PROJECTION");
+    await readerConnection.close();
+    await assertRejects(() => projection.get(job.id));
+    await f.slot(
+      () => Promise.resolve({ recovered: true }),
+      false,
+      async (work) => {
+        const entry = await projection.get(work.id);
+        return entry ? JSON.parse(entry.string()) : undefined;
+      },
+    );
+    await waitFor(async () =>
+      (await f.jsm.consumers.info("JOBS", "worker")).delivered.consumer_seq >= 1
+    );
+    await waitFor(async () =>
+      (await f.jsm.consumers.info("JOBS", "worker")).num_waiting === 1
+    );
+    const failedAt = performance.now();
+    await waitFor(() => Promise.resolve(performance.now() - failedAt > 350));
+    assertEquals(
+      (await f.jsm.consumers.info("JOBS", "worker")).delivered.consumer_seq,
+      1,
+      "the delayed NAK must defer redelivery beyond several ordinary ack waits",
+    );
+    projection = f.projection;
+    const later = await f.manager.create("refresh", {});
+    await f.settled();
+    assertEquals(
+      (await f.completed(job)).result,
+      { recovered: true },
+      "real projection failure must leave the source job available",
+    );
+    assertEquals((await f.completed(later)).result, { recovered: true });
+    assertEquals(
+      (await f.jsm.consumers.info("JOBS", "worker")).delivered.consumer_seq,
+      3,
+      "one failed read, a later job, and redelivery must all be accounted",
+    );
+  }));
+
+Deno.test("final ordinary retry redelivers for execution-owned reconciliation", () =>
+  withBroker(async (f) => {
+    await f.jsm.consumers.update("JOBS", "worker", { max_deliver: -1 });
+    let handled = 0;
+    let reconciled = 0;
+    const job = await f.manager.create("refresh", {});
+    await f.host((activeJob) => {
+      if (activeJob.isCancelled()) {
+        assertEquals(activeJob.cancellationToken().reason(), "retry-exhausted");
+        reconciled++;
+        return Promise.resolve({});
+      }
+      handled++;
+      return Promise.reject(JobProcessError.retryable("retry again"));
+    });
+    await f.settled();
+    const retry = await f.jsm.direct.getMessage("JOBS", {
+      last_by_subj:
+        `${f.binding.jobs.queues.refresh.publishPrefix}.${job.id}.retry`,
+    });
+    assert(retry);
+    assertEquals(JSON.parse(retry.string()).tries, 2);
+    assertEquals(handled, 2);
+    assertEquals(reconciled, 1);
+    assertEquals(
+      (await getLatestLifecycleEvent(
+        f.jsm.direct,
+        "JOBS",
+        f.binding.jobs.queues.refresh.publishPrefix,
+        job,
+      ))?.eventType,
+      "dead",
+    );
+    const info = await f.jsm.consumers.info("JOBS", "worker");
+    assertEquals(info.delivered.consumer_seq, 3);
+    assertEquals(
+      info.ack_floor.stream_seq,
+      1,
+      "the final redelivery must reconcile execution exhaustion and ACK the source",
+    );
+  }));
+
+Deno.test("terminal lifecycle is ACKed and removes its queued KV reservation", () =>
+  withBroker(async (f) => {
+    const payload = { tenant: "a" };
+    const job = await f.manager.create("refresh", payload);
+    assertEquals(
+      (await f.keyState(payload)).queued.map((entry) => entry.jobId),
+      [job.id],
+    );
+    await f.event(job, "skipped", "skipped");
+    await f.host(() => Promise.resolve({ cleaned: true }));
+    await f.settled();
+    const terminal = await getLatestLifecycleEvent(
+      f.jsm.direct,
+      "JOBS",
+      f.binding.jobs.queues.refresh.publishPrefix,
+      job,
+    );
+    assertEquals(terminal?.state, "skipped", "terminal work must not execute");
+    assertEquals((await f.keyState(payload)).queued, []);
+    const next = await f.manager.create("refresh", payload);
+    await f.settled();
+    assertEquals((await f.completed(next)).state, "completed");
+  }, true));
+
+Deno.test("terminal work is ACKed even when the real key bucket is unavailable", () =>
+  withBroker(async (f) => {
+    const job = await f.manager.create("refresh", { tenant: "a" });
+    await f.event(job, "completed", "completed");
+    await f.jsm.streams.delete("KV_JOBS_KEYS_svc");
+    await f.host(() => Promise.reject(new Error("terminal work executed")));
+    await f.settled();
+    const info = await f.jsm.consumers.info("JOBS", "worker");
+    assertEquals(
+      info.delivered.consumer_seq,
+      1,
+      "cleanup outage must not redeliver terminal work",
+    );
+  }, true));
+
+Deno.test("keyed capacity deferral retains the delivery until a real KV slot releases", () =>
+  withBroker(async (f) => {
+    const payload = { tenant: "a" };
+    const first = await f.manager.create("refresh", payload);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    try {
+      await f.host(async (active) => {
+        if (active.job().id === first.id) {
+          entered.resolve();
+          await release.promise;
+        }
+        return { id: active.job().id };
+      }, 2);
+      await deadline(entered.promise, 5_000);
+      // Key concurrency does not promise FIFO acquisition. Establish the held
+      // active slot before submitting the job whose deferral is being tested.
+      const second = await f.manager.create("refresh", payload);
+      await waitFor(async () =>
+        (await f.jsm.consumers.info("JOBS", "worker")).num_ack_pending === 2
+      );
+      const competitor = await f.js.consumers.get("JOBS", "worker");
+      const receive = competitor.next({ expires: 1_000 });
+      const since = performance.now();
+      await waitFor(() => Promise.resolve(performance.now() - since > 350));
+      const state = await f.keyState(payload);
+      assertEquals(state.active.map((entry) => entry.jobId), [first.id]);
+      assertEquals(state.queued.map((entry) => entry.jobId), [second.id]);
+      assertEquals(
+        (await f.jsm.consumers.info("JOBS", "worker")).delivered.consumer_seq,
+        2,
+      );
+      release.resolve();
+      assertEquals(await receive, null);
+      await f.settled();
+      assertEquals((await f.completed(second)).tries, 1);
+      assertEquals((await f.keyState(payload)).active, []);
+    } finally {
+      release.resolve();
+    }
+  }, true));
+
+Deno.test("manual retry of failed keyed work reacquires a real KV slot without create admission", () =>
+  withBroker(async (f) => {
+    const payload = { tenant: "a" };
+    const job = await f.manager.create("refresh", payload);
+    const failedHost = await f.host(() =>
+      Promise.reject(JobProcessError.failed("invalid input"))
+    );
+    await f.settled();
+    await failedHost.stop();
+    const latest = await getLatestLifecycleEvent(
+      f.jsm.direct,
+      "JOBS",
+      f.binding.jobs.queues.refresh.publishPrefix,
+      job,
+    );
+    assertEquals(latest?.state, "failed");
+    assertEquals((await f.keyState(payload)).active, []);
+    assertEquals((await f.keyState(payload)).queued, []);
+    // The ordinary admin retry envelope does not perform another create admission.
+    await f.event(job, "retried", "pending");
+    await f.host(() => Promise.resolve({ recovered: true }));
+    await f.settled();
+    assertEquals((await f.completed(job)).result, { recovered: true });
+    assertEquals((await f.keyState(payload)).active, []);
+  }, true));
+
+Deno.test("terminal historical payload cleans its real KV reservation by job identity", () =>
+  withBroker(async (f) => {
+    const payload = { tenant: "a" };
+    const job = await f.manager.create("refresh", payload);
+    const created = await f.jsm.direct.getMessage("JOBS", {
+      last_by_subj:
+        `${f.binding.jobs.queues.refresh.publishPrefix}.${job.id}.created`,
+    });
+    assert(created);
+    await f.jsm.streams.deleteMessage("JOBS", created.seq);
+    // Retained work can predate the current key path; cleanup must use job ID
+    // when the historical payload can no longer derive that key.
+    const historical = { ...job, payload: { input: { tenant: "a" } } };
+    await f.event(historical, "created", "pending");
+    await f.event(historical, "completed", "completed");
+    await f.host(() =>
+      Promise.reject(new Error("terminal historical work executed"))
+    );
+    await f.settled();
+    assertEquals((await f.keyState(payload)).queued, []);
+  }, true));
+
+Deno.test("missing approved consumer fails closed against actual JetStream", () =>
+  withBroker(async (f) => {
+    await f.jsm.consumers.delete("JOBS", "worker");
+    await assertRejects(
+      () => f.host(() => Promise.resolve({})),
+      JobsConsumerMissingError,
+    );
+    await f.manager.create("refresh", {});
+    const info = await f.jsm.streams.info("JOBS");
+    assertEquals(
+      info.state.messages,
+      1,
+      "queued work remains retained without a worker",
+    );
+    assertEquals(
+      info.state.consumer_count,
+      0,
+      "host must not silently recreate missing approved consumer",
+    );
+  }));
+
+Deno.test("invalid implementation concurrency rejects against real broker", () =>
+  withBroker(async (f) => {
+    await assertRejects(
+      () => f.host(() => Promise.resolve({}), 0),
+      Error,
+      "expected a positive integer",
+    );
+    const job = await f.manager.create("refresh", {});
+    await f.host(() => Promise.resolve({ valid: true }));
+    await f.settled();
+    assertEquals((await f.completed(job)).result, { valid: true });
+  }));
+
+Deno.test("ackActionForOutcome maps dispositions including final exhaustion", () => {
   assertEquals(
     ackActionForOutcome({
       outcome: "deferred",
@@ -136,760 +561,54 @@ Deno.test("ackActionForOutcome naks keyed deferred work", () => {
     }),
     "nak",
   );
+  assertEquals(
+    ackActionForOutcome({ outcome: "retry", tries: 1, error: "retry" }),
+    "nak",
+  );
+  assertEquals(
+    ackActionForOutcome({ outcome: "retry", tries: 2, error: "retry" }),
+    "nak",
+  );
+  assertEquals(
+    ackActionForOutcome({ outcome: "completed", tries: 1, result: {} }),
+    "ack",
+  );
 });
 
 Deno.test("progress ACK cadence floors and clamps to whole milliseconds", () => {
-  const queue = jobsBinding.queues.refresh;
-  assertEquals(progressAckIntervalMs({ ...queue, backoffMs: [1] }), 1);
-  assertEquals(progressAckIntervalMs({ ...queue, backoffMs: [2] }), 1);
-  assertEquals(progressAckIntervalMs({ ...queue, backoffMs: [5] }), 1);
+  const queue = {
+    queueType: "refresh",
+    ackWaitMs: 1_000,
+    backoffMs: [],
+    publishPrefix: "trellis.jobs.svc.refresh",
+    workSubject: "trellis.work.svc.refresh",
+    consumerName: "worker",
+    maxDeliver: 2,
+    payload: { schema: "RefreshPayload" },
+  };
+  for (const wait of [1, 2, 5]) {
+    assertEquals(progressAckIntervalMs({ ...queue, backoffMs: [wait] }), 1);
+  }
   assertEquals(progressAckIntervalMs({ ...queue, backoffMs: [3_000] }), 1_000);
+  assertEquals(progressAckIntervalMs(queue), 333);
 });
 
 Deno.test("progress ACK cadence rejects sub-millisecond policies", () => {
-  const queue = jobsBinding.queues.refresh;
   for (const wait of [0, 0.5]) {
     assertThrows(
-      () => progressAckIntervalMs({ ...queue, backoffMs: [wait] }),
+      () =>
+        progressAckIntervalMs({
+          queueType: "refresh",
+          ackWaitMs: 1_000,
+          backoffMs: [wait],
+          publishPrefix: "trellis.jobs.svc.refresh",
+          workSubject: "trellis.work.svc.refresh",
+          consumerName: "worker",
+          maxDeliver: 2,
+          payload: { schema: "RefreshPayload" },
+        }),
       Error,
       "positive whole millisecond",
     );
   }
-});
-
-function cancelSubscription(unsubscribe: () => void): {
-  unsubscribe(): void;
-  [Symbol.asyncIterator](): AsyncIterator<
-    { subject: string; data: Uint8Array }
-  >;
-} {
-  let unsubscribed = false;
-  return {
-    unsubscribe: () => {
-      unsubscribed = true;
-      unsubscribe();
-    },
-    [Symbol.asyncIterator]() {
-      return {
-        async next() {
-          while (!unsubscribed) {
-            await new Promise((resolve) => setTimeout(resolve, 1));
-          }
-          return { done: true, value: undefined };
-        },
-      };
-    },
-  };
-}
-
-Deno.test("startQueueWorkerLoop skips terminal projected jobs before processing", async () => {
-  let acked = 0;
-  let handled = 0;
-  const job: Job = {
-    id: "job-1",
-    service: "svc",
-    type: "refresh",
-    state: "pending",
-    context: jobContext,
-    payload: { siteId: "site-1" },
-    createdAt: "2024-01-01T00:00:00.000Z",
-    updatedAt: "2024-01-01T00:00:00.000Z",
-    tries: 0,
-    maxTries: 5,
-  };
-  const event = {
-    jobId: job.id,
-    service: job.service,
-    jobType: job.type,
-    eventType: "created",
-    state: "pending",
-    context: jobContext,
-    tries: 0,
-    maxTries: 5,
-    payload: job.payload,
-    timestamp: job.createdAt,
-  };
-
-  const loop = await startQueueWorkerLoop({
-    manager: new JobManager({ nc: { publish: () => {} }, jobs: jobsBinding }),
-    consumer: {
-      consume() {
-        return Promise.resolve((async function* () {
-          yield {
-            data: new TextEncoder().encode(JSON.stringify(event)),
-            subject: "trellis.work.svc.refresh",
-            ack: () => {
-              acked += 1;
-            },
-            nak: () => {},
-            inProgress: () => {},
-          };
-        })());
-      },
-    },
-    cancelSubscription: cancelSubscription(() => {}),
-    getProjectedJob: () => Promise.resolve({ ...job, state: "cancelled" }),
-    handler: () => {
-      handled += 1;
-      return Promise.resolve({});
-    },
-  });
-
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  await loop.stop();
-
-  assertEquals(acked, 1);
-  assertEquals(handled, 0);
-});
-
-Deno.test("startQueueWorkerLoop naks unexpected failures and continues", async () => {
-  let acked = 0;
-  let nacked = 0;
-  let projectedCalls = 0;
-  let handled = 0;
-  const first: Job = {
-    id: "job-fails",
-    service: "svc",
-    type: "refresh",
-    state: "pending",
-    context: jobContext,
-    payload: { siteId: "site-1" },
-    createdAt: "2024-01-01T00:00:00.000Z",
-    updatedAt: "2024-01-01T00:00:00.000Z",
-    tries: 0,
-    maxTries: 5,
-  };
-  const second = { ...first, id: "job-continues" };
-
-  const loop = await startQueueWorkerLoop({
-    manager: new JobManager({ nc: { publish: () => {} }, jobs: jobsBinding }),
-    consumer: {
-      consume() {
-        return Promise.resolve((async function* () {
-          for (const job of [first, second]) {
-            yield {
-              data: new TextEncoder().encode(JSON.stringify(createdEvent(job))),
-              subject: "trellis.work.svc.refresh",
-              ack: () => {
-                acked += 1;
-              },
-              nak: () => {
-                nacked += 1;
-              },
-              inProgress: () => {},
-            };
-          }
-        })());
-      },
-    },
-    cancelSubscription: cancelSubscription(() => {}),
-    getProjectedJob: () => {
-      projectedCalls += 1;
-      if (projectedCalls === 1) throw new Error("projection unavailable");
-      return Promise.resolve(undefined);
-    },
-    handler: () => {
-      handled += 1;
-      return Promise.resolve({});
-    },
-  });
-
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  await loop.stop();
-
-  assertEquals(nacked, 1);
-  assertEquals(acked, 1);
-  assertEquals(handled, 1);
-});
-
-Deno.test("startQueueWorkerLoop prefers latest lifecycle event over stale projection", async () => {
-  let acked = 0;
-  let handled = 0;
-  const job: Job = {
-    id: "job-2",
-    service: "svc",
-    type: "refresh",
-    state: "pending",
-    context: jobContext,
-    payload: { siteId: "site-2" },
-    createdAt: "2024-01-01T00:00:00.000Z",
-    updatedAt: "2024-01-01T00:00:00.000Z",
-    tries: 0,
-    maxTries: 5,
-  };
-  const event = {
-    jobId: job.id,
-    service: job.service,
-    jobType: job.type,
-    eventType: "created",
-    state: "pending",
-    context: jobContext,
-    tries: 0,
-    maxTries: 5,
-    payload: job.payload,
-    timestamp: job.createdAt,
-  };
-
-  const loop = await startQueueWorkerLoop({
-    manager: new JobManager({ nc: { publish: () => {} }, jobs: jobsBinding }),
-    consumer: {
-      consume() {
-        return Promise.resolve((async function* () {
-          yield {
-            data: new TextEncoder().encode(JSON.stringify(event)),
-            subject: "trellis.work.svc.refresh",
-            ack: () => {
-              acked += 1;
-            },
-            nak: () => {},
-            inProgress: () => {},
-          };
-        })());
-      },
-    },
-    cancelSubscription: cancelSubscription(() => {}),
-    getLatestLifecycleEvent: () =>
-      Promise.resolve({
-        ...event,
-        eventType: "started",
-        state: "active",
-      }),
-    getProjectedJob: () => Promise.resolve({ ...job, state: "cancelled" }),
-    handler: () => {
-      handled += 1;
-      return Promise.resolve({});
-    },
-  });
-
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  await loop.stop();
-
-  assertEquals(acked, 1);
-  assertEquals(handled, 1);
-});
-
-Deno.test("final ordinary retry redelivers for execution-owned reconciliation", async () => {
-  let acked = 0;
-  let nacked = 0;
-  const published: unknown[] = [];
-  const job: Job = {
-    id: "job-redelivery",
-    service: "svc",
-    type: "refresh",
-    state: "pending",
-    context: jobContext,
-    payload: { siteId: "site-redelivery" },
-    createdAt: "2024-01-01T00:00:00.000Z",
-    updatedAt: "2024-01-01T00:00:00.000Z",
-    tries: 0,
-    maxTries: 2,
-  };
-  const event = createdEvent(job);
-
-  const loop = await startQueueWorkerLoop({
-    manager: new JobManager({
-      nc: {
-        publish(_subject, payload) {
-          published.push(JSON.parse(new TextDecoder().decode(payload)));
-        },
-      },
-      jobs: jobsBinding,
-    }),
-    consumer: {
-      consume() {
-        return Promise.resolve((async function* () {
-          yield {
-            data: new TextEncoder().encode(JSON.stringify(event)),
-            subject: "trellis.work.svc.refresh",
-            info: { redeliveryCount: 1 },
-            ack: () => {
-              acked += 1;
-            },
-            nak: () => {
-              nacked += 1;
-            },
-            inProgress: () => {},
-          };
-        })());
-      },
-    },
-    cancelSubscription: cancelSubscription(() => {}),
-    getLatestLifecycleEvent: () =>
-      Promise.resolve({
-        ...event,
-        eventType: "retry",
-        state: "retry",
-        tries: 1,
-      }),
-    handler: () => {
-      throw JobProcessError.retryable("retry again");
-    },
-  });
-
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  await loop.stop();
-
-  assertEquals(acked, 0);
-  assertEquals(nacked, 1);
-  const terminal = published.at(-1) as { eventType?: string; tries?: number };
-  assertEquals(terminal.eventType, "retry");
-  assertEquals(terminal.tries, 2);
-});
-
-Deno.test("startQueueWorkerLoop cleans queued key state for terminal lifecycle before ack", async () => {
-  let acked = 0;
-  let handled = 0;
-  let removed = 0;
-  const job: Job = {
-    id: "job-skipped",
-    service: "svc",
-    type: "sync",
-    state: "pending",
-    context: jobContext,
-    payload: { tenant: "a" },
-    createdAt: "2024-01-01T00:00:00.000Z",
-    updatedAt: "2024-01-01T00:00:00.000Z",
-    tries: 0,
-    maxTries: 5,
-  };
-  const event = createdEvent(job);
-  const coordinator: JobKeyCoordinator = {
-    admitCreate: () => Promise.reject(new Error("unexpected admit")),
-    restoreReplacedQueuedJob: () =>
-      Promise.reject(new Error("unexpected restore")),
-    removeQueuedJob: () => {
-      removed += 1;
-      return Promise.resolve({
-        kind: "removed",
-        state: {
-          version: 1,
-          service: "svc",
-          jobType: "sync",
-          key: "a",
-          keyHash: "hash",
-          maxActive: 1,
-          active: [],
-          queued: [],
-          staleTakeoverCount: 0,
-          updatedAt: "2024-01-01T00:00:00.000Z",
-        },
-      });
-    },
-    acquireActiveSlot: () => Promise.reject(new Error("unexpected acquire")),
-    renewHeartbeat: () => Promise.reject(new Error("unexpected renew")),
-    releaseActiveSlot: () => Promise.reject(new Error("unexpected release")),
-  };
-
-  const loop = await startQueueWorkerLoop({
-    manager: new JobManager({
-      nc: { publish: () => {} },
-      jobs: keyedJobsBinding,
-      keyCoordinator: coordinator,
-    }),
-    consumer: {
-      consume() {
-        return Promise.resolve((async function* () {
-          yield {
-            data: new TextEncoder().encode(JSON.stringify(event)),
-            subject: "trellis.work.svc.sync",
-            ack: () => {
-              acked += 1;
-            },
-            nak: () => {},
-            inProgress: () => {},
-          };
-        })());
-      },
-    },
-    cancelSubscription: cancelSubscription(() => {}),
-    getLatestLifecycleEvent: () =>
-      Promise.resolve({
-        ...event,
-        eventType: "skipped",
-        state: "skipped",
-      }),
-    handler: () => {
-      handled += 1;
-      return Promise.resolve({});
-    },
-  });
-
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  await loop.stop();
-
-  assertEquals(acked, 1);
-  assertEquals(handled, 0);
-  assertEquals(removed, 1);
-});
-
-Deno.test("startQueueWorkerLoop acks terminal work when keyed cleanup fails", async () => {
-  let acked = 0;
-  let nacked = 0;
-  let fallbackCleanup = 0;
-  const job: Job = {
-    id: "job-old-payload",
-    service: "svc",
-    type: "sync",
-    state: "pending",
-    context: jobContext,
-    payload: { input: { tenant: "a" } },
-    createdAt: "2024-01-01T00:00:00.000Z",
-    updatedAt: "2024-01-01T00:00:00.000Z",
-    tries: 0,
-    maxTries: 5,
-  };
-  const event = createdEvent(job);
-  const coordinator: JobKeyCoordinator = {
-    admitCreate: () => Promise.reject(new Error("unexpected admit")),
-    restoreReplacedQueuedJob: () =>
-      Promise.reject(new Error("unexpected restore")),
-    removeQueuedJob: () => Promise.reject(new Error("old payload schema")),
-    removeQueuedJobById: () => {
-      fallbackCleanup += 1;
-      return Promise.reject(new Error("coordinator unavailable"));
-    },
-    acquireActiveSlot: () => Promise.reject(new Error("unexpected acquire")),
-    renewHeartbeat: () => Promise.reject(new Error("unexpected renew")),
-    releaseActiveSlot: () => Promise.reject(new Error("unexpected release")),
-  };
-
-  const loop = await startQueueWorkerLoop({
-    manager: new JobManager({
-      nc: { publish: () => {} },
-      jobs: keyedJobsBinding,
-      keyCoordinator: coordinator,
-    }),
-    consumer: {
-      consume() {
-        return Promise.resolve((async function* () {
-          yield {
-            data: new TextEncoder().encode(JSON.stringify(event)),
-            subject: "trellis.work.svc.sync",
-            ack: () => {
-              acked += 1;
-            },
-            nak: () => {
-              nacked += 1;
-            },
-            inProgress: () => {},
-          };
-        })());
-      },
-    },
-    cancelSubscription: cancelSubscription(() => {}),
-    getLatestLifecycleEvent: () =>
-      Promise.resolve({
-        ...event,
-        eventType: "completed",
-        state: "completed",
-      }),
-    handler: () => Promise.reject(new Error("terminal work was handled")),
-  });
-
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  await loop.stop();
-
-  assertEquals(fallbackCleanup, 1);
-  assertEquals(acked, 1);
-  assertEquals(nacked, 0);
-});
-
-Deno.test("startQueueWorkerLoop holds keyed active-limit deferrals with progress", async () => {
-  const nakDelays: Array<number | undefined> = [];
-  let progressAcks = 0;
-  let acquireCalls = 0;
-  let handled = 0;
-  const job: Job = {
-    id: "job-deferred",
-    service: "svc",
-    type: "sync",
-    state: "pending",
-    context: jobContext,
-    payload: { tenant: "a" },
-    createdAt: "2024-01-01T00:00:00.000Z",
-    updatedAt: "2024-01-01T00:00:00.000Z",
-    tries: 0,
-    maxTries: 5,
-  };
-  const event = createdEvent(job);
-  const coordinator: JobKeyCoordinator = {
-    admitCreate: () => Promise.reject(new Error("unexpected admit")),
-    restoreReplacedQueuedJob: () =>
-      Promise.reject(new Error("unexpected restore")),
-    removeQueuedJob: () => Promise.reject(new Error("unexpected remove")),
-    acquireActiveSlot: () => {
-      acquireCalls += 1;
-      return Promise.resolve(
-        acquireCalls === 1
-          ? {
-            kind: "blocked",
-            key: "a",
-            reason: "active-limit",
-            active: 1,
-            queued: 1,
-            limit: 1,
-          }
-          : {
-            kind: "acquired",
-            key: "a",
-            keyHash: "hash",
-            slotToken: "slot-1",
-            stale: [],
-            state: {
-              version: 1,
-              service: "svc",
-              jobType: "sync",
-              key: "a",
-              keyHash: "hash",
-              maxActive: 1,
-              active: [],
-              queued: [],
-              staleTakeoverCount: 0,
-              updatedAt: "2024-01-01T00:00:00.000Z",
-            },
-          },
-      );
-    },
-    renewHeartbeat: () => Promise.reject(new Error("unexpected renew")),
-    releaseActiveSlot: () => Promise.resolve({ kind: "staleCompletion" }),
-  };
-
-  const loop = await startQueueWorkerLoop({
-    manager: new JobManager({
-      nc: { publish: () => {} },
-      jobs: keyedJobsBinding,
-      keyCoordinator: coordinator,
-    }),
-    consumer: {
-      consume() {
-        return Promise.resolve((async function* () {
-          yield {
-            data: new TextEncoder().encode(JSON.stringify(event)),
-            subject: "trellis.work.svc.sync",
-            ack: () => {},
-            nak: (delay?: number) => {
-              nakDelays.push(delay);
-            },
-            inProgress: () => {
-              progressAcks += 1;
-            },
-          };
-        })());
-      },
-    },
-    cancelSubscription: cancelSubscription(() => {}),
-    progressAckIntervalMs: 1,
-    handler: () => {
-      handled += 1;
-      return Promise.resolve({});
-    },
-  });
-
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  await loop.stop();
-
-  assertEquals(handled, 1);
-  assertEquals(progressAcks > 0, true);
-  assertEquals(nakDelays, []);
-});
-
-Deno.test("startQueueWorkerLoop processes keyed manual retried work", async () => {
-  let handled = 0;
-  let acked = 0;
-  let nacked = 0;
-  const workEventTypes: string[] = [];
-  const job: Job = {
-    id: "job-retried",
-    service: "svc",
-    type: "sync",
-    state: "pending",
-    context: jobContext,
-    payload: { tenant: "a" },
-    createdAt: "2024-01-01T00:00:00.000Z",
-    updatedAt: "2024-01-01T00:00:00.000Z",
-    tries: 0,
-    maxTries: 5,
-  };
-  const event = {
-    ...createdEvent(job),
-    eventType: "retried" as const,
-    previousState: "failed" as const,
-  };
-  const keyState: JobKeyState = {
-    version: 1,
-    service: "svc",
-    jobType: "sync",
-    key: "a",
-    keyHash: "hash",
-    maxActive: 1,
-    active: [],
-    queued: [],
-    staleTakeoverCount: 0,
-    updatedAt: "2024-01-01T00:00:00.000Z",
-  };
-  const coordinator: JobKeyCoordinator = {
-    admitCreate: () => Promise.reject(new Error("unexpected admit")),
-    restoreReplacedQueuedJob: () =>
-      Promise.reject(new Error("unexpected restore")),
-    removeQueuedJob: () => Promise.reject(new Error("unexpected remove")),
-    acquireActiveSlot: (request) => {
-      workEventTypes.push(request.workEventType ?? "missing");
-      return Promise.resolve({
-        kind: "acquired",
-        key: "a",
-        keyHash: "hash",
-        slotToken: "slot-1",
-        stale: [],
-        state: keyState,
-      });
-    },
-    renewHeartbeat: () => Promise.reject(new Error("unexpected renew")),
-    releaseActiveSlot: () =>
-      Promise.resolve({ kind: "released", state: keyState }),
-  };
-
-  const loop = await startQueueWorkerLoop({
-    manager: new JobManager({
-      nc: { publish: () => {} },
-      jobs: keyedJobsBinding,
-      keyCoordinator: coordinator,
-    }),
-    consumer: {
-      consume() {
-        return Promise.resolve((async function* () {
-          yield {
-            data: new TextEncoder().encode(JSON.stringify(event)),
-            subject: "trellis.work.svc.sync",
-            ack: () => {
-              acked += 1;
-            },
-            nak: () => {
-              nacked += 1;
-            },
-            inProgress: () => {},
-          };
-        })());
-      },
-    },
-    cancelSubscription: cancelSubscription(() => {}),
-    getLatestLifecycleEvent: () => Promise.resolve(event),
-    handler: () => {
-      handled += 1;
-      return Promise.resolve({});
-    },
-  });
-
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  await loop.stop();
-
-  assertEquals(handled, 1);
-  assertEquals(acked, 1);
-  assertEquals(nacked, 0);
-  assertEquals(workEventTypes, ["retried"]);
-});
-
-Deno.test("startNatsWorkerHostFromBinding reads approved existing consumer only", async () => {
-  const requestedConsumers: Array<{ stream: string; consumerName: string }> =
-    [];
-
-  const worker = await startNatsWorkerHostFromBinding({
-    jobs: jobsBinding,
-    workStream: "JOBS_WORK",
-  }, {
-    nats: {
-      subscribe(): ReturnType<NatsConnection["subscribe"]> {
-        return cancelSubscription(() => {}) as ReturnType<
-          NatsConnection["subscribe"]
-        >;
-      },
-    },
-    jsm: {
-      consumers: {
-        info(stream, consumerName) {
-          requestedConsumers.push({ stream, consumerName });
-          return Promise.resolve({ config: {} });
-        },
-      },
-    },
-    js: {
-      consumers: {
-        getConsumerFromInfo() {
-          return {
-            consume() {
-              return Promise.resolve((async function* () {})());
-            },
-          };
-        },
-      },
-    },
-    manager: new JobManager({ nc: { publish: () => {} }, jobs: jobsBinding }),
-    instanceId: "worker-1",
-    queueTypes: ["refresh"],
-    handler: () => Promise.resolve({}),
-  });
-
-  await worker.stop();
-
-  assertEquals(requestedConsumers, [{
-    stream: "JOBS_WORK",
-    consumerName: "svc-refresh",
-  }]);
-});
-
-function createdEvent(job: Job) {
-  return {
-    jobId: job.id,
-    service: job.service,
-    jobType: job.type,
-    eventType: "created" as const,
-    state: "pending" as const,
-    context: job.context,
-    tries: 0,
-    maxTries: job.maxTries,
-    payload: job.payload,
-    timestamp: job.createdAt,
-  };
-}
-
-Deno.test("startNatsWorkerHostFromBinding fails closed when approved consumer is missing", async () => {
-  await assertRejects(
-    () =>
-      startNatsWorkerHostFromBinding({
-        jobs: jobsBinding,
-        workStream: "JOBS_WORK",
-      }, {
-        nats: {
-          subscribe(): ReturnType<NatsConnection["subscribe"]> {
-            return cancelSubscription(() => {}) as ReturnType<
-              NatsConnection["subscribe"]
-            >;
-          },
-        },
-        jsm: {
-          consumers: {
-            info() {
-              const error = new Error("consumer not found");
-              error.name = "ConsumerNotFoundError";
-              return Promise.reject(error);
-            },
-          },
-        },
-        js: {
-          consumers: {
-            getConsumerFromInfo() {
-              throw new Error("consumer should not be built");
-            },
-          },
-        },
-        manager: new JobManager({
-          nc: { publish: () => {} },
-          jobs: jobsBinding,
-        }),
-        instanceId: "worker-1",
-        queueTypes: ["refresh"],
-        handler: () => Promise.resolve({}),
-      }),
-    JobsConsumerMissingError,
-    "Jobs consumer 'svc-refresh' was not found in stream 'JOBS_WORK' while starting queue 'refresh'",
-  );
 });

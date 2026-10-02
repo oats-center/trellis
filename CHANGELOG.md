@@ -16,16 +16,13 @@ and this project adheres to
 - Operations can reserve a caller-selected invocation with cancellation already
   requested. Cancellation survives replay and owner replacement, and cleanup
   must succeed before the operation becomes terminal.
-- Connections now expose a retained transport-upgrade notification and an
-  explicit transport refresh instead of adopting wider authority silently. When
-  renewable authority safely covers the admitted policy but offers additional
-  transport capability, TypeScript reports `transportUpgradeAvailable` and the
-  application decides when to call `refreshTransport()`; the Rust client exposes
-  the equivalent retained status and refresh method. Because the explicit call
-  replaces the physical attachment, it can interrupt in-flight RPCs and
-  ephemeral Live and Operation observations, so automatic adoption on every
-  upgrade is not the default integration pattern. A listener added later
-  immediately receives the current retained status.
+- TypeScript and Rust connections automatically adopt newly approved authority
+  on an exactly verified physical connection. Safe work already in progress
+  remains on its original connection; provider and framework intake moves to the
+  new connection, and unused connections close automatically. Renewing unchanged
+  transport authority does not replace a healthy connection. The explicit
+  transport-refresh APIs, upgrade notification, and upgrade-required errors have
+  been removed.
 
 ### Fixed
 
@@ -37,6 +34,20 @@ and this project adheres to
   when transport-policy reevaluation is already in flight.
 - TypeScript job updates encode and decode through their generated codecs, so
   nested `int64` and bytes values round-trip through the typed update channel.
+- Authorization revocation coverage follows transport changes without discarding
+  healthy cached authority. Fresh application traffic cannot proceed while its
+  own authorization is unusable; bounded acquisitions can resume after verified
+  coverage recovery, while immediate acquisitions report unavailability. Watch
+  loss and revocation remain fail-closed during replacement setup.
+- Built-in authenticated provider routes recover after native transport outages
+  instead of terminating the Platform subsystem when old subscriptions end.
+  Their connections close at runtime shutdown even when child tasks retain
+  client references.
+- Jobs and durable event intake retain each delivered attempt's receiving
+  connection through disposition, preserve bounded capacity across handoff, and
+  continue after the baseline connection closes. Jobs keep broker reservations
+  alive during pre-handler checks. Worker and service health heartbeats follow
+  the logical connection.
 - Service shutdown settles admitted Operation control requests before draining
   NATS and stops waiting when its transport is lost, preventing cancellation
   failures and shutdown hangs. Operation observations close with their caller
@@ -48,7 +59,7 @@ and this project adheres to
   `ServiceHandlerClient`, including Job and Live callbacks. Selected event
   subscriptions and prepared publishers retain their generated types, and
   handler clients expose availability and transfer utilities while preserving
-  live resource bindings and explicit transport adoption.
+  live resource bindings and automatic transport adoption.
 - Proactive service/device authorization refresh no longer fails silently on a
   fractional-second `serverNow`, and live credit/pulse/end-ack controls are no
   longer bounded by the 15-second opening reservation, so retained Live sessions
@@ -80,13 +91,13 @@ and this project adheres to
 - Refreshing renewable Trellis authorization no longer restarts a healthy NATS
   connection. An identity-preserving refresh retains the new context in place
   and keeps the physical attachment; additional transport authority is adopted
-  only by an explicit application transport refresh or an otherwise necessary
-  reconnect, and removed admitted authority is enforced by a server-directed
-  disconnection of the exact physical attachment. Open contexts now bind their
-  exact compiled transport policy, and the admitted NATS user claim is bounded
-  only by genuine underlying authorization deadlines rather than a periodic
-  user-JWT lifetime. Active connection presence is retained until the broker
-  confirms the attachment is gone.
+  automatically without interrupting safe work, and removed admitted authority
+  is enforced by a server-directed disconnection of the exact physical
+  attachment. Open contexts now bind their exact compiled transport policy, and
+  the admitted NATS user claim is bounded only by genuine underlying
+  authorization deadlines rather than a periodic user-JWT lifetime. Active
+  connection presence is retained until the broker confirms the attachment is
+  gone.
 - Removed the obsolete periodic admitted-user NATS JWT lifetime and the active
   connection-presence maximum age derived from it. Browser flow, OAuth, and
   auth-pending TTLs are unchanged.
