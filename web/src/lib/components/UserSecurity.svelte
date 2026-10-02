@@ -40,14 +40,17 @@
   let linkFlow = $state.raw<LinkFlow | null>(null);
   let identityError = $state<string | null>(null);
   let sessionError = $state<string | null>(null);
+  let connectionError = $state<string | null>(null);
   let error = $state<string | null>(null);
   let saved = $state<string | null>(null);
   let loading = $state(true);
   let sessionLoading = $state(true);
+  let connectionLoading = $state(true);
   let uncertain = $state(false);
   let action = $state.raw<Action | null>(null);
   let providerIds = $state("");
   let sessionGeneration = 0;
+  let connectionGeneration = 0;
   const busy = $derived(disabled || resetPending || linkPending || actionPending || uncertain);
 
   async function loadIdentities(): Promise<void> {
@@ -74,23 +77,33 @@
     sessionLoading = true;
     sessionError = null;
     try {
-      const [sessionResult, connectionResult] = await Promise.all([
-        traverseAll<Session>(async (request) => {
-          const response = await trellis.sessionsList({ principalId: targetId, page: catalogPage(request.cursor) }).orThrow();
-          return { items: response.items, cursor: response.page.nextCursor };
-        }),
-        traverseAll<Connection>(async (request) => {
-          const response = await trellis.connectionsList({ principalId: targetId, page: catalogPage(request.cursor) }).orThrow();
-          return { items: response.items, cursor: response.page.nextCursor };
-        }),
-      ]);
+      const sessionResult = await traverseAll<Session>(async (request) => {
+        const response = await trellis.sessionsList({ principalId: targetId, page: catalogPage(request.cursor) }).orThrow();
+        return { items: response.items, cursor: response.page.nextCursor };
+      });
       if (scope.key !== key || sessionGeneration !== generation) return;
       if (!sessionResult.complete) throw sessionResult.error;
-      if (!connectionResult.complete) throw connectionResult.error;
       sessions = [...sessionResult.items];
-      connections = [...connectionResult.items];
     } catch (cause) { if (scope.key === key && sessionGeneration === generation) sessionError = errorMessage(cause); }
     finally { if (scope.key === key && sessionGeneration === generation) sessionLoading = false; }
+  }
+
+  async function loadConnections(): Promise<void> {
+    const key = scope.key;
+    const generation = ++connectionGeneration;
+    const targetId = userId;
+    connectionLoading = true;
+    connectionError = null;
+    try {
+      const result = await traverseAll<Connection>(async (request) => {
+        const response = await trellis.connectionsList({ principalId: targetId, page: catalogPage(request.cursor) }).orThrow();
+        return { items: response.items, cursor: response.page.nextCursor };
+      });
+      if (scope.key !== key || connectionGeneration !== generation) return;
+      if (!result.complete) throw result.error;
+      connections = [...result.items];
+    } catch (cause) { if (scope.key === key && connectionGeneration === generation) connectionError = errorMessage(cause); }
+    finally { if (scope.key === key && connectionGeneration === generation) connectionLoading = false; }
   }
 
   async function createReset(): Promise<void> {
@@ -136,7 +149,7 @@
       dispatch: ({ input }) => input.kind === "unlink" ? trellis.userIdentitiesUnlink(input.value).orThrow() : input.kind === "revoke" ? trellis.sessionsRevoke(input.value).orThrow() : trellis.connectionsKick(input.value).orThrow(),
     });
     if (!outcome || scope.key !== intent.scope.routeKey) return;
-    if (outcome.kind === "succeeded") { action = null; saved = "Security action completed. Refreshed details are shown below."; await Promise.all([loadIdentities(), loadSessions()]); }
+    if (outcome.kind === "succeeded") { action = null; saved = "Security action completed. Refreshed details are shown below."; await Promise.all([loadIdentities(), loadSessions(), loadConnections()]); }
     else if (outcome.kind === "unknown") { uncertain = true; error = "Result unknown. Refresh security details to verify before retrying."; }
     else error = errorMessage(outcome.error);
   }
@@ -144,14 +157,14 @@
   $effect(() => {
     scope.setKey(JSON.stringify([userId, String(version)]));
     resetMutation.cancel(); linkMutation.cancel(); actionMutation.cancel();
-    untrack(() => { identities = []; sessions = []; connections = []; resetFlow = null; linkFlow = null; action = null; error = null; saved = null; uncertain = false; void loadIdentities(); void loadSessions(); });
+    untrack(() => { identities = []; sessions = []; connections = []; resetFlow = null; linkFlow = null; action = null; error = null; saved = null; uncertain = false; void loadIdentities(); void loadSessions(); void loadConnections(); });
     return () => scope.invalidate();
   });
-  onDestroy(() => { scope.dispose(); ++sessionGeneration; });
+  onDestroy(() => { scope.dispose(); ++sessionGeneration; ++connectionGeneration; });
 </script>
 
 <Panel title="Sign-in & security">
-  {#snippet actions()}<button class="btn btn-ghost btn-sm" disabled={resetPending || linkPending || actionPending || loading || sessionLoading} onclick={async () => { await Promise.all([loadIdentities(), loadSessions()]); if (!identityError && !sessionError) { uncertain = false; error = null; action = null; } }}>Refresh security</button>{/snippet}
+  {#snippet actions()}<button class="btn btn-ghost btn-sm" disabled={resetPending || linkPending || actionPending || loading || sessionLoading || connectionLoading} onclick={async () => { await Promise.all([loadIdentities(), loadSessions(), loadConnections()]); if (!identityError && !sessionError && !connectionError) { uncertain = false; error = null; action = null; } }}>Refresh security</button>{/snippet}
   {#if error}<Notice variant="error">{error}</Notice>{/if}
   {#if saved}<Notice variant="success">{saved}</Notice>{/if}
   {#if action?.kind === "unlink"}{@render confirmation()}{/if}
@@ -182,12 +195,15 @@
 <Panel title="Sessions & connections">
   {#if action && action.kind !== "unlink"}{@render confirmation()}{/if}
   <p class="trellis-field-help mb-3">End session revokes a login. Disconnect closes only the selected physical connection; the session may reconnect.</p>
-  {#if sessionError}<Notice variant="error">{sessionError}</Notice>{:else if sessionLoading}<LoadingState label="Loading sessions and connections" />{:else}
+  {#if sessionError}<Notice variant="error">Could not load sessions: {sessionError}</Notice>{:else if sessionLoading}<LoadingState label="Loading sessions" />{:else}
     <div class="overflow-x-auto"><table class="table table-sm"><thead><tr><th>Application / session</th><th>Signed in / last authenticated</th><th>State / expiry</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
       {#each sessions as session (session.sessionId)}<tr><td><span class="trellis-identifier">{session.participantId}</span><p class="trellis-metadata break-all">{session.sessionId}</p></td><td class="text-xs">{formatDate(session.createdAt)}<p class="trellis-metadata">{formatDate(session.lastAuthenticatedAt)}</p></td><td><span class="badge badge-sm">{session.state}</span><p class="trellis-metadata">{session.expiresAt === null ? "No expiry" : formatDate(session.expiresAt)}</p></td><td><button class="btn btn-ghost btn-sm text-error" disabled={busy || session.state !== "active" || !canPerform(authority.authority, "sessionsRevoke")} onclick={() => action = { kind: "revoke", session }}>End session</button></td></tr>
       {:else}<tr><td colspan="4" class="text-sm text-base-content/60">No sessions for this user.</td></tr>{/each}
     </tbody></table></div>
-    <h3 class="text-sm font-semibold mt-4 mb-2">Open connections</h3><div class="overflow-x-auto"><table class="table table-sm"><thead><tr><th>Application / connection</th><th>Connected / last seen</th><th>Address</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
+  {/if}
+  <h3 class="text-sm font-semibold mt-4 mb-2">Open connections</h3>
+  {#if connectionError}<Notice variant="error">Could not load connections: {connectionError}</Notice>{:else if connectionLoading}<LoadingState label="Loading connections" />{:else}
+    <div class="overflow-x-auto"><table class="table table-sm"><thead><tr><th>Application / connection</th><th>Connected / last seen</th><th>Address</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
       {#each connections as connection (connection.connectionId)}<tr><td><span class="trellis-identifier">{connection.participantId}</span><p class="trellis-metadata break-all">{connection.connectionId}</p></td><td class="text-xs">{formatDate(connection.connectedAt)}<p class="trellis-metadata">{formatDate(connection.lastSeenAt)}</p></td><td class="trellis-identifier">{connection.remoteAddress ?? "—"}</td><td><button class="btn btn-ghost btn-sm text-error" disabled={busy || !canPerform(authority.authority, "connectionsKick")} onclick={() => action = { kind: "kick", connection }}>Disconnect</button></td></tr>
       {:else}<tr><td colspan="4" class="text-sm text-base-content/60">No open connections.</td></tr>{/each}
     </tbody></table></div>
