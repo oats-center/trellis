@@ -412,6 +412,7 @@ await writeJson(
       "@oatscenter/trellis/auth/browser":
         `jsr:@oatscenter/trellis@^${jsrRuntimeDependencyVersion}/auth/browser`,
       "svelte": "npm:svelte@^5.0.0",
+      "svelte/reactivity": "npm:svelte@^5.0.0/reactivity",
       "svelte/internal/client": "npm:svelte@^5.0.0/internal/client",
       "svelte/internal/disclose-version":
         "npm:svelte@^5.0.0/internal/disclose-version",

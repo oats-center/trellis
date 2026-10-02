@@ -121,6 +121,7 @@
     "sigma": "npm:sigma@^3.0.2",
     "sirv": "npm:sirv@^3.0.2",
     "svelte": "npm:svelte@5.55.5",
+    "svelte/reactivity": "npm:svelte@5.55.5/reactivity",
     "svelte-check": "npm:svelte-check@4.4.6",
     "svelteplot": "npm:svelteplot@0.14.2",
     "tailwindcss": "npm:tailwindcss@4.2.4",
