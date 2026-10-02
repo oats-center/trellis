@@ -1,13 +1,11 @@
 //! Built-in Jobs admin subsystem.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use trellis_jobs_runtime::{
-    jobs_admin_resources, start_advisory_loop, start_janitor_loop, start_jobs_projector,
-    start_worker_presence_projector, AdvisoryHandle, JanitorHandle, JobResourceResolver,
-    JobsAdminResources, JobsProjectorHandle, JobsQuery, SqliteJobResourceResolver, SqliteJobsStore,
-    WorkerPresenceProjectorHandle,
+    jobs_admin_resources, start_jobs_projector, start_worker_presence_projector,
+    JobResourceResolver, JobsAdminResources, JobsProjectorHandle, JobsQuery,
+    SqliteJobResourceResolver, SqliteJobsStore, WorkerPresenceProjectorHandle,
 };
 use trellis_rs::service::{
     internal::run_builtin_authenticated_router, RequestValidator, ServerError,
@@ -37,24 +35,12 @@ const JOBS_SUBJECTS: &[&str] = &[
     lives::Watch::SUBJECT,
 ];
 const JOBS_API_ID: &str = "trellis.jobs@v1";
-const DEFAULT_JANITOR_INTERVAL: Duration = Duration::from_secs(30);
-
-fn janitor_interval() -> Duration {
-    std::env::var("TRELLIS_JOBS_JANITOR_INTERVAL_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|millis| *millis > 0)
-        .map(Duration::from_millis)
-        .unwrap_or(DEFAULT_JANITOR_INTERVAL)
-}
 
 fn runtime_error(error: ServerError) -> RuntimeError {
     RuntimeError::Nats(error.to_string())
 }
 
 struct RuntimeLoops {
-    advisory: AdvisoryHandle,
-    janitor: JanitorHandle,
     projector: JobsProjectorHandle,
     worker_presence: WorkerPresenceProjectorHandle,
 }
@@ -64,38 +50,14 @@ impl RuntimeLoops {
         jobs_runtime: trellis_rs::jobs::JobsRuntime,
         resources: &JobsAdminResources,
         store: SqliteJobsStore,
-        resolver: Arc<dyn JobResourceResolver>,
     ) -> Result<Self, RuntimeError> {
-        let advisory = start_advisory_loop(
-            jobs_runtime.clone(),
-            store.clone(),
-            resources.jobs_advisories_stream.clone(),
-            resolver,
-        )
-        .await
-        .map_err(runtime_error)?;
-        let janitor =
-            match start_janitor_loop(jobs_runtime.clone(), store.clone(), janitor_interval()).await
-            {
-                Ok(handle) => handle,
-                Err(error) => {
-                    advisory.stop().await;
-                    return Err(runtime_error(error));
-                }
-            };
-        let projector = match start_jobs_projector(
+        let projector = start_jobs_projector(
             jobs_runtime.clone(),
             store.clone(),
             resources.jobs_stream.clone(),
         )
         .await
-        {
-            Ok(handle) => handle,
-            Err(error) => {
-                let ((), ()) = tokio::join!(advisory.stop(), janitor.stop());
-                return Err(runtime_error(error));
-            }
-        };
+        .map_err(runtime_error)?;
         let worker_presence = match start_worker_presence_projector(
             jobs_runtime,
             resources.jobs_stream.clone(),
@@ -105,24 +67,18 @@ impl RuntimeLoops {
         {
             Ok(handle) => handle,
             Err(error) => {
-                let ((), (), ()) = tokio::join!(advisory.stop(), janitor.stop(), projector.stop(),);
+                projector.stop().await;
                 return Err(runtime_error(error));
             }
         };
         Ok(Self {
-            advisory,
-            janitor,
             projector,
             worker_presence,
         })
     }
 
     async fn stop(self) {
-        let ((), (), ()) = tokio::join!(
-            self.projector.stop(),
-            self.janitor.stop(),
-            self.advisory.stop(),
-        );
+        self.projector.stop().await;
         self.worker_presence.stop().await;
     }
 
@@ -135,14 +91,6 @@ impl RuntimeLoops {
             result = self.worker_presence.wait() => {
                 self.worker_presence.discard_completed();
                 ("worker presence", result)
-            },
-            result = self.janitor.wait() => {
-                self.janitor.discard_completed();
-                ("janitor", result)
-            },
-            result = self.advisory.wait() => {
-                self.advisory.discard_completed();
-                ("advisory", result)
             },
         };
         match result {
@@ -189,7 +137,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             RuntimeError::Platform("local authorization verifier is not ready".to_owned())
         })?);
     let sampler_store = store.clone();
-    let loops = RuntimeLoops::start(jobs_runtime, &resources, store, resolver).await?;
+    let loops = RuntimeLoops::start(jobs_runtime, &resources, store).await?;
     let sampler_nats = context.trellis_nats.clone();
     let live_owner = context
         .live_providers

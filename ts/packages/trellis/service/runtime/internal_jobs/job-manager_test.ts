@@ -34,7 +34,7 @@ import {
   JobProcessError,
 } from "./job-manager.ts";
 import type { JobKeyCoordinator } from "./key-coordinator.ts";
-import type { Job, JobContext } from "./types.ts";
+import type { Job, JobContext, JobEvent } from "./types.ts";
 
 type PublishedMessage = {
   subject: string;

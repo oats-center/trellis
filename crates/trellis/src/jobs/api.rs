@@ -315,6 +315,16 @@ where
         self.runtime.job().tries
     }
 
+    /// Return the ordinary execution-attempt budget; cleanup may outlive it.
+    pub fn max_tries(&self) -> u64 {
+        self.runtime.job().max_tries
+    }
+
+    /// Observe cancellation and its reason for this execution-owned delivery.
+    pub fn cancellation_token(&self) -> crate::jobs::JobCancellationToken {
+        self.runtime.cancellation_token()
+    }
+
     #[doc = concat!("Trellis API operation `", stringify!(redelivery_count), "`.")]
     pub fn redelivery_count(&self) -> u64 {
         self.tries().saturating_sub(1)

@@ -368,7 +368,7 @@ Deno.test("startQueueWorkerLoop prefers latest lifecycle event over stale projec
   assertEquals(handled, 1);
 });
 
-Deno.test("final retry awaits the max-delivery advisory", async () => {
+Deno.test("final ordinary retry redelivers for execution-owned reconciliation", async () => {
   let acked = 0;
   let nacked = 0;
   const published: unknown[] = [];
@@ -430,7 +430,7 @@ Deno.test("final retry awaits the max-delivery advisory", async () => {
   await loop.stop();
 
   assertEquals(acked, 0);
-  assertEquals(nacked, 0);
+  assertEquals(nacked, 1);
   const terminal = published.at(-1) as { eventType?: string; tries?: number };
   assertEquals(terminal.eventType, "retry");
   assertEquals(terminal.tries, 2);

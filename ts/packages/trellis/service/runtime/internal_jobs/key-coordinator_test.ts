@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   deriveJobKey,
   isJobKeyState,
@@ -17,6 +17,77 @@ const context: JobContext = {
   traceId: "0123456789abcdef0123456789abcdef",
   traceparent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
 };
+
+Deno.test("same-job redelivery reclaims an expired keyed lease and fences its old owner", async () => {
+  const policy = normalizeJobKeyPolicy({
+    keyConcurrency: {
+      key: ["/documentId"],
+      heartbeatTtlMs: 5_000,
+      stalePolicy: "block",
+    },
+  });
+  const derived = await deriveJobKey({
+    service: "svc",
+    jobType: "processing",
+    payload: { documentId: "document" },
+    template: policy.key,
+  });
+  const request = {
+    service: "svc",
+    jobType: "processing",
+    jobId: "job-1",
+    context,
+    tries: 1,
+    instanceId: "crashed-worker",
+    now: "2026-10-01T00:00:00.000Z",
+    lifecycleState: "active" as const,
+  };
+  const first = reduceAcquireActiveSlot({
+    state: undefined,
+    derived,
+    request,
+    policy,
+    slotToken: "old-owner",
+  });
+  assert(first.kind === "acquired");
+  const restart = {
+    ...request,
+    tries: 2,
+    instanceId: "restarted-worker",
+    now: "2026-10-01T00:00:04.000Z",
+  };
+  assertEquals(
+    reduceAcquireActiveSlot({
+      state: first.state,
+      derived,
+      request: restart,
+      policy,
+      slotToken: "new-owner",
+    }).kind,
+    "blocked",
+  );
+  restart.now = "2026-10-01T00:00:05.000Z";
+  const other = reduceAcquireActiveSlot({
+    state: first.state,
+    derived,
+    request: { ...restart, jobId: "other-job" },
+    policy,
+    slotToken: "other-owner",
+  });
+  assert(other.kind === "blocked");
+  assertEquals(other.reason, "stale-blocked");
+  const recovered = reduceAcquireActiveSlot({
+    state: first.state,
+    derived,
+    request: restart,
+    policy,
+    slotToken: "new-owner",
+  });
+  assert(recovered.kind === "acquired");
+  assertEquals(recovered.state.active.length, 1);
+  assertEquals(recovered.state.active[0].slotToken, "new-owner");
+  assertEquals(recovered.stale, []);
+});
 
 Deno.test("deriveJobKey builds display key and stable hash from template", async () => {
   const first = await deriveJobKey({

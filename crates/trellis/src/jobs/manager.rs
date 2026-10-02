@@ -18,7 +18,7 @@ use crate::jobs::keys::{
     JobKeyPolicy, JobKeyQueuedEntry, KeyRejectReason,
 };
 use crate::jobs::publisher::{JobEventHeaders, JobEventPublisher};
-use crate::jobs::runtime_worker::JobCancellationToken;
+use crate::jobs::runtime_worker::{JobCancellationReason, JobCancellationToken};
 use crate::jobs::types::{
     Job, JobConcurrency, JobContext, JobEventType, JobLineage, JobLogEntry, JobProgress,
     JobQueuePolicy, JobQueuePolicyOutcome, JobState, JobTrigger, JobTriggerKind, JobWaitEdge,
@@ -55,6 +55,8 @@ pub enum JobProcessOutcome<TResult> {
     Retry { tries: u64, error: String },
     Failed { tries: u64, error: String },
     Cancelled { tries: u64 },
+    Expired { tries: u64 },
+    Dead { tries: u64 },
     Interrupted { tries: u64 },
     StaleCompletionIgnored { tries: u64 },
 }
@@ -274,6 +276,30 @@ where
     #[doc = concat!("Trellis API operation `", stringify!(now_iso), "`.")]
     pub fn now_iso(&self) -> String {
         self.inner.meta.now_iso()
+    }
+
+    pub(crate) fn deadline_delay(
+        &self,
+        job: &Job,
+    ) -> Result<Option<std::time::Duration>, JobManagerError<P::Error>> {
+        let Some(deadline) = job.deadline.as_deref() else {
+            return Ok(None);
+        };
+        let now = self.now_iso();
+        let parse = |timestamp: &str| {
+            OffsetDateTime::parse(timestamp, &Rfc3339).map_err(|error| {
+                JobManagerError::InvalidTimestamp {
+                    timestamp: timestamp.into(),
+                    details: error.to_string(),
+                }
+            })
+        };
+        let remaining = parse(deadline)? - parse(&now)?;
+        Ok(Some(if remaining <= TimeDuration::ZERO {
+            std::time::Duration::ZERO
+        } else {
+            remaining.unsigned_abs()
+        }))
     }
 
     pub async fn create<TPayload>(
@@ -713,6 +739,39 @@ where
     {
         let queue = self.queue_binding_for_job(&job)?;
 
+        if self
+            .deadline_delay(&job)?
+            .is_some_and(|delay| delay.is_zero())
+            && job.tries == 0
+            && !cancellation.is_cancelled()
+        {
+            let terminal_at = self.now_iso();
+            if self
+                .guard_terminal_publish(&job, queue, 0, &terminal_at, &terminal_guard)
+                .await?
+                == TerminalPublishDecision::StaleCompletionIgnored
+            {
+                return Ok(JobProcessOutcome::StaleCompletionIgnored { tries: 0 });
+            }
+            let expired = events::expired(
+                EventMeta {
+                    service: &job.service,
+                    job_type: &job.job_type,
+                    job_id: &job.id,
+                    context: &job.context,
+                    timestamp: &terminal_at,
+                },
+                0,
+                job.state,
+                "job deadline exceeded before execution",
+            );
+            self.publish_queue_event(queue, &job.id, expired.event_type, &expired)
+                .await?;
+            self.run_terminal_cleanup(&terminal_cleanup, &terminal_at)
+                .await?;
+            return Ok(JobProcessOutcome::Expired { tries: 0 });
+        }
+
         let tries = job.tries.saturating_add(1);
         let started_at = self.now_iso();
         let started = match job.concurrency.clone() {
@@ -743,6 +802,13 @@ where
         self.publish_queue_event(queue, &job.id, started.event_type, &started)
             .await?;
 
+        let deadline_delay = self.deadline_delay(&job)?;
+        if deadline_delay.is_some_and(|delay| delay.is_zero()) {
+            cancellation.cancel_for_deadline();
+        } else if job.tries >= job.max_tries {
+            cancellation.cancel_for_retry_exhaustion();
+        }
+
         let active_job = self.make_active_job(
             job.clone(),
             tries,
@@ -753,8 +819,89 @@ where
 
         let parent = active_job.job().clone();
         let update_gate = active_job.update_gate();
-        let process_result = ACTIVE_PARENT_JOB.scope(parent, process(active_job)).await;
+        let process_result = {
+            let process = ACTIVE_PARENT_JOB.scope(parent, process(active_job));
+            tokio::pin!(process);
+            if let Some(delay) = deadline_delay.filter(|delay| !delay.is_zero()) {
+                tokio::select! {
+                    biased;
+                    () = tokio::time::sleep(delay) => {
+                        cancellation.cancel_for_deadline();
+                        process.await
+                    }
+                    result = &mut process => result,
+                }
+            } else {
+                process.await
+            }
+        };
         *update_gate.lock().await = false;
+
+        if matches!(
+            cancellation.reason(),
+            Some(JobCancellationReason::DeadlineExceeded | JobCancellationReason::RetryExhausted)
+        ) {
+            if process_result.is_err() {
+                self.run_terminal_cleanup(&terminal_cleanup, &self.now_iso())
+                    .await?;
+                return Ok(JobProcessOutcome::Interrupted { tries });
+            }
+            let terminal_at = self.now_iso();
+            if self
+                .guard_terminal_publish(&job, queue, tries, &terminal_at, &terminal_guard)
+                .await?
+                == TerminalPublishDecision::StaleCompletionIgnored
+            {
+                return Ok(JobProcessOutcome::StaleCompletionIgnored { tries });
+            }
+            if cancellation.is_host_shutdown() || cancellation.is_lease_lost() {
+                self.run_terminal_cleanup(&terminal_cleanup, &terminal_at)
+                    .await?;
+                return Ok(JobProcessOutcome::Interrupted { tries });
+            }
+            if cancellation.is_job_cancelled() {
+                self.run_terminal_cleanup(&terminal_cleanup, &terminal_at)
+                    .await?;
+                return Ok(JobProcessOutcome::Cancelled { tries });
+            }
+            let expired = cancellation.reason() == Some(JobCancellationReason::DeadlineExceeded);
+            let event = if expired {
+                events::expired(
+                    EventMeta {
+                        service: &job.service,
+                        job_type: &job.job_type,
+                        job_id: &job.id,
+                        context: &job.context,
+                        timestamp: &terminal_at,
+                    },
+                    tries,
+                    JobState::Active,
+                    "job deadline exceeded; execution owner reconciled",
+                )
+            } else {
+                events::dead(
+                    EventMeta {
+                        service: &job.service,
+                        job_type: &job.job_type,
+                        job_id: &job.id,
+                        context: &job.context,
+                        timestamp: &terminal_at,
+                    },
+                    tries,
+                    JobState::Active,
+                    "ordinary job attempts exhausted; execution owner reconciled",
+                )
+            };
+            self.publish_queue_event(queue, &job.id, event.event_type, &event)
+                .await?;
+            self.run_terminal_cleanup(&terminal_cleanup, &terminal_at)
+                .await?;
+            return Ok(if expired {
+                JobProcessOutcome::Expired { tries }
+            } else {
+                JobProcessOutcome::Dead { tries }
+            });
+        }
         match process_result {
             Ok(result) => {
                 if cancellation.is_host_shutdown() || cancellation.is_lease_lost() {

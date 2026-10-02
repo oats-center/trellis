@@ -30,6 +30,14 @@ export const JobProgressSchema = Type.Object({
 export type JobProgress = StaticDecode<typeof JobProgressSchema>;
 export type JobLogEntry = StaticDecode<typeof JobLogEntrySchema>;
 
+/** Why a job must stop or reconcile its execution-owned work. */
+export type JobCancellationReason =
+  | "job"
+  | "shutdown"
+  | "lease-lost"
+  | "deadline-exceeded"
+  | "retry-exhausted";
+
 export const JobContextSchema = Type.Object({
   requestId: Type.String({ minLength: 1 }),
   traceId: Type.String({ pattern: "^[0-9a-f]{32}$" }),
@@ -507,6 +515,7 @@ export class ActiveJob<TPayload, TResult, TUpdate = never> {
   readonly signal: AbortSignal;
 
   readonly #cancelled: () => boolean;
+  readonly #cancellationReason: () => JobCancellationReason | undefined;
   readonly #heartbeat: () => AsyncResult<void, BaseError>;
   readonly #progress: (value: JobProgress) => AsyncResult<void, BaseError>;
   readonly #log: (entry: JobLogEntry) => AsyncResult<void, BaseError>;
@@ -530,6 +539,7 @@ export class ActiveJob<TPayload, TResult, TUpdate = never> {
       waitFor: <T>(target: JobWaitTarget, fn: () => Promise<T>) => Promise<T>;
       redeliveryCount?: number;
       signal?: AbortSignal;
+      cancellationReason?: () => JobCancellationReason | undefined;
     },
   ) {
     this.ref = ref;
@@ -539,6 +549,7 @@ export class ActiveJob<TPayload, TResult, TUpdate = never> {
       ? cancelled
       : () => cancelled;
     this.#heartbeat = impl.heartbeat;
+    this.#cancellationReason = impl.cancellationReason ?? (() => undefined);
     this.#progress = impl.progress;
     this.#log = impl.log;
     this.#emitUpdate = impl.emitUpdate ??
@@ -557,6 +568,11 @@ export class ActiveJob<TPayload, TResult, TUpdate = never> {
     } catch {
       return false;
     }
+  }
+
+  /** Return the current owner-aware reason, including lease loss after abort. */
+  get cancellationReason(): JobCancellationReason | undefined {
+    return this.#cancellationReason();
   }
 
   heartbeat(): AsyncResult<void, BaseError> {

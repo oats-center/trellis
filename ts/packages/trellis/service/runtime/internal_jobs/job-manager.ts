@@ -106,6 +106,7 @@ export type JobProcessOutcome<TResult> =
   | { outcome: "dead"; tries: number; error: string }
   | { outcome: "failed"; tries: number; error: string }
   | { outcome: "cancelled"; tries: number }
+  | { outcome: "expired"; tries: number }
   | { outcome: "deferred"; tries: number; reason: string }
   | { outcome: "stale_completion_ignored"; tries: number }
   | { outcome: "interrupted"; tries: number };
@@ -661,6 +662,41 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
     const tries = job.tries + 1;
     const queue = this.#getQueueBinding(job.type);
     const keyedPolicy = getKeyPolicy(queue);
+    const initialDeadline = job.deadline === undefined
+      ? undefined
+      : Date.parse(job.deadline) - Date.parse(this.#meta().nowIso());
+    if (initialDeadline !== undefined && !Number.isFinite(initialDeadline)) {
+      throw new Error(`Invalid deadline for job '${job.id}'`);
+    }
+    if (
+      initialDeadline !== undefined && initialDeadline <= 0 &&
+      job.tries === 0 &&
+      !cancellation.isCancelled()
+    ) {
+      await this.#publishJobEvent(job.type, job.id, {
+        jobId: job.id,
+        service: job.service,
+        jobType: job.type,
+        eventType: "expired",
+        state: "expired",
+        previousState: job.state,
+        context: job.context,
+        tries: 0,
+        error: "job deadline exceeded before execution",
+        timestamp: this.#meta().nowIso(),
+      });
+      if (keyedPolicy) {
+        await this.#context.keyCoordinator!.removeQueuedJob({
+          service: this.#coordinationService(),
+          jobType: job.type,
+          jobId: job.id,
+          payload: job.payload,
+          policy: keyedPolicy,
+          now: this.#meta().nowIso(),
+        });
+      }
+      return { outcome: "expired", tries: 0 };
+    }
     let lease: ActiveSlotLease | undefined;
     let staleSlots: JobKeyActiveSlot[] = [];
     if (keyedPolicy) {
@@ -728,6 +764,26 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
       throw error;
     }
 
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const deadlineDelay = job.deadline === undefined
+      ? undefined
+      : Date.parse(job.deadline) - Date.parse(this.#meta().nowIso());
+    if (deadlineDelay !== undefined) {
+      const deadlineAt = performance.now() + Math.max(0, deadlineDelay);
+      const enforceDeadline = () => {
+        const remaining = deadlineAt - performance.now();
+        if (remaining <= 0) {
+          cancellation.cancelForDeadline();
+        } else {
+          deadlineTimer = setTimeout(
+            enforceDeadline,
+            Math.min(remaining, 2_147_483_647),
+          );
+        }
+      };
+      enforceDeadline();
+    }
+    if (job.tries >= job.maxTries) cancellation.cancelForRetryExhaustion();
     try {
       const result = await this.withActiveJobAndHeartbeat(
         { ...job, state: "active", tries },
@@ -741,6 +797,49 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
       if (cancellation.isHostShutdown() || cancellation.isLeaseLost()) {
         await this.#releaseKeyedSlot(job, lease);
         return { outcome: "interrupted", tries };
+      }
+      const stopReason = cancellation.reason();
+      if (
+        stopReason === "deadline-exceeded" || stopReason === "retry-exhausted"
+      ) {
+        if (lease) {
+          try {
+            await this.#keyedHeartbeat(job, lease)();
+          } catch {
+            cancellation.cancelForLeaseLoss();
+            await this.#releaseKeyedSlot(job, lease);
+            return { outcome: "interrupted", tries };
+          }
+        }
+        if (cancellation.isHostShutdown() || cancellation.isLeaseLost()) {
+          await this.#releaseKeyedSlot(job, lease);
+          return { outcome: "interrupted", tries };
+        }
+        const expired = stopReason === "deadline-exceeded";
+        if (cancellation.isJobCancelled()) {
+          await this.#releaseKeyedSlot(job, lease);
+          return { outcome: "cancelled", tries };
+        }
+        await this.#publishJobEvent(job.type, job.id, {
+          jobId: job.id,
+          service: job.service,
+          jobType: job.type,
+          eventType: expired ? "expired" : "dead",
+          state: expired ? "expired" : "dead",
+          previousState: "active",
+          context: job.context,
+          tries,
+          error: expired
+            ? "job deadline exceeded; execution owner reconciled"
+            : "ordinary job attempts exhausted; execution owner reconciled",
+          timestamp: this.#meta().nowIso(),
+        });
+        await this.#releaseKeyedSlot(job, lease);
+        return expired ? { outcome: "expired", tries } : {
+          outcome: "dead",
+          tries,
+          error: "ordinary job attempts exhausted",
+        };
       }
       if (cancellation.isCancelled()) {
         await this.#releaseKeyedSlot(job, lease);
@@ -778,6 +877,19 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
       return { outcome: "completed", tries, result };
     } catch (error) {
       if (cancellation.isHostShutdown() || cancellation.isLeaseLost()) {
+        await this.#releaseKeyedSlot(job, lease);
+        return { outcome: "interrupted", tries };
+      }
+      if (
+        cancellation.reason() === "deadline-exceeded" ||
+        cancellation.reason() === "retry-exhausted"
+      ) {
+        recordTrellisError(error, {
+          surface: "job",
+          direction: "worker",
+          operation: job.type,
+          phase: "reconciliation",
+        });
         await this.#releaseKeyedSlot(job, lease);
         return { outcome: "interrupted", tries };
       }
@@ -848,6 +960,8 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
         phase: "runtime",
       });
       throw error;
+    } finally {
+      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
     }
   }
 

@@ -1517,6 +1517,120 @@ Deno.test("parallel client and service shutdown is repeatable", async () => {
   });
 });
 
+Deno.test("ordinary attempts stay bounded while failed cleanup redelivers beyond that budget", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: "retry-reconciliation-provider",
+      contract: participants.Provider.participant,
+    });
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.Provider.participant,
+      seed: identity.seed,
+    }).orThrow();
+    let ordinary = 0;
+    let cleanup = 0;
+    service.jobs.work.handle(({ job }) => {
+      if (job.cancellationReason === "retry-exhausted") {
+        cleanup += 1;
+        return Promise.resolve(
+          cleanup < 3
+            ? Result.err(new RetryJobError())
+            : Result.ok(job.payload),
+        );
+      }
+      assertEquals(job.cancelled, false);
+      ordinary += 1;
+      return Promise.resolve(Result.err(new RetryJobError()));
+    });
+    const exit = service.wait();
+    try {
+      const job = await service.jobs.work.create({
+        value: "bounded work, durable cleanup",
+      }).orThrow();
+      const terminal = await job.wait().orThrow();
+      assertEquals(terminal.state, "dead");
+      assertEquals(ordinary, 2);
+      assertEquals(cleanup, 3);
+    } finally {
+      await service.stop();
+      await exit;
+    }
+  });
+});
+
+Deno.test("started job deadline waits for native handler reconciliation", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const admin = await runtime.connectClient({
+      name: "deadline-reconciliation-admin",
+      contract: adminParticipant,
+    });
+    const identity = await runtime.registerService({
+      name: "deadline-reconciliation-provider",
+      contract: participants.Provider.participant,
+    });
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.Provider.participant,
+      seed: identity.seed,
+    }).orThrow();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let deadlineObserved = false;
+    let cleanupReturned = false;
+    let starts = 0;
+    service.jobs.work.handle(async ({ job }) => {
+      starts += 1;
+      entered.resolve();
+      if (!job.signal.aborted) {
+        await new Promise<void>((resolve) => {
+          job.signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      }
+      assertEquals(job.cancellationReason, "deadline-exceeded");
+      if (job.payload.value === "deadline barrier") {
+        return Result.ok(job.payload);
+      }
+      deadlineObserved = true;
+      await release.promise;
+      cleanupReturned = true;
+      return Result.ok(job.payload);
+    }, { concurrency: 2 });
+    const exit = service.wait();
+    try {
+      const job = await service.jobs.work.create({
+        value: "owned until cleanup",
+      }).orThrow();
+      await runtime.waitFor(() => starts === 1);
+      await entered.promise;
+      await runtime.waitFor(() =>
+        job.get().orThrow().then((snapshot) => snapshot.state === "active")
+      );
+      await runtime.waitFor(() => deadlineObserved, { timeoutMs: 12_000 });
+      const barrier = await service.jobs.work.create({
+        value: "deadline barrier",
+      }).orThrow();
+      assertEquals((await barrier.wait().orThrow()).state, "expired");
+      assertEquals((await job.get().orThrow()).state, "active");
+      const projection = await admin.jobsQuery({}).orThrow();
+      assertEquals(
+        projection.items.find((item) => item.id === job.id)?.state,
+        "active",
+      );
+      assertEquals(cleanupReturned, false);
+      release.resolve();
+      const terminal = await job.wait().orThrow();
+      assertEquals(terminal.state, "expired");
+      assertEquals(cleanupReturned, true);
+      assertEquals(starts, 2);
+    } finally {
+      release.resolve();
+      await service.stop();
+      await exit;
+    }
+  });
+});
+
 Deno.test("unkeyed job maintains progress across broker ACK windows and completes once", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({

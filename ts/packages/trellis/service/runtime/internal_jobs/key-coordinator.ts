@@ -547,12 +547,37 @@ export function reduceAcquireActiveSlot(args: {
     policy: args.policy,
   });
   const nowMs = Date.parse(args.request.now);
-  const expired = base.active.filter((slot) =>
+  const ownSlot = base.active.find((slot) => slot.jobId === args.request.jobId);
+  if (ownSlot && Date.parse(ownSlot.leaseExpiresAt) > nowMs) {
+    return {
+      kind: "blocked",
+      key: base.key,
+      reason: "active-limit",
+      active: base.active.length,
+      queued: base.queued.length,
+      limit: args.policy.maxActive,
+    };
+  }
+  if (ownSlot?.slotToken === args.slotToken) {
+    return {
+      kind: "blocked",
+      key: base.key,
+      reason: "stale-blocked",
+      active: base.active.length,
+      queued: base.queued.length,
+      limit: args.policy.maxActive,
+    };
+  }
+  // Reclaiming this job fences its old owner without terminalizing the job.
+  const others = base.active.filter((slot) =>
+    slot.jobId !== args.request.jobId
+  );
+  const expired = others.filter((slot) =>
     Date.parse(slot.leaseExpiresAt) <= nowMs
   );
   if (
     expired.length > 0 && args.policy.stalePolicy === "block" &&
-    base.active.length >= args.policy.maxActive
+    others.length >= args.policy.maxActive
   ) {
     return {
       kind: "blocked",
@@ -564,8 +589,8 @@ export function reduceAcquireActiveSlot(args: {
     };
   }
   const active = args.policy.stalePolicy === "fail-stale"
-    ? base.active.filter((slot) => Date.parse(slot.leaseExpiresAt) > nowMs)
-    : base.active;
+    ? others.filter((slot) => Date.parse(slot.leaseExpiresAt) > nowMs)
+    : others;
   const isQueued = base.queued.some((entry) =>
     entry.jobId === args.request.jobId
   );
@@ -617,7 +642,8 @@ export function reduceAcquireActiveSlot(args: {
     maxQueuedPerKey: args.policy.queue.maxQueuedPerKey,
     active: [...active, slot],
     queued,
-    staleTakeoverCount: base.staleTakeoverCount + expired.length,
+    staleTakeoverCount: base.staleTakeoverCount + expired.length +
+      (ownSlot ? 1 : 0),
     updatedAt: args.request.now,
   };
   return {

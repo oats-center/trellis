@@ -16,7 +16,7 @@ import {
 import { isTerminal, jobFromWorkEvent } from "./projection.ts";
 import type { Job, JobEvent } from "./types.ts";
 
-export type WorkerAckAction = "ack" | "nak" | "await-max-deliver";
+export type WorkerAckAction = "ack" | "nak";
 export type ProjectedWorkDecision = "process" | "skip-ack";
 export type SchemaRef = { schema: string };
 export type PayloadValidationArgs<TResult> = {
@@ -241,14 +241,12 @@ export function lifecycleWorkDecision(
 
 export function ackActionForOutcome(
   outcome: JobProcessOutcome<unknown> | undefined,
-  maxDeliver = Number.MAX_SAFE_INTEGER,
 ): WorkerAckAction {
   if (!outcome) {
     return "ack";
   }
   switch (outcome.outcome) {
     case "retry":
-      return outcome.tries >= maxDeliver ? "await-max-deliver" : "nak";
     case "interrupted":
     case "deferred":
       return "nak";
@@ -425,11 +423,12 @@ export async function startQueueWorkerLoop<TResult>(
               );
             }
           } while (outcome.outcome === "deferred" && !token.isCancelled());
-          const ackAction = ackActionForOutcome(outcome, job.maxTries);
+          const ackAction = ackActionForOutcome(outcome);
           if (ackAction === "ack") {
+            if (outcome.outcome === "expired" || outcome.outcome === "dead") {
+              await cleanupTerminalKeyState(options.manager, job);
+            }
             await disposition("ack");
-          } else if (ackAction === "await-max-deliver") {
-            continue;
           } else if (outcome?.outcome === "deferred") {
             await disposition("nak", options.deferralBackoffMs ?? 1_000);
           } else {

@@ -2608,6 +2608,7 @@ function createJobsFacade<
                     waitFor: (target, fn) => job.waitFor(target, fn),
                     redeliveryCount: job.redeliveryCount(),
                     signal: job.signal,
+                    cancellationReason: () => job.cancellationToken().reason(),
                   },
                 );
 

@@ -623,7 +623,6 @@ async fn reconcile_job(
         ));
     }
     let stream = get_required_stream(&jetstream, "JOBS_WORK").await?;
-    let max_deliver = i64::from(retry_attempts.unwrap_or(5));
     let backoff = if retry_attempts.is_none() {
         vec![5_000, 30_000, 120_000, 600_000]
     } else {
@@ -640,7 +639,9 @@ async fn reconcile_job(
             filter_subject: format!("trellis.work.{}.{}", namespace, catalog.local_name),
             ack_policy: consumer::AckPolicy::Explicit,
             ack_wait: backoff.first().copied().unwrap_or(Duration::from_secs(30)),
-            max_deliver,
+            // Attempts are bounded by the worker, not broker redeliveries:
+            // reconciliation must survive repeated worker crashes.
+            max_deliver: -1,
             backoff: backoff.clone(),
             metadata: HashMap::from([(
                 "trellis.resource_id".to_owned(),

@@ -44,12 +44,28 @@ const CANCELLATION_NONE: u8 = 0;
 const CANCELLATION_HOST_SHUTDOWN: u8 = 1;
 const CANCELLATION_JOB: u8 = 2;
 const CANCELLATION_LEASE_LOST: u8 = 3;
+const CANCELLATION_DEADLINE: u8 = 4;
+const CANCELLATION_RETRY_EXHAUSTED: u8 = 5;
+
+/// Why a job attempt must stop or reconcile previously started work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobCancellationReason {
+    /// A business-level cancellation was requested.
+    Requested,
+    /// The worker host is stopping; work must remain redeliverable.
+    HostShutdown,
+    /// This attempt no longer owns its execution lease.
+    LeaseLost,
+    /// The absolute job deadline elapsed; reconcile before declaring Expired.
+    DeadlineExceeded,
+    /// Ordinary attempts were exhausted; reconcile before declaring Dead.
+    RetryExhausted,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WorkerAckAction {
     Ack,
     Nak(Duration),
-    AwaitMaxDeliver,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,30 +89,64 @@ impl JobCancellationToken {
 
     /// Mark the token as cancelled.
     pub fn cancel(&self) {
-        let _ = self.cancelled.compare_exchange(
-            CANCELLATION_NONE,
-            CANCELLATION_JOB,
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-        );
+        let _ = self
+            .cancelled
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |reason| {
+                matches!(
+                    reason,
+                    CANCELLATION_NONE | CANCELLATION_DEADLINE | CANCELLATION_RETRY_EXHAUSTED
+                )
+                .then_some(CANCELLATION_JOB)
+            });
         self.notify.notify_waiters();
     }
 
     /// Mark the token as cancelled because the worker host is shutting down.
     pub fn cancel_for_shutdown(&self) {
-        self.cancelled
-            .store(CANCELLATION_HOST_SHUTDOWN, Ordering::SeqCst);
+        let _ = self
+            .cancelled
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |reason| {
+                (reason != CANCELLATION_LEASE_LOST).then_some(CANCELLATION_HOST_SHUTDOWN)
+            });
         self.notify.notify_waiters();
     }
 
     fn cancel_for_lease_loss(&self) {
+        self.cancelled
+            .store(CANCELLATION_LEASE_LOST, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    pub(crate) fn cancel_for_deadline(&self) {
         let _ = self.cancelled.compare_exchange(
             CANCELLATION_NONE,
-            CANCELLATION_LEASE_LOST,
+            CANCELLATION_DEADLINE,
             Ordering::SeqCst,
             Ordering::SeqCst,
         );
         self.notify.notify_waiters();
+    }
+
+    pub(crate) fn cancel_for_retry_exhaustion(&self) {
+        let _ = self.cancelled.compare_exchange(
+            CANCELLATION_NONE,
+            CANCELLATION_RETRY_EXHAUSTED,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+        self.notify.notify_waiters();
+    }
+
+    /// Return the explicit cancellation reason, or None while execution is allowed.
+    pub fn reason(&self) -> Option<JobCancellationReason> {
+        match self.cancelled.load(Ordering::SeqCst) {
+            CANCELLATION_JOB => Some(JobCancellationReason::Requested),
+            CANCELLATION_HOST_SHUTDOWN => Some(JobCancellationReason::HostShutdown),
+            CANCELLATION_LEASE_LOST => Some(JobCancellationReason::LeaseLost),
+            CANCELLATION_DEADLINE => Some(JobCancellationReason::DeadlineExceeded),
+            CANCELLATION_RETRY_EXHAUSTED => Some(JobCancellationReason::RetryExhausted),
+            _ => None,
+        }
     }
 
     /// Return whether cancellation has been requested.
@@ -445,6 +495,8 @@ where
         Ok(JobProcessOutcome::Retry { .. }) => "retry",
         Ok(JobProcessOutcome::Failed { .. }) => "failed",
         Ok(JobProcessOutcome::Cancelled { .. }) => "cancelled",
+        Ok(JobProcessOutcome::Expired { .. }) => "expired",
+        Ok(JobProcessOutcome::Dead { .. }) => "dead",
         Ok(JobProcessOutcome::Interrupted { .. }) => "interrupted",
         // A stale completion is an observed lease loss, not a completion.
         Ok(JobProcessOutcome::StaleCompletionIgnored { .. }) => "lease_lost",
@@ -515,7 +567,7 @@ where
             consumer: queue.consumer_name.clone(),
             details: error.to_string(),
         })?;
-        let delivery_attempt = match message.info() {
+        let _delivery_attempt = match message.info() {
             Ok(info) => u64::try_from(info.delivered)
                 .map_err(|error| RuntimeWorkerError::Messages {
                     consumer: queue.consumer_name.clone(),
@@ -536,9 +588,8 @@ where
             message.ack().await.map_err(map_ack_error)?;
             continue;
         };
-        parsed_job.tries = delivery_attempt.saturating_sub(1);
         let job_key = job_key(&parsed_job.service, &parsed_job.job_type, &parsed_job.id);
-        if stream_work_decision(&lifecycle_stream, &queue.publish_prefix, &parsed_job).await?
+        if stream_work_decision(&lifecycle_stream, &queue.publish_prefix, &mut parsed_job).await?
             == ProjectedWorkDecision::SkipAck
         {
             cleanup_queued_key_for_terminal(
@@ -564,13 +615,21 @@ where
         let handler = handler.clone();
         let heartbeat_message = message.clone();
         let active_key = loop {
+            if parsed_job.tries == 0
+                && manager
+                    .deadline_delay(&parsed_job)
+                    .map_err(|error| RuntimeWorkerError::Process(error.to_string()))?
+                    .is_some_and(|delay| delay.is_zero())
+            {
+                break None;
+            }
             let active_key = acquire_key_slot_for_work(
                 key_coordinator.as_ref(),
                 &queue,
                 manager.bindings().namespace.as_str(),
                 &parsed_job,
                 &manager.now_iso(),
-                delivery_attempt,
+                parsed_job.tries.saturating_add(1),
             )
             .await?;
             if queue.key_concurrency.is_none() || active_key.is_some() {
@@ -729,17 +788,25 @@ where
         forward_cancellation.abort();
         let _ = forward_cancellation.await;
         let process_result = process_result?;
-        match ack_action_for_outcome(
-            Some(&process_result),
-            parsed_job.max_tries,
-            &queue.backoff_ms,
+        if matches!(
+            process_result,
+            JobProcessOutcome::Expired { .. } | JobProcessOutcome::Dead { .. }
         ) {
+            cleanup_queued_key_for_terminal(
+                key_coordinator.as_ref(),
+                &queue,
+                manager.bindings().namespace.as_str(),
+                &parsed_job,
+                &manager.now_iso(),
+            )
+            .await?;
+        }
+        match ack_action_for_outcome(Some(&process_result), &queue.backoff_ms) {
             WorkerAckAction::Ack => message.ack().await.map_err(map_ack_error)?,
             WorkerAckAction::Nak(delay) => message
                 .ack_with(AckKind::Nak(Some(delay)))
                 .await
                 .map_err(map_ack_error)?,
-            WorkerAckAction::AwaitMaxDeliver => {}
         }
     }
 
@@ -789,7 +856,8 @@ where
         &resources.queue,
     )
     .await?;
-    let result = run_prepared_queue_worker_loop(resources, handler).await;
+    // Keep the large generic loop off the surrounding worker poll frames.
+    let result = Box::pin(run_prepared_queue_worker_loop(resources, handler)).await;
     cancellation_task.abort();
     let _ = cancellation_task.await;
     result
@@ -1291,7 +1359,7 @@ async fn lifecycle_stream(
 async fn stream_work_decision(
     lifecycle_stream: &stream::Stream<()>,
     publish_prefix: &str,
-    work: &Job,
+    work: &mut Job,
 ) -> Result<ProjectedWorkDecision, RuntimeWorkerError> {
     if exact_terminal_lifecycle_event_exists(lifecycle_stream, publish_prefix, work).await? {
         return Ok(ProjectedWorkDecision::SkipAck);
@@ -1318,7 +1386,15 @@ async fn stream_work_decision(
         }
     })?;
 
-    Ok(lifecycle_work_decision(Some(&latest), work))
+    let decision = lifecycle_work_decision(Some(&latest), work);
+    if latest.service == work.service
+        && latest.job_type == work.job_type
+        && latest.job_id == work.id
+    {
+        work.tries = latest.tries;
+        work.state = latest.state;
+    }
+    Ok(decision)
 }
 
 async fn exact_terminal_lifecycle_event_exists(
@@ -1402,13 +1478,9 @@ fn is_terminal_lifecycle_event(event_type: JobEventType) -> bool {
 
 fn ack_action_for_outcome<TResult>(
     outcome: Option<&JobProcessOutcome<TResult>>,
-    max_tries: u64,
     backoff_ms: &[u64],
 ) -> WorkerAckAction {
     match outcome {
-        Some(JobProcessOutcome::Retry { tries, .. }) if *tries >= max_tries => {
-            WorkerAckAction::AwaitMaxDeliver
-        }
         Some(JobProcessOutcome::Retry { tries, .. }) => {
             WorkerAckAction::Nak(Duration::from_millis(retry_delay_ms(*tries, backoff_ms)))
         }
@@ -1416,6 +1488,8 @@ fn ack_action_for_outcome<TResult>(
         Some(JobProcessOutcome::Completed { .. })
         | Some(JobProcessOutcome::Cancelled { .. })
         | Some(JobProcessOutcome::Failed { .. })
+        | Some(JobProcessOutcome::Expired { .. })
+        | Some(JobProcessOutcome::Dead { .. })
         | Some(JobProcessOutcome::StaleCompletionIgnored { .. })
         | None => WorkerAckAction::Ack,
     }
@@ -1577,7 +1651,6 @@ mod tests {
         assert_eq!(
             ack_action_for_outcome(
                 Some(&JobProcessOutcome::<Value>::Interrupted { tries: 1 }),
-                2,
                 &[5_000],
             ),
             WorkerAckAction::Nak(Duration::from_secs(5))
@@ -1585,17 +1658,16 @@ mod tests {
     }
 
     #[test]
-    fn final_retry_waits_for_max_deliver_advisory() {
+    fn final_retry_is_redelivered_for_execution_owned_reconciliation() {
         assert_eq!(
             ack_action_for_outcome(
                 Some(&JobProcessOutcome::<Value>::Retry {
                     tries: 2,
                     error: "retry requested".to_string(),
                 }),
-                2,
                 &[5_000],
             ),
-            WorkerAckAction::AwaitMaxDeliver
+            WorkerAckAction::Nak(Duration::from_secs(5))
         );
     }
 
@@ -1607,7 +1679,6 @@ mod tests {
                     tries: 1,
                     error: "retry requested".to_string(),
                 }),
-                3,
                 &[17, 29],
             ),
             WorkerAckAction::Nak(Duration::from_millis(17))

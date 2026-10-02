@@ -17,12 +17,14 @@ export type ActiveJobRuntimeMetadata = {
   redeliveryCount: number;
 };
 
+import type { JobCancellationReason } from "../../../jobs.ts";
+
 export class JobCancellationToken {
   readonly #controller = new AbortController();
-  #reason: "none" | "job" | "shutdown" | "lease-lost" = "none";
+  #reason: "none" | JobCancellationReason = "none";
 
   cancel(): void {
-    if (this.#reason === "shutdown") {
+    if (this.#reason === "shutdown" || this.#reason === "lease-lost") {
       return;
     }
     this.#reason = "job";
@@ -30,14 +32,33 @@ export class JobCancellationToken {
   }
 
   cancelForShutdown(): void {
+    if (this.#reason === "lease-lost") return;
     this.#reason = "shutdown";
     this.#controller.abort("shutdown");
   }
 
   cancelForLeaseLoss(): void {
-    if (this.#reason !== "none") return;
     this.#reason = "lease-lost";
     this.#controller.abort("lease-lost");
+  }
+
+  /** Request deadline reconciliation, without declaring a terminal job state. */
+  cancelForDeadline(): void {
+    if (this.#reason !== "none") return;
+    this.#reason = "deadline-exceeded";
+    this.#controller.abort(this.#reason);
+  }
+
+  /** Request reconciliation after the ordinary execution budget is exhausted. */
+  cancelForRetryExhaustion(): void {
+    if (this.#reason !== "none") return;
+    this.#reason = "retry-exhausted";
+    this.#controller.abort(this.#reason);
+  }
+
+  /** Return the execution-owned stop reason, if any. */
+  reason(): JobCancellationReason | undefined {
+    return this.#reason === "none" ? undefined : this.#reason;
   }
 
   get signal(): AbortSignal {

@@ -427,11 +427,34 @@ pub fn acquire_active_slot(
         .find(|slot| slot.job_id == input.job_id && slot.slot_token == input.slot_token)
         .cloned()
     {
+        if existing.lease_expires_at <= input.started_at {
+            return AcquireSlotOutcome::Blocked {
+                state,
+                reason: KeyRejectReason::StaleBlocked,
+            };
+        }
         return AcquireSlotOutcome::Acquired {
             state,
             slot: Box::new(existing),
             stale_slots: Vec::new(),
         };
+    }
+
+    if let Some(index) = state
+        .active
+        .iter()
+        .position(|slot| slot.job_id == input.job_id)
+    {
+        if state.active[index].lease_expires_at > input.started_at {
+            return AcquireSlotOutcome::Blocked {
+                state,
+                reason: KeyRejectReason::ActiveLimit,
+            };
+        }
+        // Redelivery resumes the same job with a new fencing token. It must not
+        // publish Stale, which would terminalize the very job being recovered.
+        state.active.remove(index);
+        state.stale_takeover_count = state.stale_takeover_count.saturating_add(1);
     }
 
     let mut stale_slots = Vec::new();
@@ -936,4 +959,92 @@ fn already_exists(error: &impl std::fmt::Display) -> bool {
         .to_string()
         .to_ascii_lowercase()
         .contains("already exists")
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    use ulid::Ulid;
+
+    #[test]
+    fn expired_same_job_lease_is_reclaimed_without_terminalizing_the_job() {
+        let policy = JobKeyPolicy {
+            service: "service".into(),
+            job_type: "processing".into(),
+            key: "document".into(),
+            key_hash: "hash".into(),
+            max_active: 1,
+            max_queued_per_key: 0,
+            when_full: JobQueueWhenFull::Reject,
+            stale_policy: JobKeyStalePolicy::Block,
+        };
+        let input = AcquireSlotInput {
+            job_id: Ulid::new().to_string(),
+            slot_token: Ulid::new().to_string(),
+            instance_id: "crashed-worker".into(),
+            started_at: "2026-10-01T00:00:00Z".into(),
+            lease_expires_at: "2026-10-01T00:00:05Z".into(),
+            tries: 1,
+            context: JobContext {
+                request_id: "request".into(),
+                trace_id: "0123456789abcdef0123456789abcdef".into(),
+                traceparent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01".into(),
+                tracestate: None,
+            },
+        };
+        let AcquireSlotOutcome::Acquired { state, .. } =
+            acquire_active_slot_from_state(None, &policy, input.clone())
+        else {
+            panic!("initial lease must be acquired");
+        };
+        let mut restart = input.clone();
+        restart.slot_token = Ulid::new().to_string();
+        restart.instance_id = "restarted-worker".into();
+        restart.tries = 2;
+        restart.started_at = "2026-10-01T00:00:04Z".into();
+        restart.lease_expires_at = "2026-10-01T00:00:09Z".into();
+        assert!(matches!(
+            acquire_active_slot(state.clone(), &policy, restart.clone()),
+            AcquireSlotOutcome::Blocked { .. }
+        ));
+        restart.started_at = "2026-10-01T00:00:05Z".into();
+        restart.lease_expires_at = "2026-10-01T00:00:10Z".into();
+        let mut other = restart.clone();
+        other.job_id = Ulid::new().to_string();
+        assert!(matches!(
+            acquire_active_slot(state.clone(), &policy, other),
+            AcquireSlotOutcome::Blocked {
+                reason: KeyRejectReason::StaleBlocked,
+                ..
+            }
+        ));
+        let AcquireSlotOutcome::Acquired {
+            state,
+            slot,
+            stale_slots,
+        } = acquire_active_slot(state, &policy, restart.clone())
+        else {
+            panic!("same job must recover its expired lease");
+        };
+        assert_eq!(state.active.len(), 1);
+        assert_eq!(slot.slot_token, restart.slot_token);
+        assert!(
+            stale_slots.is_empty(),
+            "recovery must not emit terminal Stale"
+        );
+        assert!(matches!(
+            renew_active_slot(
+                state.clone(),
+                &input.job_id,
+                &input.slot_token,
+                &restart.started_at,
+                &restart.lease_expires_at
+            ),
+            LeaseMutationOutcome::Lost { .. }
+        ));
+        assert!(matches!(
+            release_active_slot(state, &input.job_id, &input.slot_token, &restart.started_at),
+            LeaseMutationOutcome::Lost { .. }
+        ));
+    }
 }

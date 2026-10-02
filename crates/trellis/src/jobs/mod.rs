@@ -47,7 +47,9 @@ pub use registry::{
     ActiveJobCancellationRegistry, WorkerHeartbeatHandle, WorkerHeartbeatOptions,
 };
 pub use runtime::{JobsRuntime, JobsRuntimeMessage, JobsRuntimeMessageStream};
-pub use runtime_worker::{JobCancellationToken, WorkerHostHandle, WorkerHostOptions};
+pub use runtime_worker::{
+    JobCancellationReason, JobCancellationToken, WorkerHostHandle, WorkerHostOptions,
+};
 pub use subjects::{job_event_subject, worker_heartbeat_subject, WORKER_HEARTBEATS_WILDCARD};
 pub use types::{
     Job, JobAdminAction, JobConcurrency, JobContext, JobEvent, JobEventType, JobLogEntry,
