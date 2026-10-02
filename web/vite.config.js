@@ -21,6 +21,7 @@ function manualChunks(id) {
 }
 
 const config = {
+  cacheDir: resolve(rootDir, "node_modules/.vite"),
   plugins: [tailwindcss(), sveltekit()],
   build: {
     chunkSizeWarningLimit: 450,
