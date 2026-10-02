@@ -693,6 +693,7 @@ Deno.test("isJobKeyState rejects malformed capacity-blocking active and queued e
       requestId: context.requestId,
       context,
     }],
+    cleanupPending: [],
     staleTakeoverCount: 0,
     updatedAt: "2024-01-01T00:00:01.000Z",
   };

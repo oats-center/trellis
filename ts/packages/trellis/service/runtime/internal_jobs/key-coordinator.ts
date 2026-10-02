@@ -78,6 +78,8 @@ export type JobKeyState = {
   maxActive: number;
   maxQueuedPerKey?: number;
   active: JobKeyActiveSlot[];
+  /** Displaced jobs that must reconcile before terminal settlement. */
+  cleanupPending: string[];
   queued: JobKeyQueued[];
   staleTakeoverCount: number;
   updatedAt: string;
@@ -204,12 +206,14 @@ export type JobKeyCoordinator = {
     now: string;
     policy: NormalizedJobKeyPolicy;
     submissionId?: string;
+    terminal?: boolean;
   }): Promise<QueuedJobRemovalOutcome>;
   removeQueuedJobById?(args: {
     service: string;
     jobType: string;
     jobId: string;
     now: string;
+    terminal?: boolean;
   }): Promise<QueuedJobRemovalOutcome>;
   acquireActiveSlot(
     request: ActiveSlotAcquireRequest,
@@ -600,7 +604,10 @@ export function reduceAcquireActiveSlot(args: {
   const isRetry = args.request.lifecycleState === "retry" ||
     args.request.workEventType === "retried";
   const isActiveRedelivery = args.request.lifecycleState === "active";
-  if (!isQueued && !isAlreadyActive && !isRetry && !isActiveRedelivery) {
+  if (
+    !isQueued && !isAlreadyActive && !isRetry && !isActiveRedelivery &&
+    !base.cleanupPending.includes(args.request.jobId)
+  ) {
     return {
       kind: "blocked",
       key: base.key,
@@ -641,6 +648,14 @@ export function reduceAcquireActiveSlot(args: {
     maxActive: args.policy.maxActive,
     maxQueuedPerKey: args.policy.queue.maxQueuedPerKey,
     active: [...active, slot],
+    cleanupPending: args.policy.stalePolicy === "fail-stale"
+      ? [
+        ...new Set([
+          ...base.cleanupPending,
+          ...expired.map((slot) => slot.jobId),
+        ]),
+      ]
+      : base.cleanupPending,
     queued,
     staleTakeoverCount: base.staleTakeoverCount + expired.length +
       (ownSlot ? 1 : 0),
@@ -662,6 +677,7 @@ export function reduceRemoveQueuedJob(args: {
   jobId: string;
   now: string;
   submissionId?: string;
+  terminal?: boolean;
 }): QueuedJobRemovalOutcome {
   if (!args.state) {
     return { kind: "not-found" };
@@ -669,7 +685,17 @@ export function reduceRemoveQueuedJob(args: {
   const queued = args.state.queued.filter((entry) =>
     entry.jobId !== args.jobId
   );
-  if (queued.length === args.state.queued.length) {
+  const active = args.terminal
+    ? args.state.active.filter((slot) => slot.jobId !== args.jobId)
+    : args.state.active;
+  const cleanupPending = args.terminal
+    ? args.state.cleanupPending.filter((jobId) => jobId !== args.jobId)
+    : args.state.cleanupPending;
+  if (
+    queued.length === args.state.queued.length &&
+    active.length === args.state.active.length &&
+    cleanupPending.length === args.state.cleanupPending.length
+  ) {
     return { kind: "not-found" };
   }
   const acceptedBySubmissionId = { ...args.state.acceptedBySubmissionId };
@@ -681,6 +707,8 @@ export function reduceRemoveQueuedJob(args: {
     state: {
       ...args.state,
       queued,
+      active,
+      cleanupPending,
       acceptedBySubmissionId: Object.keys(acceptedBySubmissionId).length > 0
         ? acceptedBySubmissionId
         : undefined,
@@ -820,6 +848,7 @@ export function createNatsJobKeyCoordinator(
             jobId: args.jobId,
             now: args.now,
             submissionId: args.submissionId,
+            terminal: args.terminal,
           }),
       );
     },
@@ -832,7 +861,9 @@ export function createNatsJobKeyCoordinator(
         if (
           !isJobKeyState(state) || state.service !== args.service ||
           state.jobType !== args.jobType ||
-          !state.queued.some((queued) => queued.jobId === args.jobId)
+          !(state.queued.some((queued) => queued.jobId === args.jobId) ||
+            (args.terminal && (state.cleanupPending.includes(args.jobId) ||
+              state.active.some((slot) => slot.jobId === args.jobId))))
         ) {
           continue;
         }
@@ -850,6 +881,7 @@ export function createNatsJobKeyCoordinator(
               state: current,
               jobId: args.jobId,
               now: args.now,
+              terminal: args.terminal,
             }),
         );
       }
@@ -1019,6 +1051,7 @@ function emptyState(args: {
     maxActive: args.policy.maxActive,
     maxQueuedPerKey: args.policy.queue.maxQueuedPerKey,
     active: [],
+    cleanupPending: [],
     queued: [],
     staleTakeoverCount: 0,
     updatedAt: args.now,
@@ -1132,6 +1165,8 @@ export function isJobKeyState(value: unknown): value is JobKeyState {
     (state.maxQueuedPerKey === undefined ||
       isNonNegativeInteger(state.maxQueuedPerKey)) &&
     Array.isArray(state.active) && state.active.every(isJobKeyActiveSlot) &&
+    Array.isArray(state.cleanupPending) &&
+    state.cleanupPending.every(isNonEmptyString) &&
     Array.isArray(state.queued) && state.queued.every(isJobKeyQueued) &&
     isNonNegativeInteger(state.staleTakeoverCount) &&
     isValidIsoTimestamp(state.updatedAt) &&

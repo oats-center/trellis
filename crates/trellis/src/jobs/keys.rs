@@ -150,6 +150,8 @@ pub struct JobKeyState {
     pub max_queued_per_key: Option<u64>,
     #[doc = concat!("The `", stringify!(active), "` value.")]
     pub active: Vec<JobKeyActiveSlot>,
+    /// Displaced jobs that must reconcile before terminal settlement.
+    pub cleanup_pending: Vec<String>,
     #[doc = concat!("The `", stringify!(queued), "` value.")]
     pub queued: Vec<JobKeyQueuedEntry>,
     #[doc = concat!("The `", stringify!(stale_takeover_count), "` value.")]
@@ -465,7 +467,11 @@ pub fn acquire_active_slot(
             .position(|slot| slot.lease_expires_at <= input.started_at);
         match (expired_index, &policy.stale_policy) {
             (Some(index), JobKeyStalePolicy::FailStale) => {
-                stale_slots.push(state.active.remove(index));
+                let displaced = state.active.remove(index);
+                if !state.cleanup_pending.contains(&displaced.job_id) {
+                    state.cleanup_pending.push(displaced.job_id.clone());
+                }
+                stale_slots.push(displaced);
                 state.stale_takeover_count = state.stale_takeover_count.saturating_add(1);
             }
             (Some(_), JobKeyStalePolicy::Block) => {
@@ -598,6 +604,7 @@ pub fn new_key_state(policy: &JobKeyPolicy, timestamp: &str) -> JobKeyState {
         max_active: policy.max_active,
         max_queued_per_key: Some(policy.max_queued_per_key),
         active: Vec::new(),
+        cleanup_pending: Vec::new(),
         queued: Vec::new(),
         stale_takeover_count: 0,
         updated_at: timestamp.to_string(),

@@ -413,18 +413,52 @@ Deno.test("terminal lifecycle is ACKed and removes its queued KV reservation", (
     assertEquals((await f.completed(next)).state, "completed");
   }, true));
 
-Deno.test("terminal work is ACKed even when the real key bucket is unavailable", () =>
+Deno.test("terminal work redelivers until its real key bucket recovers and cleanup completes", () =>
   withBroker(async (f) => {
-    const job = await f.manager.create("refresh", { tenant: "a" });
+    const payload = { tenant: "a" };
+    const job = await f.manager.create("refresh", payload);
+    const persisted = await f.keyState(payload);
+    const key = await deriveJobKey({
+      service: "svc",
+      jobType: "refresh",
+      payload,
+      template: ["/tenant"],
+    });
+    await f.jsm.consumers.update("JOBS", "worker", { max_deliver: -1 });
     await f.event(job, "completed", "completed");
     await f.jsm.streams.delete("KV_JOBS_KEYS_svc");
-    await f.host(() => Promise.reject(new Error("terminal work executed")));
-    await f.settled();
+    const worker = await f.host(() =>
+      Promise.reject(new Error("terminal work executed"))
+    );
+    await waitFor(async () =>
+      (await f.jsm.consumers.info("JOBS", "worker")).delivered.consumer_seq >= 2
+    );
     const info = await f.jsm.consumers.info("JOBS", "worker");
     assertEquals(
-      info.delivered.consumer_seq,
+      info.ack_floor.stream_seq,
+      0,
+      "cleanup outage must leave the source unacknowledged",
+    );
+    await worker.stop();
+    const restored = await new Kvm(f.nc).create("JOBS_KEYS_svc");
+    await restored.put(key.kvKey, f.encode(persisted));
+    await f.host(() => Promise.reject(new Error("terminal work executed")));
+    await f.settled();
+    assertEquals((await f.keyState(payload)).queued, []);
+    assertEquals(
+      (await f.jsm.consumers.info("JOBS", "worker")).ack_floor.stream_seq,
       1,
-      "cleanup outage must not redeliver terminal work",
+      "successful cleanup must acknowledge the source",
+    );
+    assertEquals(
+      (await getLatestLifecycleEvent(
+        f.jsm.direct,
+        "JOBS",
+        f.binding.jobs.queues.refresh.publishPrefix,
+        job,
+      ))?.state,
+      "completed",
+      "recovery must not execute terminal business work",
     );
   }, true));
 

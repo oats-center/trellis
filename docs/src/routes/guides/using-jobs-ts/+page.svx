@@ -37,7 +37,7 @@ const job = await service.jobs.reconcile.create({ orderId }).orThrow();
 ```
 
 Progress, structured logs, retry, and dead-job lifecycle are always available.
-The default is five total deliveries with delays of 5s, 30s, 2m, and 10m.
+The default is five ordinary attempts with delays of 5s, 30s, 2m, and 10m.
 Explicit retry supplies attempts and exactly attempts-minus-one positive delays.
 Delivery progress acknowledgement is automatic; there is no authored heartbeat,
 ack-wait, max-delivery, or feature switch.
@@ -46,6 +46,20 @@ For keyed work, the handler does not start until the declared key slot is
 acquired. Waiting workers maintain delivery progress without spending a retry or
 reaching max-delivery exhaustion. A `RetryJobError` returned by ordinary handler
 execution does consume the configured attempts and backoff schedule.
+
+Broker redelivery is unlimited so previously started work can finish cleanup after
+its creation-relative deadline or ordinary retry budget is exhausted. Before
+business work, check `job.signal.aborted`: an already-aborted handler invocation
+must reconcile earlier side effects and return success only when cleanup is
+complete. Cleanup errors keep the job redeliverable rather than terminalizing it.
+Never-started expired jobs release any recovered key slot without running the
+handler.
+
+Ordinary queues use the Block stale policy; stale-policy selection is not an
+authored option. At the coordinator boundary, fail-stale takeover only fences the
+old attempt. Its recovered owner must obtain a fresh slot and reconcile with
+`job.signal.reason === "stale-attempt"` before publishing terminal Stale. The new
+owner's fence is unaffected by the old token.
 
 Execution is at least once. Use stable job identity and idempotent side effects.
 Typed updates are transient; durable progress, logs, result/error, and dead

@@ -32,6 +32,7 @@ export type JobLogEntry = StaticDecode<typeof JobLogEntrySchema>;
 
 /** Why a job must stop or reconcile its execution-owned work. */
 export type JobCancellationReason =
+  | "stale-attempt"
   | "job"
   | "shutdown"
   | "lease-lost"

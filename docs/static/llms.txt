@@ -90,7 +90,13 @@ same caller-chosen invocation ID and input on every retry. It atomically records
 non-clearable cancellation intent; the handler must perform already-aborted
 cleanup before business work. Errors or explicit deferral leave cleanup pending.
 Job deadlines are creation-relative;
-retry defaults to five deliveries delayed by 5s, 30s, 2m, and 10m. Jobs Summary
+retry defaults to five ordinary attempts delayed by 5s, 30s, 2m, and 10m. Broker
+redelivery is unlimited so execution owners can finish cleanup before Expired or
+Dead. Already-cancelled handlers must reconcile earlier side effects; cleanup
+errors preserve redelivery. Never-started expiration releases recovered key slots
+without running handlers. Ordinary queues use Block. At the coordinator boundary,
+fail-stale takeover preserves cleanup for the displaced job's recovered owner
+under a fresh fence; only that owner settles Stale. Jobs Summary
 is independent of Query pages. Capability approval is not an exact grant. Resource commitments are
 approvals; desired capacities are hints, while observed bindings are the usable
 limits. Trellis neither adopts nor destroys foreign-owned physical resources.

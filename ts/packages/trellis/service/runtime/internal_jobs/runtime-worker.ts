@@ -273,6 +273,7 @@ async function cleanupTerminalKeyState(
       phase: "terminal_key_cleanup",
       messagingSystem: "nats",
     });
+    throw error;
   }
 }
 
@@ -498,7 +499,10 @@ export function startQueueWorkerLoop<TResult>(
           } while (outcome.outcome === "deferred" && !token.isCancelled());
           const ackAction = ackActionForOutcome(outcome);
           if (ackAction === "ack") {
-            if (outcome.outcome === "expired" || outcome.outcome === "dead") {
+            if (
+              outcome.outcome === "expired" || outcome.outcome === "dead" ||
+              outcome.outcome === "stale"
+            ) {
               await cleanupTerminalKeyState(session.manager, job);
             }
             await disposition("ack");

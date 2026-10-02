@@ -14,8 +14,8 @@ use crate::jobs::active_job::ActiveJob;
 use crate::jobs::bindings::{JobQueueWhenFull, JobsBinding, JobsQueueBinding};
 use crate::jobs::events::{self, EventMeta};
 use crate::jobs::keys::{
-    derive_job_key, AdmitJobInput, AdmitJobOutcome, JobKeyActiveSlot, JobKeyCoordinator,
-    JobKeyPolicy, JobKeyQueuedEntry, KeyRejectReason,
+    derive_job_key, AdmitJobInput, AdmitJobOutcome, JobKeyCoordinator, JobKeyPolicy,
+    JobKeyQueuedEntry, KeyRejectReason,
 };
 use crate::jobs::publisher::{JobEventHeaders, JobEventPublisher};
 use crate::jobs::runtime_worker::{JobCancellationReason, JobCancellationToken};
@@ -57,6 +57,7 @@ pub enum JobProcessOutcome<TResult> {
     Cancelled { tries: u64 },
     Expired { tries: u64 },
     Dead { tries: u64 },
+    Stale { tries: u64 },
     Interrupted { tries: u64 },
     StaleCompletionIgnored { tries: u64 },
 }
@@ -679,36 +680,11 @@ where
             .await
     }
 
-    /// Publish a `stale` lifecycle event for an expired active key slot.
-    #[doc = concat!("Asynchronous Trellis API operation `", stringify!(emit_stale_slot), "`.")]
-    pub async fn emit_stale_slot(
-        &self,
-        queue_type: &str,
-        slot: &JobKeyActiveSlot,
-        reason: &str,
-    ) -> Result<(), JobManagerError<P::Error>> {
-        let queue = self.queue_binding(queue_type)?;
-        let Some(context) = slot.context.as_ref() else {
-            return Ok(());
-        };
-        let timestamp = self.now_iso();
-        let event = events::stale(
-            EventMeta {
-                service: &self.inner.bindings.service_name,
-                job_type: queue_type,
-                job_id: &slot.job_id,
-                context,
-                timestamp: &timestamp,
-            },
-            slot.tries,
-            Some(reason),
-            None,
-        );
-        self.publish_queue_event(queue, &slot.job_id, event.event_type, &event)
-            .await
-    }
-
-    /// Process a job with separate pre-publish guard and post-publish cleanup hooks.
+    /// Process a job with separate terminal-publish guard and cleanup hooks.
+    ///
+    /// Never-started expiration runs cleanup before publication so a recovered
+    /// keyed reservation cannot survive a terminal event. Executed attempts
+    /// retain their fence through terminal publication and then run cleanup.
     pub async fn process_with_heartbeat_and_terminal_hooks<
         TResult,
         E,
@@ -743,11 +719,13 @@ where
     {
         let queue = self.queue_binding_for_job(&job)?;
 
-        if self
+        let stale_attempt = cancellation.reason() == Some(JobCancellationReason::StaleAttempt);
+        if (self
             .deadline_delay(&job)?
             .is_some_and(|delay| delay.is_zero())
-            && job.tries == 0
             && !cancellation.is_cancelled()
+            || stale_attempt)
+            && job.tries == 0
         {
             let terminal_at = self.now_iso();
             if self
@@ -757,23 +735,46 @@ where
             {
                 return Ok(JobProcessOutcome::StaleCompletionIgnored { tries: 0 });
             }
-            let expired = events::expired(
-                EventMeta {
-                    service: &job.service,
-                    job_type: &job.job_type,
-                    job_id: &job.id,
-                    context: &job.context,
-                    timestamp: &terminal_at,
-                },
-                0,
-                job.state,
-                "job deadline exceeded before execution",
-            );
-            self.publish_queue_event(queue, &job.id, expired.event_type, &expired)
-                .await?;
+            let meta = EventMeta {
+                service: &job.service,
+                job_type: &job.job_type,
+                job_id: &job.id,
+                context: &job.context,
+                timestamp: &terminal_at,
+            };
+            let mut terminal = if stale_attempt {
+                events::stale(
+                    meta,
+                    0,
+                    Some("key reservation displaced before execution"),
+                    None,
+                )
+            } else {
+                events::expired(
+                    EventMeta {
+                        service: &job.service,
+                        job_type: &job.job_type,
+                        job_id: &job.id,
+                        context: &job.context,
+                        timestamp: &terminal_at,
+                    },
+                    0,
+                    job.state,
+                    "job deadline exceeded before execution",
+                )
+            };
+            // No handler ran: remove the recovered reservation before making
+            // expiration terminal, so a crash cannot strand its key afterward.
             self.run_terminal_cleanup(&terminal_cleanup, &terminal_at)
                 .await?;
-            return Ok(JobProcessOutcome::Expired { tries: 0 });
+            terminal.previous_state = Some(job.state);
+            self.publish_queue_event(queue, &job.id, terminal.event_type, &terminal)
+                .await?;
+            return Ok(if stale_attempt {
+                JobProcessOutcome::Stale { tries: 0 }
+            } else {
+                JobProcessOutcome::Expired { tries: 0 }
+            });
         }
 
         let tries = job.tries.saturating_add(1);
@@ -843,7 +844,11 @@ where
 
         if matches!(
             cancellation.reason(),
-            Some(JobCancellationReason::DeadlineExceeded | JobCancellationReason::RetryExhausted)
+            Some(
+                JobCancellationReason::DeadlineExceeded
+                    | JobCancellationReason::RetryExhausted
+                    | JobCancellationReason::StaleAttempt
+            )
         ) {
             if process_result.is_err() {
                 self.run_terminal_cleanup(&terminal_cleanup, &self.now_iso())
@@ -869,7 +874,21 @@ where
                 return Ok(JobProcessOutcome::Cancelled { tries });
             }
             let expired = cancellation.reason() == Some(JobCancellationReason::DeadlineExceeded);
-            let event = if expired {
+            let stale = cancellation.reason() == Some(JobCancellationReason::StaleAttempt);
+            let event = if stale {
+                events::stale(
+                    EventMeta {
+                        service: &job.service,
+                        job_type: &job.job_type,
+                        job_id: &job.id,
+                        context: &job.context,
+                        timestamp: &terminal_at,
+                    },
+                    tries,
+                    Some("key lease displaced; execution owner reconciled"),
+                    None,
+                )
+            } else if expired {
                 events::expired(
                     EventMeta {
                         service: &job.service,
@@ -900,7 +919,9 @@ where
                 .await?;
             self.run_terminal_cleanup(&terminal_cleanup, &terminal_at)
                 .await?;
-            return Ok(if expired {
+            return Ok(if stale {
+                JobProcessOutcome::Stale { tries }
+            } else if expired {
                 JobProcessOutcome::Expired { tries }
             } else {
                 JobProcessOutcome::Dead { tries }

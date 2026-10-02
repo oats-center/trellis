@@ -58,6 +58,13 @@ export class JobCancellationToken {
     this.#controller.abort(this.#reason);
   }
 
+  /** Request cleanup of an attempt displaced by another keyed job. */
+  cancelForStaleAttempt(): void {
+    if (this.#reason !== "none") return;
+    this.#reason = "stale-attempt";
+    this.#controller.abort(this.#reason);
+  }
+
   /** Return the execution-owned stop reason, if any. */
   reason(): JobCancellationReason | undefined {
     return this.#reason === "none" ? undefined : this.#reason;

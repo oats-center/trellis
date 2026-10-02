@@ -1940,6 +1940,7 @@ mod tests {
             max_active: 1,
             max_queued_per_key: Some(1),
             active: Vec::new(),
+            cleanup_pending: Vec::new(),
             queued: Vec::new(),
             stale_takeover_count: 3,
             updated_at: "2026-03-28T12:00:00Z".to_owned(),

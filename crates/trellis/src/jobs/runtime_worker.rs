@@ -28,7 +28,7 @@ use crate::jobs::job_key;
 use crate::jobs::keys::{
     derive_job_key, new_key_state, release_active_slot, renew_active_slot, AcquireSlotInput,
     AcquireSlotOutcome, JobKeyActiveSlot, JobKeyCoordinator, JobKeyPolicy, LeaseMutationOutcome,
-    NatsKeyCoordinator,
+    NatsKeyCoordinator, QueueMutationOutcome,
 };
 use crate::jobs::manager::{
     JobManager, JobMetaSource, JobProcessError, JobProcessOutcome, TerminalPublishDecision,
@@ -50,6 +50,7 @@ const CANCELLATION_JOB: u8 = 2;
 const CANCELLATION_LEASE_LOST: u8 = 3;
 const CANCELLATION_DEADLINE: u8 = 4;
 const CANCELLATION_RETRY_EXHAUSTED: u8 = 5;
+const CANCELLATION_STALE_ATTEMPT: u8 = 6;
 
 /// Why a job attempt must stop or reconcile previously started work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +65,8 @@ pub enum JobCancellationReason {
     DeadlineExceeded,
     /// Ordinary attempts were exhausted; reconcile before declaring Dead.
     RetryExhausted,
+    /// Another job displaced the previous attempt; reconcile before Stale.
+    StaleAttempt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,7 +101,10 @@ impl JobCancellationToken {
             .try_update(Ordering::SeqCst, Ordering::SeqCst, |reason| {
                 matches!(
                     reason,
-                    CANCELLATION_NONE | CANCELLATION_DEADLINE | CANCELLATION_RETRY_EXHAUSTED
+                    CANCELLATION_NONE
+                        | CANCELLATION_DEADLINE
+                        | CANCELLATION_RETRY_EXHAUSTED
+                        | CANCELLATION_STALE_ATTEMPT
                 )
                 .then_some(CANCELLATION_JOB)
             });
@@ -141,6 +147,17 @@ impl JobCancellationToken {
         self.notify.notify_waiters();
     }
 
+    /// Request reconciliation of a displaced attempt under a recovered fence.
+    pub(crate) fn cancel_for_stale_attempt(&self) {
+        let _ = self.cancelled.compare_exchange(
+            CANCELLATION_NONE,
+            CANCELLATION_STALE_ATTEMPT,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+        self.notify.notify_waiters();
+    }
+
     /// Return the explicit cancellation reason, or None while execution is allowed.
     pub fn reason(&self) -> Option<JobCancellationReason> {
         match self.cancelled.load(Ordering::SeqCst) {
@@ -149,6 +166,7 @@ impl JobCancellationToken {
             CANCELLATION_LEASE_LOST => Some(JobCancellationReason::LeaseLost),
             CANCELLATION_DEADLINE => Some(JobCancellationReason::DeadlineExceeded),
             CANCELLATION_RETRY_EXHAUSTED => Some(JobCancellationReason::RetryExhausted),
+            CANCELLATION_STALE_ATTEMPT => Some(JobCancellationReason::StaleAttempt),
             _ => None,
         }
     }
@@ -239,7 +257,7 @@ struct ActiveKeyLease {
     slot: JobKeyActiveSlot,
     heartbeat_interval: Duration,
     heartbeat_ttl_ms: u64,
-    stale_slots: Vec<JobKeyActiveSlot>,
+    cleanup_required: bool,
     stale_takeover_count: u64,
 }
 
@@ -570,6 +588,7 @@ where
         Ok(JobProcessOutcome::Cancelled { .. }) => "cancelled",
         Ok(JobProcessOutcome::Expired { .. }) => "expired",
         Ok(JobProcessOutcome::Dead { .. }) => "dead",
+        Ok(JobProcessOutcome::Stale { .. }) => "stale",
         Ok(JobProcessOutcome::Interrupted { .. }) => "interrupted",
         // A stale completion is an observed lease loss, not a completion.
         Ok(JobProcessOutcome::StaleCompletionIgnored { .. }) => "lease_lost",
@@ -775,14 +794,6 @@ where
             cancellation_registry.register(job_key.clone(), job_cancellation.clone());
         let handler = handler.clone();
         let active_key = loop {
-            if parsed_job.tries == 0
-                && manager
-                    .deadline_delay(&parsed_job)
-                    .map_err(|error| RuntimeWorkerError::Process(error.to_string()))?
-                    .is_some_and(|delay| delay.is_zero())
-            {
-                break None;
-            }
             let active_key = acquire_key_slot_for_work(
                 key_coordinator.as_ref(),
                 &queue,
@@ -810,11 +821,8 @@ where
             }
         };
         if let Some(active_key) = active_key.as_ref() {
-            for stale_slot in &active_key.stale_slots {
-                manager
-                    .emit_stale_slot(&queue.queue_type, stale_slot, "key lease expired")
-                    .await
-                    .map_err(|error| RuntimeWorkerError::Process(error.to_string()))?;
+            if active_key.cleanup_required {
+                job_cancellation.cancel_for_stale_attempt();
             }
         }
         let forward_cancellation = {
@@ -926,7 +934,9 @@ where
         let process_result = process_result?;
         if matches!(
             process_result,
-            JobProcessOutcome::Expired { .. } | JobProcessOutcome::Dead { .. }
+            JobProcessOutcome::Expired { .. }
+                | JobProcessOutcome::Dead { .. }
+                | JobProcessOutcome::Stale { .. }
         ) {
             cleanup_queued_key_for_terminal(
                 key_coordinator.as_ref(),
@@ -1077,13 +1087,13 @@ async fn acquire_key_slot_for_work(
         AcquireSlotOutcome::Acquired {
             state,
             slot,
-            stale_slots,
+            stale_slots: _,
         } => Ok(Some(ActiveKeyLease {
             policy,
             slot: *slot,
             heartbeat_interval: Duration::from_millis(key_concurrency.heartbeat_interval_ms),
             heartbeat_ttl_ms: key_concurrency.heartbeat_ttl_ms,
-            stale_slots,
+            cleanup_required: state.cleanup_pending.contains(&job.id),
             stale_takeover_count: state.stale_takeover_count,
         })),
         AcquireSlotOutcome::Blocked { .. } => Ok(None),
@@ -1152,7 +1162,23 @@ async fn cleanup_queued_key_for_terminal(
     };
     let policy = key_policy_for_job(queue, key_concurrency, namespace, job)?;
     coordinator
-        .remove_queued(policy, job.id.clone(), removed_at.to_string())
+        .update_key(&policy, {
+            let policy = policy.clone();
+            let job_id = job.id.clone();
+            let removed_at = removed_at.to_string();
+            move |current| {
+                let Some(mut state) = current else {
+                    return QueueMutationOutcome::Missing {
+                        state: new_key_state(&policy, &removed_at),
+                    };
+                };
+                state.queued.retain(|entry| entry.job_id != job_id);
+                state.active.retain(|slot| slot.job_id != job_id);
+                state.cleanup_pending.retain(|id| id != &job_id);
+                state.updated_at = removed_at.clone();
+                QueueMutationOutcome::Removed { state }
+            }
+        })
         .await
         .map(|_| ())
         .map_err(|error| RuntimeWorkerError::KeyCoordinator(error.to_string()))
@@ -1629,6 +1655,7 @@ fn ack_action_for_outcome<TResult>(
         | Some(JobProcessOutcome::Failed { .. })
         | Some(JobProcessOutcome::Expired { .. })
         | Some(JobProcessOutcome::Dead { .. })
+        | Some(JobProcessOutcome::Stale { .. })
         | Some(JobProcessOutcome::StaleCompletionIgnored { .. })
         | None => WorkerAckAction::Ack,
     }

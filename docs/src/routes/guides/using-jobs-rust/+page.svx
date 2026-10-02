@@ -19,7 +19,7 @@ job reconcile {
 ```
 
 Use generated handles to register workers and submit work. The default policy is
-five total deliveries with delays of 5s, 30s, 2m, and 10m. Explicit retry uses
+five ordinary attempts with delays of 5s, 30s, 2m, and 10m. Explicit retry uses
 attempts plus exactly attempts-minus-one positive delays.
 
 Generated provider methods accept an `ActiveJob` handler whose future returns
@@ -49,6 +49,20 @@ For keyed work, the handler starts only after the active key slot is acquired.
 Capacity waits maintain broker delivery progress without consuming an attempt or
 causing max-delivery exhaustion. `JobProcessError::retryable(error)` from handler
 execution consumes the configured attempts and backoff schedule.
+
+Broker redelivery is unlimited so previously started work can finish cleanup after
+its creation-relative deadline or ordinary retry budget is exhausted. Before
+business work, inspect `job.cancellation_token().reason()`: an already-cancelled
+invocation must reconcile earlier side effects and return success only when cleanup is
+complete. Cleanup errors keep the job redeliverable rather than terminalizing it.
+Never-started expired jobs release any recovered key slot without running the
+handler.
+
+Ordinary queues use the Block stale policy; stale-policy selection is not an
+authored option. At the coordinator boundary, fail-stale takeover only fences the
+old attempt. Its recovered owner must obtain a fresh slot and reconcile with
+`JobCancellationReason::StaleAttempt` before publishing terminal Stale. The new
+owner's fence is unaffected by the old token.
 
 Jobs are at least once. Keep side effects idempotent. Typed updates are live-only;
 durable progress, logs, result/error, and dead lifecycle remain authoritative.

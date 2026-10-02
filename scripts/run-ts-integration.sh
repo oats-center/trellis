@@ -43,6 +43,7 @@ fixture_bins=(
   device_companion
   transport_growth_subject
   transport_growth_operation
+  jobs
 )
 
 # CI stages the producer-built executables; a missing one is a setup failure.

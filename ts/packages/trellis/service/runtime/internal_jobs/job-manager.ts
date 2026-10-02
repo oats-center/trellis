@@ -29,7 +29,6 @@ import type { JobsBinding, JobsQueueBinding } from "./bindings.ts";
 import type {
   ActiveSlotLease,
   JobAdmissionOutcome,
-  JobKeyActiveSlot,
   JobKeyCoordinator,
   NormalizedJobKeyPolicy,
   ReplacedQueuedJob,
@@ -109,6 +108,7 @@ export type JobProcessOutcome<TResult> =
   | { outcome: "expired"; tries: number }
   | { outcome: "deferred"; tries: number; reason: string }
   | { outcome: "stale_completion_ignored"; tries: number }
+  | { outcome: "stale"; tries: number }
   | { outcome: "interrupted"; tries: number };
 
 export type JobManagerSubmitOutcome<TPayload, TResult> =
@@ -515,7 +515,12 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
     const keyedPolicy = getKeyPolicy(queue);
     if (!keyedPolicy) return;
     try {
-      await this.#removeQueuedKeyedReservation(job, keyedPolicy);
+      await this.#removeQueuedKeyedReservation(
+        job,
+        keyedPolicy,
+        undefined,
+        true,
+      );
     } catch (cause) {
       const coordinator = this.#context.keyCoordinator;
       if (!coordinator?.removeQueuedJobById) throw cause;
@@ -524,6 +529,7 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
         jobType: job.type,
         jobId: job.id,
         now: this.#meta().nowIso(),
+        terminal: true,
       });
     }
   }
@@ -532,6 +538,7 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
     job: Job<TPayload, TResult>,
     policy: NormalizedJobKeyPolicy,
     submissionId?: string,
+    terminal = false,
   ): Promise<void> {
     const coordinator = this.#context.keyCoordinator;
     if (!coordinator) return;
@@ -542,6 +549,7 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
       payload: job.payload,
       now: this.#meta().nowIso(),
       policy,
+      terminal,
       ...(submissionId ? { submissionId } : {}),
     });
   }
@@ -676,37 +684,7 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
     if (initialDeadline !== undefined && !Number.isFinite(initialDeadline)) {
       throw new Error(`Invalid deadline for job '${job.id}'`);
     }
-    if (
-      initialDeadline !== undefined && initialDeadline <= 0 &&
-      job.tries === 0 &&
-      !cancellation.isCancelled()
-    ) {
-      await this.#publishJobEvent(job.type, job.id, {
-        jobId: job.id,
-        service: job.service,
-        jobType: job.type,
-        eventType: "expired",
-        state: "expired",
-        previousState: job.state,
-        context: job.context,
-        tries: 0,
-        error: "job deadline exceeded before execution",
-        timestamp: this.#meta().nowIso(),
-      });
-      if (keyedPolicy) {
-        await this.#context.keyCoordinator!.removeQueuedJob({
-          service: this.#coordinationService(),
-          jobType: job.type,
-          jobId: job.id,
-          payload: job.payload,
-          policy: keyedPolicy,
-          now: this.#meta().nowIso(),
-        });
-      }
-      return { outcome: "expired", tries: 0 };
-    }
     let lease: ActiveSlotLease | undefined;
-    let staleSlots: JobKeyActiveSlot[] = [];
     if (keyedPolicy) {
       const coordinator = this.#context.keyCoordinator;
       if (!coordinator) {
@@ -738,23 +716,39 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
         slotToken: acquired.slotToken,
         policy: keyedPolicy,
       };
-      staleSlots = acquired.stale;
+      if (acquired.state.cleanupPending.includes(job.id)) {
+        cancellation.cancelForStaleAttempt();
+      }
     }
 
     try {
-      for (const stale of staleSlots) {
-        await this.#publishJobEvent(job.type, stale.jobId, {
-          jobId: stale.jobId,
+      // Zero Started events do not prove that a crashed worker never acquired
+      // a key. Recover its slot with a fresh fence before settling expiration.
+      if (
+        job.tries === 0 &&
+        ((initialDeadline !== undefined && initialDeadline <= 0 &&
+          !cancellation.isCancelled()) ||
+          cancellation.reason() === "stale-attempt")
+      ) {
+        const stale = cancellation.reason() === "stale-attempt";
+        if (lease) await this.#keyedHeartbeat(job, lease)();
+        await this.#releaseKeyedSlot(job, lease);
+        await this.#publishJobEvent(job.type, job.id, {
+          jobId: job.id,
           service: job.service,
           jobType: job.type,
-          eventType: "stale",
-          state: "stale",
-          previousState: "active",
-          context: stale.context,
-          tries: stale.tries,
-          error: "keyed job lease expired",
+          eventType: stale ? "stale" : "expired",
+          state: stale ? "stale" : "expired",
+          previousState: job.state,
+          context: job.context,
+          tries: 0,
+          error: stale
+            ? "key reservation displaced before execution"
+            : "job deadline exceeded before execution",
           timestamp: this.#meta().nowIso(),
         });
+        if (stale) await this.cleanupQueuedKeyedJob(job);
+        return { outcome: stale ? "stale" : "expired", tries: 0 };
       }
       await this.#publishJobEvent(job.type, job.id, {
         jobId: job.id,
@@ -808,7 +802,9 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
       }
       const stopReason = cancellation.reason();
       if (
-        stopReason === "deadline-exceeded" || stopReason === "retry-exhausted"
+        stopReason === "deadline-exceeded" ||
+        stopReason === "retry-exhausted" ||
+        stopReason === "stale-attempt"
       ) {
         if (lease) {
           try {
@@ -824,6 +820,7 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
           return { outcome: "interrupted", tries };
         }
         const expired = stopReason === "deadline-exceeded";
+        const stale = stopReason === "stale-attempt";
         if (cancellation.isJobCancelled()) {
           await this.#releaseKeyedSlot(job, lease);
           return { outcome: "cancelled", tries };
@@ -832,17 +829,23 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
           jobId: job.id,
           service: job.service,
           jobType: job.type,
-          eventType: expired ? "expired" : "dead",
-          state: expired ? "expired" : "dead",
+          eventType: stale ? "stale" : expired ? "expired" : "dead",
+          state: stale ? "stale" : expired ? "expired" : "dead",
           previousState: "active",
           context: job.context,
           tries,
-          error: expired
+          error: stale
+            ? "key lease displaced; execution owner reconciled"
+            : expired
             ? "job deadline exceeded; execution owner reconciled"
             : "ordinary job attempts exhausted; execution owner reconciled",
           timestamp: this.#meta().nowIso(),
         });
         await this.#releaseKeyedSlot(job, lease);
+        if (stale) {
+          await this.cleanupQueuedKeyedJob(job);
+          return { outcome: "stale", tries };
+        }
         return expired ? { outcome: "expired", tries } : {
           outcome: "dead",
           tries,
@@ -890,7 +893,8 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
       }
       if (
         cancellation.reason() === "deadline-exceeded" ||
-        cancellation.reason() === "retry-exhausted"
+        cancellation.reason() === "retry-exhausted" ||
+        cancellation.reason() === "stale-attempt"
       ) {
         recordTrellisError(error, {
           surface: "job",

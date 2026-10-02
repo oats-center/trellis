@@ -217,9 +217,17 @@ policy. Waiting for keyed capacity maintains the current delivery and does not
 consume an attempt before the handler starts. `Jobs.Summary` computes matching
 totals, groups, and statistics independently of a `Jobs.Query` page. Live
 updates are separate from durable progress and terminal results.
-Job deadlines are creation-relative. Omitted retry means five deliveries with
+Job deadlines are creation-relative. Omitted retry means five ordinary attempts with
 delays of 5s, 30s, 2m, and 10m; explicit retry requires exactly one fewer
 positive ordered backoffs than total attempts.
+Broker redelivery is unlimited. Before business work, check `job.signal.aborted`:
+already-aborted job handlers must reconcile earlier side effects. Cleanup errors
+preserve redelivery; previously started work reaches Expired or Dead only after
+successful cleanup. Never-started expiration releases any recovered key slot
+without running the handler. Ordinary queues use Block, not an authored stale
+policy. Coordinator fail-stale takeover preserves cleanup for a recovered owner
+with a fresh fence and `job.signal.reason === "stale-attempt"`; only that owner
+settles Stale, without mutating the replacement owner's slot.
 
 ## Resources And Transactional Events
 

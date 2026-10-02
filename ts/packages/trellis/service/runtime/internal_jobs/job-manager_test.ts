@@ -15,7 +15,7 @@ import {
   InMemoryMetricExporter,
   MeterProvider,
   PeriodicExportingMetricReader,
-} from "npm:@opentelemetry/sdk-metrics@^2.7.0";
+} from "@opentelemetry/sdk-metrics";
 import {
   BasicTracerProvider,
   InMemorySpanExporter,
@@ -34,7 +34,7 @@ import {
   JobProcessError,
 } from "./job-manager.ts";
 import type { JobKeyCoordinator } from "./key-coordinator.ts";
-import type { Job, JobContext, JobEvent } from "./types.ts";
+import type { Job, JobContext } from "./types.ts";
 
 type PublishedMessage = {
   subject: string;
@@ -255,9 +255,7 @@ Deno.test("JobManager preserves structured failure error string", async () => {
     job,
     new JobCancellationToken(),
     async () => {},
-    async () => {
-      throw JobProcessError.failed(serializedError);
-    },
+    () => Promise.reject(JobProcessError.failed(serializedError)),
   );
 
   assertEquals(outcome.outcome, "failed");
@@ -474,7 +472,7 @@ Deno.test("JobRef wait inside active job uses active wait edge", async () => {
   assertEquals(calls, ["job:svc:refresh:child-1"]);
 });
 
-Deno.test("JobManager leaves max-delivery exhaustion to the advisory", async () => {
+Deno.test("JobManager leaves final ordinary failure available for cleanup redelivery", async () => {
   const published: PublishedMessage[] = [];
   const manager = new JobManager<{ siteId: string }, { ok: boolean }>({
     nc: {
@@ -510,9 +508,7 @@ Deno.test("JobManager leaves max-delivery exhaustion to the advisory", async () 
     job,
     new JobCancellationToken(),
     async () => {},
-    async () => {
-      throw JobProcessError.retryable("try again");
-    },
+    () => Promise.reject(JobProcessError.retryable("try again")),
   );
 
   assertEquals(outcome, { outcome: "retry", tries: 1, error: "try again" });
@@ -660,6 +656,7 @@ Deno.test("JobManager submit returns keyed policy outcomes", async () => {
             keyHash: "hash",
             maxActive: 1,
             active: [],
+            cleanupPending: [],
             queued: [],
             staleTakeoverCount: 0,
             updatedAt: request.createdAt,
@@ -678,6 +675,7 @@ Deno.test("JobManager submit returns keyed policy outcomes", async () => {
           keyHash: "hash",
           maxActive: 1,
           active: [],
+          cleanupPending: [],
           queued: [],
           staleTakeoverCount: 0,
           updatedAt: request.createdAt,
@@ -934,69 +932,6 @@ Deno.test("JobManager renews keyed leases independently from delivery progress",
   assertEquals(published.map(eventType), ["started", "completed"]);
 });
 
-Deno.test("JobManager releases acquired slot when stale publish fails before handler", async () => {
-  let released = 0;
-  let handlerRan = false;
-  const coordinator: JobKeyCoordinator = {
-    ...unsupportedCoordinator(),
-    acquireActiveSlot: () =>
-      Promise.resolve({
-        kind: "acquired",
-        key: "tenant-a",
-        keyHash: "hash",
-        slotToken: "slot-1",
-        stale: [{
-          jobId: "job-stale",
-          slotToken: "slot-stale",
-          instanceId: "worker-old",
-          startedAt: "2024-01-01T00:00:00.000Z",
-          heartbeatAt: "2024-01-01T00:00:00.000Z",
-          leaseExpiresAt: "2024-01-01T00:00:01.000Z",
-          tries: 1,
-          context: jobContext,
-        }],
-        state: emptyKeyState(),
-      }),
-    releaseActiveSlot: () => {
-      released += 1;
-      return Promise.resolve({ kind: "released", state: emptyKeyState() });
-    },
-  };
-  const manager = new JobManager<{ tenant: string }, { ok: boolean }>({
-    nc: {
-      publish(subject) {
-        if (subject.endsWith(".stale")) {
-          throw new Error("stale publish failed");
-        }
-      },
-    },
-    jobs: keyedJobsBinding(),
-    keyCoordinator: coordinator,
-    meta: {
-      nextJobId: () => "unused",
-      nowIso: () => "2024-01-01T00:00:00.000Z",
-    },
-  });
-
-  await assertRejects(
-    () =>
-      manager.processWithHeartbeat(
-        keyedJob(),
-        new JobCancellationToken(),
-        () => Promise.resolve(),
-        () => {
-          handlerRan = true;
-          return Promise.resolve({ ok: true });
-        },
-        { instanceId: "worker-1" },
-      ),
-    Error,
-    "stale publish failed",
-  );
-  assertEquals(released, 1);
-  assertEquals(handlerRan, false);
-});
-
 Deno.test("JobManager releases acquired slot when started publish fails before handler", async () => {
   let released = 0;
   let handlerRan = false;
@@ -1143,6 +1078,7 @@ function emptyKeyState() {
     keyHash: "hash",
     maxActive: 1,
     active: [],
+    cleanupPending: [],
     queued: [],
     staleTakeoverCount: 0,
     updatedAt: "2024-01-01T00:00:00.000Z",

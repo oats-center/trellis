@@ -15,11 +15,18 @@ structured logs, retries, and dead-job lifecycle are always enabled. Authored
 feature switches, heartbeat, ack-wait, max-delivery, and transport knobs do not
 exist.
 
-The default retry policy is five total deliveries with delays of 5s, 30s, 2m,
+The default retry policy is five ordinary attempts with delays of 5s, 30s, 2m,
 and 10m. Explicit retry has positive attempts and exactly attempts-minus-one
 positive delays. Ordinary retryable handler failure uses delayed NAK and
-consumes that delivery budget. Final exhaustion is durably recorded by Jobs
-Runtime before source acknowledgement.
+consumes that execution budget. Broker delivery is unlimited: after the ordinary
+budget is exhausted, the execution owner re-enters the handler with cancellation
+already requested to reconcile earlier side effects. A creation-relative
+deadline uses the same cleanup path for previously started work. Cleanup errors
+leave work redeliverable; only successful cleanup permits terminal Dead or
+Expired settlement and source acknowledgement. Never-started expired work
+recovers and releases any owned key slot before Expired publication without
+running the handler. The janitor does not settle deadlines or execute
+application cleanup.
 
 Progress ACK maintenance is automatic for accepted keyed and unkeyed deliveries
 at one third of the effective broker acknowledgement wait. It covers preflight,
@@ -31,8 +38,19 @@ are at least once.
 A keyed delivery that cannot acquire its active slot remains blocked before the
 handler starts. The worker maintains the broker delivery lease with progress
 ACKs, so capacity waiting neither consumes another delivery attempt nor causes
-max-delivery exhaustion. Handler work and keyed lease renewal begin only after
-the slot is acquired.
+ordinary-attempt exhaustion. Handler work and keyed lease renewal begin only
+after the slot is acquired. Ordinary provisioned queues use the `block` stale
+policy; stale-policy selection is not an authored option.
+
+At the key-coordinator boundary, `fail-stale` takeover fences the displaced
+attempt and atomically preserves its cleanup obligation in the key record. The
+new job does not publish terminal Stale for the displaced job. On redelivery,
+that job waits for capacity, acquires a fresh fence, and enters its handler with
+`stale-attempt` cancellation already requested. Cleanup failure preserves the
+obligation for another delivery. A never-started displaced reservation needs no
+handler cleanup. Only its recovered owner can publish Stale after
+reconciliation; confirmed terminal settlement then removes the obligation.
+Release and renewal by an old token cannot mutate the replacement owner's slot.
 
 Jobs retains stream-first durable lifecycle, stable IDs, queue/key coordination,
 projection, janitor, cancellation, progress, logs, result/error, dead jobs,

@@ -256,9 +256,19 @@ cancellation-first start option only for ordinary, non-transfer operations.
 Keyed Jobs waiting for an active capacity slot maintain the current delivery and
 do not consume a retry attempt before handler entry. `Jobs.Summary` computes all
 matching totals, groups, and statistics independently of any `Jobs.Query` page.
-Job deadlines are creation-relative. Omitted retry means five deliveries with
+Job deadlines are creation-relative. Omitted retry means five ordinary attempts with
 delays of 5s, 30s, 2m, and 10m; explicit retry declares total attempts and
 exactly attempts-minus-one positive ordered backoffs.
+Broker redelivery is unlimited so execution owners can finish cleanup before
+Expired or Dead. Check cancellation before business work: already-cancelled job
+handlers reconcile earlier side effects, and cleanup errors preserve redelivery.
+Never-started expiration releases recovered key slots without running handlers.
+Ordinary queues use Block; stale-policy selection is not an authored option.
+Coordinator fail-stale takeover fences the old attempt and atomically preserves
+its cleanup obligation. The displaced job waits for capacity, recovers a fresh
+fence, and reconciles with stale-attempt cancellation before settling Stale.
+Only confirmed terminal settlement removes its obligation; the old token cannot
+mutate the replacement owner's slot.
 Live observations and Operation watchers are authorized live sessions negotiated with
 bounded opening requests. The provider signs its offer and frames; control
 responses bind the session ID, logical command sequence, and command hash, and
