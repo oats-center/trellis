@@ -592,6 +592,7 @@ jobs:
         run: bash scripts/acquire-test-nats.sh --dest /tmp/trellis-testkit-nats
 
       - name: Run the prebuilt testkit live binary with a host probe
+        id: testkit-live
         env:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
@@ -599,6 +600,11 @@ jobs:
           RUST_BACKTRACE: "1"
         run: |
           set +e
+          diagnostics="$GITHUB_WORKSPACE/target/testkit-diagnostics-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$diagnostics" || exit 1
+          testkit_tmp="$(mktemp -d "$diagnostics/runtime.XXXXXX")" || exit 1
+          chmod 700 "$testkit_tmp" || exit 1
+          echo "Testkit execution temp root: $testkit_tmp"
           probe_log="$RUNNER_TEMP/host-probe.log"
           : > "$probe_log"
           (
@@ -622,13 +628,35 @@ jobs:
             done
           ) >> "$probe_log" 2>&1 &
           probe_pid=$!
-          "$GITHUB_WORKSPACE/target/debug/trellis-testkit-live"
+          TMPDIR="$testkit_tmp" "$GITHUB_WORKSPACE/target/debug/trellis-testkit-live"
           status=$?
           kill "$probe_pid" 2>/dev/null || true
           wait "$probe_pid" 2>/dev/null || true
           echo "===== HOST PROBE (${probe_log}) ====="
           cat "$probe_log"
+          if [ "$status" -ne 0 ]; then
+            # This private temp root belongs only to the native execution above.
+            for owner in "$testkit_tmp"/trellis-testkit-*/.trellis-testkit-owner; do
+              [ -f "$owner" ] || continue
+              sandbox="${owner%/.trellis-testkit-owner}"
+              log="$sandbox/state/trellis/log/nats-server.log"
+              [ -f "$log" ] && [ ! -L "$log" ] || continue
+              destination="$diagnostics/nats/${sandbox##*/}"
+              mkdir -p "$destination" && cp -- "$log" "$destination/nats-server.log"
+              echo "===== NATS CHILD LOG ($log; PID in NATS log prefix) ====="
+              tail -n 200 -- "$log"
+            done
+          fi
           exit "$status"
+
+      - name: Upload failed testkit NATS child logs
+        if: failure() && steps.testkit-live.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: testkit-nats-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/testkit-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}/nats/**/nats-server.log
+          retention-days: 3
+          if-no-files-found: warn
 
   live-typescript:
     name: TypeScript live integration

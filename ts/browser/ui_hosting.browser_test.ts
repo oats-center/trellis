@@ -102,19 +102,35 @@ Deno.test("configured UI directories serve both applications", async () => {
 
 Deno.test("the unified web source is fully reverse proxied through Trellis", async () => {
   const upstream = "http://127.0.0.1:5173";
+  const spawnStartedAt = new Date().toISOString();
   const vite = startVite(fromFileUrl(new URL("../../web/", import.meta.url)));
-  const viteStatus = vite.status;
+  const lifecycle = [
+    `PID ${vite.pid}: spawn started ${spawnStartedAt}; spawned ${
+      new Date().toISOString()
+    }`,
+  ];
+  const viteStatus = vite.status.then((status) => {
+    lifecycle.push(
+      `PID ${vite.pid}: exit observed ${
+        new Date().toISOString()
+      }; code=${status.code}, signal=${status.signal}`,
+    );
+    return status;
+  });
   const viteOutput = { stdout: "", stderr: "" };
-  const outputDrained = Promise.all(
-    (["stdout", "stderr"] as const).map(async (name) => {
+  const processDrained = Promise.allSettled([
+    viteStatus,
+    ...(["stdout", "stderr"] as const).map(async (name) => {
       for await (
         const chunk of vite[name].pipeThrough(new TextDecoderStream())
       ) {
         viteOutput[name] += chunk;
       }
     }),
-  );
+  ]);
   let runtimeOutput = "";
+  let failure: { cause: unknown } | undefined;
+  const cleanupErrors: unknown[] = [];
   try {
     await waitForUrl(`${upstream}/login`, vite);
     const runtime = await startTrellisRuntime({
@@ -245,17 +261,37 @@ Deno.test("the unified web source is fully reverse proxied through Trellis", asy
       await runtime.stop();
     }
   } catch (cause) {
+    failure = { cause };
+  } finally {
+    lifecycle.push(`PID ${vite.pid}: shutdown ${new Date().toISOString()}`);
+    try {
+      terminateVite(vite);
+    } catch (cause) {
+      cleanupErrors.push(cause);
+    }
+    for (const result of await processDrained) {
+      if (result.status === "rejected") cleanupErrors.push(result.reason);
+    }
+    lifecycle.push(
+      `PID ${vite.pid}: cleanup completed ${new Date().toISOString()}`,
+    );
+  }
+  if (failure !== undefined) {
+    const { cause } = failure;
     throw new Error(
       `${cause instanceof Error ? cause.message : String(cause)}\n` +
+        `Vite lifecycle:\n${lifecycle.join("\n")}\n` +
         `Vite stdout:\n${viteOutput.stdout}\n` +
         `Vite stderr:\n${viteOutput.stderr}\n` +
-        `Trellis runtime:\n${runtimeOutput}`,
+        `Trellis runtime:\n${runtimeOutput}` +
+        (cleanupErrors.length
+          ? `\nVite cleanup errors:\n${cleanupErrors.join("\n")}`
+          : ""),
       { cause },
     );
-  } finally {
-    terminateVite(vite);
-    await viteStatus;
-    await outputDrained;
+  }
+  if (cleanupErrors.length) {
+    throw new AggregateError(cleanupErrors, "Vite cleanup failed");
   }
 });
 
@@ -298,6 +334,7 @@ async function waitForUrl(
   url: string,
   child: Deno.ChildProcess,
 ): Promise<void> {
+  const startedAt = new Date().toISOString();
   const deadline = Date.now() + 30_000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30_000);
@@ -331,9 +368,11 @@ async function waitForUrl(
       `${
         exit === undefined ? "Timed out waiting" : "Vite exited while waiting"
       } for ${url}; ` +
-        `child: ${
+        `PID ${child.pid}; readiness started ${startedAt}; failed ${
+          new Date().toISOString()
+        }; child: ${
           exit === undefined
-            ? "still running"
+            ? "exit pending (not observed)"
             : `code=${exit.code}, signal=${exit.signal}`
         }; ` +
         `last HTTP status: ${lastStatus ?? "none"}; last fetch error: ${
