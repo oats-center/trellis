@@ -228,6 +228,36 @@ Deno.test("resource reapproval progresses after broker restart with historical t
         assertEquals(await repaired.kv.extras.get("retained").orThrow(), {
           value: "original",
         });
+        await repaired.stop();
+        await repairedExit;
+        const current = await runtime.callAdminRpc("authGrantsGet", {
+          ownerKind: "deployment",
+          ownerId: identity.deploymentId,
+          participantId: contract.identity,
+        });
+        assert(current.binding);
+        await runtime.callAdminRpc("authGrantsRevoke", {
+          ownerKind: "deployment",
+          ownerId: identity.deploymentId,
+          participantId: contract.identity,
+          expectedRevision: current.binding.revision,
+          idempotencyKey: "revoke-after-broker-recovery",
+        });
+        await runtime.waitFor(() => {
+          const output = runtime.controlPlaneOutput().toLowerCase();
+          return output.includes("transportreevaluate") &&
+            output.includes("no responders");
+        }, { timeoutMs: 20_000 });
+        await runtime.restartControlPlane();
+        const denied = await TrellisService.connect({
+          trellisUrl: runtime.trellisUrl,
+          participant: contract,
+          seed: identity.seed,
+        });
+        assert(
+          denied.isErr(),
+          "revoked provider must remain denied after startup",
+        );
       } finally {
         await repaired.stop();
         await repairedExit;

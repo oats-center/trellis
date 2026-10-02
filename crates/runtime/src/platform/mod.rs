@@ -331,13 +331,20 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     // after a provider has issued its context, so a provider that bootstraps
     // while it is still in flight is denied at callout admission. Drain ready
     // startup effects before any router serves or any provider connects.
-    // ponytail: fixed 30s convergence window, matching the validator-cache
-    // startup wait; widen if a real startup reconcile exceeds it.
-    let reconcile_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    // Retained authority history can make a single reconciliation batch take
+    // over 30 seconds. Keep convergence bounded without rejecting that progress.
+    let reconcile_started = std::time::Instant::now();
+    let reconcile_deadline = reconcile_started + std::time::Duration::from_secs(120);
     loop {
         match auth_post_commit.dispatch_ready().await {
             Ok(0) => break,
-            Ok(_) => {}
+            Ok(completed) => {
+                tracing::info!(
+                    completed,
+                    elapsed_seconds = reconcile_started.elapsed().as_secs_f64(),
+                    "auth startup reconciliation acknowledged actions"
+                );
+            }
             Err(error) => {
                 stop.stop();
                 validator_join.abort();

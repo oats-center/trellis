@@ -105,34 +105,40 @@ impl AuthPostCommitRuntime {
             .repository
             .list_ready_post_commit_actions(now, BATCH_SIZE)
             .await?;
-        let action_count = actions.len();
         let mut dispatches = stream::iter(actions)
             .map(|action| self.dispatch_action(action, now))
             .buffer_unordered(16);
         let mut first_error = None;
+        // Retry scheduling is not convergence progress. Startup must be able
+        // to finish while failed enforcement remains durably pending.
+        let mut completed = 0;
         while let Some(result) = dispatches.next().await {
-            if let Err(error) = result {
-                first_error.get_or_insert(error);
+            match result {
+                Ok(true) => completed += 1,
+                Ok(false) => {}
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
             }
         }
         if let Some(error) = first_error {
             return Err(error);
         }
-        Ok(action_count)
+        Ok(completed)
     }
 
     async fn dispatch_action(
         &self,
         action: PostCommitActionRecord,
         now: i64,
-    ) -> Result<(), AuthorizationStateError> {
+    ) -> Result<bool, AuthorizationStateError> {
         let claimed_until = now.saturating_add(CLAIM_DURATION_MS);
         let Some(claim) = self
             .repository
             .claim_post_commit_action(&action.action_id, now, claimed_until)
             .await?
         else {
-            return Ok(());
+            return Ok(false);
         };
         // One claimed action execution through its persisted acknowledge or
         // failure result.
@@ -156,7 +162,7 @@ impl AuthPostCommitRuntime {
             }
         };
         match result {
-            Ok(()) => Ok(()),
+            Ok(()) => Ok(true),
             Err(error) => {
                 tracing::warn!(
                     action_id = %claim.action.action_id,
@@ -174,7 +180,7 @@ impl AuthPostCommitRuntime {
                         error.to_string(),
                     )
                     .await
-                    .map(|_| ())
+                    .map(|_| false)
             }
         }
     }
