@@ -1445,11 +1445,12 @@ fn worker_consumer_mismatch(info: &consumer::Info, queue: &JobsQueueBinding) -> 
             config.ack_wait, expected_ack_wait
         ));
     }
-    let expected_max_deliver = i64::try_from(queue.max_deliver).unwrap_or(i64::MAX);
-    if config.max_deliver != expected_max_deliver {
+    // Broker delivery must outlive application attempts until the execution owner
+    // finishes reconciliation, including after repeated worker crashes.
+    if config.max_deliver != -1 {
         return Some(format!(
-            "stale consumer max deliver {}, expected {}",
-            config.max_deliver, expected_max_deliver
+            "stale consumer max deliver {}, expected unlimited (-1) for execution-owner reconciliation",
+            config.max_deliver
         ));
     }
     let expected_backoff = queue
