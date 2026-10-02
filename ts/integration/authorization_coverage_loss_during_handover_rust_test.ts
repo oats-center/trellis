@@ -85,8 +85,15 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
       seed: targetInstance.seed,
     }).orThrow();
     let advances = 0;
-    await target.handleAdvance(() => {
+    let initialAdvanceDigest: string | undefined;
+    await target.handleAdvance(({ context }) => {
       advances++;
+      if (advances === 1) {
+        assertEquals(context.caller.type, "verified");
+        if (context.caller.type === "verified") {
+          initialAdvanceDigest = context.caller.contextDigest;
+        }
+      }
       return Result.ok({});
     });
     await target.handleExtend(() => Result.ok({}));
@@ -315,6 +322,40 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
         item.participantId === subjectContract.identity
       );
       assert(baseline);
+      // Identify the fixture through its actual accepted Advance, never through
+      // a connection ordinal or a socket that merely happens to own Watch.
+      const advanceRoutes = gate.connections().flatMap((connection) =>
+        connection.subs.filter((sub) => sub.subject.endsWith(".Advance"))
+      );
+      assertEquals(advanceRoutes.length, 1);
+      assert(initialAdvanceDigest);
+      const advanceOwners = gate.connections().filter((connection) =>
+        connection.outboundContexts.some((outbound) =>
+          outbound.subject === advanceRoutes[0].subject &&
+          outbound.context === initialAdvanceDigest
+        )
+      );
+      record("initial-advance-owner-selection", {
+        advanceSubject: advanceRoutes[0].subject,
+        signedContextDigest: initialAdvanceDigest,
+        baselineDigest: baseline.contextDigest,
+        runtimeConnectionId: baseline.runtimeConnectionId,
+        candidates: advanceOwners,
+      });
+      assertEquals(advanceOwners.length, 1);
+      const rustOwner = advanceOwners[0];
+      assert(!rustOwner.closed, "the actual Advance owner must still be live");
+      assertEquals(
+        initialAdvanceDigest,
+        baseline.contextDigest,
+        "the initial signed Advance must still identify current authority, not a stale generation",
+      );
+      const initialWatchRoutes = rustOwner.subs.filter((sub) =>
+        sub.subject.startsWith("live.v1.route.") &&
+        sub.subject.endsWith(".Watch")
+      );
+      assertEquals(initialWatchRoutes.length, 1);
+      const watchSubject = initialWatchRoutes[0].subject;
       const sockets = admittedConnections(
         await readRuntimeBrokerInventory(runtime),
         new Set([baseline.contextDigest]),
@@ -324,7 +365,7 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
       let oldInfo: ConsumerInfo | undefined;
       hold = gate.armResponseHold(
         "$JS.API.CONSUMER.INFO.",
-        undefined,
+        rustOwner.id,
         (body) => {
           const info = JSON.parse(
             new TextDecoder().decode(body),
@@ -339,6 +380,12 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
           return true;
         },
       );
+      let watchDelivery:
+        | Awaited<ReturnType<typeof gate.waitForDelivery>>
+        | undefined;
+      gate.waitForDelivery(watchSubject).then((delivery) => {
+        watchDelivery = delivery;
+      });
       const opening = observer.watch({
         runId: crypto.randomUUID(),
         streamId: "coverage-loss",
@@ -358,15 +405,34 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
         timeoutMs: 10_000,
         intervalMs: 10,
       });
+      record("initial-peer-info-held", {
+        heldInfo: initialHeld,
+        consumer: oldInfo,
+        advanceOwner: rustOwner.id,
+        signedAdvanceDigest: initialAdvanceDigest,
+        baselineDigest: baseline.contextDigest,
+        runtimeConnectionId: baseline.runtimeConnectionId,
+        brokerOwner: owner,
+        watchSubject,
+        watchDelivery,
+        sockets: gate.connections(),
+      });
       assert(oldInfo);
       const old = oldInfo;
       const oldConnection = initialHeld!.connectionId;
+      assertEquals(oldConnection, rustOwner.id);
+      assert(watchDelivery, "the opening Watch must actually reach a provider");
+      assertEquals(
+        watchDelivery.connectionId,
+        oldConnection,
+        "the actual Watch delivery and held Rust peer consumer must share the old physical owner",
+      );
       const watchRoutes = gate.connection(oldConnection)!.subs.filter((sub) =>
         sub.subject.startsWith("live.v1.route.") &&
         sub.subject.endsWith(".Watch")
       );
       assertEquals(watchRoutes.length, 1);
-      const watchSubject = watchRoutes[0].subject;
+      assertEquals(watchRoutes[0].subject, watchSubject);
       record("native-owner", {
         brokerKey: brokerConnectionKey(owner),
         proxyConnection: oldConnection,
