@@ -103,7 +103,7 @@ Deno.test("configured UI directories serve both applications", async () => {
 Deno.test("the unified web source is fully reverse proxied through Trellis", async () => {
   const vite = startVite(fromFileUrl(new URL("../../web/", import.meta.url)));
   try {
-    await waitForUrl("http://127.0.0.1:5173/login");
+    await waitForUrl("http://127.0.0.1:5173/login", vite);
     const runtime = await startTrellisRuntime({
       webSource: { proxy: "http://127.0.0.1:5173" },
       trellis: {
@@ -176,7 +176,15 @@ Deno.test("the unified web source is fully reverse proxied through Trellis", asy
       await runtime.stop();
     }
   } finally {
-    vite.kill("SIGTERM");
+    try {
+      vite.kill("SIGTERM");
+    } catch (error) {
+      if (
+        !(error instanceof Deno.errors.NotFound) &&
+        !(error instanceof TypeError &&
+          error.message === "Child process has already terminated")
+      ) throw error;
+    }
     await vite.status;
   }
 });
@@ -199,20 +207,58 @@ function startVite(
     args: ["run", "-A", "vite", "dev"],
     cwd,
     env,
-    stdout: "null",
-    stderr: "null",
+    stdout: "inherit",
+    stderr: "inherit",
   }).spawn();
 }
 
-async function waitForUrl(url: string): Promise<void> {
+async function waitForUrl(
+  url: string,
+  child: Deno.ChildProcess,
+): Promise<void> {
   const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    try {
-      if ((await fetch(url)).ok) return;
-    } catch {
-      // The dev server is still starting.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30_000);
+  let exit: Deno.CommandStatus | undefined;
+  void child.status.then((status) => {
+    exit = status;
+    controller.abort();
+  });
+  let lastStatus: number | undefined;
+  let lastError: string | undefined;
+  try {
+    while (!controller.signal.aborted && Date.now() < deadline) {
+      try {
+        const response = await fetch(url, { signal: controller.signal });
+        lastStatus = response.status;
+        await response.body?.cancel();
+        if (response.ok && !controller.signal.aborted) {
+          console.log(`Vite ready: ${url} HTTP ${response.status}`);
+          return;
+        }
+      } catch (error) {
+        lastError = String(error);
+      }
+      const remaining = deadline - Date.now();
+      if (controller.signal.aborted || remaining <= 0) break;
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(100, remaining))
+      );
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    throw new Error(
+      `${
+        exit === undefined ? "Timed out waiting" : "Vite exited while waiting"
+      } for ${url}; ` +
+        `child: ${
+          exit === undefined
+            ? "still running"
+            : `code=${exit.code}, signal=${exit.signal}`
+        }; ` +
+        `last HTTP status: ${lastStatus ?? "none"}; last fetch error: ${
+          lastError ?? "none"
+        }`,
+    );
+  } finally {
+    clearTimeout(timer);
   }
-  throw new Error(`Timed out waiting for ${url}`);
 }
