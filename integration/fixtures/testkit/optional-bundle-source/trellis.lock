@@ -1,0 +1,13 @@
+format = 2
+root = "optional-bundle-fixture"
+
+[[packages]]
+name = "optional-bundle-fixture"
+version = "0.100.0"
+digest = "WU8UUMHExIwkjdJ3Zyj8foJFfKT-0LtAScQEX8uOTdI"
+distribution-digest = "sha256:405b810df65a34a354d3c9627fce15dcd1bfded0fb74018e6012bc70ae11dae1"
+dependencies = []
+
+[packages.source]
+kind = "path"
+path = "."

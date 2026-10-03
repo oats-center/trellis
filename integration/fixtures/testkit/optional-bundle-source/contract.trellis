@@ -1,0 +1,28 @@
+model Value { value: string; }
+
+api echo@v1 {
+  title "Optional bundle inspection";
+  description "Self-contained participant installation acceptance fixture.";
+  rpc Echo { input Value; output Value; }
+  capabilities {
+    public {}
+    capability optionalEcho {
+      title "Optional echo";
+      description "Optional API bundle inspection acceptance.";
+      consequence "The caller can call Echo.";
+      allows { rpc Echo; }
+    }
+  }
+}
+
+service Caller {
+  use echo { rpc Echo; optional capability optionalEcho; }
+  kv optional cache {
+    title "Optional cache";
+    description "Optional resource bundle inspection acceptance.";
+    schema Value;
+    version 1;
+    history 4;
+    ttl 0ms;
+  }
+}

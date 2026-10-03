@@ -1,7 +1,6 @@
 pub mod trellis_test_fixture_agent_caller;
 pub mod trellis_test_fixture_caller;
 pub mod trellis_test_fixture_operation_authorization_caller;
-pub mod trellis_test_fixture_optional_bundle_service;
 pub mod trellis_test_fixture_optional_operation_caller;
 pub mod trellis_test_fixture_provider;
 pub mod trellis_test_fixture_restricted_caller;

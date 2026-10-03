@@ -1,0 +1,6 @@
+[package]
+name = "optional-bundle-fixture"
+version = "0.100.0"
+
+[sources]
+contract = "contract.trellis"
