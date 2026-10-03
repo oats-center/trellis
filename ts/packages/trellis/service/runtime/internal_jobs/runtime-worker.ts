@@ -898,22 +898,43 @@ export async function getLatestLifecycleEvent(
       last_by_subj: `${publishPrefix}.${job.id}.*`,
     });
     if (!last) return undefined;
-    let current: ResolvedLifecycleEvent | undefined;
-    let seq = 1;
-    while (seq <= last.seq) {
-      let msg;
-      try {
-        msg = await direct.getMessage(stream, {
-          next_by_subj: `${publishPrefix}.${job.id}.*`,
-          seq,
-        });
-      } catch (error) {
-        if (isMessageNotFoundError(error)) break;
-        throw error;
+    // Observation volume must not add recovery reads. Each transition subject
+    // has an independent cursor, then the accepted-state fold uses broker order.
+    const histories = await Promise.all([
+      "created",
+      "retried",
+      "started",
+      "retry",
+      "completed",
+      "failed",
+      "cancelled",
+      "expired",
+      "skipped",
+      "stale",
+      "dead",
+      "dismissed",
+    ].map(async (eventType) => {
+      const messages: Array<{ data: Uint8Array; seq: number }> = [];
+      let seq = 1;
+      while (seq <= last.seq) {
+        let msg;
+        try {
+          msg = await direct.getMessage(stream, {
+            next_by_subj: `${publishPrefix}.${job.id}.${eventType}`,
+            seq,
+          });
+        } catch (error) {
+          if (isMessageNotFoundError(error)) break;
+          throw error;
+        }
+        if (!msg || msg.seq > last.seq) break;
+        seq = msg.seq + 1;
+        messages.push(msg);
       }
-      if (!msg) break;
-      if (msg.seq > last.seq) break;
-      seq = msg.seq + 1;
+      return messages;
+    }));
+    let current: ResolvedLifecycleEvent | undefined;
+    for (const msg of histories.flat().sort((a, b) => a.seq - b.seq)) {
       const event = parseWorkPayloadEvent(msg.data);
       if (
         !event || event.jobId !== job.id || event.service !== job.service ||

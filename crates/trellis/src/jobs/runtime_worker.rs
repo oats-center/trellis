@@ -1594,42 +1594,69 @@ async fn stream_work_decision(
             watermark = watermark.max(last.sequence);
         }
     }
+    // Keep observation volume out of recovery. Scan transition subjects in
+    // parallel, then apply the accepted-state fold in broker sequence order.
+    let mut scans = FuturesUnordered::new();
+    for prefix in subjects {
+        let prefix = prefix.strip_suffix(".*").expect("job wildcard subject");
+        for event_type in [
+            JobEventType::Created,
+            JobEventType::Retried,
+            JobEventType::Started,
+            JobEventType::Retry,
+            JobEventType::Completed,
+            JobEventType::Failed,
+            JobEventType::Cancelled,
+            JobEventType::Expired,
+            JobEventType::Skipped,
+            JobEventType::Stale,
+            JobEventType::Dead,
+            JobEventType::Dismissed,
+        ] {
+            let subject = format!("{prefix}.{}", event_type.as_token());
+            scans.push(async move {
+                let mut transitions = Vec::new();
+                let mut sequence = 1;
+                while sequence <= watermark {
+                    let message = match lifecycle_stream
+                        .direct_get_next_for_subject(&subject, Some(sequence))
+                        .await
+                    {
+                        Ok(message) => message,
+                        Err(error) if error.kind() == stream::DirectGetErrorKind::NotFound => break,
+                        Err(error) => {
+                            return Err(RuntimeWorkerError::LifecycleRead {
+                                stream: JOBS_STREAM.to_string(),
+                                subject: subject.clone(),
+                                details: error.to_string(),
+                            })
+                        }
+                    };
+                    sequence = message.sequence + 1;
+                    if message.sequence > watermark {
+                        break;
+                    }
+                    let event =
+                        serde_json::from_slice::<JobEvent>(&message.payload).map_err(|error| {
+                            RuntimeWorkerError::LifecycleDecode {
+                                stream: JOBS_STREAM.to_string(),
+                                subject: subject.clone(),
+                                details: error.to_string(),
+                            }
+                        })?;
+                    transitions.push((message.sequence, event));
+                }
+                Ok::<_, RuntimeWorkerError>(transitions)
+            });
+        }
+    }
     let mut transitions = Vec::new();
-    for subject in subjects {
-        let mut sequence = 1;
-        while sequence <= watermark {
-            let message = match lifecycle_stream
-                .direct_get_next_for_subject(&subject, Some(sequence))
-                .await
-            {
-                Ok(message) => message,
-                Err(error) if error.kind() == stream::DirectGetErrorKind::NotFound => break,
-                Err(error) => {
-                    return Err(RuntimeWorkerError::LifecycleRead {
-                        stream: JOBS_STREAM.to_string(),
-                        subject: subject.clone(),
-                        details: error.to_string(),
-                    })
-                }
-            };
-            sequence = message.sequence + 1;
-            if message.sequence > watermark {
-                break;
-            }
-            let event = serde_json::from_slice::<JobEvent>(&message.payload).map_err(|error| {
-                RuntimeWorkerError::LifecycleDecode {
-                    stream: JOBS_STREAM.to_string(),
-                    subject: subject.clone(),
-                    details: error.to_string(),
-                }
-            })?;
-            if event.service == work.service
+    while let Some(scan) = scans.next().await {
+        transitions.extend(scan?.into_iter().filter(|(_, event)| {
+            event.service == work.service
                 && event.job_type == work.job_type
                 && event.job_id == work.id
-            {
-                transitions.push((message.sequence, event));
-            }
-        }
+        }));
     }
     transitions.sort_by_key(|(sequence, _)| *sequence);
     let mut current: Option<Job> = None;
@@ -2756,8 +2783,9 @@ mod tests {
     #[tokio::test]
     async fn duplicate_created_after_deduplication_keeps_native_completion_authoritative() {
         use crate::jobs::bindings::JobsBinding;
-        use crate::jobs::{TrellisJobEventPublisher, TrellisJobMetaSource};
+        use crate::jobs::{JobEventType, TrellisJobEventPublisher, TrellisJobMetaSource};
         use async_nats::jetstream::{consumer, stream};
+        use futures_util::StreamExt;
         use std::sync::{
             atomic::{AtomicUsize, Ordering},
             Arc,
@@ -2827,7 +2855,7 @@ mod tests {
             queue: None,
         };
         let manager = crate::jobs::manager::JobManager::new(
-            TrellisJobEventPublisher::new(client),
+            TrellisJobEventPublisher::new(client.clone()),
             JobsBinding {
                 service_name: "documents".into(),
                 namespace: "documents".into(),
@@ -2894,6 +2922,49 @@ mod tests {
             .direct_get_last_for_subject(format!("jobs.work.{}.completed", job.id))
             .await
             .unwrap();
+        let mut observation: crate::jobs::JobEvent =
+            serde_json::from_slice(&completed.payload).unwrap();
+        observation.state = JobState::Active;
+        observation.previous_state = Some(JobState::Active);
+        for index in 0..50_000 {
+            observation.event_type = if index % 2 == 0 {
+                JobEventType::Progress
+            } else {
+                JobEventType::Logged
+            };
+            client
+                .publish(
+                    format!("jobs.work.{}.{}", job.id, observation.event_type.as_token()),
+                    serde_json::to_vec(&observation).unwrap().into(),
+                )
+                .await
+                .unwrap();
+        }
+        client.flush().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while js
+                .get_stream("JOBS")
+                .await
+                .unwrap()
+                .cached_info()
+                .state
+                .messages
+                < 50_003
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut reads = client.subscribe("$JS.API.DIRECT.GET.JOBS.>").await.unwrap();
+        client.flush().await.unwrap();
+        let recovery_reads = Arc::new(AtomicUsize::new(0));
+        let read_count = recovery_reads.clone();
+        let observer = tokio::spawn(async move {
+            while reads.next().await.is_some() {
+                read_count.fetch_add(1, Ordering::SeqCst);
+            }
+        });
         // Exercise the broker's finite deduplication window, not an injected duplicate.
         tokio::time::sleep(Duration::from_millis(150)).await;
         let duplicate = js
@@ -2911,6 +2982,12 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(executions.load(Ordering::SeqCst), 1);
+        let reads = recovery_reads.load(Ordering::SeqCst);
+        assert!(
+            reads > 0 && reads < 64,
+            "terminal recovery must exclude 50,000 observations, got {reads} direct reads"
+        );
+        observer.abort();
         let retained = lifecycle
             .direct_get_last_for_subject(format!("jobs.work.{}.completed", job.id))
             .await

@@ -30,7 +30,7 @@ import type { Job, JobEvent } from "./types.ts";
 
 Deno.test("republishing a completed prepared submission after broker deduplication does not execute it again", async () => {
   await withBroker(async (fixture) => {
-    const { manager, jsm, host, settled, completed } = fixture;
+    const { manager, jsm, host, settled, completed, nc, encode } = fixture;
     await jsm.streams.update("JOBS", { duplicate_window: 100_000_000 });
     const submission = prepareJobSubmission({
       submissionId: crypto.randomUUID(),
@@ -46,15 +46,108 @@ Deno.test("republishing a completed prepared submission after broker deduplicati
     const job = await manager.createPrepared(submission);
     await settled();
     const original = await completed(job);
+    for (let index = 0; index < 50_000; index++) {
+      const eventType = index % 2 === 0 ? "progress" : "logged";
+      nc.publish(
+        `trellis.jobs.svc.refresh.${job.id}.${eventType}`,
+        encode({
+          ...original,
+          eventType,
+          state: "active",
+          previousState: "active",
+        }),
+      );
+    }
+    await nc.flush();
+    await waitFor(async () =>
+      (await jsm.streams.info("JOBS")).state.messages >= 50_003
+    );
+    let recoveryReads = 0;
+    const reads = nc.subscribe("$JS.API.DIRECT.GET.JOBS.>", {
+      callback: () => {
+        recoveryReads++;
+      },
+    });
     // This wait exercises the broker's actual finite deduplication contract.
     await new Promise((resolve) => setTimeout(resolve, 150));
     await manager.createPrepared(submission);
     await settled();
+    await nc.flush();
+    reads.unsubscribe();
     assertEquals(executions, 1);
+    assert(
+      recoveryReads > 0 && recoveryReads < 32,
+      `terminal recovery must exclude 50,000 observations, got ${recoveryReads} direct reads`,
+    );
     assertEquals((await completed(job)).result, original.result);
     assertEquals(
       (await jsm.consumers.info("JOBS", "worker")).ack_floor.consumer_seq,
       2,
+    );
+  });
+});
+
+Deno.test("deadline recovery excludes retained observation traffic before invoking cleanup", async () => {
+  await withBroker(async (f) => {
+    const manager = new JobManager({
+      nc: f.js,
+      jobs: {
+        ...f.binding.jobs,
+        queues: {
+          refresh: { ...f.binding.jobs.queues.refresh, defaultDeadlineMs: 1 },
+        },
+      },
+    });
+    const job = await manager.create("refresh", {});
+    const prefix = f.binding.jobs.queues.refresh.publishPrefix;
+    const message = await f.jsm.direct.getMessage("JOBS", {
+      last_by_subj: `${prefix}.${job.id}.created`,
+    });
+    assert(message);
+    const started: JobEvent = {
+      ...JSON.parse(message.string()),
+      eventType: "started",
+      state: "active",
+      previousState: "pending",
+      tries: 1,
+      startedAt: new Date().toISOString(),
+      timestamp: new Date().toISOString(),
+    };
+    await f.js.publish(`${prefix}.${job.id}.started`, f.encode(started));
+    for (let index = 0; index < 50_000; index++) {
+      const eventType = index % 2 === 0 ? "progress" : "logged";
+      f.nc.publish(
+        `${prefix}.${job.id}.${eventType}`,
+        f.encode({ ...started, eventType }),
+      );
+    }
+    await f.nc.flush();
+    await waitFor(async () =>
+      (await f.jsm.streams.info("JOBS")).state.messages >= 50_002
+    );
+    let recoveryReads = 0;
+    const reads = f.nc.subscribe("$JS.API.DIRECT.GET.JOBS.>", {
+      callback: () => {
+        recoveryReads++;
+      },
+    });
+    let cleanups = 0;
+    await f.host(async (active) => {
+      assertEquals(active.cancellationToken().reason(), "deadline-exceeded");
+      cleanups++;
+      return { reconciled: true };
+    });
+    await f.settled();
+    await f.nc.flush();
+    reads.unsubscribe();
+    assertEquals(cleanups, 1);
+    assert(
+      recoveryReads > 0 && recoveryReads < 32,
+      `deadline cleanup must exclude observations, got ${recoveryReads} direct reads`,
+    );
+    assertEquals(
+      (await getLatestLifecycleEvent(f.jsm.direct, "JOBS", prefix, job))?.state,
+      "expired",
     );
   });
 });
