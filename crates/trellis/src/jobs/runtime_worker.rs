@@ -2788,7 +2788,7 @@ mod tests {
         use futures_util::StreamExt;
         use std::sync::{
             atomic::{AtomicUsize, Ordering},
-            Arc,
+            Arc, Mutex,
         };
 
         let source = tempfile::tempdir().unwrap();
@@ -2956,13 +2956,27 @@ mod tests {
         })
         .await
         .unwrap();
-        let mut reads = client.subscribe("$JS.API.DIRECT.GET.JOBS.>").await.unwrap();
+        let shortcuts = client.subscribe("$JS.API.DIRECT.GET.JOBS.>").await.unwrap();
+        let scans = client.subscribe("$JS.API.DIRECT.GET.JOBS").await.unwrap();
+        let mut reads = futures_util::stream::select(shortcuts, scans);
         client.flush().await.unwrap();
         let recovery_reads = Arc::new(AtomicUsize::new(0));
         let read_count = recovery_reads.clone();
+        let scan_subjects = Arc::new(Mutex::new(std::collections::BTreeSet::new()));
+        let observed_subjects = scan_subjects.clone();
         let observer = tokio::spawn(async move {
-            while reads.next().await.is_some() {
+            while let Some(message) = reads.next().await {
                 read_count.fetch_add(1, Ordering::SeqCst);
+                if message.subject.as_str() == "$JS.API.DIRECT.GET.JOBS" {
+                    let query: serde_json::Value =
+                        serde_json::from_slice(&message.payload).unwrap();
+                    if let Some(subject) = query
+                        .get("next_by_subj")
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        observed_subjects.lock().unwrap().insert(subject.to_owned());
+                    }
+                }
             }
         });
         // Exercise the broker's finite deduplication window, not an injected duplicate.
@@ -2982,6 +2996,19 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(executions.load(Ordering::SeqCst), 1);
+        {
+            let subjects = scan_subjects.lock().unwrap();
+            assert!(
+                !subjects.is_empty(),
+                "the probe must observe historical scan requests"
+            );
+            assert!(
+                subjects
+                    .iter()
+                    .all(|subject| !subject.contains('*') && !subject.contains('>')),
+                "recovery must not scan observation wildcards: {subjects:?}"
+            );
+        }
         let reads = recovery_reads.load(Ordering::SeqCst);
         assert!(
             reads > 0 && reads < 64,

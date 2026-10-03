@@ -63,18 +63,39 @@ Deno.test("republishing a completed prepared submission after broker deduplicati
       (await jsm.streams.info("JOBS")).state.messages >= 50_003
     );
     let recoveryReads = 0;
-    const reads = nc.subscribe("$JS.API.DIRECT.GET.JOBS.>", {
-      callback: () => {
-        recoveryReads++;
-      },
-    });
+    const scanSubjects = new Set<string>();
+    const reads = ["$JS.API.DIRECT.GET.JOBS", "$JS.API.DIRECT.GET.JOBS.>"].map((
+      subject,
+    ) =>
+      nc.subscribe(subject, {
+        callback: (_error, message) => {
+          recoveryReads++;
+          if (message.subject === "$JS.API.DIRECT.GET.JOBS") {
+            const query = message.json<{ next_by_subj?: string }>();
+            if (query.next_by_subj) scanSubjects.add(query.next_by_subj);
+          }
+        },
+      })
+    );
     // This wait exercises the broker's actual finite deduplication contract.
     await new Promise((resolve) => setTimeout(resolve, 150));
     await manager.createPrepared(submission);
     await settled();
     await nc.flush();
-    reads.unsubscribe();
+    for (const subscription of reads) subscription.unsubscribe();
     assertEquals(executions, 1);
+    assert(
+      scanSubjects.size > 0,
+      "the probe must observe historical scan requests",
+    );
+    assert(
+      [...scanSubjects].every((subject) =>
+        !subject.includes("*") && !subject.includes(">")
+      ),
+      `recovery must not scan observation wildcards: ${
+        JSON.stringify([...scanSubjects])
+      }`,
+    );
     assert(
       recoveryReads > 0 && recoveryReads < 32,
       `terminal recovery must exclude 50,000 observations, got ${recoveryReads} direct reads`,
@@ -126,11 +147,20 @@ Deno.test("deadline recovery excludes retained observation traffic before invoki
       (await f.jsm.streams.info("JOBS")).state.messages >= 50_002
     );
     let recoveryReads = 0;
-    const reads = f.nc.subscribe("$JS.API.DIRECT.GET.JOBS.>", {
-      callback: () => {
-        recoveryReads++;
-      },
-    });
+    const scanSubjects = new Set<string>();
+    const reads = ["$JS.API.DIRECT.GET.JOBS", "$JS.API.DIRECT.GET.JOBS.>"].map((
+      subject,
+    ) =>
+      f.nc.subscribe(subject, {
+        callback: (_error, message) => {
+          recoveryReads++;
+          if (message.subject === "$JS.API.DIRECT.GET.JOBS") {
+            const query = message.json<{ next_by_subj?: string }>();
+            if (query.next_by_subj) scanSubjects.add(query.next_by_subj);
+          }
+        },
+      })
+    );
     let cleanups = 0;
     await f.host(async (active) => {
       assertEquals(active.cancellationToken().reason(), "deadline-exceeded");
@@ -139,8 +169,20 @@ Deno.test("deadline recovery excludes retained observation traffic before invoki
     });
     await f.settled();
     await f.nc.flush();
-    reads.unsubscribe();
+    for (const subscription of reads) subscription.unsubscribe();
     assertEquals(cleanups, 1);
+    assert(
+      scanSubjects.size > 0,
+      "the probe must observe historical scan requests",
+    );
+    assert(
+      [...scanSubjects].every((subject) =>
+        !subject.includes("*") && !subject.includes(">")
+      ),
+      `recovery must not scan observation wildcards: ${
+        JSON.stringify([...scanSubjects])
+      }`,
+    );
     assert(
       recoveryReads > 0 && recoveryReads < 32,
       `deadline cleanup must exclude observations, got ${recoveryReads} direct reads`,
