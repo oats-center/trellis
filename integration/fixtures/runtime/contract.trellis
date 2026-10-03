@@ -15,11 +15,12 @@ api runtime@v1 {
   title "Runtime acceptance";
   description "Small generated transport and durability fixture.";
   rpc Echo { input Value; output Value; }
+  rpc Download { input Value; output Value; download; }
   operation Work { input Value; progress Update; output Value; signals { Continue Value; } }
   operation Upload { input Value; output Value; signals { Continue Value; } upload; }
   event Changed { payload Value; }
   live Watch { input Empty; event Value; }
-  capabilities { public { allows { rpc Echo; operation Work; operation Upload; publish event Changed; subscribe event Changed; live Watch; } } }
+  capabilities { public { allows { rpc Echo; rpc Download; operation Work; operation Upload; publish event Changed; subscribe event Changed; live Watch; } } }
 }
 
 api events@v1 {
@@ -86,7 +87,7 @@ service OperationProvider {
 service OperationCaller { use runtime { operation Work; } }
 app Caller {
   use auth { rpc Sessions.Me; }
-  use runtime { rpc Echo; operation Work; operation Upload; publish event Changed; subscribe event Changed; live Watch; }
+  use runtime { rpc Echo; rpc Download; operation Work; operation Upload; publish event Changed; subscribe event Changed; live Watch; }
   state saved { title "Saved"; description "Caller-owned saved value."; schema Saved; version 1; }
   state savedResource { title "Saved resource"; description "Rust State acceptance value."; schema ResourceValue; version 1; }
 }

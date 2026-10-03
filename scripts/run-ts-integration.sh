@@ -43,6 +43,7 @@ fixture_bins=(
   device_companion
   transport_growth_subject
   transport_growth_operation
+  transfer_generation
   jobs
 )
 

@@ -559,12 +559,13 @@ where
     Ok(UploadTransferCompletion { receiver })
 }
 
-/// Subscribe and run one planned download transfer endpoint in the background.
+/// Serve a planned download while retaining its accepting transport generation.
 pub async fn spawn_download_transfer_endpoint<C, V>(
     client: async_nats::Client,
     plan: DownloadTransferGrantPlan,
     store: C,
     validator: V,
+    lease: crate::client::TransportLease,
 ) -> Result<(), ServerError>
 where
     C: StoreResourceClient,
@@ -579,6 +580,7 @@ where
     })?;
     tokio::spawn(async move {
         tracing::debug!(subject = %subject, "download transfer endpoint task started");
+        let _lease = lease;
         if let Err(error) =
             run_download_transfer_endpoint(client, subscriber, plan, store, validator).await
         {

@@ -458,6 +458,7 @@ impl Drop for ServiceEventListenerHandle {
 #[derive(Clone)]
 pub struct ServiceHandle {
     client: Arc<TrellisClient>,
+    transport: super::router::GenerationPin,
     service_name: Arc<str>,
     binding: CoreBootstrapBinding,
     resources: ServiceResourceBindings,
@@ -727,7 +728,8 @@ impl ServiceHandle {
         .await
     }
 
-    /// Subscribe and run a download transfer endpoint backed by the connected NATS client.
+    /// Run a download on the request's accepting generation, retaining it until
+    /// completion, cancellation, or expiry. Outside a handler, use the current generation.
     pub async fn spawn_download_transfer_endpoint<C>(
         &self,
         plan: DownloadTransferGrantPlan,
@@ -736,11 +738,20 @@ impl ServiceHandle {
     where
         C: StoreResourceClient,
     {
+        let lease = match self.transport.lease() {
+            Some(lease) => lease.clone(),
+            None => self
+                .client()
+                .acquire_transport(&[], &[], self.client().transport_deadline())
+                .await
+                .map_err(|error| ServerError::Nats(error.to_string()))?,
+        };
         spawn_download_transfer_endpoint(
-            self.client().nats().clone(),
+            lease.nats().clone(),
             plan,
             store,
             self.auth.clone(),
+            lease,
         )
         .await
     }
@@ -769,7 +780,8 @@ pub struct ServiceHandlerContext {
 
 impl ServiceHandlerContext {
     /// Build a handler context from low-level request metadata and a service handle.
-    pub fn new(request: RequestContext, handle: ServiceHandle) -> Self {
+    pub fn new(request: RequestContext, mut handle: ServiceHandle) -> Self {
+        handle.transport = request.transport.clone();
         Self {
             request,
             handle,
@@ -1372,6 +1384,7 @@ impl<C> ConnectedServiceRuntime<C> {
     #[doc(hidden)]
     pub fn generated_handle(&self) -> ServiceHandle {
         ServiceHandle {
+            transport: Default::default(),
             client: Arc::clone(&self.client),
             service_name: Arc::from(self.service_name.as_str()),
             binding: self.binding.clone(),

@@ -12,5 +12,7 @@ futures-util = "0.3"
 runtime-trellis = { path = "crates/runtime-trellis" }
 trellis-rs = { version = "0.100.0", features = ["telemetry-otlp", "runtime-internals"] }
 tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread", "signal"] }
+time = { version = "0.3", features = ["formatting"] }
+ulid = "1"
 tracing-opentelemetry = "0.33.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
