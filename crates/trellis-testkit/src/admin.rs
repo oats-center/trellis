@@ -87,7 +87,7 @@ pub(crate) async fn login_client(
     {
         LocalLoginStep::Completed { .. } => {}
         LocalLoginStep::ConsentRequired {
-            flow_id,
+            transaction_id,
             binding,
             summary,
         } => {
@@ -110,7 +110,7 @@ pub(crate) async fn login_client(
             admin
                 .ensure_portal_consent_policy(participant_id, &summary.capabilities)
                 .await?;
-            approve_local_login(trellis_url, &flow_id, &binding)
+            approve_local_login(trellis_url, &transaction_id, &binding)
                 .await
                 .map_err(|error| login_error("approving the caller consent", &error))?;
         }

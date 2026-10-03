@@ -1,15 +1,15 @@
-/** Routes a Console browser flow through first-administrator setup. */
+/** Carries the signed Console intent through first-administrator setup. */
 export function buildAdminAccountLoginUrl(
   loginUrl: string,
   adminAccountToken: string,
   location: URL | Location = globalThis.location,
 ): string | null {
   const resolvedLoginUrl = new URL(loginUrl, location.origin);
-  const browserFlowId = resolvedLoginUrl.searchParams.get("flowId");
-  if (!browserFlowId) return null;
+  const intent = resolvedLoginUrl.searchParams.get("intent");
+  if (!intent) return null;
   const setupUrl = new URL("/login/admin/bootstrap", resolvedLoginUrl);
   setupUrl.searchParams.set("flowId", adminAccountToken);
-  setupUrl.searchParams.set("browserFlowId", browserFlowId);
+  setupUrl.searchParams.set("intent", intent);
   return setupUrl.toString();
 }
 

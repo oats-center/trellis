@@ -44,6 +44,8 @@ pub struct BoundSession {
 #[serde(rename_all = "camelCase")]
 #[doc = concat!("Public Trellis data type `", stringify!(BindResponseBound), "`.")]
 pub struct BindResponseBound {
+    /// Validated initiating request that owns this completed transaction.
+    pub intent_id: String,
     /// Server time in Unix milliseconds.
     pub server_now: i64,
     #[doc = concat!("The `", stringify!(session), "` value.")]
@@ -67,8 +69,9 @@ pub struct BoundSessionRecord {
 /// An in-progress agent login flow waiting for completion.
 #[doc = concat!("Public Trellis data type `", stringify!(AgentLoginChallenge), "`.")]
 pub struct AgentLoginChallenge {
-    #[doc = concat!("The `", stringify!(flow_id), "` value.")]
-    pub flow_id: String,
+    /// Correlation of the validated reusable sign-in request, not an active attempt.
+    pub intent_id: String,
+    pub(crate) intent: String,
     #[doc = concat!("The `", stringify!(login_url), "` value.")]
     pub login_url: String,
     #[doc = concat!("The `", stringify!(session_seed), "` value.")]

@@ -4,6 +4,7 @@ import {
   fetchPortalFlowState,
   type PortalBinding,
   type PortalFlowState,
+  startPortalTransaction,
   submitPortalApproval,
 } from "@oatscenter/trellis/auth/browser";
 
@@ -11,10 +12,10 @@ import { ADMIN_USERNAME } from "./methods.ts";
 import { recordTrellisDuration } from "./metrics.ts";
 import { postJson } from "./transport.ts";
 
-export function flowIdFromUrl(url: string): string {
-  const flowId = new URL(url).searchParams.get("flowId");
-  if (!flowId) throw new Error(`Trellis auth URL is missing flowId: ${url}`);
-  return flowId;
+export function intentFromUrl(url: string): string {
+  const intent = new URL(url).searchParams.get("intent");
+  if (!intent) throw new Error(`Trellis auth URL is missing intent: ${url}`);
+  return intent;
 }
 
 export function adminAccountTokenFromUrl(url: string): string {
@@ -37,11 +38,11 @@ export async function performLocalLogin(args: {
   const startedAt = performance.now();
   try {
     await postJson(`${args.trellisUrl}/auth/login/local`, {
-      flowId: args.flowId,
+      transactionId: args.flowId,
       username: ADMIN_USERNAME,
       password: args.password,
       portalBindingDigest: binding.digest,
-    });
+    }, { "trellis-portal-binding": binding.secret });
   } finally {
     recordTrellisDuration(
       "trellis.auth.flow.duration",
@@ -123,11 +124,18 @@ export async function completeLocalAuthFlow(args: {
   password: string;
 }): Promise<ClientAuthContinuation> {
   const startedAt = performance.now();
-  const flowId = flowIdFromUrl(args.loginUrl);
+  const intent = intentFromUrl(args.loginUrl);
+  const portalBinding = await createPortalBinding();
+  const flowId = await startPortalTransaction(
+    { authUrl: args.trellisUrl, portalOrigin: new URL(args.trellisUrl).origin },
+    intent,
+    portalBinding,
+  );
   const binding = await performLocalLogin({
     trellisUrl: args.trellisUrl,
     flowId,
     password: args.password,
+    binding: portalBinding,
   });
   await approveLocalFlowIfNeeded({
     trellisUrl: args.trellisUrl,
@@ -139,5 +147,5 @@ export async function completeLocalAuthFlow(args: {
     performance.now() - startedAt,
     { phase: "total" },
   );
-  return { status: "bound", flowId };
+  return { status: "bound", transactionId: flowId };
 }

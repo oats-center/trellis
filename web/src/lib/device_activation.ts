@@ -61,7 +61,7 @@ export function createPortalDeviceActivationController() {
         auth: {
           currentUrl: authUrlState.currentUrl,
           redirectTo: authUrlState.redirectTo,
-          flowId: callbackFlowId,
+          transactionId: callbackFlowId,
         },
         onAuthRequired: () => ({ status: "handled" }),
         participant: portalParticipant,

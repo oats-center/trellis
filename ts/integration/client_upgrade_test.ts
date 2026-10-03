@@ -1,18 +1,18 @@
 import { assert, assertEquals } from "@std/assert";
 import { Result, TrellisClient } from "@oatscenter/trellis";
+import {
+  createPortalBinding,
+  fetchPortalFlowState,
+  startPortalTransaction,
+  submitPortalApproval,
+} from "@oatscenter/trellis/auth/browser";
 import { TrellisService } from "@oatscenter/trellis/service";
-import {
-  participants,
-  type types,
-} from "../../integration/fixtures/client-upgrade/packages/client-upgrade/index.js";
+import { participants } from "../../integration/fixtures/client-upgrade/packages/client-upgrade/index.js";
 import { participants as narrow } from "../../integration/fixtures/client-upgrade-narrow/packages/client-upgrade/index.js";
-import {
-  issueRawClientConnection,
-  observeClientConnection,
-} from "./_support/client_session.ts";
+import { ADMIN_USERNAME } from "../packages/trellis-testkit/src/admin/methods.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
-Deno.test("browser login revision changes preserve compatible sessions and recover incompatible ones without widening denied authority", async () => {
+Deno.test("expanded browser authority renews consent once; compatible sign-in reuses it; denied authority does not reauthenticate", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: "upgrade-provider",
@@ -25,139 +25,181 @@ Deno.test("browser login revision changes preserve compatible sessions and recov
     }).orThrow();
     const serviceExit = service.wait().catch((error: unknown) => error);
     await service.handleEcho(({ input }) => Result.ok(input));
+    await service.handleExtra(({ input }) => Result.ok(input));
+    let passwords = 0;
+    let consents = 0;
+    const login = async (loginUrl: string, expectConsent: boolean) => {
+      const intent = new URL(loginUrl).searchParams.get("intent");
+      assert(intent);
+      const binding = await createPortalBinding();
+      const config = {
+        authUrl: runtime.trellisUrl,
+        portalOrigin: runtime.trellisUrl,
+      };
+      const transactionId = await startPortalTransaction(
+        config,
+        intent,
+        binding,
+      );
+      passwords += 1;
+      const response = await fetch(`${runtime.trellisUrl}/auth/login/local`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: runtime.trellisUrl,
+          "trellis-portal-binding": binding.secret,
+        },
+        body: JSON.stringify({
+          transactionId,
+          username: ADMIN_USERNAME,
+          password: runtime.adminPassword,
+          portalBindingDigest: binding.digest,
+        }),
+      });
+      assertEquals(response.status, 200, await response.text());
+      const state = await fetchPortalFlowState(config, transactionId, binding);
+      assertEquals(
+        state.status,
+        expectConsent ? "approval_required" : "redirect",
+      );
+      if (expectConsent) {
+        consents += 1;
+        const approved = await submitPortalApproval(
+          config,
+          transactionId,
+          binding,
+          "approved",
+        );
+        assertEquals(approved.status, "redirect");
+      }
+      return { status: "bound" as const, transactionId };
+    };
     try {
-      const narrowKey = await runtime.registerClient({
-        name: "compatible-login",
+      const oldKey = await runtime.registerClient({
+        name: "old-revision",
         contract: narrow.Caller.participant,
       });
-      const narrowClient = await TrellisClient.connect({
+      const old = await TrellisClient.connect({
         trellisUrl: runtime.trellisUrl,
         participant: narrow.Caller.participant,
-        ...runtime.clientAuth(narrowKey),
+        auth: runtime.clientAuth(oldKey).auth,
+        onAuthRequired: (ctx) => login(ctx.loginUrl, true),
       }).orThrow();
-      assertEquals(
-        (await narrowClient.echo({ value: "before upgrade" }).orThrow()).value,
-        "before upgrade",
-      );
-      const narrowLogin = await observeClientConnection(runtime, narrowKey);
-      const narrowDefinition =
-        (await runtime.callAdminRpc("authParticipantsGet", {
-          participantId: narrow.Caller.participant.id,
-        })).participant;
-      await narrowClient.connection.close();
+      assertEquals((await old.echo({ value: "old" }).orThrow()).value, "old");
+      const oldSession = (await old.sessionsMe({}).orThrow()).session;
+      assert(oldSession !== null);
+      await old.connection.close();
 
-      // Install real authored definitions and replace current user authority via
-      // the supported admin API, never by mutating auth/session database rows.
-      const broadKey = await runtime.registerClient({
-        name: "incompatible-login",
+      const newKey = await runtime.registerClient({
+        name: "expanded-revision",
         contract: participants.Caller.participant,
       });
-      const savedAuth = runtime.clientAuth(broadKey).auth;
-      assert(savedAuth.mode === "session_key");
-      const approveRevision = async (
-        revision: bigint,
-        permissions: types.AuthPermissionAtom[],
-      ) => {
-        const listed = await runtime.callAdminRpc("authGrantsList", {
-          participantId: participants.Caller.participant.id,
-        });
-        assertEquals(listed.items.length, 1);
-        const binding = listed.items[0];
-        await runtime.callAdminRpc("authGrantsSet", {
-          expectedRevision: binding.revision,
-          expiresAt: binding.expiresAt,
-          grants: { format: binding.grants.format, permissions },
-          idempotencyKey: crypto.randomUUID(),
-          installedRevision: revision,
-          ownerId: binding.ownerId,
-          ownerKind: binding.ownerKind,
-          participantId: binding.participantId,
-          platformPrivileges: binding.platformPrivileges,
-        });
-      };
-      const broadDefinition =
-        (await runtime.callAdminRpc("authParticipantsGet", {
-          participantId: participants.Caller.participant.id,
-        })).participant;
-      await approveRevision(
-        broadDefinition.revision,
-        broadDefinition.requiredGrants.permissions,
-      );
-      // An additive revision retains the old login and does not require a new
-      // sign-in merely because its immutable definition is no longer current.
-      const compatible = await issueRawClientConnection(
-        runtime,
-        narrowKey,
-        narrowLogin.loginSessionId,
-      );
-      assertEquals(compatible.loginSessionId, narrowLogin.loginSessionId);
-
-      const broadClient = await TrellisClient.connect({
+      const expanded = await TrellisClient.connect({
         trellisUrl: runtime.trellisUrl,
         participant: participants.Caller.participant,
-        ...runtime.clientAuth(broadKey),
+        auth: runtime.clientAuth(newKey).auth,
+        onAuthRequired: (ctx) => login(ctx.loginUrl, true),
       }).orThrow();
-      const broadLogin = await observeClientConnection(runtime, broadKey);
-      const broadSession = (await broadClient.sessionsMe({}).orThrow()).session;
-      assert(broadSession !== null);
-      await broadClient.connection.close();
-      await approveRevision(
-        narrowDefinition.revision,
-        narrowDefinition.requiredGrants.permissions,
+      assertEquals(
+        (await expanded.extra({ value: "new permission" }).orThrow()).value,
+        "new permission",
       );
+      const session = (await expanded.sessionsMe({}).orThrow()).session;
+      assert(session !== null);
+      await expanded.connection.close();
+      assertEquals(passwords, 2);
+      assertEquals(consents, 2);
 
-      // The updated client starts from the genuinely saved old login. Its
-      // ordinary authentication callback completes a real portal flow and bind.
-      let signIns = 0;
-      const recovered = await TrellisClient.connect({
+      const oldAuth = runtime.clientAuth(oldKey).auth;
+      assert(oldAuth.mode === "session_key");
+      const oldAgain = await TrellisClient.connect({
         trellisUrl: runtime.trellisUrl,
         participant: narrow.Caller.participant,
-        auth: {
-          ...savedAuth,
-          sessionId: broadLogin.loginSessionId,
-        },
-        onAuthRequired: async (ctx) => {
-          signIns += 1;
-          return await runtime.completeClientAuth(ctx);
-        },
+        auth: { ...oldAuth, sessionId: oldSession.sessionId },
+        onAuthRequired: () =>
+          Promise.reject(new Error("covered old login must remain usable")),
       }).orThrow();
-      assertEquals(signIns, 1);
       assertEquals(
-        (await recovered.echo({ value: "after recovery" }).orThrow()).value,
-        "after recovery",
+        (await oldAgain.echo({ value: "retained" }).orThrow()).value,
+        "retained",
       );
-      const recoveredSession =
-        (await recovered.sessionsMe({}).orThrow()).session;
-      assert(recoveredSession !== null);
-      assert(
-        recoveredSession.sessionId !== broadSession.sessionId ||
-          recoveredSession.version > broadSession.version,
-        "sign-in must replace or version-renew the incompatible login",
-      );
-      await recovered.connection.close();
+      await oldAgain.connection.close();
 
-      // A denial at the current revision is not an obsolete-login signal and
-      // must never be converted into automatic consent or wider permissions.
-      await approveRevision(narrowDefinition.revision, []);
-      signIns = 0;
-      const currentAuth = runtime.clientAuth(narrowKey).auth;
-      assert(currentAuth.mode === "session_key");
+      const compatibleKey = await runtime.registerClient({
+        name: "compatible-narrowing",
+        contract: narrow.Caller.participant,
+      });
+      const compatible = await TrellisClient.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant: narrow.Caller.participant,
+        auth: runtime.clientAuth(compatibleKey).auth,
+        onAuthRequired: (ctx) => login(ctx.loginUrl, false),
+      }).orThrow();
+      assertEquals(
+        (await compatible.echo({ value: "reused" }).orThrow()).value,
+        "reused",
+      );
+      await compatible.connection.close();
+      assertEquals(consents, 2);
+
+      const grants = await runtime.callAdminRpc("authGrantsList", {
+        participantId: participants.Caller.participant.id,
+      });
+      const binding = grants.items[0];
+      await runtime.callAdminRpc("authGrantsSet", {
+        expectedRevision: binding.revision,
+        expiresAt: binding.expiresAt,
+        grants: { format: binding.grants.format, permissions: [] },
+        idempotencyKey: crypto.randomUUID(),
+        installedRevision: binding.installedRevision,
+        ownerId: binding.ownerId,
+        ownerKind: binding.ownerKind,
+        participantId: binding.participantId,
+        platformPrivileges: binding.platformPrivileges,
+      });
+      let signIns = 0;
+      const saved = runtime.clientAuth(newKey).auth;
+      assert(saved.mode === "session_key");
       const denied = await TrellisClient.connect({
         trellisUrl: runtime.trellisUrl,
-        participant: narrow.Caller.participant,
-        auth: {
-          ...currentAuth,
-          sessionId: narrowLogin.loginSessionId,
-        },
+        participant: participants.Caller.participant,
+        auth: { ...saved, sessionId: session.sessionId },
         onAuthRequired: () => {
           signIns += 1;
           return Promise.reject(
-            new Error("same-revision denial must not request sign-in"),
+            new Error("valid login must not reauthenticate"),
           );
         },
       });
       assert(denied.isErr());
       assertEquals(signIns, 0);
+
+      const current = await runtime.callAdminRpc("authSessionsList", {
+        participantId: participants.Caller.participant.id,
+      });
+      const retained = current.items.find((entry) =>
+        entry.sessionId === session.sessionId
+      );
+      assert(retained);
+      await runtime.callAdminRpc("authSessionsRevoke", {
+        expectedVersion: retained.version,
+        reason: "verify revoked-login recovery",
+        sessionId: session.sessionId,
+        idempotencyKey: crypto.randomUUID(),
+      });
+      const revoked = await TrellisClient.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant: participants.Caller.participant,
+        auth: { ...saved, sessionId: session.sessionId },
+        onAuthRequired: () => {
+          signIns += 1;
+          return Promise.reject(
+            new Error("observed legitimate reauthentication"),
+          );
+        },
+      });
+      assert(revoked.isErr());
+      assertEquals(signIns, 1);
     } finally {
       await service.stop();
       assertEquals(await serviceExit, undefined);

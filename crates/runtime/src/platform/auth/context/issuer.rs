@@ -47,6 +47,38 @@ pub(crate) struct AuthorizationContextService {
 }
 
 impl AuthorizationContextService {
+    /// Sign an immutable browser request with the configured online issuer.
+    pub(crate) fn sign_browser_intent(
+        &self,
+        mut intent: super::super::browser_intent::BrowserSignInIntent,
+    ) -> Result<String, AuthorizationStateError> {
+        intent.issuer_key_id = self.trust.issuer.key_id.clone();
+        intent.sign(&self.trust.issuer_signing_key)
+    }
+
+    /// Accept a request only while its signing issuer remains available and active.
+    pub(crate) async fn verify_browser_intent(
+        &self,
+        token: &str,
+        now_ms: i64,
+    ) -> Result<super::super::browser_intent::BrowserSignInIntent, AuthorizationStateError> {
+        let intent = super::super::browser_intent::BrowserSignInIntent::verify(
+            token,
+            &self.trust.issuer_signing_key.verifying_key(),
+        )?;
+        let issuer = self
+            .repository
+            .get_issuer_key(intent.issuer_key_id.clone(), now_ms)
+            .await?
+            .ok_or(AuthorizationStateError::IssuerMissing)?;
+        if intent.issuer_key_id != self.trust.issuer.key_id
+            || issuer.state != trellis_protocol::AuthorizationIssuerState::Active
+        {
+            return Err(AuthorizationStateError::IssuerMissing);
+        }
+        Ok(intent)
+    }
+
     /// Resolve retained public issuer material without exposing signing secrets.
     pub(crate) async fn issuer_key(
         &self,

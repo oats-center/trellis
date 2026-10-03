@@ -125,6 +125,35 @@ companion is created only as part of device activation after its own user
 consent. It receives a separate ordinary App/Agent user session and cannot
 bootstrap independently or borrow the parent device's authority.
 
+Browser sign-in begins with a proof-bound request that returns `intentId`, an
+opaque signed `intent`, and `loginUrl`. The intent binds the participant,
+initiating public key, origin, exact return target, portal, and online issuer;
+it is not a bearer login credential. Portal rendering verifies it and reads
+current public choices without starting an authentication attempt. Local
+authentication or provider selection starts an independently portal-bound
+transaction, selecting the current participant revision and starting its
+deadline. Identity, provider state, consent, and completion belong to
+`transactionId`. Account continuations use `browserTransactionId`; account and
+device review lifetimes remain separate. Expiry leaves the intent available
+for a fresh attempt, without returning to the initiating app.
+
+Existing grants are reused only when shared issuance/policy semantics prove
+compatibility without expanding approved authority; neither activity nor a
+matching revision alone establishes eligibility. Compatible revision changes
+do not force consent. Additional authority eligible for approval presents fresh
+consent after authentication without a second password prompt. Stale consent
+decisions are rejected and refreshed; policy denial is an authorization error,
+while unavailable runtime/resource evidence remains bounded pending.
+
+Completion requires the initiating private key's proof, returns its `intentId`
+and minimal login metadata, and returns the same semantic login result on exact
+supported replay instead of creating another session. Independent transactions
+do not inherit identity or consent. The client validates intent, participant,
+and public-key bindings before committing login state and refreshing context.
+Only terminal failure with an invalid login clears it and requires
+authentication. Terminal authorization denial with a valid login preserves the
+login and propagates its stable machine code without an automatic login loop.
+
 An administrator installs immutable participant revisions containing exact API
 artifacts and writes one `GrantBinding` per identity and participant. Deployment
 apply records exact resource evidence. Adding an action to IDL or installing a
@@ -193,8 +222,10 @@ connection through disposition. Raw NATS connections are physical attachments,
 not generation-aware application handles.
 Authorization contexts, route JWTs, transport endpoints, grants, clock offset,
 and issuer keys are process-memory-only. Browser IndexedDB version 3 persists
-only the session seed, nullable login metadata, pending flow, and generation
-fence, keyed by canonical origin plus stable participant ID.
+only the initiating session seed, nullable login metadata, pending signed
+intent/intent ID, and generation tombstone, keyed by canonical origin plus
+stable participant ID. Generation, public-key, intent, and login compare-and-swap
+fences prevent stale tabs from overwriting or clearing newer state.
 
 Trellis HTTP endpoints serve bootstrap, browser/account flows, recovery, and
 browser assets. Connected Trellis control uses generated APIs over NATS. Use the

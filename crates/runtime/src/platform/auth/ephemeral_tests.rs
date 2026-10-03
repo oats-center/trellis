@@ -21,14 +21,14 @@ fn connection_kick_response_rejects_system_errors() {
     assert!(validate_connection_kick_response(br#"{"server":{"id":"N2"}}"#, "N1").is_err());
 }
 
-pub(crate) fn browser_flow() -> AuthBrowserFlow {
-    let mut flow = AuthBrowserFlow {
-        format: BROWSER_FLOW_FORMAT.to_owned(),
-        flow_id: "flow-1".to_owned(),
-        kind: AuthBrowserFlowKind::UserAuth,
-        state: AuthBrowserFlowState::ChooseProvider,
-        request_id: "request-1".to_owned(),
-        request_digest: DIGEST.to_owned(),
+pub(crate) fn browser_flow() -> AuthBrowserTransaction {
+    let mut flow = AuthBrowserTransaction {
+        format: BROWSER_TRANSACTION_FORMAT.to_owned(),
+        transaction_id: "flow-1".to_owned(),
+        kind: AuthBrowserTransactionKind::UserAuth,
+        state: AuthBrowserTransactionState::ChooseProvider,
+        intent_id: "request-1".to_owned(),
+        intent_digest: DIGEST.to_owned(),
         participant_id: "app-1".to_owned(),
         installed_revision: 1,
         target_grant_revision: 0,
@@ -74,7 +74,7 @@ fn oauth_state() -> AuthOAuthState {
         redirect_uri: "https://auth.example/callback".to_owned(),
         browser_binding_digest: DIGEST.to_owned(),
         portal_binding_digest: Some(DIGEST.to_owned()),
-        browser_flow_id: None,
+        browser_transaction_id: None,
         portal_id: Some("builtin".to_owned()),
         portal_policy_digest: Some(DIGEST.to_owned()),
         claim_owner: None,
@@ -91,23 +91,29 @@ fn oauth_state() -> AuthOAuthState {
 
 async fn repository_conformance(repository: impl AuthEphemeralRepository + Clone) {
     let flow = browser_flow();
-    repository.create_browser_flow(flow.clone()).await.unwrap();
+    repository
+        .create_browser_transaction(flow.clone())
+        .await
+        .unwrap();
     assert_eq!(
-        repository.get_browser_flow(&flow.flow_id).await.unwrap(),
+        repository
+            .get_browser_transaction(&flow.transaction_id)
+            .await
+            .unwrap(),
         Some(flow.clone())
     );
     assert_eq!(
-        repository.create_browser_flow(flow.clone()).await,
+        repository.create_browser_transaction(flow.clone()).await,
         Err(AuthorizationStateError::StorageConflict)
     );
 
     let mut directly_approved = flow.clone();
-    directly_approved.flow_id = "flow-approved".to_owned();
+    directly_approved.transaction_id = "flow-approved".to_owned();
     repository
-        .create_browser_flow(directly_approved.clone())
+        .create_browser_transaction(directly_approved.clone())
         .await
         .unwrap();
-    directly_approved.state = AuthBrowserFlowState::Authenticated;
+    directly_approved.state = AuthBrowserTransactionState::Authenticated;
     directly_approved.principal_id = Some("user-1".to_owned());
     directly_approved.authenticated_provider_id = Some("local".to_owned());
     directly_approved.portal_binding_digest = Some(DIGEST.to_owned());
@@ -119,15 +125,15 @@ async fn repository_conformance(repository: impl AuthEphemeralRepository + Clone
         .unwrap();
     directly_approved.version = 2;
     repository
-        .replace_browser_flow(1, directly_approved.clone())
+        .replace_browser_transaction(1, directly_approved.clone())
         .await
         .unwrap();
-    directly_approved.state = AuthBrowserFlowState::Approved;
+    directly_approved.state = AuthBrowserTransactionState::Approved;
     directly_approved.durable_result_digest = Some(DIGEST.to_owned());
     directly_approved.completed_at = Some(200);
     directly_approved.version = 3;
     repository
-        .replace_browser_flow(2, directly_approved.clone())
+        .replace_browser_transaction(2, directly_approved.clone())
         .await
         .unwrap();
     let mut changed_grant_revision = directly_approved;
@@ -135,67 +141,76 @@ async fn repository_conformance(repository: impl AuthEphemeralRepository + Clone
     changed_grant_revision.version = 4;
     assert_eq!(
         repository
-            .replace_browser_flow(3, changed_grant_revision)
+            .replace_browser_transaction(3, changed_grant_revision)
             .await,
         Err(AuthorizationStateError::StorageConflict)
     );
 
     let mut approval_required = flow.clone();
-    approval_required.state = AuthBrowserFlowState::Authenticated;
+    approval_required.state = AuthBrowserTransactionState::Authenticated;
     approval_required.principal_id = Some("user-1".to_owned());
     approval_required.authenticated_provider_id = Some("local".to_owned());
     approval_required.portal_binding_digest = Some(DIGEST.to_owned());
     approval_required.version = 2;
     repository
-        .replace_browser_flow(1, approval_required.clone())
+        .replace_browser_transaction(1, approval_required.clone())
         .await
         .unwrap();
-    approval_required.state = AuthBrowserFlowState::ApprovalRequired;
+    approval_required.state = AuthBrowserTransactionState::ApprovalRequired;
     approval_required.version = 3;
     repository
-        .replace_browser_flow(2, approval_required.clone())
+        .replace_browser_transaction(2, approval_required.clone())
         .await
         .unwrap();
     assert_eq!(
         repository
-            .replace_browser_flow(1, approval_required.clone())
+            .replace_browser_transaction(1, approval_required.clone())
             .await,
         Err(AuthorizationStateError::StorageConflict)
     );
-    for changed_consent in [{
-        let mut consent = approval_required.consent.clone();
-        consent.decision_digest = DIGEST.replace('A', "B");
-        consent
-    }] {
-        let mut changed = approval_required.clone();
-        changed.consent = changed_consent;
-        changed.version = 4;
-        assert_eq!(
-            repository.replace_browser_flow(3, changed).await,
-            Err(AuthorizationStateError::StorageConflict)
-        );
-    }
-    let mut changed_transcript = approval_required;
-    changed_transcript.request_id = "changed".to_owned();
-    changed_transcript.version = 4;
+    let mut refreshed = approval_required.clone();
+    refreshed.installed_revision = 2;
+    refreshed.consent.installed_revision = 2;
+    refreshed.target_grant_revision = 8;
+    refreshed.consent.expected_grant_revision = 8;
+    refreshed.consent.decision_digest = refreshed.consent.computed_decision_digest().unwrap();
+    refreshed.version = 4;
+    repository
+        .replace_browser_transaction(3, refreshed)
+        .await
+        .unwrap();
+    let refreshed = repository
+        .get_browser_transaction(&flow.transaction_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(refreshed.consent.installed_revision, 2);
+    assert_eq!(refreshed.principal_id.as_deref(), Some("user-1"));
+    let mut changed_transcript = refreshed;
+    changed_transcript.intent_id = "changed".to_owned();
+    changed_transcript.version = 5;
     assert_eq!(
-        repository.replace_browser_flow(3, changed_transcript).await,
+        repository
+            .replace_browser_transaction(4, changed_transcript)
+            .await,
         Err(AuthorizationStateError::StorageConflict)
     );
     let mut skipped_state = flow.clone();
-    skipped_state.flow_id = "flow-skipped".to_owned();
+    skipped_state.transaction_id = "flow-skipped".to_owned();
     repository
-        .create_browser_flow(skipped_state.clone())
+        .create_browser_transaction(skipped_state.clone())
         .await
         .unwrap();
-    skipped_state.state = AuthBrowserFlowState::ApprovalDenied;
+    skipped_state.state = AuthBrowserTransactionState::ApprovalDenied;
     skipped_state.principal_id = Some("user-1".to_owned());
     skipped_state.authenticated_provider_id = Some("local".to_owned());
     skipped_state.portal_binding_digest = Some(DIGEST.to_owned());
     skipped_state.completed_at = Some(200);
     skipped_state.version = 2;
     assert_eq!(
-        repository.replace_browser_flow(1, skipped_state).await,
+        repository
+            .replace_browser_transaction(1, skipped_state)
+            .await,
         Err(AuthorizationStateError::StorageConflict)
     );
 
@@ -378,7 +393,7 @@ async fn account_flow_oauth_accepts_browser_continuation_binding() {
     let mut state = oauth_state();
     state.kind = AuthOAuthKind::AccountFlow;
     state.status = AuthOAuthStatus::ExchangeStarted;
-    state.browser_flow_id = Some("browser-flow-1".to_owned());
+    state.browser_transaction_id = Some("browser-transaction-1".to_owned());
     state.claim_owner = Some("claim-owner".to_owned());
     state.authenticated_provider_subject = Some("provider-subject".to_owned());
     state.authenticated_roles = vec!["administrator".to_owned()];

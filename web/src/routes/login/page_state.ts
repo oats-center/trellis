@@ -23,7 +23,7 @@ function isSamePageLocation(currentUrl: URL, location: string | null): boolean {
 
 type LocalLoginSuccess = {
   state: "authenticated" | "approval_required" | "approved";
-  flowId: string;
+  transactionId: string;
 };
 
 type LocalLoginFetch = (
@@ -34,7 +34,7 @@ type LocalLoginFetch = (
 type LocalRegistrationFetch = LocalLoginFetch;
 
 type LocalLoginRequestRecord = {
-  flowId: string;
+  transactionId: string;
   username: string;
   password: string;
   portalBindingDigest: string;
@@ -77,7 +77,7 @@ function localLoginUrl(trellisUrl: string): URL {
 
 function localRegistrationUrl(trellisUrl: string, flowId: string): URL {
   return new URL(
-    `/auth/flow/${encodeURIComponent(flowId)}/register/local`,
+    `/auth/transactions/${encodeURIComponent(flowId)}/register/local`,
     trellisUrl,
   );
 }
@@ -207,11 +207,15 @@ export function isFederatedRegistrationProvider(
 export async function submitLocalLogin(
   trellisUrl: string,
   request: LocalLoginRequestRecord,
+  bindingSecret: string,
   fetchFn: LocalLoginFetch = fetch,
 ): Promise<LocalLoginSuccess> {
   const response = await fetchFn(localLoginUrl(trellisUrl), {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      "trellis-portal-binding": bindingSecret,
+    },
     body: JSON.stringify(request),
   });
 
@@ -230,23 +234,27 @@ export async function submitLocalLogin(
     (body.state !== "authenticated" &&
       body.state !== "approval_required" &&
       body.state !== "approved") ||
-    body.flowId !== request.flowId
+    body.transactionId !== request.transactionId
   ) {
     throw new Error("Unable to sign in. Please try again.");
   }
 
-  return { state: body.state, flowId: request.flowId };
+  return { state: body.state, transactionId: request.transactionId };
 }
 
 export async function submitLocalRegistration(
   trellisUrl: string,
   flowId: string,
   request: LocalRegistrationRequestRecord,
+  bindingSecret: string,
   fetchFn: LocalRegistrationFetch = fetch,
 ): Promise<void> {
   const response = await fetchFn(localRegistrationUrl(trellisUrl, flowId), {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      "trellis-portal-binding": bindingSecret,
+    },
     body: JSON.stringify(request),
   });
 

@@ -27,9 +27,10 @@ derivation stays the same.
 - `context-refresh`.
 
 Every proof binds purpose, canonical origin, request ID, issued-at milliseconds,
-raw payload digest, and session public key. Browser request policy additionally
-requires `requestId == flowId` at the `/auth/requests` route; the generic proof
-constructor does not impose that route-specific rule.
+raw payload digest, and session public key. Browser request proofs bind the
+initiating request. Browser bind proofs also bind the exact
+`/auth/transactions/{transactionId}/bind` route and the initiating public key;
+their `requestId` is a separate canonical ULID, not the transaction ID.
 
 ## Native Bootstrap
 
@@ -78,7 +79,7 @@ The operation reports only `pending`, `rejected`, or `ready`. `ready` means the
 review is approved; installation still occurs through `/bootstrap/device`.
 Offline QR material is transported by the application and is not a server route.
 
-## Browser Flow
+## Browser Intent And Authentication Transaction
 
 `POST /auth/requests` accepts:
 
@@ -87,20 +88,67 @@ participantId, participantKind, requestId, origin, redirectTo,
 sessionPublicKey, issuedAt, proof
 ```
 
-The server assigns and validates the flow identity, resolves the installed
-participant and current `GrantBinding`, and stores the browser-flow state. The
-client does not upload an artifact or authority digest.
+The server validates the initiating proof and current participant/portal
+eligibility, then returns `intentId`, an opaque signed `intent`, and `loginUrl`.
+The client does not upload an artifact or authority digest. Request creation
+does not persist an authentication transaction or start its deadline.
 
-Portal actions require the raw `Trellis-Portal-Binding` secret whose SHA-256
-digest is stored with the flow. Local login/registration, OIDC continuation,
-approval, and denial share this binding. OIDC callback continuity additionally
-requires the Trellis-origin HttpOnly SameSite=Lax cookie and exact CAS-backed
-state record.
+The `trellis.browser-sign-in-intent.v1` envelope binds the participant ID,
+initiating public key, initiating origin, exact return target, selected portal,
+issue time, and online issuer key ID. It carries no authenticated principal,
+approved grant, consent result, or provider secret. A portal URL transports
+`?intent=<opaque-envelope>`; it is observable, not a bearer login credential.
+The runtime serves pages with `Referrer-Policy: no-referrer`.
 
-`POST /auth/requests/{flowId}/bind` accepts the browser-bind proof. It creates a
-login-only session and returns the minimal login projection. It does not return
-authorization. The client validates participant ID and session public key,
-commits browser generation-fenced login state, then invokes context refresh.
+Rendering calls `POST /auth/intents/view` to verify the intent and obtain
+current non-secret login choices without creating an attempt. Signature failure,
+unavailable signing issuer, participant removal, or changed portal/redirect
+eligibility invalidates the request explicitly; idle elapsed time is not an
+authentication-attempt deadline. Initiating clients use the same boundary to
+discover an existing transaction after authentication starts.
+
+When the user starts local authentication or chooses an OIDC provider, the
+portal calls `POST /auth/transactions` with the intent and a fresh
+`portalBindingDigest`, carrying the raw binding in `Trellis-Portal-Binding`.
+Trellis verifies the intent and current eligibility, selects the current
+participant revision, and assigns an independent `transactionId`. The attempt's
+deadline begins here, not when the intent was created or the page rendered.
+
+The portal retains the raw 32-byte binding in portal-origin `sessionStorage`;
+only its SHA-256 digest is persisted server-side. Bound actions require the
+binding as designed. The transaction owns authenticated identity, provider
+attributes, current consent, expected grant revision, approval/denial, and
+completion. OIDC PKCE, nonce, state, and callback association refer to this
+transaction. Callback continuity still requires the Trellis-origin HttpOnly
+SameSite=Lax cookie and exact CAS-backed state record. Account-flow
+continuations use `browserTransactionId` without changing account or device
+review lifetimes.
+
+Expired transactions cannot authenticate or complete. The portal retains the
+signed intent, explains the expired attempt, and starts another transaction when
+the user continues. Independent attempts do not inherit identity or consent;
+denial or expiry does not destroy the signed intent.
+
+Existing grants are reused only when shared issuance/policy semantics prove
+compatibility without expanding what the user approved. Revision change alone
+does not require consent. Additional authority eligible for user approval
+presents current consent after authentication without a second password prompt.
+Policy denial remains an authorization error; incomplete runtime/resource
+evidence remains bounded pending. Approval recomputes current participant,
+grant, capability, and resource consent: stale decisions are rejected and the
+portal refreshes the view before another decision.
+
+`POST /auth/transactions/{transactionId}/bind` requires proof of the initiating
+private key. The first valid completion creates a login-only session; exact
+supported replay returns that transaction's recorded semantic login result, not
+another session. The response includes `intentId` and the minimal login
+projection, not authorization. The client validates intent, participant, and
+session public-key bindings, commits generation-fenced login state, then invokes
+context refresh.
+
+Only terminal refresh failure with an invalid login may clear login and become
+authentication-required. Terminal authorization denial with a valid login
+propagates its stable machine code without automatically starting another login.
 
 ## Context Refresh
 

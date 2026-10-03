@@ -142,7 +142,7 @@
   }
 
   async function deny(): Promise<void> {
-    if (!flow.flowId) {
+    if (!flow.transactionId) {
       setFlowError("Missing flow id.");
       return;
     }
@@ -173,12 +173,6 @@
 
   async function submitLocal(): Promise<void> {
     const username = localUsername.trim();
-    if (!flow.flowId) {
-      setFlowError(
-        "This sign-in request has expired. Return to the app and start sign-in again.",
-      );
-      return;
-    }
     if (!username || !localPassword) {
       setFlowError("Enter your username and password.");
       return;
@@ -188,12 +182,13 @@
     clearFlowError();
 
     try {
+      const transactionId = await flow.beginAuthentication();
       await submitLocalLogin(trellisUrl, {
-        flowId: flow.flowId,
+        transactionId,
         username,
         password: localPassword,
         portalBindingDigest: flow.binding.digest,
-      });
+      }, flow.binding.secret);
       localPassword = "";
       await loadFlow();
     } catch (error) {
@@ -207,12 +202,6 @@
     const username = localUsername.trim();
     const name = registrationName.trim();
     const email = registrationEmail.trim();
-    if (!flow.flowId) {
-      setFlowError(
-        "This sign-in request has expired. Return to the app and start sign-in again.",
-      );
-      return;
-    }
     if (!username || !registrationPassword || !name || !email) {
       setFlowError("Enter your username, password, name, and email.");
       return;
@@ -222,13 +211,14 @@
     clearFlowError();
 
     try {
-      await submitLocalRegistration(trellisUrl, flow.flowId, {
+      const transactionId = await flow.beginAuthentication();
+      await submitLocalRegistration(trellisUrl, transactionId, {
         username,
         password: registrationPassword,
         name,
         email,
         portalBindingDigest: flow.binding.digest,
-      });
+      }, flow.binding.secret);
       registrationPassword = "";
       await loadFlow();
     } catch (error) {
@@ -242,6 +232,18 @@
     if (!browser) return;
     void loadFlow();
   });
+
+  async function startProvider(providerId: string): Promise<void> {
+    localSubmitting = true;
+    clearFlowError();
+    try {
+      window.location.assign(await flow.providerUrl(providerId));
+    } catch (error) {
+      setFlowError(error instanceof Error ? error.message : String(error));
+    } finally {
+      localSubmitting = false;
+    }
+  }
 </script>
 
 <svelte:head>
@@ -510,10 +512,11 @@
                 {/if}
               </div>
             {:else}
-              <a
+              <button
                 class="portal-provider-link group flex w-full items-center gap-3 rounded-field px-4 py-3 text-left"
-                data-sveltekit-reload
-                href={flow.providerUrl(provider.id)}
+                type="button"
+                disabled={localSubmitting}
+                onclick={() => startProvider(provider.id)}
               >
                 <span
                   class="flex size-9 shrink-0 items-center justify-center rounded-full border border-base-300 bg-base-200 text-sm font-semibold text-base-content/70"
@@ -541,7 +544,7 @@
                     clip-rule="evenodd"
                   />
                 </svg>
-              </a>
+              </button>
             {/if}
           {/each}
         </div>
@@ -675,7 +678,7 @@
         {/if}
       {:else if flow.state?.status === "expired"}
         <div>
-          <h1 class="text-xl font-semibold tracking-[-0.025em] text-base-content">Session expired</h1>
+          <h1 class="text-xl font-semibold tracking-[-0.025em] text-base-content">Sign-in attempt ended</h1>
           <p class="portal-copy mt-2 text-sm">
             This sign-in request is no longer active.
             {#if shouldShowReturnToAppLink()}
@@ -706,13 +709,18 @@
           <span>{visibleFlowError()}</span>
         </div>
       {/if}
+      {#if flow.authenticationAttemptExpired}
+        <div class="alert text-sm" role="status">
+          This authentication attempt expired. Sign in again here to start a fresh attempt.
+        </div>
+      {/if}
     </div>
   </div>
   {#if flow.state?.status === "approval_required"}
     {@render technicalDetails(
       rawUserId(flow.state.user),
       [
-        { label: "Request handle", value: flow.state.flowId },
+        { label: "Authentication attempt", value: flow.state.transactionId },
         { label: "Contract id", value: flow.state.approval.contractId },
         { label: "Contract digest", value: flow.state.approval.contractDigest },
         { label: "Signed-in user id", value: rawUserId(flow.state.user) },
@@ -723,7 +731,7 @@
     {@render technicalDetails(
       rawUserId(flow.state.user),
       [
-        { label: "Request handle", value: flow.state.flowId },
+        { label: "Authentication attempt", value: flow.state.transactionId },
         { label: "Contract id", value: flow.state.approval.contractId },
         { label: "Contract digest", value: flow.state.approval.contractDigest },
         { label: "Signed-in user id", value: rawUserId(flow.state.user) },

@@ -14,11 +14,11 @@ use super::domain::{
 };
 use super::AuthorizationStateError;
 
-pub(super) const BROWSER_FLOW_FORMAT: &str = "trellis.auth-browser-flow.v1";
+pub(super) const BROWSER_TRANSACTION_FORMAT: &str = "trellis.auth-browser-transaction.v1";
 const OAUTH_STATE_FORMAT: &str = "trellis.auth-oauth-state.v1";
 
 #[cfg(feature = "nats-leases")]
-const BROWSER_FLOW_BUCKET: &str = "trellis_auth_browser_flows";
+const BROWSER_TRANSACTION_BUCKET: &str = "trellis_auth_browser_transactions";
 #[cfg(feature = "nats-leases")]
 const OAUTH_STATE_BUCKET: &str = "trellis_auth_oauth_states";
 #[cfg(feature = "nats-leases")]
@@ -32,7 +32,13 @@ const CONNECTIONS_BUCKET: &str = "trellis_auth_connections";
 /// `auth_resources` materialization instead of inventing separate hard values.
 #[cfg(feature = "nats-leases")]
 pub(crate) const AUTH_KV_MATERIALIZATION: [(&str, &str, u64, u64, u32); 3] = [
-    ("browserFlows", BROWSER_FLOW_BUCKET, 1, 86_400_000, 65_536),
+    (
+        "browserTransactions",
+        BROWSER_TRANSACTION_BUCKET,
+        1,
+        86_400_000,
+        65_536,
+    ),
     ("oauthStates", OAUTH_STATE_BUCKET, 1, 900_000, 16_384),
     ("connections", CONNECTIONS_BUCKET, 1, 0, 16_384),
 ];
@@ -40,7 +46,7 @@ pub(crate) const AUTH_KV_MATERIALIZATION: [(&str, &str, u64, u64, u32); 3] = [
 /// Browser authentication flow kind.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum AuthBrowserFlowKind {
+pub(crate) enum AuthBrowserTransactionKind {
     UserAuth,
     DeviceActivation,
 }
@@ -48,7 +54,7 @@ pub(crate) enum AuthBrowserFlowKind {
 /// Browser authentication flow state.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum AuthBrowserFlowState {
+pub(crate) enum AuthBrowserTransactionState {
     ChooseProvider,
     Authenticated,
     ApprovalRequired,
@@ -266,13 +272,13 @@ pub(crate) struct ConsentDecision {
 /// Complete ephemeral browser authentication flow record.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct AuthBrowserFlow {
+pub(crate) struct AuthBrowserTransaction {
     pub format: String,
-    pub flow_id: String,
-    pub kind: AuthBrowserFlowKind,
-    pub state: AuthBrowserFlowState,
-    pub request_id: String,
-    pub request_digest: String,
+    pub transaction_id: String,
+    pub kind: AuthBrowserTransactionKind,
+    pub state: AuthBrowserTransactionState,
+    pub intent_id: String,
+    pub intent_digest: String,
     pub participant_id: String,
     pub installed_revision: u64,
     pub target_grant_revision: u64,
@@ -293,12 +299,12 @@ pub(crate) struct AuthBrowserFlow {
     pub version: u64,
 }
 
-impl AuthBrowserFlow {
+impl AuthBrowserTransaction {
     fn validate(&self) -> Result<(), AuthorizationStateError> {
-        require_format("format", &self.format, BROWSER_FLOW_FORMAT)?;
-        require_nonempty("flowId", &self.flow_id)?;
-        require_nonempty("requestId", &self.request_id)?;
-        require_digest("requestDigest", &self.request_digest)?;
+        require_format("format", &self.format, BROWSER_TRANSACTION_FORMAT)?;
+        require_nonempty("transactionId", &self.transaction_id)?;
+        require_nonempty("intentId", &self.intent_id)?;
+        require_digest("intentDigest", &self.intent_digest)?;
         require_nonempty("participantId", &self.participant_id)?;
         require_positive("installedRevision", self.installed_revision)?;
         if self.target_grant_revision > super::MAX_PROTOCOL_INTEGER {
@@ -359,15 +365,21 @@ impl AuthBrowserFlow {
         let result = self.durable_result_digest.is_some();
         let completed = self.completed_at.is_some();
         let valid = match self.state {
-            AuthBrowserFlowState::ChooseProvider => !principal && !claim && !result && !completed,
-            AuthBrowserFlowState::Authenticated => authenticated && !claim && !result && !completed,
-            AuthBrowserFlowState::ApprovalRequired => {
+            AuthBrowserTransactionState::ChooseProvider => {
+                !principal && !claim && !result && !completed
+            }
+            AuthBrowserTransactionState::Authenticated => {
                 authenticated && !claim && !result && !completed
             }
-            AuthBrowserFlowState::ApprovalDenied => authenticated && !claim && !result && completed,
-            AuthBrowserFlowState::Approved => authenticated && !claim && result && completed,
-            AuthBrowserFlowState::Consumed => authenticated && claim && result && completed,
-            AuthBrowserFlowState::Expired => !claim && !result && completed,
+            AuthBrowserTransactionState::ApprovalRequired => {
+                authenticated && !claim && !result && !completed
+            }
+            AuthBrowserTransactionState::ApprovalDenied => {
+                authenticated && !claim && !result && completed
+            }
+            AuthBrowserTransactionState::Approved => authenticated && !claim && result && completed,
+            AuthBrowserTransactionState::Consumed => authenticated && claim && result && completed,
+            AuthBrowserTransactionState::Expired => !claim && !result && completed,
         };
         if !valid {
             return invalid("browser flow claim/result fields do not match state");
@@ -377,12 +389,17 @@ impl AuthBrowserFlow {
 
     fn preserves_transcript(&self, replacement: &Self) -> bool {
         self.format == replacement.format
-            && self.flow_id == replacement.flow_id
+            && self.transaction_id == replacement.transaction_id
             && self.kind == replacement.kind
-            && self.request_id == replacement.request_id
-            && self.request_digest == replacement.request_digest
+            && self.intent_id == replacement.intent_id
+            && self.intent_digest == replacement.intent_digest
             && self.participant_id == replacement.participant_id
-            && self.installed_revision == replacement.installed_revision
+            && (self.installed_revision == replacement.installed_revision
+                || (matches!(
+                    self.state,
+                    AuthBrowserTransactionState::ChooseProvider
+                        | AuthBrowserTransactionState::ApprovalRequired
+                ) && replacement.installed_revision > self.installed_revision))
             && self.session_public_key == replacement.session_public_key
             && self.portal_id == replacement.portal_id
             && self.redirect_target == replacement.redirect_target
@@ -425,7 +442,7 @@ pub(crate) struct AuthOAuthState {
     pub redirect_uri: String,
     pub browser_binding_digest: String,
     pub portal_binding_digest: Option<String>,
-    pub browser_flow_id: Option<String>,
+    pub browser_transaction_id: Option<String>,
     pub portal_id: Option<String>,
     pub portal_policy_digest: Option<String>,
     pub claim_owner: Option<String>,
@@ -633,7 +650,7 @@ impl AuthOAuthState {
             return invalid("browser OAuth state requires a portal binding digest");
         }
         if self.kind == AuthOAuthKind::AccountFlow
-            && self.browser_flow_id.is_some() != self.portal_binding_digest.is_some()
+            && self.browser_transaction_id.is_some() != self.portal_binding_digest.is_some()
         {
             return invalid("OAuth browser continuation and portal binding must both be present");
         }
@@ -717,18 +734,23 @@ impl AuthOAuthState {
 /// Typed repository port for ephemeral browser and OAuth auth state.
 #[async_trait]
 pub(crate) trait AuthEphemeralRepository: Send + Sync {
-    async fn create_browser_flow(
+    /// Locate the latest started attempt; this correlation never carries identity or approval.
+    async fn transaction_for_intent(
         &self,
-        record: AuthBrowserFlow,
+        intent_id: &str,
+    ) -> Result<Option<String>, AuthorizationStateError>;
+    async fn create_browser_transaction(
+        &self,
+        record: AuthBrowserTransaction,
     ) -> Result<(), AuthorizationStateError>;
-    async fn get_browser_flow(
+    async fn get_browser_transaction(
         &self,
         flow_id: &str,
-    ) -> Result<Option<AuthBrowserFlow>, AuthorizationStateError>;
-    async fn replace_browser_flow(
+    ) -> Result<Option<AuthBrowserTransaction>, AuthorizationStateError>;
+    async fn replace_browser_transaction(
         &self,
         expected_version: u64,
-        replacement: AuthBrowserFlow,
+        replacement: AuthBrowserTransaction,
     ) -> Result<(), AuthorizationStateError>;
 
     async fn create_oauth_state(
@@ -803,7 +825,8 @@ pub(crate) async fn claim_oauth_state(
 #[cfg(test)]
 #[derive(Clone, Debug, Default)]
 pub(crate) struct InMemoryAuthEphemeralRepository {
-    browser_flows: Arc<Mutex<BTreeMap<String, AuthBrowserFlow>>>,
+    intent_transactions: Arc<Mutex<BTreeMap<String, String>>>,
+    browser_transactions: Arc<Mutex<BTreeMap<String, AuthBrowserTransaction>>>,
     oauth_states: Arc<Mutex<BTreeMap<String, AuthOAuthState>>>,
     connections: Arc<Mutex<BTreeMap<String, AuthConnectionPresence>>>,
 }
@@ -811,39 +834,47 @@ pub(crate) struct InMemoryAuthEphemeralRepository {
 #[cfg(test)]
 #[async_trait]
 impl AuthEphemeralRepository for InMemoryAuthEphemeralRepository {
-    async fn create_browser_flow(
+    async fn transaction_for_intent(
         &self,
-        record: AuthBrowserFlow,
+        intent_id: &str,
+    ) -> Result<Option<String>, AuthorizationStateError> {
+        Ok(lock(&self.intent_transactions)?.get(intent_id).cloned())
+    }
+    async fn create_browser_transaction(
+        &self,
+        record: AuthBrowserTransaction,
     ) -> Result<(), AuthorizationStateError> {
         validate_create(record.version, || record.validate())?;
-        let mut records = lock(&self.browser_flows)?;
-        if records.contains_key(&record.flow_id) {
+        let mut records = lock(&self.browser_transactions)?;
+        if records.contains_key(&record.transaction_id) {
             return Err(AuthorizationStateError::StorageConflict);
         }
-        records.insert(record.flow_id.clone(), record);
+        lock(&self.intent_transactions)?
+            .insert(record.intent_digest.clone(), record.transaction_id.clone());
+        records.insert(record.transaction_id.clone(), record);
         Ok(())
     }
 
-    async fn get_browser_flow(
+    async fn get_browser_transaction(
         &self,
         flow_id: &str,
-    ) -> Result<Option<AuthBrowserFlow>, AuthorizationStateError> {
-        Ok(lock(&self.browser_flows)?.get(flow_id).cloned())
+    ) -> Result<Option<AuthBrowserTransaction>, AuthorizationStateError> {
+        Ok(lock(&self.browser_transactions)?.get(flow_id).cloned())
     }
 
-    async fn replace_browser_flow(
+    async fn replace_browser_transaction(
         &self,
         expected_version: u64,
-        replacement: AuthBrowserFlow,
+        replacement: AuthBrowserTransaction,
     ) -> Result<(), AuthorizationStateError> {
         validate_replacement_version(expected_version, replacement.version)?;
-        let mut records = lock(&self.browser_flows)?;
+        let mut records = lock(&self.browser_transactions)?;
         let current = records
-            .get(&replacement.flow_id)
+            .get(&replacement.transaction_id)
             .ok_or(AuthorizationStateError::StorageConflict)?;
         validate_browser_replacement(current, expected_version, &replacement)?;
         replacement.validate()?;
-        records.insert(replacement.flow_id.clone(), replacement);
+        records.insert(replacement.transaction_id.clone(), replacement);
         Ok(())
     }
 
@@ -970,24 +1001,28 @@ fn validate_replacement_version(
 }
 
 fn validate_browser_replacement(
-    current: &AuthBrowserFlow,
+    current: &AuthBrowserTransaction,
     expected_version: u64,
-    replacement: &AuthBrowserFlow,
+    replacement: &AuthBrowserTransaction,
 ) -> Result<(), AuthorizationStateError> {
     if current.version != expected_version
         || !current.preserves_transcript(replacement)
         || current.consent != replacement.consent
-            && !(current.state == AuthBrowserFlowState::ChooseProvider
-                && replacement.state == AuthBrowserFlowState::Authenticated)
+            && !((current.state == AuthBrowserTransactionState::ChooseProvider
+                && replacement.state == AuthBrowserTransactionState::Authenticated)
+                || (current.state == AuthBrowserTransactionState::ApprovalRequired
+                    && replacement.state == AuthBrowserTransactionState::ApprovalRequired))
         || current.principal_id.is_some()
             && (current.principal_id != replacement.principal_id
                 || current.authenticated_provider_id != replacement.authenticated_provider_id
                 || current.authenticated_roles != replacement.authenticated_roles
                 || current.portal_binding_digest != replacement.portal_binding_digest
-                || current.target_grant_revision != replacement.target_grant_revision)
+                || (current.target_grant_revision != replacement.target_grant_revision
+                    && !(current.state == AuthBrowserTransactionState::ApprovalRequired
+                        && replacement.state == AuthBrowserTransactionState::ApprovalRequired)))
         || current.principal_id.is_none()
             && replacement.principal_id.is_some()
-            && replacement.state != AuthBrowserFlowState::Authenticated
+            && replacement.state != AuthBrowserTransactionState::Authenticated
         || !valid_browser_transition(current.state, replacement.state)
     {
         return Err(AuthorizationStateError::StorageConflict);
@@ -1016,25 +1051,29 @@ fn validate_oauth_replacement(
     Ok(())
 }
 
-fn valid_browser_transition(current: AuthBrowserFlowState, next: AuthBrowserFlowState) -> bool {
+fn valid_browser_transition(
+    current: AuthBrowserTransactionState,
+    next: AuthBrowserTransactionState,
+) -> bool {
     matches!(
         (current, next),
         (
-            AuthBrowserFlowState::ChooseProvider,
-            AuthBrowserFlowState::Authenticated | AuthBrowserFlowState::Expired
+            AuthBrowserTransactionState::ChooseProvider,
+            AuthBrowserTransactionState::Authenticated | AuthBrowserTransactionState::Expired
         ) | (
-            AuthBrowserFlowState::Authenticated,
-            AuthBrowserFlowState::ApprovalRequired
-                | AuthBrowserFlowState::Approved
-                | AuthBrowserFlowState::Expired
+            AuthBrowserTransactionState::Authenticated,
+            AuthBrowserTransactionState::ApprovalRequired
+                | AuthBrowserTransactionState::Approved
+                | AuthBrowserTransactionState::Expired
         ) | (
-            AuthBrowserFlowState::ApprovalRequired,
-            AuthBrowserFlowState::Approved
-                | AuthBrowserFlowState::ApprovalDenied
-                | AuthBrowserFlowState::Expired
+            AuthBrowserTransactionState::ApprovalRequired,
+            AuthBrowserTransactionState::ApprovalRequired
+                | AuthBrowserTransactionState::Approved
+                | AuthBrowserTransactionState::ApprovalDenied
+                | AuthBrowserTransactionState::Expired
         ) | (
-            AuthBrowserFlowState::Approved,
-            AuthBrowserFlowState::Consumed | AuthBrowserFlowState::Expired
+            AuthBrowserTransactionState::Approved,
+            AuthBrowserTransactionState::Consumed | AuthBrowserTransactionState::Expired
         )
     )
 }
@@ -1102,7 +1141,7 @@ mod nats {
     /// NATS KV implementation of ephemeral auth storage.
     #[derive(Clone, Debug)]
     pub(crate) struct NatsAuthEphemeralRepository {
-        browser_flows: kv::Store,
+        browser_transactions: kv::Store,
         oauth_states: kv::Store,
         connections: kv::Store,
     }
@@ -1131,7 +1170,7 @@ mod nats {
             // Active attachment records are retained until the broker confirms the
             // attachment is gone, which is why `connections` carries a zero window.
             Ok(Self {
-                browser_flows: stores.remove(0),
+                browser_transactions: stores.remove(0),
                 oauth_states: stores.remove(0),
                 connections: stores.remove(0),
             })
@@ -1157,34 +1196,57 @@ mod nats {
 
     #[async_trait]
     impl AuthEphemeralRepository for NatsAuthEphemeralRepository {
-        async fn create_browser_flow(
+        async fn transaction_for_intent(
             &self,
-            record: AuthBrowserFlow,
+            intent_id: &str,
+        ) -> Result<Option<String>, AuthorizationStateError> {
+            self.browser_transactions
+                .get(format!("intent.{intent_id}"))
+                .await
+                .map_err(|error| storage(error.to_string()))?
+                .map(|bytes| {
+                    String::from_utf8(bytes.to_vec()).map_err(|error| storage(error.to_string()))
+                })
+                .transpose()
+        }
+        async fn create_browser_transaction(
+            &self,
+            record: AuthBrowserTransaction,
         ) -> Result<(), AuthorizationStateError> {
             validate_create(record.version, || record.validate())?;
-            create(&self.browser_flows, &record.flow_id, &record).await
+            create(&self.browser_transactions, &record.transaction_id, &record).await?;
+            // Publish discovery only after the independent transaction exists.
+            self.browser_transactions
+                .put(
+                    format!("intent.{}", record.intent_digest),
+                    record.transaction_id.into(),
+                )
+                .await
+                .map_err(|error| storage(error.to_string()))?;
+            Ok(())
         }
 
-        async fn get_browser_flow(
+        async fn get_browser_transaction(
             &self,
             flow_id: &str,
-        ) -> Result<Option<AuthBrowserFlow>, AuthorizationStateError> {
-            get(&self.browser_flows, flow_id).await
+        ) -> Result<Option<AuthBrowserTransaction>, AuthorizationStateError> {
+            get(&self.browser_transactions, flow_id).await
         }
 
-        async fn replace_browser_flow(
+        async fn replace_browser_transaction(
             &self,
             expected_version: u64,
-            replacement: AuthBrowserFlow,
+            replacement: AuthBrowserTransaction,
         ) -> Result<(), AuthorizationStateError> {
             validate_replacement_version(expected_version, replacement.version)?;
-            let entry = current_entry(&self.browser_flows, &replacement.flow_id).await?;
-            let current = decode::<AuthBrowserFlow>(&entry.value)?;
+            let entry =
+                current_entry(&self.browser_transactions, &replacement.transaction_id).await?;
+            let current = decode::<AuthBrowserTransaction>(&entry.value)?;
             validate_browser_replacement(&current, expected_version, &replacement)?;
             replacement.validate()?;
             update(
-                &self.browser_flows,
-                &replacement.flow_id,
+                &self.browser_transactions,
+                &replacement.transaction_id,
                 &replacement,
                 entry.revision,
             )
@@ -1492,7 +1554,7 @@ mod nats {
         fn validate_record(&self) -> Result<(), AuthorizationStateError>;
     }
 
-    impl Validate for AuthBrowserFlow {
+    impl Validate for AuthBrowserTransaction {
         fn validate_record(&self) -> Result<(), AuthorizationStateError> {
             self.validate()
         }

@@ -241,49 +241,23 @@ pub(super) fn resolve_snapshot(
             )
         }
     };
-    let authority = if pinned_older_revision {
-        super::policy::resolve_projected_authority(
-            &participant,
-            binding.approval_mode,
-            &binding.approved_capabilities,
-            &binding.approved_resources,
-            &binding.platform_privileges,
-            &binding.delegation_ceiling,
-            (
-                &resources,
-                companion_available && binding.companion_approved,
-            ),
-        )?
-    } else {
-        super::policy::resolve_authority(
-            &participant,
-            binding.approval_mode,
-            &binding.approved_capabilities,
-            &binding.approved_resources,
-            &binding.platform_privileges,
-            &binding.delegation_ceiling,
-            (
-                &resources,
-                companion_available && binding.companion_approved,
-            ),
-        )?
-    };
-    // Exact approvals and older-revision projections may narrow effective grants,
-    // but neither may introduce an atom outside the approved ceiling.
-    if authority.exact_grants != binding.grants
-        && !((binding.approval_mode == super::ApprovalMode::Exact || pinned_older_revision)
-            && authority
-                .exact_grants
-                .permissions()
-                .iter()
-                .all(|atom| binding.grants.permissions().contains(atom)))
-    {
-        return Err(if pinned_older_revision && login_session_id.is_some() {
+    let authority = super::policy::resolve_binding_authority(
+        &participant,
+        participant_revision,
+        &binding,
+        &resources,
+        companion_available,
+    )
+    .map_err(|error| {
+        if error == AuthorizationStateError::NotAuthorized
+            && pinned_older_revision
+            && login_session_id.is_some()
+        {
             AuthorizationStateError::ParticipantDigestMismatch
         } else {
-            AuthorizationStateError::NotAuthorized
-        });
-    }
+            error
+        }
+    })?;
     if !authority.readiness {
         if authority
             .missing_required
@@ -302,8 +276,8 @@ pub(super) fn resolve_snapshot(
             ));
         }
         // An otherwise valid login can outlive the app vocabulary its owner
-        // currently approves. Let clients renew sign-in instead of retrying a
-        // permanently incompatible pin. Current-revision denials and native
+        // currently approves. Surface the permanently incompatible pin without
+        // discarding the login. Current-revision denials and native
         // identities retain their existing authorization errors.
         return Err(if pinned_older_revision && login_session_id.is_some() {
             AuthorizationStateError::ParticipantDigestMismatch

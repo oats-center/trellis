@@ -14,22 +14,31 @@ device-connect APIs.
 
 ## HTTP Surface
 
-| Method | Route                          | Purpose                                                         |
-| ------ | ------------------------------ | --------------------------------------------------------------- |
-| `GET`  | `/auth/keys/{keyId}`           | Current issuer signing key by key ID                            |
-| `POST` | `/bootstrap/service`           | Admit a provisioned service and return shared installation data |
-| `POST` | `/bootstrap/device`            | Admit an approved device and return shared installation data    |
-| `POST` | `/auth/device/enroll`          | Create/resume proof-bound device review                         |
-| `POST` | `/auth/requests`               | Start a proof-bound browser flow                                |
-| `GET`  | `/auth/requests/{flowId}`      | Read browser-flow progress                                      |
-| `POST` | `/auth/requests/{flowId}/bind` | Create a login after approval; no context returned              |
-| `POST` | `/auth/context/refresh`        | Revalidate and return current runtime installation data         |
-| `POST` | `/auth/logout`                 | Revoke a real user login                                        |
-| `POST` | `/auth/password`               | Change password and revoke sibling logins                       |
+| Method | Route                                         | Purpose                                                                                                     |
+| ------ | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/auth/keys/{keyId}`                          | Current issuer signing key by key ID                                                                        |
+| `POST` | `/bootstrap/service`                          | Admit a provisioned service and return shared installation data                                             |
+| `POST` | `/bootstrap/device`                           | Admit an approved device and return shared installation data                                                |
+| `POST` | `/auth/device/enroll`                         | Create/resume proof-bound device review                                                                     |
+| `POST` | `/auth/requests`                              | Validate a proof-bound request and return a signed intent and portal URL; no authentication attempt created |
+| `POST` | `/auth/intents/view`                          | Verify intent and read current public login choices or discover an existing transaction                     |
+| `POST` | `/auth/transactions`                          | Start an independently portal-bound authentication attempt from a verified intent                           |
+| `GET`  | `/auth/transactions/{transactionId}`          | Read authentication-attempt progress                                                                        |
+| `GET`  | `/auth/transactions/{transactionId}/portal`   | Read bound portal progress and current consent                                                              |
+| `POST` | `/auth/transactions/{transactionId}/approval` | Apply a fresh transaction-bound consent decision                                                            |
+| `POST` | `/auth/transactions/{transactionId}/bind`     | Return the key-bound, idempotent login result and intent ID; no context returned                            |
+| `POST` | `/auth/context/refresh`                       | Revalidate and return current runtime installation data                                                     |
+| `POST` | `/auth/logout`                                | Revoke a real user login                                                                                    |
+| `POST` | `/auth/password`                              | Change password and revoke sibling logins                                                                   |
 
-Browser local-login, registration, OIDC, portal approval/denial, and account
-recovery routes remain part of the existing browser machine. They preserve the
-portal-binding and OIDC-cookie/CAS controls documented in `auth-protocol.md`.
+Browser sign-in separates a reusable signed request from a bounded server-owned
+authentication transaction. Rendering the portal verifies the intent without
+starting an attempt; starting authentication creates the transaction. Local
+login and registration carry `transactionId`; OIDC, consent, and completion
+belong to that transaction. Account-flow continuations use
+`browserTransactionId`; account and device review flows retain their own IDs and
+lifetimes. Portal-binding and OIDC-cookie/CAS controls are documented in
+`auth-protocol.md`.
 
 Native bootstrap request DTOs are strict and accept only identity/proof inputs.
 Browser request and bind proofs bind the complete raw body. All HTTP timestamps
@@ -44,8 +53,10 @@ Native bootstrap and context refresh return one shape:
   evidence, signed context, route JWT, inbox, and expiries; and
 - `transports`: exact Core NATS and WebSocket endpoints/options.
 
-Bind returns only the minimal login projection. Browser clients commit that
-result under their generation fence, then call context refresh.
+Bind returns the minimal login projection and its `intentId`. Browser clients
+validate the intent, participant, and initiating-key bindings, commit that
+result under their generation fence, then call context refresh. Exact supported
+replay of a completed transaction returns the same semantic login result.
 
 ## RPC Surface
 

@@ -403,7 +403,7 @@ pub mod trellis {
         }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    pub struct AuthBrowserFlow {
+    pub struct AuthBrowserTransaction {
         #[serde(rename = "authenticatedProviderId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub authenticated_provider_id: Option<crate::__types::Nullable<String>>,
@@ -418,7 +418,7 @@ pub mod trellis {
         #[serde(rename = "completedAt")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub completed_at: Option<crate::__types::Nullable<crate::__types::Int64>>,
-        pub consent: crate::__types::Bytes,
+        pub consent: crate::__types::trellis::ConsentRequest,
         #[serde(rename = "createdAt")]
         pub created_at: crate::__types::Int64,
         #[serde(rename = "durableResultDigest")]
@@ -426,16 +426,16 @@ pub mod trellis {
         pub durable_result_digest: Option<crate::__types::Nullable<String>>,
         #[serde(rename = "expiresAt")]
         pub expires_at: crate::__types::Int64,
-        #[serde(rename = "flowId")]
-        pub flow_id: String,
         pub format: String,
+        #[serde(rename = "installedRevision")]
+        pub installed_revision: crate::__types::Uint64,
+        #[serde(rename = "intentDigest")]
+        pub intent_digest: String,
+        #[serde(rename = "intentId")]
+        pub intent_id: String,
         pub kind: String,
-        #[serde(rename = "participantDigest")]
-        pub participant_digest: String,
         #[serde(rename = "participantId")]
         pub participant_id: String,
-        #[serde(rename = "participantNeedsDigest")]
-        pub participant_needs_digest: String,
         #[serde(rename = "portalBindingDigest")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub portal_binding_digest: Option<crate::__types::Nullable<String>>,
@@ -447,15 +447,13 @@ pub mod trellis {
         #[serde(rename = "redirectTarget")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub redirect_target: Option<crate::__types::Nullable<String>>,
-        #[serde(rename = "requestDigest")]
-        pub request_digest: String,
-        #[serde(rename = "requestId")]
-        pub request_id: String,
-        #[serde(rename = "sessionNkey")]
-        pub session_nkey: String,
         #[serde(rename = "sessionPublicKey")]
         pub session_public_key: String,
         pub state: String,
+        #[serde(rename = "targetGrantRevision")]
+        pub target_grant_revision: crate::__types::Uint64,
+        #[serde(rename = "transactionId")]
+        pub transaction_id: String,
         pub version: crate::__types::Uint64,
         #[serde(flatten)]
         pub extra: serde_json::Map<String, serde_json::Value>,
@@ -15236,9 +15234,9 @@ pub mod trellis {
         pub authenticated_roles: Vec<String>,
         #[serde(rename = "browserBindingDigest")]
         pub browser_binding_digest: String,
-        #[serde(rename = "browserFlowId")]
+        #[serde(rename = "browserTransactionId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub browser_flow_id: Option<crate::__types::Nullable<String>>,
+        pub browser_transaction_id: Option<crate::__types::Nullable<String>>,
         #[serde(rename = "claimOwner")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub claim_owner: Option<crate::__types::Nullable<String>>,

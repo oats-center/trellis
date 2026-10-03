@@ -14,7 +14,7 @@ use sha2::{Digest as _, Sha256};
 use subtle::ConstantTimeEq;
 use url::Url;
 
-use super::super::ephemeral::AuthBrowserFlow;
+use super::super::ephemeral::AuthBrowserTransaction;
 use super::super::ephemeral::AuthOAuthState;
 use super::super::{LoginPortalRecord, LoginSettingsRecord};
 use super::{digest_parts, HttpError};
@@ -54,7 +54,7 @@ pub(super) fn validate_portal_binding_digest(value: &str) -> Result<(), HttpErro
 }
 
 pub(super) fn require_portal_binding(
-    flow: &AuthBrowserFlow,
+    flow: &AuthBrowserTransaction,
     headers: &HeaderMap,
 ) -> Result<(), HttpError> {
     let binding = headers

@@ -126,6 +126,12 @@ participant. Authorization contexts, route JWTs, transports, grants, and issuer
 keys remain process-memory-only. Requests/events carry context digest, matching
 redundant `session-key`, and a message-specific proof.
 
+Browser sign-in carries a reusable signed intent; a bounded authentication
+transaction starts only when authentication begins, not when the portal renders.
+Expired attempts can restart from the same intent. Invalid login requires
+authentication; valid-login authorization denial surfaces its machine code
+without automatically sending the user through another login.
+
 Events use API-qualified subjects and base64url parameter tokens; their signed
 descriptor binds the exact API, dotted event name, and parameter count. Durable delivery acknowledges success only
 after the handler succeeds; final exhaustion is durably recorded in the

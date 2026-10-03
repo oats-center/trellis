@@ -37,31 +37,30 @@ export const AuthApiSurfaceTargetSurfaceCodec = codecs.recursive(() => codecs.na
 	"rpc",
 	"state"
 ])));
-export const AuthBrowserFlowCodec = codecs.recursive(() => codecs.named("trellis.AuthBrowserFlow", codecs.model({
+export const AuthBrowserTransactionCodec = codecs.recursive(() => codecs.named("trellis.AuthBrowserTransaction", codecs.model({
 	authenticatedProviderId: codecs.optional(codecs.nullable(codecs.string)),
 	authenticatedRoles: codecs.list(codecs.string),
 	claimOwner: codecs.optional(codecs.nullable(codecs.string)),
 	claimedAt: codecs.optional(codecs.nullable(codecs.i64)),
 	completedAt: codecs.optional(codecs.nullable(codecs.i64)),
-	consent: codecs.bytes,
+	consent: codecs.ref(() => ConsentRequestCodec),
 	createdAt: codecs.i64,
 	durableResultDigest: codecs.optional(codecs.nullable(codecs.string)),
 	expiresAt: codecs.i64,
-	flowId: codecs.string,
 	format: codecs.string,
+	installedRevision: codecs.u64,
+	intentDigest: codecs.string,
+	intentId: codecs.string,
 	kind: codecs.string,
-	participantDigest: codecs.string,
 	participantId: codecs.string,
-	participantNeedsDigest: codecs.string,
 	portalBindingDigest: codecs.optional(codecs.nullable(codecs.string)),
 	portalId: codecs.string,
 	principalId: codecs.optional(codecs.nullable(codecs.string)),
 	redirectTarget: codecs.optional(codecs.nullable(codecs.string)),
-	requestDigest: codecs.string,
-	requestId: codecs.string,
-	sessionNkey: codecs.string,
 	sessionPublicKey: codecs.string,
 	state: codecs.string,
+	targetGrantRevision: codecs.u64,
+	transactionId: codecs.string,
 	version: codecs.u64
 })));
 export const AuthCapabilitiesListRequestCodec = codecs.recursive(() => codecs.named("trellis.AuthCapabilitiesListRequest", codecs.model({
@@ -1430,7 +1429,7 @@ export const AuthOAuthStateCodec = codecs.recursive(() => codecs.named("trellis.
 	authenticatedProviderSubject: codecs.optional(codecs.nullable(codecs.string)),
 	authenticatedRoles: codecs.list(codecs.string),
 	browserBindingDigest: codecs.string,
-	browserFlowId: codecs.optional(codecs.nullable(codecs.string)),
+	browserTransactionId: codecs.optional(codecs.nullable(codecs.string)),
 	claimOwner: codecs.optional(codecs.nullable(codecs.string)),
 	createdAt: codecs.i64,
 	expiresAt: codecs.i64,

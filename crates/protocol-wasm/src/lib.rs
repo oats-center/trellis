@@ -72,7 +72,7 @@ struct RequiredNullable<T>(Option<T>);
 enum WireSessionProofInput {
     UserAuthBind {
         origin: String,
-        flow_id: String,
+        transaction_id: String,
         session_public_key: String,
         unsigned_request: Value,
     },
@@ -106,12 +106,12 @@ impl TryFrom<WireSessionProofInput> for SessionProofInput {
         match value {
             WireSessionProofInput::UserAuthBind {
                 origin,
-                flow_id,
+                transaction_id,
                 session_public_key,
                 unsigned_request,
             } => Self::user_auth_bind(UserAuthBindSessionProofInput {
                 origin,
-                flow_id,
+                transaction_id,
                 session_public_key,
                 unsigned_request,
             }),

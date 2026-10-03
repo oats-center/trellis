@@ -11,7 +11,7 @@ type BrowserInstallationRecord = {
   sessionKey?: string;
   loginSessionId?: string;
   expiresAt?: number | null;
-  pendingFlowId?: string;
+  pendingIntentId?: string;
 };
 
 /** Browser-owned installation credential and optional remembered login. */
@@ -21,7 +21,7 @@ export type BrowserSessionCredential = Readonly<{
   sessionKey: string;
   loginSessionId?: string;
   expiresAt?: number | null;
-  pendingFlowId?: string;
+  pendingIntentId?: string;
 }>;
 
 const temporaryInstallations = new Map<string, BrowserInstallationRecord>();
@@ -59,9 +59,9 @@ function credential(
       ? {}
       : { loginSessionId: record.loginSessionId }),
     ...(record.expiresAt === undefined ? {} : { expiresAt: record.expiresAt }),
-    ...(record.pendingFlowId === undefined
+    ...(record.pendingIntentId === undefined
       ? {}
-      : { pendingFlowId: record.pendingFlowId }),
+      : { pendingIntentId: record.pendingIntentId }),
   };
 }
 
@@ -201,23 +201,23 @@ export class BrowserSessionStore {
     });
   }
 
-  rememberFlow(
+  rememberIntent(
     expected: Pick<BrowserSessionCredential, "generation" | "sessionKey">,
-    flowId: string,
+    intentId: string,
   ): Promise<boolean> {
     return this.#update((current) => {
       if (
         current.generation !== expected.generation ||
         current.sessionKey !== expected.sessionKey
       ) return undefined;
-      return { ...current, pendingFlowId: flowId };
+      return { ...current, pendingIntentId: intentId };
     });
   }
 
   completeBind(
     expected: Pick<
       BrowserSessionCredential,
-      "generation" | "sessionKey" | "pendingFlowId"
+      "generation" | "sessionKey" | "pendingIntentId"
     >,
     login: { loginSessionId: string; expiresAt: number | null },
   ): Promise<boolean> {
@@ -225,10 +225,10 @@ export class BrowserSessionStore {
       if (
         current.generation !== expected.generation ||
         current.sessionKey !== expected.sessionKey ||
-        !expected.pendingFlowId ||
-        current.pendingFlowId !== expected.pendingFlowId
+        !expected.pendingIntentId ||
+        current.pendingIntentId !== expected.pendingIntentId
       ) return undefined;
-      const { pendingFlowId: _, ...retained } = current;
+      const { pendingIntentId: _, ...retained } = current;
       return { ...retained, ...login };
     });
   }

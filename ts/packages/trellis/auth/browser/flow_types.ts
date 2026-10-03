@@ -29,7 +29,8 @@ const UserSchema = Type.Object({
 export const PortalFlowStateSchema = Type.Union([
   Type.Object({
     status: Type.Literal("choose_provider"),
-    flowId: Type.String({ minLength: 1 }),
+    intentId: Type.String({ minLength: 1 }),
+    transactionId: Type.Optional(Type.String({ minLength: 1 })),
     providers: Type.Array(Type.Object({
       id: Type.String({ minLength: 1 }),
       displayName: Type.String({ minLength: 1 }),
@@ -40,11 +41,11 @@ export const PortalFlowStateSchema = Type.Union([
   }),
   Type.Object({
     status: Type.Literal("processing"),
-    flowId: Type.String({ minLength: 1 }),
+    transactionId: Type.String({ minLength: 1 }),
   }),
   Type.Object({
     status: Type.Literal("approval_required"),
-    flowId: Type.String({ minLength: 1 }),
+    transactionId: Type.String({ minLength: 1 }),
     consentViewDigest: Type.String({ minLength: 1 }),
     optionalBundles: Type.Array(OpenObjectSchema),
     user: UserSchema,
@@ -52,13 +53,13 @@ export const PortalFlowStateSchema = Type.Union([
   }),
   Type.Object({
     status: Type.Literal("approval_denied"),
-    flowId: Type.String({ minLength: 1 }),
+    transactionId: Type.String({ minLength: 1 }),
     approval: ApprovalSchema,
     returnLocation: Type.Optional(Type.String({ minLength: 1 })),
   }),
   Type.Object({
     status: Type.Literal("insufficient_capabilities"),
-    flowId: Type.String({ minLength: 1 }),
+    transactionId: Type.String({ minLength: 1 }),
     user: Type.Optional(UserSchema),
     approval: ApprovalSchema,
     missingCapabilities: Type.Array(Type.String()),

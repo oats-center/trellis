@@ -38,20 +38,18 @@ pub fn create_portal_binding() -> PortalBinding {
     }
 }
 
-/// Reads the `flowId` query parameter out of a login URL.
+/// Reads the opaque signed intent from a portal navigation URL.
 ///
 /// # Errors
 ///
-/// Returns an invalid-argument error when the URL is malformed or carries no `flowId`.
-pub fn flow_id_from_url(url: &str) -> Result<String, TrellisAuthError> {
+/// Returns an invalid-argument error when the URL is malformed or carries no intent.
+pub fn intent_from_url(url: &str) -> Result<String, TrellisAuthError> {
     let parsed = url::Url::parse(url)?;
     parsed
         .query_pairs()
-        .find(|(key, _)| key == "flowId")
+        .find(|(key, _)| key == "intent")
         .map(|(_, value)| value.into_owned())
-        .ok_or_else(|| {
-            TrellisAuthError::InvalidArgument(format!("auth URL is missing flowId: {url}"))
-        })
+        .ok_or_else(|| TrellisAuthError::InvalidArgument("auth URL is missing intent".to_owned()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -78,7 +76,7 @@ fn base_url(trellis_url: &str) -> Result<String, TrellisAuthError> {
 
 async fn get_flow(base: &str, flow_id: &str) -> Result<FlowWire, TrellisAuthError> {
     let response = http_client()?
-        .get(format!("{base}/auth/flow/{flow_id}"))
+        .get(format!("{base}/auth/transactions/{flow_id}"))
         .send()
         .await?;
     if !response.status().is_success() {
@@ -97,7 +95,7 @@ async fn post_portal_flow(
     binding: &PortalBinding,
 ) -> Result<FlowWire, TrellisAuthError> {
     let response = http_client()?
-        .post(format!("{base}/auth/flow/{flow_id}/portal"))
+        .post(format!("{base}/auth/transactions/{flow_id}/portal"))
         .header("origin", base)
         .header(PORTAL_BINDING_HEADER, &binding.secret)
         .send()
@@ -168,6 +166,38 @@ fn approval_body(consent: &Value, decision_digest: &str, approve: bool) -> Value
     })
 }
 
+/// Starts a fresh bounded authentication attempt from a reusable signed intent.
+///
+/// # Errors
+/// Returns an HTTP failure when the intent or selected portal is no longer valid.
+pub async fn start_portal_transaction(
+    trellis_url: &str,
+    intent: &str,
+    binding: &PortalBinding,
+) -> Result<String, TrellisAuthError> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Started {
+        transaction_id: String,
+    }
+    let base = base_url(trellis_url)?;
+    let response = http_client()?
+        .post(format!("{base}/auth/transactions"))
+        .header("origin", &base)
+        .header(PORTAL_BINDING_HEADER, &binding.secret)
+        .json(&json!({ "intent": intent, "portalBindingDigest": binding.digest }))
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        let error = decode_trellis_http_error(response).await;
+        return Err(TrellisAuthError::AuthRequestHttpFailure(
+            error.status,
+            error.code,
+        ));
+    }
+    Ok(response.json::<Started>().await?.transaction_id)
+}
+
 /// Performs the local-password login step of a portal flow.
 ///
 /// # Errors
@@ -184,8 +214,9 @@ pub async fn perform_local_login(
     let response = http_client()?
         .post(format!("{base}/auth/login/local"))
         .header("origin", &base)
+        .header(PORTAL_BINDING_HEADER, &binding.secret)
         .json(&json!({
-            "flowId": flow_id,
+            "transactionId": flow_id,
             "username": username,
             "password": password,
             "portalBindingDigest": binding.digest,
@@ -215,7 +246,7 @@ pub enum LocalLoginStep {
     /// The flow is waiting for consent; finish it with [`approve_local_login`].
     ConsentRequired {
         /// Flow identifier.
-        flow_id: String,
+        transaction_id: String,
         /// Binding secret that must accompany the approval.
         binding: PortalBinding,
         /// What the flow is asking to grant.
@@ -224,7 +255,7 @@ pub enum LocalLoginStep {
     /// The flow already completed.
     Completed {
         /// Flow identifier.
-        flow_id: String,
+        transaction_id: String,
     },
 }
 
@@ -266,8 +297,9 @@ pub async fn begin_local_login(
     password: &str,
 ) -> Result<LocalLoginStep, TrellisAuthError> {
     let base = base_url(trellis_url)?;
-    let flow_id = flow_id_from_url(login_url)?;
+    let intent = intent_from_url(login_url)?;
     let binding = create_portal_binding();
+    let flow_id = start_portal_transaction(&base, &intent, &binding).await?;
     perform_local_login(&base, &flow_id, username, password, &binding).await?;
 
     let browser = get_flow(&base, &flow_id).await?;
@@ -275,7 +307,11 @@ pub async fn begin_local_login(
         "authenticated" | "approval_required" => {
             post_portal_flow(&base, &flow_id, &binding).await?
         }
-        "approved" | "consumed" => return Ok(LocalLoginStep::Completed { flow_id }),
+        "approved" | "consumed" => {
+            return Ok(LocalLoginStep::Completed {
+                transaction_id: flow_id,
+            })
+        }
         other => {
             return Err(TrellisAuthError::AuthFlowFailed(format!(
                 "local login did not reach approval; portal state is '{other}'"
@@ -284,14 +320,16 @@ pub async fn begin_local_login(
     };
 
     match portal.state.as_str() {
-        "approved" | "consumed" => Ok(LocalLoginStep::Completed { flow_id }),
+        "approved" | "consumed" => Ok(LocalLoginStep::Completed {
+            transaction_id: flow_id,
+        }),
         "approval_required" => {
             let consent = portal.consent_view.clone().ok_or_else(|| {
                 TrellisAuthError::AuthFlowFailed("flow omitted its consent view".to_owned())
             })?;
             let summary = consent_summary(&consent);
             Ok(LocalLoginStep::ConsentRequired {
-                flow_id,
+                transaction_id: flow_id,
                 binding,
                 summary,
             })
@@ -328,7 +366,7 @@ pub async fn approve_local_login(
         .to_owned();
     let body = approval_body(&consent, &decision_digest, true);
     let response = http_client()?
-        .post(format!("{base}/auth/flow/{flow_id}/approval"))
+        .post(format!("{base}/auth/transactions/{flow_id}/approval"))
         .header("content-type", "application/json")
         .header("origin", &base)
         .header(PORTAL_BINDING_HEADER, &binding.secret)
@@ -370,10 +408,12 @@ pub async fn complete_local_login(
     password: &str,
 ) -> Result<String, TrellisAuthError> {
     match begin_local_login(trellis_url, login_url, username, password).await? {
-        LocalLoginStep::Completed { flow_id } => Ok(flow_id),
+        LocalLoginStep::Completed { transaction_id } => Ok(transaction_id),
         LocalLoginStep::ConsentRequired {
-            flow_id, binding, ..
-        } => approve_local_login(trellis_url, &flow_id, &binding).await,
+            transaction_id,
+            binding,
+            ..
+        } => approve_local_login(trellis_url, &transaction_id, &binding).await,
     }
 }
 
@@ -420,12 +460,12 @@ mod tests {
     }
 
     #[test]
-    fn flow_id_is_read_from_a_login_url() {
+    fn signed_intent_is_read_from_a_login_url() {
         assert_eq!(
-            flow_id_from_url("http://localhost:3000/login?flowId=abc").expect("flow id"),
+            intent_from_url("http://localhost:3000/login?intent=abc").expect("intent"),
             "abc"
         );
-        assert!(flow_id_from_url("http://localhost:3000/login").is_err());
+        assert!(intent_from_url("http://localhost:3000/login").is_err());
     }
 
     #[test]

@@ -4,6 +4,7 @@ import { base64urlEncode } from "@oatscenter/trellis/auth";
 import {
   createPortalBinding,
   fetchPortalFlowState,
+  startPortalTransaction,
   submitPortalApproval,
 } from "@oatscenter/trellis/auth/browser";
 import { participants } from "trellis-web-generated";
@@ -125,9 +126,18 @@ Deno.test("user administration renames local login, restores access, and scopes 
           redirectTo: `${runtime.trellisUrl}/_trellis/test/admin-auth`,
         },
         onAuthRequired: async ({ loginUrl }) => {
-          const flowId = new URL(loginUrl).searchParams.get("flowId");
-          assert(flowId);
+          const intent = new URL(loginUrl).searchParams.get("intent");
+          assert(intent);
           const binding = await createPortalBinding();
+          const location = {
+            authUrl: runtime.trellisUrl,
+            portalOrigin: runtime.publicOrigin,
+          };
+          const flowId = await startPortalTransaction(
+            location,
+            intent,
+            binding,
+          );
           const response = await fetch(
             `${runtime.trellisUrl}/auth/login/local`,
             {
@@ -135,9 +145,10 @@ Deno.test("user administration renames local login, restores access, and scopes 
               headers: {
                 "content-type": "application/json",
                 origin: runtime.publicOrigin,
+                "trellis-portal-binding": binding.secret,
               },
               body: JSON.stringify({
-                flowId,
+                transactionId: flowId,
                 username,
                 password,
                 portalBindingDigest: binding.digest,
@@ -146,10 +157,6 @@ Deno.test("user administration renames local login, restores access, and scopes 
           );
           assertEquals(response.status, 200, await response.clone().text());
           await response.arrayBuffer();
-          const location = {
-            authUrl: runtime.trellisUrl,
-            portalOrigin: runtime.publicOrigin,
-          };
           const state = await fetchPortalFlowState(location, flowId, binding);
           if (state.status === "approval_required") {
             assert(
@@ -164,7 +171,7 @@ Deno.test("user administration renames local login, restores access, and scopes 
             );
             assertEquals(approved.status, "redirect");
           } else assertEquals(state.status, "redirect");
-          return { status: "bound" as const, flowId };
+          return { status: "bound" as const, transactionId: flowId };
         },
       }).orThrow();
     }

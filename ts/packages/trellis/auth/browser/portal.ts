@@ -47,10 +47,10 @@ export async function createPortalBinding(): Promise<PortalBinding> {
 
 /** Returns the portal browser's per-flow verifier, creating it when absent. */
 export async function getOrCreatePortalBinding(
-  flowId: string,
+  transactionId: string,
   storage: Storage,
 ): Promise<PortalBinding> {
-  const key = `${PORTAL_BINDING_KEY_PREFIX}${flowId}`;
+  const key = `${PORTAL_BINDING_KEY_PREFIX}${transactionId}`;
   const stored = storage.getItem(key);
   const storedBytes = stored ? decodeBase64Url(stored) : null;
   let bytes: Uint8Array;
@@ -76,8 +76,9 @@ function authBaseUrl(config: AuthConfig): string {
   return config.authUrl.replace(/\/$/, "");
 }
 
-const BrowserFlowWireProperties = {
-  flowId: Type.String({ minLength: 1 }),
+const BrowserTransactionWireProperties = {
+  transactionId: Type.String({ minLength: 1 }),
+  intentId: Type.String({ minLength: 1 }),
   expiresAt: Type.Integer(),
   state: Type.Union([
     Type.Literal("choose_provider"),
@@ -137,9 +138,11 @@ const BrowserFlowWireProperties = {
     Type.String({ minLength: 1 }),
   ])),
 };
-const BrowserFlowWireSchema = Type.Object(BrowserFlowWireProperties);
-const PortalFlowWireSchema = Type.Object({
-  ...BrowserFlowWireProperties,
+const BrowserTransactionWireSchema = Type.Object(
+  BrowserTransactionWireProperties,
+);
+const PortalTransactionWireSchema = Type.Object({
+  ...BrowserTransactionWireProperties,
   decisionDigest: Type.String({ minLength: 1 }),
   user: Type.Object({
     origin: Type.String({ minLength: 1 }),
@@ -149,10 +152,10 @@ const PortalFlowWireSchema = Type.Object({
     image: Type.Optional(Type.String({ minLength: 1 })),
   }),
 });
-type BrowserFlowWire = StaticDecode<typeof BrowserFlowWireSchema>;
-type PortalFlowWire = StaticDecode<typeof PortalFlowWireSchema>;
+type BrowserTransactionWire = StaticDecode<typeof BrowserTransactionWireSchema>;
+type PortalTransactionWire = StaticDecode<typeof PortalTransactionWireSchema>;
 
-function approval(wire: BrowserFlowWire) {
+function approval(wire: BrowserTransactionWire) {
   const capabilities: Record<
     string,
     { displayName: string; description: string }
@@ -178,7 +181,9 @@ function approval(wire: BrowserFlowWire) {
   };
 }
 
-function portalState(wire: BrowserFlowWire | PortalFlowWire): PortalFlowState {
+function portalState(
+  wire: BrowserTransactionWire | PortalTransactionWire,
+): PortalFlowState {
   const evidence = approval(wire);
   let state: unknown;
   if (wire.state === "choose_provider") {
@@ -188,7 +193,8 @@ function portalState(wire: BrowserFlowWire | PortalFlowWire): PortalFlowState {
       );
     state = {
       status: "choose_provider",
-      flowId: wire.flowId,
+      intentId: wire.intentId,
+      transactionId: wire.transactionId,
       providers: wire.providers.map((id) => ({ id, displayName: id })),
       app: {
         contractId: evidence.contractId,
@@ -205,14 +211,14 @@ function portalState(wire: BrowserFlowWire | PortalFlowWire): PortalFlowState {
       },
     };
   } else if (wire.state === "authenticated") {
-    state = { status: "processing", flowId: wire.flowId };
+    state = { status: "processing", transactionId: wire.transactionId };
   } else if (wire.state === "approval_required") {
     if (!("user" in wire) || !("decisionDigest" in wire)) {
       throw new Error("Authenticated portal flow requires portal binding");
     }
     state = {
       status: "approval_required",
-      flowId: wire.flowId,
+      transactionId: wire.transactionId,
       consentViewDigest: wire.decisionDigest,
       optionalBundles: [],
       user: wire.user,
@@ -221,7 +227,7 @@ function portalState(wire: BrowserFlowWire | PortalFlowWire): PortalFlowState {
   } else if (wire.state === "approval_denied") {
     state = {
       status: "approval_denied",
-      flowId: wire.flowId,
+      transactionId: wire.transactionId,
       approval: evidence,
       ...(wire.redirectTarget ? { returnLocation: wire.redirectTarget } : {}),
     };
@@ -230,7 +236,7 @@ function portalState(wire: BrowserFlowWire | PortalFlowWire): PortalFlowState {
       throw new Error("Completed portal flow has no redirect target");
     }
     const location = new URL(wire.redirectTarget);
-    location.searchParams.set("flowId", wire.flowId);
+    location.searchParams.set("transactionId", wire.transactionId);
     state = { status: "redirect", location: location.toString() };
   } else if (wire.state === "expired") {
     state = {
@@ -241,26 +247,30 @@ function portalState(wire: BrowserFlowWire | PortalFlowWire): PortalFlowState {
   return Value.Parse(PortalFlowStateSchema, state) as PortalFlowState;
 }
 
-async function fetchBrowserFlowWire(
+async function fetchBrowserTransactionWire(
   config: AuthConfig,
-  flowId: string,
-): Promise<BrowserFlowWire> {
+  transactionId: string,
+): Promise<BrowserTransactionWire> {
   const response = await fetch(
-    `${authBaseUrl(config)}/auth/flow/${encodeURIComponent(flowId)}`,
+    `${authBaseUrl(config)}/auth/transactions/${
+      encodeURIComponent(transactionId)
+    }`,
   );
   if (!response.ok) {
     throw await decodeTrellisHttpError(response);
   }
-  return Value.Parse(BrowserFlowWireSchema, await response.json());
+  return Value.Parse(BrowserTransactionWireSchema, await response.json());
 }
 
-async function fetchBoundPortalFlowWire(
+async function fetchBoundPortalTransactionWire(
   config: AuthConfig,
-  flowId: string,
+  transactionId: string,
   binding: PortalBinding,
-): Promise<PortalFlowWire> {
+): Promise<PortalTransactionWire> {
   const response = await fetch(
-    `${authBaseUrl(config)}/auth/flow/${encodeURIComponent(flowId)}/portal`,
+    `${authBaseUrl(config)}/auth/transactions/${
+      encodeURIComponent(transactionId)
+    }/portal`,
     {
       method: "POST",
       headers: {
@@ -270,57 +280,122 @@ async function fetchBoundPortalFlowWire(
     },
   );
   if (!response.ok) throw await decodeTrellisHttpError(response);
-  return Value.Parse(PortalFlowWireSchema, await response.json());
+  return Value.Parse(PortalTransactionWireSchema, await response.json());
 }
 
-export function portalFlowIdFromUrl(url: URL): string | null {
-  return url.searchParams.get("flowId");
+/** Read the bounded attempt identifier after authentication has started. */
+export function portalTransactionIdFromUrl(url: URL): string | null {
+  return url.searchParams.get("transactionId");
+}
+
+/** Read the opaque signed request carried by portal navigation. */
+export function portalIntentFromUrl(url: URL): string | null {
+  return url.searchParams.get("intent");
+}
+
+/** Render current login choices without creating an authentication attempt. */
+export async function fetchPortalIntentState(
+  config: AuthConfig,
+  intent: string,
+): Promise<Extract<PortalFlowState, { status: "choose_provider" }>> {
+  const response = await fetch(`${authBaseUrl(config)}/auth/intents/view`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(config.portalOrigin ? { origin: config.portalOrigin } : {}),
+    },
+    body: JSON.stringify({ intent }),
+  });
+  if (!response.ok) throw await decodeTrellisHttpError(response);
+  const state = Value.Parse(PortalFlowStateSchema, await response.json());
+  if (state.status !== "choose_provider") {
+    throw new Error("Invalid sign-in intent response");
+  }
+  return state;
+}
+
+/** Begin one fresh attempt from a reusable intent when the user starts signing in. */
+export async function startPortalTransaction(
+  config: AuthConfig,
+  intent: string,
+  binding: PortalBinding,
+): Promise<string> {
+  const response = await fetch(`${authBaseUrl(config)}/auth/transactions`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      [PORTAL_BINDING_HEADER]: binding.secret,
+      ...(config.portalOrigin ? { origin: config.portalOrigin } : {}),
+    },
+    body: JSON.stringify({ intent, portalBindingDigest: binding.digest }),
+  });
+  if (!response.ok) throw await decodeTrellisHttpError(response);
+  return Value.Parse(BrowserTransactionWireSchema, await response.json())
+    .transactionId;
 }
 
 export async function fetchPortalFlowState(
   config: AuthConfig,
-  flowId: string,
+  transactionId: string,
   binding: PortalBinding,
 ): Promise<PortalFlowState> {
-  const flow = await fetchBrowserFlowWire(config, flowId);
+  const flow = await fetchBrowserTransactionWire(config, transactionId);
   if (flow.state !== "authenticated" && flow.state !== "approval_required") {
     return portalState(flow);
   }
-  return portalState(await fetchBoundPortalFlowWire(config, flowId, binding));
+  return portalState(
+    await fetchBoundPortalTransactionWire(config, transactionId, binding),
+  );
 }
 
-export function portalProviderLoginUrl(
+/** Start the selected OIDC provider on the portal-bound authentication attempt. */
+export async function portalProviderLoginUrl(
   config: AuthConfig,
   providerId: string,
-  flowId: string,
+  transactionId: string,
   binding: PortalBinding,
-): string {
+): Promise<string> {
   const base = `${authBaseUrl(config)}/auth/login/${
     encodeURIComponent(providerId)
   }`;
-  const query = new URLSearchParams({
-    flowId,
-    portalBindingDigest: binding.digest,
+  const response = await fetch(base, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "content-type": "application/json",
+      [PORTAL_BINDING_HEADER]: binding.secret,
+      ...(config.portalOrigin ? { origin: config.portalOrigin } : {}),
+    },
+    body: JSON.stringify({
+      transactionId,
+      portalBindingDigest: binding.digest,
+    }),
   });
-  return `${base}?${query}`;
+  if (!response.ok) throw await decodeTrellisHttpError(response);
+  return Value.Parse(
+    Type.Object({ loginUrl: Type.String({ minLength: 1 }) }),
+    await response.json(),
+  ).loginUrl;
 }
 
 export async function submitPortalApproval(
   config: AuthConfig,
-  flowId: string,
+  transactionId: string,
   binding: PortalBinding,
   decision: ApprovalDecision,
 ): Promise<PortalFlowState> {
-  const flow = await fetchBrowserFlowWire(config, flowId);
+  const flow = await fetchBrowserTransactionWire(config, transactionId);
   const wire =
     flow.state === "authenticated" || flow.state === "approval_required"
-      ? await fetchBoundPortalFlowWire(config, flowId, binding)
+      ? await fetchBoundPortalTransactionWire(config, transactionId, binding)
       : null;
   if (wire?.state !== "approval_required") {
     throw new Error("Portal flow is not awaiting approval");
   }
   const response = await fetch(
-    `${authBaseUrl(config)}/auth/flow/${encodeURIComponent(flowId)}/approval`,
+    `${authBaseUrl(config)}/auth/transactions/${
+      encodeURIComponent(transactionId)
+    }/approval`,
     {
       method: "POST",
       headers: {
@@ -360,7 +435,9 @@ export async function submitPortalApproval(
     throw await decodeTrellisHttpError(response);
   }
 
-  return portalState(Value.Parse(PortalFlowWireSchema, await response.json()));
+  return portalState(
+    Value.Parse(PortalTransactionWireSchema, await response.json()),
+  );
 }
 
 export function portalRedirectLocation(
@@ -368,6 +445,5 @@ export function portalRedirectLocation(
 ): string | null {
   if (state?.status === "redirect") return state.location;
   if (state?.status === "approval_denied") return state.returnLocation ?? null;
-  if (state?.status === "expired") return state.returnLocation ?? null;
   return null;
 }

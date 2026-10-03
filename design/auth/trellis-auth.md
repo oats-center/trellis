@@ -192,25 +192,53 @@ already approved device.
 
 ## Browser Authentication
 
-`POST /auth/requests` creates a browser flow. The client supplies participant
-ID, participant kind, canonical origin, request ID, redirect URL, raw-request
-digest, session public key, and proof. Trellis resolves the installed revision
-and current binding server-side.
+`POST /auth/requests` validates a proof-bound sign-in request and returns a
+reusable opaque signed intent, its `intentId`, and a portal URL. The intent
+binds the participant, initiating public key, origin, exact return target,
+portal, issue time, and online issuer. It contains no authenticated identity,
+approved authority, or authentication secrets. Intent creation and portal
+rendering do not start an authentication-attempt deadline.
 
-Portal actions use a 32-byte browser binding. The portal retains the raw value
-in portal-origin `sessionStorage`; Trellis persists only its SHA-256 digest and
-requires the raw value in `Trellis-Portal-Binding`. Origin remains CSRF defense,
-not authentication. OIDC additionally uses its HttpOnly SameSite=Lax callback
-cookie and CAS-backed state record.
+The portal reads current public choices through `/auth/intents/view`. When the
+user starts authentication, `/auth/transactions` verifies the intent and current
+eligibility, selects the current participant revision, and creates an
+independent bounded transaction. Authenticated identity, provider attributes,
+consent, grant revision, decisions, and completion belong to `transactionId`,
+not to the intent. An expired attempt cannot complete; the portal retains the
+intent and allows a fresh attempt without returning to the app.
 
-`POST /auth/requests/{flowId}/bind` verifies the bind proof and creates a user
-login, but returns no authorization context. The client commits the validated
-login result, then calls `/auth/context/refresh` to obtain current
-authorization. Browser persistence is IndexedDB `trellis-auth` version 3, store
+Portal actions use a fresh 32-byte transaction binding. The portal retains the
+raw value in portal-origin `sessionStorage`; Trellis persists only its SHA-256
+digest and requires the raw value in `Trellis-Portal-Binding` for bound actions.
+Origin remains CSRF defense, not authentication. OIDC PKCE, nonce, state,
+HttpOnly SameSite=Lax callback cookie association, and CAS-backed continuation
+belong to the transaction. Account-flow continuations use
+`browserTransactionId`; account and device review lifetimes remain separate.
+
+Existing grant reuse shares issuance/policy compatibility semantics: an active,
+unexpired grant alone is insufficient, and revision change alone does not force
+consent. Authority expansion eligible for approval requests fresh consent after
+authentication, not another password. Approval rejects stale participant, grant,
+capability, and resource decisions and refreshes the consent view. Policy denial
+is an explicit authorization error; pending resource evidence remains bounded
+pending rather than prompting for authentication or consent again.
+
+`POST /auth/transactions/{transactionId}/bind` verifies the initiating key's
+proof and creates a user login, returning its intent ID but no authorization
+context. Exact supported replay returns the same semantic login result;
+independent transactions from one intent do not inherit identity or consent. The
+client commits the validated login result, then calls `/auth/context/refresh`.
+Only an invalid login becomes authentication-required; terminal authorization
+denial with a valid login retains it and surfaces the machine-readable error
+without an automatic login loop.
+
+Browser persistence is IndexedDB `trellis-auth` version 3, store
 `installations`, keyed only by canonical Trellis origin plus stable participant
-ID. Generation, public-key, flow, and login compare-and-swap fences prevent a
-stale tab from overwriting or clearing a newer login. Only the seed, minimal
-login metadata, pending flow, and generation tombstone are durable.
+ID. Generation, public-key, intent, and login compare-and-swap fences prevent
+stale tabs from overwriting or clearing newer state. Only the initiating seed,
+minimal login metadata, pending signed intent/intent ID, and generation
+tombstone are durable; runtime authorization remains in memory. This is a clean
+pre-release cutover without compatibility reads for old pending browser flows.
 
 ## Events And Atomicity
 

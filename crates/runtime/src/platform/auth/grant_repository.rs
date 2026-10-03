@@ -122,6 +122,15 @@ pub(crate) trait GrantRepository: Send + Sync {
         participant_id: String,
     ) -> Result<Vec<super::ephemeral::ConsentResourceActualEntry>, AuthorizationStateError>;
 
+    /// Read current physical resource evidence using the selected vocabulary.
+    async fn get_resource_bindings(
+        &self,
+        owner_kind: GrantOwnerKind,
+        owner_id: String,
+        participant_id: String,
+        installed_revision: u64,
+    ) -> Result<Vec<super::ResourceBindingEvidence>, AuthorizationStateError>;
+
     async fn set_grant_binding(
         &self,
         replacement: GrantBindingReplacement,

@@ -155,14 +155,19 @@ Deno.test("browser request and final bind retain key, flow, redirect, and raw pa
   const bind: SessionProofInput = {
     purpose: "userAuthBind",
     origin: "https://trellis.example",
-    flowId: ulid(),
+    transactionId: ulid(),
     sessionPublicKey: owner.publicKey,
     unsignedRequest: { requestId, issuedAt: iat, extra: request.extra },
   };
   const bound = await signSessionProof(bind, owner.privateKey, owner.publicKey);
   await verifySessionProof(bind, bound, owner.publicKey, iat);
   await assertRejects(() =>
-    verifySessionProof({ ...bind, flowId: ulid() }, bound, owner.publicKey, iat)
+    verifySessionProof(
+      { ...bind, transactionId: ulid() },
+      bound,
+      owner.publicKey,
+      iat,
+    )
   );
   await assertRejects(async () =>
     verifySessionProof(

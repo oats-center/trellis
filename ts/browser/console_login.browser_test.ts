@@ -7,7 +7,7 @@ import {
   completeAdminBootstrapInBrowser,
   completeConsoleEntry,
   launchProfile,
-  openConsole,
+  signInIfPrompted,
   waitForConsoleReady,
 } from "./browser_test_support.ts";
 
@@ -70,7 +70,7 @@ Deno.test("browser admin bootstrap reaches the authorized console and survives r
   }, browserRuntimeOptions());
 });
 
-Deno.test("expired browser sign-in flow recovers without request errors", async () => {
+Deno.test("idle signed-intent portal survives reload and completes the initiating Console login", async () => {
   await withTrellisRuntime(async (runtime) => {
     await runtime.ensureAdmin();
     const context = await launchProfile(runtime);
@@ -85,19 +85,22 @@ Deno.test("expired browser sign-in flow recovers without request errors", async 
       await page
         .getByLabel("Username", { exact: true })
         .waitFor({ state: "visible", timeout: 30_000 });
-      await new Promise((resolve) => setTimeout(resolve, 10_000));
+      const intent = new URL(page.url()).searchParams.get("intent");
+      assertEquals(typeof intent, "string");
       await page.reload({ waitUntil: "domcontentloaded" });
       await page
-        .getByText("Session expired")
+        .getByLabel("Username", { exact: true })
         .waitFor({ state: "visible", timeout: 30_000 });
+      assertEquals(new URL(page.url()).searchParams.get("intent"), intent);
 
-      await openConsole(page, runtime, {
+      await signInIfPrompted(page, {
         username: runtime.adminUsername,
         password: runtime.adminPassword,
       });
+      await waitForConsoleReady(page);
       assertEquals(pageErrors, []);
     } finally {
       await context.close();
     }
-  }, browserRuntimeOptions({ ttlMs: { pendingAuth: 8_000 } }));
+  }, browserRuntimeOptions());
 });

@@ -16,15 +16,16 @@ export type AdminBootstrapInput = {
   password: string;
   name: string;
   email: string;
-  browserFlowId?: string;
+  browserTransactionId?: string;
   portalBindingDigest?: string;
+  portalBindingSecret?: string;
 };
 
 /** Successful admin bootstrap completion response. */
 export type AdminBootstrapSuccess = {
   status: "created" | "updated";
   userId: string;
-  browserFlowId?: string;
+  browserTransactionId?: string;
 };
 
 /** Backend error details used for user-facing bootstrap messages. */
@@ -77,8 +78,8 @@ function successBody(value: unknown): AdminBootstrapSuccess | null {
   return {
     status: value.status,
     userId: value.userId,
-    ...(typeof value.browserFlowId === "string"
-      ? { browserFlowId: value.browserFlowId }
+    ...(typeof value.browserTransactionId === "string"
+      ? { browserTransactionId: value.browserTransactionId }
       : {}),
   };
 }
@@ -130,14 +131,21 @@ export async function completeAdminBootstrap(
     name: input.name.trim() || null,
     email: input.email.trim() || null,
   };
-  if (input.browserFlowId) payload.browserFlowId = input.browserFlowId;
+  if (input.browserTransactionId) {
+    payload.browserTransactionId = input.browserTransactionId;
+  }
   if (input.portalBindingDigest) {
     payload.portalBindingDigest = input.portalBindingDigest;
   }
 
   const response = await fetcher(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(input.portalBindingSecret
+        ? { "trellis-portal-binding": input.portalBindingSecret }
+        : {}),
+    },
     body: JSON.stringify(payload),
   });
   if (!response.ok) {

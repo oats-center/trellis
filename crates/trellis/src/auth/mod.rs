@@ -12,7 +12,8 @@ mod session_store;
 
 pub use crate::service::payload_hash_base64url;
 pub use browser_login::{
-    generate_session_keypair, poll_agent_flow_until_ready, start_admin_reauth, start_agent_login,
+    generate_session_keypair, poll_agent_transaction_until_ready, start_admin_reauth,
+    start_agent_login,
 };
 pub use client::{connect_admin_client_async, session_public_key};
 pub use device_activation::{
@@ -28,8 +29,8 @@ pub use models::{
 };
 pub use portal::{
     approve_local_login, begin_local_login, complete_local_login, create_portal_binding,
-    flow_id_from_url, perform_local_login, LocalLoginStep, PortalBinding, PortalConsentSummary,
-    PORTAL_BINDING_HEADER,
+    intent_from_url, perform_local_login, start_portal_transaction, LocalLoginStep, PortalBinding,
+    PortalConsentSummary, PORTAL_BINDING_HEADER,
 };
 pub use protocol::AuthenticatedUser;
 pub use session_store::{clear_admin_session, load_admin_session, save_admin_session};

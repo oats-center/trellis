@@ -8,13 +8,16 @@ export {
   type ApprovalDecision,
   createPortalBinding,
   fetchPortalFlowState,
+  fetchPortalIntentState,
   getOrCreatePortalBinding,
   type PortalBinding,
-  portalFlowIdFromUrl,
   type PortalFlowState,
   type PortalFlowState as BrowserPortalFlowState,
+  portalIntentFromUrl,
   portalProviderLoginUrl,
   portalRedirectLocation,
+  portalTransactionIdFromUrl,
+  startPortalTransaction,
   submitPortalApproval,
 } from "./browser/portal.ts";
 export { BrowserSessionStore } from "./browser/storage.ts";

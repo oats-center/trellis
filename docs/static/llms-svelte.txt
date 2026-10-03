@@ -52,7 +52,7 @@ Trellis integration behavior:
 - Browser bind verifies session-key possession and creates a user login, then a
   separate refresh obtains and verifies the signed authorization context before
   NATS opens. IndexedDB `trellis-auth` version 3 stores only the session seed,
-  nullable login metadata, pending flow, and generation tombstone, keyed by
+  nullable login metadata, pending signed intent/intent ID, and generation tombstone, keyed by
   canonical origin plus stable participant ID. Contexts, route JWTs, transports,
   grants, and issuer keys remain in memory. Use `AuthorizationContextController` only when UI
   needs explicit reactive loading, ready, refreshing, degraded, expired,
@@ -63,14 +63,22 @@ Trellis integration behavior:
   renewed route credential and context; pending devices poll
   `/auth/device/enroll`, while `/bootstrap/device` admits only approved devices.
 - Let Trellis-owned browser auth redirects complete through `TrellisProvider`
-  and the returned callback URL. A plain callback after an expired login attempt
-  is a restart opportunity, not a user-facing error; only explicit callback
-  errors such as `authError=approval_denied` should be surfaced as denial
-  outcomes.
+  and the returned callback URL carrying `transactionId`. Creating an intent or
+  rendering a portal does not start the attempt deadline. The portal controller
+  loads the signed intent first; call `beginAuthentication()` when submitting
+  credentials or selecting a provider, not on mount. Its
+  `authenticationAttemptExpired` notice explains a deadline while retaining
+  the intent and allowing a fresh attempt in the portal. A plain expired-attempt
+  callback is a restart opportunity; explicit errors such as
+  `authError=approval_denied` remain denial outcomes. Valid-login authorization
+  denial surfaces its stable machine code without automatically starting login.
 - Portal approval is server-owned. `portal.approve()` selects required authority
   only; pass only ids from `portal.state.optionalBundles` to select optional
   authority. Never construct grant sets or capability lists in a Svelte portal.
-  Treat the returned consent proposal as immutable for the lifetime of the flow.
+  Decide only against the current transaction-bound consent view. Stale
+  decisions are rejected and the controller reloads consent before another
+  decision. Compatible approved grants are reused; expanded authority eligible
+  for approval requests fresh consent without another password prompt.
 - OIDC provider links must navigate the same browser so Trellis can verify its
   state-specific `HttpOnly` cookie and current portal policy at callback.
 - Trusted portal policy is administered for one exact portal + participant.

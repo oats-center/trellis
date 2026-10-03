@@ -5,7 +5,7 @@ import { health } from health;
 import { jobs } from jobs;
 import { events } from events;
 import {
-  AuthBrowserFlow,
+  AuthBrowserTransaction,
   AuthConnectionPresence,
   AuthOAuthState,
   AuthApiSurfaceTarget,
@@ -733,7 +733,7 @@ service platform {
   implements auth;
   implements core;
   implements state;
-  kv browserFlows { title "Browser flows"; description "Short-lived browser authentication and activation flow state."; schema AuthBrowserFlow; ttl 1d; desired_max_value 64KiB; }
+  kv browserTransactions { title "Browser authentication attempts"; description "Bounded authentication, consent, and completion state."; schema AuthBrowserTransaction; ttl 1d; desired_max_value 64KiB; }
   kv oauthStates { title "OAuth states"; description "CAS-consumed OAuth state and recovery records."; schema AuthOAuthState; ttl 15m; desired_max_value 16KiB; }
   kv connections { title "Connections"; description "Current operational NATS connection presence."; schema AuthConnectionPresence; ttl 2m; desired_max_value 16KiB; }
 }

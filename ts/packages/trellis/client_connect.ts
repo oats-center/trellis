@@ -243,7 +243,7 @@ type BrowserClientAuthOptions = {
   landingPath?: string;
   context?: unknown;
   currentUrl?: URL | string | (() => URL | string);
-  flowId?: string;
+  transactionId?: string;
   persistence?: "remembered" | "temporary";
 };
 
@@ -255,7 +255,7 @@ type SessionKeyClientAuthOptionsBase = {
   redirectTo: string;
   currentUrl?: URL | string | (() => URL | string);
   context?: unknown;
-  flowId?: string;
+  transactionId?: string;
 };
 
 type SessionKeyClientAuthOptions = SessionKeyClientAuthOptionsBase;
@@ -271,7 +271,7 @@ export type ClientAuthRequiredContext = {
 };
 
 export type ClientAuthContinuation =
-  | { status: "bound"; flowId: string }
+  | { status: "bound"; transactionId: string }
   | { status: "handled" }
   | void;
 
@@ -575,6 +575,7 @@ function createTransportError(args: {
 
 const BindWireSchema = Type.Object({
   serverNow: Type.Integer(),
+  intentId: Type.String({ minLength: 1 }),
   session: Type.Object({
     sessionId: Type.String({ minLength: 1 }),
     principalId: Type.String({ minLength: 1 }),
@@ -585,6 +586,7 @@ const BindWireSchema = Type.Object({
 });
 
 type BrowserBindResult = {
+  intentId: string;
   sessionId: string;
   expiresAt: number | null;
   serverNow: number;
@@ -724,7 +726,7 @@ async function clearBrowserLogin(
 async function bindClientFlow(args: {
   trellisUrl: string;
   origin: string;
-  flowId: string;
+  transactionId: string;
   identity: ClientRuntimeIdentity;
   participant: ClientConnectArgsFor<ClientContract>["participant"];
 }): Promise<BrowserBindResult> {
@@ -736,8 +738,8 @@ async function bindClientFlow(args: {
     requestId,
     issuedAt,
   };
-  const url = `${args.trellisUrl}/auth/flow/${
-    encodeURIComponent(args.flowId)
+  const url = `${args.trellisUrl}/auth/transactions/${
+    encodeURIComponent(args.transactionId)
   }/bind`;
   const init: RequestInit = {
     method: "POST",
@@ -750,7 +752,7 @@ async function bindClientFlow(args: {
       proof: await args.identity.installationAuth.signSessionProof({
         purpose: "userAuthBind",
         origin: args.trellisUrl,
-        flowId: args.flowId,
+        transactionId: args.transactionId,
         sessionPublicKey: args.identity.installationAuth.sessionKey,
         unsignedRequest: unsigned,
       }),
@@ -779,7 +781,7 @@ async function bindClientFlow(args: {
     code: "bind_invalid_response",
     message: "Trellis returned an invalid sign-in response.",
     hint: "Start the sign-in flow again.",
-    context: { flowId: args.flowId },
+    context: { transactionId: args.transactionId },
   });
   let parsed: StaticDecode<typeof BindWireSchema>;
   try {
@@ -792,7 +794,7 @@ async function bindClientFlow(args: {
       message: "Trellis returned an invalid sign-in response.",
       hint: "Start the sign-in flow again.",
       cause,
-      context: { flowId: args.flowId },
+      context: { transactionId: args.transactionId },
     });
   }
   if (
@@ -817,6 +819,7 @@ async function bindClientFlow(args: {
   );
   return {
     sessionId: parsed.session.sessionId,
+    intentId: parsed.intentId,
     expiresAt: parsed.session.expiresAt,
     // Verification consumes integer Unix seconds; the response is in
     // milliseconds, so truncate rather than leave a fractional second.
@@ -920,6 +923,7 @@ async function recoverClientBootstrapWithRetry(args: {
         error instanceof AuthorizationContextRefreshError &&
         error.terminal
       ) {
+        if (!error.loginInvalid) throw error;
         await args.onTerminalSession?.();
         return {
           status: "auth_required",
@@ -975,13 +979,13 @@ async function createRuntimeUserAuthenticator(args: {
 function cleanupBrowserCallbackUrl(currentUrl: URL): void {
   if (!isBrowserRuntime()) return;
   if (
-    !currentUrl.searchParams.has("flowId") &&
+    !currentUrl.searchParams.has("transactionId") &&
     !currentUrl.searchParams.has("authError")
   ) {
     return;
   }
 
-  currentUrl.searchParams.delete("flowId");
+  currentUrl.searchParams.delete("transactionId");
   currentUrl.searchParams.delete("authError");
   globalThis.history.replaceState(
     {},
@@ -992,7 +996,7 @@ function cleanupBrowserCallbackUrl(currentUrl: URL): void {
 
 function isExpiredBindError(error: unknown): boolean {
   return error instanceof TransportError &&
-    error.code === "flow_expired";
+    error.code === "transaction_expired";
 }
 
 function needsReauth(
@@ -1030,7 +1034,7 @@ async function buildSessionKeyLoginUrl(args: {
   identity: ClientRuntimeIdentity;
   participant: ClientConnectArgsFor<ClientContract>["participant"];
 }): Promise<
-  { status: "auth_required"; flowId: string; loginUrl: string }
+  { status: "auth_required"; intentId: string; loginUrl: string }
 > {
   const startedAt = performance.now();
   const requestId = ulid();
@@ -1074,7 +1078,8 @@ async function buildSessionKeyLoginUrl(args: {
   });
   const start = Value.Parse(
     Type.Object({
-      flowId: Type.String({ minLength: 1 }),
+      intentId: Type.String({ minLength: 1 }),
+      intent: Type.String({ minLength: 1 }),
       loginUrl: Type.String({ minLength: 1 }),
     }, { additionalProperties: false }),
     payload,
@@ -1091,7 +1096,7 @@ async function buildSessionKeyLoginUrl(args: {
     );
     return {
       status: "auth_required",
-      flowId: start.flowId,
+      intentId: start.intentId,
       loginUrl: start.loginUrl,
     };
   }
@@ -1125,8 +1130,9 @@ export async function connectClientWithDeps<
   const currentUrl = resolveCurrentUrl(args.auth);
   const browserAuth = args.auth?.mode === "session_key" ? undefined : args.auth;
   const callbackFlowId = args.auth?.mode === "session_key"
-    ? args.auth.flowId
-    : browserAuth?.flowId ?? currentUrl?.searchParams.get("flowId") ??
+    ? args.auth.transactionId
+    : browserAuth?.transactionId ??
+      currentUrl?.searchParams.get("transactionId") ??
       undefined;
   const callbackAuthError = args.auth?.mode === "session_key"
     ? undefined
@@ -1155,7 +1161,7 @@ export async function connectClientWithDeps<
       const bound = await bindClientFlow({
         trellisUrl,
         origin: currentUrl?.origin ?? new URL(trellisUrl).origin,
-        flowId: callbackFlowId,
+        transactionId: callbackFlowId,
         identity,
         participant: args.participant,
       });
@@ -1165,7 +1171,7 @@ export async function connectClientWithDeps<
           !current || !await browserInstallation.completeBind({
             generation: current.generation,
             sessionKey: current.sessionKey,
-            pendingFlowId: callbackFlowId,
+            pendingIntentId: bound.intentId,
           }, {
             loginSessionId: bound.sessionId,
             expiresAt: bound.expiresAt,
@@ -1863,17 +1869,17 @@ async function resolveAuthRequired<
   if (browserInstallation) {
     const current = identity.browserCredential;
     if (
-      !current || !await browserInstallation.rememberFlow({
+      !current || !await browserInstallation.rememberIntent({
         generation: current.generation,
         sessionKey: current.sessionKey,
-      }, authStart.flowId)
+      }, authStart.intentId)
     ) {
       globalThis.location?.reload();
       throw new Error("browser installation changed in another tab");
     }
     identity.browserCredential = {
       ...current,
-      pendingFlowId: authStart.flowId,
+      pendingIntentId: authStart.intentId,
     };
   }
 
@@ -1903,7 +1909,7 @@ async function resolveAuthRequired<
     const bound = await bindClientFlow({
       trellisUrl: normalizeTrellisUrl(args.trellisUrl),
       origin: new URL(redirectTo).origin,
-      flowId: continuation.flowId,
+      transactionId: continuation.transactionId,
       identity,
       participant: args.participant,
     });
@@ -1913,7 +1919,7 @@ async function resolveAuthRequired<
         !current || !await browserInstallation.completeBind({
           generation: current.generation,
           sessionKey: current.sessionKey,
-          pendingFlowId: continuation.flowId,
+          pendingIntentId: bound.intentId,
         }, {
           loginSessionId: bound.sessionId,
           expiresAt: bound.expiresAt,

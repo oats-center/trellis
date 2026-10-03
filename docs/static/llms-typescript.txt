@@ -311,6 +311,25 @@ Browser apps use
 [Svelte integration](llms-svelte.txt). Let the Trellis client own its auth
 installation, proactive refresh, transport maintenance, and normal `logout()`.
 
+Browser sign-in transports a reusable signed intent (`intentId`, opaque
+`intent`, and `loginUrl`), not an already-running authentication attempt. The
+portal verifies the intent on render; authentication starts a bounded,
+independently bound transaction. Callbacks carry `transactionId`.
+`ClientAuthContinuation` supports `{ status: "bound", transactionId }` for
+caller-owned completion or `{ status: "handled" }` for caller-owned routing.
+Do not fabricate login metadata or authorization from a callback.
+
+Custom portals use the public browser-auth helpers `portalIntentFromUrl`,
+`portalTransactionIdFromUrl`, `fetchPortalIntentState`, and
+`startPortalTransaction`. Retain the intent across attempt expiry and start a
+new transaction when the user continues; do not send the user back to the app
+just to restart. The portal receives no initiating app private key. Its fresh
+transaction binding is separate from the app's key-bound completion proof.
+Reuse compatible approved grants without prompting again; expanded authority
+eligible for approval requests current consent after authentication. Preserve
+stable authorization errors with a valid login rather than automatically
+starting another login. The SDK owns those recovery decisions.
+
 A generated device companion is established only through the parent device's
 activation flow and separate user consent. It has its own ordinary App/Agent
 session and cannot use standalone bootstrap or the parent device's authority.

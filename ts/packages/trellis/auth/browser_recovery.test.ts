@@ -20,11 +20,11 @@ function assertClassification(
 Deno.test("classifyBrowserAuthError treats bind expiration as a recoverable expired flow", () => {
   assertClassification(
     new TransportError({
-      code: "flow_expired",
+      code: "transaction_expired",
       message: "The Trellis sign-in step expired.",
       hint: "Start the sign-in flow again.",
     }),
-    { kind: "recoverable_expired_flow", recoverable: true },
+    { kind: "recoverable_expired_transaction", recoverable: true },
   );
 });
 
@@ -47,15 +47,15 @@ Deno.test("classifyBrowserAuthError treats expired session reason as stale sessi
   );
 });
 
-Deno.test("classifyBrowserAuthError treats flow_expired as recoverable expired flow", () => {
+Deno.test("classifyBrowserAuthError treats an expired transaction as restartable without losing the intent", () => {
   assertClassification(
     {
       type: "TransportError",
-      code: "flow_expired",
+      code: "transaction_expired",
       message: "Trellis sign-in did not complete.",
-      context: { reason: "flow_expired" },
+      context: { reason: "transaction_expired" },
     },
-    { kind: "recoverable_expired_flow", recoverable: true },
+    { kind: "recoverable_expired_transaction", recoverable: true },
   );
 });
 

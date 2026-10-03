@@ -1000,19 +1000,18 @@ type JobsRetryResponsejobwaitingOnItemtargetType = string(min_length=1);
 type EventsConsumersQueryRequestLimit = int64(min=1, max=500);
 type EventsQueryRequestLimit = int64(min=1, max=500);
 
-model AuthBrowserFlow {
+model AuthBrowserTransaction {
   format: string;
-  flowId: string;
+  transactionId: string;
   kind: string;
   state: string;
-  requestId: string;
-  requestDigest: string;
+  intentId: string;
+  intentDigest: string;
   participantId: string;
-  participantDigest: string;
-  participantNeedsDigest: string;
-  consent: bytes;
+  installedRevision: uint64;
+  targetGrantRevision: uint64;
+  consent: ConsentRequest;
   sessionPublicKey: string;
-  sessionNkey: string;
   portalId: string;
   redirectTarget?: string | null;
   principalId?: string | null;
@@ -1040,7 +1039,7 @@ model AuthOAuthState {
   redirectUri: string;
   browserBindingDigest: string;
   portalBindingDigest?: string | null;
-  browserFlowId?: string | null;
+  browserTransactionId?: string | null;
   portalId?: string | null;
   portalPolicyDigest?: string | null;
   claimOwner?: string | null;

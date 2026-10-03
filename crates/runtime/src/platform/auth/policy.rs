@@ -379,7 +379,57 @@ pub(crate) struct ResolvedAuthority {
     pub apis: BTreeMap<String, Availability>,
     pub companion: Option<Availability>,
     pub readiness: bool,
+    /// Required authority lacks approval, as distinct from approved provisioning being pending.
+    pub approval_missing: bool,
     pub missing_required: Vec<String>,
+}
+
+/// Resolve an approved binding against the selected participant vocabulary.
+///
+/// Browser reuse and issuance share this boundary: projection can remove obsolete
+/// approvals, but can never authorize permissions outside the approved snapshot.
+pub(crate) fn resolve_binding_authority(
+    participant: &ParticipantBindingRecord,
+    participant_revision: u64,
+    binding: &GrantBinding,
+    resources: &[ResourceBindingEvidence],
+    companion_available: bool,
+) -> Result<ResolvedAuthority, AuthorizationStateError> {
+    let projected = participant_revision != binding.installed_revision;
+    let resolve = if projected {
+        resolve_projected_authority
+    } else {
+        resolve_authority
+    };
+    let mut authority = resolve(
+        participant,
+        binding.approval_mode,
+        &binding.approved_capabilities,
+        &binding.approved_resources,
+        &binding.platform_privileges,
+        &binding.delegation_ceiling,
+        (resources, companion_available && binding.companion_approved),
+    )?;
+    authority.approval_missing |=
+        participant.resolve()?.companion_required && !binding.companion_approved;
+    if authority.exact_grants != binding.grants
+        && !((binding.approval_mode == ApprovalMode::Exact
+            || projected
+            || binding
+                .grants
+                .permissions()
+                .iter()
+                .filter(|atom| !authority.exact_grants.permissions().contains(atom))
+                .all(|atom| matches!(atom.target(), PermissionTarget::ParticipantResource { .. })))
+            && authority
+                .exact_grants
+                .permissions()
+                .iter()
+                .all(|atom| binding.grants.permissions().contains(atom)))
+    {
+        return Err(AuthorizationStateError::NotAuthorized);
+    }
+    Ok(authority)
 }
 
 /// Project present deployment authority onto a pinned older participant revision.
@@ -433,9 +483,11 @@ pub(crate) fn resolve_projected_authority(
         .cloned()
         .collect::<Vec<_>>();
     let mut projected_ceiling = ceiling.clone();
-    projected_ceiling
-        .capabilities
-        .retain(|capability| capabilities.contains_key(&capability.id));
+    projected_ceiling.capabilities.retain(|approved| {
+        capabilities
+            .get(&approved.id)
+            .is_some_and(|capability| capability.consent_digest == approved.consent_digest)
+    });
     if let Some(restrictions) = &ceiling.exact_restrictions {
         projected_ceiling.exact_restrictions = Some(GrantSet::new(
             restrictions
@@ -527,6 +579,7 @@ pub(crate) fn resolve_authority(
         Vec::new()
     };
     let mut missing_required = Vec::new();
+    let mut approval_missing = false;
     for (id, capability) in implicated {
         let fingerprint = ApprovedCapability {
             id: (*id).clone(),
@@ -632,6 +685,7 @@ pub(crate) fn resolve_authority(
             }).cloned());
         }
         if !available && !declaration.optional {
+            approval_missing |= approval.is_none();
             let prefix = if stale { "stale-resource" } else { "resource" };
             missing_required.push(format!(
                 "{prefix}:{}:{name}",
@@ -651,6 +705,7 @@ pub(crate) fn resolve_authority(
         })
     {
         missing_required.push("authority".to_owned());
+        approval_missing = true;
     }
     let mut platform_privileges = approved_platform_privileges
         .iter()
@@ -706,6 +761,7 @@ pub(crate) fn resolve_authority(
         companion,
         readiness: missing_required.is_empty(),
         missing_required,
+        approval_missing,
     })
 }
 
@@ -1124,6 +1180,34 @@ mod tests {
         assert_eq!(resolved.exact_grants, GrantSet::new(vec![atom("Read")]));
         assert!(!resolved.readiness);
         assert_eq!(resolved.missing_required, ["capability:app::overlap"]);
+    }
+
+    #[test]
+    fn changed_consent_semantics_require_approval_even_when_another_capability_covers_the_atoms() {
+        let mut updated = participant();
+        let approved = participant_delegation_ceiling(&updated).unwrap();
+        updated
+            .projection
+            .referenced_apis
+            .get_mut("app@v1")
+            .unwrap()
+            .capabilities
+            .get_mut("app::first")
+            .unwrap()
+            .consent_digest = "C".repeat(43);
+        let authority = resolve_projected_authority(
+            &updated,
+            ApprovalMode::Capabilities,
+            &approved.capabilities,
+            &[],
+            &[],
+            &approved,
+            (&[], true),
+        )
+        .unwrap();
+        assert_eq!(authority.exact_grants, GrantSet::new(vec![atom("Read")]));
+        assert!(!authority.readiness);
+        assert_eq!(authority.missing_required, ["capability:app::first"]);
     }
 
     #[test]

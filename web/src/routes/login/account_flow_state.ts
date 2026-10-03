@@ -69,7 +69,7 @@ export type LocalPasswordInput = {
   password: string;
   name: string;
   email: string;
-  browserFlowId?: string;
+  browserTransactionId?: string;
 };
 
 /** Successful local-password completion response. */
@@ -77,7 +77,7 @@ export type LocalPasswordSuccess = {
   status: "created";
   userId: string;
   returnTo?: string;
-  browserFlowId?: string;
+  browserTransactionId?: string;
 };
 
 /** OAuth/OIDC callback query state for a completed account flow. */
@@ -193,7 +193,7 @@ export function accountFlowProviderLoginUrl(
   flowId: string,
   providerId: string,
   continuation?: {
-    browserFlowId: string;
+    browserTransactionId: string;
     portalBindingDigest: string;
   },
 ): string {
@@ -204,7 +204,10 @@ export function accountFlowProviderLoginUrl(
     trellisUrl,
   );
   if (continuation) {
-    url.searchParams.set("browserFlowId", continuation.browserFlowId);
+    url.searchParams.set(
+      "browserTransactionId",
+      continuation.browserTransactionId,
+    );
     url.searchParams.set(
       "portalBindingDigest",
       continuation.portalBindingDigest,
@@ -400,7 +403,9 @@ export async function completeAccountFlowLocalPassword(
   if (username) payload.username = username;
   if (name) payload.name = name;
   if (email) payload.email = email;
-  if (input.browserFlowId) payload.browserFlowId = input.browserFlowId;
+  if (input.browserTransactionId) {
+    payload.browserTransactionId = input.browserTransactionId;
+  }
 
   const response = await fetcher(
     new URL(
@@ -424,14 +429,14 @@ export async function completeAccountFlowLocalPassword(
     typeof body.userId === "string"
   ) {
     const returnTo = safeRelativeReturnTo(body.returnTo);
-    const browserFlowId = typeof body.browserFlowId === "string"
-      ? body.browserFlowId
+    const browserTransactionId = typeof body.browserTransactionId === "string"
+      ? body.browserTransactionId
       : undefined;
     return {
       status: "created",
       userId: body.userId,
       ...(returnTo ? { returnTo } : {}),
-      ...(browserFlowId ? { browserFlowId } : {}),
+      ...(browserTransactionId ? { browserTransactionId } : {}),
     };
   }
   throw new Error(

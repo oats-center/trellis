@@ -90,10 +90,10 @@ type __ActionNames = {
 	readonly "trellis.state@v1:rpc:Resources.Query": "state.Resources.Query";
 };
 type __Resources = {
-	readonly browserFlows: {
+	readonly browserTransactions: {
 		readonly kind: "kv";
 		readonly availability: "required";
-		readonly codec: typeof Types0.AuthBrowserFlowCodec;
+		readonly codec: typeof Types0.AuthBrowserTransactionCodec;
 		readonly version: 1;
 		readonly migrations: {};
 	};
@@ -146,11 +146,11 @@ export declare const participant: {
 	readonly __runtimeTypes?: typeof __participant.__runtimeTypes;
 	readonly packageEvidence: unknown;
 };
-export declare const PARTICIPANT_DIGEST: "jrmhBcaDBlKuZfY15IGPNe1Fg-nkB7zVn1la-t-4Ctk";
+export declare const PARTICIPANT_DIGEST: "5TiOJIMbSMqq5DU2bhodAHkjmli5RIGsj9NJxFUoGyE";
 export type Participant = typeof participant;
 export type ResourceDescriptors = typeof participant.resources;
-export type BrowserFlowsResource = ResourceDescriptors["browserFlows"];
-export type BrowserFlowsHandle<Handle> = Handle;
+export type BrowserTransactionsResource = ResourceDescriptors["browserTransactions"];
+export type BrowserTransactionsHandle<Handle> = Handle;
 export type ConnectionsResource = ResourceDescriptors["connections"];
 export type ConnectionsHandle<Handle> = Handle;
 export type OauthStatesResource = ResourceDescriptors["oauthStates"];

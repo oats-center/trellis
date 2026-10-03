@@ -19,6 +19,7 @@ mod account;
 mod api_bindings;
 mod application;
 mod authority;
+mod browser_intent;
 mod builtin_semantics;
 mod builtins;
 mod compiled_evidence;

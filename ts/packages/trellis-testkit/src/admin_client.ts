@@ -3,12 +3,16 @@ import {
   type ClientAuthRequiredContext,
   TrellisClient,
 } from "@oatscenter/trellis";
+import {
+  createPortalBinding,
+  startPortalTransaction,
+} from "@oatscenter/trellis/auth/browser";
 
 import {
   adminAccountTokenFromUrl,
   approveLocalFlowIfNeeded,
   completeLocalAuthFlow,
-  flowIdFromUrl,
+  intentFromUrl,
   performLocalLogin,
 } from "./admin/auth_flow.ts";
 import * as adminDeployment from "./admin/deployment.ts";
@@ -222,11 +226,21 @@ export class TrellisTestAdminAutomation {
   ): Promise<ClientAuthContinuation> {
     const startedAt = performance.now();
     await this.completeBootstrap();
-    const flowId = flowIdFromUrl(ctx.loginUrl);
+    const intent = intentFromUrl(ctx.loginUrl);
+    const portalBinding = await createPortalBinding();
+    const flowId = await startPortalTransaction(
+      {
+        authUrl: this.#trellisUrl,
+        portalOrigin: new URL(this.#trellisUrl).origin,
+      },
+      intent,
+      portalBinding,
+    );
     const binding = await performLocalLogin({
       trellisUrl: this.#trellisUrl,
       flowId,
       password: this.#adminPassword,
+      binding: portalBinding,
     });
     await approveLocalFlowIfNeeded({
       trellisUrl: this.#trellisUrl,
@@ -245,7 +259,7 @@ export class TrellisTestAdminAutomation {
       performance.now() - startedAt,
       { operation: "register_client", phase: "total" },
     );
-    return { status: "bound", flowId };
+    return { status: "bound", transactionId: flowId };
   }
 
   /** Configures the built-in portal's test consent ceiling for a participant. */

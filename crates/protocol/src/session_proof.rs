@@ -72,13 +72,13 @@ pub struct UserAuthRequestSessionProofInput {
     pub unsigned_request: Value,
 }
 
-/// Owned fields for claiming an approved browser-auth flow.
+/// Owned fields for claiming an approved browser authentication transaction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UserAuthBindSessionProofInput {
     /// Exact configured Trellis origin, independently supplied by both peers.
     pub origin: String,
-    /// Immutable browser flow identifier.
-    pub flow_id: String,
+    /// Immutable browser authentication transaction identifier.
+    pub transaction_id: String,
     /// Enrolled unpadded base64url Ed25519 session public key.
     pub session_public_key: String,
     /// Complete canonical request input, with the entire `proof` field omitted.
@@ -186,7 +186,7 @@ impl SessionProofInput {
     pub fn user_auth_bind(input: UserAuthBindSessionProofInput) -> Result<Self, ProtocolError> {
         let UserAuthBindSessionProofInput {
             origin,
-            flow_id,
+            transaction_id,
             session_public_key,
             unsigned_request,
         } = input;
@@ -245,7 +245,10 @@ impl SessionProofInput {
             signer_key_id,
             vec![
                 text(&origin, &["origin"])?,
-                text(&format!("/auth/flow/{flow_id}/bind"), &["route"])?,
+                text(
+                    &format!("/auth/transactions/{transaction_id}/bind"),
+                    &["route"],
+                )?,
                 key.as_bytes().to_vec(),
                 Sha256::digest(canonicalize_json(&unsigned_request)?.as_bytes()).to_vec(),
             ],
@@ -1047,7 +1050,7 @@ mod tests {
         let bind = |flow_id: &str| {
             SessionProofInput::user_auth_bind(UserAuthBindSessionProofInput {
                 origin: "https://trellis.example".to_owned(),
-                flow_id: flow_id.to_owned(),
+                transaction_id: flow_id.to_owned(),
                 session_public_key: public_key.clone(),
                 unsigned_request: json!({
                     "requestId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -1074,7 +1077,7 @@ mod tests {
         assert!(
             SessionProofInput::user_auth_bind(UserAuthBindSessionProofInput {
                 origin: "https://trellis.example".to_owned(),
-                flow_id: "flow_1".to_owned(),
+                transaction_id: "flow_1".to_owned(),
                 session_public_key: public_key,
                 unsigned_request: json!({"requestId": "req_bind_1", "issuedAt": 1_000}),
             })

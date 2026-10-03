@@ -2,9 +2,10 @@ use super::super::*;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct BrowserFlowResponse {
-    pub(crate) flow_id: String,
-    pub(crate) state: AuthBrowserFlowState,
+pub(crate) struct BrowserTransactionResponse {
+    pub(crate) transaction_id: String,
+    pub(crate) intent_id: String,
+    pub(crate) state: AuthBrowserTransactionState,
     pub(crate) expires_at: i64,
     pub(crate) providers: Vec<String>,
     pub(crate) registration_enabled: bool,
@@ -15,17 +16,17 @@ pub(crate) struct BrowserFlowResponse {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct PortalFlowResponse {
+pub(crate) struct PortalTransactionResponse {
     #[serde(flatten)]
-    flow: BrowserFlowResponse,
+    flow: BrowserTransactionResponse,
     decision_digest: String,
     user: BrowserFlowUser,
 }
 
 pub(super) async fn portal_flow_response<R, E>(
     state: &AuthHttpState<R, E>,
-    flow: AuthBrowserFlow,
-) -> Result<PortalFlowResponse, HttpError>
+    flow: AuthBrowserTransaction,
+) -> Result<PortalTransactionResponse, HttpError>
 where
     R: AccountRepository
         + AuthorityEvidenceRepository
@@ -52,7 +53,7 @@ where
         .get_user_profile(principal_id)
         .await?
         .ok_or_else(|| HttpError::internal("flow_principal_missing"))?;
-    Ok(PortalFlowResponse {
+    Ok(PortalTransactionResponse {
         decision_digest: flow.consent.decision_digest.clone(),
         user: BrowserFlowUser {
             origin: "trellis",
@@ -78,10 +79,10 @@ pub(crate) struct BrowserFlowUser {
     image: Option<String>,
 }
 
-pub(crate) async fn get_flow<R, E>(
+pub(crate) async fn get_transaction<R, E>(
     State(state): State<AuthHttpState<R, E>>,
     Path(flow_id): Path<String>,
-) -> Result<Json<BrowserFlowResponse>, HttpError>
+) -> Result<Json<BrowserTransactionResponse>, HttpError>
 where
     R: AccountRepository
         + AuthorityEvidenceRepository
@@ -98,7 +99,7 @@ where
         + 'static,
     E: AuthEphemeralRepository + Clone,
 {
-    let flow = load_flow(&state.ephemeral, &flow_id).await?;
+    let flow = load_transaction(&state.ephemeral, &flow_id).await?;
     let (portal, settings) = state
         .service
         .repository()
@@ -115,7 +116,7 @@ where
         .cloned()
         .collect();
     let mut response = flow_response(flow);
-    response.flow_id = flow_id;
+    response.transaction_id = flow_id;
     response.providers = providers;
     response.registration_enabled =
         portal.local_registration_enabled && settings.local_login_enabled;
@@ -123,11 +124,11 @@ where
     Ok(Json(response))
 }
 
-pub(crate) async fn get_portal_flow<R, E>(
+pub(crate) async fn get_portal_transaction<R, E>(
     State(state): State<AuthHttpState<R, E>>,
     Path(flow_id): Path<String>,
     headers: HeaderMap,
-) -> Result<Json<PortalFlowResponse>, HttpError>
+) -> Result<Json<PortalTransactionResponse>, HttpError>
 where
     R: AccountRepository
         + AuthorityEvidenceRepository
@@ -144,7 +145,7 @@ where
         + 'static,
     E: AuthEphemeralRepository + Clone,
 {
-    let flow = load_flow(&state.ephemeral, &flow_id).await?;
+    let flow = load_transaction(&state.ephemeral, &flow_id).await?;
     let (portal, _) = state
         .service
         .repository()
@@ -159,6 +160,7 @@ where
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LocalLoginRequest {
+    #[serde(rename = "transactionId")]
     flow_id: String,
     username: String,
     password: String,
@@ -346,7 +348,7 @@ pub(crate) struct AdminAccountRequest {
     password: String,
     name: Option<String>,
     email: Option<String>,
-    browser_flow_id: Option<String>,
+    browser_transaction_id: Option<String>,
     portal_binding_digest: Option<String>,
 }
 
@@ -384,7 +386,7 @@ where
     let is_first_admin_continuation_retry = flow.kind
         == super::super::super::AccountFlowKind::AdminAccount
         && flow.state == AccountFlowState::Consumed
-        && request.browser_flow_id.is_some();
+        && request.browser_transaction_id.is_some();
     if (!is_first_admin_continuation_retry && flow.state != AccountFlowState::Pending)
         || (flow.state == AccountFlowState::Pending && flow.expires_at < now_ms()?)
     {
@@ -518,14 +520,15 @@ where
                 .collect(),
         });
     }
-    let browser_flow_id = request.browser_flow_id.clone();
+    let browser_flow_id = request.browser_transaction_id.clone();
     let browser_flow = if let Some(browser_flow_id) = browser_flow_id.as_deref() {
         let portal_binding_digest = request
             .portal_binding_digest
             .as_deref()
             .ok_or_else(|| HttpError::bad_request("portal_binding_digest_required"))?;
         validate_portal_binding_digest(portal_binding_digest)?;
-        let browser_flow = load_flow(&state.ephemeral, browser_flow_id).await?;
+        let browser_flow = load_transaction(&state.ephemeral, browser_flow_id).await?;
+        require_portal_binding(&browser_flow, &headers)?;
         let (portal, _) = state
             .service
             .repository()
@@ -570,7 +573,7 @@ where
             .to_owned(),
     };
     if let Some(browser_flow) = browser_flow {
-        let browser_flow_id = browser_flow.flow_id.clone();
+        let browser_flow_id = browser_flow.transaction_id.clone();
         super::consent::complete_authenticated_flow(
             &state,
             browser_flow,
@@ -589,7 +592,7 @@ where
         return Ok(Json(json!({
             "status": if admin_account_edit { "updated" } else { "created" },
             "userId": principal_id,
-            "browserFlowId": browser_flow_id,
+            "browserTransactionId": browser_flow_id,
         })));
     }
     Ok(Json(json!({
@@ -602,7 +605,7 @@ pub(crate) async fn local_login<R, E>(
     State(state): State<AuthHttpState<R, E>>,
     headers: HeaderMap,
     Json(request): Json<LocalLoginRequest>,
-) -> Result<Json<BrowserFlowResponse>, HttpError>
+) -> Result<Json<BrowserTransactionResponse>, HttpError>
 where
     R: AccountRepository
         + AuthorityEvidenceRepository
@@ -619,7 +622,8 @@ where
         + 'static,
     E: AuthEphemeralRepository + Clone,
 {
-    let flow = load_flow(&state.ephemeral, &request.flow_id).await?;
+    let flow = load_transaction(&state.ephemeral, &request.flow_id).await?;
+    require_portal_binding(&flow, &headers)?;
     let (portal, settings) = state
         .service
         .repository()
@@ -639,7 +643,7 @@ where
     }
     if !matches!(
         flow.state,
-        AuthBrowserFlowState::ChooseProvider | AuthBrowserFlowState::Authenticated
+        AuthBrowserTransactionState::ChooseProvider | AuthBrowserTransactionState::Authenticated
     ) {
         return Err(HttpError::conflict("flow_not_pending"));
     }
@@ -653,6 +657,9 @@ where
         LocalAuthentication::Denied => return Err(HttpError::unauthorized("invalid_credentials")),
     };
     validate_portal_binding_digest(&request.portal_binding_digest)?;
+    if flow.portal_binding_digest.as_deref() != Some(&request.portal_binding_digest) {
+        return Err(HttpError::forbidden("portal_binding_mismatch"));
+    }
     let completed = super::consent::complete_authenticated_flow(
         &state,
         flow,
@@ -686,7 +693,7 @@ pub(crate) async fn register_local<R, E>(
     Path(flow_id): Path<String>,
     headers: HeaderMap,
     Json(request): Json<LocalRegistrationRequest>,
-) -> Result<Json<BrowserFlowResponse>, HttpError>
+) -> Result<Json<BrowserTransactionResponse>, HttpError>
 where
     R: AccountRepository
         + AuthorityEvidenceRepository
@@ -703,10 +710,11 @@ where
         + 'static,
     E: AuthEphemeralRepository + Clone,
 {
-    let flow = load_flow(&state.ephemeral, &flow_id).await?;
+    let flow = load_transaction(&state.ephemeral, &flow_id).await?;
+    require_portal_binding(&flow, &headers)?;
     if !matches!(
         flow.state,
-        AuthBrowserFlowState::ChooseProvider | AuthBrowserFlowState::Authenticated
+        AuthBrowserTransactionState::ChooseProvider | AuthBrowserTransactionState::Authenticated
     ) {
         return Err(HttpError::conflict("flow_not_pending"));
     }

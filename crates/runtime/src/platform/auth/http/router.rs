@@ -14,10 +14,10 @@ use url::Url;
 
 use super::bootstrap::{device_bootstrap, device_enroll, service_bootstrap};
 use super::browser::{
-    bind_flow, complete_admin_account, console_index, console_page, decide_approval,
-    get_account_flow, get_flow, get_portal_flow, local_login, oidc_callback, portal_asset,
-    portal_index, portal_page, register_local, start_account_flow_oidc, start_auth, start_oidc,
-    web_fallback,
+    bind_transaction, complete_admin_account, console_index, console_page, decide_approval,
+    get_account_flow, get_portal_transaction, get_transaction, local_login, oidc_callback,
+    portal_asset, portal_index, portal_page, register_local, start_account_flow_oidc, start_auth,
+    start_oidc, start_transaction, view_intent, web_fallback,
 };
 use super::security::{canonical_origin, security_headers};
 use super::well_known::{issuer_key, refresh_context};
@@ -42,6 +42,8 @@ enum RouteMethod {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RouteHandler {
     StartAuth,
+    StartTransaction,
+    ViewIntent,
     ServiceBootstrap,
     DeviceBootstrap,
     DeviceEnroll,
@@ -87,6 +89,16 @@ impl RouteDefinition {
 
 const ROUTES: &[RouteDefinition] = &[
     RouteDefinition {
+        method: RouteMethod::Post,
+        path: "/auth/intents/view",
+        handler: RouteHandler::ViewIntent,
+    },
+    RouteDefinition {
+        method: RouteMethod::Post,
+        path: "/auth/transactions",
+        handler: RouteHandler::StartTransaction,
+    },
+    RouteDefinition {
         method: RouteMethod::Get,
         path: "/auth/keys/{key_id}",
         handler: RouteHandler::IssuerKey,
@@ -118,12 +130,12 @@ const ROUTES: &[RouteDefinition] = &[
     },
     RouteDefinition {
         method: RouteMethod::Get,
-        path: "/auth/flow/{flow_id}",
+        path: "/auth/transactions/{flow_id}",
         handler: RouteHandler::GetFlow,
     },
     RouteDefinition {
         method: RouteMethod::Post,
-        path: "/auth/flow/{flow_id}/portal",
+        path: "/auth/transactions/{flow_id}/portal",
         handler: RouteHandler::GetPortalFlow,
     },
     RouteDefinition {
@@ -133,7 +145,7 @@ const ROUTES: &[RouteDefinition] = &[
     },
     RouteDefinition {
         method: RouteMethod::Post,
-        path: "/auth/flow/{flow_id}/register/local",
+        path: "/auth/transactions/{flow_id}/register/local",
         handler: RouteHandler::RegisterLocal,
     },
     RouteDefinition {
@@ -163,12 +175,12 @@ const ROUTES: &[RouteDefinition] = &[
     },
     RouteDefinition {
         method: RouteMethod::Post,
-        path: "/auth/flow/{flow_id}/approval",
+        path: "/auth/transactions/{flow_id}/approval",
         handler: RouteHandler::DecideApproval,
     },
     RouteDefinition {
         method: RouteMethod::Post,
-        path: "/auth/flow/{flow_id}/bind",
+        path: "/auth/transactions/{flow_id}/bind",
         handler: RouteHandler::BindFlow,
     },
     RouteDefinition {
@@ -226,6 +238,12 @@ where
         (RouteMethod::Post, RouteHandler::StartAuth) => {
             routes.route(route.path, post(start_auth::<R, E>))
         }
+        (RouteMethod::Post, RouteHandler::StartTransaction) => {
+            routes.route(route.path, post(start_transaction::<R, E>))
+        }
+        (RouteMethod::Post, RouteHandler::ViewIntent) => {
+            routes.route(route.path, post(view_intent::<R, E>))
+        }
         (RouteMethod::Post, RouteHandler::ServiceBootstrap) => {
             routes.route(route.path, post(service_bootstrap::<R, E>))
         }
@@ -239,10 +257,10 @@ where
             routes.route(route.path, post(refresh_context::<R, E>))
         }
         (RouteMethod::Get, RouteHandler::GetFlow) => {
-            routes.route(route.path, get(get_flow::<R, E>))
+            routes.route(route.path, get(get_transaction::<R, E>))
         }
         (RouteMethod::Post, RouteHandler::GetPortalFlow) => {
-            routes.route(route.path, post(get_portal_flow::<R, E>))
+            routes.route(route.path, post(get_portal_transaction::<R, E>))
         }
         (RouteMethod::Post, RouteHandler::LocalLogin) => {
             routes.route(route.path, post(local_login::<R, E>))
@@ -269,7 +287,7 @@ where
             routes.route(route.path, post(decide_approval::<R, E>))
         }
         (RouteMethod::Post, RouteHandler::BindFlow) => {
-            routes.route(route.path, post(bind_flow::<R, E>))
+            routes.route(route.path, post(bind_transaction::<R, E>))
         }
         (RouteMethod::Get, RouteHandler::PortalIndex) => {
             routes.route(route.path, get(portal_index::<R, E>))

@@ -76,37 +76,36 @@ export declare const AuthApiSurfaceTargetSurfaceCodec: {
 	decode(value: unknown): AuthApiSurfaceTargetSurface;
 	encode(value: AuthApiSurfaceTargetSurface): unknown;
 };
-export type AuthBrowserFlow = {
+export type AuthBrowserTransaction = {
 	readonly authenticatedProviderId?: string | null;
 	readonly authenticatedRoles: Array<string>;
 	readonly claimOwner?: string | null;
 	readonly claimedAt?: bigint | null;
 	readonly completedAt?: bigint | null;
-	readonly consent: Uint8Array;
+	readonly consent: ConsentRequest;
 	readonly createdAt: bigint;
 	readonly durableResultDigest?: string | null;
 	readonly expiresAt: bigint;
-	readonly flowId: string;
 	readonly format: string;
+	readonly installedRevision: bigint;
+	readonly intentDigest: string;
+	readonly intentId: string;
 	readonly kind: string;
-	readonly participantDigest: string;
 	readonly participantId: string;
-	readonly participantNeedsDigest: string;
 	readonly portalBindingDigest?: string | null;
 	readonly portalId: string;
 	readonly principalId?: string | null;
 	readonly redirectTarget?: string | null;
-	readonly requestDigest: string;
-	readonly requestId: string;
-	readonly sessionNkey: string;
 	readonly sessionPublicKey: string;
 	readonly state: string;
+	readonly targetGrantRevision: bigint;
+	readonly transactionId: string;
 	readonly version: bigint;
 	readonly [key: string]: unknown;
 };
-export declare const AuthBrowserFlowCodec: {
-	decode(value: unknown): AuthBrowserFlow;
-	encode(value: AuthBrowserFlow): unknown;
+export declare const AuthBrowserTransactionCodec: {
+	decode(value: unknown): AuthBrowserTransaction;
+	encode(value: AuthBrowserTransaction): unknown;
 };
 export type AuthCapabilitiesListRequest = {
 	readonly page?: {
@@ -3501,7 +3500,7 @@ export type AuthOAuthState = {
 	readonly authenticatedProviderSubject?: string | null;
 	readonly authenticatedRoles: Array<string>;
 	readonly browserBindingDigest: string;
-	readonly browserFlowId?: string | null;
+	readonly browserTransactionId?: string | null;
 	readonly claimOwner?: string | null;
 	readonly createdAt: bigint;
 	readonly expiresAt: bigint;

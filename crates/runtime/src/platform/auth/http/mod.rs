@@ -41,7 +41,7 @@ mod router;
 mod security;
 mod telemetry;
 mod well_known;
-use browser::BrowserFlowResponse;
+use browser::BrowserTransactionResponse;
 use error::{map_issuance_error, HttpError};
 pub(crate) use router::router;
 use security::{
@@ -55,9 +55,10 @@ const MAX_AUTH_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
 use url::Url;
 
 use super::ephemeral::{
-    claim_oauth_state, AuthBrowserFlow, AuthBrowserFlowKind, AuthBrowserFlowState,
-    AuthEphemeralRepository, AuthOAuthKind, AuthOAuthState, AuthOAuthStatus, ConsentApproval,
-    ConsentDecision, ConsentDecisionKind, ConsentRequest, BROWSER_FLOW_FORMAT,
+    claim_oauth_state, AuthBrowserTransaction, AuthBrowserTransactionKind,
+    AuthBrowserTransactionState, AuthEphemeralRepository, AuthOAuthKind, AuthOAuthState,
+    AuthOAuthStatus, ConsentApproval, ConsentDecision, ConsentDecisionKind, ConsentRequest,
+    BROWSER_TRANSACTION_FORMAT,
 };
 use super::evidence::ParticipantRuntimeProjection;
 use super::{
@@ -353,9 +354,10 @@ struct IssuedBootstrapJwt {
     expires_at: i64,
 }
 
-fn flow_response(flow: AuthBrowserFlow) -> BrowserFlowResponse {
-    BrowserFlowResponse {
-        flow_id: flow.flow_id,
+fn flow_response(flow: AuthBrowserTransaction) -> BrowserTransactionResponse {
+    BrowserTransactionResponse {
+        transaction_id: flow.transaction_id,
+        intent_id: flow.intent_id,
         state: flow.state,
         expires_at: flow.expires_at,
         providers: Vec::new(),
@@ -379,22 +381,27 @@ fn browser_consent(
         .map_err(Into::into)
 }
 
-async fn load_flow(
+async fn load_transaction(
     repository: &impl AuthEphemeralRepository,
     flow_id: &str,
-) -> Result<AuthBrowserFlow, HttpError> {
+) -> Result<AuthBrowserTransaction, HttpError> {
     let flow = repository
-        .get_browser_flow(flow_id)
+        .get_browser_transaction(flow_id)
         .await?
-        .ok_or_else(|| HttpError::not_found("flow_not_found"))?;
-    if flow.expires_at < now_ms()? && flow.state != AuthBrowserFlowState::Expired {
+        .ok_or_else(|| HttpError::not_found("transaction_not_found"))?;
+    if flow.state == AuthBrowserTransactionState::Expired {
+        return Err(HttpError::gone("transaction_expired"));
+    }
+    if flow.expires_at <= now_ms()? {
         let expected = flow.version;
         let mut expired = flow;
-        expired.state = AuthBrowserFlowState::Expired;
+        expired.state = AuthBrowserTransactionState::Expired;
         expired.completed_at = Some(expired.expires_at);
         expired.version += 1;
-        repository.replace_browser_flow(expected, expired).await?;
-        return Err(HttpError::gone("flow_expired"));
+        repository
+            .replace_browser_transaction(expected, expired)
+            .await?;
+        return Err(HttpError::gone("transaction_expired"));
     }
     Ok(flow)
 }

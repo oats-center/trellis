@@ -21,7 +21,8 @@ pub(in crate::platform::auth::http) struct AuthStartRequest {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AuthStartResponse {
-    flow_id: String,
+    intent_id: String,
+    intent: String,
     login_url: String,
 }
 
@@ -56,7 +57,7 @@ where
         return Err(HttpError::bad_request("invalid_auth_request"));
     }
     validate_redirect(&request.redirect_target, &state.allowed_redirect_origins)?;
-    let request_digest = proof_request_digest(&raw).map_err(|error| {
+    proof_request_digest(&raw).map_err(|error| {
         tracing::warn!(%error, "invalid auth request proof envelope");
         HttpError::bad_request("invalid_auth_request")
     })?;
@@ -90,7 +91,7 @@ where
         tracing::warn!(%error, "auth request session proof rejected");
         HttpError::unauthorized("invalid_proof")
     })?;
-    let (installed_revision, binding) = state
+    let (_, binding) = state
         .service
         .repository()
         .get_installed_participant_record(request.participant_id.clone(), None)
@@ -113,26 +114,216 @@ where
             "companion_requires_parent_activation",
         ));
     }
+    let intent_id = request.request_id;
+    let intent = state.authorization_contexts.sign_browser_intent(
+        super::super::super::browser_intent::BrowserSignInIntent {
+            format: String::new(),
+            intent_id: intent_id.clone(),
+            participant_id: request.participant_id,
+            session_public_key: request.session_public_key,
+            origin: canonical_origin(&request.redirect_target)
+                .map_err(|_| HttpError::bad_request("invalid_redirect"))?,
+            redirect_target: request.redirect_target,
+            portal_id: portal.portal_id.clone(),
+            issued_at: now,
+            issuer_key_id: String::new(),
+        },
+    )?;
+    let mut login_url = Url::parse(&portal_url(&portal, &state.public_origin, "")?)
+        .map_err(|_| HttpError::internal("portal_entry_invalid"))?;
+    login_url.set_query(None);
+    login_url.query_pairs_mut().append_pair("intent", &intent);
+    Ok(Json(AuthStartResponse {
+        intent_id,
+        intent,
+        login_url: login_url.into(),
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct TransactionStartRequest {
+    intent: String,
+    portal_binding_digest: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct IntentViewRequest {
+    intent: String,
+}
+
+/// Read current public login choices without creating an authentication attempt.
+pub(crate) async fn view_intent<R, E>(
+    State(state): State<AuthHttpState<R, E>>,
+    headers: HeaderMap,
+    Json(request): Json<IntentViewRequest>,
+) -> Result<Json<Value>, HttpError>
+where
+    R: AccountRepository
+        + AuthorityEvidenceRepository
+        + GrantRepository
+        + ContextRepository
+        + DeploymentRepository
+        + OutboxRepository
+        + PortalRepository
+        + ProvisioningRepository
+        + SessionRepository
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    E: AuthEphemeralRepository + Clone,
+{
+    let intent = state
+        .authorization_contexts
+        .verify_browser_intent(&request.intent, now_ms()?)
+        .await
+        .map_err(|_| HttpError::bad_request("intent_invalid"))?;
+    validate_redirect(&intent.redirect_target, &state.allowed_redirect_origins)?;
+    let (portal, settings) = select_login_portal(
+        state.service.repository(),
+        &intent.participant_id,
+        &intent.redirect_target,
+    )
+    .await?;
+    if portal.portal_id != intent.portal_id {
+        return Err(HttpError::forbidden("intent_portal_changed"));
+    }
+    require_selected_portal_origin(&headers, &portal, &state.public_origin).or_else(|error| {
+        let origin = headers
+            .get(axum::http::header::ORIGIN)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| canonical_origin(value).ok());
+        if origin.as_deref() == Some(intent.origin.as_str()) {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    })?;
+    let (_, participant) = state
+        .service
+        .repository()
+        .get_installed_participant_record(intent.participant_id.clone(), None)
+        .await?
+        .ok_or_else(|| HttpError::not_found("participant_not_found"))?;
+    if participant.state != ParticipantBindingState::Resolved {
+        return Err(HttpError::bad_request("participant_binding_mismatch"));
+    }
+    let providers = portal
+        .provider_ids
+        .iter()
+        .filter(|provider| {
+            (provider.as_str() == "local" && settings.local_login_enabled)
+                || state.oidc_providers.contains_key(provider.as_str())
+        })
+        .map(|id| json!({ "id": id, "displayName": id }))
+        .collect::<Vec<_>>();
+    let mut metadata = json!({
+        "intentId": intent.intent_id,
+        "status": "choose_provider",
+        "providers": providers,
+        "app": { "displayName": participant.projection.display_name },
+        "registration": {
+            "localIdentity": { "available": portal.local_registration_enabled && settings.local_login_enabled },
+            "federatedIdentity": { "available": settings.federated_registration_enabled, "providers": providers.iter().filter(|provider| provider["id"] != "local").collect::<Vec<_>>() },
+        },
+    });
+    if let Some(transaction_id) = state
+        .ephemeral
+        .transaction_for_intent(&URL_SAFE_NO_PAD.encode(Sha256::digest(request.intent.as_bytes())))
+        .await?
+    {
+        metadata["transactionId"] = json!(transaction_id);
+    }
+    Ok(Json(metadata))
+}
+
+/// Start one bounded authentication attempt, never merely to render the portal.
+pub(crate) async fn start_transaction<R, E>(
+    State(state): State<AuthHttpState<R, E>>,
+    headers: HeaderMap,
+    Json(request): Json<TransactionStartRequest>,
+) -> Result<Json<super::local::BrowserTransactionResponse>, HttpError>
+where
+    R: AccountRepository
+        + AuthorityEvidenceRepository
+        + GrantRepository
+        + ContextRepository
+        + DeploymentRepository
+        + OutboxRepository
+        + PortalRepository
+        + ProvisioningRepository
+        + SessionRepository
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    E: AuthEphemeralRepository + Clone,
+{
+    let now = now_ms()?;
+    let intent = state
+        .authorization_contexts
+        .verify_browser_intent(&request.intent, now)
+        .await
+        .map_err(|_| HttpError::bad_request("intent_invalid"))?;
+    validate_redirect(&intent.redirect_target, &state.allowed_redirect_origins)?;
+    if canonical_origin(&intent.redirect_target)
+        .map_err(|_| HttpError::bad_request("intent_invalid"))?
+        != intent.origin
+    {
+        return Err(HttpError::bad_request("intent_invalid"));
+    }
+    let (portal, _) = select_login_portal(
+        state.service.repository(),
+        &intent.participant_id,
+        &intent.redirect_target,
+    )
+    .await?;
+    if portal.portal_id != intent.portal_id {
+        return Err(HttpError::forbidden("intent_portal_changed"));
+    }
+    require_selected_portal_origin(&headers, &portal, &state.public_origin)?;
+    validate_portal_binding_digest(&request.portal_binding_digest)?;
+    let (installed_revision, binding) = state
+        .service
+        .repository()
+        .get_installed_participant_record(intent.participant_id.clone(), None)
+        .await?
+        .ok_or_else(|| HttpError::not_found("participant_not_found"))?;
+    if binding.state != ParticipantBindingState::Resolved {
+        return Err(HttpError::bad_request("participant_binding_mismatch"));
+    }
+    if state
+        .service
+        .repository()
+        .is_companion_participant(intent.participant_id.clone())
+        .await?
+    {
+        return Err(HttpError::bad_request(
+            "companion_requires_parent_activation",
+        ));
+    }
     let consent = browser_consent(&binding, installed_revision)?;
-    let flow_id = request.request_id.clone();
-    let flow = AuthBrowserFlow {
-        format: BROWSER_FLOW_FORMAT.to_owned(),
-        flow_id: flow_id.clone(),
-        kind: AuthBrowserFlowKind::UserAuth,
-        state: AuthBrowserFlowState::ChooseProvider,
-        request_id: request.request_id,
-        request_digest,
-        participant_id: request.participant_id,
+    let flow_id = ulid::Ulid::new().to_string();
+    let flow = AuthBrowserTransaction {
+        format: BROWSER_TRANSACTION_FORMAT.to_owned(),
+        transaction_id: flow_id.clone(),
+        kind: AuthBrowserTransactionKind::UserAuth,
+        state: AuthBrowserTransactionState::ChooseProvider,
+        intent_id: intent.intent_id,
+        intent_digest: URL_SAFE_NO_PAD.encode(Sha256::digest(request.intent.as_bytes())),
+        participant_id: intent.participant_id,
         installed_revision,
         target_grant_revision: 0,
         consent,
-        session_public_key: request.session_public_key,
+        session_public_key: intent.session_public_key,
         portal_id: portal.portal_id.clone(),
-        redirect_target: Some(request.redirect_target),
+        redirect_target: Some(intent.redirect_target),
         principal_id: None,
         authenticated_provider_id: None,
         authenticated_roles: Vec::new(),
-        portal_binding_digest: None,
+        portal_binding_digest: Some(request.portal_binding_digest),
         claim_owner: None,
         claimed_at: None,
         durable_result_digest: None,
@@ -141,26 +332,12 @@ where
         expires_at: checked_add(now, state.browser_flow_ttl_ms)?,
         version: 1,
     };
-    match state.ephemeral.create_browser_flow(flow.clone()).await {
-        Ok(()) => {}
-        Err(AuthorizationStateError::StorageConflict) => {
-            let existing = state
-                .ephemeral
-                .get_browser_flow(&flow_id)
-                .await?
-                .ok_or_else(|| HttpError::conflict("proof_replay"))?;
-            if existing.request_digest != flow.request_digest
-                || existing.session_public_key != flow.session_public_key
-            {
-                return Err(HttpError::conflict("proof_replay"));
-            }
-        }
-        Err(error) => return Err(error.into()),
-    }
-    Ok(Json(AuthStartResponse {
-        flow_id: flow_id.clone(),
-        login_url: portal_url(&portal, &state.public_origin, &flow_id)?,
-    }))
+    require_portal_binding(&flow, &headers)?;
+    state
+        .ephemeral
+        .create_browser_transaction(flow.clone())
+        .await?;
+    Ok(Json(flow_response(flow)))
 }
 
 async fn select_login_portal(
@@ -485,22 +662,4 @@ fn embedded_response(path: &str, bytes: Vec<u8>) -> Response {
         _ => "application/octet-stream",
     };
     ([(CONTENT_TYPE, content_type)], bytes).into_response()
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn start_response_has_one_final_shape() {
-        assert_eq!(
-            serde_json::to_value(super::AuthStartResponse {
-                flow_id: "flow_01".to_owned(),
-                login_url: "https://auth.example/login?flowId=flow_01".to_owned(),
-            })
-            .unwrap(),
-            serde_json::json!({
-                "flowId": "flow_01",
-                "loginUrl": "https://auth.example/login?flowId=flow_01",
-            })
-        );
-    }
 }

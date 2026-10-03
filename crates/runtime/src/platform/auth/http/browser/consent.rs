@@ -1,5 +1,5 @@
 use super::super::*;
-use super::local::{portal_flow_response, PortalFlowResponse};
+use super::local::{portal_flow_response, PortalTransactionResponse};
 use crate::platform::auth::policy::{
     default_portal_authority_selection, portal_allows_authenticated_provider,
 };
@@ -9,7 +9,7 @@ use crate::platform::auth::{
 
 async fn consent_ceiling<R, E>(
     state: &AuthHttpState<R, E>,
-    flow: &AuthBrowserFlow,
+    flow: &AuthBrowserTransaction,
     participant: &ParticipantBindingRecord,
     current: Option<&GrantBinding>,
     attributes: &ProviderLoginAttributes,
@@ -92,7 +92,7 @@ pub(crate) async fn decide_approval<R, E>(
     Path(flow_id): Path<String>,
     headers: HeaderMap,
     Json(request): Json<ConsentDecision>,
-) -> Result<Json<PortalFlowResponse>, HttpError>
+) -> Result<Json<PortalTransactionResponse>, HttpError>
 where
     R: AccountRepository
         + AuthorityEvidenceRepository
@@ -109,7 +109,7 @@ where
         + 'static,
     E: AuthEphemeralRepository + Clone,
 {
-    let mut flow = load_flow(&state.ephemeral, &flow_id).await?;
+    let mut flow = load_transaction(&state.ephemeral, &flow_id).await?;
     let (portal, _) = state
         .service
         .repository()
@@ -124,7 +124,7 @@ where
         .map_err(|_| HttpError::bad_request("invalid_approval"))?;
     if matches!(
         flow.state,
-        AuthBrowserFlowState::Approved | AuthBrowserFlowState::Consumed
+        AuthBrowserTransactionState::Approved | AuthBrowserTransactionState::Consumed
     ) {
         let signer_id = super::super::super::domain::validate_ed25519_public_key(
             "sessionPublicKey",
@@ -147,17 +147,14 @@ where
         }
         return Ok(Json(portal_flow_response(&state, flow).await?));
     }
-    if flow.state != AuthBrowserFlowState::ApprovalRequired {
+    if flow.state != AuthBrowserTransactionState::ApprovalRequired {
         return Err(HttpError::conflict("flow_not_awaiting_approval"));
     }
     let now = now_ms()?;
-    let (_, binding) = state
+    let (installed_revision, binding) = state
         .service
         .repository()
-        .get_installed_participant_record(
-            flow.participant_id.clone(),
-            Some(flow.installed_revision),
-        )
+        .get_installed_participant_record(flow.participant_id.clone(), None)
         .await?
         .ok_or_else(|| HttpError::internal("participant_binding_missing"))?;
     let current = state
@@ -241,6 +238,7 @@ where
     } else {
         None
     };
+    flow.installed_revision = installed_revision;
     let current_consent = super::super::super::policy::consent_request(
         &binding,
         flow.installed_revision,
@@ -259,6 +257,14 @@ where
             }),
     )?;
     if current_consent != flow.consent {
+        let expected_version = flow.version;
+        flow.consent = current_consent;
+        flow.target_grant_revision = current.as_ref().map_or(0, |binding| binding.revision);
+        flow.version += 1;
+        state
+            .ephemeral
+            .replace_browser_transaction(expected_version, flow)
+            .await?;
         return Err(HttpError::conflict("consent_view_changed"));
     }
     if request.decision == ConsentDecisionKind::Reject {
@@ -266,12 +272,12 @@ where
             return Err(HttpError::bad_request("invalid_consent_decision"));
         }
         let expected = flow.version;
-        flow.state = AuthBrowserFlowState::ApprovalDenied;
+        flow.state = AuthBrowserTransactionState::ApprovalDenied;
         flow.completed_at = Some(now);
         flow.version += 1;
         state
             .ephemeral
-            .replace_browser_flow(expected, flow.clone())
+            .replace_browser_transaction(expected, flow.clone())
             .await?;
         return Ok(Json(portal_flow_response(&state, flow).await?));
     }
@@ -348,22 +354,22 @@ where
     let durable_result_digest = trellis_protocol::digest_json(&durable)
         .map_err(|_| HttpError::internal("authority_digest"))?;
     let expected = flow.version;
-    flow.state = AuthBrowserFlowState::Approved;
+    flow.state = AuthBrowserTransactionState::Approved;
     flow.durable_result_digest = Some(durable_result_digest);
     flow.completed_at = Some(now);
     flow.version += 1;
     if let Err(error) = state
         .ephemeral
-        .replace_browser_flow(expected, flow.clone())
+        .replace_browser_transaction(expected, flow.clone())
         .await
     {
         if error != AuthorizationStateError::StorageConflict {
             return Err(error.into());
         }
-        let current = load_flow(&state.ephemeral, &flow.flow_id).await?;
+        let current = load_transaction(&state.ephemeral, &flow.transaction_id).await?;
         if !matches!(
             current.state,
-            AuthBrowserFlowState::Approved | AuthBrowserFlowState::Consumed
+            AuthBrowserTransactionState::Approved | AuthBrowserTransactionState::Consumed
         ) || current.durable_result_digest != flow.durable_result_digest
         {
             return Err(HttpError::conflict("approval_completion_conflict"));
@@ -464,10 +470,10 @@ fn validate_consent_decision(
 
 pub(super) async fn apply_trusted_portal_authority<R, E>(
     state: &AuthHttpState<R, E>,
-    mut flow: AuthBrowserFlow,
+    mut flow: AuthBrowserTransaction,
     attributes: ProviderLoginAttributes,
     now: i64,
-) -> Result<Option<AuthBrowserFlow>, HttpError>
+) -> Result<Option<AuthBrowserTransaction>, HttpError>
 where
     R: AccountRepository
         + AuthorityEvidenceRepository
@@ -582,7 +588,7 @@ where
                 (&[], true),
             )?;
             let request_digest = trellis_protocol::digest_json(&json!({
-                "flowId": flow.flow_id,
+                "transactionId": flow.transaction_id,
                 "portalId": flow.portal_id,
                 "portalVersion": snapshot.portal_version,
                 "loginSettingsVersion": snapshot.login_settings_version,
@@ -624,10 +630,10 @@ where
                     },
                     snapshot,
                     idempotency(
-                        &flow.flow_id,
+                        &flow.transaction_id,
                         "portal.grant.accept",
                         &signer_id,
-                        &flow.flow_id,
+                        &flow.transaction_id,
                         &request_digest,
                         now,
                     )?,
@@ -650,7 +656,7 @@ where
         }
         unreachable!("bounded portal policy retries return or break")
     };
-    flow.state = AuthBrowserFlowState::Approved;
+    flow.state = AuthBrowserTransactionState::Approved;
     flow.durable_result_digest = Some(
         trellis_protocol::digest_json(&durable)
             .map_err(|_| HttpError::internal("authority_digest"))?,
@@ -661,13 +667,13 @@ where
 
 pub(super) async fn complete_authenticated_flow<R, E>(
     state: &AuthHttpState<R, E>,
-    mut flow: AuthBrowserFlow,
+    mut flow: AuthBrowserTransaction,
     principal_id: String,
     attributes: ProviderLoginAttributes,
     portal_binding_digest: String,
     require_explicit_approval: bool,
     now: i64,
-) -> Result<AuthBrowserFlow, HttpError>
+) -> Result<AuthBrowserTransaction, HttpError>
 where
     R: AccountRepository
         + AuthorityEvidenceRepository
@@ -684,7 +690,7 @@ where
         + 'static,
     E: AuthEphemeralRepository + Clone,
 {
-    if flow.state == AuthBrowserFlowState::ChooseProvider {
+    if flow.state == AuthBrowserTransactionState::ChooseProvider {
         let current = state
             .service
             .repository()
@@ -695,15 +701,13 @@ where
             )
             .await?;
         flow.target_grant_revision = current.as_ref().map_or(0, |binding| binding.revision);
-        let (_, participant) = state
+        let (installed_revision, participant) = state
             .service
             .repository()
-            .get_installed_participant_record(
-                flow.participant_id.clone(),
-                Some(flow.installed_revision),
-            )
+            .get_installed_participant_record(flow.participant_id.clone(), None)
             .await?
             .ok_or_else(|| HttpError::internal("participant_binding_missing"))?;
+        flow.installed_revision = installed_revision;
         let mut authority = consent_ceiling(
             state,
             &flow,
@@ -786,7 +790,7 @@ where
                 }),
         )?;
         let expected = flow.version;
-        flow.state = AuthBrowserFlowState::Authenticated;
+        flow.state = AuthBrowserTransactionState::Authenticated;
         flow.principal_id = Some(principal_id.clone());
         flow.authenticated_provider_id = Some(attributes.provider_id.clone());
         flow.authenticated_roles = attributes.roles.clone();
@@ -794,12 +798,12 @@ where
         flow.version += 1;
         match state
             .ephemeral
-            .replace_browser_flow(expected, flow.clone())
+            .replace_browser_transaction(expected, flow.clone())
             .await
         {
             Ok(()) => {}
             Err(AuthorizationStateError::StorageConflict) => {
-                flow = load_flow(&state.ephemeral, &flow.flow_id).await?;
+                flow = load_transaction(&state.ephemeral, &flow.transaction_id).await?;
             }
             Err(error) => return Err(error.into()),
         }
@@ -813,17 +817,17 @@ where
     }
     if matches!(
         flow.state,
-        AuthBrowserFlowState::ApprovalRequired
-            | AuthBrowserFlowState::Approved
-            | AuthBrowserFlowState::Consumed
+        AuthBrowserTransactionState::ApprovalRequired
+            | AuthBrowserTransactionState::Approved
+            | AuthBrowserTransactionState::Consumed
     ) {
         return Ok(flow);
     }
-    if flow.state != AuthBrowserFlowState::Authenticated {
+    if flow.state != AuthBrowserTransactionState::Authenticated {
         return Err(HttpError::conflict("flow_not_pending"));
     }
     let expected = flow.version;
-    let allow_automatic_approval = automatic_approval_allowed(require_explicit_approval);
+    let allow_automatic_approval = !require_explicit_approval;
     // A portal policy governs this login even when an accepted authority
     // exists, so reconcile through policy instead of the fast path.
     let policy_governs = allow_automatic_approval
@@ -833,7 +837,7 @@ where
             .get_portal_grant_override(&flow.portal_id, &flow.participant_id)
             .await?
             .is_some();
-    let existing_binding = if !allow_automatic_approval || policy_governs {
+    let mut existing_binding = if !allow_automatic_approval || policy_governs {
         None
     } else {
         state
@@ -850,8 +854,55 @@ where
                     && binding.expires_at.is_none_or(|expires_at| expires_at > now)
             })
     };
+    if let Some(binding) = &existing_binding {
+        let (_, participant) = state
+            .service
+            .repository()
+            .get_installed_participant_record(
+                flow.participant_id.clone(),
+                Some(flow.installed_revision),
+            )
+            .await?
+            .ok_or_else(|| HttpError::not_found("participant_not_found"))?;
+        let resources = state
+            .service
+            .repository()
+            .get_resource_bindings(
+                GrantOwnerKind::User,
+                principal_id.clone(),
+                flow.participant_id.clone(),
+                flow.installed_revision,
+            )
+            .await?;
+        match super::super::super::policy::resolve_binding_authority(
+            &participant,
+            flow.installed_revision,
+            binding,
+            &resources,
+            true,
+        ) {
+            Ok(authority) => {
+                // Approved resource provisioning may still be pending. It is not
+                // a reason to repeat either consent or password authentication.
+                if authority.approval_missing {
+                    existing_binding = None;
+                }
+            }
+            Err(AuthorizationStateError::NotAuthorized) => existing_binding = None,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    if existing_binding.is_none()
+        && flow
+            .consent
+            .capabilities
+            .iter()
+            .any(|capability| capability.required && !capability.eligible)
+    {
+        return Err(HttpError::forbidden("authority_rejected"));
+    }
     let mut completed = if let Some(binding) = existing_binding {
-        flow.state = AuthBrowserFlowState::Approved;
+        flow.state = AuthBrowserTransactionState::Approved;
         flow.durable_result_digest = Some(
             trellis_protocol::digest_json(
                 &serde_json::to_value(binding)
@@ -862,35 +913,36 @@ where
         flow.completed_at = Some(now);
         flow
     } else if !allow_automatic_approval {
-        flow.state = AuthBrowserFlowState::ApprovalRequired;
+        flow.state = AuthBrowserTransactionState::ApprovalRequired;
         flow
     } else if let Some(approved) =
         apply_trusted_portal_authority(state, flow.clone(), attributes, now).await?
     {
         approved
     } else {
-        flow.state = AuthBrowserFlowState::ApprovalRequired;
+        flow.state = AuthBrowserTransactionState::ApprovalRequired;
         flow
     };
     completed.version += 1;
     match state
         .ephemeral
-        .replace_browser_flow(expected, completed.clone())
+        .replace_browser_transaction(expected, completed.clone())
         .await
     {
         Ok(()) => Ok(completed),
         Err(AuthorizationStateError::StorageConflict) => {
-            let current = load_flow(&state.ephemeral, &completed.flow_id).await?;
+            let current = load_transaction(&state.ephemeral, &completed.transaction_id).await?;
             let converged = current.principal_id == completed.principal_id
                 && (current.state == completed.state
                     || matches!(
                         (completed.state, current.state),
                         (
-                            AuthBrowserFlowState::ApprovalRequired,
-                            AuthBrowserFlowState::Approved | AuthBrowserFlowState::Consumed
+                            AuthBrowserTransactionState::ApprovalRequired,
+                            AuthBrowserTransactionState::Approved
+                                | AuthBrowserTransactionState::Consumed
                         ) | (
-                            AuthBrowserFlowState::Approved,
-                            AuthBrowserFlowState::Consumed
+                            AuthBrowserTransactionState::Approved,
+                            AuthBrowserTransactionState::Consumed
                         )
                     ))
                 && completed
@@ -907,21 +959,11 @@ where
     }
 }
 
-fn automatic_approval_allowed(require_explicit_approval: bool) -> bool {
-    !require_explicit_approval
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::platform::auth::{builtins, sqlite::SqliteAuthorizationStore, DelegationCeiling};
     use trellis_protocol::PlatformPrivilege;
-
-    #[test]
-    fn administrator_account_continuation_requires_explicit_approval() {
-        assert!(!super::automatic_approval_allowed(true));
-        assert!(super::automatic_approval_allowed(false));
-    }
 
     #[tokio::test]
     async fn carried_source_keeps_provenance_bearing_lifetime(
@@ -1271,6 +1313,7 @@ pub(crate) struct BindRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BrowserSessionBundle {
     server_now: i64,
+    intent_id: String,
     session: BrowserLoginSession,
 }
 
@@ -1284,7 +1327,7 @@ struct BrowserLoginSession {
     expires_at: Option<i64>,
 }
 
-pub(crate) async fn bind_flow<R, E>(
+pub(crate) async fn bind_transaction<R, E>(
     State(state): State<AuthHttpState<R, E>>,
     Path(flow_id): Path<String>,
     headers: HeaderMap,
@@ -1306,7 +1349,7 @@ where
         + 'static,
     E: AuthEphemeralRepository + Clone,
 {
-    let flow = load_flow(&state.ephemeral, &flow_id).await?;
+    let flow = load_transaction(&state.ephemeral, &flow_id).await?;
     let redirect_target = flow
         .redirect_target
         .as_deref()
@@ -1314,7 +1357,7 @@ where
     require_portal_origin(&headers, redirect_target)?;
     if !matches!(
         flow.state,
-        AuthBrowserFlowState::Approved | AuthBrowserFlowState::Consumed
+        AuthBrowserTransactionState::Approved | AuthBrowserTransactionState::Consumed
     ) {
         return Err(HttpError::conflict("flow_not_approved"));
     }
@@ -1334,7 +1377,7 @@ where
     let input =
         SessionProofInput::user_auth_bind(trellis_protocol::UserAuthBindSessionProofInput {
             origin: state.public_origin.clone(),
-            flow_id,
+            transaction_id: flow_id,
             session_public_key: flow.session_public_key.clone(),
             unsigned_request,
         })
@@ -1356,15 +1399,15 @@ where
         tracing::warn!(%error, "bind proof verification rejected");
         HttpError::unauthorized("invalid_proof")
     })?;
-    let flow = complete_flow(&state, flow, now_ms()?).await?;
+    let flow = complete_transaction(&state, flow, now_ms()?).await?;
     Ok(Json(session_bundle(&state, &flow).await?))
 }
 
-async fn complete_flow<R, E>(
+async fn complete_transaction<R, E>(
     state: &AuthHttpState<R, E>,
-    mut flow: AuthBrowserFlow,
+    mut flow: AuthBrowserTransaction,
     now: i64,
-) -> Result<AuthBrowserFlow, HttpError>
+) -> Result<AuthBrowserTransaction, HttpError>
 where
     R: AccountRepository
         + AuthorityEvidenceRepository
@@ -1381,7 +1424,7 @@ where
         + 'static,
     E: AuthEphemeralRepository + Clone,
 {
-    if flow.state == AuthBrowserFlowState::Consumed {
+    if flow.state == AuthBrowserTransactionState::Consumed {
         let session_id = flow
             .claim_owner
             .as_deref()
@@ -1400,7 +1443,7 @@ where
         }
         return Ok(flow);
     }
-    if flow.state != AuthBrowserFlowState::Approved {
+    if flow.state != AuthBrowserTransactionState::Approved {
         return Err(HttpError::conflict("flow_not_approved"));
     }
     let (_, binding) = state
@@ -1420,7 +1463,7 @@ where
         "sessionPublicKey",
         &flow.session_public_key,
     )?;
-    let digest = digest_parts(&["browser.session.complete", &flow.flow_id]);
+    let digest = digest_parts(&["browser.session.complete", &flow.transaction_id]);
     let outcome = state
         .service
         .create_session(CreateSessionInput {
@@ -1431,10 +1474,10 @@ where
             session_public_key: flow.session_public_key.clone(),
             created_at: now,
             idempotency: idempotency(
-                &flow.flow_id,
+                &flow.transaction_id,
                 "browser.session.complete",
                 &signer_id,
-                &flow.flow_id,
+                &flow.transaction_id,
                 &digest,
                 now,
             )?,
@@ -1457,19 +1500,19 @@ where
         }
     };
     let expected = flow.version;
-    flow.state = AuthBrowserFlowState::Consumed;
+    flow.state = AuthBrowserTransactionState::Consumed;
     flow.claim_owner = Some(session.session_id.clone());
     flow.claimed_at = Some(now);
     flow.version += 1;
     match state
         .ephemeral
-        .replace_browser_flow(expected, flow.clone())
+        .replace_browser_transaction(expected, flow.clone())
         .await
     {
         Ok(()) => Ok(flow),
         Err(AuthorizationStateError::StorageConflict) => {
-            let current = load_flow(&state.ephemeral, &flow.flow_id).await?;
-            if current.state == AuthBrowserFlowState::Consumed
+            let current = load_transaction(&state.ephemeral, &flow.transaction_id).await?;
+            if current.state == AuthBrowserTransactionState::Consumed
                 && current.claim_owner.as_deref() == Some(session.session_id.as_str())
             {
                 Ok(current)
@@ -1483,7 +1526,7 @@ where
 
 async fn session_bundle<R, E>(
     state: &AuthHttpState<R, E>,
-    flow: &AuthBrowserFlow,
+    flow: &AuthBrowserTransaction,
 ) -> Result<BrowserSessionBundle, HttpError>
 where
     R: AccountRepository
@@ -1501,7 +1544,7 @@ where
         + 'static,
     E: AuthEphemeralRepository + Clone,
 {
-    if flow.state != AuthBrowserFlowState::Consumed {
+    if flow.state != AuthBrowserTransactionState::Consumed {
         return Err(HttpError::conflict("flow_not_consumed"));
     }
     let now = now_ms()?;
@@ -1524,6 +1567,7 @@ where
     }
     Ok(BrowserSessionBundle {
         server_now: now,
+        intent_id: flow.intent_id.clone(),
         session: BrowserLoginSession {
             session_id: session.session_id,
             principal_id: session.principal_id,

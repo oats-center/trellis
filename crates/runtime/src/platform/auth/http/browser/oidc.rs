@@ -3,6 +3,7 @@ use super::super::*;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OidcStartQuery {
+    #[serde(rename = "transactionId")]
     flow_id: String,
     portal_binding_digest: String,
 }
@@ -10,14 +11,15 @@ pub(crate) struct OidcStartQuery {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AccountFlowOidcStartQuery {
-    browser_flow_id: Option<String>,
+    browser_transaction_id: Option<String>,
     portal_binding_digest: Option<String>,
 }
 
 pub(crate) async fn start_oidc<R, E>(
     State(state): State<AuthHttpState<R, E>>,
     Path(provider_id): Path<String>,
-    Query(query): Query<OidcStartQuery>,
+    headers: HeaderMap,
+    Json(query): Json<OidcStartQuery>,
 ) -> Result<Response, HttpError>
 where
     R: AccountRepository
@@ -35,11 +37,15 @@ where
         + 'static,
     E: AuthEphemeralRepository + Clone,
 {
-    let flow = load_flow(&state.ephemeral, &query.flow_id).await?;
-    if flow.state != AuthBrowserFlowState::ChooseProvider {
+    let flow = load_transaction(&state.ephemeral, &query.flow_id).await?;
+    require_portal_binding(&flow, &headers)?;
+    if flow.state != AuthBrowserTransactionState::ChooseProvider {
         return Err(HttpError::conflict("flow_not_pending"));
     }
     validate_portal_binding_digest(&query.portal_binding_digest)?;
+    if flow.portal_binding_digest.as_deref() != Some(&query.portal_binding_digest) {
+        return Err(HttpError::forbidden("portal_binding_mismatch"));
+    }
     let (portal, settings) = state
         .service
         .repository()
@@ -49,16 +55,25 @@ where
     if portal.disabled || portal.removed || !portal.provider_ids.contains(&provider_id) {
         return Err(HttpError::forbidden("provider_not_allowed"));
     }
-    begin_oidc(
+    require_selected_portal_origin(&headers, &portal, &state.public_origin)?;
+    let response = begin_oidc(
         &state,
         provider_id,
-        flow.flow_id,
+        flow.transaction_id,
         AuthOAuthKind::Browser,
         Some((&portal, &settings)),
         Some(query.portal_binding_digest),
         None,
     )
-    .await
+    .await?;
+    let login_url = response
+        .headers()
+        .get(axum::http::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| HttpError::internal("oidc_redirect_missing"))?
+        .to_owned();
+    let (headers, _) = response.into_parts();
+    Ok((headers.headers, Json(json!({ "loginUrl": login_url }))).into_response())
 }
 
 pub(crate) async fn start_account_flow_oidc<R, E>(
@@ -119,17 +134,22 @@ where
     } else {
         None
     };
-    if query.browser_flow_id.is_some() != query.portal_binding_digest.is_some() {
-        return Err(HttpError::bad_request("browser_flow_binding_incomplete"));
+    if query.browser_transaction_id.is_some() != query.portal_binding_digest.is_some() {
+        return Err(HttpError::bad_request(
+            "browser_transaction_binding_incomplete",
+        ));
     }
     if let Some(portal_binding_digest) = query.portal_binding_digest.as_deref() {
         validate_portal_binding_digest(portal_binding_digest)?;
-        let browser_flow = load_flow(
+        let browser_flow = load_transaction(
             &state.ephemeral,
-            query.browser_flow_id.as_deref().expect("checked together"),
+            query
+                .browser_transaction_id
+                .as_deref()
+                .expect("checked together"),
         )
         .await?;
-        if browser_flow.state != AuthBrowserFlowState::ChooseProvider
+        if browser_flow.state != AuthBrowserTransactionState::ChooseProvider
             || browser_flow.portal_id != "builtin"
         {
             return Err(HttpError::conflict("oauth_flow_changed"));
@@ -142,7 +162,7 @@ where
         AuthOAuthKind::AccountFlow,
         portal.as_ref().map(|(portal, settings)| (portal, settings)),
         query.portal_binding_digest,
-        query.browser_flow_id,
+        query.browser_transaction_id,
     )
     .await
 }
@@ -154,7 +174,7 @@ async fn begin_oidc<R, E>(
     kind: AuthOAuthKind,
     portal_policy: Option<(&LoginPortalRecord, &LoginSettingsRecord)>,
     portal_binding_digest: Option<String>,
-    browser_flow_id: Option<String>,
+    browser_transaction_id: Option<String>,
 ) -> Result<Response, HttpError>
 where
     R: AccountRepository
@@ -221,7 +241,7 @@ where
             redirect_uri: provider.redirect_uri.as_str().to_owned(),
             browser_binding_digest,
             portal_binding_digest,
-            browser_flow_id,
+            browser_transaction_id,
             portal_id,
             portal_policy_digest,
             claim_owner: None,
@@ -391,13 +411,13 @@ where
             mark_oauth_restart_required(&state.ephemeral, &mut pending).await?;
             return Err(HttpError::conflict("oauth_restart_required"));
         }
-        let flow = load_flow(&state.ephemeral, &pending.flow_id).await?;
+        let flow = load_transaction(&state.ephemeral, &pending.flow_id).await?;
         if pending.status == AuthOAuthStatus::Completed
             && matches!(
                 flow.state,
-                AuthBrowserFlowState::ApprovalRequired
-                    | AuthBrowserFlowState::Approved
-                    | AuthBrowserFlowState::Consumed
+                AuthBrowserTransactionState::ApprovalRequired
+                    | AuthBrowserTransactionState::Approved
+                    | AuthBrowserTransactionState::Consumed
             )
         {
             let (portal, _) = state
@@ -409,7 +429,7 @@ where
             return Ok(Redirect::temporary(&super::request::portal_url(
                 &portal,
                 &state.public_origin,
-                &flow.flow_id,
+                &flow.transaction_id,
             )?)
             .into_response());
         }
@@ -449,8 +469,8 @@ where
     };
     match pending.kind {
         AuthOAuthKind::Browser => {
-            let flow = load_flow(&state.ephemeral, &pending.flow_id).await?;
-            if flow.state != AuthBrowserFlowState::ChooseProvider
+            let flow = load_transaction(&state.ephemeral, &pending.flow_id).await?;
+            if flow.state != AuthBrowserTransactionState::ChooseProvider
                 || pending.portal_id.as_deref() != Some(flow.portal_id.as_str())
             {
                 return Err(HttpError::conflict("oauth_flow_changed"));
@@ -479,12 +499,12 @@ where
             {
                 return Err(HttpError::conflict("oauth_flow_changed"));
             }
-            if let Some(browser_flow_id) = pending.browser_flow_id.as_deref() {
+            if let Some(browser_flow_id) = pending.browser_transaction_id.as_deref() {
                 if pending.portal_binding_digest.is_none() {
                     return Err(HttpError::conflict("oauth_flow_changed"));
                 }
-                let browser_flow = load_flow(&state.ephemeral, browser_flow_id).await?;
-                if browser_flow.state != AuthBrowserFlowState::ChooseProvider
+                let browser_flow = load_transaction(&state.ephemeral, browser_flow_id).await?;
+                if browser_flow.state != AuthBrowserTransactionState::ChooseProvider
                     || browser_flow.portal_id != "builtin"
                 {
                     return Err(HttpError::conflict("oauth_flow_changed"));
@@ -756,7 +776,7 @@ where
         .authenticated_principal_id
         .clone()
         .ok_or_else(|| HttpError::internal("oauth_result_missing_principal"))?;
-    let flow = load_flow(&state.ephemeral, &oauth.flow_id).await?;
+    let flow = load_transaction(&state.ephemeral, &oauth.flow_id).await?;
     let completed = super::consent::complete_authenticated_flow(
         state,
         flow,
@@ -803,7 +823,7 @@ where
     Ok(Redirect::temporary(&super::request::portal_url(
         &portal,
         &state.public_origin,
-        &completed.flow_id,
+        &completed.transaction_id,
     )?)
     .into_response())
 }
@@ -916,8 +936,9 @@ where
             .replace_oauth_state(expected, oauth.clone())
             .await?;
     }
-    let browser_completion = if let Some(browser_flow_id) = oauth.browser_flow_id.as_deref() {
-        let browser_flow = load_flow(&state.ephemeral, browser_flow_id).await?;
+    let browser_completion = if let Some(browser_flow_id) = oauth.browser_transaction_id.as_deref()
+    {
+        let browser_flow = load_transaction(&state.ephemeral, browser_flow_id).await?;
         Some(
             super::consent::complete_authenticated_flow(
                 state,
@@ -956,7 +977,7 @@ where
         return Ok(Redirect::temporary(&super::request::portal_url(
             &portal,
             &state.public_origin,
-            &completed.flow_id,
+            &completed.transaction_id,
         )?)
         .into_response());
     }

@@ -33,9 +33,12 @@ export {
 } from "./device_activation.ts";
 export {
   fetchPortalFlowState,
-  portalFlowIdFromUrl,
+  fetchPortalIntentState,
+  portalIntentFromUrl,
   portalProviderLoginUrl,
   portalRedirectLocation,
+  portalTransactionIdFromUrl,
+  startPortalTransaction,
   submitPortalApproval,
 } from "./browser/portal.ts";
 export type {

@@ -23,7 +23,7 @@ export type SessionProofInput =
   | {
     purpose: "userAuthBind";
     origin: string;
-    flowId: string;
+    transactionId: string;
     sessionPublicKey: string;
     unsignedRequest: Record<string, unknown> & { issuedAt: number };
   }

@@ -2246,6 +2246,23 @@ impl super::super::GrantRepository for SqliteAuthorizationStore {
         .await
     }
 
+    async fn get_resource_bindings(
+        &self,
+        owner_kind: GrantOwnerKind,
+        owner_id: String,
+        participant_id: String,
+        installed_revision: u64,
+    ) -> Result<Vec<super::super::ResourceBindingEvidence>, AuthorizationStateError> {
+        SqliteAuthorizationStore::get_resource_bindings(
+            self,
+            owner_kind,
+            owner_id,
+            participant_id,
+            installed_revision,
+        )
+        .await
+    }
+
     async fn set_grant_binding(
         &self,
         replacement: GrantBindingReplacement,

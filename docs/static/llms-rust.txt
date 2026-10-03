@@ -95,6 +95,20 @@ perform context refresh before CONNECT. Devices retain their provisioned
 identity seed and use generated activation/connect options. Do not substitute a
 raw NATS URL/JWT or client-authored assignment for either lifecycle.
 
+Agent browser sign-in returns an `AgentLoginChallenge` retaining the signed
+intent and exposing `intent_id` and `login_url`. Creating this challenge or
+rendering its portal does not start an authentication-attempt deadline. The
+portal starts an independent bounded transaction when authentication begins.
+`poll_agent_transaction_until_ready` discovers the transaction from an intent,
+follows its progress within the caller's wait budget, and returns its ID.
+Completion binds that transaction with the initiating private key and verifies
+the returned intent, participant, and key bindings before context refresh.
+Exact supported replay returns the same semantic login result, not another
+session. An idle valid intent is not an expired attempt or an invalid login;
+attempt expiry permits a fresh transaction from the retained intent. Treat
+authorization denial separately from invalid login rather than starting a
+login loop.
+
 A generated device companion is established only through the parent device's
 activation flow and separate user consent. It receives an independent ordinary
 App/Agent user session and cannot bootstrap standalone or use the parent's

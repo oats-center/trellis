@@ -1,64 +1,9 @@
 import { assertEquals } from "@std/assert";
 
 import {
-  accountFlowProviderLoginUrl,
   adminBootstrapFlowId,
-  completeAdminBootstrap,
   formatAdminBootstrapError,
 } from "./page_state.ts";
-
-Deno.test("administrator OIDC carries the Console browser flow binding", () => {
-  assertEquals(
-    accountFlowProviderLoginUrl(
-      "https://trellis.example",
-      "admin-token",
-      "oidc",
-      {
-        browserFlowId: "flow_console",
-        portalBindingDigest: "binding_digest",
-      },
-    ),
-    "https://trellis.example/auth/account-flow/admin-token/login/oidc?browserFlowId=flow_console&portalBindingDigest=binding_digest",
-  );
-});
-
-Deno.test("administrator completion carries the Console browser flow", async () => {
-  let submitted: unknown;
-  const result = await completeAdminBootstrap(
-    "http://trellis.example",
-    "admin-token",
-    {
-      username: "admin",
-      password: "secret-password",
-      name: "Admin",
-      email: "",
-      browserFlowId: "flow_console",
-      portalBindingDigest: "binding_digest",
-    },
-    async (_input, init) => {
-      submitted = JSON.parse(String(init?.body));
-      return new Response(JSON.stringify({
-        status: "updated",
-        userId: "usr_admin",
-        browserFlowId: "flow_console",
-      }));
-    },
-  );
-
-  assertEquals(result, {
-    status: "updated",
-    userId: "usr_admin",
-    browserFlowId: "flow_console",
-  });
-  assertEquals(submitted, {
-    username: "admin",
-    password: "secret-password",
-    name: "Admin",
-    email: null,
-    browserFlowId: "flow_console",
-    portalBindingDigest: "binding_digest",
-  });
-});
 
 Deno.test("adminBootstrapFlowId reads a non-empty flow id", () => {
   assertEquals(

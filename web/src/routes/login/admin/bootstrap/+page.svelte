@@ -1,7 +1,7 @@
 <script lang="ts">
   import { browser } from "$app/environment";
   import { onMount } from "svelte";
-  import { getOrCreatePortalBinding } from "@oatscenter/trellis/auth/browser";
+  import { PortalFlowController } from "@oatscenter/trellis-svelte";
   import PortalBrand from "$lib/components/PortalBrand.svelte";
   import { trellisUrl } from "$lib/portal_config";
   import {
@@ -22,8 +22,8 @@
   let name = $state("");
   let email = $state("");
   let flowId = $state<string | null>(null);
-  let browserFlowId = $state<string | null>(null);
-  let portalBindingDigest = $state<string | null>(null);
+  const browserLogin = new PortalFlowController({ authUrl: trellisUrl });
+  let hasBrowserIntent = $state(false);
   let flowState = $state.raw<AccountFlowState | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -98,17 +98,18 @@
     error = null;
 
     try {
+      if (hasBrowserIntent) await browserLogin.load();
+      const browserTransactionId = hasBrowserIntent ? await browserLogin.beginAuthentication() : undefined;
       completion = await completeAdminBootstrap(trellisUrl, activeFlowId, {
         username: username.trim(),
         password,
         name,
         email,
-        ...(browserFlowId ? { browserFlowId } : {}),
-        ...(portalBindingDigest ? { portalBindingDigest } : {}),
+        ...(browserTransactionId ? { browserTransactionId, portalBindingDigest: browserLogin.binding.digest, portalBindingSecret: browserLogin.binding.secret } : {}),
       });
-      if (completion.browserFlowId) {
+      if (completion.browserTransactionId) {
         window.location.replace(
-          `/login?flowId=${encodeURIComponent(completion.browserFlowId)}`,
+          `/login?transactionId=${encodeURIComponent(completion.browserTransactionId)}`,
         );
       }
     } catch (caught) {
@@ -118,13 +119,28 @@
     }
   }
 
-  onMount(async () => {
-    browserFlowId = new URL(window.location.href).searchParams.get("browserFlowId");
-    if (browserFlowId) {
-      portalBindingDigest = (
-        await getOrCreatePortalBinding(browserFlowId, sessionStorage)
-      ).digest;
+  async function startProvider(providerId: string): Promise<void> {
+    if (!active || submitting) return;
+    submitting = true;
+    error = null;
+    try {
+      if (hasBrowserIntent) await browserLogin.load();
+      const browserTransactionId = hasBrowserIntent ? await browserLogin.beginAuthentication() : undefined;
+      window.location.assign(accountFlowProviderLoginUrl(
+        trellisUrl,
+        active.flowId,
+        providerId,
+        browserTransactionId ? { browserTransactionId, portalBindingDigest: browserLogin.binding.digest } : undefined,
+      ));
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught);
+      submitting = false;
     }
+  }
+
+  onMount(async () => {
+    hasBrowserIntent = new URL(window.location.href).searchParams.has("intent");
+    if (hasBrowserIntent) await browserLogin.load();
     void loadFlow();
   });
 </script>
@@ -194,10 +210,8 @@
                 trellisUrl,
                 active.flowId,
                 provider.id,
-                browserFlowId && portalBindingDigest
-                  ? { browserFlowId, portalBindingDigest }
-                  : undefined,
               )}
+              onclick={(event) => { event.preventDefault(); void startProvider(provider.id); }}
             >
               Continue with {provider.displayName}
             </a>
