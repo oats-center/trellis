@@ -3,6 +3,7 @@
 import { waitFor } from "@oatscenter/trellis-testkit";
 import { assertEquals } from "@std/assert";
 import { ulid } from "ulid";
+import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {
@@ -1017,6 +1018,77 @@ Deno.test("N11 last-page user grant revoke leaves first-page binding active", as
       });
       assertEquals(last.binding?.state, "revoked");
       assertEquals(first.binding?.state, "active");
+      assertNoBrowserErrors(errors);
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});
+
+Deno.test("Console optional capability selection saves its concrete permissions as an exact user grant", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const installed = await runtime.contracts.install({
+      contract: participants.TransportGrowthCaller.participant,
+    });
+    const detail = await runtime.callAdminRpc("authParticipantsGet", {
+      participantId: installed.participantId,
+    });
+    const optional = detail.participant.optionalBundles.find((bundle) =>
+      bundle.id.endsWith("::extend")
+    );
+    if (!optional) throw new Error("Optional growth capability missing");
+    const created = await runtime.callAdminRpc("authUsersCreate", {
+      username: fixtureName("capability-grant"),
+      name: "Capability grant operator",
+      email: null,
+      image: null,
+      idempotencyKey: ulid(),
+    });
+    const context = await launchProfile(runtime);
+    try {
+      const page = await context.newPage();
+      const errors = captureBrowserErrors(page);
+      await openConsoleAsRuntimeAdmin(page, runtime);
+      await page.goto(
+        `${runtime.trellisUrl}/console/admin/users/edit?userId=${
+          encodeURIComponent(created.user.userId)
+        }`,
+        { waitUntil: "domcontentloaded" },
+      );
+      await waitForConsoleShell(page);
+      await page.getByRole("button", { name: "Add grant", exact: true })
+        .click();
+      await page.getByLabel("Application / participant").selectOption(
+        installed.participantId,
+      );
+      await page.getByRole("checkbox", { name: new RegExp(optional.id) })
+        .check();
+      await page.getByLabel("I reviewed these access changes.").check();
+      await page.getByRole("button", { name: "Save access", exact: true })
+        .click();
+      await page.getByText(
+        "Access saved. The permissions below are the server-confirmed grant.",
+        { exact: true },
+      ).waitFor({ state: "visible", timeout: 30_000 });
+      const saved = await runtime.callAdminRpc("authGrantsGet", {
+        ownerKind: "user",
+        ownerId: created.user.userId,
+        participantId: installed.participantId,
+      });
+      assertEquals(saved.binding?.approvalMode, "exact");
+      const expected = [
+        ...detail.participant.requiredGrants.permissions,
+        ...optional.permissions,
+      ];
+      assertEquals(
+        new Set(
+          saved.binding?.grants.permissions.map((permission) =>
+            JSON.stringify(permission)
+          ),
+        ),
+        new Set(expected.map((permission) => JSON.stringify(permission))),
+        "only required permissions and the selected capability's concrete atoms are granted",
+      );
       assertNoBrowserErrors(errors);
     } finally {
       await context.close();

@@ -708,40 +708,103 @@ async fn identity_grants_get_command(
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct IdentityGrantSetFile {
+    #[serde(deserialize_with = "deserialize_installed_revision")]
+    installed_revision: u64,
+    grants: auth_types::AuthGrantSet,
+    platform_privileges: Vec<String>,
+    #[serde(deserialize_with = "deserialize_grant_expiry")]
+    expires_at: Option<u64>,
+}
+
+fn grant_file_integer(value: Value, field: &str, minimum: u64) -> Result<u64, String> {
+    let invalid = || {
+        format!("invalid {field}: expected an integer from {minimum} to 9007199254740991, as a JSON number or canonical decimal string")
+    };
+    let integer = match value {
+        Value::Number(number) => number.as_u64().ok_or_else(invalid)?,
+        Value::String(text)
+            if !text.is_empty()
+                && text.bytes().all(|byte| byte.is_ascii_digit())
+                && (text.len() == 1 || !text.starts_with('0')) =>
+        {
+            text.parse::<u64>().map_err(|_| invalid())?
+        }
+        _ => return Err(invalid()),
+    };
+    if !(minimum..=9_007_199_254_740_991).contains(&integer) {
+        return Err(invalid());
+    }
+    Ok(integer)
+}
+
+fn deserialize_installed_revision<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<u64, D::Error> {
+    let value = <Value as serde::Deserialize>::deserialize(deserializer)?;
+    grant_file_integer(value, "installedRevision", 1).map_err(serde::de::Error::custom)
+}
+
+fn deserialize_grant_expiry<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error> {
+    let value = <Option<Value> as serde::Deserialize>::deserialize(deserializer)?;
+    value
+        .map(|value| grant_file_integer(value, "expiresAt", 0))
+        .transpose()
+        .map_err(serde::de::Error::custom)
+}
+
 async fn identity_grants_set_command(
     format: OutputFormat,
     args: &IdentityGrantsSetArgs,
 ) -> miette::Result<()> {
-    let (_state, connected) = connect_authenticated_cli_client().await?;
-    let mut input: Value =
+    let input: Value =
         serde_json::from_slice(&std::fs::read(&args.input).into_diagnostic()?).into_diagnostic()?;
-    let object = input
-        .as_object_mut()
-        .ok_or_else(|| miette::miette!("grant input must be a JSON object"))?;
-    let expected = [
-        "expiresAt",
-        "grants",
-        "installedRevision",
-        "platformPrivileges",
-    ];
-    if object.len() != expected.len() || expected.iter().any(|field| !object.contains_key(*field)) {
+    if !input.is_object() {
+        return Err(miette::miette!("grant input must be a JSON object"));
+    }
+    let input: IdentityGrantSetFile = serde_json::from_value(input)
+        .map_err(|error| miette::miette!("invalid grant input: {error}"))?;
+    if args
+        .expected_revision
+        .is_some_and(|revision| revision > 9_007_199_254_740_991)
+    {
         return Err(miette::miette!(
-            "grant input must contain exactly installedRevision, grants, platformPrivileges, and expiresAt"
+            "invalid expectedRevision: must be from 0 to 9007199254740991"
         ));
     }
+    let (_state, connected) = connect_authenticated_cli_client().await?;
     let expected_revision = match args.expected_revision {
         Some(revision) => revision,
         None => current_grant_revision(&connected, &args.user, &args.participant_id)
             .await?
             .unwrap_or(0),
     };
-    object.insert("ownerKind".to_owned(), json!("user"));
-    object.insert("ownerId".to_owned(), json!(args.user));
-    object.insert("participantId".to_owned(), json!(args.participant_id));
-    object.insert("expectedRevision".to_owned(), json!(expected_revision));
-    object.insert("idempotencyKey".to_owned(), json!(cli_idempotency_key()));
-    let request: auth_types::AuthGrantsSetRequest =
-        serde_json::from_value(input).into_diagnostic()?;
+    if expected_revision > 9_007_199_254_740_991 {
+        return Err(miette::miette!(
+            "invalid expectedRevision: must be from 0 to 9007199254740991"
+        ));
+    }
+    let request = auth_types::AuthGrantsSetRequest {
+        owner_kind: auth_types::AuthGrantsSetRequestOwnerKind::User,
+        owner_id: wire(&args.user)?,
+        participant_id: wire(&args.participant_id)?,
+        installed_revision: wire(input.installed_revision.to_string())?,
+        grants: input.grants,
+        platform_privileges: input.platform_privileges,
+        expires_at: match input.expires_at {
+            Some(expiry) => {
+                trellis_runtime_apis::__types::Nullable::Value(wire(expiry.to_string())?)
+            }
+            None => trellis_runtime_apis::__types::Nullable::Null,
+        },
+        expected_revision: wire(expected_revision.to_string())?,
+        idempotency_key: wire(cli_idempotency_key())?,
+        extra: Default::default(),
+    };
     let response = AuthClient::from_generated(connected.clone())
         .grants_set(&request)
         .await
@@ -771,14 +834,9 @@ async fn current_grant_revision(
         .await
         .into_diagnostic()?;
     let binding = wire::<Option<auth_types::AuthGrantBinding>>(response.binding)?;
-    Ok(binding.and_then(|binding| {
-        serde_json::to_value(binding)
-            .ok()?
-            .get("revision")?
-            .as_str()?
-            .parse()
-            .ok()
-    }))
+    binding
+        .map(|binding| wire_u64(binding.revision))
+        .transpose()
 }
 
 async fn participants_install_command(

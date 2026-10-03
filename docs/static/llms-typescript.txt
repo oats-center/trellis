@@ -27,6 +27,16 @@ one-time presets; the saved grant is an exact permission snapshot.
 Saving that snapshot can initiate resource provisioning; access still requires
 runtime readiness, and read-only resource approval does not grant write access.
 
+`Capabilities.List` supports `participantId`, `revision`, and `sourceApi`
+filters. Scope access-editor discovery to the exact participant revision being
+edited; omitting revision selects its current installation, and revision
+requires a participant. Unscoped discovery uses all current installations.
+Entries identify definitions by `sourceApi` and `apiDigest`: identical
+definitions deduplicate, while differing definitions with the same capability
+identity remain distinct. Retained revisions remain queryable explicitly. Expand
+selected capabilities or group presets using the scoped definition before saving
+exact `Grants.Set` permissions; discovery itself confers no authority.
+
 Author native IDL, run `trellis update` after dependency changes, and run
 `trellis generate` after IDL changes. Set `[package]`, `[sources]`, and
 `[generate.typescript].output` in `trellis.toml`.

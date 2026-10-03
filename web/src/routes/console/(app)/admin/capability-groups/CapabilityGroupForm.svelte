@@ -448,7 +448,7 @@
         {/if}
 
         <div class="max-h-[28rem] overflow-y-auto rounded border border-base-300 bg-base-100/40">
-          {#each capabilityListings as capability (capability.capability)}
+          {#each capabilityListings as capability (`${capability.apiDigest}:${capability.capability}`)}
             <ChoiceRow>
               {#snippet input()}
                 <input
@@ -464,6 +464,7 @@
                 <span class="trellis-identifier mt-0.5 block break-all text-base-content/50">{localCapabilityKey(capability.capability)}</span>
                 <span class="mt-0.5 block text-base-content/60">{capability.description}</span>
                 <span class="trellis-field-help block">Source API: {sourceApiLabel(capability.sourceApi)}</span>
+                <span class="trellis-identifier block break-all text-base-content/50">API digest: {capability.apiDigest}</span>
               </span>
             </ChoiceRow>
           {:else}

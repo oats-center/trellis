@@ -563,7 +563,7 @@
         </Panel>
         <Panel title="Base direct capabilities" eyebrow="All logins">
           <SelectionGroup title="Direct capabilities" count={directCapabilities.length} bodyClass="max-h-72 overflow-y-auto rounded border border-base-300 bg-base-100/40">
-            {#each sortedCapabilities as capability (capability.capability)}
+            {#each sortedCapabilities as capability (`${capability.apiDigest}:${capability.capability}`)}
               <ChoiceRow>
                 {#snippet input()}
                   <input
@@ -582,6 +582,7 @@
                 <span class="min-w-0">
                   <span class="trellis-identifier block truncate" title={capability.capability}>{capability.capability}</span>
                   <span class="trellis-field-help">{capability.description}</span>
+                  <span class="trellis-identifier block break-all text-base-content/50">API digest: {capability.apiDigest}</span>
                 </span>
               </ChoiceRow>
             {:else}

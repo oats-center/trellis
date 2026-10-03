@@ -1906,47 +1906,42 @@ impl AuthRpcProcessor {
         let input: Value = serde_json::from_slice(payload)
             .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
         let source_api = input.get("sourceApi").and_then(Value::as_str);
-        let entries = if source_api
-            .is_none_or(|value| value == trellis_runtime_apis::apis::trellis_auth_v1::API_ID)
-        {
-            let (_, participant) = self
-                .service
-                .repository()
-                .get_installed_participant_record(
-                    super::builtins::AUTH_RUNTIME_PARTICIPANT_ID.to_owned(),
-                    None,
-                )
-                .await?
-                .ok_or(AuthorizationStateError::ParticipantMissing)?;
-            participant
-                .projection
-                .implemented_apis
-                .get(trellis_runtime_apis::apis::trellis_auth_v1::API_ID)
-                .ok_or_else(|| {
-                    AuthorizationStateError::InvalidRecord(
-                        "installed Auth API projection is absent".to_owned(),
-                    )
-                })?
-                .capabilities
-                .iter()
-                .map(|(capability, definition)| {
-                    json!({
-                        "capability": capability,
-                        "displayName": definition.display_name,
-                        "description": definition.description,
-                        "allows": definition.allows,
-                        "sourceApi": trellis_runtime_apis::apis::trellis_auth_v1::API_ID,
+        let request: trellis_runtime_apis::types::AuthCapabilitiesListRequest =
+            serde_json::from_slice(payload)
+                .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
+        let revision = request
+            .revision
+            .map(|value| u64::try_from(value.0 .0))
+            .transpose()
+            .map_err(|_| AuthorizationStateError::InvalidRecord("invalid revision".to_owned()))?;
+        let definitions = self
+            .service
+            .repository()
+            .capability_api_definitions(request.participant_id.map(|value| value.0), revision)
+            .await?;
+        let entries = definitions
+            .iter()
+            .filter(|((api_id, _), _)| source_api.is_none_or(|source| source == api_id))
+            .flat_map(|((api_id, digest), api)| {
+                api.capabilities
+                    .iter()
+                    .map(move |(capability, definition)| {
+                        json!({
+                            "capability": capability,
+                            "displayName": definition.display_name,
+                            "description": definition.description,
+                            "allows": definition.allows,
+                            "sourceApi": api_id,
+                            "apiDigest": digest,
+                        })
                     })
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+            })
+            .collect();
         paginate_values(
             entries,
             &input,
             "auth.Capabilities.List",
-            &["/sourceApi", "/capability"],
+            &["/sourceApi", "/apiDigest", "/capability"],
         )
     }
 

@@ -112,13 +112,9 @@
     const key = scope.key;
     const generation = selectionGeneration;
     try {
-      const [participantResult, capabilityResult, groupResult] = await Promise.all([
+      const [participantResult, groupResult] = await Promise.all([
         traverseAll<Participant>(async (request) => {
           const response = await trellis.participantsList({ page: catalogPage(request.cursor) }).orThrow();
-          return { items: response.items, cursor: response.page.nextCursor };
-        }),
-        traverseAll<Capability>(async (request) => {
-          const response = await trellis.capabilitiesList({ page: catalogPage(request.cursor) }).orThrow();
           return { items: response.items, cursor: response.page.nextCursor };
         }),
         traverseAll<CapabilityGroup>(async (request) => {
@@ -128,10 +124,8 @@
       ]);
       if (scope.key !== key || selectionGeneration !== generation) return;
       if (!participantResult.complete) throw participantResult.error;
-      if (!capabilityResult.complete) throw capabilityResult.error;
       if (!groupResult.complete) throw groupResult.error;
       participants = [...participantResult.items].filter((entry) => fixedParticipantId ? entry.participantId === fixedParticipantId : ownerKind === "user" ? entry.participantKind === "app" || entry.participantKind === "agent" : true);
-      capabilities = [...capabilityResult.items];
       groups = [...groupResult.items];
       catalogError = null;
     } catch (cause) {
@@ -153,6 +147,7 @@
     expiry = binding?.expiresAt == null ? "" : new Date(Number(binding.expiresAt)).toLocaleString("sv-SE").slice(0, 16).replace(" ", "T");
     platformAdmin = binding?.platformPrivileges.includes("trellis.auth::admin") ?? false;
     detail = null;
+    capabilities = [];
     editing = true;
     review = false;
     editorError = null;
@@ -163,8 +158,14 @@
     detailLoading = true;
     try {
       const response = await trellis.participantsGet({ participantId, ...(binding ? { revision: binding.installedRevision } : {}) }).orThrow();
+      const catalog = await traverseAll<Capability>(async (request) => {
+        const page = await trellis.capabilitiesList({ participantId: response.participant.participantId, revision: response.participant.revision, page: catalogPage(request.cursor) }).orThrow();
+        return { items: page.items, cursor: page.page.nextCursor };
+      });
+      if (!catalog.complete) throw catalog.error;
       if (scope.key !== key || editorGeneration !== generation) return;
       detail = response.participant;
+      capabilities = [...catalog.items];
       if (!binding) for (const permission of detail.requiredGrants.permissions) selected.add(permissionKey(permission));
     } catch (cause) {
       if (scope.key === key && editorGeneration === generation) editorError = errorMessage(cause);
@@ -185,11 +186,17 @@
     try {
       const response = await trellis.grantsGet(target).orThrow();
       const participant = await trellis.participantsGet({ participantId: target.participantId, ...(response.binding ? { revision: response.binding.installedRevision } : {}) }).orThrow();
+      const catalog = await traverseAll<Capability>(async (request) => {
+        const page = await trellis.capabilitiesList({ participantId: participant.participant.participantId, revision: participant.participant.revision, page: catalogPage(request.cursor) }).orThrow();
+        return { items: page.items, cursor: page.page.nextCursor };
+      });
+      if (!catalog.complete) throw catalog.error;
       if (scope.key !== key || editorGeneration !== generation) return;
       if (response.binding && protectedBinding(response.binding)) throw new Error("This grant is now protected bootstrap-administrator access. The draft cannot be saved.");
       draftPermissions = permissions;
       original = response.binding;
       detail = participant.participant;
+      capabilities = [...catalog.items];
       bindings = [...bindings.filter((binding) => binding.participantId !== target.participantId), ...response.binding ? [response.binding] : []];
       editorError = null;
       conflicted = false;

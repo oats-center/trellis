@@ -476,7 +476,7 @@ export declare const participant: {
 	readonly __runtimeTypes?: typeof __participant.__runtimeTypes;
 	readonly packageEvidence: unknown;
 };
-export declare const PARTICIPANT_DIGEST: "uQYGifKKuK-sW5Dmt68xuE7Pp0rL5P1_esD2xNkT-1U";
+export declare const PARTICIPANT_DIGEST: "_N2sHd773GIr9BTkNo4UcN0xvgr8Nrqwy68zBi6_gDU";
 export type Participant = typeof participant;
 export type ResourceDescriptors = typeof participant.resources;
 export type ResourceHandles<Handles extends { readonly [Name in keyof ResourceDescriptors] : unknown }> = { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "required" ? Name : never] : Handles[Name] } & { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "optional" ? Name : never] : Handles[Name] | undefined };

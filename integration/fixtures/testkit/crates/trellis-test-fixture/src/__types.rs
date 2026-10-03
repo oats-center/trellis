@@ -464,6 +464,15 @@ pub mod trellis {
     pub struct AuthCapabilitiesListRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub page: Option<crate::__types::CursorQuery>,
+        #[serde(rename = "participantId")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub participant_id: Option<
+            crate::__types::trellis::AuthCapabilitiesListRequestParticipantId,
+        >,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub revision: Option<
+            crate::__types::trellis::AuthCapabilitiesListRequestRevision,
+        >,
         #[serde(rename = "sourceApi")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub source_api: Option<
@@ -542,6 +551,64 @@ pub mod trellis {
         serde::Deserialize
     )]
     #[serde(transparent)]
+    pub struct AuthCapabilitiesListRequestParticipantId(pub String);
+    impl std::ops::Deref for AuthCapabilitiesListRequestParticipantId {
+        type Target = String;
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+    impl From<String> for AuthCapabilitiesListRequestParticipantId {
+        fn from(value: String) -> Self {
+            Self(value)
+        }
+    }
+    impl AsRef<str> for AuthCapabilitiesListRequestParticipantId {
+        fn as_ref(&self) -> &str {
+            self.0.as_ref()
+        }
+    }
+    impl std::fmt::Display for AuthCapabilitiesListRequestParticipantId {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(self.as_ref())
+        }
+    }
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        PartialEq,
+        Eq,
+        PartialOrd,
+        Ord,
+        serde::Serialize,
+        serde::Deserialize
+    )]
+    #[serde(transparent)]
+    pub struct AuthCapabilitiesListRequestRevision(pub crate::__types::Int64);
+    impl std::ops::Deref for AuthCapabilitiesListRequestRevision {
+        type Target = crate::__types::Int64;
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+    impl From<crate::__types::Int64> for AuthCapabilitiesListRequestRevision {
+        fn from(value: crate::__types::Int64) -> Self {
+            Self(value)
+        }
+    }
+    #[derive(
+        Clone,
+        Debug,
+        PartialEq,
+        Eq,
+        PartialOrd,
+        Ord,
+        Hash,
+        serde::Serialize,
+        serde::Deserialize
+    )]
+    #[serde(transparent)]
     pub struct AuthCapabilitiesListRequestSourceApi(pub String);
     impl std::ops::Deref for AuthCapabilitiesListRequestSourceApi {
         type Target = String;
@@ -567,11 +634,47 @@ pub mod trellis {
     pub type AuthCapabilitiesListResponse = crate::__types::CursorPage<
         crate::__types::trellis::AuthCapabilitiesListResponseentriesItem,
     >;
+    #[derive(
+        Clone,
+        Debug,
+        PartialEq,
+        Eq,
+        PartialOrd,
+        Ord,
+        Hash,
+        serde::Serialize,
+        serde::Deserialize
+    )]
+    #[serde(transparent)]
+    pub struct AuthCapabilitiesListResponseApiDigest(pub String);
+    impl std::ops::Deref for AuthCapabilitiesListResponseApiDigest {
+        type Target = String;
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+    impl From<String> for AuthCapabilitiesListResponseApiDigest {
+        fn from(value: String) -> Self {
+            Self(value)
+        }
+    }
+    impl AsRef<str> for AuthCapabilitiesListResponseApiDigest {
+        fn as_ref(&self) -> &str {
+            self.0.as_ref()
+        }
+    }
+    impl std::fmt::Display for AuthCapabilitiesListResponseApiDigest {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(self.as_ref())
+        }
+    }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthCapabilitiesListResponseentriesItem {
         pub allows: Vec<
             crate::__types::trellis::AuthCapabilitiesListResponseentriesItemallowsItem,
         >,
+        #[serde(rename = "apiDigest")]
+        pub api_digest: crate::__types::trellis::AuthCapabilitiesListResponseApiDigest,
         pub capability: crate::__types::trellis::AuthCapabilitiesListResponseentriesItemCapability,
         pub description: crate::__types::trellis::AuthCapabilitiesListResponseentriesItemDescription,
         #[serde(rename = "displayName")]

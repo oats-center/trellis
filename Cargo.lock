@@ -5640,6 +5640,8 @@ dependencies = [
  "trellis-bootstrap",
  "trellis-local-nats",
  "trellis-protocol",
+ "trellis-runtime-apis",
+ "trellis-testkit",
  "ulid",
  "url",
 ]

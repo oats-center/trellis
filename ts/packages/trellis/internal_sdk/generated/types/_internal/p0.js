@@ -69,17 +69,23 @@ export const AuthCapabilitiesListRequestCodec = codecs.recursive(() => codecs.na
 		cursor: codecs.optional(codecs.string),
 		limit: codecs.optional(codecs.u32)
 	})),
+	participantId: codecs.optional(codecs.ref(() => AuthCapabilitiesListRequestParticipantIdCodec)),
+	revision: codecs.optional(codecs.ref(() => AuthCapabilitiesListRequestRevisionCodec)),
 	sourceApi: codecs.optional(codecs.ref(() => AuthCapabilitiesListRequestSourceApiCodec))
 })));
 export const AuthCapabilitiesListRequestCursorCodec = codecs.recursive(() => codecs.named("trellis.AuthCapabilitiesListRequestCursor", codecs.string));
 export const AuthCapabilitiesListRequestLimitCodec = codecs.recursive(() => codecs.named("trellis.AuthCapabilitiesListRequestLimit", codecs.i64));
+export const AuthCapabilitiesListRequestParticipantIdCodec = codecs.recursive(() => codecs.named("trellis.AuthCapabilitiesListRequestParticipantId", codecs.string));
+export const AuthCapabilitiesListRequestRevisionCodec = codecs.recursive(() => codecs.named("trellis.AuthCapabilitiesListRequestRevision", codecs.i64));
 export const AuthCapabilitiesListRequestSourceApiCodec = codecs.recursive(() => codecs.named("trellis.AuthCapabilitiesListRequestSourceApi", codecs.string));
 export const AuthCapabilitiesListResponseCodec = codecs.recursive(() => codecs.named("trellis.AuthCapabilitiesListResponse", codecs.model({
 	items: codecs.list(codecs.ref(() => AuthCapabilitiesListResponseentriesItemCodec)),
 	page: codecs.model({ nextCursor: codecs.optional(codecs.string) })
 })));
+export const AuthCapabilitiesListResponseApiDigestCodec = codecs.recursive(() => codecs.named("trellis.AuthCapabilitiesListResponseApiDigest", codecs.string));
 export const AuthCapabilitiesListResponseentriesItemCodec = codecs.recursive(() => codecs.named("trellis.AuthCapabilitiesListResponseentriesItem", codecs.model({
 	allows: codecs.list(codecs.ref(() => AuthCapabilitiesListResponseentriesItemallowsItemCodec)),
+	apiDigest: codecs.ref(() => AuthCapabilitiesListResponseApiDigestCodec),
 	capability: codecs.ref(() => AuthCapabilitiesListResponseentriesItemCapabilityCodec),
 	description: codecs.ref(() => AuthCapabilitiesListResponseentriesItemDescriptionCodec),
 	displayName: codecs.ref(() => AuthCapabilitiesListResponseentriesItemDisplayNameCodec),

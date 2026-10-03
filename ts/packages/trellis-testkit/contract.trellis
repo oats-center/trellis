@@ -2,6 +2,7 @@ import { auth, events, health, jobs, state } from trellis;
 
 app cli {
   use auth {
+    rpc Capabilities.List;
     rpc CapabilityGroups.Get;
     rpc CapabilityGroups.Put;
     rpc Connections.List;

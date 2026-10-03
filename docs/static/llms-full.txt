@@ -139,6 +139,26 @@ device grants are deployment-owned, separate from device user delegation.
 Exact snapshots can initiate resource provisioning without bypassing runtime
 readiness. Resource actions remain within the approved snapshot and delegation
 ceiling; read-only approval does not grant write access.
+
+`Auth.Capabilities.List` accepts optional `participantId`, `revision`, and
+`sourceApi` filters. A participant plus revision selects an exact retained
+snapshot; omitting revision selects that participant's current installation.
+Revision requires a participant. With neither scope filter, discovery uses every
+participant's current installation. Entries include `sourceApi` and `apiDigest`:
+identical API definitions deduplicate, while differing definitions under the
+same API ID remain distinct. Do not select an arbitrary definition by capability
+identity alone. Console access editing scopes capability discovery and preset
+expansion to the participant revision being edited, then saves exact
+permissions.
+
+For `trellis identity grants set`, the input file contains only
+`installedRevision`, `grants`, `platformPrivileges`, and `expiresAt`; all four
+fields are required. `installedRevision` accepts a JSON integer or decimal
+string in `1..=9007199254740991`. `expiresAt` accepts `null`, or a JSON integer
+or decimal string in `0..=9007199254740991`. The CLI normalizes these inputs for
+the generated request. Omitting `--expected-revision` uses the current binding
+revision, or zero for creation; an explicit zero is also valid. A stale revision
+is rejected without changing the binding.
 `Auth.Users.Update` accepts optional `username` to atomically rename an existing
 local credential and identity, preserving the user ID and password; uniqueness
 conflicts roll back the accompanying profile edits. Accounts without a local

@@ -50,6 +50,7 @@ Deno.test("applying nested permission presets deduplicates actions regardless of
       displayName: "Read",
       description: "Read documents",
       sourceApi: "example.docs@v1",
+      apiDigest: "docs-snapshot",
       allows: [first],
     },
     {
@@ -57,6 +58,7 @@ Deno.test("applying nested permission presets deduplicates actions regardless of
       displayName: "Inspect",
       description: "Inspect documents",
       sourceApi: "example.docs@v1",
+      apiDigest: "docs-snapshot",
       allows: [equivalent, second],
     },
   ];

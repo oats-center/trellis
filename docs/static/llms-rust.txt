@@ -21,6 +21,16 @@ Exact snapshots can initiate resource provisioning without bypassing runtime
 readiness. Resource actions stay within the snapshot and delegation ceiling;
 read-only approval does not grant write access.
 
+`Capabilities.List` supports participant, revision, and source-API filters
+through its generated request model. A participant and revision select an exact
+retained snapshot; omitting revision selects its current installation. Revision
+requires a participant. Unscoped discovery uses all current installations.
+Entries include `sourceApi` and `apiDigest`: identical definitions deduplicate,
+while differing definitions with the same capability identity remain distinct.
+Expand capability selections and group presets against the exact participant
+revision before saving `Grants.Set` permissions. Discovery does not grant
+authority or make exact grants track future capability changes.
+
 Author native IDL and set `[package]`, `[sources]`, and `[generate.rust].output`
 in `trellis.toml`. `trellis generate` is offline after dependencies are
 available in the global validated source-package cache.

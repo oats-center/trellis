@@ -41,6 +41,29 @@ startup from Trellis-owned source semantics. First-admin creation and reset
 atomically write Admin bindings for CLI and Console in the same transaction as
 the account credential. The Portal receives no Admin binding.
 
+## Capability Discovery
+
+`Auth.Capabilities.List` discovers capability definitions from verified
+installed participant snapshots, not a separate mutable catalog. With
+`participantId` and `revision`, it reads that exact retained revision. With only
+`participantId`, it reads the participant's current revision. A revision without
+a participant is invalid. Without either filter, it reads the current revision
+of every installed participant; historical definitions remain available through
+explicit revision queries, not global discovery. `sourceApi` can further
+restrict either scope.
+
+Definitions are identified by API ID and `apiDigest`. Identical definitions
+referenced by multiple participants deduplicate, while differing definitions of
+the same API remain distinct. Capability identity alone is therefore
+insufficient to identify a global catalog entry; pagination also distinguishes
+API digests.
+
+Console access editing discovers capabilities for the exact participant revision
+being edited. Capability selections and capability-group presets expand once to
+that revision's concrete permissions. `Auth.Grants.Set` stores an exact
+snapshot, not capability membership; later definition or group changes do not
+widen it. Discovery does not grant authority or change portal consent semantics.
+
 ## Principals And Credentials
 
 Users, services, and devices are durable principals. Services and devices use

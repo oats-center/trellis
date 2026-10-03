@@ -135,6 +135,7 @@ pub struct IdentityGrantsSetArgs {
     pub user: String,
     #[arg(long)]
     /// JSON file containing installedRevision, grants, platformPrivileges, and expiresAt.
+    /// Integers accept JSON numbers or canonical decimal strings; expiresAt may be null.
     pub input: PathBuf,
     #[arg(long)]
     /// Expected current grant revision; omitted reads it once.

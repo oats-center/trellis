@@ -1027,6 +1027,48 @@ impl SqliteAuthorizationStore {
         .await
     }
 
+    /// Discover API definitions from one retained snapshot or all current installations.
+    pub(crate) async fn capability_api_definitions(
+        &self,
+        participant_id: Option<String>,
+        revision: Option<u64>,
+    ) -> Result<
+        BTreeMap<(String, String), super::super::evidence::ApiRuntimeProjection>,
+        AuthorizationStateError,
+    > {
+        if revision
+            .is_some_and(|revision| revision == 0 || revision > super::super::MAX_PROTOCOL_INTEGER)
+            || (revision.is_some() && participant_id.is_none())
+        {
+            return Err(AuthorizationStateError::InvalidRecord(
+                "revision requires a participant and must be a positive protocol integer"
+                    .to_owned(),
+            ));
+        }
+        self.run_read(move |connection| {
+            let transaction = connection.transaction().map_err(sql_error)?;
+            let ids = if let Some(id) = participant_id {
+                vec![id]
+            } else {
+                let mut statement = transaction.prepare("SELECT DISTINCT participant_id FROM auth_installed_participants ORDER BY participant_id").map_err(sql_error)?;
+                let ids = statement.query_map([], |row| row.get::<_, String>(0)).map_err(sql_error)?
+                    .collect::<rusqlite::Result<Vec<_>>>().map_err(sql_error)?;
+                ids
+            };
+            let mut definitions = BTreeMap::new();
+            for id in ids {
+                let (_, participant) = load_installed_participant(&transaction, &id, revision)?
+                    .ok_or(AuthorizationStateError::ParticipantMissing)?;
+                for (api_id, api) in participant.projection.implemented_apis.into_iter()
+                    .chain(participant.projection.referenced_apis)
+                {
+                    definitions.entry((api_id, api.digest.clone())).or_insert(api);
+                }
+            }
+            Ok(definitions)
+        }).await
+    }
+
     pub(crate) async fn is_companion_participant(
         &self,
         participant_id: String,

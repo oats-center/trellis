@@ -42,6 +42,10 @@ guide for administrative scope and protected-account safeguards.
 Exact snapshots may initiate resource provisioning; readiness still gates access,
 and read-only resource approval does not grant write access.
 
+Capability discovery includes installed application APIs. Access editors use the
+selected participant revision; global discovery distinguishes API definitions by
+digest rather than choosing one definition for a shared API ID.
+
 1. Author the `.trellis` files explicitly listed by `[sources]`.
 2. Set `[package]`, `[dependencies]`, and language outputs in `trellis.toml`;
    run `trellis update` to resolve changes into `trellis.lock`.

@@ -114,6 +114,8 @@ export type AuthCapabilitiesListRequest = {
 		readonly limit?: number;
 		readonly [key: string]: unknown;
 	};
+	readonly participantId?: AuthCapabilitiesListRequestParticipantId;
+	readonly revision?: AuthCapabilitiesListRequestRevision;
 	readonly sourceApi?: AuthCapabilitiesListRequestSourceApi;
 	readonly [key: string]: unknown;
 };
@@ -130,6 +132,16 @@ export type AuthCapabilitiesListRequestLimit = bigint;
 export declare const AuthCapabilitiesListRequestLimitCodec: {
 	decode(value: unknown): AuthCapabilitiesListRequestLimit;
 	encode(value: AuthCapabilitiesListRequestLimit): unknown;
+};
+export type AuthCapabilitiesListRequestParticipantId = string;
+export declare const AuthCapabilitiesListRequestParticipantIdCodec: {
+	decode(value: unknown): AuthCapabilitiesListRequestParticipantId;
+	encode(value: AuthCapabilitiesListRequestParticipantId): unknown;
+};
+export type AuthCapabilitiesListRequestRevision = bigint;
+export declare const AuthCapabilitiesListRequestRevisionCodec: {
+	decode(value: unknown): AuthCapabilitiesListRequestRevision;
+	encode(value: AuthCapabilitiesListRequestRevision): unknown;
 };
 export type AuthCapabilitiesListRequestSourceApi = string;
 export declare const AuthCapabilitiesListRequestSourceApiCodec: {
@@ -148,8 +160,14 @@ export declare const AuthCapabilitiesListResponseCodec: {
 	decode(value: unknown): AuthCapabilitiesListResponse;
 	encode(value: AuthCapabilitiesListResponse): unknown;
 };
+export type AuthCapabilitiesListResponseApiDigest = string;
+export declare const AuthCapabilitiesListResponseApiDigestCodec: {
+	decode(value: unknown): AuthCapabilitiesListResponseApiDigest;
+	encode(value: AuthCapabilitiesListResponseApiDigest): unknown;
+};
 export type AuthCapabilitiesListResponseentriesItem = {
 	readonly allows: Array<AuthCapabilitiesListResponseentriesItemallowsItem>;
+	readonly apiDigest: AuthCapabilitiesListResponseApiDigest;
 	readonly capability: AuthCapabilitiesListResponseentriesItemCapability;
 	readonly description: AuthCapabilitiesListResponseentriesItemDescription;
 	readonly displayName: AuthCapabilitiesListResponseentriesItemDisplayName;

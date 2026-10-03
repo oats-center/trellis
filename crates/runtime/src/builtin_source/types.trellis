@@ -134,6 +134,9 @@ type AuthIssuersRevokedEventRevokedBy = string(min_length=1);
 type AuthCapabilitiesListRequestCursor = string(min_length=1);
 type AuthCapabilitiesListRequestLimit = int64(min=1, max=100);
 type AuthCapabilitiesListRequestSourceApi = string(min_length=1);
+type AuthCapabilitiesListRequestParticipantId = string(min_length=1);
+type AuthCapabilitiesListRequestRevision = int64(min=1);
+type AuthCapabilitiesListResponseApiDigest = string(min_length=1);
 type AuthCapabilityGroupsDeleteRequestGroupKey = string(min_length=1);
 type AuthCapabilityGroupsDeleteRequestIdempotencyKey = string(min_length=1);
 type AuthCapabilityGroupsGetRequestGroupKey = string(min_length=1);
@@ -2095,6 +2098,8 @@ model AuthIssuersRevokedEvent {
 model AuthCapabilitiesListRequest {
   page?: CursorQuery;
   sourceApi?: AuthCapabilitiesListRequestSourceApi;
+  participantId?: AuthCapabilitiesListRequestParticipantId;
+  revision?: AuthCapabilitiesListRequestRevision;
 }
 
 type AuthCapabilitiesListResponse = CursorPage<AuthCapabilitiesListResponseentriesItem>;
@@ -2730,6 +2735,7 @@ model AuthUsersUpdateResponse {
 }
 
 model AuthCapabilitiesListResponseentriesItem {
+  apiDigest: AuthCapabilitiesListResponseApiDigest;
   allows: list<AuthCapabilitiesListResponseentriesItemallowsItem>;
   capability: AuthCapabilitiesListResponseentriesItemCapability;
   description: AuthCapabilitiesListResponseentriesItemDescription;
