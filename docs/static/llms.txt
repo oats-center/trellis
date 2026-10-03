@@ -105,10 +105,12 @@ under a fresh fence; only that owner settles Stale. Ignored stale completions ar
 nonterminal diagnostics and retain redelivery until cleanup settles. A never-started
 displaced reservation settles Pending to Stale without handler execution. Lifecycle
 publication awaits JetStream acknowledgement; typed live updates remain transient.
-Execution state and attempts follow durable state-changing events in broker stream
-sequence order. Diagnostics cannot override settlement or attempts. Retried opens
-a new run under the same ID; older terminal events remain historical and cannot
-settle a later retry or dead-letter replay.
+Execution state and attempts follow accepted lifecycle transitions in broker
+stream-sequence order. Created initializes but cannot reopen a job. Diagnostics
+cannot override settlement or attempts. A valid Retried opens a new run without
+deleting history. Old-run deliveries are identified by their original lifecycle
+sequence and acknowledged without touching newer-run coordination. Deferred work
+rereads lifecycle state before acquisition.
 Jobs Summary is independent of Query pages. Capability approval is not an exact grant. Resource commitments are
 approvals; desired capacities are hints, while observed bindings are the usable
 limits. Trellis neither adopts nor destroys foreign-owned physical resources.

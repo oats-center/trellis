@@ -252,11 +252,15 @@ export class TcpProxy {
               continue;
             }
           } else {
-            gating.gate.onClientFrame(
-              gating.connectionId,
-              frame.op,
-              frame.raw,
-            );
+            if (
+              gating.gate.onClientFrame(
+                gating.connectionId,
+                frame.op,
+                frame.raw,
+              )
+            ) {
+              continue;
+            }
           }
           await sink.write(frame.raw);
         }

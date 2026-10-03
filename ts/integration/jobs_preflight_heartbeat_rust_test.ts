@@ -33,7 +33,7 @@ Deno.test("Rust maintains the accepted Jobs receipt during stalled lifecycle pre
     const manager = await jetstreamManager(nats);
     const gate = runtime.nativeTransportGate();
     const decoder = new TextDecoder();
-    const requests: { connectionId: number; body: string }[] = [];
+    const requests: { connectionId: number; subject: string }[] = [];
     const deliveries: {
       connectionId: number;
       subject: string;
@@ -58,8 +58,8 @@ Deno.test("Rust maintains the accepted Jobs receipt during stalled lifecycle pre
         if (op.headers !== undefined) {
           body = body.slice(body.indexOf("\r\n\r\n") + 4);
         }
-        if (op.subject === "$JS.API.STREAM.MSG.GET.JOBS") {
-          requests.push({ connectionId: id, body });
+        if (op.subject.startsWith("$JS.API.DIRECT.GET.JOBS.")) {
+          requests.push({ connectionId: id, subject: op.subject });
         }
         if (op.subject.startsWith("$JS.ACK.")) {
           acks.push({
@@ -95,7 +95,7 @@ Deno.test("Rust maintains the accepted Jobs receipt during stalled lifecycle pre
     // Arm before launch: initial submission precedes ordinary worker intake.
     // Hold an actual receiving-connection lifecycle read, not a fabricated slow
     // callback. Lookup count and order do not affect the receipt obligation.
-    const preflight = gate.armResponseHold("$JS.API.STREAM.MSG.GET.JOBS");
+    const preflight = gate.armResponseHold("$JS.API.DIRECT.GET.JOBS.");
     let child: Deno.ChildProcess | undefined;
     let stdin: WritableStreamDefaultWriter<Uint8Array> | undefined;
     let status: Promise<Deno.CommandStatus> | undefined;
@@ -174,10 +174,9 @@ Deno.test("Rust maintains the accepted Jobs receipt during stalled lifecycle pre
         "lifecycle read must use the actual receiving connection",
       );
       assert(requests.length > 0, "hold intercepts a real lifecycle lookup");
-      const query = JSON.parse(requests[0].body) as { last_by_subj: string };
       assert(
-        query.last_by_subj.includes(`.held.${job.jobId}.`),
-        requests[0].body,
+        requests[0].subject.includes(`.held.${job.jobId}.`),
+        requests[0].subject,
       );
       assertEquals(requests[0].connectionId, receipt.connectionId);
       assertEquals(Number(receipt.reply.split(".").at(-5)), 1);
@@ -225,7 +224,7 @@ Deno.test("Rust maintains the accepted Jobs receipt during stalled lifecycle pre
       console.log(`PREFLIGHT_HELD ${
         JSON.stringify({
           connectionId: receipt.connectionId,
-          query,
+          query: requests[0].subject,
           heldMs,
           ackWaitMs,
           deliveries: heldDeliveries.map(({ connectionId, reply, at }) => ({

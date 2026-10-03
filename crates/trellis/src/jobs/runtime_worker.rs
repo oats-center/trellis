@@ -33,7 +33,7 @@ use crate::jobs::keys::{
 use crate::jobs::manager::{
     JobManager, JobMetaSource, JobProcessError, JobProcessOutcome, TerminalPublishDecision,
 };
-use crate::jobs::projection::job_from_work_event;
+use crate::jobs::projection::{job_from_work_event, reduce_job_event};
 use crate::jobs::publisher::JobEventPublisher;
 use crate::jobs::registry::{
     start_worker_heartbeat_loop, ActiveJobCancellationRegistry, ServiceRegistryError,
@@ -79,6 +79,7 @@ enum WorkerAckAction {
 enum ProjectedWorkDecision {
     Process,
     SkipAck,
+    OldRunAck,
 }
 
 /// Cooperative cancellation token passed into worker handlers.
@@ -775,9 +776,43 @@ where
             })))
         };
         let job_key = job_key(&parsed_job.service, &parsed_job.job_type, &parsed_job.id);
-        if stream_work_decision(&lifecycle_stream, &queue.publish_prefix, &mut parsed_job).await?
-            == ProjectedWorkDecision::SkipAck
-        {
+        let work_sequence = message
+            .headers
+            .as_ref()
+            .and_then(|headers| headers.get("Nats-Stream-Source"))
+            .and_then(|source| source.as_str().split_whitespace().nth(1))
+            .and_then(|sequence| sequence.parse::<u64>().ok())
+            .unwrap_or(
+                message
+                    .info()
+                    .map_err(|error| RuntimeWorkerError::Messages {
+                        consumer: queue.consumer_name.clone(),
+                        details: error.to_string(),
+                    })?
+                    .stream_sequence,
+            );
+        let work_event = serde_json::from_slice::<JobEvent>(&payload).map_err(|error| {
+            RuntimeWorkerError::LifecycleDecode {
+                stream: JOBS_STREAM.to_owned(),
+                subject: message.subject.to_string(),
+                details: error.to_string(),
+            }
+        })?;
+        let decision = stream_work_decision(
+            &lifecycle_stream,
+            &queue.publish_prefix,
+            &mut parsed_job,
+            work_sequence,
+            work_event.event_type,
+        )
+        .await?;
+        if decision == ProjectedWorkDecision::OldRunAck {
+            // The newer run shares this job ID. Retire only this old delivery,
+            // never its successor's keyed reservation or cancellation state.
+            message.ack().await.map_err(map_ack_error)?;
+            continue;
+        }
+        if decision == ProjectedWorkDecision::SkipAck {
             cleanup_queued_key_for_terminal(
                 key_coordinator.as_ref(),
                 &queue,
@@ -1525,52 +1560,62 @@ async fn stream_work_decision(
     lifecycle_stream: &stream::Stream<()>,
     publish_prefix: &str,
     work: &mut Job,
+    work_sequence: u64,
+    work_event_type: JobEventType,
 ) -> Result<ProjectedWorkDecision, RuntimeWorkerError> {
-    // Compare durable state transitions by broker sequence, not timestamps or
-    // the existence of historical terminal events. Retried opens a new run;
-    // diagnostics and other observation-only events cannot reset its state.
-    let mut subjects = Vec::new();
-    for event_type in [
+    let canonical = job_event_subject(
+        &work.service,
+        &work.job_type,
+        &work.id,
         JobEventType::Created,
-        JobEventType::Retried,
-        JobEventType::Started,
-        JobEventType::Retry,
-        JobEventType::Completed,
-        JobEventType::Failed,
-        JobEventType::Cancelled,
-        JobEventType::Expired,
-        JobEventType::Skipped,
-        JobEventType::Stale,
-        JobEventType::Dead,
-        JobEventType::Dismissed,
-    ] {
-        subjects.push(format!(
-            "{publish_prefix}.{}.{}",
-            work.id,
-            event_type.as_token()
-        ));
-        subjects.push(job_event_subject(
-            &work.service,
-            &work.job_type,
-            &work.id,
-            event_type,
-        ));
-    }
+    );
+    let mut subjects = vec![
+        format!("{publish_prefix}.{}.*", work.id),
+        format!(
+            "{}.*",
+            canonical
+                .rsplit_once('.')
+                .expect("event subject has type")
+                .0
+        ),
+    ];
     subjects.sort();
     subjects.dedup();
-    let identity = &*work;
-    let transitions =
-        futures_util::future::try_join_all(subjects.into_iter().map(|subject| async move {
-            let Some(message) = latest_lifecycle_message(lifecycle_stream, &subject)
+    let mut watermark = 0;
+    for subject in &subjects {
+        if let Some(last) = latest_lifecycle_message(lifecycle_stream, subject)
+            .await
+            .map_err(|details| RuntimeWorkerError::LifecycleRead {
+                stream: JOBS_STREAM.to_owned(),
+                subject: subject.clone(),
+                details,
+            })?
+        {
+            watermark = watermark.max(last.sequence);
+        }
+    }
+    let mut transitions = Vec::new();
+    for subject in subjects {
+        let mut sequence = 1;
+        while sequence <= watermark {
+            let message = match lifecycle_stream
+                .direct_get_next_for_subject(&subject, Some(sequence))
                 .await
-                .map_err(|error| RuntimeWorkerError::LifecycleRead {
-                    stream: JOBS_STREAM.to_string(),
-                    subject: subject.clone(),
-                    details: error,
-                })?
-            else {
-                return Ok(None);
+            {
+                Ok(message) => message,
+                Err(error) if error.kind() == stream::DirectGetErrorKind::NotFound => break,
+                Err(error) => {
+                    return Err(RuntimeWorkerError::LifecycleRead {
+                        stream: JOBS_STREAM.to_string(),
+                        subject: subject.clone(),
+                        details: error.to_string(),
+                    })
+                }
             };
+            sequence = message.sequence + 1;
+            if message.sequence > watermark {
+                break;
+            }
             let event = serde_json::from_slice::<JobEvent>(&message.payload).map_err(|error| {
                 RuntimeWorkerError::LifecycleDecode {
                     stream: JOBS_STREAM.to_string(),
@@ -1578,59 +1623,62 @@ async fn stream_work_decision(
                     details: error.to_string(),
                 }
             })?;
-            if event.service == identity.service
-                && event.job_type == identity.job_type
-                && event.job_id == identity.id
+            if event.service == work.service
+                && event.job_type == work.job_type
+                && event.job_id == work.id
             {
-                Ok(Some((message.sequence, event)))
-            } else {
-                Ok(None)
+                transitions.push((message.sequence, event));
             }
-        }))
-        .await?;
-    let Some((_, latest)) = transitions
-        .into_iter()
-        .flatten()
-        .max_by_key(|(sequence, _)| *sequence)
-    else {
-        return Ok(ProjectedWorkDecision::Process);
-    };
-    let decision = lifecycle_work_decision(Some(&latest), work);
-    work.tries = latest.tries;
-    work.state = latest.state;
-    Ok(decision)
-}
-
-fn lifecycle_work_decision(latest: Option<&JobEvent>, work: &Job) -> ProjectedWorkDecision {
-    let Some(latest) = latest else {
-        return ProjectedWorkDecision::Process;
-    };
-
-    if latest.service != work.service
-        || latest.job_type != work.job_type
-        || latest.job_id != work.id
+        }
+    }
+    transitions.sort_by_key(|(sequence, _)| *sequence);
+    let mut current: Option<Job> = None;
+    let mut run_sequence = None;
+    let mut run_type = JobEventType::Created;
+    for (sequence, event) in transitions {
+        if matches!(
+            event.event_type,
+            JobEventType::Progress
+                | JobEventType::Logged
+                | JobEventType::Heartbeat
+                | JobEventType::StaleCompletionIgnored
+                | JobEventType::Waiting
+                | JobEventType::Resumed
+        ) {
+            continue;
+        }
+        let opens_run = (current.is_none() && event.event_type == JobEventType::Created)
+            || (event.event_type == JobEventType::Retried
+                && current.as_ref().is_some_and(|job| {
+                    matches!(
+                        job.state,
+                        crate::jobs::types::JobState::Failed | crate::jobs::types::JobState::Dead
+                    ) && event.previous_state == Some(job.state)
+                }));
+        current = reduce_job_event(current.as_ref(), &event);
+        if opens_run && current.is_some() {
+            run_sequence = Some(sequence);
+            run_type = event.event_type;
+        }
+    }
+    if run_sequence.is_some()
+        && (run_type != work_event_type
+            || (run_sequence != Some(work_sequence)
+                && (run_type == JobEventType::Retried
+                    || !current
+                        .as_ref()
+                        .is_some_and(|job| crate::jobs::projection::is_terminal(job.state)))))
     {
-        return ProjectedWorkDecision::Process;
+        return Ok(ProjectedWorkDecision::OldRunAck);
     }
-
-    if is_terminal_lifecycle_event(latest.event_type) {
-        return ProjectedWorkDecision::SkipAck;
+    if let Some(current) = current {
+        *work = current;
     }
-    ProjectedWorkDecision::Process
-}
-
-fn is_terminal_lifecycle_event(event_type: JobEventType) -> bool {
-    matches!(
-        event_type,
-        JobEventType::Completed
-            | JobEventType::Failed
-            | JobEventType::Cancelled
-            | JobEventType::Expired
-            | JobEventType::Skipped
-            | JobEventType::Stale
-            | JobEventType::Dead
-            | JobEventType::Dismissed
-    )
+    Ok(if crate::jobs::projection::is_terminal(work.state) {
+        ProjectedWorkDecision::SkipAck
+    } else {
+        ProjectedWorkDecision::Process
+    })
 }
 
 fn ack_action_for_outcome<TResult>(
@@ -2413,12 +2461,9 @@ mod tests {
 
     use super::JobCancellationToken;
 
-    use super::{
-        ack_action_for_outcome, lifecycle_work_decision, progress_ack_interval,
-        ProjectedWorkDecision, WorkerAckAction,
-    };
+    use super::{ack_action_for_outcome, progress_ack_interval, WorkerAckAction};
     use crate::jobs::bindings::JobsQueueBinding;
-    use crate::jobs::events::{cancelled, completed, created, started, EventMeta};
+    use crate::jobs::events::{created, EventMeta};
     use crate::jobs::manager::JobProcessOutcome;
     use crate::jobs::types::{Job, JobContext, JobState};
 
@@ -2705,6 +2750,179 @@ mod tests {
         for task in tasks {
             task.await.unwrap().unwrap();
         }
+        nats.stop().unwrap();
+    }
+
+    #[tokio::test]
+    async fn duplicate_created_after_deduplication_keeps_native_completion_authoritative() {
+        use crate::jobs::bindings::JobsBinding;
+        use crate::jobs::{TrellisJobEventPublisher, TrellisJobMetaSource};
+        use async_nats::jetstream::{consumer, stream};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let source = tempfile::tempdir().unwrap();
+        trellis_bootstrap::generate_nats_bootstrap(&trellis_bootstrap::NatsBootstrapOptions::new(
+            source.path(),
+        ))
+        .unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut nats = trellis_local_nats::LocalNats::builder()
+            .binary(trellis_local_nats::NatsBinarySource::DownloadPinned)
+            .cache_dir(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target/trellis-test-cache"),
+            )
+            .source(source.path())
+            .temporary_state()
+            .ephemeral_ports()
+            .output(trellis_local_nats::NatsOutput::Log {
+                path: state.path().join("nats.log"),
+                mirror: false,
+            })
+            .start()
+            .unwrap();
+        let client = async_nats::ConnectOptions::new()
+            .credentials_file(source.path().join("creds/trellis-auth.creds"))
+            .await
+            .unwrap()
+            .connect(nats.nats_url())
+            .await
+            .unwrap();
+        let js = async_nats::jetstream::new(client.clone());
+        let lifecycle = js
+            .create_stream(stream::Config {
+                name: "JOBS".into(),
+                subjects: vec!["jobs.>".into()],
+                allow_direct: true,
+                duplicate_window: Duration::from_millis(100),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let mut consumer = lifecycle
+            .create_consumer(consumer::pull::Config {
+                durable_name: Some("prepared".into()),
+                filter_subject: "jobs.work.*.created".into(),
+                ack_policy: consumer::AckPolicy::Explicit,
+                max_deliver: -1,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let queue = JobsQueueBinding {
+            queue_type: "document-process".into(),
+            publish_prefix: "jobs.work".into(),
+            updates_prefix: None,
+            work_subject: "jobs.work.*.created".into(),
+            consumer_name: "prepared".into(),
+            max_deliver: 3,
+            backoff_ms: vec![],
+            ack_wait_ms: 30_000,
+            default_deadline_ms: None,
+            update: None,
+            key_concurrency: None,
+            queue: None,
+        };
+        let manager = crate::jobs::manager::JobManager::new(
+            TrellisJobEventPublisher::new(client),
+            JobsBinding {
+                service_name: "documents".into(),
+                namespace: "documents".into(),
+                queues: [(queue.queue_type.clone(), queue.clone())].into(),
+            },
+            TrellisJobMetaSource,
+        );
+        let cancellation = JobCancellationToken::new();
+        let executions = Arc::new(AtomicUsize::new(0));
+        let count = executions.clone();
+        let worker = tokio::spawn(super::run_prepared_queue_worker_loop(
+            super::WorkerLoopResources {
+                consumer: consumer.clone(),
+                lifecycle_stream: js.get_stream_no_info("JOBS").await.unwrap(),
+                queue,
+                manager,
+                cancellation: cancellation.clone(),
+                cancellation_registry: Default::default(),
+                key_coordinator: None,
+                _lease: None,
+                retire: None,
+                single_receive: false,
+            },
+            move |_| {
+                let count = count.clone();
+                async move {
+                    let execution = count.fetch_add(1, Ordering::SeqCst) + 1;
+                    Ok::<_, crate::jobs::manager::JobProcessError<String>>(
+                        serde_json::json!({"execution": execution}),
+                    )
+                }
+            },
+        ));
+        let job = sample_job(JobState::Pending, 0);
+        let event = created(
+            EventMeta {
+                service: &job.service,
+                job_type: &job.job_type,
+                job_id: &job.id,
+                context: &job.context,
+                timestamp: &job.created_at,
+            },
+            job.payload,
+            job.max_tries,
+            None,
+        );
+        let body = serde_json::to_vec(&event).unwrap();
+        let subject = format!("jobs.work.{}.created", job.id);
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert("Nats-Msg-Id", "prepared-submission");
+        js.publish_with_headers(subject.clone(), headers.clone(), body.clone().into())
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while consumer.info().await.unwrap().ack_floor.consumer_sequence < 1 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let completed = lifecycle
+            .direct_get_last_for_subject(format!("jobs.work.{}.completed", job.id))
+            .await
+            .unwrap();
+        // Exercise the broker's finite deduplication window, not an injected duplicate.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let duplicate = js
+            .publish_with_headers(subject, headers, body.into())
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        assert!(!duplicate.duplicate);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while consumer.info().await.unwrap().ack_floor.consumer_sequence < 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        let retained = lifecycle
+            .direct_get_last_for_subject(format!("jobs.work.{}.completed", job.id))
+            .await
+            .unwrap();
+        assert_eq!(retained.sequence, completed.sequence);
+        assert_eq!(retained.payload, completed.payload);
+        cancellation.cancel_for_shutdown();
+        tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
         nats.stop().unwrap();
     }
 
@@ -3016,91 +3234,6 @@ mod tests {
                 &[17, 29],
             ),
             WorkerAckAction::Nak(Duration::from_millis(17))
-        );
-    }
-
-    #[test]
-    fn lifecycle_work_decision_allows_when_latest_event_is_created() {
-        let work = sample_job(JobState::Pending, 0);
-        let latest = created(
-            EventMeta {
-                service: &work.service,
-                job_type: &work.job_type,
-                job_id: &work.id,
-                context: &work.context,
-                timestamp: &work.created_at,
-            },
-            work.payload.clone(),
-            work.max_tries,
-            None,
-        );
-
-        assert_eq!(
-            lifecycle_work_decision(Some(&latest), &work),
-            ProjectedWorkDecision::Process
-        );
-    }
-
-    #[test]
-    fn lifecycle_work_decision_skips_when_latest_event_is_cancelled() {
-        let work = sample_job(JobState::Pending, 0);
-        let latest = cancelled(
-            EventMeta {
-                service: &work.service,
-                job_type: &work.job_type,
-                job_id: &work.id,
-                context: &work.context,
-                timestamp: &work.updated_at,
-            },
-            work.tries,
-            JobState::Pending,
-        );
-
-        assert_eq!(
-            lifecycle_work_decision(Some(&latest), &work),
-            ProjectedWorkDecision::SkipAck
-        );
-    }
-
-    #[test]
-    fn lifecycle_work_decision_processes_when_latest_event_is_started_for_created_work() {
-        let work = sample_job(JobState::Pending, 0);
-        let latest = started(
-            EventMeta {
-                service: &work.service,
-                job_type: &work.job_type,
-                job_id: &work.id,
-                context: &work.context,
-                timestamp: &work.updated_at,
-            },
-            1,
-            JobState::Pending,
-        );
-
-        assert_eq!(
-            lifecycle_work_decision(Some(&latest), &work),
-            ProjectedWorkDecision::Process
-        );
-    }
-
-    #[test]
-    fn lifecycle_work_decision_skips_when_latest_event_is_terminal() {
-        let work = sample_job(JobState::Retry, 0);
-        let latest = completed(
-            EventMeta {
-                service: &work.service,
-                job_type: &work.job_type,
-                job_id: &work.id,
-                context: &work.context,
-                timestamp: &work.updated_at,
-            },
-            1,
-            serde_json::json!({ "ok": true }),
-        );
-
-        assert_eq!(
-            lifecycle_work_decision(Some(&latest), &work),
-            ProjectedWorkDecision::SkipAck
         );
     }
 

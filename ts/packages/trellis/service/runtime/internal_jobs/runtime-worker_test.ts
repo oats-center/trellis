@@ -7,7 +7,11 @@ import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 
 import { NatsTestContainer } from "../../../../trellis-testkit/src/nats_container.ts";
 import { ActiveJobCancellationRegistry } from "./cancellation-registry.ts";
-import { JobManager, JobProcessError } from "./job-manager.ts";
+import {
+  JobManager,
+  JobProcessError,
+  prepareJobSubmission,
+} from "./job-manager.ts";
 import {
   createNatsJobKeyCoordinator,
   deriveJobKey,
@@ -24,8 +28,80 @@ import {
 } from "./runtime-worker.ts";
 import type { Job, JobEvent } from "./types.ts";
 
+Deno.test("republishing a completed prepared submission after broker deduplication does not execute it again", async () => {
+  await withBroker(async (fixture) => {
+    const { manager, jsm, host, settled, completed } = fixture;
+    await jsm.streams.update("JOBS", { duplicate_window: 100_000_000 });
+    const submission = prepareJobSubmission({
+      submissionId: crypto.randomUUID(),
+      mode: "create",
+      service: "svc",
+      queue: "refresh",
+      jobId: crypto.randomUUID(),
+      payload: { tenant: "duplicate" },
+      createdAt: new Date().toISOString(),
+    });
+    let executions = 0;
+    await host(async () => ({ execution: ++executions }));
+    const job = await manager.createPrepared(submission);
+    await settled();
+    const original = await completed(job);
+    // This wait exercises the broker's actual finite deduplication contract.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await manager.createPrepared(submission);
+    await settled();
+    assertEquals(executions, 1);
+    assertEquals((await completed(job)).result, original.result);
+    assertEquals(
+      (await jsm.consumers.info("JOBS", "worker")).ack_floor.consumer_seq,
+      2,
+    );
+  });
+});
+
 // Production worker kernel and adapters, with case-owned authenticated NATS.
 // Full resource provisioning and generation handoff belong to live integration.
+Deno.test("a duplicate prepared publication is retired without repeating an active handler", async () => {
+  await withBroker(async ({ manager, jsm, host, settled }) => {
+    await jsm.streams.update("JOBS", { duplicate_window: 100_000_000 });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const submission = prepareJobSubmission({
+      submissionId: crypto.randomUUID(),
+      mode: "create",
+      service: "svc",
+      queue: "refresh",
+      jobId: crypto.randomUUID(),
+      payload: { tenant: "active-duplicate" },
+      createdAt: new Date().toISOString(),
+    });
+    let executions = 0;
+    await host(async () => {
+      const execution = ++executions;
+      if (execution === 1) {
+        entered.resolve();
+        await release.promise;
+      }
+      return { execution };
+    }, 2);
+    try {
+      await manager.createPrepared(submission);
+      await deadline(entered.promise, 5_000);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await manager.createPrepared(submission);
+      await waitFor(async () => {
+        const info = await jsm.consumers.info("JOBS", "worker");
+        return info.delivered.consumer_seq >= 2 && info.num_pending === 0 &&
+          info.num_ack_pending === 1;
+      });
+      assertEquals(executions, 1);
+    } finally {
+      release.resolve();
+    }
+    await settled();
+  });
+});
+
 async function withBroker(
   run: (fixture: Awaited<ReturnType<typeof brokerFixture>>) => Promise<void>,
   keyed = false,
@@ -135,6 +211,7 @@ async function brokerFixture(
           eventType,
           state,
           ...(eventType === "retried" ? { previousState: "failed" } : {}),
+          ...(eventType === "skipped" ? { previousState: "pending" } : {}),
         } satisfies JobEvent,
       ),
     );
@@ -425,7 +502,7 @@ Deno.test("terminal work redelivers until its real key bucket recovers and clean
       template: ["/tenant"],
     });
     await f.jsm.consumers.update("JOBS", "worker", { max_deliver: -1 });
-    await f.event(job, "completed", "completed");
+    await f.event(job, "skipped", "skipped");
     await f.jsm.streams.delete("KV_JOBS_KEYS_svc");
     const worker = await f.host(() =>
       Promise.reject(new Error("terminal work executed"))
@@ -457,7 +534,7 @@ Deno.test("terminal work redelivers until its real key bucket recovers and clean
         f.binding.jobs.queues.refresh.publishPrefix,
         job,
       ))?.state,
-      "completed",
+      "skipped",
       "recovery must not execute terminal business work",
     );
   }, true));
@@ -528,28 +605,6 @@ Deno.test("manual retry of failed keyed work reacquires a real KV slot without c
     await f.settled();
     assertEquals((await f.completed(job)).result, { recovered: true });
     assertEquals((await f.keyState(payload)).active, []);
-  }, true));
-
-Deno.test("terminal historical payload cleans its real KV reservation by job identity", () =>
-  withBroker(async (f) => {
-    const payload = { tenant: "a" };
-    const job = await f.manager.create("refresh", payload);
-    const created = await f.jsm.direct.getMessage("JOBS", {
-      last_by_subj:
-        `${f.binding.jobs.queues.refresh.publishPrefix}.${job.id}.created`,
-    });
-    assert(created);
-    await f.jsm.streams.deleteMessage("JOBS", created.seq);
-    // Retained work can predate the current key path; cleanup must use job ID
-    // when the historical payload can no longer derive that key.
-    const historical = { ...job, payload: { input: { tenant: "a" } } };
-    await f.event(historical, "created", "pending");
-    await f.event(historical, "completed", "completed");
-    await f.host(() =>
-      Promise.reject(new Error("terminal historical work executed"))
-    );
-    await f.settled();
-    assertEquals((await f.keyState(payload)).queued, []);
   }, true));
 
 Deno.test("missing approved consumer fails closed against actual JetStream", () =>

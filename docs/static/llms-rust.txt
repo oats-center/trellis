@@ -164,11 +164,13 @@ without handler execution.
 Native lifecycle publication awaits JetStream acknowledgement. Typed live updates
 remain transient and do not require a durable stream.
 
-Execution state and attempt counts come from durable state-changing events in
-broker stream-sequence order, not the latest arbitrary event. Diagnostics,
-heartbeats, logs, and progress cannot override terminal settlement or attempts.
-Retried opens a new run under the same job ID; older terminal events remain in
-history but cannot settle a later retry or dead-letter replay.
+Execution state and attempts follow accepted lifecycle transitions in broker
+stream-sequence order. Created initializes but cannot reopen a job. Diagnostics,
+heartbeats, logs, and progress cannot override settlement or attempts. A valid
+Retried opens a new run under the same ID without deleting history. Work retains
+its original lifecycle sequence through broker source metadata. Old-run
+deliveries are acknowledged without touching newer-run coordination. Deferred
+work rereads lifecycle state before acquisition.
 
 Operation get, watch, signal, and cancel remain bound to the creator principal
 plus participant across reconnects rather than to one session key. A durable

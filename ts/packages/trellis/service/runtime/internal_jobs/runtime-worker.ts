@@ -74,7 +74,7 @@ export class JobsConsumerMissingError extends Error {
 type WorkMessageLike = {
   data: Uint8Array;
   subject: string;
-  info?: { redeliveryCount?: number };
+  info?: { redeliveryCount?: number; lifecycleSequence?: number };
   ack(): void | Promise<void>;
   nak(delay?: number): void | Promise<void>;
   inProgress(): void | Promise<void>;
@@ -113,8 +113,13 @@ type StartNatsConsumerDeps = {
 type DirectMessageReader = {
   getMessage(
     stream: string,
-    query: { last_by_subj: string },
+    query: { last_by_subj: string } | { next_by_subj: string; seq: number },
   ): Promise<{ data: Uint8Array; seq: number } | null>;
+};
+
+type ResolvedLifecycleEvent = JobEvent & {
+  runSequence?: number;
+  runEventType?: "created" | "retried";
 };
 
 type StartNatsConnectionDeps = {
@@ -149,7 +154,7 @@ export type StartNatsWorkerHostOptions<TResult> =
     ) => Promise<Job<unknown, TResult> | undefined>;
     getLatestLifecycleEvent?: (
       job: Job<unknown, TResult>,
-    ) => Promise<JobEvent | undefined>;
+    ) => Promise<ResolvedLifecycleEvent | undefined>;
     validatePayload?: (
       args: PayloadValidationArgs<TResult>,
     ) => Promise<void> | void;
@@ -175,7 +180,7 @@ export type JobReceivingSession<TResult> = {
   ) => Promise<Job<unknown, TResult> | undefined>;
   readonly getLatestLifecycleEvent?: (
     job: Job<unknown, TResult>,
-  ) => Promise<JobEvent | undefined>;
+  ) => Promise<ResolvedLifecycleEvent | undefined>;
 };
 
 type StartQueueWorkerLoopOptions<TResult> = {
@@ -216,6 +221,9 @@ export function toWorkerConsumer(
         subject: msg.subject,
         info: {
           redeliveryCount: Math.max(0, msg.info.deliveryCount - 1),
+          lifecycleSequence: msg.headers?.get("Nats-Stream-Source")
+            ? Number(msg.headers.get("Nats-Stream-Source")!.split(" ")[1])
+            : msg.info.streamSequence,
         },
         ack: msg.ack.bind(msg),
         nak: msg.nak.bind(msg),
@@ -350,7 +358,7 @@ export function startQueueWorkerLoop<TResult>(
   }
 
   const workTask = (async () => {
-    while (!stopping) {
+    workLoop: while (!stopping) {
       let session: JobReceivingSession<TResult>;
       try {
         session = await options.acquireSession(acquisition.signal);
@@ -421,11 +429,23 @@ export function startQueueWorkerLoop<TResult>(
             await disposition("nak");
             continue;
           }
-          const latestLifecycle = session.getLatestLifecycleEvent
+          let latestLifecycle = session.getLatestLifecycleEvent
             ? await session.getLatestLifecycleEvent(job)
             : undefined;
           if (stopping || token.isLeaseLost()) {
             await disposition("nak");
+            continue;
+          }
+          if (
+            latestLifecycle?.runSequence !== undefined &&
+            (event.eventType !== latestLifecycle.runEventType ||
+              (msg.info?.lifecycleSequence !== latestLifecycle.runSequence &&
+                (latestLifecycle.runEventType === "retried" ||
+                  lifecycleWorkDecision(latestLifecycle) !== "skip-ack")))
+          ) {
+            // This delivery belongs to a settled earlier run. Its job ID is
+            // shared with the new run, so do not clear that run's coordination.
+            await disposition("ack");
             continue;
           }
           if (lifecycleWorkDecision(latestLifecycle) === "skip-ack") {
@@ -450,7 +470,7 @@ export function startQueueWorkerLoop<TResult>(
             }
           }
 
-          const currentJob = latestLifecycle
+          let currentJob = latestLifecycle
             ? {
               ...job,
               state: latestLifecycle.state,
@@ -499,6 +519,34 @@ export function startQueueWorkerLoop<TResult>(
               await new Promise((resolve) =>
                 setTimeout(resolve, options.progressAckIntervalMs ?? 1_000)
               );
+              latestLifecycle = session.getLatestLifecycleEvent
+                ? await session.getLatestLifecycleEvent(job)
+                : undefined;
+              if (token.isCancelled()) break;
+              if (
+                latestLifecycle?.runSequence !== undefined &&
+                (event.eventType !== latestLifecycle.runEventType ||
+                  (msg.info?.lifecycleSequence !==
+                      latestLifecycle.runSequence &&
+                    (latestLifecycle.runEventType === "retried" ||
+                      lifecycleWorkDecision(latestLifecycle) !== "skip-ack")))
+              ) {
+                await disposition("ack");
+                continue workLoop;
+              }
+              if (lifecycleWorkDecision(latestLifecycle) === "skip-ack") {
+                await cleanupTerminalKeyState(session.manager, job);
+                registry.clearPending(key);
+                await disposition("ack");
+                continue workLoop;
+              }
+              currentJob = latestLifecycle
+                ? {
+                  ...job,
+                  state: latestLifecycle.state,
+                  tries: latestLifecycle.tries,
+                }
+                : job;
             }
           } while (outcome.outcome === "deferred" && !token.isCancelled());
           const ackAction = ackActionForOutcome(outcome);
@@ -835,53 +883,80 @@ function getQueueBinding(
 }
 
 /**
- * @internal Reads the newest execution-state transition by broker sequence.
- * Explicit retries supersede earlier settlements; observation-only events cannot
- * replace authoritative state or attempt counts.
+ * @internal Folds accepted execution transitions in broker order. Created only
+ * initializes a job; a valid Retried opens a new run. Observation events cannot
+ * replace execution state or attempts.
  */
 export async function getLatestLifecycleEvent(
   direct: DirectMessageReader,
   stream: string,
   publishPrefix: string,
   job: Job,
-): Promise<JobEvent | undefined> {
+): Promise<ResolvedLifecycleEvent | undefined> {
   try {
-    const transitions = await Promise.all([
-      "created",
-      "retried",
-      "started",
-      "retry",
-      "completed",
-      "failed",
-      "cancelled",
-      "expired",
-      "skipped",
-      "stale",
-      "dead",
-      "dismissed",
-    ].map(async (type) => {
+    const last = await direct.getMessage(stream, {
+      last_by_subj: `${publishPrefix}.${job.id}.*`,
+    });
+    if (!last) return undefined;
+    let current: ResolvedLifecycleEvent | undefined;
+    let seq = 1;
+    while (seq <= last.seq) {
+      let msg;
       try {
-        const msg = await direct.getMessage(stream, {
-          last_by_subj: `${publishPrefix}.${job.id}.${type}`,
+        msg = await direct.getMessage(stream, {
+          next_by_subj: `${publishPrefix}.${job.id}.*`,
+          seq,
         });
-        if (!msg) return undefined;
-        const event = parseWorkPayloadEvent(msg.data);
-        return event?.jobId === job.id && event.service === job.service &&
-            event.jobType === job.type
-          ? { seq: msg.seq, event }
-          : undefined;
       } catch (error) {
-        if (isMessageNotFoundError(error)) return undefined;
+        if (isMessageNotFoundError(error)) break;
         throw error;
       }
-    }));
-    let newest: { seq: number; event: JobEvent } | undefined;
-    for (const transition of transitions) {
-      if (transition && (!newest || transition.seq > newest.seq)) {
-        newest = transition;
+      if (!msg) break;
+      if (msg.seq > last.seq) break;
+      seq = msg.seq + 1;
+      const event = parseWorkPayloadEvent(msg.data);
+      if (
+        !event || event.jobId !== job.id || event.service !== job.service ||
+        event.jobType !== job.type
+      ) continue;
+      if (!current) {
+        if (event.eventType === "created") {
+          current = { ...event, runSequence: msg.seq, runEventType: "created" };
+        }
+        continue;
       }
+      const allowed: Partial<
+        Record<JobEvent["eventType"], JobEvent["state"][]>
+      > = {
+        started: ["pending", "retry", "active"],
+        retry: ["active"],
+        completed: ["active"],
+        failed: ["active"],
+        cancelled: ["pending", "retry", "active"],
+        expired: ["pending", "retry", "active"],
+        skipped: ["pending", "retry"],
+        stale: current.tries === 0 && event.tries === 0
+          ? ["pending", "active"]
+          : ["active"],
+        dead: ["active", "retry", "failed", "expired"],
+        dismissed: ["dead"],
+        retried: ["failed", "dead"],
+      };
+      if (
+        !allowed[event.eventType]?.includes(current.state) ||
+        event.previousState !== current.state
+      ) continue;
+      current = {
+        ...event,
+        runSequence: event.eventType === "retried"
+          ? msg.seq
+          : current.runSequence,
+        runEventType: event.eventType === "retried"
+          ? "retried"
+          : current.runEventType,
+      };
     }
-    return newest?.event;
+    return current;
   } catch (error) {
     if (isMessageNotFoundError(error)) {
       return undefined;

@@ -78,8 +78,7 @@ Deno.test("Jobs reserves the initial delivery during a slow lifecycle query", as
     assert(created);
     const createdBody = created.string();
     const decode = new TextDecoder();
-    const requestSubject =
-      `$JS.API.DIRECT.GET.JOBS.${prefix}.${job.id}.created`;
+    const requestSubject = `$JS.API.DIRECT.GET.JOBS.${prefix}.${job.id}.*`;
     const requests: {
       connectionId: number;
       subject: string;
@@ -318,7 +317,7 @@ Deno.test("Jobs reserves the initial delivery during a slow lifecycle query", as
     assert(stoppedCreated);
     const stoppedBody = stoppedCreated.string();
     hold = gate.armResponseHold(
-      `$JS.API.DIRECT.GET.JOBS.${prefix}.${stoppedJob.id}.created`,
+      `$JS.API.DIRECT.GET.JOBS.${prefix}.${stoppedJob.id}.*`,
       receipt.connectionId,
       (body) => decode.decode(body) === stoppedBody,
     );

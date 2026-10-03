@@ -162,8 +162,10 @@ fn is_legal_transition(current: &Job, event: &JobEvent) -> bool {
     match event.event_type {
         JobEventType::Created => false,
         JobEventType::Started => {
-            matches!(current.state, JobState::Pending | JobState::Retry)
-                && event.previous_state == Some(current.state)
+            matches!(
+                current.state,
+                JobState::Pending | JobState::Retry | JobState::Active
+            ) && event.previous_state == Some(current.state)
         }
         JobEventType::Retry => {
             current.state == JobState::Active && event.previous_state == Some(JobState::Active)

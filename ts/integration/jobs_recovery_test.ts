@@ -1,10 +1,11 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { AckPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { credsAuthenticator } from "@nats-io/nats-core";
+import { credsAuthenticator, deadline } from "@nats-io/nats-core";
 import { connect } from "@nats-io/transport-node";
 import { join } from "@std/path";
-import { TrellisService } from "@oatscenter/trellis/service";
+import { RetryJobError, TrellisService } from "@oatscenter/trellis/service";
+import { Result } from "@oatscenter/trellis";
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import {
   JobCancellationToken,
@@ -61,6 +62,116 @@ Deno.test("native Rust worker starts on a provisioned queue and retries cleanup 
     }
   });
 });
+
+for (const terminal of ["failed", "dead"] as const) {
+  Deno.test(`one-slot keyed ${terminal} replay retires the old unacknowledged delivery before running the new run`, async () => {
+    await withTrellisRuntime(async (runtime) => {
+      const identity = await runtime.registerService({
+        name: `keyed-${terminal}-replay`,
+        contract: participants.Provider.participant,
+      });
+      const admin = await runtime.connectClient({
+        name: `keyed-${terminal}-admin`,
+        contract: participants.JobsAdmin.participant,
+      });
+      const gate = runtime.nativeTransportGate();
+      const originalFrame = gate.onClientFrame.bind(gate);
+      const heldAck = Promise.withResolvers<string>();
+      let drop = true;
+      const forwarded: string[] = [];
+      gate.onClientFrame = (connection, op, raw) => {
+        const held = originalFrame(connection, op, raw);
+        if (
+          op.kind === "pub" &&
+          op.subject.startsWith("$JS.ACK.JOBS_WORK.") &&
+          new TextDecoder().decode(raw).endsWith("+ACK\r\n")
+        ) {
+          if (drop) {
+            heldAck.resolve(op.subject);
+            return true;
+          }
+          forwarded.push(op.subject);
+        }
+        return held;
+      };
+      let service = await TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant: participants.Provider.participant,
+        seed: identity.seed,
+      }).orThrow();
+      let executions = 0;
+      service.jobs.replayWork.handle(({ job }) => {
+        if (job.cancellationReason === "retry-exhausted") {
+          return Promise.resolve(Result.ok(job.payload));
+        }
+        executions++;
+        if (terminal === "failed") throw new Error("original run failed");
+        return Promise.resolve(Result.err(new RetryJobError()));
+      }, { concurrency: 1 });
+      let exited = service.wait();
+      try {
+        const job = await service.jobs.replayWork.create({ value: terminal })
+          .orThrow();
+        const oldAck = await deadline(heldAck.promise, 10_000);
+        await runtime.waitFor(async () =>
+          (await admin.inspect({ id: job.id }).orThrow()).job.state === terminal
+        );
+        await service.stop();
+        await exited;
+        const before = executions;
+        if (terminal === "failed") await admin.retry({ id: job.id }).orThrow();
+        else await admin.replayDlq({ id: job.id }).orThrow();
+        // Leave the existing delivery overdue before receiving again, so the
+        // broker schedules its redelivery ahead of the newly sourced replay.
+        const due = performance.now() + 300;
+        await runtime.waitFor(() => performance.now() >= due);
+        drop = false;
+        service = await TrellisService.connect({
+          trellisUrl: runtime.trellisUrl,
+          participant: participants.Provider.participant,
+          seed: identity.seed,
+        }).orThrow();
+        service.jobs.replayWork.handle(({ job }) => {
+          executions++;
+          return Promise.resolve(Result.ok(job.payload));
+        }, { concurrency: 1 });
+        exited = service.wait();
+        await runtime.waitFor(async () =>
+          (await admin.inspect({ id: job.id }).orThrow()).job.state ===
+            "completed"
+        ).catch(async (cause) => {
+          const state =
+            (await admin.inspect({ id: job.id }).orThrow()).job.state;
+          throw new Error(
+            `Replay did not complete: state=${state}, executions=${executions}, before=${before}, acknowledgements=${
+              JSON.stringify(forwarded)
+            }`,
+            { cause },
+          );
+        });
+        await runtime.waitFor(() => forwarded.length >= 2).catch((cause) => {
+          throw new Error(
+            `Missing delivery acknowledgements: original=${oldAck}, forwarded=${
+              JSON.stringify(forwarded)
+            }, executions=${executions}, before=${before}`,
+            { cause },
+          );
+        });
+        assertEquals(
+          Number(forwarded[0].split(".").at(-4)),
+          Number(oldAck.split(".").at(-4)),
+          "the old delivery must be retired first",
+        );
+        assertEquals(executions, before + 1);
+      } finally {
+        drop = false;
+        await service.stop();
+        await exited;
+        gate.onClientFrame = originalFrame;
+      }
+    }, { interruptibleNativeProxy: true });
+  });
+}
 
 Deno.test("native worker killed after key persistence but before Started recovers expiration and unblocks the next job", async () => {
   await withTrellisRuntime(async (runtime) => {
