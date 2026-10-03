@@ -291,3 +291,24 @@ app TransportGrowthCaller {
     optional capability extend;
   }
 }
+
+api permission_subset@v1 {
+  title "Participant permission subset";
+  description "Capability shortcuts expand only participant-selected actions.";
+  rpc Selected { input Empty; output Empty; }
+  rpc Unselected { input Empty; output Empty; }
+  capabilities {
+    public { allows {} }
+    capability manage {
+      title "Manage selected actions";
+      description "A capability spanning more actions than the participant selects.";
+      consequence "The subject can invoke its selected actions.";
+      allows { rpc Selected; rpc Unselected; }
+    }
+  }
+}
+
+app PermissionSubsetCaller {
+  use auth { rpc Sessions.Me; }
+  use permission_subset { rpc Selected; optional capability manage; }
+}

@@ -81,7 +81,10 @@
   const added = $derived(selectedPermissions.filter((permission) => !previousKeys.has(permissionKey(permission))));
   const removed = $derived(original?.grants.permissions.filter((permission) => !selected.has(permissionKey(permission))) ?? []);
   const busy = $derived(disabled || loading || pending || uncertain);
-  const permissionCapabilities = $derived(capabilities.filter((capability) => capability.allows.length > 0 && capability.allows.every((permission) => available.some((candidate) => permissionKey(candidate) === permissionKey(permission)))));
+  const permissionCapabilities = $derived.by(() => {
+    const keys = new Set(available.map(permissionKey));
+    return capabilities.map((capability) => ({ ...capability, allows: capability.allows.filter((permission) => keys.has(permissionKey(permission))) })).filter((capability) => capability.allows.length > 0);
+  });
 
   function protectedBinding(binding: Binding): boolean {
     return bootstrapAdministrator && binding.platformPrivileges.includes("trellis.auth::admin");
@@ -212,9 +215,7 @@
     draftError = null;
     review = false;
     try {
-      const permissions = presetPermissions(key, groups, capabilities);
-      const unavailable = permissions.filter((permission) => !available.some((candidate) => permissionKey(candidate) === permissionKey(permission)));
-      if (unavailable.length) throw new Error(`Preset is incompatible with this installed participant: ${unavailable.map(permissionLabel).join("; ")}`);
+      const permissions = presetPermissions(key, groups, permissionCapabilities);
       for (const permission of permissions) selected.add(permissionKey(permission));
     } catch (cause) { draftError = errorMessage(cause); }
   }
