@@ -10,6 +10,75 @@ import {
   signInIfPrompted,
   waitForConsoleReady,
 } from "./browser_test_support.ts";
+import { openConsoleAsRuntimeAdmin } from "./console_test_support.ts";
+
+Deno.test("browser network restoration wakes renewal backoff before the next RPC times out", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      const context = await launchProfile(runtime);
+      try {
+        const page = await context.newPage();
+        await openConsoleAsRuntimeAdmin(page, runtime);
+        await page.goto(`${runtime.trellisUrl}/console/admin/users`, {
+          waitUntil: "domcontentloaded",
+        });
+        await page.getByLabel("Search users").waitFor({ state: "visible" });
+        await page.locator(".users-row").first().waitFor({ state: "visible" });
+
+        let failedRenewals = 0;
+        page.on("requestfailed", (request) => {
+          if (
+            request.method() === "POST" &&
+            new URL(request.url()).pathname === "/auth/context/refresh"
+          ) failedRenewals++;
+        });
+        // Let real credentials expire and actual renewal failures enter backoff.
+        // No fake clock, authorization response, or SDK hook.
+        await context.setOffline(true);
+        await runtime.waitFor(() => failedRenewals >= 3, { timeoutMs: 60_000 });
+
+        // This row did not exist when the browser disconnected. Showing it proves
+        // a fresh authenticated RPC, not merely redisplaying cached data.
+        const username = `resume-${crypto.randomUUID().slice(0, 8)}`;
+        await runtime.callAdminRpc("authUsersCreate", {
+          email: null,
+          idempotencyKey: crypto.randomUUID(),
+          image: null,
+          name: username,
+          username,
+        });
+        await page.getByLabel("Search users").fill(username);
+        await Promise.all([
+          page.waitForResponse(
+            (response) =>
+              new URL(response.url()).pathname === "/auth/context/refresh" &&
+              response.ok(),
+            { timeout: 3_000 },
+          ),
+          (async () => {
+            await context.setOffline(false);
+            await page.getByLabel("Search users").press("Enter");
+            await page.locator(".users-row", { hasText: username }).waitFor({
+              state: "visible",
+              timeout: 3_000,
+            });
+          })(),
+        ]);
+        assertEquals(await page.locator(".users-row").count(), 1);
+      } finally {
+        await context.close();
+      }
+    },
+    browserRuntimeOptions({
+      authorization: {
+        contextLifetimeSeconds: 76,
+        refreshLeadSeconds: 15,
+        refreshJitterSeconds: 0,
+        minimumContextLifetimeSeconds: 46,
+      },
+    }),
+  );
+});
 
 Deno.test("browser admin bootstrap reaches the authorized console and survives reload", async () => {
   await withTrellisRuntime(async (runtime) => {

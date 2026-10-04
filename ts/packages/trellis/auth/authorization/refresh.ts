@@ -205,7 +205,10 @@ export async function refreshAuthorizationContext(args: {
   return result.context;
 }
 
-/** Start proactive refresh using the context's distributed refresh time. */
+/**
+ * Start proactive refresh using the context's distributed refresh time.
+ * Browser connectivity restoration and foreground return wake the same owner.
+ */
 export function startAuthorizationContextRefresh(args: {
   trellisUrl: string;
   credential: UserLoginCredential;
@@ -265,6 +268,7 @@ export function startAuthorizationContextRefresh(args: {
           schedule(refreshDelay(args.cache, 1_000));
           return;
         }
+        stop();
         await args.onTerminalFailure?.(error);
         return;
       }
@@ -294,26 +298,42 @@ export function startAuthorizationContextRefresh(args: {
     }
   };
   schedule(refreshDelay(args.cache));
+  const requestRefresh = () => {
+    if (stopped) return;
+    if (running) {
+      wakePending = true;
+      return;
+    }
+    if (timer !== undefined) clearTimeout(timer);
+    schedule(0);
+  };
   let unregisterRefreshRequest: () => void;
   try {
-    unregisterRefreshRequest = args.cache.registerRefreshRequest(() => {
-      if (running) {
-        wakePending = true;
-        return;
-      }
-      if (timer !== undefined) clearTimeout(timer);
-      schedule(0);
-    });
+    unregisterRefreshRequest = args.cache.registerRefreshRequest(
+      requestRefresh,
+    );
   } catch (error) {
     stopped = true;
     if (timer !== undefined) clearTimeout(timer);
     throw error;
   }
-  return () => {
+  const browser = typeof window === "undefined" ? undefined : window;
+  const onVisibilityChange = () => {
+    if (browser?.document.visibilityState === "visible") requestRefresh();
+  };
+  browser?.addEventListener("online", requestRefresh);
+  browser?.document.addEventListener("visibilitychange", onVisibilityChange);
+  const stop = () => {
     stopped = true;
     unregisterRefreshRequest();
     if (timer !== undefined) clearTimeout(timer);
+    browser?.removeEventListener("online", requestRefresh);
+    browser?.document.removeEventListener(
+      "visibilitychange",
+      onVisibilityChange,
+    );
   };
+  return stop;
 }
 
 function refreshDelay(
