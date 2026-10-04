@@ -810,9 +810,14 @@ jobs:
         working-directory: web
         run: deno run -A --frozen @sveltejs/kit sync
 
-      - name: Install Chromium and browser dependencies
+      - name: Set up Node for the Playwright installer
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pinned Chromium and browser dependencies
         working-directory: ts
-        run: deno run -A --frozen npm:playwright@1.59.1 install --with-deps chromium
+        run: node node_modules/playwright/cli.js install --with-deps chromium
 
       - name: Test built-in UI hosting
         working-directory: ts
