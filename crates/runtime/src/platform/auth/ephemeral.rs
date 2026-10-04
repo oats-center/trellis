@@ -300,6 +300,15 @@ pub(crate) struct AuthBrowserTransaction {
 }
 
 impl AuthBrowserTransaction {
+    fn restartable(&self, now: i64) -> bool {
+        self.expires_at <= now
+            || matches!(
+                self.state,
+                AuthBrowserTransactionState::ApprovalDenied
+                    | AuthBrowserTransactionState::Expired
+                    | AuthBrowserTransactionState::Consumed
+            )
+    }
     fn validate(&self) -> Result<(), AuthorizationStateError> {
         require_format("format", &self.format, BROWSER_TRANSACTION_FORMAT)?;
         require_nonempty("transactionId", &self.transaction_id)?;
@@ -734,7 +743,7 @@ impl AuthOAuthState {
 /// Typed repository port for ephemeral browser and OAuth auth state.
 #[async_trait]
 pub(crate) trait AuthEphemeralRepository: Send + Sync {
-    /// Locate the latest started attempt; this correlation never carries identity or approval.
+    /// Locate the single accepted attempt for an intent; this is not a public projection.
     async fn transaction_for_intent(
         &self,
         intent_id: &str,
@@ -849,8 +858,16 @@ impl AuthEphemeralRepository for InMemoryAuthEphemeralRepository {
         if records.contains_key(&record.transaction_id) {
             return Err(AuthorizationStateError::StorageConflict);
         }
-        lock(&self.intent_transactions)?
-            .insert(record.intent_digest.clone(), record.transaction_id.clone());
+        let mut intents = lock(&self.intent_transactions)?;
+        if let Some(current) = intents
+            .get(&record.intent_digest)
+            .and_then(|id| records.get(id))
+        {
+            if !current.restartable(record.created_at) {
+                return Err(AuthorizationStateError::StorageConflict);
+            }
+        }
+        intents.insert(record.intent_digest.clone(), record.transaction_id.clone());
         records.insert(record.transaction_id.clone(), record);
         Ok(())
     }
@@ -1214,15 +1231,52 @@ mod nats {
             record: AuthBrowserTransaction,
         ) -> Result<(), AuthorizationStateError> {
             validate_create(record.version, || record.validate())?;
-            create(&self.browser_transactions, &record.transaction_id, &record).await?;
-            // Publish discovery only after the independent transaction exists.
-            self.browser_transactions
-                .put(
-                    format!("intent.{}", record.intent_digest),
-                    record.transaction_id.into(),
-                )
+            let key = format!("intent.{}", record.intent_digest);
+            let entry = self
+                .browser_transactions
+                .entry(&key)
                 .await
-                .map_err(|error| storage(error.to_string()))?;
+                .map_err(|error| storage(error.to_string()))?
+                .filter(|entry| entry.operation == kv::Operation::Put);
+            if let Some(entry) = &entry {
+                let id = std::str::from_utf8(&entry.value)
+                    .map_err(|error| storage(error.to_string()))?;
+                if let Some(current) =
+                    get::<AuthBrowserTransaction>(&self.browser_transactions, id).await?
+                {
+                    if !current.restartable(record.created_at) {
+                        return Err(AuthorizationStateError::StorageConflict);
+                    }
+                }
+            }
+            create(&self.browser_transactions, &record.transaction_id, &record).await?;
+            // The index CAS is the acceptance point. Unindexed candidates are not readable
+            // through this repository, including after a crash or an uncertain publish ACK.
+            let value = Bytes::from(record.transaction_id.clone());
+            let claimed = if let Some(entry) = entry {
+                match self
+                    .browser_transactions
+                    .update(&key, value, entry.revision)
+                    .await
+                {
+                    Ok(_) => true,
+                    Err(error) if error.kind() == kv::UpdateErrorKind::WrongLastRevision => false,
+                    Err(error) => return Err(storage(error.to_string())),
+                }
+            } else {
+                match self.browser_transactions.create(&key, value).await {
+                    Ok(_) => true,
+                    Err(error) if error.kind() == kv::CreateErrorKind::AlreadyExists => false,
+                    Err(error) => return Err(storage(error.to_string())),
+                }
+            };
+            if !claimed {
+                self.browser_transactions
+                    .delete(&record.transaction_id)
+                    .await
+                    .map_err(|error| storage(error.to_string()))?;
+                return Err(AuthorizationStateError::StorageConflict);
+            }
             Ok(())
         }
 
@@ -1230,7 +1284,23 @@ mod nats {
             &self,
             flow_id: &str,
         ) -> Result<Option<AuthBrowserTransaction>, AuthorizationStateError> {
-            get(&self.browser_transactions, flow_id).await
+            let record = get::<AuthBrowserTransaction>(&self.browser_transactions, flow_id).await?;
+            if let Some(current) = &record {
+                if !matches!(
+                    current.state,
+                    AuthBrowserTransactionState::ApprovalDenied
+                        | AuthBrowserTransactionState::Expired
+                        | AuthBrowserTransactionState::Consumed
+                ) && self
+                    .transaction_for_intent(&current.intent_digest)
+                    .await?
+                    .as_deref()
+                    != Some(flow_id)
+                {
+                    return Ok(None);
+                }
+            }
+            Ok(record)
         }
 
         async fn replace_browser_transaction(
@@ -1242,6 +1312,19 @@ mod nats {
             let entry =
                 current_entry(&self.browser_transactions, &replacement.transaction_id).await?;
             let current = decode::<AuthBrowserTransaction>(&entry.value)?;
+            if !matches!(
+                current.state,
+                AuthBrowserTransactionState::ApprovalDenied
+                    | AuthBrowserTransactionState::Expired
+                    | AuthBrowserTransactionState::Consumed
+            ) && self
+                .transaction_for_intent(&current.intent_digest)
+                .await?
+                .as_deref()
+                != Some(current.transaction_id.as_str())
+            {
+                return Err(AuthorizationStateError::StorageConflict);
+            }
             validate_browser_replacement(&current, expected_version, &replacement)?;
             replacement.validate()?;
             update(

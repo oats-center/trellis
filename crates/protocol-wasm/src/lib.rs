@@ -70,6 +70,10 @@ struct RequiredNullable<T>(Option<T>);
     rename_all_fields = "camelCase"
 )]
 enum WireSessionProofInput {
+    UserAuthProgress {
+        origin: String,
+        unsigned_request: Value,
+    },
     UserAuthBind {
         origin: String,
         transaction_id: String,
@@ -104,6 +108,13 @@ impl TryFrom<WireSessionProofInput> for SessionProofInput {
 
     fn try_from(value: WireSessionProofInput) -> Result<Self, Self::Error> {
         match value {
+            WireSessionProofInput::UserAuthProgress {
+                origin,
+                unsigned_request,
+            } => Self::user_auth_progress(UserAuthRequestSessionProofInput {
+                origin,
+                unsigned_request,
+            }),
             WireSessionProofInput::UserAuthBind {
                 origin,
                 transaction_id,

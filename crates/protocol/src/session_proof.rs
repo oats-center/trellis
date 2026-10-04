@@ -22,6 +22,8 @@ const MAXIMUM_PROOF_WINDOW_MS: i64 = 5 * 60 * 1_000;
 pub enum SessionProofPurpose {
     /// Start a user app or agent browser-auth request.
     UserAuthRequest,
+    /// Discover intent progress using its initiating key, without claiming a login.
+    UserAuthProgress,
     /// Claim an approved browser-auth flow with its enrolled session key.
     UserAuthBind,
     /// Bootstrap a provisioned service instance.
@@ -38,6 +40,7 @@ impl SessionProofPurpose {
     fn as_str(self) -> &'static str {
         match self {
             Self::UserAuthRequest => "userAuthRequest",
+            Self::UserAuthProgress => "userAuthProgress",
             Self::UserAuthBind => "userAuthBind",
             Self::ServiceBootstrap => "serviceBootstrap",
             Self::DeviceBootstrap => "deviceBootstrap",
@@ -63,7 +66,7 @@ pub struct SessionProofInput {
     transcript_fields: Vec<Vec<u8>>,
 }
 
-/// Owned fields for a user browser-auth initiation proof.
+/// Owned fields for user browser-auth initiation and intent-progress proofs.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UserAuthRequestSessionProofInput {
     /// Exact configured Trellis origin, independently supplied by both peers.
@@ -117,6 +120,32 @@ impl SessionProofInput {
     pub fn user_auth_request(
         input: UserAuthRequestSessionProofInput,
     ) -> Result<Self, ProtocolError> {
+        Self::user_auth_request_at(
+            input,
+            SessionProofPurpose::UserAuthRequest,
+            "/auth/requests",
+        )
+    }
+
+    /// Bind intent-progress discovery to the initiating key, origin, intent, and freshness.
+    ///
+    /// # Errors
+    /// Returns [`ProtocolError::SessionProof`] for malformed, unsafe, or noncanonical input.
+    pub fn user_auth_progress(
+        input: UserAuthRequestSessionProofInput,
+    ) -> Result<Self, ProtocolError> {
+        Self::user_auth_request_at(
+            input,
+            SessionProofPurpose::UserAuthProgress,
+            "/auth/intents/progress",
+        )
+    }
+
+    fn user_auth_request_at(
+        input: UserAuthRequestSessionProofInput,
+        purpose: SessionProofPurpose,
+        route: &str,
+    ) -> Result<Self, ProtocolError> {
         let UserAuthRequestSessionProofInput {
             origin,
             unsigned_request,
@@ -164,13 +193,13 @@ impl SessionProofInput {
         let key = decode_public_key(&session_public_key, &["sessionPublicKey"])?;
         let signer_key_id = derived_key_id(&key);
         Self::new(
-            SessionProofPurpose::UserAuthRequest,
+            purpose,
             request_id,
             issued_at,
             signer_key_id,
             vec![
                 text(&origin, &["origin"])?,
-                text("/auth/requests", &["route"])?,
+                text(route, &["route"])?,
                 key.as_bytes().to_vec(),
                 Sha256::digest(canonicalize_json(&unsigned_request)?.as_bytes()).to_vec(),
             ],

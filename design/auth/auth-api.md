@@ -21,10 +21,13 @@ device-connect APIs.
 | `POST` | `/bootstrap/device`                           | Admit an approved device and return shared installation data                                                |
 | `POST` | `/auth/device/enroll`                         | Create/resume proof-bound device review                                                                     |
 | `POST` | `/auth/requests`                              | Validate a proof-bound request and return a signed intent and portal URL; no authentication attempt created |
-| `POST` | `/auth/intents/view`                          | Verify intent and read current public login choices or discover an existing transaction                     |
+| `POST` | `/auth/intents/view`                          | Verify intent and read public portal-rendering choices; no transaction discovery                            |
+| `POST` | `/auth/intents/progress`                      | Discover progress with a fresh initiating-key proof; return a transaction ID only when ready to bind        |
 | `POST` | `/auth/transactions`                          | Start an independently portal-bound authentication attempt from a verified intent                           |
-| `GET`  | `/auth/transactions/{transactionId}`          | Read authentication-attempt progress                                                                        |
-| `GET`  | `/auth/transactions/{transactionId}/portal`   | Read bound portal progress and current consent                                                              |
+| `GET`  | `/auth/transactions/{transactionId}`          | Read portal-binding-protected authentication-attempt progress                                               |
+| `POST` | `/auth/transactions/{transactionId}/portal`   | Read bound portal progress and current consent                                                              |
+| `POST` | `/auth/login/{providerId}`                    | Start browser OIDC with a JSON transaction ID and portal binding                                            |
+| `GET`  | `/auth/callback/{providerId}`                 | Verify provider callback and return to the portal with `transactionId`                                      |
 | `POST` | `/auth/transactions/{transactionId}/approval` | Apply a fresh transaction-bound consent decision                                                            |
 | `POST` | `/auth/transactions/{transactionId}/bind`     | Return the key-bound, idempotent login result and intent ID; no context returned                            |
 | `POST` | `/auth/context/refresh`                       | Revalidate and return current runtime installation data                                                     |
@@ -39,6 +42,14 @@ belong to that transaction. Account-flow continuations use
 `browserTransactionId`; account and device review flows retain their own IDs and
 lifetimes. Portal-binding and OIDC-cookie/CAS controls are documented in
 `auth-protocol.md`.
+
+An intent has at most one outstanding authentication transaction. Repository
+creation atomically claims the intent index; an existing unexpired transaction,
+including one approved but not yet bound, rejects another start with
+`intent_transaction_active`. Denied, expired, and consumed transactions permit
+another attempt. Public intent rendering never discovers an attempt. Detached
+callers use their initiating private key to sign each `/auth/intents/progress`
+request.
 
 Native bootstrap request DTOs are strict and accept only identity/proof inputs.
 Browser request and bind proofs bind the complete raw body. All HTTP timestamps

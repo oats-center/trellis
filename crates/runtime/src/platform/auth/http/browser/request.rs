@@ -129,8 +129,7 @@ where
             issuer_key_id: String::new(),
         },
     )?;
-    let mut login_url = Url::parse(&portal_url(&portal, &state.public_origin, "")?)
-        .map_err(|_| HttpError::internal("portal_entry_invalid"))?;
+    let mut login_url = portal_entry_url(&portal, &state.public_origin)?;
     login_url.set_query(None);
     login_url.query_pairs_mut().append_pair("intent", &intent);
     Ok(Json(AuthStartResponse {
@@ -219,7 +218,7 @@ where
         })
         .map(|id| json!({ "id": id, "displayName": id }))
         .collect::<Vec<_>>();
-    let mut metadata = json!({
+    let metadata = json!({
         "intentId": intent.intent_id,
         "status": "choose_provider",
         "providers": providers,
@@ -229,14 +228,99 @@ where
             "federatedIdentity": { "available": settings.federated_registration_enabled, "providers": providers.iter().filter(|provider| provider["id"] != "local").collect::<Vec<_>>() },
         },
     });
-    if let Some(transaction_id) = state
-        .ephemeral
-        .transaction_for_intent(&URL_SAFE_NO_PAD.encode(Sha256::digest(request.intent.as_bytes())))
-        .await?
-    {
-        metadata["transactionId"] = json!(transaction_id);
-    }
     Ok(Json(metadata))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct IntentProgressRequest {
+    intent: String,
+    request_id: String,
+    issued_at: i64,
+    session_public_key: String,
+    proof: Value,
+}
+
+/// Discover bind readiness only with a fresh proof from the intent's initiating key.
+pub(crate) async fn intent_progress<R, E>(
+    State(state): State<AuthHttpState<R, E>>,
+    Json(request): Json<IntentProgressRequest>,
+) -> Result<Json<Value>, HttpError>
+where
+    R: AccountRepository
+        + AuthorityEvidenceRepository
+        + GrantRepository
+        + ContextRepository
+        + DeploymentRepository
+        + OutboxRepository
+        + PortalRepository
+        + ProvisioningRepository
+        + SessionRepository
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    E: AuthEphemeralRepository + Clone,
+{
+    let now = now_ms()?;
+    let intent = state
+        .authorization_contexts
+        .verify_browser_intent(&request.intent, now)
+        .await
+        .map_err(|_| HttpError::bad_request("intent_invalid"))?;
+    if request.session_public_key != intent.session_public_key {
+        return Err(HttpError::unauthorized("invalid_proof"));
+    }
+    let input = SessionProofInput::user_auth_progress(UserAuthRequestSessionProofInput {
+        origin: state.public_origin.clone(),
+        unsigned_request: json!({
+            "intent": request.intent,
+            "requestId": request.request_id,
+            "issuedAt": request.issued_at,
+            "sessionPublicKey": intent.session_public_key,
+        }),
+    })
+    .map_err(|_| HttpError::unauthorized("invalid_proof"))?;
+    let proof = parse_session_proof(&request.proof)
+        .map_err(|_| HttpError::unauthorized("invalid_proof"))?;
+    verify_session_proof(
+        &input,
+        &proof,
+        &intent.session_public_key,
+        now,
+        state.proof_policy,
+    )
+    .map_err(|_| HttpError::unauthorized("invalid_proof"))?;
+    let digest = URL_SAFE_NO_PAD.encode(Sha256::digest(request.intent.as_bytes()));
+    let Some(transaction_id) = state.ephemeral.transaction_for_intent(&digest).await? else {
+        return Ok(Json(json!({ "status": "waiting_for_user" })));
+    };
+    let Some(transaction) = state
+        .ephemeral
+        .get_browser_transaction(&transaction_id)
+        .await?
+    else {
+        return Ok(Json(json!({ "status": "waiting_for_user" })));
+    };
+    if transaction.intent_digest != digest
+        || transaction.intent_id != intent.intent_id
+        || transaction.session_public_key != intent.session_public_key
+        || transaction.participant_id != intent.participant_id
+    {
+        return Err(HttpError::internal("intent_transaction_mismatch"));
+    }
+    if transaction.state == AuthBrowserTransactionState::ApprovalDenied {
+        return Ok(Json(json!({ "status": "denied" })));
+    }
+    if transaction.expires_at <= now || transaction.state == AuthBrowserTransactionState::Expired {
+        return Ok(Json(json!({ "status": "waiting_for_user" })));
+    }
+    match transaction.state {
+        AuthBrowserTransactionState::Approved | AuthBrowserTransactionState::Consumed => Ok(Json(
+            json!({ "status": "ready", "transactionId": transaction_id }),
+        )),
+        _ => Ok(Json(json!({ "status": "pending" }))),
+    }
 }
 
 /// Start one bounded authentication attempt, never merely to render the portal.
@@ -336,7 +420,14 @@ where
     state
         .ephemeral
         .create_browser_transaction(flow.clone())
-        .await?;
+        .await
+        .map_err(|error| {
+            if matches!(error, AuthorizationStateError::StorageConflict) {
+                HttpError::conflict("intent_transaction_active")
+            } else {
+                error.into()
+            }
+        })?;
     Ok(Json(flow_response(flow)))
 }
 
@@ -402,17 +493,22 @@ pub(crate) async fn select_device_portal(
         .ok_or_else(|| HttpError::internal("builtin_portal_unavailable"))
 }
 
-pub(super) fn portal_url(
-    portal: &LoginPortalRecord,
-    public_origin: &str,
-    flow_id: &str,
-) -> Result<String, HttpError> {
+fn portal_entry_url(portal: &LoginPortalRecord, public_origin: &str) -> Result<Url, HttpError> {
     let entry = portal.entry_url.as_deref().map_or_else(
         || format!("{}/login", public_origin.trim_end_matches('/')),
         ToOwned::to_owned,
     );
-    let mut url = Url::parse(&entry).map_err(|_| HttpError::internal("portal_entry_invalid"))?;
-    url.query_pairs_mut().append_pair("flowId", flow_id);
+    Url::parse(&entry).map_err(|_| HttpError::internal("portal_entry_invalid"))
+}
+
+pub(super) fn portal_transaction_url(
+    portal: &LoginPortalRecord,
+    public_origin: &str,
+    transaction_id: &str,
+) -> Result<String, HttpError> {
+    let mut url = portal_entry_url(portal, public_origin)?;
+    url.query_pairs_mut()
+        .append_pair("transactionId", transaction_id);
     Ok(url.into())
 }
 

@@ -137,6 +137,16 @@ deadline. Identity, provider state, consent, and completion belong to
 device review lifetimes remain separate. Expiry leaves the intent available
 for a fresh attempt, without returning to the initiating app.
 
+Only one outstanding transaction can claim an intent. A concurrent or duplicate
+start receives `transaction_active` instead of replacing that attempt, including
+while it is approved but awaiting bind. Denial, expiry, and consumed completion
+permit another transaction. Public `/auth/intents/view` is for portal rendering,
+not transaction discovery. Detached clients use `/auth/intents/progress` with a
+fresh initiating-key proof; only `ready` returns a transaction ID. Portal progress
+requires the raw transaction binding. Browser OIDC starts with a JSON POST and
+returns to the selected portal with `transactionId` on both first and replayed
+callbacks.
+
 Existing grants are reused only when shared issuance/policy semantics prove
 compatibility without expanding approved authority; neither activity nor a
 matching revision alone establishes eligibility. Compatible revision changes

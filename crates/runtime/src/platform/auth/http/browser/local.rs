@@ -82,6 +82,7 @@ pub(crate) struct BrowserFlowUser {
 pub(crate) async fn get_transaction<R, E>(
     State(state): State<AuthHttpState<R, E>>,
     Path(flow_id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Json<BrowserTransactionResponse>, HttpError>
 where
     R: AccountRepository
@@ -100,6 +101,7 @@ where
     E: AuthEphemeralRepository + Clone,
 {
     let flow = load_transaction(&state.ephemeral, &flow_id).await?;
+    require_portal_binding(&flow, &headers)?;
     let (portal, settings) = state
         .service
         .repository()

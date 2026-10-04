@@ -128,7 +128,10 @@ redundant `session-key`, and a message-specific proof.
 
 Browser sign-in carries a reusable signed intent; a bounded authentication
 transaction starts only when authentication begins, not when the portal renders.
-Expired attempts can restart from the same intent. Invalid login requires
+Only one outstanding attempt can claim an intent; concurrent starts cannot
+replace it. Detached progress requires the initiating key's fresh proof, while
+public portal rendering exposes no transaction discovery. Denied, expired, or
+consumed attempts can restart from the same intent. Invalid login requires
 authentication; valid-login authorization denial surfaces its machine code
 without automatically sending the user through another login.
 

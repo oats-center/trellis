@@ -15,9 +15,9 @@ use url::Url;
 use super::bootstrap::{device_bootstrap, device_enroll, service_bootstrap};
 use super::browser::{
     bind_transaction, complete_admin_account, console_index, console_page, decide_approval,
-    get_account_flow, get_portal_transaction, get_transaction, local_login, oidc_callback,
-    portal_asset, portal_index, portal_page, register_local, start_account_flow_oidc, start_auth,
-    start_oidc, start_transaction, view_intent, web_fallback,
+    get_account_flow, get_portal_transaction, get_transaction, intent_progress, local_login,
+    oidc_callback, portal_asset, portal_index, portal_page, register_local,
+    start_account_flow_oidc, start_auth, start_oidc, start_transaction, view_intent, web_fallback,
 };
 use super::security::{canonical_origin, security_headers};
 use super::well_known::{issuer_key, refresh_context};
@@ -44,6 +44,7 @@ enum RouteHandler {
     StartAuth,
     StartTransaction,
     ViewIntent,
+    IntentProgress,
     ServiceBootstrap,
     DeviceBootstrap,
     DeviceEnroll,
@@ -88,6 +89,11 @@ impl RouteDefinition {
 }
 
 const ROUTES: &[RouteDefinition] = &[
+    RouteDefinition {
+        method: RouteMethod::Post,
+        path: "/auth/intents/progress",
+        handler: RouteHandler::IntentProgress,
+    },
     RouteDefinition {
         method: RouteMethod::Post,
         path: "/auth/intents/view",
@@ -159,7 +165,7 @@ const ROUTES: &[RouteDefinition] = &[
         handler: RouteHandler::CompleteFirstAdmin,
     },
     RouteDefinition {
-        method: RouteMethod::Get,
+        method: RouteMethod::Post,
         path: "/auth/login/{provider_id}",
         handler: RouteHandler::StartOidc,
     },
@@ -244,6 +250,9 @@ where
         (RouteMethod::Post, RouteHandler::ViewIntent) => {
             routes.route(route.path, post(view_intent::<R, E>))
         }
+        (RouteMethod::Post, RouteHandler::IntentProgress) => {
+            routes.route(route.path, post(intent_progress::<R, E>))
+        }
         (RouteMethod::Post, RouteHandler::ServiceBootstrap) => {
             routes.route(route.path, post(service_bootstrap::<R, E>))
         }
@@ -274,8 +283,8 @@ where
         (RouteMethod::Post, RouteHandler::CompleteFirstAdmin) => {
             routes.route(route.path, post(complete_admin_account::<R, E>))
         }
-        (RouteMethod::Get, RouteHandler::StartOidc) => {
-            routes.route(route.path, get(start_oidc::<R, E>))
+        (RouteMethod::Post, RouteHandler::StartOidc) => {
+            routes.route(route.path, post(start_oidc::<R, E>))
         }
         (RouteMethod::Get, RouteHandler::StartAccountFlowOidc) => {
             routes.route(route.path, get(start_account_flow_oidc::<R, E>))

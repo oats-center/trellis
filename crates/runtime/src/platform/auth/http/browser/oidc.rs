@@ -426,7 +426,7 @@ where
                 .get_login_portal(&flow.portal_id)
                 .await?
                 .ok_or_else(|| HttpError::gone("portal_unavailable"))?;
-            return Ok(Redirect::temporary(&super::request::portal_url(
+            return Ok(Redirect::temporary(&super::request::portal_transaction_url(
                 &portal,
                 &state.public_origin,
                 &flow.transaction_id,
@@ -820,7 +820,7 @@ where
         .get_login_portal(&completed.portal_id)
         .await?
         .ok_or_else(|| HttpError::gone("portal_unavailable"))?;
-    Ok(Redirect::temporary(&super::request::portal_url(
+    Ok(Redirect::temporary(&super::request::portal_transaction_url(
         &portal,
         &state.public_origin,
         &completed.transaction_id,
@@ -974,7 +974,7 @@ where
             .get_login_portal(&completed.portal_id)
             .await?
             .ok_or_else(|| HttpError::gone("portal_unavailable"))?;
-        return Ok(Redirect::temporary(&super::request::portal_url(
+        return Ok(Redirect::temporary(&super::request::portal_transaction_url(
             &portal,
             &state.public_origin,
             &completed.transaction_id,

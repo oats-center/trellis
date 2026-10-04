@@ -99,8 +99,13 @@ Agent browser sign-in returns an `AgentLoginChallenge` retaining the signed
 intent and exposing `intent_id` and `login_url`. Creating this challenge or
 rendering its portal does not start an authentication-attempt deadline. The
 portal starts an independent bounded transaction when authentication begins.
-`poll_agent_transaction_until_ready` discovers the transaction from an intent,
-follows its progress within the caller's wait budget, and returns its ID.
+`poll_agent_transaction_until_ready` takes the initiating `SessionAuth` as well
+as the origin and challenge. It submits a fresh `browser-auth-progress` proof
+to `/auth/intents/progress` on each poll within the caller's wait budget and
+returns the ID only when ready. Public intent rendering exposes no discovery.
+Only one outstanding transaction can claim the intent; a concurrent start cannot
+replace an unexpired attempt, even after approval while bind is outstanding.
+Denied, expired, and consumed attempts permit a fresh transaction.
 Completion binds that transaction with the initiating private key and verifies
 the returned intent, participant, and key bindings before context refresh.
 Exact supported replay returns the same semantic login result, not another

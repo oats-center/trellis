@@ -21,6 +21,7 @@ derivation stays the same.
 `trellis.session-proof.v1` supports these purposes:
 
 - `browser-auth-request`;
+- `browser-auth-progress`;
 - `browser-bind`;
 - `native-bootstrap`;
 - `device-enroll`; and
@@ -104,8 +105,19 @@ Rendering calls `POST /auth/intents/view` to verify the intent and obtain
 current non-secret login choices without creating an attempt. Signature failure,
 unavailable signing issuer, participant removal, or changed portal/redirect
 eligibility invalidates the request explicitly; idle elapsed time is not an
-authentication-attempt deadline. Initiating clients use the same boundary to
-discover an existing transaction after authentication starts.
+authentication-attempt deadline. This public rendering boundary does not reveal
+transaction progress or IDs.
+
+Detached initiating clients call `POST /auth/intents/progress` with `intent`,
+`sessionPublicKey`, a fresh `requestId`, `issuedAt`, and `proof`. The
+`browser-auth-progress` proof binds the complete payload and canonical Trellis
+origin and must verify under the initiating public key in the intent. The
+response is `waiting_for_user` when no outstanding attempt exists, `pending`
+while authentication or consent is incomplete, `denied` after denial, or `ready`
+with `transactionId` when the attempt can bind or replay completion. Only
+`ready` reveals the transaction ID. The portal already owns its ID from
+transaction creation; its transaction progress and consent reads require the raw
+portal binding, not possession of a public ID or intent.
 
 When the user starts local authentication or chooses an OIDC provider, the
 portal calls `POST /auth/transactions` with the intent and a fresh
@@ -113,6 +125,14 @@ portal calls `POST /auth/transactions` with the intent and a fresh
 Trellis verifies the intent and current eligibility, selects the current
 participant revision, and assigns an independent `transactionId`. The attempt's
 deadline begins here, not when the intent was created or the page rendered.
+
+Creation atomically claims the intent-to-transaction index at the repository
+boundary. At most one outstanding attempt exists per intent: a concurrent start
+or duplicate action cannot replace an unexpired attempt, including an approved
+attempt awaiting bind, and receives `intent_transaction_active`. Denial, expiry,
+or consumed completion permits a fresh independent transaction. NATS index
+changes use revision CAS; an unclaimed candidate is never usable as a
+transaction.
 
 The portal retains the raw 32-byte binding in portal-origin `sessionStorage`;
 only its SHA-256 digest is persisted server-side. Bound actions require the
@@ -123,6 +143,12 @@ transaction. Callback continuity still requires the Trellis-origin HttpOnly
 SameSite=Lax cookie and exact CAS-backed state record. Account-flow
 continuations use `browserTransactionId` without changing account or device
 review lifetimes.
+
+Browser OIDC starts with `POST /auth/login/{providerId}` carrying JSON
+`transactionId` and `portalBindingDigest` plus the raw portal-binding header.
+Both initial and replayed browser callbacks return to the selected portal with
+`transactionId`. Account-flow OIDC keeps its separate GET start route and
+account-flow continuation.
 
 Expired transactions cannot authenticate or complete. The portal retains the
 signed intent, explains the expired attempt, and starts another transaction when

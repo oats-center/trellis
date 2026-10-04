@@ -12,6 +12,7 @@ export const SESSION_PROOF_FORMAT_V1 = "trellis.session-proof.v1" as const;
 /** One protocol-owned signature purpose. */
 export type SessionProofPurpose =
   | "userAuthRequest"
+  | "userAuthProgress"
   | "userAuthBind"
   | "serviceBootstrap"
   | "deviceBootstrap"
@@ -28,7 +29,7 @@ export type SessionProofInput =
     unsignedRequest: Record<string, unknown> & { issuedAt: number };
   }
   | {
-    purpose: "userAuthRequest";
+    purpose: "userAuthRequest" | "userAuthProgress";
     origin: string;
     unsignedRequest: Record<string, unknown> & { issuedAt: number };
   }

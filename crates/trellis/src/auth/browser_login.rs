@@ -92,75 +92,50 @@ struct AuthStartResponse {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum AgentFlowState {
-    ChooseProvider,
-    Authenticated,
-    ApprovalRequired,
-    ApprovalDenied,
-    Approved,
-    Consumed,
-    Expired,
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+enum IntentProgress {
+    WaitingForUser,
+    Pending,
+    Denied,
+    Ready {
+        #[serde(rename = "transactionId")]
+        transaction_id: String,
+    },
 }
 
-#[derive(Debug, Deserialize)]
-struct AgentFlowStatusResponse {
-    state: AgentFlowState,
-}
-
-async fn fetch_agent_flow_status(
-    trellis_url: &str,
-    flow_id: &str,
-) -> Result<AgentFlowStatusResponse, TrellisAuthError> {
-    let trellis_url = crate::client::canonical_trellis_origin(trellis_url)?;
-    let client = HttpClient::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(30))
-        .build()?;
-    let response = client
-        .get(format!(
-            "{}/auth/transactions/{}",
-            trellis_url.trim_end_matches('/'),
-            flow_id
-        ))
-        .send()
-        .await?;
-    if !response.status().is_success() {
-        let error = decode_trellis_http_error(response).await;
-        return Err(TrellisAuthError::AuthRequestHttpFailure(
-            error.status,
-            error.code,
-        ));
-    }
-    Ok(response.json::<AgentFlowStatusResponse>().await?)
-}
-
-/// Wait for an attempt to be started from the signed intent, then follow its progress.
+/// Wait for bind readiness with fresh initiating-key proofs; never expose portal progress publicly.
 ///
 /// # Errors
 /// Returns a denied-intent/authentication error or a bounded wait timeout.
 pub async fn poll_agent_transaction_until_ready(
     trellis_url: &str,
     intent: &str,
+    auth: &SessionAuth,
     poll_interval: Duration,
     timeout_after: Duration,
 ) -> Result<String, TrellisAuthError> {
     let deadline = tokio::time::Instant::now() + timeout_after;
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct IntentStatus {
-        transaction_id: Option<String>,
-    }
     let base = crate::client::canonical_trellis_origin(trellis_url)?;
     let client = HttpClient::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30))
         .build()?;
     loop {
+        let unsigned_request = json!({
+            "intent": intent,
+            "requestId": ulid::Ulid::new().to_string(),
+            "issuedAt": now_ms()?,
+            "sessionPublicKey": auth.session_key,
+        });
+        let input = SessionProofInput::user_auth_progress(UserAuthRequestSessionProofInput {
+            origin: base.clone(),
+            unsigned_request: unsigned_request.clone(),
+        })?;
+        let mut request = unsigned_request;
+        request["proof"] = serde_json::to_value(auth.sign_session_proof(&input)?)?;
         let response = client
-            .post(format!("{base}/auth/intents/view"))
-            .header(reqwest::header::ORIGIN, &base)
-            .json(&json!({ "intent": intent }))
+            .post(format!("{base}/auth/intents/progress"))
+            .json(&request)
             .send()
             .await?;
         if !response.status().is_success() {
@@ -170,19 +145,14 @@ pub async fn poll_agent_transaction_until_ready(
                 error.code,
             ));
         }
-        if let Some(flow_id) = response.json::<IntentStatus>().await?.transaction_id {
-            match fetch_agent_flow_status(trellis_url, &flow_id).await?.state {
-                AgentFlowState::Approved | AgentFlowState::Consumed => return Ok(flow_id),
-                AgentFlowState::ChooseProvider
-                | AgentFlowState::Authenticated
-                | AgentFlowState::ApprovalRequired
-                | AgentFlowState::Expired => {}
-                AgentFlowState::ApprovalDenied => {
-                    return Err(TrellisAuthError::AuthFlowFailed(
-                        "approval_denied".to_string(),
-                    ));
-                }
+        match response.json::<IntentProgress>().await? {
+            IntentProgress::Ready { transaction_id } => return Ok(transaction_id),
+            IntentProgress::Denied => {
+                return Err(TrellisAuthError::AuthFlowFailed(
+                    "approval_denied".to_owned(),
+                ))
             }
+            IntentProgress::WaitingForUser | IntentProgress::Pending => {}
         }
 
         if tokio::time::Instant::now() >= deadline {
@@ -312,6 +282,7 @@ impl AgentLoginChallenge {
         let flow_id = poll_agent_transaction_until_ready(
             trellis_url,
             intent,
+            auth,
             DETACHED_LOGIN_POLL_INTERVAL,
             Duration::from_secs(300),
         )

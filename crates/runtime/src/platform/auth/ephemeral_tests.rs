@@ -109,6 +109,9 @@ async fn repository_conformance(repository: impl AuthEphemeralRepository + Clone
 
     let mut directly_approved = flow.clone();
     directly_approved.transaction_id = "flow-approved".to_owned();
+    directly_approved.intent_id = "request-approved".to_owned();
+    directly_approved.intent_digest =
+        trellis_protocol::digest_json(&serde_json::json!("request-approved")).unwrap();
     repository
         .create_browser_transaction(directly_approved.clone())
         .await
@@ -197,6 +200,9 @@ async fn repository_conformance(repository: impl AuthEphemeralRepository + Clone
     );
     let mut skipped_state = flow.clone();
     skipped_state.transaction_id = "flow-skipped".to_owned();
+    skipped_state.intent_id = "request-skipped".to_owned();
+    skipped_state.intent_digest =
+        trellis_protocol::digest_json(&serde_json::json!("request-skipped")).unwrap();
     repository
         .create_browser_transaction(skipped_state.clone())
         .await

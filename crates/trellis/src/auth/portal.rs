@@ -74,9 +74,14 @@ fn base_url(trellis_url: &str) -> Result<String, TrellisAuthError> {
         .to_owned())
 }
 
-async fn get_flow(base: &str, flow_id: &str) -> Result<FlowWire, TrellisAuthError> {
+async fn get_flow(
+    base: &str,
+    flow_id: &str,
+    binding: &PortalBinding,
+) -> Result<FlowWire, TrellisAuthError> {
     let response = http_client()?
         .get(format!("{base}/auth/transactions/{flow_id}"))
+        .header(PORTAL_BINDING_HEADER, &binding.secret)
         .send()
         .await?;
     if !response.status().is_success() {
@@ -302,7 +307,7 @@ pub async fn begin_local_login(
     let flow_id = start_portal_transaction(&base, &intent, &binding).await?;
     perform_local_login(&base, &flow_id, username, password, &binding).await?;
 
-    let browser = get_flow(&base, &flow_id).await?;
+    let browser = get_flow(&base, &flow_id, &binding).await?;
     let portal = match browser.state.as_str() {
         "authenticated" | "approval_required" => {
             post_portal_flow(&base, &flow_id, &binding).await?

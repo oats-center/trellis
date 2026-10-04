@@ -64,9 +64,93 @@ Deno.test("signed intent survives a denied attempt; transaction binding and init
             intent.endsWith("AA") ? "BB" : "AA"
           }`;
           await assertRejects(() => fetchPortalIntentState(config, malformed));
-          const bindingA = await createPortalBinding();
-          const bindingB = await createPortalBinding();
-          const a = await startPortalTransaction(config, intent, bindingA);
+          const competingBindings = await Promise.all([
+            createPortalBinding(),
+            createPortalBinding(),
+          ]);
+          const starts = await Promise.allSettled(
+            competingBindings.map((binding) =>
+              startPortalTransaction(config, intent, binding)
+            ),
+          );
+          const acceptedIndex = starts.findIndex((result) =>
+            result.status === "fulfilled"
+          );
+          const accepted = starts[acceptedIndex];
+          assert(accepted?.status === "fulfilled");
+          assertEquals(
+            starts.filter((result) => result.status === "fulfilled").length,
+            1,
+            "concurrent starts must not replace the accepted intent rendezvous",
+          );
+          const conflict = starts.find((result) =>
+            result.status === "rejected"
+          );
+          assert(conflict?.status === "rejected");
+          const cause: unknown = conflict.reason;
+          assert(
+            cause instanceof Error && "code" in cause && "status" in cause,
+          );
+          assertEquals(cause.code, "intent_transaction_active");
+          assertEquals(cause.status, 409);
+          const bindingA = competingBindings[acceptedIndex];
+          let bindingB = await createPortalBinding();
+          const a = accepted.value;
+          const unbound = await fetch(
+            `${runtime.trellisUrl}/auth/transactions/${a}`,
+          );
+          assertEquals(unbound.status, 403, await unbound.text());
+          const publicView = await fetch(
+            `${runtime.trellisUrl}/auth/intents/view`,
+            {
+              method: "POST",
+              headers,
+              body: JSON.stringify({ intent }),
+            },
+          );
+          assertEquals(publicView.status, 200, await publicView.clone().text());
+          assertEquals(
+            (await publicView.json()).transactionId,
+            undefined,
+            "public portal choices must not disclose detached correlation",
+          );
+          const progress = async (
+            signer: typeof initiator,
+            issuedAt = Date.now(),
+            purpose: "userAuthProgress" | "userAuthRequest" =
+              "userAuthProgress",
+          ) => {
+            const unsignedRequest = {
+              intent,
+              requestId: ulid(),
+              issuedAt,
+              sessionPublicKey: signer.sessionKey,
+            };
+            return await fetch(`${runtime.trellisUrl}/auth/intents/progress`, {
+              method: "POST",
+              headers,
+              body: JSON.stringify({
+                ...unsignedRequest,
+                proof: await signer.signSessionProof({
+                  purpose,
+                  origin: runtime.trellisUrl,
+                  unsignedRequest,
+                }),
+              }),
+            });
+          };
+          for (
+            const response of [
+              await progress(attacker),
+              await progress(initiator, Date.now() - 600_000),
+              await progress(initiator, Date.now(), "userAuthRequest"),
+            ]
+          ) {
+            assertEquals(response.status, 401, await response.text());
+          }
+          const pending = await progress(initiator);
+          assertEquals(pending.status, 200, await pending.clone().text());
+          assertEquals(await pending.json(), { status: "pending" });
           const authenticate = async (
             transactionId: string,
             binding: typeof bindingA,
@@ -90,6 +174,9 @@ Deno.test("signed intent survives a denied attempt; transaction binding and init
             assertEquals(response.status, 200, await response.text());
           };
           await authenticate(a, bindingA);
+          await assertRejects(() =>
+            startPortalTransaction(config, intent, bindingB)
+          );
           assertEquals(
             (await fetchPortalFlowState(config, a, bindingA)).status,
             "approval_required",
@@ -98,7 +185,25 @@ Deno.test("signed intent survives a denied attempt; transaction binding and init
             (await submitPortalApproval(config, a, bindingA, "denied")).status,
             "approval_denied",
           );
-          const b = await startPortalTransaction(config, intent, bindingB);
+          const denied = await progress(initiator);
+          assertEquals(await denied.json(), { status: "denied" });
+          const restartBindings = [bindingB, await createPortalBinding()];
+          const restarts = await Promise.allSettled(
+            restartBindings.map((binding) =>
+              startPortalTransaction(config, intent, binding)
+            ),
+          );
+          const restartedIndex = restarts.findIndex((result) =>
+            result.status === "fulfilled"
+          );
+          const restarted = restarts[restartedIndex];
+          assert(restarted?.status === "fulfilled");
+          assertEquals(
+            restarts.filter((result) => result.status === "fulfilled").length,
+            1,
+          );
+          bindingB = restartBindings[restartedIndex];
+          const b = restarted.value;
           assert(a !== b);
           assertEquals(
             (await fetchPortalFlowState(config, b, bindingB)).status,
@@ -132,6 +237,15 @@ Deno.test("signed intent survives a denied attempt; transaction binding and init
               .status,
             "redirect",
           );
+          await assertRejects(() =>
+            startPortalTransaction(config, intent, bindingA)
+          );
+          const ready = await progress(initiator);
+          assertEquals(ready.status, 200, await ready.clone().text());
+          assertEquals(await ready.json(), {
+            status: "ready",
+            transactionId: b,
+          });
           const unsigned = { requestId: ulid(), issuedAt: Date.now() };
           const bindRequest = async (signer: typeof initiator) => ({
             ...unsigned,

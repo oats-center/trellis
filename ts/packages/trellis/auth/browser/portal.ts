@@ -250,11 +250,13 @@ function portalState(
 async function fetchBrowserTransactionWire(
   config: AuthConfig,
   transactionId: string,
+  binding: PortalBinding,
 ): Promise<BrowserTransactionWire> {
   const response = await fetch(
     `${authBaseUrl(config)}/auth/transactions/${
       encodeURIComponent(transactionId)
     }`,
+    { headers: { [PORTAL_BINDING_HEADER]: binding.secret } },
   );
   if (!response.ok) {
     throw await decodeTrellisHttpError(response);
@@ -339,7 +341,11 @@ export async function fetchPortalFlowState(
   transactionId: string,
   binding: PortalBinding,
 ): Promise<PortalFlowState> {
-  const flow = await fetchBrowserTransactionWire(config, transactionId);
+  const flow = await fetchBrowserTransactionWire(
+    config,
+    transactionId,
+    binding,
+  );
   if (flow.state !== "authenticated" && flow.state !== "approval_required") {
     return portalState(flow);
   }
@@ -384,7 +390,11 @@ export async function submitPortalApproval(
   binding: PortalBinding,
   decision: ApprovalDecision,
 ): Promise<PortalFlowState> {
-  const flow = await fetchBrowserTransactionWire(config, transactionId);
+  const flow = await fetchBrowserTransactionWire(
+    config,
+    transactionId,
+    binding,
+  );
   const wire =
     flow.state === "authenticated" || flow.state === "approval_required"
       ? await fetchBoundPortalTransactionWire(config, transactionId, binding)
