@@ -83,6 +83,8 @@ struct BootstrapTransport {
 struct BootstrapAuthorization {
     participant_id: String,
     participant_digest: String,
+    approval_mode: crate::platform::auth::ApprovalMode,
+    approved_capabilities: Vec<crate::platform::auth::ApprovedCapability>,
     resource_runtime: ServiceResourceBindings,
 }
 
@@ -480,6 +482,8 @@ where
             authorization: BootstrapAuthorization {
                 participant_id: issuance.participant.participant_id.clone(),
                 participant_digest: issuance.participant.participant_digest.clone(),
+                approval_mode: issuance.binding.approval_mode,
+                approved_capabilities: issuance.binding.approved_capabilities.clone(),
                 resource_runtime: project_service_resource_bindings(
                     &issuance.participant.projection,
                     &issuance.resource_bindings,

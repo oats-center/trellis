@@ -1121,6 +1121,9 @@ fn render_participant(
     }
     lines.push("};".into());
     lines.push("const __participant: {".into());
+    lines.push("  readonly digest: string;".into());
+    lines.push("  readonly requiredCapabilities: readonly Readonly<{ id: string; consentDigest: string }>[];".into());
+    lines.push("  readonly requiredGrants: readonly Readonly<{ action: string; target: Readonly<Record<string, unknown>> }>[];".into());
     lines.push(format!(
         "  readonly kind: {}; readonly id: {}; readonly identity: {}; readonly path: {};",
         js_string(participant_kind(participant.kind())),
@@ -1227,6 +1230,12 @@ fn render_participant(
     ));
     lines.push(format!("  path: {},", js_string(path)));
     lines.push(format!(
+        "  digest: {},",
+        js_string(
+            &trellis_idl::participant_digest(graph, participant.identity()).map_err(idl_error)?
+        )
+    ));
+    lines.push(format!(
         "  implements: [{}],",
         participant
             .implements()
@@ -1292,6 +1301,34 @@ fn render_participant(
         }
     }
     lines.push("  },".into());
+    let required_atoms = needs
+        .map(|needs| {
+            needs
+                .required_grants()
+                .permissions()
+                .iter()
+                .map(|atom| serde_json::to_string(atom).expect("permission atoms serialize"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    lines.push(format!("  requiredGrants: [{required_atoms}],"));
+    let mut required_capabilities = Vec::new();
+    if let Some(needs) = needs {
+        for capability in needs.required_capabilities() {
+            let consent_digest =
+                trellis_idl::capability_consent_digest(graph, capability).map_err(idl_error)?;
+            required_capabilities.push(format!(
+                "{{ id: {}, consentDigest: {} }}",
+                js_string(capability.as_str()),
+                js_string(&consent_digest)
+            ));
+        }
+    }
+    let required_capabilities = required_capabilities.join(", ");
+    lines.push(format!(
+        "  requiredCapabilities: [{required_capabilities}],"
+    ));
     lines.push("  actionNames: {".into());
     for (key, name) in &action_names {
         lines.push(format!("    {}: {},", js_string(key), js_string(name)));
@@ -1319,6 +1356,10 @@ fn render_participant(
     lines.push("  readonly id: typeof __participant.id;".into());
     lines.push("  readonly identity: typeof __participant.identity;".into());
     lines.push("  readonly path: typeof __participant.path;".into());
+    lines.push("  readonly digest: typeof __participant.digest;".into());
+    lines.push("  readonly requiredGrants: typeof __participant.requiredGrants;".into());
+    lines
+        .push("  readonly requiredCapabilities: typeof __participant.requiredCapabilities;".into());
     lines.push("  readonly implements: typeof __participant.implements;".into());
     lines.push("  readonly uses: typeof __participant.uses;".into());
     lines.push("  readonly optionalGrants: typeof __participant.optionalGrants;".into());

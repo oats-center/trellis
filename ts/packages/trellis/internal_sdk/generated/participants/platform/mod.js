@@ -12,6 +12,7 @@ const __participant = participantDescriptor({
 	identity: "trellis.platform",
 	id: "trellis.platform",
 	path: "platform",
+	digest: "5TiOJIMbSMqq5DU2bhodAHkjmli5RIGsj9NJxFUoGyE",
 	implements: [
 		Api0.API,
 		Api1.API,
@@ -19,6 +20,90 @@ const __participant = participantDescriptor({
 	],
 	uses: [],
 	optionalGrants: {},
+	requiredGrants: [
+		{
+			"target": {
+				"kind": "participantResource",
+				"participant": "trellis.platform",
+				"resource": "kv",
+				"name": "browserTransactions"
+			},
+			"action": "delete"
+		},
+		{
+			"target": {
+				"kind": "participantResource",
+				"participant": "trellis.platform",
+				"resource": "kv",
+				"name": "browserTransactions"
+			},
+			"action": "read"
+		},
+		{
+			"target": {
+				"kind": "participantResource",
+				"participant": "trellis.platform",
+				"resource": "kv",
+				"name": "browserTransactions"
+			},
+			"action": "write"
+		},
+		{
+			"target": {
+				"kind": "participantResource",
+				"participant": "trellis.platform",
+				"resource": "kv",
+				"name": "connections"
+			},
+			"action": "delete"
+		},
+		{
+			"target": {
+				"kind": "participantResource",
+				"participant": "trellis.platform",
+				"resource": "kv",
+				"name": "connections"
+			},
+			"action": "read"
+		},
+		{
+			"target": {
+				"kind": "participantResource",
+				"participant": "trellis.platform",
+				"resource": "kv",
+				"name": "connections"
+			},
+			"action": "write"
+		},
+		{
+			"target": {
+				"kind": "participantResource",
+				"participant": "trellis.platform",
+				"resource": "kv",
+				"name": "oauthStates"
+			},
+			"action": "delete"
+		},
+		{
+			"target": {
+				"kind": "participantResource",
+				"participant": "trellis.platform",
+				"resource": "kv",
+				"name": "oauthStates"
+			},
+			"action": "read"
+		},
+		{
+			"target": {
+				"kind": "participantResource",
+				"participant": "trellis.platform",
+				"resource": "kv",
+				"name": "oauthStates"
+			},
+			"action": "write"
+		}
+	],
+	requiredCapabilities: [],
 	actionNames: {
 		"trellis.auth@v1:rpc:Capabilities.List": "Capabilities.List",
 		"trellis.auth@v1:rpc:CapabilityGroups.Delete": "CapabilityGroups.Delete",

@@ -10,6 +10,7 @@ const __participant = participantDescriptor({
 	identity: "client-upgrade-fixture.Caller",
 	id: "client-upgrade-fixture.Caller",
 	path: "Caller",
+	digest: "xdYDoBHOU6i0hKiilvUzArDjRsFwhoZ-7k2z5VjwgnQ",
 	implements: [],
 	uses: [{
 		api: Api0.API,
@@ -29,6 +30,24 @@ const __participant = participantDescriptor({
 		optionalCapabilities: []
 	}],
 	optionalGrants: {},
+	requiredGrants: [{
+		"target": {
+			"kind": "apiSurface",
+			"api": "client-upgrade-fixture.upgrade@v1",
+			"surface": "rpc",
+			"name": "Echo"
+		},
+		"action": "call"
+	}, {
+		"target": {
+			"kind": "apiSurface",
+			"api": "trellis.auth@v1",
+			"surface": "rpc",
+			"name": "Sessions.Me"
+		},
+		"action": "call"
+	}],
+	requiredCapabilities: [],
 	actionNames: {
 		"client-upgrade-fixture.upgrade@v1:rpc:Echo": "Echo",
 		"client-upgrade-fixture.upgrade@v1:rpc:Extra": "Extra",

@@ -82,6 +82,8 @@ export type GeneratedParticipant = Readonly<{
   kind: "service" | "device" | "app" | "agent";
   id: string;
   identity: string;
+  /** Compiler-owned semantic digest of the participant's authority needs. */
+  digest: string;
   path: string;
   implements: readonly GeneratedApiDescriptor[];
   uses: readonly GeneratedActionSelection[];
@@ -91,6 +93,12 @@ export type GeneratedParticipant = Readonly<{
    * these atoms, never from provider-binding presence alone.
    */
   optionalGrants: Readonly<Record<string, readonly GeneratedPermissionAtom[]>>;
+  /** Compiler-owned required authority, used to detect a remembered-login upgrade. */
+  requiredGrants: readonly GeneratedPermissionAtom[];
+  /** Required consent labels; permission coverage alone cannot approve a new capability. */
+  requiredCapabilities: readonly Readonly<
+    { id: string; consentDigest: string }
+  >[];
   actionNames: Readonly<Record<string, string>>;
   resources: Readonly<Record<string, GeneratedResourceDescriptor>>;
   companion?: Readonly<{
@@ -121,12 +129,13 @@ type GeneratedDescriptorRuntime<T> = T extends
         >,
         "update" | "runtimeErrors"
       >
-      & (T extends { update: infer U } ? { update: GeneratedSchema<U> } : {})
-      & (T extends { errors: infer E } ? { runtimeErrors: E } : {})
+      & (T extends { update: infer U } ? { update: GeneratedSchema<U> }
+        : unknown)
+      & (T extends { errors: infer E } ? { runtimeErrors: E } : unknown)
       & (T extends { upload: true } ? {
           transfer: { direction: "send" };
         }
-        : {})
+        : unknown)
   : T extends { kind: "event"; payload: infer E }
     ? EventDesc<GeneratedSchema<E>>
   : T extends { kind: "live"; input: infer I; event: infer E }
@@ -165,7 +174,8 @@ type GeneratedRuntimeFamily<
   TApi,
   TNames extends Readonly<Record<string, string>>,
   TKind extends GeneratedActionDescriptor["kind"],
-> = [GeneratedRuntimeEntries<TApi, TNames, TKind>] extends [never] ? {}
+> = [GeneratedRuntimeEntries<TApi, TNames, TKind>] extends [never]
+  ? Record<never, never>
   : UnionToIntersection<GeneratedRuntimeEntries<TApi, TNames, TKind>>;
 
 /** Exact runtime API type projected from canonical generated action descriptors. */
@@ -603,7 +613,7 @@ export function getParticipantRuntime(
 }
 
 /** Compares one signed grant permission with one authored grant atom. */
-function sameGrantAtom(
+export function sameGrantAtom(
   permission: Readonly<
     { action?: string; target: Readonly<Record<string, unknown>> }
   >,

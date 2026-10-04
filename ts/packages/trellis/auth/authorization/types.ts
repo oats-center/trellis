@@ -138,6 +138,14 @@ export const AuthorizationContextRefreshResponseSchema = Type.Object({
   authorization: Type.Object({
     participantId: Type.String({ minLength: 1 }),
     participantDigest: Type.String({ minLength: 1 }),
+    approvalMode: Type.Union([
+      Type.Literal("exact"),
+      Type.Literal("capabilities"),
+    ]),
+    approvedCapabilities: Type.Array(Type.Object({
+      id: Type.String({ minLength: 1 }),
+      consentDigest: Type.String({ minLength: 1 }),
+    })),
     resourceRuntime: ContractResourceBindingsSchema,
   }),
 });

@@ -14,6 +14,7 @@ const __participant = participantDescriptor({
 	identity: "trellis.console",
 	id: "trellis.console",
 	path: "console",
+	digest: "lSN4b-6luJOVm8-awYrJaIYyu8WgebE958yLzYdT27E",
 	implements: [],
 	uses: [
 		{
@@ -549,6 +550,1031 @@ const __participant = participantDescriptor({
 		}
 	],
 	optionalGrants: {},
+	requiredGrants: [
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "operation",
+				"name": "DeviceUserAuthorities.Resolve"
+			},
+			"action": "cancel"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "operation",
+				"name": "DeviceUserAuthorities.Resolve"
+			},
+			"action": "invoke"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "operation",
+				"name": "DeviceUserAuthorities.Resolve"
+			},
+			"action": "observe"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Capabilities.List"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "CapabilityGroups.Delete"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "CapabilityGroups.Get"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "CapabilityGroups.List"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "CapabilityGroups.Put"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Connections.Kick"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Connections.List"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Deployments.Apply"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Deployments.Create"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Deployments.Disable"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Deployments.Enable"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Deployments.Get"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Deployments.List"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Deployments.Remove"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "DeviceUserAuthorities.List"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "DeviceUserAuthorities.Reviews.Decide"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "DeviceUserAuthorities.Reviews.List"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "DeviceUserAuthorities.Revoke"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Devices.Disable"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Devices.Enable"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Devices.List"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Devices.Provision"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Devices.Remove"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Grants.Get"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Grants.List"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Grants.Revoke"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Grants.Set"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Issuers.Revoke"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Participants.Get"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Participants.Install"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Participants.List"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Portals.Get"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Portals.GrantOverrides.List"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Portals.GrantOverrides.Put"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Portals.GrantOverrides.Remove"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Portals.List"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Portals.LoginSettings.Get"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Portals.LoginSettings.Update"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Portals.Put"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Portals.Remove"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Portals.Routes.Put"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Portals.Routes.Remove"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "ServiceInstances.Disable"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "ServiceInstances.Enable"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "ServiceInstances.List"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "ServiceInstances.Provision"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "ServiceInstances.Remove"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Sessions.List"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Sessions.Logout"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Sessions.Me"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Sessions.Revoke"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "UserIdentities.List"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "UserIdentities.Unlink"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Users.Create"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Users.Get"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Users.IdentityLink.Create"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Users.List"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Users.Password.Change"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Users.PasswordReset.Create"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Users.Resolve"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Users.Update"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.core@v1",
+				"surface": "rpc",
+				"name": "Resources.Destroy"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.core@v1",
+				"surface": "rpc",
+				"name": "Resources.Inspect"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.core@v1",
+				"surface": "rpc",
+				"name": "Resources.Query"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.events@v1",
+				"surface": "live",
+				"name": "Watch"
+			},
+			"action": "subscribe"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.events@v1",
+				"surface": "rpc",
+				"name": "Consumers.Inspect"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.events@v1",
+				"surface": "rpc",
+				"name": "Consumers.Query"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.events@v1",
+				"surface": "rpc",
+				"name": "Consumers.ReportDelivery"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.events@v1",
+				"surface": "rpc",
+				"name": "DeadLetters.Dismiss"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.events@v1",
+				"surface": "rpc",
+				"name": "DeadLetters.Inspect"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.events@v1",
+				"surface": "rpc",
+				"name": "DeadLetters.Query"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.events@v1",
+				"surface": "rpc",
+				"name": "DeadLetters.Replay"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.events@v1",
+				"surface": "rpc",
+				"name": "Diagnostics"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.events@v1",
+				"surface": "rpc",
+				"name": "Inspect"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.events@v1",
+				"surface": "rpc",
+				"name": "Metrics"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.events@v1",
+				"surface": "rpc",
+				"name": "Query"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.health@v1",
+				"surface": "live",
+				"name": "Watch"
+			},
+			"action": "subscribe"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.health@v1",
+				"surface": "rpc",
+				"name": "Inspect"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.health@v1",
+				"surface": "rpc",
+				"name": "Metrics"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.health@v1",
+				"surface": "rpc",
+				"name": "Query"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.health@v1",
+				"surface": "rpc",
+				"name": "Summary"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.jobs@v1",
+				"surface": "live",
+				"name": "Watch"
+			},
+			"action": "subscribe"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.jobs@v1",
+				"surface": "rpc",
+				"name": "Cancel"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.jobs@v1",
+				"surface": "rpc",
+				"name": "DismissDLQ"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.jobs@v1",
+				"surface": "rpc",
+				"name": "GetKey"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.jobs@v1",
+				"surface": "rpc",
+				"name": "Inspect"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.jobs@v1",
+				"surface": "rpc",
+				"name": "ListDLQ"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.jobs@v1",
+				"surface": "rpc",
+				"name": "ListServices"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.jobs@v1",
+				"surface": "rpc",
+				"name": "Metrics"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.jobs@v1",
+				"surface": "rpc",
+				"name": "Query"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.jobs@v1",
+				"surface": "rpc",
+				"name": "ReplayDLQ"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.jobs@v1",
+				"surface": "rpc",
+				"name": "Retry"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.jobs@v1",
+				"surface": "rpc",
+				"name": "Summary"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.state@v1",
+				"surface": "rpc",
+				"name": "Delete"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.state@v1",
+				"surface": "rpc",
+				"name": "Get"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.state@v1",
+				"surface": "rpc",
+				"name": "Put"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.state@v1",
+				"surface": "rpc",
+				"name": "Resources.Inspect"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.state@v1",
+				"surface": "rpc",
+				"name": "Resources.Query"
+			},
+			"action": "call"
+		}
+	],
+	requiredCapabilities: [
+		{
+			id: "trellis.auth@v1::authorities_mutate",
+			consentDigest: "MIGWLwTYRa9BIqy3iukm98m9-xN0pDp3_UgavGA-iKk"
+		},
+		{
+			id: "trellis.auth@v1::authorities_read",
+			consentDigest: "2IhD0wb7rw9K2LMwl5w-e6vWYFzEV-5vXoLECMsQVaY"
+		},
+		{
+			id: "trellis.auth@v1::capabilities_read",
+			consentDigest: "gpaJJ90oPyPu0dGA5rfTgLJjv3umvMh0Uny73mifzXY"
+		},
+		{
+			id: "trellis.auth@v1::connections_kick",
+			consentDigest: "8MLc-tWJOCiUbvyeRFy1seWnMvLc9PQC35eiyJwvHkk"
+		},
+		{
+			id: "trellis.auth@v1::connections_read",
+			consentDigest: "zbf-dnjeDYFskfxXz3R53YUNWeO24MQ8Lwzh_hCyK1s"
+		},
+		{
+			id: "trellis.auth@v1::deployments_mutate",
+			consentDigest: "GeZvXWHMF2rU2Tcp13co4RBfrEVHFxro29bzzBl2jlw"
+		},
+		{
+			id: "trellis.auth@v1::deployments_read",
+			consentDigest: "CSlIM9oYHbepWTKOmK4BO74YuoYHPIOY4QS5uayWhVo"
+		},
+		{
+			id: "trellis.auth@v1::devices_mutate",
+			consentDigest: "dowbqsnbA_OZieHmjhS6nORzaNNYuYaTIvSue9l5Qk8"
+		},
+		{
+			id: "trellis.auth@v1::devices_read",
+			consentDigest: "RN4qMT-CTTBcah5n8bci_piLnwehmykIqdT2Jw-4H7E"
+		},
+		{
+			id: "trellis.auth@v1::devices_review",
+			consentDigest: "mf9bGUzJpQlq9lTqzoUBiuGPPhYUVsaJF6fQdJa_yKo"
+		},
+		{
+			id: "trellis.auth@v1::portals_mutate",
+			consentDigest: "2dXATXuhbxaMp_V-tHSV56d5Dlh0Mtyf0oS2KwQyrhA"
+		},
+		{
+			id: "trellis.auth@v1::portals_read",
+			consentDigest: "EcceFZ0MQ_GlLehwdNQL9k7vP-TnVnibDf5xTboRuf8"
+		},
+		{
+			id: "trellis.auth@v1::services_mutate",
+			consentDigest: "RVuId87LI8Rj-6TtlIDrnf28q6wC8DNJFFjAaG5H6tA"
+		},
+		{
+			id: "trellis.auth@v1::services_read",
+			consentDigest: "mC0vNO7A6BMMeNPK6N4JWs7rB_kGDc3k2bmBaTib3xw"
+		},
+		{
+			id: "trellis.auth@v1::sessions_read",
+			consentDigest: "wRj-aHJnRl4TkGAJeqLqj9oLmIY8XOZ7Ypzw32RF_jE"
+		},
+		{
+			id: "trellis.auth@v1::sessions_revoke",
+			consentDigest: "fASue_VnuC7-WAyY0jiU-oCY3fve7gEa9isNqgyL84g"
+		},
+		{
+			id: "trellis.auth@v1::users_mutate",
+			consentDigest: "4KCL9kT1DKvtTqvHhSF71T8r6YRTTIa1mM8k6AidIN8"
+		},
+		{
+			id: "trellis.auth@v1::users_read",
+			consentDigest: "09cIbRCunl0ry8aIBRxi7Ak2zpmVSdY-08_t87sq3bc"
+		},
+		{
+			id: "trellis.core@v1::resources_destroy",
+			consentDigest: "BPK_HkVekkLTfMxaBbE9l_fUS0R8JklApT9AHNJ2G78"
+		},
+		{
+			id: "trellis.core@v1::resources_read",
+			consentDigest: "3tpkViUZwcvViVyy9vm-tuksTt9D4kIF4-9o_xNXz9E"
+		},
+		{
+			id: "trellis.events@v1::manage_consumers",
+			consentDigest: "ssCWWzibtjWoOCaepAJqIxnSJ-P5SqHpY0FhiJazgG4"
+		},
+		{
+			id: "trellis.events@v1::read",
+			consentDigest: "ZOv1nV8r73VQ5jBI7CuCKYzxApUzYD9S6-BLZ_XdVTE"
+		},
+		{
+			id: "trellis.events@v1::stream",
+			consentDigest: "cPu0p-jxLppGoKv4GuzPuCg9veBCsm31KlsTJvRhr0Y"
+		},
+		{
+			id: "trellis.health@v1::read",
+			consentDigest: "0IO7vyEdUVaghdw3eqq1uyWbmRA93NlmVQHsX8-ljks"
+		},
+		{
+			id: "trellis.jobs@v1::mutate",
+			consentDigest: "tmynoy4P7kjLiYdFfDfHJR0WP1x5upghMVMEdHdb_oo"
+		},
+		{
+			id: "trellis.jobs@v1::read",
+			consentDigest: "WdG3bWif7DOg47U2-VR1OC6Yr1s4HABwHQ6C1t01yTI"
+		},
+		{
+			id: "trellis.jobs@v1::stream",
+			consentDigest: "Mojxd9X2kZ9E9zTR5dqkc2TFdRrAaGw6tmF_50lN7lE"
+		},
+		{
+			id: "trellis.state@v1::resources_read",
+			consentDigest: "uI5TuyropJ6YM7eZSLHpdy-R5t0_itpyukX2byTFVxU"
+		}
+	],
 	actionNames: {
 		"trellis.auth@v1:rpc:Capabilities.List": "Capabilities.List",
 		"trellis.auth@v1:rpc:CapabilityGroups.Delete": "CapabilityGroups.Delete",

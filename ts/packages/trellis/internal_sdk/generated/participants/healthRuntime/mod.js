@@ -9,9 +9,12 @@ const __participant = participantDescriptor({
 	identity: "trellis.healthRuntime",
 	id: "trellis.healthRuntime",
 	path: "healthRuntime",
+	digest: "QhoLj6a2cuKYfbgyAaLjJnzDnO88GJFy93480HQ6WVE",
 	implements: [Api0.API],
 	uses: [],
 	optionalGrants: {},
+	requiredGrants: [],
+	requiredCapabilities: [],
 	actionNames: {
 		"trellis.health@v1:rpc:Inspect": "Inspect",
 		"trellis.health@v1:rpc:Metrics": "Metrics",

@@ -9,6 +9,7 @@ const __participant = participantDescriptor({
 	identity: "runtime-trellis.AdminService",
 	id: "runtime-trellis.AdminService",
 	path: "AdminService",
+	digest: "8H5ai6yLtJ6nrdx7hvDiDmH1V6WW7O9XRUWXLNHrBOE",
 	implements: [],
 	uses: [{
 		api: Api0.API,
@@ -32,6 +33,49 @@ const __participant = participantDescriptor({
 		optionalCapabilities: []
 	}],
 	optionalGrants: {},
+	requiredGrants: [
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Grants.Get"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Grants.Revoke"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "rpc",
+				"name": "Sessions.List"
+			},
+			"action": "call"
+		}
+	],
+	requiredCapabilities: [
+		{
+			id: "trellis.auth@v1::authorities_mutate",
+			consentDigest: "MIGWLwTYRa9BIqy3iukm98m9-xN0pDp3_UgavGA-iKk"
+		},
+		{
+			id: "trellis.auth@v1::authorities_read",
+			consentDigest: "2IhD0wb7rw9K2LMwl5w-e6vWYFzEV-5vXoLECMsQVaY"
+		},
+		{
+			id: "trellis.auth@v1::sessions_read",
+			consentDigest: "wRj-aHJnRl4TkGAJeqLqj9oLmIY8XOZ7Ypzw32RF_jE"
+		}
+	],
 	actionNames: {
 		"trellis.auth@v1:rpc:Capabilities.List": "Capabilities.List",
 		"trellis.auth@v1:rpc:CapabilityGroups.Delete": "CapabilityGroups.Delete",

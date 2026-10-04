@@ -9,9 +9,12 @@ const __participant = participantDescriptor({
 	identity: "trellis.jobsRuntime",
 	id: "trellis.jobsRuntime",
 	path: "jobsRuntime",
+	digest: "vQfG7D9yA89KTtc3su7SUuusz-asKGgUG88m-9HkuxU",
 	implements: [Api0.API],
 	uses: [],
 	optionalGrants: {},
+	requiredGrants: [],
+	requiredCapabilities: [],
 	actionNames: {
 		"trellis.jobs@v1:rpc:Cancel": "Cancel",
 		"trellis.jobs@v1:rpc:DismissDLQ": "DismissDLQ",

@@ -9,9 +9,12 @@ const __participant = participantDescriptor({
 	identity: "runtime-trellis.EventService",
 	id: "runtime-trellis.EventService",
 	path: "EventService",
+	digest: "j3jBufyAmyOJAD2H-781574cN9k6zii5NbGTyjVmvn0",
 	implements: [Api0.API],
 	uses: [],
 	optionalGrants: {},
+	requiredGrants: [],
+	requiredCapabilities: [],
 	actionNames: {
 		"runtime-trellis.events@v1:rpc:DropAlpha": "DropAlpha",
 		"runtime-trellis.events@v1:rpc:Observed": "Observed",

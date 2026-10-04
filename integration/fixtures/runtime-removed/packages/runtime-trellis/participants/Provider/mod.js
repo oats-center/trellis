@@ -9,9 +9,12 @@ const __participant = participantDescriptor({
 	identity: "runtime-trellis.Provider",
 	id: "runtime-trellis.Provider",
 	path: "Provider",
+	digest: "jyicLUIUh_dd2BCqhoz5teoUaetvSuHGV-HMhzBX3pA",
 	implements: [Api0.API],
 	uses: [],
 	optionalGrants: {},
+	requiredGrants: [],
+	requiredCapabilities: [],
 	actionNames: {
 		"runtime-trellis.runtime@v1:rpc:Echo": "Echo",
 		"runtime-trellis.runtime@v1:operation:Upload": "Upload",

@@ -113,6 +113,15 @@ type __Resources = {
 	};
 };
 declare const __participant: {
+	readonly digest: string;
+	readonly requiredCapabilities: readonly Readonly<{
+		id: string;
+		consentDigest: string;
+	}>[];
+	readonly requiredGrants: readonly Readonly<{
+		action: string;
+		target: Readonly<Record<string, unknown>>;
+	}>[];
 	readonly kind: "service";
 	readonly id: "trellis.platform";
 	readonly identity: "trellis.platform";
@@ -138,6 +147,9 @@ export declare const participant: {
 	readonly id: typeof __participant.id;
 	readonly identity: typeof __participant.identity;
 	readonly path: typeof __participant.path;
+	readonly digest: typeof __participant.digest;
+	readonly requiredGrants: typeof __participant.requiredGrants;
+	readonly requiredCapabilities: typeof __participant.requiredCapabilities;
 	readonly implements: typeof __participant.implements;
 	readonly uses: typeof __participant.uses;
 	readonly optionalGrants: typeof __participant.optionalGrants;

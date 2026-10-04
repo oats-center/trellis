@@ -9,6 +9,7 @@ const __participant = participantDescriptor({
 	identity: "runtime-trellis.Denied",
 	id: "runtime-trellis.Denied",
 	path: "Denied",
+	digest: "6CArPir9rsBOVok7Ohw999Y5ikYDBOzvQMgK-yrIgys",
 	implements: [],
 	uses: [{
 		api: Api0.API,
@@ -16,6 +17,8 @@ const __participant = participantDescriptor({
 		optionalCapabilities: []
 	}],
 	optionalGrants: {},
+	requiredGrants: [],
+	requiredCapabilities: [],
 	actionNames: {
 		"runtime-trellis.runtime@v1:rpc:Echo": "Echo",
 		"runtime-trellis.runtime@v1:operation:Upload": "Upload",

@@ -62,6 +62,7 @@ import {
   getParticipantRuntime,
   participantAvailability,
   refreshApiRoutes,
+  sameGrantAtom,
 } from "./participant_runtime/participant.ts";
 import type { ContractResourceBindings } from "./participant_runtime/schemas.ts";
 import type { RuntimeApi } from "./participant_runtime/api.ts";
@@ -476,6 +477,14 @@ const ClientBootstrapReadySchema = Type.Object({
     sessionId: Type.String({ minLength: 1 }),
     participantId: Type.String({ minLength: 1 }),
     participantDigest: Type.String({ minLength: 1 }),
+    approvalMode: Type.Union([
+      Type.Literal("exact"),
+      Type.Literal("capabilities"),
+    ]),
+    approvedCapabilities: Type.Array(Type.Object({
+      id: Type.String({ minLength: 1 }),
+      consentDigest: Type.String({ minLength: 1 }),
+    })),
     transports: ClientTransportsSchema,
     transport: Type.Object({
       inboxPrefix: Type.String({ minLength: 1 }),
@@ -909,6 +918,9 @@ async function recoverClientBootstrapWithRetry(args: {
           sessionId: session.loginSessionId!,
           participantId: session.participantId,
           participantDigest: result.response.authorization.participantDigest,
+          approvalMode: result.response.authorization.approvalMode,
+          approvedCapabilities:
+            result.response.authorization.approvedCapabilities,
           transports: nats.transports,
           transport: {
             inboxPrefix: session.inboxPrefix,
@@ -1023,9 +1035,23 @@ function bootstrapTargetsRequestedContract<
 >(
   bootstrap: ClientBootstrapResponse,
   args: ClientConnectArgsFor<TContract>,
+  cache: AuthorizationContextCache,
 ): boolean {
   return bootstrap.status === "ready" &&
-    bootstrap.connectInfo.participantId === args.participant.identity;
+    bootstrap.connectInfo.participantId === args.participant.identity &&
+    (bootstrap.connectInfo.approvalMode === "exact" ||
+      args.participant.requiredCapabilities.every((capability) =>
+        bootstrap.connectInfo.approvedCapabilities.some((approved) =>
+          approved.id === capability.id &&
+          approved.consentDigest === capability.consentDigest
+        )
+      )) &&
+    (bootstrap.connectInfo.participantDigest === args.participant.digest ||
+      args.participant.requiredGrants.every((atom) =>
+        cache.current().context.grants.permissions.some((permission) =>
+          sameGrantAtom(permission, atom)
+        )
+      ));
 }
 
 async function buildSessionKeyLoginUrl(args: {
@@ -1242,11 +1268,19 @@ export async function connectClientWithDeps<
   let bootstrap = initialBootstrap;
   if (
     needsReauth(initialBootstrap) ||
-    !bootstrapTargetsRequestedContract(initialBootstrap, args)
+    !bootstrapTargetsRequestedContract(
+      initialBootstrap,
+      args,
+      authorizationContexts,
+    )
   ) {
     if (
       initialBootstrap.status === "ready" &&
-      !bootstrapTargetsRequestedContract(initialBootstrap, args)
+      !bootstrapTargetsRequestedContract(
+        initialBootstrap,
+        args,
+        authorizationContexts,
+      )
     ) {
       if (
         browserInstallation &&
