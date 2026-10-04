@@ -277,6 +277,23 @@ Deno.test("signed intent survives a denied attempt; transaction binding and init
             if (retry === 0) completedSessionId = result.session.sessionId;
             else assertEquals(result.session.sessionId, completedSessionId);
           }
+          const bindingC = await createPortalBinding();
+          const [c, recoveredC] = await Promise.all([
+            startPortalTransaction(config, intent, bindingC),
+            startPortalTransaction(config, intent, bindingC),
+          ]);
+          assert(c !== b);
+          assertEquals(recoveredC, c);
+          await assertRejects(() =>
+            startPortalTransaction(config, intent, bindingA)
+          );
+          const restartedProgress = await progress(initiator);
+          assertEquals(
+            restartedProgress.status,
+            200,
+            await restartedProgress.clone().text(),
+          );
+          assertEquals(await restartedProgress.json(), { status: "pending" });
           return { status: "bound", transactionId: b };
         },
       }).orThrow();

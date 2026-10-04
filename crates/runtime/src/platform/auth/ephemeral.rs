@@ -300,6 +300,13 @@ pub(crate) struct AuthBrowserTransaction {
 }
 
 impl AuthBrowserTransaction {
+    fn resumes_start(&self, candidate: &Self) -> bool {
+        !self.restartable(candidate.created_at)
+            && self.intent_digest == candidate.intent_digest
+            && self.portal_binding_digest.is_some()
+            && self.portal_binding_digest == candidate.portal_binding_digest
+    }
+
     fn restartable(&self, now: i64) -> bool {
         self.expires_at <= now
             || matches!(
@@ -748,10 +755,11 @@ pub(crate) trait AuthEphemeralRepository: Send + Sync {
         &self,
         intent_id: &str,
     ) -> Result<Option<String>, AuthorizationStateError>;
+    /// Atomically starts an attempt or recovers the active one for the same binding.
     async fn create_browser_transaction(
         &self,
         record: AuthBrowserTransaction,
-    ) -> Result<(), AuthorizationStateError>;
+    ) -> Result<AuthBrowserTransaction, AuthorizationStateError>;
     async fn get_browser_transaction(
         &self,
         flow_id: &str,
@@ -852,24 +860,27 @@ impl AuthEphemeralRepository for InMemoryAuthEphemeralRepository {
     async fn create_browser_transaction(
         &self,
         record: AuthBrowserTransaction,
-    ) -> Result<(), AuthorizationStateError> {
+    ) -> Result<AuthBrowserTransaction, AuthorizationStateError> {
         validate_create(record.version, || record.validate())?;
         let mut records = lock(&self.browser_transactions)?;
-        if records.contains_key(&record.transaction_id) {
-            return Err(AuthorizationStateError::StorageConflict);
-        }
         let mut intents = lock(&self.intent_transactions)?;
         if let Some(current) = intents
             .get(&record.intent_digest)
             .and_then(|id| records.get(id))
         {
+            if current.resumes_start(&record) {
+                return Ok(current.clone());
+            }
             if !current.restartable(record.created_at) {
                 return Err(AuthorizationStateError::StorageConflict);
             }
         }
+        if records.contains_key(&record.transaction_id) {
+            return Err(AuthorizationStateError::StorageConflict);
+        }
         intents.insert(record.intent_digest.clone(), record.transaction_id.clone());
-        records.insert(record.transaction_id.clone(), record);
-        Ok(())
+        records.insert(record.transaction_id.clone(), record.clone());
+        Ok(record)
     }
 
     async fn get_browser_transaction(
@@ -1217,19 +1228,34 @@ mod nats {
             &self,
             intent_id: &str,
         ) -> Result<Option<String>, AuthorizationStateError> {
-            self.browser_transactions
-                .get(format!("intent.{intent_id}"))
-                .await
-                .map_err(|error| storage(error.to_string()))?
-                .map(|bytes| {
-                    String::from_utf8(bytes.to_vec()).map_err(|error| storage(error.to_string()))
-                })
-                .transpose()
+            // KV direct reads may be served by followers. Rendezvous confirmation
+            // must read the stream leader, as physical connection presence does.
+            let subject = format!("{}intent.{intent_id}", self.browser_transactions.prefix);
+            let entry = match self.browser_transactions.stream
+                .get_last_raw_message_by_subject(&subject).await {
+                Ok(entry) => entry,
+                Err(error) if error.kind() ==
+                    async_nats::jetstream::stream::LastRawMessageErrorKind::NoMessageFound => return Ok(None),
+                Err(error) => return Err(storage(error.to_string())),
+            };
+            if entry.subject.as_ref() != subject {
+                return Err(storage("intent index returned a different subject"));
+            }
+            if let Some(operation) = entry.headers.get("KV-Operation") {
+                match operation.as_str() {
+                    "DEL" | "PURGE" => return Ok(None),
+                    "PUT" => {}
+                    _ => return Err(storage("intent index returned an invalid operation")),
+                }
+            }
+            String::from_utf8(entry.payload.to_vec())
+                .map(Some)
+                .map_err(|error| storage(error.to_string()))
         }
         async fn create_browser_transaction(
             &self,
             record: AuthBrowserTransaction,
-        ) -> Result<(), AuthorizationStateError> {
+        ) -> Result<AuthBrowserTransaction, AuthorizationStateError> {
             validate_create(record.version, || record.validate())?;
             let key = format!("intent.{}", record.intent_digest);
             let entry = self
@@ -1241,9 +1267,10 @@ mod nats {
             if let Some(entry) = &entry {
                 let id = std::str::from_utf8(&entry.value)
                     .map_err(|error| storage(error.to_string()))?;
-                if let Some(current) =
-                    get::<AuthBrowserTransaction>(&self.browser_transactions, id).await?
-                {
+                if let Some(current) = self.get_browser_transaction(id).await? {
+                    if current.resumes_start(&record) {
+                        return Ok(current);
+                    }
                     if !current.restartable(record.created_at) {
                         return Err(AuthorizationStateError::StorageConflict);
                     }
@@ -1254,30 +1281,54 @@ mod nats {
             // through this repository, including after a crash or an uncertain publish ACK.
             let value = Bytes::from(record.transaction_id.clone());
             let claimed = if let Some(entry) = entry {
-                match self
-                    .browser_transactions
+                self.browser_transactions
                     .update(&key, value, entry.revision)
                     .await
-                {
-                    Ok(_) => true,
-                    Err(error) if error.kind() == kv::UpdateErrorKind::WrongLastRevision => false,
-                    Err(error) => return Err(storage(error.to_string())),
-                }
+                    .map(|_| ())
+                    .map_err(|error| {
+                        if error.kind() == kv::UpdateErrorKind::WrongLastRevision {
+                            AuthorizationStateError::StorageConflict
+                        } else {
+                            storage(error.to_string())
+                        }
+                    })
             } else {
-                match self.browser_transactions.create(&key, value).await {
-                    Ok(_) => true,
-                    Err(error) if error.kind() == kv::CreateErrorKind::AlreadyExists => false,
-                    Err(error) => return Err(storage(error.to_string())),
-                }
-            };
-            if !claimed {
                 self.browser_transactions
-                    .delete(&record.transaction_id)
+                    .create(&key, value)
                     .await
-                    .map_err(|error| storage(error.to_string()))?;
-                return Err(AuthorizationStateError::StorageConflict);
+                    .map(|_| ())
+                    .map_err(|error| {
+                        if error.kind() == kv::CreateErrorKind::AlreadyExists {
+                            AuthorizationStateError::StorageConflict
+                        } else {
+                            storage(error.to_string())
+                        }
+                    })
+            };
+            if let Err(error) = claimed {
+                let selected = self.transaction_for_intent(&record.intent_digest).await?;
+                if selected.as_deref() == Some(record.transaction_id.as_str()) {
+                    return Ok(record);
+                }
+                // Only a definitive CAS rejection permits deletion. An unconfirmed
+                // write may still commit later; keep its candidate until the normal
+                // KV deadline so a same-binding retry can recover it safely.
+                if matches!(error, AuthorizationStateError::StorageConflict) && selected.is_some() {
+                    self.browser_transactions
+                        .delete(&record.transaction_id)
+                        .await
+                        .map_err(|error| storage(error.to_string()))?;
+                }
+                if let Some(id) = selected {
+                    if let Some(current) = self.get_browser_transaction(&id).await? {
+                        if current.resumes_start(&record) {
+                            return Ok(current);
+                        }
+                    }
+                }
+                return Err(error);
             }
-            Ok(())
+            Ok(record)
         }
 
         async fn get_browser_transaction(

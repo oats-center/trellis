@@ -105,6 +105,9 @@ to `/auth/intents/progress` on each poll within the caller's wait budget and
 returns the ID only when ready. Public intent rendering exposes no discovery.
 Only one outstanding transaction can claim the intent; a concurrent start cannot
 replace an unexpired attempt, even after approval while bind is outstanding.
+The portal persists its pending binding before starting; retrying that intent
+with the same binding recovers the active transaction after response loss or
+reload. Another binding conflicts and cannot replace the rendezvous.
 Denied, expired, and consumed attempts permit a fresh transaction.
 Completion binds that transaction with the initiating private key and verifies
 the returned intent, participant, and key bindings before context refresh.

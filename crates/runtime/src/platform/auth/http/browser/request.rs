@@ -417,9 +417,9 @@ where
         version: 1,
     };
     require_portal_binding(&flow, &headers)?;
-    state
+    let flow = state
         .ephemeral
-        .create_browser_transaction(flow.clone())
+        .create_browser_transaction(flow)
         .await
         .map_err(|error| {
             if matches!(error, AuthorizationStateError::StorageConflict) {

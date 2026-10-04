@@ -325,8 +325,11 @@ Custom portals use the public browser-auth helpers `portalIntentFromUrl`,
 new transaction when the user continues; do not send the user back to the app
 just to restart. The portal receives no initiating app private key. Its fresh
 transaction binding is separate from the app's key-bound completion proof.
-Portal progress requires that raw binding. A concurrent or duplicate transaction
-start receives `transaction_active`; it must not displace an outstanding attempt.
+Portal progress requires that raw binding. Persist a pending binding indexed by
+intent before `startPortalTransaction`; reuse it on retry or reload, then
+associate it with the returned transaction ID. A same-binding retry recovers the
+active transaction without resetting state or expiry; another binding receives
+`intent_transaction_active` and must not displace it.
 Public intent rendering never returns transaction discovery. Detached discovery
 uses the initiating key's fresh `userAuthProgress` session proof at
 `/auth/intents/progress` and receives a transaction ID only when ready to bind.

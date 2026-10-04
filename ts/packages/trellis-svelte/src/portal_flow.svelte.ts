@@ -1,6 +1,5 @@
 import {
   type BrowserPortalFlowState as PortalFlowState,
-  createPortalBinding,
   fetchPortalFlowState,
   fetchPortalIntentState,
   getOrCreatePortalBinding,
@@ -126,13 +125,17 @@ export class PortalFlowController {
     );
   }
 
-  /** Create a bounded attempt only when the user submits credentials or selects a provider. */
+  /** Start or recover an attempt with a binding persisted before the first request. */
   async beginAuthentication(): Promise<string> {
     if (this.transactionId) return this.transactionId;
     if (!this.#intent || this.state?.status !== "choose_provider") {
       throw new Error("Sign-in intent has not loaded.");
     }
-    const binding = await createPortalBinding();
+    const pendingBindingId = `intent:${this.#intent}`;
+    const binding = await getOrCreatePortalBinding(
+      pendingBindingId,
+      this.#sessionStorage,
+    );
     const transactionId = await startPortalTransaction(
       this.#config,
       this.#intent,
@@ -152,6 +155,9 @@ export class PortalFlowController {
     const url = this.#getUrl();
     url.searchParams.set("transactionId", transactionId);
     globalThis.history?.replaceState(null, "", url);
+    this.#sessionStorage.removeItem(
+      `trellis.portal-binding.v1:${pendingBindingId}`,
+    );
     return transactionId;
   }
 

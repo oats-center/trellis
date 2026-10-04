@@ -209,23 +209,29 @@ intent and allows a fresh attempt without returning to the app.
 
 One intent has at most one outstanding transaction. Repository creation claims
 its correlation index atomically; another start cannot displace an unexpired
-attempt, even after approval while bind is outstanding. Denied, expired, and
-consumed attempts allow a fresh transaction. Public intent rendering does not
-expose transaction discovery. Detached clients submit fresh initiating-key
-proofs to `/auth/intents/progress`, which returns an ID only for a bindable or
-replayable result. Portal progress remains protected by the transaction's raw
-portal binding.
+attempt, even after approval while bind is outstanding. A same-binding retry
+recovers that attempt without resetting its state or deadline; another binding
+conflicts. An uncertain NATS index write is exact-confirmed against the stream
+leader, and an unconfirmed candidate is retained until its normal KV deadline so
+a delayed commit remains recoverable. Denied, expired, and consumed attempts
+allow a fresh transaction. Public intent rendering does not expose transaction
+discovery. Detached clients submit fresh initiating-key proofs to
+`/auth/intents/progress`, which returns an ID only for a bindable or replayable
+result. Portal progress remains protected by the transaction's raw portal
+binding.
 
 Portal actions use a fresh 32-byte transaction binding. The portal retains the
-raw value in portal-origin `sessionStorage`; Trellis persists only its SHA-256
-digest and requires the raw value in `Trellis-Portal-Binding` for bound actions.
-Origin remains CSRF defense, not authentication. OIDC PKCE, nonce, state,
-HttpOnly SameSite=Lax callback cookie association, and CAS-backed continuation
-belong to the transaction. Account-flow continuations use
-`browserTransactionId`; account and device review lifetimes remain separate.
-Browser OIDC starts by POSTing JSON transaction and binding inputs; initial and
-replayed callbacks return to the portal with `transactionId`, never an
-account-flow ID.
+raw value in portal-origin `sessionStorage` before starting the transaction,
+indexed by intent until the response supplies the transaction ID. Response loss
+or reload reuses that pending binding rather than creating a competing attempt.
+Trellis persists only its SHA-256 digest and requires the raw value in
+`Trellis-Portal-Binding` for bound actions. Origin remains CSRF defense, not
+authentication. OIDC PKCE, nonce, state, HttpOnly SameSite=Lax callback cookie
+association, and CAS-backed continuation belong to the transaction. Account-flow
+continuations use `browserTransactionId`; account and device review lifetimes
+remain separate. Browser OIDC starts by POSTing JSON transaction and binding
+inputs; initial and replayed callbacks return to the portal with
+`transactionId`, never an account-flow ID.
 
 Existing grant reuse shares issuance/policy compatibility semantics: an active,
 unexpired grant alone is insufficient, and revision change alone does not force
