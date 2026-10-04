@@ -550,7 +550,7 @@ jobs:
   live-testkit:
     name: Rust testkit integration
     needs: [install, wasm, portal, build]
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       TESTKIT_EXECUTION_ROOT: ${{ github.workspace }}/.local/ci/testkit-${{ github.run_id }}-${{ github.run_attempt }}
