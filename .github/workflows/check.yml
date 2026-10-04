@@ -817,7 +817,7 @@ jobs:
 
       - name: Install pinned Chromium and browser dependencies
         working-directory: ts
-        run: node node_modules/playwright/cli.js install --with-deps chromium
+        run: npm exec --yes --package=playwright@1.59.1 -- playwright install --with-deps chromium
 
       - name: Test built-in UI hosting
         working-directory: ts
