@@ -65,4 +65,4 @@ jobs:
           for pressure in cpu io memory; do
             cat "/proc/pressure/$pressure"
           done
-          "$EXECUTION_ROOT/binaries/trellis-testkit-live"
+          "$EXECUTION_ROOT/binaries/trellis-testkit-live" --test-threads=4
