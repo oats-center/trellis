@@ -14,9 +14,17 @@ permissions:
 
 jobs:
   testkit:
-    name: Diagnose prebuilt testkit filesystem waits
-    runs-on: [self-hosted, Linux, X64]
+    name: Compare exact testkit (${{ matrix.host }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: self-hosted
+            runner: [self-hosted, Linux, X64]
+          - host: github-hosted
+            runner: ubuntu-latest
     env:
       EXECUTION_ROOT: ${{ github.workspace }}/.local/ci/testkit-diag-${{ github.run_id }}
     steps:
@@ -31,19 +39,18 @@ jobs:
           run-id: ${{ inputs.source-run-id }}
           github-token: ${{ github.token }}
 
-      - name: Prepare executables and syscall diagnostics
+      - name: Prepare exact executables
         run: |
           set -euo pipefail
           umask 077
           chmod go-w "$HOME"
-          mkdir -p "$EXECUTION_ROOT/nats" "$EXECUTION_ROOT/runtime" "$EXECUTION_ROOT/diagnostics"
-          chmod 700 "$EXECUTION_ROOT" "$EXECUTION_ROOT/nats" "$EXECUTION_ROOT/runtime" "$EXECUTION_ROOT/diagnostics"
+          mkdir -p "$EXECUTION_ROOT/nats" "$EXECUTION_ROOT/runtime"
+          chmod 700 "$EXECUTION_ROOT" "$EXECUTION_ROOT/nats" "$EXECUTION_ROOT/runtime"
           tar -xzf "$EXECUTION_ROOT/binaries/runtime-binaries.tar.gz" -C "$EXECUTION_ROOT/binaries"
           bash scripts/acquire-test-nats.sh --dest "$EXECUTION_ROOT/nats"
-          sudo apt-get update
-          sudo apt-get install --yes bpftrace
+          sha256sum "$EXECUTION_ROOT/binaries/trellis-server" "$EXECUTION_ROOT/binaries/trellis" "$EXECUTION_ROOT/binaries/trellis-testkit-live" "$EXECUTION_ROOT/nats/nats-server"
 
-      - name: Run unchanged parallel suite with filesystem-sync tracing
+      - name: Run unchanged parallel suite without instrumentation
         env:
           RUST_BACKTRACE: "1"
         run: |
@@ -53,44 +60,9 @@ jobs:
           export TRELLIS_TEST_SERVER_BIN="$EXECUTION_ROOT/binaries/trellis-server"
           export TRELLIS_TEST_CLI_BIN="$EXECUTION_ROOT/binaries/trellis"
           export TRELLIS_TEST_NATS_BIN="$EXECUTION_ROOT/nats/nats-server"
-          # Observe in the kernel without ptrace interception of the supervised children.
-          # Record only process names, thread ids, and durations, never I/O buffers.
-          sudo bpftrace -B line -o "$EXECUTION_ROOT/diagnostics/fsync.log" -e '
-            tracepoint:syscalls:sys_enter_fsync,
-            tracepoint:syscalls:sys_enter_fdatasync
-            {
-              @started[tid] = nsecs;
-            }
-            tracepoint:syscalls:sys_exit_fsync,
-            tracepoint:syscalls:sys_exit_fdatasync
-            /@started[tid]/ {
-              printf("%s pid=%d tid=%d sync_us=%llu result=%d\n",
-                comm, pid, tid, (nsecs - @started[tid]) / 1000, args->ret);
-              delete(@started[tid]);
-            }
-          ' &
-          probe=$!
-          trap 'sudo kill -INT "$probe" 2>/dev/null || true; wait "$probe" || true' EXIT
-          ready=false
-          for attempt in {1..100}; do
-            if grep -q 'Attaching' "$EXECUTION_ROOT/diagnostics/fsync.log"; then
-              ready=true
-              break
-            fi
-            kill -0 "$probe"
-            sleep 0.1
+          uname -a
+          df -h "$EXECUTION_ROOT"
+          for pressure in cpu io memory; do
+            cat "/proc/pressure/$pressure"
           done
-          if [ "$ready" != true ]; then
-            echo "kernel sync probe did not attach" >&2
-            exit 1
-          fi
           "$EXECUTION_ROOT/binaries/trellis-testkit-live"
-
-      - name: Upload filesystem-sync diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: testkit-fsync-${{ github.run_id }}
-          path: ${{ env.EXECUTION_ROOT }}/diagnostics/fsync.log
-          retention-days: 3
-          if-no-files-found: error
