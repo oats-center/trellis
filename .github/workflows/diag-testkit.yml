@@ -54,7 +54,7 @@ jobs:
           export TRELLIS_TEST_CLI_BIN="$EXECUTION_ROOT/binaries/trellis"
           export TRELLIS_TEST_NATS_BIN="$EXECUTION_ROOT/nats/nats-server"
           # Only syscall names, file paths, and durations: no credential-bearing I/O buffers.
-          strace -f -tt -T -yy -e trace=fsync,fdatasync \
+          strace --seccomp-bpf -f -tt -T -yy -e trace=fsync,fdatasync \
             -o "$EXECUTION_ROOT/diagnostics/fsync.log" \
             "$EXECUTION_ROOT/binaries/trellis-testkit-live"
 
