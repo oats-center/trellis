@@ -41,7 +41,7 @@ jobs:
           tar -xzf "$EXECUTION_ROOT/binaries/runtime-binaries.tar.gz" -C "$EXECUTION_ROOT/binaries"
           bash scripts/acquire-test-nats.sh --dest "$EXECUTION_ROOT/nats"
           sudo apt-get update
-          sudo apt-get install --yes strace
+          sudo apt-get install --yes bpftrace
 
       - name: Run unchanged parallel suite with filesystem-sync tracing
         env:
@@ -53,10 +53,38 @@ jobs:
           export TRELLIS_TEST_SERVER_BIN="$EXECUTION_ROOT/binaries/trellis-server"
           export TRELLIS_TEST_CLI_BIN="$EXECUTION_ROOT/binaries/trellis"
           export TRELLIS_TEST_NATS_BIN="$EXECUTION_ROOT/nats/nats-server"
-          # Only syscall names, file paths, and durations: no credential-bearing I/O buffers.
-          strace --seccomp-bpf -f -tt -T -yy -e trace=fsync,fdatasync \
-            -o "$EXECUTION_ROOT/diagnostics/fsync.log" \
-            "$EXECUTION_ROOT/binaries/trellis-testkit-live"
+          # Observe in the kernel without ptrace interception of the supervised children.
+          # Record only process names, thread ids, and durations, never I/O buffers.
+          sudo bpftrace -B line -o "$EXECUTION_ROOT/diagnostics/fsync.log" -e '
+            tracepoint:syscalls:sys_enter_fsync,
+            tracepoint:syscalls:sys_enter_fdatasync
+            {
+              @started[tid] = nsecs;
+            }
+            tracepoint:syscalls:sys_exit_fsync,
+            tracepoint:syscalls:sys_exit_fdatasync
+            /@started[tid]/ {
+              printf("%s pid=%d tid=%d sync_us=%llu result=%d\n",
+                comm, pid, tid, (nsecs - @started[tid]) / 1000, args->ret);
+              delete(@started[tid]);
+            }
+          ' &
+          probe=$!
+          trap 'sudo kill -INT "$probe" 2>/dev/null || true; wait "$probe" || true' EXIT
+          ready=false
+          for attempt in {1..100}; do
+            if grep -q 'Attaching' "$EXECUTION_ROOT/diagnostics/fsync.log"; then
+              ready=true
+              break
+            fi
+            kill -0 "$probe"
+            sleep 0.1
+          done
+          if [ "$ready" != true ]; then
+            echo "kernel sync probe did not attach" >&2
+            exit 1
+          fi
+          "$EXECUTION_ROOT/binaries/trellis-testkit-live"
 
       - name: Upload filesystem-sync diagnostics
         if: always()
