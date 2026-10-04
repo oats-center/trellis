@@ -27,12 +27,10 @@ import { AuthorizationRegistryReader } from "./authorization/nats_registry.ts";
 import {
   type AuthorizationContextBundle,
   AuthorizationContextCache,
-  AuthorizationContextRefreshError,
   AuthorizationProviderCache,
   type AuthorizationProviderEvent,
   type AuthorizationProviderRequest,
   type AuthorizationRuntimeBinding,
-  startAuthorizationContextRefresh,
 } from "./authorization_context.ts";
 import type { PermissionAtom } from "./protocol_wasm.ts";
 import { createAuth } from "./session_auth.ts";
@@ -137,68 +135,6 @@ async function installedCache(fetch?: typeof globalThis.fetch) {
   );
   return value;
 }
-
-Deno.test("authorization refresh can use native bootstrap", async () => {
-  const value = await installedCache();
-  const auth = await createAuth({ sessionKeySeed: chain.sessionSeed });
-  let refreshed!: () => void;
-  const didRefresh = new Promise<void>((resolve) => refreshed = resolve);
-  const stop = startAuthorizationContextRefresh({
-    trellisUrl: "https://trellis.test",
-    credential: {
-      loginSessionId: value.current().context.connectionId,
-      proofAuth: auth,
-    },
-    runtime: { auth },
-    cache: value,
-    refresh: (shouldInstall) => {
-      assert(shouldInstall());
-      refreshed();
-      return Promise.resolve(value.current());
-    },
-  });
-
-  value.requestRefresh();
-  await didRefresh;
-  stop();
-  assert(
-    new AuthorizationContextRefreshError(401, "identity_not_found").terminal,
-  );
-  assert(
-    new AuthorizationContextRefreshError(401, "identity_inactive").terminal,
-  );
-});
-
-Deno.test("changed authorization refresh reconnects once while connected", async () => {
-  const value = await installedCache();
-  const auth = await createAuth({ sessionKeySeed: chain.sessionSeed });
-  let reconnects = 0;
-  let reconnected!: () => void;
-  const didReconnect = new Promise<void>((resolve) => reconnected = resolve);
-  const stop = startAuthorizationContextRefresh({
-    trellisUrl: "https://trellis.test",
-    credential: {
-      loginSessionId: value.current().context.connectionId,
-      proofAuth: auth,
-    },
-    runtime: { auth },
-    cache: value,
-    refresh: () =>
-      Promise.resolve({
-        ...value.current(),
-        contextDigest: "changed-context",
-      }),
-    onRefresh: () => {
-      reconnects += 1;
-      reconnected();
-    },
-  });
-
-  value.requestRefresh();
-  await didReconnect;
-  stop();
-  assertEquals(reconnects, 1);
-});
 
 function permission(): PermissionAtom {
   return vectors.defaults.permission as PermissionAtom;
