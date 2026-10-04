@@ -810,6 +810,10 @@ jobs:
         working-directory: web
         run: deno run -A --frozen @sveltejs/kit sync
 
+      - name: Install Chromium and browser dependencies
+        working-directory: ts
+        run: deno run -A --frozen npm:playwright@1.59.1 install --with-deps chromium
+
       - name: Test built-in UI hosting
         working-directory: ts
         env:
