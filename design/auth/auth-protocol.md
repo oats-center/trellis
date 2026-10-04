@@ -143,7 +143,7 @@ The portal retains the raw 32-byte binding in portal-origin `sessionStorage`; it
 reuses the pending binding on retry or reload and associates it with the
 transaction only after receiving the ID. Removing the pending association
 follows successful transaction persistence and URL continuation, not the first
-request. only its SHA-256 digest is persisted server-side. Bound actions require
+request. Only its SHA-256 digest is persisted server-side. Bound actions require
 the binding as designed. The transaction owns authenticated identity, provider
 attributes, current consent, expected grant revision, approval/denial, and
 completion. OIDC PKCE, nonce, state, and callback association refer to this

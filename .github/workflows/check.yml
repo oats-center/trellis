@@ -930,11 +930,12 @@ jobs:
           tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
 
       - name: Package the public crates
-        # Verify the packaged crates against the workspace crates being released
-        # rather than whatever versions crates.io currently holds: `cargo package`
-        # ignores the manifest's [patch] section, so the patches are explicit.
+        # Assemble all three archives together. The SDK's dev-dependency on the
+        # testkit creates a cycle that makes Cargo's source-patched verification
+        # collide with the packaged SDK. The required artifact-only consumer job
+        # compiles these unmodified archives and runs their full live acceptance.
         run: |
-          cargo package --manifest-path Cargo.toml \
+          cargo package --manifest-path Cargo.toml --no-verify \
             -p trellis-protocol -p trellis-rs -p trellis-testkit \
             --config 'patch.crates-io.trellis-protocol.path="crates/protocol"' \
             --config 'patch.crates-io.trellis-rs.path="crates/trellis"'
@@ -1003,25 +1004,15 @@ jobs:
         run: bash bundle/verify-rust-test-package.sh --bundle "$PWD/bundle" --mode full
 
   build-targets-linux:
-    name: Build native Linux runtime (${{ matrix.arch }})
+    name: Build native Linux x86-64 runtime
     needs: [install, wasm, portal]
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     container:
       image: rust:bookworm
     timeout-minutes: 45
     env:
       TRELLIS_OFFICIAL_BUILD: "1"
       TRELLIS_BUILD_SHA: ${{ github.sha }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-          - arch: arm64
-            target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -1049,19 +1040,19 @@ jobs:
           deno-version: ${{ env.DENO_VERSION }}
 
       # The runtime image base is debian:bookworm-slim, so compile in the same
-      # release (rust:bookworm) on each native architecture.
+      # release (rust:bookworm) on Linux x86-64.
       - name: Build release binaries
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release -p trellis-cli -p trellis-server --target ${{ matrix.target }}
+          cargo build --release -p trellis-cli -p trellis-server --target x86_64-unknown-linux-gnu
 
       - name: Package CLI archives
         shell: bash
         run: |
           set -euo pipefail
           version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
-          target="${{ matrix.target }}"
+          target="x86_64-unknown-linux-gnu"
           staging="dist/${target}"
           mkdir -p "$staging"
           cp "target/${target}/release/trellis" "$staging/trellis"
@@ -1073,89 +1064,7 @@ jobs:
       - name: Upload packaged CLI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: trellis-cli-${{ matrix.target }}
-          path: |
-            dist/*.tar.gz
-            dist/*.sha256
-          retention-days: 3
-
-  build-targets-darwin:
-    name: Build ${{ matrix.target }} CLI
-    needs: [install, wasm, portal]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
-    env:
-      TRELLIS_OFFICIAL_BUILD: "1"
-      TRELLIS_BUILD_SHA: ${{ github.sha }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-14
-            target: x86_64-apple-darwin
-          - runner: macos-14
-            target: aarch64-apple-darwin
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: check-generated
-
-      - name: Download embedded browser apps
-        uses: actions/download-artifact@v4
-        with:
-          name: check-portal
-          path: crates/runtime/generated
-
-      - name: Download protocol WASM
-        uses: actions/download-artifact@v4
-        with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: ${{ env.DENO_VERSION }}
-
-      - name: Add target toolchain
-        run: rustup target add ${{ matrix.target }}
-
-      - name: Cache Rust build artifacts
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-
-      - name: Build release binaries
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo build --release -p trellis-cli -p trellis-server --target ${{ matrix.target }}
-
-      - name: Package CLI archives
-        run: |
-          set -euo pipefail
-          version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
-          target="${{ matrix.target }}"
-          staging="dist/${target}"
-          mkdir -p "$staging"
-          cp "target/${target}/release/trellis" "$staging/trellis"
-          cp "target/${target}/release/trellis-server" "$staging/trellis-server"
-          archive="trellis-${version}-${target}.tar.gz"
-          tar -C "$staging" -czf "dist/$archive" trellis trellis-server
-          shasum -a 256 "dist/$archive" > "dist/checksum-${version}-${target}-trellis.sha256"
-
-      - name: Upload packaged CLI artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: trellis-cli-${{ matrix.target }}
+          name: trellis-cli-x86_64-unknown-linux-gnu
           path: |
             dist/*.tar.gz
             dist/*.sha256
@@ -1203,8 +1112,7 @@ jobs:
         if: matrix.image == 'trellis'
         uses: actions/download-artifact@v4
         with:
-          pattern: trellis-cli-*-unknown-linux-gnu
-          merge-multiple: true
+          name: trellis-cli-x86_64-unknown-linux-gnu
           path: ${{ runner.temp }}/native-runtime
 
       - name: Stage native binaries for image assembly
@@ -1212,21 +1120,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          declare -A arches=( [amd64]=x86_64-unknown-linux-gnu [arm64]=aarch64-unknown-linux-gnu )
-          for arch in "${!arches[@]}"; do
-            target="${arches[${arch}]}"
-            archive="$(find "$RUNNER_TEMP/native-runtime" -maxdepth 1 -name "trellis-*-${target}.tar.gz" | head -n1)"
-            if [ -z "${archive}" ]; then
-              echo "missing native Linux runtime archive for ${target}" >&2
-              exit 1
-            fi
-            mkdir -p "dist/native/${arch}"
-            tar --no-same-owner -xzf "${archive}" -C "dist/native/${arch}" trellis trellis-server
-          done
-          ls -l dist/native/amd64 dist/native/arm64
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+          archive="$(find "$RUNNER_TEMP/native-runtime" -maxdepth 1 -name 'trellis-*-x86_64-unknown-linux-gnu.tar.gz' | head -n1)"
+          if [ -z "${archive}" ]; then
+            echo "missing native Linux runtime archive for x86_64-unknown-linux-gnu" >&2
+            exit 1
+          fi
+          mkdir -p dist/native/amd64
+          tar --no-same-owner -xzf "${archive}" -C dist/native/amd64 trellis trellis-server
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -1236,7 +1136,7 @@ jobs:
         with:
           context: .
           file: ${{ matrix.file }}
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           outputs: type=oci,dest=/tmp/${{ matrix.image }}.tar
           build-args: |
             TRELLIS_VERSION=${{ github.ref_name }}
@@ -1271,67 +1171,6 @@ jobs:
           compression-level: 0
           retention-days: 3
 
-  smoke-image-arm64:
-    name: Smoke the native arm64 runtime image
-    needs: [install, wasm, portal, build-targets-linux]
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 45
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: check-generated
-
-      - name: Download embedded browser apps
-        uses: actions/download-artifact@v4
-        with:
-          name: check-portal
-          path: crates/runtime/generated
-
-      - name: Download protocol WASM
-        uses: actions/download-artifact@v4
-        with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
-
-      - name: Download native arm64 runtime archive
-        uses: actions/download-artifact@v4
-        with:
-          name: trellis-cli-aarch64-unknown-linux-gnu
-          path: ${{ runner.temp }}/native-runtime
-
-      - name: Stage native binaries for image assembly
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="$(find "$RUNNER_TEMP/native-runtime" -maxdepth 1 -name 'trellis-*-aarch64-unknown-linux-gnu.tar.gz' | head -n1)"
-          if [ -z "${archive}" ]; then
-            echo "missing native Linux runtime archive for aarch64-unknown-linux-gnu" >&2
-            exit 1
-          fi
-          mkdir -p dist/native/arm64
-          tar --no-same-owner -xzf "${archive}" -C dist/native/arm64 trellis trellis-server
-
-      # The multi-arch archive is assembled on x64 under emulation, so this is
-      # the native ARM runtime evidence: assemble and smoke the arm64 image on a
-      # native arm64 runner.
-      - name: Build native arm64 trellis image
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker build --platform linux/arm64 \
-            --tag trellis-smoke-arm64:test \
-            --build-arg TRELLIS_VERSION="${{ github.ref_name }}" \
-            --build-arg TRELLIS_REVISION="${{ github.sha }}" \
-            --file crates/runtime/Containerfile.release .
-
-      - name: Smoke-test managed NATS in the native arm64 image
-        shell: bash
-        run: bash scripts/smoke-trellis-image.sh --image trellis-smoke-arm64:test
-
   acceptance:
     name: Acceptance gate
     needs:
@@ -1347,9 +1186,7 @@ jobs:
       - live-typescript
       - rust-testkit-consumer
       - build-targets-linux
-      - build-targets-darwin
       - verify-images
-      - smoke-image-arm64
     if: always()
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 5

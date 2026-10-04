@@ -1228,29 +1228,12 @@ mod nats {
             &self,
             intent_id: &str,
         ) -> Result<Option<String>, AuthorizationStateError> {
-            // KV direct reads may be served by followers. Rendezvous confirmation
-            // must read the stream leader, as physical connection presence does.
-            let subject = format!("{}intent.{intent_id}", self.browser_transactions.prefix);
-            let entry = match self.browser_transactions.stream
-                .get_last_raw_message_by_subject(&subject).await {
-                Ok(entry) => entry,
-                Err(error) if error.kind() ==
-                    async_nats::jetstream::stream::LastRawMessageErrorKind::NoMessageFound => return Ok(None),
-                Err(error) => return Err(storage(error.to_string())),
-            };
-            if entry.subject.as_ref() != subject {
-                return Err(storage("intent index returned a different subject"));
+            match leader_entry(&self.browser_transactions, &format!("intent.{intent_id}")).await? {
+                Some((_, Some(value))) => String::from_utf8(value.to_vec())
+                    .map(Some)
+                    .map_err(|error| storage(error.to_string())),
+                _ => Ok(None),
             }
-            if let Some(operation) = entry.headers.get("KV-Operation") {
-                match operation.as_str() {
-                    "DEL" | "PURGE" => return Ok(None),
-                    "PUT" => {}
-                    _ => return Err(storage("intent index returned an invalid operation")),
-                }
-            }
-            String::from_utf8(entry.payload.to_vec())
-                .map(Some)
-                .map_err(|error| storage(error.to_string()))
         }
         async fn create_browser_transaction(
             &self,
@@ -1258,31 +1241,30 @@ mod nats {
         ) -> Result<AuthBrowserTransaction, AuthorizationStateError> {
             validate_create(record.version, || record.validate())?;
             let key = format!("intent.{}", record.intent_digest);
-            let entry = self
-                .browser_transactions
-                .entry(&key)
-                .await
-                .map_err(|error| storage(error.to_string()))?
-                .filter(|entry| entry.operation == kv::Operation::Put);
-            if let Some(entry) = &entry {
-                let id = std::str::from_utf8(&entry.value)
-                    .map_err(|error| storage(error.to_string()))?;
-                if let Some(current) = self.get_browser_transaction(id).await? {
-                    if current.resumes_start(&record) {
-                        return Ok(current);
-                    }
-                    if !current.restartable(record.created_at) {
-                        return Err(AuthorizationStateError::StorageConflict);
-                    }
+            let entry = leader_entry(&self.browser_transactions, &key).await?;
+            if let Some((_, Some(value))) = &entry {
+                let id = std::str::from_utf8(value).map_err(|error| storage(error.to_string()))?;
+                let current = self
+                    .get_browser_transaction(id)
+                    .await?
+                    .ok_or_else(|| storage("intent index refers to an unavailable transaction"))?;
+                if current.intent_digest != record.intent_digest || current.transaction_id != id {
+                    return Err(storage("intent index refers to a different transaction"));
+                }
+                if current.resumes_start(&record) {
+                    return Ok(current);
+                }
+                if !current.restartable(record.created_at) {
+                    return Err(AuthorizationStateError::StorageConflict);
                 }
             }
             create(&self.browser_transactions, &record.transaction_id, &record).await?;
             // The index CAS is the acceptance point. Unindexed candidates are not readable
             // through this repository, including after a crash or an uncertain publish ACK.
             let value = Bytes::from(record.transaction_id.clone());
-            let claimed = if let Some(entry) = entry {
+            let claimed = if let Some((revision, _)) = entry {
                 self.browser_transactions
-                    .update(&key, value, entry.revision)
+                    .update(&key, value, revision)
                     .await
                     .map(|_| ())
                     .map_err(|error| {
@@ -1335,7 +1317,10 @@ mod nats {
             &self,
             flow_id: &str,
         ) -> Result<Option<AuthBrowserTransaction>, AuthorizationStateError> {
-            let record = get::<AuthBrowserTransaction>(&self.browser_transactions, flow_id).await?;
+            let record = match leader_entry(&self.browser_transactions, flow_id).await? {
+                Some((_, Some(value))) => Some(decode::<AuthBrowserTransaction>(&value)?),
+                _ => None,
+            };
             if let Some(current) = &record {
                 if !matches!(
                     current.state,
@@ -1623,6 +1608,39 @@ mod nats {
                 store.name
             ))),
         }
+    }
+
+    // KV direct reads may be served by followers. Rendezvous decisions and
+    // confirmation need leader reads, including the stream sequence for CAS.
+    // Preserve tombstone revisions so replacement does not depend on a direct read.
+    async fn leader_entry(
+        store: &kv::Store,
+        key: &str,
+    ) -> Result<Option<(u64, Option<Bytes>)>, AuthorizationStateError> {
+        let subject = format!("{}{key}", store.prefix);
+        let entry = match store.stream.get_last_raw_message_by_subject(&subject).await {
+            Ok(entry) => entry,
+            Err(error)
+                if error.kind()
+                    == async_nats::jetstream::stream::LastRawMessageErrorKind::NoMessageFound =>
+            {
+                return Ok(None)
+            }
+            Err(error) => return Err(storage(error.to_string())),
+        };
+        if entry.subject.as_ref() != subject {
+            return Err(storage("auth KV leader read returned a different subject"));
+        }
+        let value = match entry
+            .headers
+            .get("KV-Operation")
+            .map(|operation| operation.as_str())
+        {
+            Some("DEL" | "PURGE") => None,
+            Some("PUT") | None => Some(entry.payload),
+            _ => return Err(storage("auth KV leader read returned an invalid operation")),
+        };
+        Ok(Some((entry.sequence, value)))
     }
 
     async fn get<T: for<'de> Deserialize<'de> + Validate>(

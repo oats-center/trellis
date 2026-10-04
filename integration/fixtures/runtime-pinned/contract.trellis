@@ -15,11 +15,12 @@ api runtime@v1 {
   title "Runtime acceptance";
   description "Small generated transport and durability fixture.";
   rpc Echo { input Value; output Value; }
+  rpc Download { input Value; output Value; download; }
   operation Work { input Value; progress Update; output Value; signals { Continue Value; } }
   operation Upload { input Value; output Value; signals { Continue Value; } upload; }
   event Changed { payload Value; }
   live Watch { input Empty; event Value; }
-  capabilities { public { allows { rpc Echo; operation Work; operation Upload; publish event Changed; subscribe event Changed; live Watch; } } }
+  capabilities { public { allows { rpc Echo; rpc Download; operation Work; operation Upload; publish event Changed; subscribe event Changed; live Watch; } } }
 }
 
 api events@v1 {
@@ -66,11 +67,12 @@ service Provider {
     description "Runtime fixture work.";
     payload Value;
     result Value;
-    update Value;
+    update Update;
     deadline 5s;
     retry { attempts 2; backoff [250ms]; }
   }
   job keyedWork { title "Keyed work"; description "Runtime keyed queue acceptance."; payload KeyedValue; result KeyedValue; key_concurrency { path key; policy queue; } }
+  job replayWork { title "Replay work"; description "Keyed retry and dead-letter replay acceptance."; payload Value; result Value; retry { attempts 2; backoff [250ms]; } key_concurrency { path value; policy queue; } }
   job preStartedWork { title "Pre-started work"; description "Key acquisition crash recovery."; payload KeyedValue; result KeyedValue; deadline 5s; key_concurrency { path key; policy queue; } }
   kv records { title "Records"; description "Rust KV acceptance values."; schema ResourceValue; version 1; history 4; ttl 0ms; }
   kv optional extras { title "Extras"; description "Optional Rust KV acceptance values approved after connect."; schema ResourceValue; version 1; history 4; ttl 0ms; }

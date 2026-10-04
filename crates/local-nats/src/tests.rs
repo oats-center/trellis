@@ -610,8 +610,7 @@ fn ensure_rejects_symlinked_cache_root() {
     {
         let temp = tempfile::tempdir().expect("temp dir");
         let real = temp.path().join("real-cache");
-        fs::create_dir_all(&real).expect("create real cache");
-        set_private_dir_permissions(&real).expect("make private");
+        ensure_cache_dir(&real).expect("create private real cache");
         let cache = temp.path().join("cache");
         std::os::unix::fs::symlink(&real, &cache).expect("symlink cache root");
 
@@ -728,6 +727,31 @@ fn ensure_cache_dir_creates_private_dir() {
         );
     }
     ensure_cache_dir(&cache).expect("existing private dir is accepted");
+}
+
+#[test]
+fn concurrent_cache_initialization_accepts_the_new_private_directory() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    for attempt in 0..64 {
+        let cache = temp.path().join(attempt.to_string());
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            let callers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        ensure_cache_dir(&cache)
+                    })
+                })
+                .collect();
+            for caller in callers {
+                caller
+                    .join()
+                    .expect("initialization caller")
+                    .expect("concurrent callers must accept a safely created cache");
+            }
+        });
+    }
 }
 
 #[test]
@@ -1200,8 +1224,7 @@ fn zombie_child(program: &Path) -> i32 {
 /// A private (0o700) cache dir under `parent`, matching what `ensure` requires.
 fn private_cache_dir(parent: &Path) -> PathBuf {
     let dir = parent.join("cache");
-    fs::create_dir_all(&dir).expect("create cache dir");
-    set_private_dir_permissions(&dir).expect("make private");
+    ensure_cache_dir(&dir).expect("create private cache dir");
     dir
 }
 

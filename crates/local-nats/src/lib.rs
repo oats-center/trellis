@@ -265,9 +265,15 @@ fn ensure_cache_dir(cache_dir: &Path) -> Result<(), LocalNatsError> {
     match fs::symlink_metadata(cache_dir) {
         Ok(metadata) => validate_cache_dir(cache_dir, &metadata),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            fs::create_dir_all(cache_dir)?;
-            set_private_dir_permissions(cache_dir)?;
-            Ok(())
+            let mut builder = fs::DirBuilder::new();
+            builder.recursive(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt as _;
+                builder.mode(0o700);
+            }
+            builder.create(cache_dir)?;
+            validate_cache_dir(cache_dir, &fs::symlink_metadata(cache_dir)?)
         }
         Err(error) => Err(error.into()),
     }
@@ -311,18 +317,6 @@ fn validate_cache_dir(cache_dir: &Path, metadata: &fs::Metadata) -> Result<(), L
 
 #[cfg(not(unix))]
 fn validate_cache_dir(_cache_dir: &Path, _metadata: &fs::Metadata) -> Result<(), LocalNatsError> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_private_dir_permissions(path: &Path) -> Result<(), LocalNatsError> {
-    use std::os::unix::fs::PermissionsExt as _;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn set_private_dir_permissions(_path: &Path) -> Result<(), LocalNatsError> {
     Ok(())
 }
 

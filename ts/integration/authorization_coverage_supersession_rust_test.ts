@@ -199,6 +199,13 @@ Deno.test("Rust retained peer coverage supersedes pending G2 setup before its IN
       await runtime.contracts.approveApply(firstGrowth.pendingId, {
         excludeCapabilities: [extend2],
       });
+      // Prepare consent before the ten-second INFO proof window. Only its
+      // acceptance below changes authority and triggers G3 supersession.
+      const secondGrowth = await runtime.contracts.requestApply({
+        deployment,
+        contract,
+      });
+      assert(secondGrowth.status === "approval_required");
       const firstRefreshStart = lines.length;
       await send("REFRESH");
       let admission: Awaited<typeof hold.held> | undefined;
@@ -511,11 +518,6 @@ Deno.test("Rust retained peer coverage supersedes pending G2 setup before its IN
         proofDeadline,
         parkSettled,
       }));
-      const secondGrowth = await runtime.contracts.requestApply({
-        deployment,
-        contract,
-      });
-      assert(secondGrowth.status === "approval_required");
       await runtime.contracts.approveApply(secondGrowth.pendingId);
       // Refresh authorization through the public client; transport adoption and
       // retained-peer supersession remain automatic production behavior.
@@ -684,6 +686,10 @@ Deno.test("Rust retained peer coverage supersedes pending G2 setup before its IN
       await marker("OPERATION_PROVIDER_DONE");
       await runtime.waitFor(() => exited ? true : undefined);
       assert((await status).success, lines.join("\n"));
+    } catch (cause) {
+      throw new Error(`provider fixture output:\n${lines.join("\n")}`, {
+        cause,
+      });
     } finally {
       hints.unsubscribe();
       await gate.release().catch(() => undefined);

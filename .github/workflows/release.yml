@@ -266,8 +266,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist
-          pattern: trellis-cli-*
-          merge-multiple: true
+          name: trellis-cli-x86_64-unknown-linux-gnu
           run-id: ${{ needs.prepare-release.outputs.check-run-id }}
           github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
 
@@ -284,8 +283,8 @@ jobs:
           tag_name: ${{ needs.prepare-release.outputs.release-tag }}
           target_commitish: ${{ github.sha }}
           files: |
-            dist/*.tar.gz
-            dist/*.sha256
+            dist/trellis-*-x86_64-unknown-linux-gnu.tar.gz
+            dist/checksum-*-x86_64-unknown-linux-gnu-trellis.sha256
           body_path: dist/release-notes.md
           prerelease: ${{ contains(needs.prepare-release.outputs.release-tag, '-') }}
 
@@ -762,6 +761,7 @@ jobs:
 
     steps:
       - name: Download verified image archive
+        # Check produces Linux amd64 images only; promotion preserves that archive.
         uses: actions/download-artifact@v4
         with:
           name: verified-image-${{ matrix.image }}
