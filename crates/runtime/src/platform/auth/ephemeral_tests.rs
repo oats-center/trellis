@@ -560,6 +560,9 @@ async fn nats_kv_repository_conforms() {
                     cluster.replicas.len() == 2
                         && cluster.replicas.iter().all(|replica| replica.current)
                 })
+                // Stream metadata can become current before its KV read
+                // subscription is available after the replication change.
+                && transactions.entry("readiness").await.is_ok()
             {
                 break;
             }

@@ -635,7 +635,7 @@ jobs:
             done
           ) >> "$probe_log" 2>&1 &
           probe_pid=$!
-          TMPDIR="$testkit_tmp" "$GITHUB_WORKSPACE/target/debug/trellis-testkit-live"
+          TMPDIR="$testkit_tmp" "$GITHUB_WORKSPACE/target/debug/trellis-testkit-live" --test-threads=4
           status=$?
           kill "$probe_pid" 2>/dev/null || true
           wait "$probe_pid" 2>/dev/null || true

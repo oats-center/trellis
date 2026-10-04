@@ -93,7 +93,24 @@ async fn optional_bundles_decode_and_repeat_cli_install() {
         .await
         .expect("connect administrator");
     let auth = AuthClient::from_generated(connected.clone());
-    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("optional-bundle-source");
+    let source = runtime.workdir().join("optional-bundle-source");
+    std::fs::create_dir(&source).expect("create participant source in the runtime sandbox");
+    for (name, contents) in [
+        (
+            "contract.trellis",
+            include_str!("../optional-bundle-source/contract.trellis"),
+        ),
+        (
+            "trellis.lock",
+            include_str!("../optional-bundle-source/trellis.lock"),
+        ),
+        (
+            "trellis.toml",
+            include_str!("../optional-bundle-source/trellis.toml"),
+        ),
+    ] {
+        std::fs::write(source.join(name), contents).expect("write participant source");
+    }
     let participant_id = "optional-bundle-fixture.Caller";
 
     for installation in ["initial", "repeat"] {
