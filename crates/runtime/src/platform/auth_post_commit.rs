@@ -7,6 +7,7 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use trellis_rs::client::SessionAuth;
 
+use super::auth::context::AuthorizationContextRepository;
 use super::auth::resources::{DestroyResourcePayload, ReconcileResourcePayload};
 use super::auth::{
     AuthAttachmentState, AuthConnectionPresence, AuthEphemeralRepository,
@@ -473,6 +474,7 @@ impl AuthPostCommitRuntime {
 
     async fn kick(&self, action: &PostCommitActionRecord) -> Result<(), AuthorizationStateError> {
         let payload = &action.payload;
+        let mut deployment_lifecycle = false;
         let connections = if let Some(target) = payload.get("target") {
             let target: super::auth::transport_attachments::PhysicalAttachmentTarget =
                 serde_json::from_value(target.clone())
@@ -524,6 +526,7 @@ impl AuthPostCommitRuntime {
             }
             connections
         } else if let Some(deployment_id) = payload.get("deploymentId").and_then(Value::as_str) {
+            deployment_lifecycle = true;
             // A deployment-wide kick applies only to lifecycle invalidation
             // (disable/remove). Native service and device connections have no
             // login session, so live presence is the authoritative source of
@@ -541,6 +544,45 @@ impl AuthPostCommitRuntime {
         };
         let mut first_error = None;
         for connection in connections {
+            if deployment_lifecycle {
+                // A failed disable/remove action may outlive reactivation. Keep
+                // enforcing invalid old attachments, not freshly authorized ones.
+                let still_authorized = async {
+                    let Some(context) = self
+                        .repository
+                        .get_context_by_digest(&connection.context_digest)
+                        .await?
+                    else {
+                        return Ok(false);
+                    };
+                    if context.state != super::auth::context::AuthorizationContextState::Active {
+                        return Ok(false);
+                    }
+                    let admitted = context.signed_context()?.unsigned.transport_authorization;
+                    let allowed = self
+                        .contexts
+                        .current_transport_policy(&connection.context_digest, now_millis()?)
+                        .await?;
+                    Ok::<_, AuthorizationStateError>(
+                        connection.transport_authorization_digest
+                            == admitted.digest().map_err(|error| {
+                                AuthorizationStateError::InvalidRecord(error.to_string())
+                            })?
+                            && admitted.is_covered_by(&allowed).map_err(|error| {
+                                AuthorizationStateError::InvalidRecord(error.to_string())
+                            })?,
+                    )
+                }
+                .await;
+                match still_authorized {
+                    Ok(true) => continue,
+                    Err(error) if transport_reevaluation_is_transient(&error) => {
+                        first_error.get_or_insert(error);
+                        continue;
+                    }
+                    Ok(false) | Err(_) => {}
+                }
+            }
             if let Err(error) = self
                 .kick_with_event(
                     &connection,
@@ -627,6 +669,17 @@ impl AuthPostCommitRuntime {
         }
         let mut seen = std::collections::BTreeSet::new();
         let mut kicked: Vec<AuthConnectionPresence> = Vec::new();
+        // The repository's per-context lookup scans all presence records. Take
+        // one snapshot for this action instead of repeating that scan for every
+        // historical context in scope.
+        let mut attachments_by_context =
+            std::collections::BTreeMap::<String, Vec<AuthConnectionPresence>>::new();
+        for connection in self.ephemeral.list_connection_presence(None).await? {
+            attachments_by_context
+                .entry(connection.context_digest.clone())
+                .or_default()
+                .push(connection);
+        }
         for context in contexts {
             if !seen.insert(context.context_digest.clone()) {
                 continue;
@@ -642,13 +695,9 @@ impl AuthPostCommitRuntime {
                 // internal name.
                 continue;
             }
-            let attachments = self
-                .ephemeral
-                .list_connection_presence_by_context(&context.context_digest)
-                .await?;
-            if attachments.is_empty() {
+            let Some(attachments) = attachments_by_context.remove(&context.context_digest) else {
                 continue;
-            }
+            };
             // The admitted policy is immutable evidence held by the signed
             // context, not a duplicate on the presence record. Resolve it here so
             // every attachment is compared as the exact policy it was admitted

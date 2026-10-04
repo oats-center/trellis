@@ -206,12 +206,67 @@ Deno.test("resource reapproval progresses after broker restart with historical t
           resource.localName === "extras" && resource.state === "available"
         );
       }, { timeoutMs: 20_000 });
+      // A failed disable kick must remain pending for the historical socket,
+      // without treating a later authorized attachment as part of that disable.
+      const active = await runtime.callAdminRpc("authDeploymentsGet", {
+        deploymentId: identity.deploymentId,
+      });
+      await runtime.callAdminRpc("authDeploymentsDisable", {
+        deploymentId: identity.deploymentId,
+        expectedVersion: active.deployment.version,
+        idempotencyKey: ulid(),
+        reason: null,
+      });
+      await runtime.waitFor(() => {
+        const output = runtime.controlPlaneOutput();
+        return output.includes('"action_kind":"Kick"') &&
+          output.includes("no responders");
+      }, { timeoutMs: 20_000 });
+      const disabled = await TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant: contract,
+        seed: identity.seed,
+      });
+      assert(disabled.isErr(), "disabled deployment must deny new bootstrap");
+      const inactive = await runtime.callAdminRpc("authDeploymentsGet", {
+        deploymentId: identity.deploymentId,
+      });
+      await runtime.callAdminRpc("authDeploymentsEnable", {
+        deploymentId: identity.deploymentId,
+        expectedVersion: inactive.deployment.version,
+        idempotencyKey: ulid(),
+        reason: null,
+      });
       repaired = await TrellisService.connect({
         trellisUrl: runtime.trellisUrl,
         participant: contract,
         seed: identity.seed,
       }).orThrow();
       assert(repaired.kv.extras);
+      assertEquals(await repaired.kv.extras.get("retained").orThrow(), {
+        value: "original",
+      });
+      const connected = await runtime.callAdminRpc("authConnectionsList", {});
+      const fresh = connected.items.find((item) =>
+        item.deploymentId === identity.deploymentId &&
+        !historical.some((old) => old.connectionId === item.connectionId)
+      );
+      assert(fresh, "re-enabled deployment must have a fresh attachment");
+      const retries =
+        runtime.controlPlaneOutput().split('"action_kind":"Kick"').length;
+      await runtime.waitFor(
+        () =>
+          runtime.controlPlaneOutput().split('"action_kind":"Kick"').length >
+            retries,
+        { timeoutMs: 20_000 },
+      );
+      const afterRetry = await runtime.callAdminRpc("authConnectionsList", {});
+      assert(
+        afterRetry.items.some((item) =>
+          item.connectionId === fresh.connectionId
+        ),
+        "historical disable retry must not kick a fresh authorized attachment",
+      );
       assertEquals(await repaired.kv.extras.get("retained").orThrow(), {
         value: "original",
       });
