@@ -766,7 +766,7 @@ jobs:
   ui-hosting:
     name: Built-in UI hosting
     needs: [install, wasm, portal, build]
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Check out repository
