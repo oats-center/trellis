@@ -317,18 +317,23 @@ export function startAuthorizationContextRefresh(args: {
     if (timer !== undefined) clearTimeout(timer);
     throw error;
   }
-  const browser = typeof window === "undefined" ? undefined : window;
+  const browser = typeof window === "undefined" || !("document" in window)
+    ? undefined
+    : window;
+  const browserDocument = browser?.document as
+    | (EventTarget & { readonly visibilityState: string })
+    | undefined;
   const onVisibilityChange = () => {
-    if (browser?.document.visibilityState === "visible") requestRefresh();
+    if (browserDocument?.visibilityState === "visible") requestRefresh();
   };
   browser?.addEventListener("online", requestRefresh);
-  browser?.document.addEventListener("visibilitychange", onVisibilityChange);
+  browserDocument?.addEventListener("visibilitychange", onVisibilityChange);
   const stop = () => {
     stopped = true;
     unregisterRefreshRequest();
     if (timer !== undefined) clearTimeout(timer);
     browser?.removeEventListener("online", requestRefresh);
-    browser?.document.removeEventListener(
+    browserDocument?.removeEventListener(
       "visibilitychange",
       onVisibilityChange,
     );
