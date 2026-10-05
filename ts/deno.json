@@ -163,6 +163,7 @@
   },
   "fmt": {
     "exclude": [
+      "../benchmarks/runtime/packages",
       "packages/trellis-testkit/trellis",
       "packages/trellis-testkit/fixtures/authorization-trust",
       "packages/trellis/auth/protocol_wasm"
