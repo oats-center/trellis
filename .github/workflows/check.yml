@@ -936,12 +936,20 @@ jobs:
         # their full live acceptance; Release compares its verified publication
         # contents against these accepted inputs before uploading each crate.
         run: |
-          cargo package --manifest-path Cargo.toml --locked --no-verify \
+          cargo package --manifest-path Cargo.toml --allow-dirty --locked --no-verify \
             -p trellis-protocol -p trellis-rs -p trellis-idl \
             -p trellis-local-bootstrap -p trellis-local-nats -p trellis-runtime-apis \
             -p trellis-events-runtime -p trellis-jobs-runtime -p trellis-runtime \
             -p trellis-bootstrap -p trellis-testkit \
             --config .cargo/publication.toml
+
+      - name: Verify publication preparation from an empty target
+        run: |
+          target="$(mktemp -d "$RUNNER_TEMP/rust-publication.XXXXXX")"
+          bash scripts/prepare-rust-publication.sh target/package "$target" \
+            trellis-protocol trellis-rs trellis-runtime-apis trellis-idl \
+            trellis-local-bootstrap trellis-events-runtime trellis-jobs-runtime \
+            trellis-runtime trellis-bootstrap trellis-local-nats trellis-testkit
 
       - name: Upload public Rust packages
         uses: actions/upload-artifact@v4

@@ -159,9 +159,14 @@ not recommended imports for services/apps.
 publication verification use the same `.cargo/publication.toml` source overrides;
 published production dependencies retain their registry version requirements.
 The SDK's workspace-only testkit development dependency is path-only and is
-omitted from its published manifest. Before each upload, Cargo's verified archive
-must match every accepted file's contents and permissions, including embedded
-browser assets and the lockfile. Release does not rebuild browser applications.
+omitted from its published manifest. The shared
+`scripts/prepare-rust-publication.sh` explicitly packages each crate into a fresh
+archive, compares every accepted file's contents and permissions (including
+embedded browser assets and the lockfile), and runs Cargo's publication dry-run
+with build verification enabled. Check exercises this no-upload sequence from an
+empty target directory before accepting the bundle. Release runs the same
+preparation before each upload; it neither relies on a publish dry-run's scratch
+archive location nor rebuilds browser applications.
 
 `release prepare` also rewrites the external testkit fixture manifests under
 `integration/fixtures/testkit` so its generated application package carries the

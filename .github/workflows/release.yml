@@ -297,6 +297,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64]
     permissions:
       contents: read
+      actions: read
       id-token: write
 
     steps:
@@ -396,11 +397,8 @@ jobs:
             local output
             local status
 
-            time cargo publish --allow-dirty --locked --dry-run \
-              --config .cargo/publication.toml "$@"
-            python3 scripts/verify-rust-crate-contents.py \
-              "dist/rust-packages/${crate}-${workspace_version}.crate" \
-              "target/package/${crate}-${workspace_version}.crate"
+            time bash scripts/prepare-rust-publication.sh \
+              dist/rust-packages target "$crate"
 
             set +e
             output=$(time cargo publish --allow-dirty --locked \
