@@ -32,6 +32,36 @@ const transientProgress = {
   },
 };
 
+Deno.test("one principal can log out two distinct login sessions", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const first = await runtime.connectClient({
+      name: "first-logout-session",
+      contract: webParticipants.Console.participant,
+    });
+    const second = await runtime.connectClient({
+      name: "second-logout-session",
+      contract: webParticipants.Console.participant,
+    });
+    try {
+      const firstSession = (await first.sessionsMe({}).orThrow()).session;
+      const secondSession = (await second.sessionsMe({}).orThrow()).session;
+      assert(firstSession && secondSession);
+      assertEquals(firstSession.principalId, secondSession.principalId);
+      assert(firstSession.sessionId !== secondSession.sessionId);
+      assertEquals(
+        (await first.sessionsLogout({}).orThrow()).session.state,
+        "revoked",
+      );
+      assertEquals(
+        (await second.sessionsLogout({}).orThrow()).session.state,
+        "revoked",
+      );
+    } finally {
+      await Promise.all([first.connection.close(), second.connection.close()]);
+    }
+  });
+});
+
 Deno.test("service bootstrap reports the configured origin when the URL uses a different host", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
