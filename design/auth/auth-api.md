@@ -53,6 +53,12 @@ response or reload. Denied, expired, and consumed transactions permit another
 attempt. Public intent rendering never discovers an attempt. Detached callers
 use their initiating private key to sign each `/auth/intents/progress` request.
 
+The bound portal response includes the authenticated user's `username` when the
+account has a local login. This is the current canonical login name from account
+storage, independent of the optional display name and email. Accounts without a
+local login omit it. Public intent and transaction-progress responses do not
+expose account identity.
+
 Native bootstrap request DTOs are strict and accept only identity/proof inputs.
 Browser request and bind proofs bind the complete raw body. All HTTP timestamps
 and expiries are epoch milliseconds.

@@ -177,10 +177,10 @@ Deno.test("signed intent survives a denied attempt; transaction binding and init
           await assertRejects(() =>
             startPortalTransaction(config, intent, bindingB)
           );
-          assertEquals(
-            (await fetchPortalFlowState(config, a, bindingA)).status,
-            "approval_required",
-          );
+          const consent = await fetchPortalFlowState(config, a, bindingA);
+          assert(consent.status === "approval_required");
+          assertEquals(consent.user.username, ADMIN_USERNAME);
+          assert(consent.user.id !== consent.user.username);
           assertEquals(
             (await submitPortalApproval(config, a, bindingA, "denied")).status,
             "approval_denied",
