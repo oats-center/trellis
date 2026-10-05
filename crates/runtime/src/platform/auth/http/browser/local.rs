@@ -57,6 +57,12 @@ where
         decision_digest: flow.consent.decision_digest.clone(),
         user: BrowserFlowUser {
             origin: "trellis",
+            username: state
+                .service
+                .repository()
+                .get_local_credential(principal_id)
+                .await?
+                .map(|credential| credential.normalized_username),
             id: profile.principal_id,
             name: profile.display_name,
             email: profile.email,
@@ -71,6 +77,8 @@ where
 pub(crate) struct BrowserFlowUser {
     origin: &'static str,
     id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    username: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

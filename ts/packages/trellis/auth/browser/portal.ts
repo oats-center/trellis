@@ -147,6 +147,7 @@ const PortalTransactionWireSchema = Type.Object({
   user: Type.Object({
     origin: Type.String({ minLength: 1 }),
     id: Type.String({ minLength: 1 }),
+    username: Type.Optional(Type.String({ minLength: 1 })),
     name: Type.Optional(Type.String({ minLength: 1 })),
     email: Type.Optional(Type.String({ minLength: 1 })),
     image: Type.Optional(Type.String({ minLength: 1 })),

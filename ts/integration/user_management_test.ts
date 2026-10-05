@@ -14,6 +14,157 @@ import { participant as adminParticipant } from "../packages/trellis/internal_sd
 import { ulid } from "ulid";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
+Deno.test("bound portal reads the canonical username before and after a local account rename", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    await runtime.contracts.install({
+      contract: participants.Console.participant,
+    });
+    const admin = await TrellisClient.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: adminParticipant,
+      ...runtime.clientAuth({
+        seed: base64urlEncode(crypto.getRandomValues(new Uint8Array(32))),
+        participantId: "trellis.console",
+      }),
+    }).orThrow();
+    try {
+      const created = (await admin.usersCreate({
+        username: "portal-before",
+        name: "Display name is not the username",
+        email: "display@example.com",
+        image: null,
+        idempotencyKey: ulid(),
+      }).orThrow()).user;
+      const reset = await admin.usersPasswordResetCreate({
+        userId: created.userId,
+        returnTarget: null,
+        idempotencyKey: ulid(),
+      }).orThrow();
+      const password = "portal-username-test-password!";
+      const response = await fetch(
+        `${reset.flow.completionUrl}/local-password`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: runtime.publicOrigin,
+          },
+          body: JSON.stringify({ username: "portal-before", password }),
+        },
+      );
+      assertEquals(response.status, 200, await response.clone().text());
+      await response.arrayBuffer();
+      const participant = (await admin.participantsGet({
+        participantId: participants.Console.participant.id,
+      }).orThrow()).participant;
+      await admin.grantsSet({
+        ownerKind: "user",
+        ownerId: created.userId,
+        participantId: participant.participantId,
+        installedRevision: participant.revision,
+        expectedRevision: 0n,
+        grants: participant.requiredGrants,
+        platformPrivileges: [],
+        expiresAt: null,
+        idempotencyKey: ulid(),
+      }).orThrow();
+      const location = {
+        authUrl: runtime.trellisUrl,
+        portalOrigin: runtime.publicOrigin,
+      };
+      let checked = false;
+      const client = await TrellisClient.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant: participants.Console.participant,
+        auth: {
+          mode: "session_key",
+          sessionKeySeed: base64urlEncode(
+            crypto.getRandomValues(new Uint8Array(32)),
+          ),
+          redirectTo: `${runtime.trellisUrl}/_trellis/test/admin-auth`,
+        },
+        onAuthRequired: async ({ loginUrl }) => {
+          const intent = new URL(loginUrl).searchParams.get("intent");
+          assert(intent);
+          const binding = await createPortalBinding();
+          const flowId = await startPortalTransaction(
+            location,
+            intent,
+            binding,
+          );
+          const login = await fetch(`${runtime.trellisUrl}/auth/login/local`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              origin: runtime.publicOrigin,
+              "trellis-portal-binding": binding.secret,
+            },
+            body: JSON.stringify({
+              transactionId: flowId,
+              username: "portal-before",
+              password,
+              portalBindingDigest: binding.digest,
+            }),
+          });
+          assertEquals(login.status, 200, await login.clone().text());
+          await login.arrayBuffer();
+          const readIdentity = async () => {
+            const portal = await fetch(
+              `${runtime.trellisUrl}/auth/transactions/${flowId}/portal`,
+              {
+                method: "POST",
+                headers: {
+                  origin: runtime.publicOrigin,
+                  "trellis-portal-binding": binding.secret,
+                },
+              },
+            );
+            assertEquals(portal.status, 200, await portal.clone().text());
+            return (await portal.json()).user;
+          };
+          const before = await readIdentity();
+          assertEquals(before.username, "portal-before");
+          assertEquals(before.id, created.userId);
+          assertEquals(before.name, "Display name is not the username");
+          const current =
+            (await admin.usersGet({ userId: created.userId }).orThrow()).user;
+          await admin.usersUpdate({
+            userId: current.userId,
+            username: "  Portal-After  ",
+            name: current.name,
+            email: current.email,
+            image: current.image,
+            state: current.state,
+            expectedVersion: current.version,
+            idempotencyKey: ulid(),
+          }).orThrow();
+          const after = await readIdentity();
+          assertEquals(after.username, "portal-after");
+          assertEquals(after.id, created.userId);
+          checked = true;
+          const state = await fetchPortalFlowState(location, flowId, binding);
+          if (state.status === "approval_required") {
+            assertEquals(
+              (await submitPortalApproval(
+                location,
+                flowId,
+                binding,
+                "approved",
+              )).status,
+              "redirect",
+            );
+          } else assertEquals(state.status, "redirect");
+          return { status: "bound" as const, transactionId: flowId };
+        },
+      }).orThrow();
+      await client.connection.close();
+      assert(checked);
+    } finally {
+      await admin.connection.close();
+    }
+  });
+});
+
 Deno.test("user administration renames local login, restores access, and scopes identity actions", async () => {
   await withTrellisRuntime(async (runtime) => {
     await runtime.contracts.install({
