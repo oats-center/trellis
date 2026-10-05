@@ -1385,13 +1385,12 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           if (
             !durable || !this.#ownsOperation(durable, getFence()) ||
             isTerminalRuntimeOperationSnapshot(durable.snapshot) ||
-            durable.cancelRequestedAt ||
-            durable.transferGrant &&
-              Value.Check(
-                FileInfoSchema,
-                Reflect.get(durable.transferGrant, "committed"),
-              )
+            durable.cancelRequestedAt
           ) return;
+          // Even a committed upload needs a new execution after its failed CAS
+          // response aborted this attempt. Preserve its durable staging locator,
+          // expire ownership, and let ordinary recovery reopen it. Business
+          // cancellation above retains ownership for handler cleanup.
           runtime.revision = durable.revision;
           runtime.snapshot = durable.snapshot;
           runtime.transferGrant = durable.transferGrant;

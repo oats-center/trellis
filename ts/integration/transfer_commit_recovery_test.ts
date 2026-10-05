@@ -20,7 +20,7 @@ for (const cancelDuringCommit of [false, true]) {
   Deno.test(
     cancelDuringCommit
       ? "wire cancellation during a held final CAS never acknowledges cancellation of committed bytes"
-      : "a lost final Operation CAS response retains staged bytes through service recovery",
+      : "a lost final Operation CAS response recovers committed bytes while the provider stays alive",
     async () => {
       await withTrellisRuntime(async (runtime) => {
         const contract = participants.Provider.participant;
@@ -28,13 +28,13 @@ for (const cancelDuringCommit of [false, true]) {
           name: "commit-recovery",
           contract,
         });
-        let provider = await TrellisService.connect({
+        const provider = await TrellisService.connect({
           trellisUrl: runtime.trellisUrl,
           participant: contract,
           name: "commit-recovery",
           seed: identity.seed,
         }).orThrow();
-        let providerExit = provider.wait().catch((cause: unknown) => cause);
+        const providerExit = provider.wait().catch((cause: unknown) => cause);
         const caller = await runtime.connectClient({
           name: "commit-recovery-caller",
           contract: participants.Caller.participant,
@@ -209,23 +209,6 @@ for (const cancelDuringCommit of [false, true]) {
             "broker-staged bytes must survive lost commit confirmation",
           );
           await hold?.release();
-          await provider.stop();
-          await providerExit;
-          provider = await TrellisService.connect({
-            trellisUrl: runtime.trellisUrl,
-            participant: contract,
-            name: "commit-recovery",
-            seed: identity.seed,
-          }).orThrow();
-          providerExit = provider.wait().catch((cause: unknown) => cause);
-          await provider.handleUpload(async ({ input, transfer, op }) => {
-            entered++;
-            assert(transfer);
-            const store = await provider.store.files.open().orThrow();
-            await store.put(input.value, await transfer.stream().orThrow())
-              .orThrow();
-            return await op.complete(input).orThrow();
-          });
           const recovered = await caller.upload.resume(accepted).wait({
             observationSignal: AbortSignal.timeout(45_000),
           }).orThrow();
