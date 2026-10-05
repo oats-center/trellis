@@ -71,7 +71,7 @@ const bencher: Record<string, Record<string, { value: number }>> = {};
 const lines = [
   `# Trellis performance — ${metadata.revision}`,
   "",
-  "HTTP is the unauthenticated lower bound, not an equivalent security stack. Transfer storage differs: JetStream vs filesystem.",
+  "**Baseline: plaintext HTTP, no TLS, no authentication, and no authorization.** This is a lower bound, not a security-equivalent comparison. Transfer storage differs: Trellis uses JetStream; HTTP uses filesystem storage.",
   `Lane: **${metadata.lane}**; provider replicas: **${metadata.providerCount}**.`,
   metadata.lane === "browser"
     ? "Browser measurements use the generated SDK in Chromium over real WebSocket; they are not Console UI startup. Bundle/document caching is disabled to make delivery cost explicit."
@@ -83,9 +83,9 @@ const lines = [
   "",
   "## Trellis vs HTTP — matched workloads",
   "",
-  "HTTP is an unauthenticated reference, not an equivalent authorization or durability stack. Ratios below compare the same workload and byte count within this language and case. The complete attempts and failures remain below.",
+  "**HTTP baseline: plaintext, no TLS, no authentication, no authorization.** Ratios compare the same application workload and byte count within this language and case, not equivalent security or durability. The complete attempts and failures remain below.",
   "",
-  "| Workload | Trellis median ms | HTTP median ms | Trellis / HTTP | Trellis p95 ms | HTTP p95 ms |",
+  "| Workload | Trellis median ms | Plain HTTP (no auth) median ms | Trellis / HTTP | Trellis p95 ms | Plain HTTP (no auth) p95 ms |",
   "|---|---:|---:|---:|---:|---:|",
 ];
 for (const row of results.summary) {

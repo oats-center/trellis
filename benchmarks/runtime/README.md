@@ -149,8 +149,9 @@ difference as a regression.
 
 ## Interpretation and current limits
 
-HTTP is an **unauthenticated lower bound**, not a security-equivalent stack.
-Each comparison uses the same language on both ends (Deno or Rust), loopback,
+HTTP is a **plaintext baseline: no TLS, no authentication, and no
+authorization**. It is a lower bound, not a security-equivalent stack. Each
+comparison uses the same language on both ends (Deno or Rust), loopback,
 identity encoding, and no caching. HTTP file storage and Trellis JetStream
 storage have different durability semantics. Transfer timings include complete
 integrity verification; first payload byte and setup are reported separately for

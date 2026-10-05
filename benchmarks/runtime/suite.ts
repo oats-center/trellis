@@ -326,13 +326,13 @@ const lines = [
       : "All cases passed."
   }`,
   "",
-  "Sequential isolated runtimes; independent repeats. Between-run medians are not pooled request percentiles. A failing run never contributes a clean score. HTTP is an unauthenticated same-language reference with different storage durability.",
+  "Sequential isolated runtimes; independent repeats. Between-run medians are not pooled request percentiles. A failing run never contributes a clean score. **Baseline: plaintext HTTP, no TLS, no authentication, and no authorization.** This is a same-language lower bound with different storage durability, not a security-equivalent comparison.",
   "",
   "## Trellis vs HTTP — matched workloads",
   "",
-  "Trellis/HTTP is a latency ratio, not a claim of equivalent security or storage. Transfers include integrity verification on both sides. Trellis persists through JetStream; HTTP uses filesystem storage. Four-provider Trellis cases still use one HTTP reference provider. Failed case runs are excluded from both scores, with their failures retained below.",
+  "**HTTP baseline: plaintext, no TLS, no authentication, no authorization.** Trellis/HTTP is a latency ratio, not a claim of equivalent security or storage. Transfers include integrity verification on both sides. Trellis persists through JetStream; HTTP uses filesystem storage. Four-provider Trellis cases still use one HTTP reference provider. Failed case runs are excluded from both scores, with their failures retained below.",
   "",
-  "| Case | Workload | Bytes | Parallel requests | Trellis median ms | HTTP median ms | Trellis / HTTP | Trellis p95 ms | HTTP p95 ms |",
+  "| Case | Workload | Bytes | Parallel requests | Trellis median ms | Plain HTTP (no auth) median ms | Trellis / HTTP | Trellis p95 ms | Plain HTTP (no auth) p95 ms |",
   "|---|---|---:|---:|---:|---:|---:|---:|---:|",
 ];
 for (const [name, group] of Object.entries(summary)) {
