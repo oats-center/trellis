@@ -44,6 +44,7 @@ const metadataSchema = z.object({
   deno: z.object({ deno: z.string(), v8: z.string() }),
   calls: z.number(),
   samples: z.number(),
+  warmups: z.number().default(0),
   sizes: z.array(z.number()),
   sessionCounts: z.array(z.number()),
   idleSeconds: z.number(),
@@ -73,6 +74,10 @@ const lines = [
   "",
   "**Baseline: plaintext HTTP, no TLS, no authentication, and no authorization.** This is a lower bound, not a security-equivalent comparison. Transfer storage differs: Trellis uses JetStream; HTTP uses filesystem storage.",
   `Lane: **${metadata.lane}**; provider replicas: **${metadata.providerCount}**.`,
+  `Warmup rounds: **${metadata.warmups}**, retained in raw samples but excluded from percentiles.`,
+  metadata.lane === "transfer"
+    ? "Store diagnostics stay runtime-private. Backend write excludes read-back verification; backend read includes hashing. Raw NATS is an unsigned transport lower bound on the same broker, with fixed diagnostic-only windows, not a Trellis protocol or security equivalent. Upload includes staging, the handler's second persisted store write/read-back, and Operation completion; subtracting backend write does not isolate final Operation commit."
+    : "",
   metadata.lane === "browser"
     ? "Browser measurements use the generated SDK in Chromium over real WebSocket; they are not Console UI startup. Bundle/document caching is disabled to make delivery cost explicit."
     : metadata.lane === "lifecycle"
@@ -351,6 +356,9 @@ if (Deno.args[1]) {
       "deno",
       "calls",
       "samples",
+      "warmups",
+      "lane",
+      "providerCount",
       "sizes",
       "sessionCounts",
       "idleSeconds",
@@ -379,6 +387,8 @@ if (Deno.args[1]) {
   lines.push(
     "",
     `## Compared with ${oldMetadata.revision}`,
+    "",
+    `Candidate source: **${metadata.revision}**; reference source: **${oldMetadata.revision}**. These are whole-build observations, not transfer-only causal attribution. Inspect each run's metadata and source.diff; unrelated upstream changes may affect the comparison.`,
     "",
     "| Workload | Median change |",
     "|---|---:|",

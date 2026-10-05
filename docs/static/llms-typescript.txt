@@ -210,6 +210,20 @@ perform cleanup before business work. Return successfully only after cleanup is
 complete. Ownership loss also aborts the signal, but a stale executor cannot
 finalize cancellation.
 
+For upload Operations, use the generated `.transfer(body).start()` workflow.
+The provider consumes runtime-staged bytes with `transfer.stream()` or
+`transfer.bytes()`, and starts processing only after backend and durable Operation
+transfer commit. Receive grants use the high-level transfer helper's `stream()`
+for large bodies or `bytes()` for a collected buffer. Transfer v2 moves raw bytes
+over bounded one-way NATS windows; Web Streams backpressure/backend consumption
+drives cumulative credit, not a per-chunk RPC. Credit does not report upload
+success. Durable watch transfer progress is monotonic and may be coalesced, with
+exact final `transferredBytes`; `chunkIndex`/`chunkBytes` describe the latest
+credited frame represented rather than one event per frame. Grants hide physical
+storage protocols and credentials. Authority growth retains an in-flight
+transfer's admitting generation; physical disconnect interrupts it, and an
+uncommitted upload restarts from byte zero.
+
 For an ordinary TypeScript operation, cancellation-first admission uses
 `.start(undefined, { invocationId, cancellationRequested: true })` with a
 caller-chosen ULID and the same frozen input on every retry. Both Invoke and
@@ -264,6 +278,15 @@ Use generated State, KV, Store, Consumer, and Job handles. State is one typed
 value without key/TTL; KV is typed history; Store is raw bytes. State/KV
 historical migration runs in SDK memory without write-on-read. These are
 Trellis-managed handles, not an application database abstraction.
+
+Use Store entry `stream()` for large bodies. Shared Store reads pull finite,
+byte-capped batches on demand and verify chunk order/count, size, and SHA-256
+before successful EOF; partial output is not a verified complete object.
+`bytes()` consumes the same reader but retains the entire object in memory.
+Paused reads recreate expired backend consumers at the exact next chunk while
+the pinned connection and stored chunks remain available. Streams fail on
+physical disconnect or closure, and consumer cleanup precedes generation-lease
+release. Native ObjectStore links are unsupported.
 
 `TypedStore.list(...)` and file metadata lists use key-sorted keyset pagination
 with opaque cursors bound to the prefix query. The limit defaults to 100 and

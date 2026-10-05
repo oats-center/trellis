@@ -1,34 +1,14 @@
 import type {
-  AsyncResult,
-  ReceiveTransferGrant,
-  StoreError,
-  TransferError,
-} from "@oatscenter/trellis";
-import type {
   ConnectedTrellisService,
   RpcHandler,
 } from "@oatscenter/trellis/service";
 import { type participants } from "../trellis/index.js";
 import type { getSiteSummary } from "../../shared/field_data.ts";
 
-export type ReceiveTransferIssuer = {
-  createTransfer(args: {
-    direction: "receive";
-    store: string;
-    key: string;
-    sessionKey: string;
-    expiresInMs?: number;
-  }): AsyncResult<ReceiveTransferGrant, TransferError>;
-  store?: {
-    uploads?: {
-      binding?: { ttlMs?: number };
-      waitFor?(key: string, options?: {
-        timeoutMs?: number;
-        pollIntervalMs?: number;
-      }): AsyncResult<unknown, StoreError>;
-    };
-  };
-};
+export type ReceiveTransferIssuer = Pick<
+  FieldOpsService,
+  "createTransfer" | "store"
+>;
 
 export type ActivityFeedEventNames = {
   auditRecorded: "Audit.Recorded";

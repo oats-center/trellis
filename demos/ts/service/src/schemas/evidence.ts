@@ -35,34 +35,6 @@ export const EvidenceDownloadRequest = Type.Object({
   key: Type.String({ minLength: 1 }),
 });
 
-export const EvidenceFileInfo = Type.Object({
-  key: Type.String({ minLength: 1 }),
-  size: Type.Integer({ minimum: 0 }),
-  updatedAt: Type.String({ minLength: 1 }),
-  digest: Type.Optional(Type.String({ minLength: 1 })),
-  contentType: Type.Optional(Type.String({ minLength: 1 })),
-  metadata: Type.Record(Type.String({ minLength: 1 }), Type.String()),
-});
-
-export const EvidenceDownloadGrant = Type.Object({
-  type: Type.Literal("TransferGrant"),
-  direction: Type.Literal("receive"),
-  service: Type.String({ minLength: 1 }),
-  sessionKey: Type.String({ minLength: 1 }),
-  transferId: Type.String({ minLength: 1 }),
-  subject: Type.String({ minLength: 1 }),
-  expiresAt: Type.String({ minLength: 1 }),
-  chunkBytes: Type.Integer({ minimum: 1 }),
-  info: Type.Object({
-    ...EvidenceFileInfo.properties,
-    digest: Type.String({ minLength: 1 }),
-  }),
-});
-
-export const EvidenceDownloadResponse = Type.Object({
-  transfer: EvidenceDownloadGrant,
-});
-
 export const EvidenceDeleteRequest = Type.Object({
   key: Type.String({ minLength: 1 }),
 });

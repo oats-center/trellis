@@ -242,11 +242,28 @@ provider limits. Trellis does not adopt or destroy foreign-owned physical
 resources.
 
 Store readers/writers support bounded streaming through `write_from` and
-`read_into`; whole-buffer helpers remain available. Generated Operation
+`read_into`. Shared Store reads pull finite, byte-capped batches on demand and
+verify chunk order/count, size, and SHA-256 before successful EOF. Partial output
+is not a verified complete object. Paused reads recreate expired backend
+consumers at the exact next chunk while the pinned connection and stored chunks
+remain available. Reader drop starts owned cleanup on the creating Tokio runtime,
+including cross-thread drops; cleanup retains the generation lease. Native
+ObjectStore links are unsupported. Whole-buffer helpers consume the same reader
+but retain the entire object in memory. Generated Operation
 references upload bytes with `upload(body)`; lower-level operation builders
 stream with `transfer_from(reader)` without a caller-supplied size or hash.
 Trellis counts and hashes bytes while sending and verifies size and SHA-256 on
-receipt; cancellation is authenticated and acknowledged.
+receipt. Transfer v2 uses bounded windowed one-way raw NATS DATA, not one RPC per
+frame. Download destination writes and upload backend-reader consumption release
+cumulative credit; credit is not persistence. Upload success awaits backend write
+completion and durable Operation transfer commit, before handler execution.
+Streaming grants contain logical session identities and runtime subjects only,
+never physical storage details. Transfers remain pinned through authority growth;
+physical disconnect interrupts them, and interrupted uploads restart from zero.
+Operation watch transfer progress may be coalesced, remains monotonic, and ends
+with exact persisted `transferredBytes`; do not assume one event per frame.
+Cancellation is authenticated; before commit it aborts staging, after commit it
+cannot undo the committed object.
 
 Prepared events and SQL outbox stores allow event intents to participate in a
 local SQL transaction. The application owns its transaction and migration

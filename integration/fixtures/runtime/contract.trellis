@@ -281,6 +281,7 @@ service TransportGrowthOperationProvider {
 }
 
 app TransportGrowthCaller {
+  use runtime { rpc Download; }
   use transport_growth {
     rpc Advance;
     rpc Extend;

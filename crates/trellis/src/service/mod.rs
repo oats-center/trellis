@@ -35,8 +35,7 @@ mod runtime_facade;
 #[doc(hidden)]
 mod schema_validation;
 mod service_host;
-mod transfer;
-pub(crate) use transfer::transfer_frame_proof_payload;
+pub(crate) mod transfer;
 
 #[doc(hidden)]
 pub use crate::generated::{EventDescriptor, LiveDescriptor, RpcDescriptor};
@@ -97,12 +96,12 @@ pub(crate) use service_host::bootstrap_service_host;
 #[cfg(test)]
 pub(crate) use service_host::ServiceHost;
 pub use transfer::{
-    decode_upload_transfer_chunk, plan_download_transfer_grant, plan_upload_transfer_grant,
-    DownloadTransferGrant, DownloadTransferGrantPlan, FileTransferInfo, TransferDownloadGrantArgs,
-    TransferUploadGrantArgs, UploadTransferAck, UploadTransferChunk, UploadTransferCompletion,
-    UploadTransferGrant, UploadTransferGrantPlan, UploadTransferSession, TRANSFER_EOF_HEADER,
-    TRANSFER_SEQUENCE_HEADER,
+    plan_download_transfer_grant, plan_upload_transfer_grant, DownloadTransferGrant,
+    DownloadTransferGrantPlan, FileTransferInfo, TransferDownloadGrantArgs, TransferIdentity,
+    TransferUploadGrantArgs, UploadTransferCompletion, UploadTransferGrant,
+    UploadTransferGrantPlan, UploadTransferSession,
 };
+pub use trellis_protocol::transfer::generate_transfer_id;
 
 #[doc(hidden)]
 pub mod internal {

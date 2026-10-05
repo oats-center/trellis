@@ -41,7 +41,8 @@ This document defines the public Trellis files pattern:
 - how byte transfer is modeled as one runtime concept with caller-facing
   directions
 - how services back the public files surface with service-owned `store`
-- how callers and providers receive per-chunk transfer progress
+- how callers and providers observe consumed-byte progress and durable
+  completion
 
 It does not define a global admin UI, cross-service shared raw store access, or
 ordinary language-library walkthroughs. TypeScript and Rust usage examples
@@ -196,43 +197,107 @@ Rules:
   `/guides/libraries/typescript`, `/guides/libraries/rust`, and `/api`
 - metadata actions such as list, head, and delete remain ordinary typed RPC
   calls on the contract client
-- all languages preserve the same chunk-progress semantics and Result-style
-  expected failure model
+- all languages preserve the same consumed-byte progress semantics and
+  Result-style expected failure model; durable Operation progress may be
+  coalesced
 - providers that expose send-transfer operations MUST await the provider-side
   durable transfer completion primitive before treating bytes as durably
   available; completion resolves only after the transfer endpoint has accepted
   EOF and durably staged the object, or fails with a transfer error if durable
   storage was not reached
 
-### Wire Behavior
+### Transfer v2 Session And Wire Behavior
+
+Transfer uses `trellis.transfer.v2`, with no v1 serving, fallback, or
+negotiation. IDL `upload` and `download` declarations remain unchanged.
+High-level generated helpers consume runtime-issued grants; applications do not
+construct subjects or resolve physical storage.
+
+A grant binds its transfer id, direction, expiry, provider and consumer logical
+connection/session identities, exact data/control/signal subjects, and
+frame/byte limits. Receive grants additionally bind logical `FileInfo`. The
+subject families use the same canonical identity-token encoding as Live:
+
+```text
+transfer.v2.upload.data.<b64(P)>.<b64(C)>.<T>
+transfer.v2.download.data.<b64(P)>.<b64(C)>.<T>
+transfer.v2.control.<b64(P)>.<b64(C)>.<T>
+transfer.v2.signal.<b64(P)>.<b64(C)>.<T>
+```
 
 Rules:
 
-- byte transfer uses raw NATS messages, not JSON/base64 wrappers
-- request signing still uses session-bound proof headers
-- send transfer sends ordered chunk requests on a runtime-owned transfer subject
-  and receives per-chunk acknowledgements
-- receive transfer streams ordered chunks from a service-owned transfer endpoint
-  to the caller; callers use language-runtime transfer helpers with the returned
-  receive-transfer grant rather than resolving raw store bindings
-- the runtime emits one transfer update per acknowledged chunk on both caller
-  and provider sides
-- chunk sequence and end-of-stream markers are runtime protocol details owned by
-  Trellis
+- each endpoint subscribes to exact session subjects, never its permission
+  wildcards; provider subscriptions exist before the grant is returned
+- consumer receive subscriptions exist before authenticated activation; DATA
+  starts only after the consumer verifies the provider's signed `activated`
+  signal
+- the session pins its admitting transport generation until owned work settles;
+  authority growth does not migrate it, and physical disconnect ends it
+- DATA payloads are raw bytes, never JSON/base64; ordered sequences start at
+  `1`, while cursor `0` means no DATA received or consumed
+- checked u64 wire counters use canonical decimal strings
+- upload frames carry session-bound request proofs over a compact digest binding
+  transfer id, direction, sequence, control discriminator, and payload hash;
+  there is no payload-sized proof copy or per-DATA request/reply
+- provider frames/signals use a separate transfer-specific proof domain binding
+  the actual subject, current covered context, pinned identity, and payload
+  hash; Live's server-proof domain is not reused
+- controls use the exact signal subject as reply, with authenticated monotonic
+  control sequences and cumulative cursors
+- senders obey both outstanding-frame and outstanding-byte windows; received
+  credit does not release capacity, only consumed credit does
+- upload consumption means the backend reader consumed the entire frame;
+  download consumption means the destination accepted the frame through its
+  write/Web Streams backpressure path
+- credit is cumulative and coalesced, not a blocking exchange per frame; a
+  verified sequence gap, impossible credit, or exceeded window ends the transfer
 
-This mirrors the general style used by NATS object store: raw chunk payloads
-plus separate metadata/control frames.
+The initial protocol policy caps frames at 1 MiB, outstanding frames at `16`,
+and outstanding bytes at 4 MiB. Effective frame size also accounts for both
+peers' NATS payload limits and a 4 KiB header reserve. The consumer reports its
+receive limit at activation. Credit is sent after eight newly consumed frames, 1
+MiB of newly consumed bytes, or 25 ms of pending consumption, with final credit
+during terminal handling. These are runtime protocol limits, not application
+knobs.
+
+### Flow Control Is Not Durability
+
+An upload's authenticated completion follows all DATA on the same upload data
+subject, declaring final sequence, size, and SHA-256 digest. An empty upload has
+final sequence `0`. The provider independently verifies sequence continuity,
+size, and digest, closes backend input cleanly, awaits backend write completion,
+and validates its returned logical metadata. For an Operation upload, the fenced
+durable Operation transfer commit must also succeed before the provider sends
+signed `committed`. Only verified `committed` resolves caller upload success.
+
+```text
+received -> consumed/credited -> backend committed -> Operation committed
+```
+
+Credit is bounded network backpressure, never evidence of durable persistence.
+Cancellation before commit aborts storage ingress and cannot expose a committed
+staged upload; cancellation after durable commit cannot undo it. Interrupted
+uploads restart from byte zero, without partial replay or resumption.
+
+A download streams through the runtime's store boundary, splitting arbitrary
+backend chunks into bounded frames while credit is available. Signed EOF follows
+all DATA on the same download subject. Both endpoints verify final logical
+size/digest, and the consumer sends final credit/end acknowledgement before
+releasing session ownership. No per-frame pull RPC remains.
 
 ### Store Backing
 
 Rules:
 
-- canonical v1 file persistence lands in the owning service's `resources.store`
+- physical persistence stays behind runtime store streaming abstractions;
+  backend-specific protocols and identities never appear in transfer grants
 - services may move staged uploads into one or more store aliases for
   service-owned persistence; declaring upload transfer support does not map an
   operation to a participant-authored store
-- services may later mirror or copy files to external systems, but `Files` does
-  not depend on those backends
+- the current JetStream adapter and future local/cloud adapters implement the
+  same storage-neutral byte-stream semantics; `Files` does not define itself in
+  terms of any one backend
 - `Files` does not imply shared raw store access across services
 - receive grants expose bytes from a service-owned endpoint; they do not expose
   or delegate raw store bindings
@@ -258,9 +323,13 @@ For caller-visible file-processing workflows, the recommended pattern is:
 Rules:
 
 - transfer success means `bytes stored`, not `workflow finished`
-- a durable transfer completion signal means all chunks were accepted, EOF was
-  received, and platform staging completed; service code can then apply its own
-  persistence and processing policy
+- a durable transfer completion signal means final sequence/size/digest were
+  verified, platform staging completed, and the Operation transfer state was
+  durably committed; only then may the handler begin processing
+- durable transfer progress is monotonic and coalesced from backend-consumed
+  bytes; `chunkIndex` and `chunkBytes` describe the latest credited frame
+  represented, not a promise of one watch event per frame; final persisted
+  `transferredBytes` is exact
 - use runtime-owned transfer events or language-runtime transfer callbacks for
   progress bars and service-authored progress calls for domain milestones
 - use operations for caller-visible progress and final results
@@ -278,6 +347,16 @@ Rules:
 - direct store writes performed by the service may still be normalized into
   public `Files.*` events
 - the public abstraction stays `Files`, not backend-native store notifications
+
+### Transfer Observability
+
+Both runtimes retain `trellis.transfer.duration` and
+`trellis.transfer.wire.bytes`, and record `trellis.transfer.frames`,
+`trellis.transfer.credit.controls`, and `trellis.transfer.buffered.bytes` from
+the endpoint that owns the actual work. Buffered bytes follow retained raw
+payload ownership and are released on consumption or cleanup. Labels are bounded
+logical direction/side/outcome values, never transfer ids, subjects, principals,
+object keys, or arbitrary errors. There are no per-frame spans.
 
 ### Non-Goals
 

@@ -174,11 +174,38 @@ Rules:
   or deletes at or before the previous continuation key do not duplicate or skip
   entries that already followed it
 - `stream()` is the primary body-access path for large values; `bytes()` is a
-  convenience helper
+  convenience helper that collects the entire object in memory
 - streaming writes enforce an effective `maxObjectBytes` limit while bytes flow
   when that limit is present in the binding
 - successful operations expose logical metadata only; physical bucket names,
   object identifiers, and chunk subjects remain runtime internals
+
+### Streaming Read Lifecycle
+
+The shared JetStream adapters read only on downstream demand, using finite,
+byte-capped pulls rather than an eager push subscription. The source-buffer
+budget does not grow with object size. This bounds adapter buffering, not
+whole-process memory or buffers retained by application code.
+
+Readers validate the bound object's metadata, chunk order and count, byte count,
+and SHA-256 digest. Successful EOF requires completed integrity verification;
+earlier chunks may already have reached the caller, so partial output is not a
+verified complete object. Empty objects receive the same digest validation.
+Native ObjectStore links are unsupported.
+
+A paused reader does not acquire a public idle deadline merely because its
+backend consumer expires. On renewed demand, the adapter recreates a missing
+consumer at the exact next stream sequence, retaining its byte counts and hash
+state. This requires the admitting connection and object chunks to remain
+available; it is not transport reconnection or interrupted-upload resumption.
+
+Readers retain their admitting transport-generation lease through owned consumer
+cleanup. Successful EOF deletes the consumer before releasing that lease;
+cancellation, failure, or reader drop initiate cleanup as well. Rust drop
+cleanup uses the creating Tokio runtime even when the reader moves to another
+thread. TypeScript streams fail on physical disconnect or connection closure
+rather than silently attaching to a replacement generation. Whole-buffer helpers
+consume the same verified reader but intentionally retain the complete object.
 
 ### Object Metadata Model
 
@@ -245,7 +272,19 @@ This document does not define:
 
 ### Relationship To Files Transfer
 
-Trellis file transfer uses `store` as the canonical v1 backing storage.
+Trellis transfer consumes runtime-owned streaming store semantics. Rust uses the
+`StoreResourceClient::read_into()` / `write_from()` boundary; TypeScript uses
+`TypedStore` streaming writes and entry streams. Backend adapters own their
+physical protocol, buffering, and persistence acknowledgement. JetStream Object
+Store is the current adapter, not the definition of Transfer. Durable local
+disk, S3, Azure Blob, GCS, or future staging adapters must not change the
+caller's transfer protocol.
+
+Transfer grants never expose physical bucket names, backend object identifiers,
+`$O.*` subjects, cloud object keys, presigned URLs, SAS tokens, or backend
+credentials. Consumption of a streaming frame may release network credit, but
+upload success still awaits the backend's completed write and any required
+durable Operation commit.
 
 That does not change the rules in this document:
 

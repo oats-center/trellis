@@ -1518,6 +1518,25 @@ export class AuthorizationProviderCache {
   async verifyRequest(
     request: AuthorizationProviderRequest,
   ): Promise<CachedRequestVerificationResult> {
+    return await this.#verifyRequest(request);
+  }
+
+  /** Verify a Transfer request with canonical exact session subjects. @internal */
+  async verifyTransferRequest(
+    request: AuthorizationProviderRequest & {
+      transferId: string;
+      providerConnectionId: string;
+      consumerConnectionId: string;
+    },
+  ): Promise<CachedRequestVerificationResult> {
+    return await this.#verifyRequest(request, request);
+  }
+
+  async #verifyRequest(request: AuthorizationProviderRequest, transfer?: {
+    transferId: string;
+    providerConnectionId: string;
+    consumerConnectionId: string;
+  }): Promise<CachedRequestVerificationResult> {
     try {
       const entry = await this.#lease(request.contextDigest, false);
       try {
@@ -1530,10 +1549,13 @@ export class AuthorizationProviderCache {
         if (request.sessionKey !== state.verified.context.sessionKey) {
           return requestFailure("InvalidInput", "/session-key");
         }
-        const { verifyAuthorizationRequestWasm } = await import(
+        const {
+          verifyAuthorizationRequestWasm,
+          verifyTransferAuthorizationRequestWasm,
+        } = await import(
           "../protocol_wasm.ts"
         );
-        const result = await verifyAuthorizationRequestWasm({
+        const input = {
           contextHandle: state.handle,
           subject: request.subject,
           reply: request.reply,
@@ -1543,7 +1565,15 @@ export class AuthorizationProviderCache {
           proof: request.proof,
           requiredPermissions: request.requiredPermissions,
           policy: this.#policy(this.#now()),
-        });
+        };
+        const result = transfer
+          ? await verifyTransferAuthorizationRequestWasm(
+            input,
+            transfer.providerConnectionId,
+            transfer.consumerConnectionId,
+            transfer.transferId,
+          )
+          : await verifyAuthorizationRequestWasm(input);
         this.#requireEntry(entry);
         if (!result.ok) return result;
         if (

@@ -29,6 +29,12 @@ Deno.test("V3 Operation observation delivers typed updates then terminal", async
         // Each application acknowledgement releases at most one 16-update
         // batch, so the observer is active before any transient update flows.
         const accepted = await op.nextSignal("Continue").orThrow();
+        if (emitted === 0) {
+          await op.progress({
+            value: "checkpoint",
+            nested: { count: 7n, payload: new Uint8Array([7, 8, 9]) },
+          }).orThrow();
+        }
         const batch = Math.min(BATCH, UPDATES - emitted);
         for (let index = 0; index < batch; index += 1) {
           emitted += 1;
@@ -59,6 +65,7 @@ Deno.test("V3 Operation observation delivers typed updates then terminal", async
         .orThrow();
       const subscription = await handle.live({ updates: true }).orThrow();
       const updates: string[] = [];
+      let checkpointObserved = false;
       let terminalState: string | undefined;
       let terminalOutput: string | undefined;
       const pump = (async () => {
@@ -67,6 +74,10 @@ Deno.test("V3 Operation observation delivers typed updates then terminal", async
             {
               type: string;
               update?: { value: string };
+              progress?: {
+                value: string;
+                nested: { count: bigint; payload: Uint8Array };
+              };
               snapshot?: {
                 id: string;
                 revision: number;
@@ -79,6 +90,12 @@ Deno.test("V3 Operation observation delivers typed updates then terminal", async
         ) {
           if (event.type === "update") {
             updates.push(event.update?.value ?? "");
+          } else if (event.type === "progress") {
+            assertEquals(event.progress, {
+              value: "checkpoint",
+              nested: { count: 7n, payload: new Uint8Array([7, 8, 9]) },
+            });
+            checkpointObserved = true;
           } else if (event.type === "completed") {
             terminalState = event.snapshot?.state;
             terminalOutput = event.snapshot?.output?.value;
@@ -107,6 +124,9 @@ Deno.test("V3 Operation observation delivers typed updates then terminal", async
         await runtime.waitFor(() => updates.length >= expected, {
           timeoutMs: 30_000,
         });
+        if (index === 0) {
+          await runtime.waitFor(() => checkpointObserved);
+        }
       }
       await handle.signal("Continue", { value: "continue" }).orThrow();
       await pump;

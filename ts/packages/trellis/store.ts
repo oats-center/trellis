@@ -22,6 +22,7 @@ import {
   paginationQueryDigest,
 } from "./auth/protocol_wasm.ts";
 import { TypedStoreEntry } from "./store_entry.ts";
+import { boundedObjectStream } from "./store_reader.ts";
 export { TypedStoreEntry } from "./store_entry.ts";
 
 const INTERNAL_CONTENT_TYPE_METADATA_KEY = "__trellis_content_type";
@@ -94,16 +95,9 @@ export type StoreStatus = {
   maxTotalBytes?: number;
 };
 
-/** Structural ObjectStore read result used by a returned store entry. */
-type ObjectResultLike = {
-  data: ReadableStream<Uint8Array>;
-  error: Promise<unknown>;
-};
-
 /** Structural ObjectStore read surface used by a returned store entry. */
 type ObjectStoreLike = {
-  get(key: string): Promise<ObjectResultLike | null>;
-  getBlob(key: string): Promise<Uint8Array | null>;
+  get(key: string): Promise<ReadableStream<Uint8Array> | null>;
 };
 
 function metadataWithContentType(
@@ -426,39 +420,6 @@ function streamFromBody(
  * An entry stream is a physical read exchange, so it holds its generation until
  * the reader finishes, errors, or cancels.
  */
-function releaseOnSettle(
-  data: ReadableStream<Uint8Array>,
-  release: () => void,
-): ReadableStream<Uint8Array> {
-  const reader = data.getReader();
-  let released = false;
-  const finish = () => {
-    if (released) return;
-    released = true;
-    release();
-  };
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      try {
-        const next = await reader.read();
-        if (next.done) {
-          finish();
-          controller.close();
-          return;
-        }
-        controller.enqueue(next.value);
-      } catch (cause) {
-        finish();
-        controller.error(cause);
-      }
-    },
-    async cancel(reason) {
-      await reader.cancel(reason);
-      finish();
-    },
-  });
-}
-
 async function unwrapObjectInfo(
   store: ObjectStore,
   key: string,
@@ -620,11 +581,11 @@ export class TypedStore {
     action?: "read" | "write",
     deadlineMs?: number,
     signal?: AbortSignal,
-  ): Promise<{ store: ObjectStore; release: () => void }> {
+  ): Promise<{ store: ObjectStore; nc: NatsConnection; release: () => void }> {
     const lease = await this.#lease(action, deadlineMs, signal);
     try {
       const store = await this.#adapter(lease.nc);
-      return { store, release: () => lease.release() };
+      return { store, nc: lease.nc, release: () => lease.release() };
     } catch (cause) {
       lease.release();
       throw cause;
@@ -732,34 +693,31 @@ export class TypedStore {
   #entryStore(): ObjectStoreLike {
     return {
       get: (key) => this.#entryGet(key),
-      getBlob: (key) => this.#entryGetBlob(key),
     };
   }
 
-  async #entryGet(key: string): Promise<ObjectResultLike | null> {
+  async #entryGet(key: string): Promise<ReadableStream<Uint8Array> | null> {
     const acquired = await this.#acquire("read");
     try {
-      const result = await acquired.store.get(key);
-      if (result === null) {
+      const info = await acquired.store.info(key);
+      if (info === null || info.deleted) {
         acquired.release();
         return null;
       }
-      return {
-        data: releaseOnSettle(result.data, acquired.release),
-        error: result.error,
-      };
+      if (info.name !== key) {
+        throw new Error(
+          "ObjectStore metadata does not match the requested key",
+        );
+      }
+      return boundedObjectStream(
+        acquired.nc,
+        this.#name,
+        info,
+        acquired.release,
+      );
     } catch (cause) {
       acquired.release();
       throw cause;
-    }
-  }
-
-  async #entryGetBlob(key: string): Promise<Uint8Array | null> {
-    const acquired = await this.#acquire("read");
-    try {
-      return await acquired.store.getBlob(key);
-    } finally {
-      acquired.release();
     }
   }
 

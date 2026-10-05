@@ -2,27 +2,26 @@ import { AsyncResult, Result } from "@oatscenter/result";
 import { StoreError } from "./errors/index.ts";
 import type { StoreInfo } from "./store.ts";
 
-type ObjectResultLike = {
-  data: ReadableStream<Uint8Array>;
-  error: Promise<unknown>;
-};
-
 type ObjectStoreLike = {
-  get(key: string): Promise<ObjectResultLike | null>;
-  getBlob(key: string): Promise<Uint8Array | null>;
+  get(key: string): Promise<ReadableStream<Uint8Array> | null>;
 };
 
+/** A logical object entry whose reads acquire and retain their own transport. */
 export class TypedStoreEntry {
+  /** Logical object key used to acquire a fresh read. */
   readonly key: string;
+  /** Metadata observed when obtained; subsequent reads validate fresh metadata. */
   readonly info: StoreInfo;
   readonly #store: ObjectStoreLike;
 
+  /** Construct an entry backed by demand-driven, integrity-checked reads. */
   constructor(store: ObjectStoreLike, info: StoreInfo) {
     this.#store = store;
     this.key = info.key;
     this.info = info;
   }
 
+  /** Read with bounded demand-driven pulls; successful EOF verifies size and digest. */
   stream(): AsyncResult<ReadableStream<Uint8Array>, StoreError> {
     return AsyncResult.from((async () => {
       try {
@@ -36,7 +35,7 @@ export class TypedStoreEntry {
           );
         }
 
-        return Result.ok(streamWithErrorCheck(result));
+        return Result.ok(result);
       } catch (cause) {
         return Result.err(
           new StoreError({
@@ -49,11 +48,12 @@ export class TypedStoreEntry {
     })());
   }
 
+  /** Collect the same verified stream, intentionally retaining the whole object. */
   bytes(): AsyncResult<Uint8Array, StoreError> {
     return AsyncResult.from((async () => {
       try {
-        const bytes = await this.#store.getBlob(this.key);
-        if (bytes === null) {
+        const stream = await this.#store.get(this.key);
+        if (stream === null) {
           return Result.err(
             new StoreError({
               operation: "bytes",
@@ -61,7 +61,9 @@ export class TypedStoreEntry {
             }),
           );
         }
-        return Result.ok(bytes);
+        return Result.ok(
+          new Uint8Array(await new Response(stream).arrayBuffer()),
+        );
       } catch (cause) {
         return Result.err(
           new StoreError({
@@ -73,30 +75,4 @@ export class TypedStoreEntry {
       }
     })());
   }
-}
-
-function streamWithErrorCheck(
-  result: ObjectResultLike,
-): ReadableStream<Uint8Array> {
-  const reader = result.data.getReader();
-
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      const next = await reader.read();
-      if (next.done) {
-        const error = await result.error;
-        if (error) {
-          controller.error(error);
-          return;
-        }
-        controller.close();
-        return;
-      }
-
-      controller.enqueue(next.value);
-    },
-    async cancel(reason) {
-      await reader.cancel(reason);
-    },
-  });
 }

@@ -220,6 +220,10 @@ pub enum CounterFamily {
     LiveRejections,
     /// Actual transmitted/received transfer payload bytes.
     TransferWireBytes,
+    /// Successfully transmitted or verified incoming transfer DATA frames.
+    TransferFrames,
+    /// Authenticated cumulative transfer-credit controls.
+    TransferCreditControls,
     /// Existing singleton lease actions.
     RuntimeLeaseEvents,
     /// Failed telemetry snapshot polling attempts.
@@ -243,6 +247,8 @@ impl CounterFamily {
             Self::LiveFrames => "trellis.live.frames",
             Self::LiveRejections => "trellis.live.rejections",
             Self::TransferWireBytes => "trellis.transfer.wire.bytes",
+            Self::TransferFrames => "trellis.transfer.frames",
+            Self::TransferCreditControls => "trellis.transfer.credit.controls",
             Self::RuntimeLeaseEvents => "trellis.runtime.lease.events",
             Self::SnapshotErrors => "trellis.snapshot.errors",
             Self::RouteOverflow => "trellis.telemetry.route_overflow",
@@ -261,6 +267,8 @@ impl CounterFamily {
             Self::LiveFrames => "{frame}",
             Self::LiveRejections => "{message}",
             Self::TransferWireBytes => "By",
+            Self::TransferFrames => "{frame}",
+            Self::TransferCreditControls => "{control}",
             Self::RpcClientAttempts => "{attempt}",
             Self::AuthRefreshAttempts => "{attempt}",
             Self::SnapshotErrors => "{error}",
@@ -282,6 +290,8 @@ pub enum UpDownFamily {
     LiveBufferedBytes,
     /// Owned live cleanup that exceeded the shared grace.
     LiveCleanupPending,
+    /// Raw transfer payload retained by the local endpoint.
+    TransferBufferedBytes,
 }
 
 impl UpDownFamily {
@@ -293,6 +303,7 @@ impl UpDownFamily {
             Self::LiveSessions => "trellis.live.sessions",
             Self::LiveBufferedBytes => "trellis.live.buffered.bytes",
             Self::LiveCleanupPending => "trellis.live.cleanup.pending",
+            Self::TransferBufferedBytes => "trellis.transfer.buffered.bytes",
         }
     }
 
@@ -304,6 +315,7 @@ impl UpDownFamily {
             Self::LiveSessions => "{session}",
             Self::LiveBufferedBytes => "By",
             Self::LiveCleanupPending => "{source}",
+            Self::TransferBufferedBytes => "By",
         }
     }
 }

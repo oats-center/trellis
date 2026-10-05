@@ -22,7 +22,7 @@ use super::resources::{validate_kv_binding, validate_store_binding};
 use super::resources::{KvHandle, KvResourceHandle, StoreHandle, StoreResourceHandle};
 use super::transfer::{
     spawn_download_transfer_endpoint, spawn_upload_transfer_endpoint_with_completion,
-    spawn_upload_transfer_endpoint_with_progress,
+    spawn_upload_transfer_endpoint_with_progress_and_completion,
 };
 use super::{
     bootstrap_service_host, control_subject, BootstrapBindingInfo, DownloadTransferGrantPlan,
@@ -457,6 +457,7 @@ impl Drop for ServiceEventListenerHandle {
 /// Cloneable handle exposed to registered service handlers.
 #[derive(Clone)]
 pub struct ServiceHandle {
+    transfer_tasks: Arc<super::transfer::TransferTasks>,
     client: Arc<TrellisClient>,
     transport: super::router::GenerationPin,
     service_name: Arc<str>,
@@ -700,14 +701,28 @@ impl ServiceHandle {
         C: StoreResourceClient,
         F: Fn(OperationTransferProgress) + Send + Sync + 'static,
     {
-        spawn_upload_transfer_endpoint_with_progress(
-            self.client().nats().clone(),
+        let lease = match self.transport.lease() {
+            Some(lease) => lease.clone(),
+            None => self
+                .client()
+                .acquire_transport(&[], &[], self.client().transport_deadline())
+                .await
+                .map_err(|error| ServerError::Nats(error.to_string()))?,
+        };
+        let completion = spawn_upload_transfer_endpoint_with_progress_and_completion(
+            Arc::clone(&self.client),
             session,
             store,
-            self.auth.clone(),
+            lease,
             on_progress,
         )
-        .await
+        .await?;
+        self.transfer_tasks
+            .own(tokio::spawn(async move {
+                completion.completed().await.map(|_| ())
+            }))
+            .await?;
+        Ok(())
     }
 
     /// Subscribe and run an upload transfer endpoint that can be awaited until durable storage.
@@ -719,11 +734,19 @@ impl ServiceHandle {
     where
         C: StoreResourceClient,
     {
+        let lease = match self.transport.lease() {
+            Some(lease) => lease.clone(),
+            None => self
+                .client()
+                .acquire_transport(&[], &[], self.client().transport_deadline())
+                .await
+                .map_err(|error| ServerError::Nats(error.to_string()))?,
+        };
         spawn_upload_transfer_endpoint_with_completion(
-            self.client().nats().clone(),
+            Arc::clone(&self.client),
             session,
             store,
-            self.auth.clone(),
+            lease,
         )
         .await
     }
@@ -746,14 +769,10 @@ impl ServiceHandle {
                 .await
                 .map_err(|error| ServerError::Nats(error.to_string()))?,
         };
-        spawn_download_transfer_endpoint(
-            lease.nats().clone(),
-            plan,
-            store,
-            self.auth.clone(),
-            lease,
-        )
-        .await
+        let task =
+            spawn_download_transfer_endpoint(Arc::clone(&self.client), plan, store, lease).await?;
+        self.transfer_tasks.own(task).await?;
+        Ok(())
     }
 }
 
@@ -805,7 +824,6 @@ impl ServiceHandlerContext {
         store: &str,
         transfer_id: &str,
         expires_at: &str,
-        chunk_bytes: u64,
         info: super::FileTransferInfo,
     ) -> Result<DownloadTransferGrantPlan, ServerError> {
         if !self.download_allowed {
@@ -822,14 +840,31 @@ impl ServiceHandlerContext {
                 subject: self.request.subject.clone(),
             })?;
         super::plan_download_transfer_grant(super::TransferDownloadGrantArgs {
+            admission: &self.request,
             service_name: self.handle.service_name(),
             session_key,
             service_session_key: self.handle.session_key(),
+            provider_connection_id: &self
+                .handle
+                .client()
+                .own_connection_id()
+                .map_err(|error| ServerError::Nats(error.to_string()))?,
+            consumer_connection_id: &self
+                .request
+                .caller
+                .as_ref()
+                .ok_or_else(|| ServerError::MissingSessionKey {
+                    subject: self.request.subject.clone(),
+                })?
+                .connection_id,
             resources: self.handle.resources(),
             store,
             transfer_id,
             expires_at,
-            chunk_bytes,
+            max_payload: self.handle.transport.lease().map_or_else(
+                || self.handle.client().nats().server_info().max_payload as u64,
+                |lease| lease.nats().server_info().max_payload as u64,
+            ),
             info,
         })
     }
@@ -842,6 +877,8 @@ impl ServiceHandlerContext {
 
 /// Connected high-level service runtime for one generated service contract.
 pub struct ConnectedServiceRuntime<C> {
+    transfer_tasks: Arc<super::transfer::TransferTasks>,
+    _transfer_cleanup: super::transfer::TransferTasksCleanup,
     client: Arc<TrellisClient>,
     binding: CoreBootstrapBinding,
     resources: ServiceResourceBindings,
@@ -884,6 +921,7 @@ impl<C> ConnectedServiceRuntime<C> {
     ) -> Self {
         let resources = binding.resource_bindings();
         let event_listeners = SharedDurableEventListeners::default();
+        let transfer_tasks = Arc::new(super::transfer::TransferTasks::default());
         let (event_failures, event_failure_receiver) = mpsc::unbounded_channel();
         let api_id = api_id.into();
         let auth =
@@ -901,6 +939,8 @@ impl<C> ConnectedServiceRuntime<C> {
             .expect("connected services always have a logical connection identity");
         router.set_provider_instance_id(provider_instance_id.clone());
         Self {
+            transfer_tasks: Arc::clone(&transfer_tasks),
+            _transfer_cleanup: super::transfer::TransferTasksCleanup(transfer_tasks),
             client,
             binding,
             resources,
@@ -1374,16 +1414,19 @@ impl<C> ConnectedServiceRuntime<C> {
             tokio::try_join!(serve, workers)?;
             Ok(())
         };
-        tokio::select! {
+        let result = tokio::select! {
             result = run => result,
             Some(error) = event_failures.recv() => Err(error),
-        }
+        };
+        self.transfer_tasks.shutdown().await;
+        result
     }
 
     /// Return a cloneable service handle for generated participant code.
     #[doc(hidden)]
     pub fn generated_handle(&self) -> ServiceHandle {
         ServiceHandle {
+            transfer_tasks: Arc::clone(&self.transfer_tasks),
             transport: Default::default(),
             client: Arc::clone(&self.client),
             service_name: Arc::from(self.service_name.as_str()),

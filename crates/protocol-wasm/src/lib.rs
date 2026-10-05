@@ -24,6 +24,172 @@ use trellis_protocol::{
 };
 use wasm_bindgen::prelude::*;
 
+/// Generate a high-entropy canonical Transfer v2 session ID.
+#[wasm_bindgen]
+pub fn transfer_generate_id() -> Result<String, JsError> {
+    trellis_protocol::transfer::generate_transfer_id()
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Derive an exact Transfer v2 subject from logical endpoint identities.
+/// `kind` is upload-data, download-data, control or signal.
+#[wasm_bindgen]
+pub fn transfer_subject(
+    kind: &str,
+    provider: &str,
+    consumer: &str,
+    transfer_id: &str,
+) -> Result<String, JsError> {
+    let kind =
+        serde_json::from_value::<trellis_protocol::transfer::TransferSubjectKind>(json!(kind))
+            .map_err(|error| JsError::new(&error.to_string()))?;
+    trellis_protocol::transfer::derive_transfer_subject(kind, provider, consumer, transfer_id)
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Validate an exact subject, returning its canonical family name.
+#[wasm_bindgen]
+pub fn transfer_validate_subject(subject: &str) -> Result<String, JsError> {
+    let kind = trellis_protocol::transfer::validate_transfer_subject(subject)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&kind).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Validate an unsigned decimal-string counter without converting it to f64.
+#[wasm_bindgen]
+pub fn transfer_parse_counter(value: &str) -> Result<String, JsError> {
+    trellis_protocol::transfer::parse_transfer_counter(value)
+        .map(|value| value.to_string())
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Negotiate raw DATA size from exact safe-integer NATS payload limits.
+#[wasm_bindgen]
+pub fn transfer_negotiate_max_frame_bytes(consumer: f64, provider: f64) -> Result<f64, JsError> {
+    let consumer = u64::try_from(safe_integer(consumer, "consumerMaxPayload")?)
+        .map_err(|_| JsError::new("negative payload limit"))?;
+    let provider = u64::try_from(safe_integer(provider, "providerMaxPayload")?)
+        .map_err(|_| JsError::new("negative payload limit"))?;
+    trellis_protocol::transfer::negotiate_transfer_max_frame_bytes(consumer, provider)
+        .map(|value| value as f64)
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Return canonical Transfer limits and protocol header names as JSON.
+#[wasm_bindgen]
+pub fn transfer_constants() -> String {
+    use trellis_protocol::transfer::*;
+    json!({
+        "format": TRANSFER_VERSION,
+        "maxFrameBytes": MAX_TRANSFER_FRAME_BYTES,
+        "windowFrames": TRANSFER_WINDOW_FRAMES,
+        "windowBytes": TRANSFER_WINDOW_BYTES,
+        "creditFrameStep": TRANSFER_CREDIT_FRAME_STEP,
+        "creditByteStep": TRANSFER_CREDIT_BYTE_STEP,
+        "creditMaxDelayMs": TRANSFER_CREDIT_MAX_DELAY_MS,
+        "headerReserve": TRANSFER_HEADER_RESERVE,
+        "maxControlBytes": MAX_TRANSFER_CONTROL_BYTES,
+        "sequenceHeader": TRANSFER_SEQUENCE_HEADER,
+        "controlHeader": TRANSFER_CONTROL_HEADER,
+        "terminalHeader": TRANSFER_TERMINAL_HEADER,
+        "proofHeader": TRANSFER_PROOF_HEADER,
+    })
+    .to_string()
+}
+
+/// Parse a direction-specific grant, validating exact subjects and identities.
+#[wasm_bindgen]
+pub fn transfer_parse_grant(raw: &[u8]) -> Result<String, JsError> {
+    let grant = trellis_protocol::transfer::parse_transfer_grant(raw)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&grant).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Parse a strict Transfer caller control and return its normalized JSON.
+#[wasm_bindgen]
+pub fn transfer_parse_control(raw: &[u8]) -> Result<String, JsError> {
+    let value = trellis_protocol::transfer::parse_transfer_control(raw)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&value).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Parse a strict provider signal and return its normalized JSON.
+#[wasm_bindgen]
+pub fn transfer_parse_signal(raw: &[u8]) -> Result<String, JsError> {
+    let value = trellis_protocol::transfer::parse_transfer_signal(raw)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&value).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Parse ordered upload completion and return its normalized JSON.
+#[wasm_bindgen]
+pub fn transfer_parse_complete(raw: &[u8]) -> Result<String, JsError> {
+    let value = trellis_protocol::transfer::parse_transfer_complete(raw)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&value).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Parse signed zero-byte EOF's terminal header and return normalized JSON.
+#[wasm_bindgen]
+pub fn transfer_parse_terminal(raw: &[u8]) -> Result<String, JsError> {
+    let value = trellis_protocol::transfer::parse_transfer_terminal(raw)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&value).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Compute a compact frame digest as base64url, hashing raw bytes in place.
+#[wasm_bindgen]
+pub fn transfer_frame_digest(descriptor_json: &str, payload: &[u8]) -> Result<String, JsError> {
+    let descriptor =
+        serde_json::from_str(descriptor_json).map_err(|error| JsError::new(&error.to_string()))?;
+    trellis_protocol::transfer::transfer_frame_digest_encoded(&descriptor, payload)
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Compute the Transfer-domain provider signature digest as base64url.
+#[wasm_bindgen]
+pub fn transfer_server_proof_digest(
+    context_digest: &str,
+    subject: &str,
+    descriptor_json: &str,
+    payload: &[u8],
+) -> Result<String, JsError> {
+    let descriptor =
+        serde_json::from_str(descriptor_json).map_err(|error| JsError::new(&error.to_string()))?;
+    trellis_protocol::transfer::transfer_server_proof_digest_encoded(
+        context_digest,
+        subject,
+        &descriptor,
+        payload,
+    )
+    .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Verify a Transfer-only provider proof against the pinned session key.
+#[wasm_bindgen]
+pub fn transfer_verify_server_proof(
+    proof: &str,
+    context_digest: &str,
+    subject: &str,
+    descriptor_json: &str,
+    payload: &[u8],
+    provider_key: &str,
+) -> Result<(), JsError> {
+    let descriptor =
+        serde_json::from_str(descriptor_json).map_err(|error| JsError::new(&error.to_string()))?;
+    let proof = trellis_protocol::transfer::TransferServerProof::parse(proof)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    trellis_protocol::transfer::verify_transfer_server_proof_encoded(
+        &proof,
+        context_digest,
+        subject,
+        &descriptor,
+        payload,
+        provider_key,
+    )
+    .map_err(|error| JsError::new(&error.to_string()))
+}
+
 const MAXIMUM_SAFE_JSON_INTEGER: f64 = 9_007_199_254_740_991.0;
 
 /// Compute the shared query binding for an opaque pagination cursor.
@@ -716,6 +882,7 @@ fn request_result(
     context: &VerifiedAuthorizationContext,
     input: WireAuthorizationRequest,
     payload: &[u8],
+    transfer: Option<(&str, &str, &str)>,
 ) -> String {
     let policy = match authorization_verification_policy_from_wire(&input.policy) {
         Ok(policy) => policy,
@@ -725,21 +892,27 @@ fn request_result(
         Ok(proof) => proof,
         Err(error) => return protocol_error_result(&error),
     };
-    let verified =
-        match verify_authorization_request_protocol(AuthorizationRequestVerificationInput {
-            context,
-            subject: &input.subject,
-            reply_subject: input.reply.0.as_deref(),
-            raw_payload: payload,
-            iat: input.iat,
-            request_id: &input.request_id,
-            proof: &proof,
-            policy: &policy,
-            required_permissions: &input.required_permissions,
-        }) {
-            Ok(verified) => verified,
-            Err(error) => return protocol_error_result(&error),
-        };
+    let request = AuthorizationRequestVerificationInput {
+        context,
+        subject: &input.subject,
+        reply_subject: input.reply.0.as_deref(),
+        raw_payload: payload,
+        iat: input.iat,
+        request_id: &input.request_id,
+        proof: &proof,
+        policy: &policy,
+        required_permissions: &input.required_permissions,
+    };
+    let result = match transfer {
+        Some((provider, consumer, id)) => {
+            trellis_protocol::verify_transfer_authorization_request(request, provider, consumer, id)
+        }
+        None => verify_authorization_request_protocol(request),
+    };
+    let verified = match result {
+        Ok(verified) => verified,
+        Err(error) => return protocol_error_result(&error),
+    };
     json_result(json!({
         "ok": true,
         "contextDigest": verified.context().context_digest(),
@@ -806,7 +979,30 @@ pub fn verify_authorization_request(
         Ok(input) => input,
         Err(_) => return input_error_result(""),
     };
-    request_result(&context.context, input, payload)
+    request_result(&context.context, input, payload, None)
+}
+
+/// Verify a compact Transfer request proof with pinned P/C/T session coordinates.
+/// Returns the same structured authorization result as the ordinary verifier.
+#[wasm_bindgen]
+pub fn verify_transfer_authorization_request(
+    context: &VerifiedAuthorizationContextHandle,
+    request_json: &str,
+    compact_digest: &[u8],
+    provider_id: &str,
+    expected_consumer_connection: &str,
+    transfer_id: &str,
+) -> String {
+    let input: WireAuthorizationRequest = match serde_json::from_str(request_json) {
+        Ok(input) => input,
+        Err(_) => return input_error_result(""),
+    };
+    request_result(
+        &context.context,
+        input,
+        compact_digest,
+        Some((provider_id, expected_consumer_connection, transfer_id)),
+    )
 }
 
 /// Verify one context-bound authorization event proof from a JSON argument.

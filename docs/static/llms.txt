@@ -119,6 +119,12 @@ reattachment. Store and file metadata listing uses opaque, query-bound keyset
 cursors with a default limit of 100 and maximum of 500. An administrator
 installs the immutable participant revision and writes a participant-scoped
 `GrantBinding`; deployment apply provisions exact resource evidence.
+Store streaming uses demand-driven, byte-capped reads and verifies chunk order,
+size, and SHA-256 before successful EOF; partial output is not a verified object.
+Backend consumer expiry permits exact-cursor continuation on the pinned
+connection, not transport reconnection. Cleanup retains the generation lease.
+Whole-buffer helpers retain the entire object; bounded source buffering is not a
+whole-process memory guarantee. Native ObjectStore links are unsupported.
 Services/devices bootstrap with identity and proof inputs only, while browsers
 bind a user login and then refresh. A device companion is established only by
 activation-owned separate consent and cannot bootstrap as a standalone
@@ -152,6 +158,13 @@ than by a network lookup per frame. Sessions have protocol liveness and credit
 bounds, not a total age or message cap; an explicit close returns a receipt
 whose remote-cleanup state is complete, incomplete, or unconfirmed, and
 reconnect is an explicit new open rather than a silent reopen.
+
+Transfers use bounded, windowed raw-byte streaming over NATS, with storage
+protocols and credentials hidden behind runtime store handles. Use generated
+upload Operations and download helpers, not raw subjects. Network credit is not
+durability: upload success follows verified backend and durable Operation commit.
+Durable transfer progress is monotonic and may be coalesced; interrupted uploads
+restart from byte zero.
 
 Consumer AGENTS templates are available under `templates/`. They describe the
 Trellis boundary; application policies belong in the consumer repository.

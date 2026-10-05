@@ -78,6 +78,28 @@ The grant is bounded, authorized, and tied to the owning service's file
 behavior. The caller sees a public file transfer, not an internal object-store
 location.
 
+Use `stream()` for large downloads and `bytes()` when collecting the whole body
+in memory is appropriate. Trellis verifies the received size and SHA-256 digest
+against the grant.
+
+## Streaming and durable completion
+
+Transfer v2 keeps multiple raw-byte NATS frames in flight within bounded frame
+and byte windows. Downstream consumption releases cumulative network credit;
+there is no blocking request/reply for every chunk. The backend controls upload
+drain rate, and the caller's stream consumption controls download drain rate.
+
+Network credit is **not** durable persistence. An upload succeeds only after
+Trellis verifies its complete size/digest, awaits the backend write, and commits
+the Operation's durable transfer state. The handler starts after that commit.
+Durable transfer progress is monotonic and may be coalesced; do not assume a
+watch event for each frame. Final persisted progress is exact.
+
+An in-flight transfer stays on the transport generation that admitted it even
+when authority grows. Physical disconnect ends the transfer; an interrupted
+upload restarts from byte zero, without partial replay or resumption. Cancelling
+before commit aborts staging; cancelling after commit cannot undo it.
+
 ## Operations and transfers
 
 Transfer-backed operations still follow operation semantics. The operation
@@ -93,3 +115,7 @@ hidden chunk subjects or service-private storage details.
 Most file APIs will use `resources.store` internally, but the store remains
 service-private. Trellis provides the service binding; the service defines the
 public file metadata, authorization, and lifecycle behavior in its own contract.
+
+Transfer consumes the runtime's storage-neutral streaming boundary. Current and
+future backend adapters own physical persistence; grants never expose bucket
+names, backend object ids/subjects, cloud keys, presigned URLs, or credentials.

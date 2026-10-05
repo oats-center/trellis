@@ -51,10 +51,11 @@ Deno.test("Rust downloads survive growth and open after the original attachment 
     // Observe read failures when joining cleanup, without an unhandled rejection.
     outputTask.catch(() => undefined);
     const bytes = Uint8Array.from(
-      { length: 131_073 },
+      { length: 8 * 1024 * 1024 },
       (_, index) => index % 251,
     );
     let held: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let idle: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
       await runtime.waitFor(() => {
         if (outputEnded) {
@@ -76,26 +77,62 @@ Deno.test("Rust downloads survive growth and open after the original attachment 
       };
       const [initial] = await attachments();
       assert(initial);
+      // Rust reads the runtime-owned staged object and validates every byte
+      // before completing: a successful terminal proves the real TS -> Rust path.
+      const uploadProgress: number[] = [];
+      const uploaded = await caller.upload({ value: "cross-language" })
+        .transfer(bytes)
+        .onTransfer(({ transfer }) => {
+          uploadProgress.push(transfer.transferredBytes);
+        })
+        .start().orThrow();
+      const uploadTerminal = await uploaded.wait().orThrow();
+      assertEquals(uploadTerminal.terminal.state, "completed");
+      assertEquals(uploadTerminal.terminal.output?.value, "cross-language");
+      assertEquals(uploadTerminal.transferred.size, bytes.length);
+      assertEquals(
+        uploadTerminal.terminal.transfer?.transferredBytes,
+        bytes.length,
+      );
+      assert(uploadProgress.some((value) => value > 0));
+      for (let index = 1; index < uploadProgress.length; index += 1) {
+        assert(uploadProgress[index] >= uploadProgress[index - 1]);
+      }
       const before = await caller.download({ value: "before" }).orThrow();
       const beforeGrant = Value.Parse(TransferGrantSchema, before.transfer);
       assert(beforeGrant.direction === "receive");
+      const unauthorized = await runtime.connectClient({
+        name: "unrelated-transfer-caller",
+        contract: participants.Caller.participant,
+      });
+      try {
+        assert(
+          (await unauthorized.transfer(beforeGrant).bytes()).isErr(),
+          "a grant cannot be consumed by another authenticated session",
+        );
+      } finally {
+        await unauthorized.connection.close();
+      }
       assertEquals(
         await caller.transfer(beforeGrant).bytes().orThrow(),
         bytes,
       );
 
-      // Hold an admitted grant before its first pull: a store reader must not
-      // accidentally keep the endpoint's original attachment alive for it.
+      // Stop public stream consumption after actual DATA, before growth.
       const ongoing = await caller.download({ value: "ongoing" }).orThrow();
       const ongoingGrant = Value.Parse(TransferGrantSchema, ongoing.transfer);
       assert(ongoingGrant.direction === "receive");
+      held = (await caller.transfer(ongoingGrant).stream().orThrow())
+        .getReader();
+      const first = await held.read();
+      assert(!first.done && first.value.length > 0);
       const cancelled = await caller.download({ value: "cancelled" }).orThrow();
       const cancelledGrant = Value.Parse(
         TransferGrantSchema,
         cancelled.transfer,
       );
       assert(cancelledGrant.direction === "receive");
-      const chunks: Uint8Array[] = [];
+      const chunks: Uint8Array[] = [first.value];
       await runtime.contracts.apply({ contract });
       await runtime.waitFor(
         async () =>
@@ -105,8 +142,6 @@ Deno.test("Rust downloads survive growth and open after the original attachment 
           ),
         { timeoutMs: 90_000 },
       );
-      held = (await caller.transfer(ongoingGrant).stream().orThrow())
-        .getReader();
       for (;;) {
         const chunk = await held.read();
         if (chunk.done) break;
@@ -121,6 +156,15 @@ Deno.test("Rust downloads survive growth and open after the original attachment 
         offset += chunk.length;
       }
       assertEquals(received, bytes);
+      const digest = `SHA-256=${
+        btoa(
+          String.fromCharCode(
+            ...new Uint8Array(await crypto.subtle.digest("SHA-256", received)),
+          ),
+        ).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")
+      }`;
+      assertEquals(ongoingGrant.info.digest, digest);
+      assertEquals(uploadTerminal.transferred.digest, digest);
 
       // The unused grant still owns its accepting attachment until cancellation.
       assert(
@@ -130,7 +174,11 @@ Deno.test("Rust downloads survive growth and open after the original attachment 
       );
       const cancelledStream = await caller.transfer(cancelledGrant).stream()
         .orThrow();
-      await cancelledStream.cancel();
+      const cancelReader = cancelledStream.getReader();
+      assert(!(await cancelReader.read()).done);
+      await cancelReader.cancel();
+      assert((await cancelReader.read()).done);
+      cancelReader.releaseLock();
 
       // Observe actual retirement, not a sleep or an application-requested refresh.
       await runtime.waitFor(
@@ -147,7 +195,36 @@ Deno.test("Rust downloads survive growth and open after the original attachment 
         await caller.transfer(afterGrant).bytes().orThrow(),
         bytes,
       );
+
+      // Physical transport closure must fail a consumer that never pulls again.
+      // Observe reader.closed, not another read or a public cancellation that
+      // would itself drive cleanup and conceal the idle-abort regression.
+      const idleDownload = await caller.download({ value: "idle-disconnect" })
+        .orThrow();
+      const idleGrant = Value.Parse(TransferGrantSchema, idleDownload.transfer);
+      assert(idleGrant.direction === "receive");
+      idle = (await caller.transfer(idleGrant).stream().orThrow()).getReader();
+      const idleFirst = await idle.read();
+      assert(!idleFirst.done && idleFirst.value.length > 0);
+      let idleClosed: "pending" | "completed" | "failed" = "pending";
+      void idle.closed.then(
+        () => {
+          idleClosed = "completed";
+        },
+        () => {
+          idleClosed = "failed";
+        },
+      );
+      await caller.connection.close();
+      await runtime.waitFor(() => idleClosed !== "pending");
+      assertEquals(
+        idleClosed,
+        "failed",
+        "physical loss must not imply verified EOF",
+      );
     } finally {
+      await idle?.cancel().catch(() => undefined);
+      idle?.releaseLock();
       await held?.cancel().catch(() => undefined);
       held?.releaseLock();
       await caller.connection.close();

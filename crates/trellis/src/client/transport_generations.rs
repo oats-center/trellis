@@ -638,6 +638,19 @@ pub(crate) struct TransportLease {
 }
 
 impl TransportLease {
+    /// Wait for irreversible loss of this exact attachment, not logical recovery.
+    pub(crate) async fn wait_lost(&self) {
+        let mut changes = self.generation.lease_wake.subscribe();
+        loop {
+            if self.generation.state() == GenerationState::Closed {
+                return;
+            }
+            if changes.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
     /// The pinned physical NATS connection.
     pub(crate) fn nats(&self) -> &async_nats::Client {
         &self.generation.nats

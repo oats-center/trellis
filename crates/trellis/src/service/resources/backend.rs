@@ -1,9 +1,14 @@
 use std::{fmt, pin::Pin, task::Poll, time::Duration, time::Instant};
 
 use async_nats::jetstream::kv::{CreateErrorKind, Operation, UpdateErrorKind};
-use async_nats::jetstream::object_store::{GetErrorKind, PutErrorKind};
+use async_nats::jetstream::object_store::{InfoErrorKind, PutErrorKind};
+use base64::{
+    engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD},
+    Engine,
+};
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt, TryStreamExt};
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::timeout_at;
 
@@ -88,7 +93,10 @@ impl ManagedStoreTransport {
 
 #[derive(Clone)]
 enum StoreBackend {
-    Fixed(Box<async_nats::jetstream::object_store::ObjectStore>),
+    Fixed {
+        client: async_nats::Client,
+        bucket: String,
+    },
     Managed(ManagedStoreTransport),
 }
 
@@ -386,6 +394,9 @@ pub struct BoundStoreResourceClient {
 struct StoreGuard {
     _lease: Option<TransportLease>,
     store: async_nats::jetstream::object_store::ObjectStore,
+    context: async_nats::jetstream::Context,
+    bucket: String,
+    read_batch_bytes: usize,
 }
 
 /// One object opened for streaming, pinned to its generation for the whole
@@ -393,13 +404,14 @@ struct StoreGuard {
 /// close underneath an in-progress read. The lease is released at true EOF,
 /// even if the caller retains the exhausted reader.
 pub(crate) struct BoundStoreObject {
-    _lease: Option<TransportLease>,
-    object: async_nats::jetstream::object_store::Object,
+    info: async_nats::jetstream::object_store::ObjectInfo,
+    chunks: futures_util::stream::BoxStream<'static, std::io::Result<Bytes>>,
+    pending: Bytes,
 }
 
 impl BoundStoreObject {
     pub(crate) fn info(&self) -> &async_nats::jetstream::object_store::ObjectInfo {
-        self.object.info()
+        &self.info
     }
 }
 
@@ -410,29 +422,72 @@ impl tokio::io::AsyncRead for BoundStoreObject {
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
         let this = self.get_mut();
-        let capacity = buf.remaining();
-        let polled = Pin::new(&mut this.object).poll_read(cx, buf);
-        let terminal = match &polled {
-            // True EOF fills no bytes when the caller offered capacity; a
-            // zero-capacity read is not EOF. A read error does not end the
-            // async-nats object reader (it can continue after a transient
-            // subscription error), so it must not release the generation.
-            Poll::Ready(Ok(())) => capacity > 0 && buf.filled().is_empty(),
-            Poll::Ready(Err(_)) | Poll::Pending => false,
-        };
-        if terminal {
-            this._lease = None;
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
         }
-        polled
+        loop {
+            if !this.pending.is_empty() {
+                let length = buf.remaining().min(this.pending.len());
+                buf.put_slice(&this.pending.split_to(length));
+                return Poll::Ready(Ok(()));
+            }
+            match this.chunks.as_mut().poll_next(cx) {
+                Poll::Ready(Some(Ok(bytes))) => this.pending = bytes,
+                Poll::Ready(Some(Err(error))) => return Poll::Ready(Err(error)),
+                Poll::Ready(None) => return Poll::Ready(Ok(())),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
+/// The consumer and its admitting generation live together, including cleanup.
+struct StoreReadState {
+    runtime: tokio::runtime::Handle,
+    guard: StoreGuard,
+    consumer: Option<
+        async_nats::jetstream::consumer::Consumer<async_nats::jetstream::consumer::pull::Config>,
+    >,
+    stream: String,
+    subject: String,
+    name: Option<String>,
+    chunks: usize,
+    size: usize,
+    received_chunks: usize,
+    received_bytes: usize,
+    stream_sequence: u64,
+    consumer_epoch_chunks: usize,
+    digest: Vec<u8>,
+    hasher: Sha256,
+}
+
+impl Drop for StoreReadState {
+    fn drop(&mut self) {
+        if let Some(name) = self.name.take() {
+            let context = self.guard.context.clone();
+            let stream = self.stream.clone();
+            let lease = self.guard._lease.take();
+            self.runtime.spawn(async move {
+                let _lease = lease;
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    context.delete_consumer_from_stream(name, stream),
+                )
+                .await;
+            });
+        }
     }
 }
 
 impl BoundStoreResourceClient {
-    /// Build one store client pinned to an already-open object store.
+    /// Bind one already-provisioned bucket to its owning connection.
     #[doc(hidden)]
-    pub fn new(store: async_nats::jetstream::object_store::ObjectStore) -> Self {
+    pub fn new(client: async_nats::Client, bucket: impl Into<String>) -> Self {
         Self {
-            backend: StoreBackend::Fixed(Box::new(store)),
+            backend: StoreBackend::Fixed {
+                client,
+                bucket: bucket.into(),
+            },
         }
     }
 
@@ -478,7 +533,7 @@ impl BoundStoreResourceClient {
     /// The absolute budget for one call when this client is managed.
     fn deadline(&self) -> Option<Instant> {
         match &self.backend {
-            StoreBackend::Fixed(_) => None,
+            StoreBackend::Fixed { .. } => None,
             StoreBackend::Managed(transport) => {
                 Some(Instant::now() + Duration::from_millis(transport.timeout_ms))
             }
@@ -509,10 +564,17 @@ impl BoundStoreResourceClient {
         deadline: Option<Instant>,
     ) -> Result<StoreGuard, ServerError> {
         match &self.backend {
-            StoreBackend::Fixed(store) => Ok(StoreGuard {
-                _lease: None,
-                store: store.as_ref().clone(),
-            }),
+            StoreBackend::Fixed { client, bucket } => {
+                let context = async_nats::jetstream::new(client.clone());
+                let store = context.get_object_store(bucket).await.map_err(nats_error)?;
+                Ok(StoreGuard {
+                    _lease: None,
+                    store,
+                    context,
+                    bucket: bucket.clone(),
+                    read_batch_bytes: client.server_info().max_payload.saturating_add(8192),
+                })
+            }
             StoreBackend::Managed(transport) => {
                 let deadline = deadline.unwrap_or_else(|| {
                     Instant::now() + Duration::from_millis(transport.timeout_ms)
@@ -526,6 +588,9 @@ impl BoundStoreResourceClient {
                     open_object_store(lease.nats(), &transport.binding).await?
                 };
                 Ok(StoreGuard {
+                    context: async_nats::jetstream::new(lease.nats().clone()),
+                    bucket: transport.binding.name.clone(),
+                    read_batch_bytes: lease.nats().server_info().max_payload.saturating_add(8192),
                     _lease: Some(lease),
                     store,
                 })
@@ -537,23 +602,191 @@ impl BoundStoreResourceClient {
     /// lease; acquisition and the metadata get share the call budget while the
     /// streamed body keeps its ordinary semantics.
     pub(crate) async fn open(&self, key: &str) -> Result<Option<BoundStoreObject>, ServerError> {
-        let found: Option<(StoreGuard, async_nats::jetstream::object_store::Object)> = self
-            .bounded("store open object", |deadline| async move {
-                let guard = self.guard(ResourceTransportAction::Read, deadline).await?;
-                match guard.store.get(key).await {
-                    Ok(object) => Ok(Some((guard, object))),
-                    Err(error) if error.kind() == GetErrorKind::NotFound => Ok(None),
-                    Err(error) => Err(nats_error(error)),
-                }
-            })
-            .await?;
-        match found {
-            Some((guard, object)) => {
-                let StoreGuard { _lease, .. } = guard;
-                Ok(Some(BoundStoreObject { _lease, object }))
+        self.bounded("store open object", |deadline| async move {
+            let guard = self.guard(ResourceTransportAction::Read, deadline).await?;
+            let info = match guard.store.info(key).await {
+                Ok(info) if !info.deleted => info,
+                Ok(_) => return Ok(None),
+                Err(error) if error.kind() == InfoErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(nats_error(error)),
+            };
+            if info.bucket != guard.bucket
+                || info.name != key
+                || info
+                    .options
+                    .as_ref()
+                    .is_some_and(|options| options.link.is_some())
+                || info.nuid.is_empty()
+                || info
+                    .nuid
+                    .chars()
+                    .any(|c| c.is_whitespace() || matches!(c, '.' | '*' | '>'))
+            {
+                return Err(nats_error(
+                    "invalid object metadata or unsupported object link",
+                ));
             }
-            None => Ok(None),
-        }
+            let encoded = info
+                .digest
+                .as_deref()
+                .and_then(|digest| digest.strip_prefix("SHA-256="))
+                .ok_or_else(|| nats_error("missing object SHA-256 digest"))?;
+            let digest = URL_SAFE
+                .decode(encoded)
+                .or_else(|_| URL_SAFE_NO_PAD.decode(encoded))
+                .map_err(nats_error)?;
+            if digest.len() != 32 || (info.size == 0) != (info.chunks == 0) {
+                return Err(nats_error("invalid object size, chunk count, or digest"));
+            }
+            if info.size == 0 {
+                if Sha256::digest([]).as_slice() != digest {
+                    return Err(nats_error("object digest mismatch"));
+                }
+                return Ok(Some(BoundStoreObject {
+                    info,
+                    chunks: futures_util::stream::empty().boxed(),
+                    pending: Bytes::new(),
+                }));
+            }
+            let stream = format!("OBJ_{}", guard.bucket);
+            let name = format!("tr_store_{}", ulid::Ulid::new());
+            let mut state = StoreReadState {
+                runtime: tokio::runtime::Handle::current(),
+                subject: format!("$O.{}.C.{}", guard.bucket, info.nuid),
+                guard,
+                consumer: None,
+                stream,
+                name: Some(name.clone()),
+                chunks: info.chunks,
+                size: info.size,
+                received_chunks: 0,
+                received_bytes: 0,
+                stream_sequence: 0,
+                consumer_epoch_chunks: 0,
+                digest,
+                hasher: Sha256::new(),
+            };
+            let consumer = state
+                .guard
+                .context
+                .create_consumer_on_stream(
+                    async_nats::jetstream::consumer::pull::Config {
+                        name: Some(name.clone()),
+                        filter_subject: format!("$O.{}.C.{}", state.guard.bucket, info.nuid),
+                        ack_policy: async_nats::jetstream::consumer::AckPolicy::None,
+                        max_waiting: 1,
+                        max_batch: 1,
+                        max_bytes: state.guard.read_batch_bytes.try_into().map_err(nats_error)?,
+                        inactive_threshold: Duration::from_secs(300),
+                        ..Default::default()
+                    },
+                    &state.stream,
+                )
+                .await
+                .map_err(nats_error)?;
+            state.consumer = Some(consumer);
+            let chunks = futures_util::stream::try_unfold(state, |mut state| async move {
+                if state.received_chunks == state.chunks {
+                    let deletion = state
+                        .guard
+                        .context
+                        .delete_consumer_from_stream(
+                            state.name.as_ref().expect("active store consumer"),
+                            &state.stream,
+                        )
+                        .await;
+                    if let Err(error) = deletion {
+                        let absent = matches!(error.kind(), async_nats::jetstream::stream::ConsumerErrorKind::JetStream(error)
+                            if error.error_code() == async_nats::jetstream::ErrorCode::CONSUMER_NOT_FOUND
+                                || error.error_code() == async_nats::jetstream::ErrorCode::STREAM_NOT_FOUND);
+                        if !absent {
+                            return Err(std::io::Error::other(error));
+                        }
+                    }
+                    drop(state.name.take());
+                    return Ok(None);
+                }
+                // async-nats 0.50's finite Batch reports byte-limit batch
+                // completion as an error. One message avoids that ambiguity
+                // while max_bytes still bounds even historical large chunks.
+                // Ephemeral consumers may be removed while the caller holds a
+                // chunk. Reopen at the exact next stream sequence on demand;
+                // no heartbeat task or idle deadline belongs to the reader.
+                match state.guard.context.get_consumer_from_stream::<async_nats::jetstream::consumer::pull::Config, _, _>(state.name.as_ref().expect("active store consumer"), &state.stream).await {
+                    Ok(consumer) => state.consumer = Some(consumer),
+                    Err(error) if matches!(error.kind(), async_nats::jetstream::stream::ConsumerErrorKind::JetStream(error) if error.error_code() == async_nats::jetstream::ErrorCode::CONSUMER_NOT_FOUND) => {
+                        let consumer = state.guard.context.create_consumer_on_stream(
+                            async_nats::jetstream::consumer::pull::Config {
+                                name: state.name.clone(),
+                                filter_subject: state.subject.clone(),
+                                deliver_policy: async_nats::jetstream::consumer::DeliverPolicy::ByStartSequence { start_sequence: state.stream_sequence + 1 },
+                                ack_policy: async_nats::jetstream::consumer::AckPolicy::None,
+                                max_waiting: 1,
+                                max_batch: 1,
+                                max_bytes: state.guard.read_batch_bytes.try_into().map_err(std::io::Error::other)?,
+                                inactive_threshold: Duration::from_secs(300),
+                                ..Default::default()
+                            }, &state.stream).await.map_err(std::io::Error::other)?;
+                        state.consumer = Some(consumer);
+                        state.consumer_epoch_chunks = state.received_chunks;
+                    }
+                    Err(error) => return Err(std::io::Error::other(error)),
+                }
+                let mut batch = state
+                    .consumer
+                    .as_ref()
+                    .expect("opened store consumer")
+                    .fetch()
+                    .max_messages(1)
+                    .max_bytes(state.guard.read_batch_bytes)
+                    .expires(Duration::from_secs(5))
+                    .messages()
+                    .await
+                    .map_err(std::io::Error::other)?;
+                let message = batch
+                    .next()
+                    .await
+                    .ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "object chunks missing",
+                        )
+                    })?
+                    .map_err(std::io::Error::other)?;
+                let message_info = message.info().map_err(std::io::Error::other)?;
+                if message_info.consumer_sequence != (state.received_chunks - state.consumer_epoch_chunks) as u64 + 1
+                    || message_info.stream_sequence <= state.stream_sequence {
+                    return Err(std::io::Error::other("object chunk sequence mismatch"));
+                }
+                state.received_chunks += 1;
+                state.stream_sequence = message_info.stream_sequence;
+                state.received_bytes = state
+                    .received_bytes
+                    .checked_add(message.payload.len())
+                    .ok_or_else(|| std::io::Error::other("object size overflow"))?;
+                if state.received_bytes > state.size {
+                    return Err(std::io::Error::other("object size mismatch"));
+                }
+                state.hasher.update(&message.payload);
+                if state.received_chunks == state.chunks
+                    && (state.received_bytes != state.size
+                        || message_info.pending != 0
+                        || state.hasher.clone().finalize().as_slice() != state.digest)
+                {
+                    return Err(std::io::Error::other(
+                        "object size, chunk count, or digest mismatch",
+                    ));
+                }
+                Ok(Some((message.payload.clone(), state)))
+            })
+            .boxed();
+            Ok(Some(BoundStoreObject {
+                info,
+                chunks,
+                pending: Bytes::new(),
+            }))
+        })
+        .await
     }
 }
 
@@ -576,24 +809,13 @@ impl StoreResourceClient for BoundStoreResourceClient {
     {
         // Acquisition, open, and the metadata get share the call budget; the
         // streamed body keeps its ordinary semantics and keeps the lease.
-        let found: Option<(StoreGuard, async_nats::jetstream::object_store::Object)> = self
-            .bounded("store read", |deadline| async move {
-                let guard = self.guard(ResourceTransportAction::Read, deadline).await?;
-                match guard.store.get(key).await {
-                    Ok(object) => Ok(Some((guard, object))),
-                    Err(error) if error.kind() == GetErrorKind::NotFound => Ok(None),
-                    Err(error) => Err(nats_error(error)),
-                }
-            })
-            .await?;
-        let Some((guard, mut object)) = found else {
+        let Some(mut object) = self.open(key).await? else {
             return Ok(None);
         };
         let info = store_object_info(object.info())?;
         tokio::io::copy(&mut object, writer)
             .await
             .map_err(nats_error)?;
-        drop(guard);
         Ok(Some(info))
     }
 

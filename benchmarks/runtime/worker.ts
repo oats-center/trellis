@@ -4,6 +4,7 @@ import {
   TrellisClient,
 } from "@oatscenter/trellis";
 import { Value } from "typebox/value";
+import { sha256 } from "@noble/hashes/sha256";
 import { RetryJobError, TrellisService } from "@oatscenter/trellis/service";
 import { ensureTelemetryRuntime } from "@oatscenter/trellis/telemetry";
 import { err, isErr, ok } from "@oatscenter/result";
@@ -50,6 +51,64 @@ if (options.role === "provider") {
     await store.put(String(size), body).orThrow();
     await Deno.writeFile(`${options.output}/body-${size}.bin`, body);
   }
+  if (options.workload === "transfer") {
+    // Runtime-private diagnostic: only the ordinary storage-neutral store API.
+    const rows: Sample[] = [];
+    for (const size of options.sizes) {
+      const body = payload(size);
+      const expected = await digest(body);
+      for (let index = -options.warmups; index < options.samples; index++) {
+        for (const action of ["write", "read"] as const) {
+          const row: Sample = {
+            scenario: `backend-${action}`,
+            transport: "store",
+            bytes: size,
+            warmup: index < 0,
+            startedUnixMs: Date.now(),
+            durationMs: 0,
+          };
+          const started = performance.now();
+          try {
+            if (action === "write") {
+              await store.put(
+                `diagnostic-${size}`,
+                (async function* () {
+                  yield body;
+                })(),
+              ).orThrow();
+              row.durationMs = performance.now() - started;
+              // Read-back is mandatory but outside the isolated write timing.
+            }
+            const entry = await store.get(`diagnostic-${size}`).orThrow();
+            const stream = await entry.stream().orThrow();
+            const hash = sha256.create();
+            let length = 0;
+            for await (const chunk of stream) {
+              length += chunk.length;
+              hash.update(chunk);
+            }
+            const actual = Array.from(
+              hash.digest(),
+              (byte) => byte.toString(16).padStart(2, "0"),
+            ).join("");
+            if (length !== size || actual !== expected) {
+              throw new Error("Corrupt backend diagnostic round trip");
+            }
+            if (action === "read") row.durationMs = performance.now() - started;
+          } catch (error) {
+            row.durationMs = performance.now() - started;
+            row.error = Deno.inspect(error, { colors: false, depth: 6 });
+          }
+          rows.push(row);
+        }
+      }
+      await store.delete(`diagnostic-${size}`).orThrow();
+    }
+    await Deno.writeTextFile(
+      `${options.output}/store-samples.json`,
+      JSON.stringify(rows, null, 2),
+    );
+  }
   await service.handleEcho(({ input }) => ok(input));
   await service.handlePutRecord(async ({ input }) => {
     await service.kv.records.put(input.value, input).orThrow();
@@ -63,11 +122,16 @@ if (options.role === "provider") {
     return ok(value);
   });
   await service.handleDownload(async ({ input, context }) => {
+    if (context.caller.type !== "verified") {
+      throw new Error("Download requires a verified RPC caller");
+    }
     const transfer = await service.createTransfer({
       direction: "receive",
       store: "files",
       key: input.value,
-      sessionKey: context.sessionKey,
+      sessionKey: context.caller.sessionKey,
+      connectionId: context.caller.connectionId,
+      contextDigest: context.caller.contextDigest,
       permission: context.permission,
       requiredCapabilities: context.requiredCapabilities,
       inboxPrefix: context.inboxPrefix,
@@ -210,11 +274,12 @@ if (options.role === "provider") {
     action: () => Promise<Partial<Sample> | void>,
     bytes?: number,
     offeredAt?: number,
+    warmup = false,
   ) {
     if (scenario !== "echo") {
       await phase(`${transport}/${scenario}/${bytes ?? 0}`);
     }
-    const before = scenario === "echo"
+    const before = scenario === "echo" || warmup
       ? undefined
       : await snapshotResources(options.output, options.cpuTicks);
     const startedUnixMs = Date.now();
@@ -233,6 +298,7 @@ if (options.role === "provider") {
         }),
         bytes,
         ...detail,
+        warmup,
       });
     } catch (error) {
       samples.push({
@@ -246,6 +312,7 @@ if (options.role === "provider") {
         }),
         bytes,
         error: Deno.inspect(error, { colors: false, depth: 6 }),
+        warmup,
       });
       if (error instanceof AuthError) {
         console.error(
@@ -269,181 +336,204 @@ if (options.role === "provider") {
     }
   }
   try {
-    for (let index = 0; index < options.samples; index++) {
-      await measure("fresh-connection-first-get", "http", async () => {
-        const http = Deno.createHttpClient({ http1: true, http2: false });
-        try {
-          const request = {
-            client: http,
-            headers: { "accept-encoding": "identity" },
-            signal: AbortSignal.timeout(30_000),
-          };
-          const reply = await fetch(
-            `${options.httpUrl}/echo?value=first-get`,
-            request,
-          );
-          if (!reply.ok || (await reply.json()).value !== "first-get") {
-            throw new Error("Fresh HTTP GET failed");
+    if (options.workload === "all") {
+      for (let index = 0; index < options.samples; index++) {
+        await measure("fresh-connection-first-get", "http", async () => {
+          const http = Deno.createHttpClient({ http1: true, http2: false });
+          try {
+            const request = {
+              client: http,
+              headers: { "accept-encoding": "identity" },
+              signal: AbortSignal.timeout(30_000),
+            };
+            const reply = await fetch(
+              `${options.httpUrl}/echo?value=first-get`,
+              request,
+            );
+            if (!reply.ok || (await reply.json()).value !== "first-get") {
+              throw new Error("Fresh HTTP GET failed");
+            }
+          } finally {
+            http.close();
           }
-        } finally {
-          http.close();
-        }
-      });
-      const seed = options.seeds[seedIndex++];
-      const cycle: { client?: Awaited<ReturnType<typeof connect>> } = {};
-      await measure(
-        index === 0 ? "first-process-login-first-rpc" : "fresh-login-first-rpc",
-        "trellis",
-        async () => {
-          const started = performance.now();
-          const client = await connect(seed);
-          cycle.client = client;
-          held.push(client);
-          const connected = performance.now();
-          const response = await client.echo({ value: `first-${index}` })
-            .orThrow();
-          const finished = performance.now();
-          if (response.value !== `first-${index}`) {
-            throw new Error("Incorrect first RPC response");
-          }
-          return {
-            durationMs: finished - started,
-            connectMs: connected - started,
-            firstRpcMs: finished - connected,
-          };
-        },
-      );
-      if (cycle.client) {
-        const sessionId = (await cycle.client.sessionsMe({}).orThrow()).session
-          ?.sessionId;
-        if (!sessionId) {
-          throw new Error("Fresh login did not create a public login session");
-        }
-        await cycle.client.connection.close();
-        held.pop();
-        await measure("resume-first-rpc", "trellis", async () => {
-          const resumeStarted = performance.now();
-          const resumed = await connect(seed, sessionId);
-          cycle.client = resumed;
-          held.push(resumed);
-          const resumedAt = performance.now();
-          const reply = await resumed.echo({ value: "resumed" }).orThrow();
-          const repliedAt = performance.now();
-          if (reply.value !== "resumed") {
-            throw new Error("Resume did not reach the provider");
-          }
-          return {
-            durationMs: repliedAt - resumeStarted,
-            connectMs: resumedAt - resumeStarted,
-            firstRpcMs: repliedAt - resumedAt,
-          };
         });
-        await measure("logout", "trellis", async () => {
-          await cycle.client!.sessionsLogout({}).orThrow();
-        });
-        await cycle.client.connection.close();
-        held.pop();
+        const seed = options.seeds[seedIndex++];
+        const cycle: { client?: Awaited<ReturnType<typeof connect>> } = {};
+        await measure(
+          index === 0
+            ? "first-process-login-first-rpc"
+            : "fresh-login-first-rpc",
+          "trellis",
+          async () => {
+            const started = performance.now();
+            const client = await connect(seed);
+            cycle.client = client;
+            held.push(client);
+            const connected = performance.now();
+            const response = await client.echo({ value: `first-${index}` })
+              .orThrow();
+            const finished = performance.now();
+            if (response.value !== `first-${index}`) {
+              throw new Error("Incorrect first RPC response");
+            }
+            return {
+              durationMs: finished - started,
+              connectMs: connected - started,
+              firstRpcMs: finished - connected,
+            };
+          },
+        );
+        if (cycle.client) {
+          const sessionId = (await cycle.client.sessionsMe({}).orThrow())
+            .session
+            ?.sessionId;
+          if (!sessionId) {
+            throw new Error(
+              "Fresh login did not create a public login session",
+            );
+          }
+          await cycle.client.connection.close();
+          held.pop();
+          await measure("resume-first-rpc", "trellis", async () => {
+            const resumeStarted = performance.now();
+            const resumed = await connect(seed, sessionId);
+            cycle.client = resumed;
+            held.push(resumed);
+            const resumedAt = performance.now();
+            const reply = await resumed.echo({ value: "resumed" }).orThrow();
+            const repliedAt = performance.now();
+            if (reply.value !== "resumed") {
+              throw new Error("Resume did not reach the provider");
+            }
+            return {
+              durationMs: repliedAt - resumeStarted,
+              connectMs: resumedAt - resumeStarted,
+              firstRpcMs: repliedAt - resumedAt,
+            };
+          });
+          await measure("logout", "trellis", async () => {
+            await cycle.client!.sessionsLogout({}).orThrow();
+          });
+          await cycle.client.connection.close();
+          held.pop();
+        }
       }
     }
     const client = await connect();
     held.push(client);
     const ephemeral = new Map<string, () => void>();
     const durable = new Map<string, () => void>();
-    await client.onChanged(
-      (event) => {
-        ephemeral.get(types.ValueCodec.decode(event).value)?.();
+    if (options.workload === "all") {
+      await client.onChanged(
+        (event) => {
+          ephemeral.get(types.ValueCodec.decode(event).value)?.();
+          return ok(undefined);
+        },
+        { mode: "ephemeral" },
+      ).orThrow();
+      await client.onDelivered((event) => {
+        durable.get(types.ValueCodec.decode(event).value)?.();
         return ok(undefined);
-      },
-      { mode: "ephemeral" },
-    ).orThrow();
-    await client.onDelivered((event) => {
-      durable.get(types.ValueCodec.decode(event).value)?.();
-      return ok(undefined);
-    }, { mode: "ephemeral" }).orThrow();
-    for (let index = 0; index < options.samples; index++) {
-      const value = `action-${index}`;
-      await measure("state-write-read", "trellis", async () => {
-        await client.state.saved.set({ value }).orThrow();
-        const stored = await client.state.saved.get().orThrow();
-        if (stored?.value.value !== value) {
-          throw new Error("State round trip lost data");
-        }
-      });
-      await measure("rpc-kv-write-read", "trellis", async () => {
-        await client.putRecord({ value }).orThrow();
-        const stored = await client.readRecord({ value }).orThrow();
-        if (stored.value !== value) throw new Error("KV round trip lost data");
-      });
-      await measure("operation-progress-complete", "trellis", async () => {
-        const operation = await client.work({ value }).start().orThrow();
-        const terminal = await operation.wait().orThrow();
-        if (
-          terminal.state !== "completed" || terminal.output?.value !== value ||
-          terminal.progress?.value !== value
-        ) throw new Error("Operation outcome or progress was lost");
-      });
-      await measure("operation-private-job-complete", "trellis", async () => {
-        const operation = await client.queueWork({ value }).start().orThrow();
-        const terminal = await operation.wait().orThrow();
-        if (
-          terminal.state !== "completed" || terminal.output?.value !== value
-        ) throw new Error("Job-backed operation lost its result");
-      });
-      await measure("live-start-first-frame", "trellis", async () => {
-        const abort = new AbortController();
-        try {
-          const feed = await client.watch({ value }, { signal: abort.signal })
-            .orThrow();
-          const received = await deadline(feed[Symbol.asyncIterator]().next());
-          if (received.done || received.value.value !== value) {
-            throw new Error("Live first frame was lost");
+      }, { mode: "ephemeral" }).orThrow();
+      for (let index = 0; index < options.samples; index++) {
+        const value = `action-${index}`;
+        await measure("state-write-read", "trellis", async () => {
+          await client.state.saved.set({ value }).orThrow();
+          const stored = await client.state.saved.get().orThrow();
+          if (stored?.value.value !== value) {
+            throw new Error("State round trip lost data");
           }
-        } finally {
-          abort.abort();
-        }
-      });
-      await measure("live-start-first-frame", "http", async () => {
-        const response = await fetch(`${options.httpUrl}/live?value=${value}`, {
-          headers: { "accept-encoding": "identity" },
-          cache: "no-store",
-          signal: AbortSignal.timeout(30_000),
         });
-        if (!response.ok || !response.body) {
-          throw new Error("HTTP stream failed");
-        }
-        const reader = response.body.getReader();
-        let text = "";
-        const decoder = new TextDecoder();
-        try {
-          while (!text.includes("\n")) {
-            const frame = await reader.read();
-            if (frame.done) throw new Error("HTTP stream ended before a frame");
-            text += decoder.decode(frame.value, { stream: true });
+        await measure("rpc-kv-write-read", "trellis", async () => {
+          await client.putRecord({ value }).orThrow();
+          const stored = await client.readRecord({ value }).orThrow();
+          if (stored.value !== value) {
+            throw new Error("KV round trip lost data");
           }
-          if (JSON.parse(text.split("\n")[0]).value !== value) {
-            throw new Error("HTTP stream returned incorrect data");
+        });
+        await measure("operation-progress-complete", "trellis", async () => {
+          const operation = await client.work({ value }).start().orThrow();
+          const terminal = await operation.wait().orThrow();
+          if (
+            terminal.state !== "completed" ||
+            terminal.output?.value !== value ||
+            terminal.progress?.value !== value
+          ) throw new Error("Operation outcome or progress was lost");
+        });
+        await measure("operation-private-job-complete", "trellis", async () => {
+          const operation = await client.queueWork({ value }).start().orThrow();
+          const terminal = await operation.wait().orThrow();
+          if (
+            terminal.state !== "completed" || terminal.output?.value !== value
+          ) throw new Error("Job-backed operation lost its result");
+        });
+        await measure("live-start-first-frame", "trellis", async () => {
+          const abort = new AbortController();
+          try {
+            const feed = await client.watch({ value }, { signal: abort.signal })
+              .orThrow();
+            const received = await deadline(
+              feed[Symbol.asyncIterator]().next(),
+            );
+            if (received.done || received.value.value !== value) {
+              throw new Error("Live first frame was lost");
+            }
+          } finally {
+            abort.abort();
           }
-        } finally {
-          await reader.cancel();
-        }
-      });
-      const seen = Promise.withResolvers<void>();
-      const handled = Promise.withResolvers<void>();
-      const durableValue = `durable-${value}`;
-      ephemeral.set(value, seen.resolve);
-      durable.set(durableValue, handled.resolve);
-      await measure("event-publish-ephemeral-receive", "trellis", async () => {
-        await client.publishChanged({ value }).orThrow();
-        await deadline(seen.promise);
-      });
-      await measure("event-durable-handler-reply", "trellis", async () => {
-        await client.publishChanged({ value: durableValue }).orThrow();
-        await deadline(handled.promise);
-      });
-      ephemeral.delete(value);
-      durable.delete(durableValue);
+        });
+        await measure("live-start-first-frame", "http", async () => {
+          const response = await fetch(
+            `${options.httpUrl}/live?value=${value}`,
+            {
+              headers: { "accept-encoding": "identity" },
+              cache: "no-store",
+              signal: AbortSignal.timeout(30_000),
+            },
+          );
+          if (!response.ok || !response.body) {
+            throw new Error("HTTP stream failed");
+          }
+          const reader = response.body.getReader();
+          let text = "";
+          const decoder = new TextDecoder();
+          try {
+            while (!text.includes("\n")) {
+              const frame = await reader.read();
+              if (frame.done) {
+                throw new Error("HTTP stream ended before a frame");
+              }
+              text += decoder.decode(frame.value, { stream: true });
+            }
+            if (JSON.parse(text.split("\n")[0]).value !== value) {
+              throw new Error("HTTP stream returned incorrect data");
+            }
+          } finally {
+            await reader.cancel();
+          }
+        });
+        const seen = Promise.withResolvers<void>();
+        const handled = Promise.withResolvers<void>();
+        const durableValue = `durable-${value}`;
+        ephemeral.set(value, seen.resolve);
+        durable.set(durableValue, handled.resolve);
+        await measure(
+          "event-publish-ephemeral-receive",
+          "trellis",
+          async () => {
+            await client.publishChanged({ value }).orThrow();
+            await deadline(seen.promise);
+          },
+        );
+        await measure("event-durable-handler-reply", "trellis", async () => {
+          await client.publishChanged({ value: durableValue }).orThrow();
+          await deadline(handled.promise);
+        });
+        ephemeral.delete(value);
+        durable.delete(durableValue);
+      }
     }
-    for (let trial = 0; trial < options.samples; trial++) {
+    for (let trial = -options.warmups; trial < options.samples; trial++) {
       // Alternate protocols to avoid consistently giving one the warmer host.
       const pair = trial % 2
         ? ["http", "trellis"] as const
@@ -477,6 +567,7 @@ if (options.role === "provider") {
               durationMs: now - offeredAt!,
               schedulerDelayMs: Math.max(0, now - offeredAt!),
               loadGeneratorDrop: true,
+              warmup: trial < 0,
               error:
                 "Load generator max-outstanding reached; no request was sent",
             });
@@ -501,6 +592,7 @@ if (options.role === "provider") {
             },
             undefined,
             offeredAt,
+            trial < 0,
           );
           if (!options.arrivalRate) await work;
           else {
@@ -515,248 +607,284 @@ if (options.role === "provider") {
         await Promise.all(allWork);
         const durationMs = performance.now() - windowStart;
         const after = await snapshotResources(options.output, options.cpuTicks);
-        windows.push({
-          scenario: "echo",
-          transport,
-          calls: attempted,
-          durationMs,
-          before,
-          after,
-        });
+        if (trial >= 0) {
+          windows.push({
+            scenario: "echo",
+            transport,
+            calls: attempted,
+            durationMs,
+            before,
+            after,
+          });
+        }
       }
     }
-    for (let index = 0; index < options.samples; index++) {
-      await measure("operation-cancel", "trellis", async () => {
-        const value = `cancel-${index}`;
-        const ready = Promise.withResolvers<void>();
-        const started = performance.now();
-        const operation = await client.awaitCancellation({ value }).onProgress(
-          (event) => {
-            if (event.progress.value !== value) {
-              throw new Error("Wrong cancellation operation progress");
-            }
-            ready.resolve();
-          },
-        ).onEvent((event) => {
-          if ("snapshot" in event && event.snapshot.progress?.value === value) {
-            ready.resolve();
-          }
-        }).start().orThrow();
-        try {
-          const finished = operation.wait().orThrow();
-          await deadline(
-            Promise.race([
-              ready.promise,
-              finished.then((result) => {
-                throw new Error(
-                  `Cancellation target ended before progress: ${
-                    JSON.stringify(result)
-                  }`,
-                );
-              }),
-            ]),
-            20_000,
-          ).catch(async (error: unknown) => {
-            console.error(
-              "BENCHMARK_CANCEL_NOT_READY",
-              JSON.stringify(await operation.get().orThrow()),
-            );
-            throw error;
-          });
-          const setupMs = performance.now() - started;
-          const cancelStarted = performance.now();
-          const result = await deadline(operation.cancel().orThrow(), 25_000)
-            .catch(async (error: unknown) => {
+    if (options.workload === "all") {
+      for (let index = 0; index < options.samples; index++) {
+        await measure("operation-cancel", "trellis", async () => {
+          const value = `cancel-${index}`;
+          const ready = Promise.withResolvers<void>();
+          const started = performance.now();
+          const operation = await client.awaitCancellation({ value })
+            .onProgress(
+              (event) => {
+                if (event.progress.value !== value) {
+                  throw new Error("Wrong cancellation operation progress");
+                }
+                ready.resolve();
+              },
+            ).onEvent((event) => {
+              if (
+                "snapshot" in event && event.snapshot.progress?.value === value
+              ) {
+                ready.resolve();
+              }
+            }).start().orThrow();
+          try {
+            const finished = operation.wait().orThrow();
+            await deadline(
+              Promise.race([
+                ready.promise,
+                finished.then((result) => {
+                  throw new Error(
+                    `Cancellation target ended before progress: ${
+                      JSON.stringify(result)
+                    }`,
+                  );
+                }),
+              ]),
+              20_000,
+            ).catch(async (error: unknown) => {
               console.error(
-                "BENCHMARK_CANCEL_STATE",
+                "BENCHMARK_CANCEL_NOT_READY",
                 JSON.stringify(await operation.get().orThrow()),
               );
               throw error;
             });
-          if (result.state !== "cancelled") {
-            throw new Error("Operation cancellation did not finish");
+            const setupMs = performance.now() - started;
+            const cancelStarted = performance.now();
+            const result = await deadline(operation.cancel().orThrow(), 25_000)
+              .catch(async (error: unknown) => {
+                console.error(
+                  "BENCHMARK_CANCEL_STATE",
+                  JSON.stringify(await operation.get().orThrow()),
+                );
+                throw error;
+              });
+            if (result.state !== "cancelled") {
+              throw new Error("Operation cancellation did not finish");
+            }
+            return {
+              setupMs,
+              cancellationMs: performance.now() - cancelStarted,
+            };
+          } finally {
+            await operation.stopObserving().orThrow();
           }
-          return { setupMs, cancellationMs: performance.now() - cancelStarted };
-        } finally {
-          await operation.stopObserving().orThrow();
-        }
-      });
-      await measure("job-key-contention", "trellis", async () => {
-        const batch = await Promise.allSettled(
-          Array.from({ length: 10 }, async (_, member) => {
-            const input = { key: "shared", value: `batch-${index}-${member}` };
-            const operation = await client.queueKeyed(input).start().orThrow();
-            const result = await operation.wait().orThrow();
+        });
+        await measure("job-key-contention", "trellis", async () => {
+          const batch = await Promise.allSettled(
+            Array.from({ length: 10 }, async (_, member) => {
+              const input = {
+                key: "shared",
+                value: `batch-${index}-${member}`,
+              };
+              const operation = await client.queueKeyed(input).start()
+                .orThrow();
+              const result = await operation.wait().orThrow();
+              if (
+                result.state !== "completed" ||
+                result.output?.value !== input.value ||
+                result.output.key !== input.key
+              ) {
+                throw new Error(
+                  `Contended job returned the wrong result for ${
+                    JSON.stringify(input)
+                  }: ${JSON.stringify(result)}`,
+                );
+              }
+            }),
+          );
+          const failures = batch.filter((result) =>
+            result.status === "rejected"
+          );
+          if (failures.length) {
+            throw new AggregateError(
+              failures.map((result) => result.reason),
+              "Contended jobs failed",
+            );
+          }
+          return { operations: 10 };
+        });
+        await measure("job-retry-after-upload", "trellis", async () => {
+          const input = { value: `upload-retry-${index}` };
+          const missing = Promise.withResolvers<void>();
+          ephemeral.set(input.value, missing.resolve);
+          const operation = await client.awaitObject(input).start().orThrow();
+          try {
+            const finished = operation.wait().orThrow();
+            await deadline(
+              Promise.race([
+                missing.promise,
+                finished.then((result) => {
+                  throw new Error(
+                    `Object-dependent operation ended before its missing-object read: ${
+                      JSON.stringify(result)
+                    }`,
+                  );
+                }),
+              ]),
+            );
+            const body = payload(1024);
+            const upload = await client.upload({ value: `retry-${index}` })
+              .transfer(body).start().orThrow();
+            const transferred = await upload.wait().orThrow();
+            if (transferred.terminal.state !== "completed") {
+              throw new Error("Retry dependency upload did not complete");
+            }
+            const result = await finished;
             if (
               result.state !== "completed" ||
-              result.output?.value !== input.value ||
-              result.output.key !== input.key
-            ) {
-              throw new Error(
-                `Contended job returned the wrong result for ${
-                  JSON.stringify(input)
-                }: ${JSON.stringify(result)}`,
-              );
-            }
-          }),
-        );
-        const failures = batch.filter((result) => result.status === "rejected");
-        if (failures.length) {
-          throw new AggregateError(
-            failures.map((result) => result.reason),
-            "Contended jobs failed",
-          );
-        }
-        return { operations: 10 };
-      });
-      await measure("job-retry-after-upload", "trellis", async () => {
-        const input = { value: `upload-retry-${index}` };
-        const missing = Promise.withResolvers<void>();
-        ephemeral.set(input.value, missing.resolve);
-        const operation = await client.awaitObject(input).start().orThrow();
-        try {
-          const finished = operation.wait().orThrow();
-          await deadline(
-            Promise.race([
-              missing.promise,
-              finished.then((result) => {
-                throw new Error(
-                  `Object-dependent operation ended before its missing-object read: ${
-                    JSON.stringify(result)
-                  }`,
-                );
-              }),
-            ]),
-          );
-          const body = payload(1024);
-          const upload = await client.upload({ value: `retry-${index}` })
-            .transfer(body).start().orThrow();
-          const transferred = await upload.wait().orThrow();
-          if (transferred.terminal.state !== "completed") {
-            throw new Error("Retry dependency upload did not complete");
+              result.output?.value !== await digest(body)
+            ) throw new Error("Retried job did not read the uploaded object");
+          } finally {
+            ephemeral.delete(input.value);
           }
-          const result = await finished;
-          if (
-            result.state !== "completed" ||
-            result.output?.value !== await digest(body)
-          ) throw new Error("Retried job did not read the uploaded object");
-        } finally {
-          ephemeral.delete(input.value);
-        }
-      });
+        });
+      }
     }
     for (const size of options.sizes) {
       const body = payload(size);
       const expected = await digest(body);
-      for (let index = 0; index < options.samples; index++) {
+      for (let index = -options.warmups; index < options.samples; index++) {
         for (
           const transport of index % 2
             ? ["http", "trellis"] as const
             : ["trellis", "http"] as const
         ) {
-          await measure("download", transport, async () => {
-            const start = performance.now();
-            let stream: ReadableStream<Uint8Array>;
-            if (transport === "trellis") {
-              const response = await client.download({ value: String(size) })
-                .orThrow();
-              const grant = Value.Parse(TransferGrantSchema, response.transfer);
-              if (grant.direction !== "receive") {
-                throw new Error("Download returned a send grant");
+          await measure(
+            "download",
+            transport,
+            async () => {
+              const start = performance.now();
+              let stream: ReadableStream<Uint8Array>;
+              if (transport === "trellis") {
+                const response = await client.download({ value: String(size) })
+                  .orThrow();
+                const grant = Value.Parse(
+                  TransferGrantSchema,
+                  response.transfer,
+                );
+                if (grant.direction !== "receive") {
+                  throw new Error("Download returned a send grant");
+                }
+                stream = await client.transfer(grant).stream()
+                  .orThrow();
+              } else {
+                const response = await fetch(
+                  `${options.httpUrl}/download?size=${size}`,
+                  {
+                    cache: "no-store",
+                    headers: { "accept-encoding": "identity" },
+                    signal: AbortSignal.timeout(30_000),
+                  },
+                );
+                if (!response.ok || !response.body) {
+                  throw new Error(`HTTP download ${response.status}`);
+                }
+                const encoding = response.headers.get("content-encoding");
+                if (encoding && encoding !== "identity") {
+                  throw new Error(`Unexpected HTTP compression: ${encoding}`);
+                }
+                stream = response.body;
               }
-              stream = await client.transfer(grant).stream()
-                .orThrow();
-            } else {
-              const response = await fetch(
-                `${options.httpUrl}/download?size=${size}`,
-                {
-                  cache: "no-store",
-                  headers: { "accept-encoding": "identity" },
-                  signal: AbortSignal.timeout(30_000),
-                },
-              );
-              if (!response.ok || !response.body) {
-                throw new Error(`HTTP download ${response.status}`);
+              const setupMs = performance.now() - start;
+              let firstByteMs: number | undefined;
+              const chunks: Uint8Array[] = [];
+              let length = 0;
+              for await (const chunk of stream) {
+                if (chunk.length && firstByteMs === undefined) {
+                  firstByteMs = performance.now() - start;
+                }
+                length += chunk.length;
+                chunks.push(chunk);
               }
-              const encoding = response.headers.get("content-encoding");
-              if (encoding && encoding !== "identity") {
-                throw new Error(`Unexpected HTTP compression: ${encoding}`);
+              const received = new Uint8Array(length);
+              let offset = 0;
+              for (const chunk of chunks) {
+                received.set(chunk, offset);
+                offset += chunk.length;
               }
-              stream = response.body;
-            }
-            const setupMs = performance.now() - start;
-            let firstByteMs: number | undefined;
-            const chunks: Uint8Array[] = [];
-            let length = 0;
-            for await (const chunk of stream) {
-              if (chunk.length && firstByteMs === undefined) {
-                firstByteMs = performance.now() - start;
+              if (length !== size || await digest(received) !== expected) {
+                throw new Error("Corrupt download");
               }
-              length += chunk.length;
-              chunks.push(chunk);
-            }
-            const received = new Uint8Array(length);
-            let offset = 0;
-            for (const chunk of chunks) {
-              received.set(chunk, offset);
-              offset += chunk.length;
-            }
-            if (length !== size || await digest(received) !== expected) {
-              throw new Error("Corrupt download");
-            }
-            return { setupMs, firstByteMs };
-          }, size);
-          await measure("upload-persisted", transport, async () => {
-            if (transport === "trellis") {
-              const operation = await client.upload({ value: String(size) })
-                .transfer(body).start().orThrow();
-              const result = await operation.wait().orThrow();
-              if (
-                result.terminal.state !== "completed" ||
-                result.transferred.size !== size
-              ) throw new Error("Upload not completed");
-              if (
-                result.terminal.state !== "completed" ||
-                result.terminal.output?.value !== expected
-              ) {
-                throw new Error("Corrupt persisted upload");
+              return { setupMs, firstByteMs };
+            },
+            size,
+            undefined,
+            index < 0,
+          );
+          await measure(
+            "upload-persisted",
+            transport,
+            async () => {
+              if (transport === "trellis") {
+                const operation = await client.upload({ value: String(size) })
+                  .transfer(body).start().orThrow();
+                const result = await operation.wait().orThrow();
+                if (
+                  result.terminal.state !== "completed" ||
+                  result.transferred.size !== size
+                ) throw new Error("Upload not completed");
+                if (
+                  result.terminal.state !== "completed" ||
+                  result.terminal.output?.value !== expected
+                ) {
+                  throw new Error("Corrupt persisted upload");
+                }
+              } else {
+                const response = await fetch(
+                  `${options.httpUrl}/upload?size=${size}`,
+                  {
+                    method: "PUT",
+                    body,
+                    headers: { "accept-encoding": "identity" },
+                    signal: AbortSignal.timeout(30_000),
+                  },
+                );
+                if (!response.ok) {
+                  throw new Error(`HTTP upload ${response.status}`);
+                }
+                const stored = await response.json();
+                if (stored.size !== size || stored.digest !== expected) {
+                  throw new Error("Corrupt persisted upload");
+                }
               }
-            } else {
-              const response = await fetch(
-                `${options.httpUrl}/upload?size=${size}`,
-                {
-                  method: "PUT",
-                  body,
-                  headers: { "accept-encoding": "identity" },
-                  signal: AbortSignal.timeout(30_000),
-                },
-              );
-              if (!response.ok) {
-                throw new Error(`HTTP upload ${response.status}`);
-              }
-              const stored = await response.json();
-              if (stored.size !== size || stored.digest !== expected) {
-                throw new Error("Corrupt persisted upload");
-              }
-            }
-          }, size);
+            },
+            size,
+            undefined,
+            index < 0,
+          );
         }
       }
     }
-    for (const count of options.sessionCounts) {
-      while (held.length < count) held.push(await connect());
-      await measure("idle-sessions", "trellis", async () => {
-        await phase(`trellis/idle-sessions/${count}`);
-        await new Promise((resolve) =>
-          setTimeout(resolve, options.idleSeconds * 1000)
-        );
-        return { sessions: count };
-      });
-      await phase("idle-validation");
-      for (const connection of held) {
-        const result = await connection.echo({ value: "idle-alive" }).orThrow();
-        if (result.value !== "idle-alive") {
-          throw new Error("Idle connection stopped working");
+    if (options.workload === "all") {
+      for (const count of options.sessionCounts) {
+        while (held.length < count) held.push(await connect());
+        await measure("idle-sessions", "trellis", async () => {
+          await phase(`trellis/idle-sessions/${count}`);
+          await new Promise((resolve) =>
+            setTimeout(resolve, options.idleSeconds * 1000)
+          );
+          return { sessions: count };
+        });
+        await phase("idle-validation");
+        for (const connection of held) {
+          const result = await connection.echo({ value: "idle-alive" })
+            .orThrow();
+          if (result.value !== "idle-alive") {
+            throw new Error("Idle connection stopped working");
+          }
         }
       }
     }

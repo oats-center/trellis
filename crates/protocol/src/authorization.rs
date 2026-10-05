@@ -1348,6 +1348,51 @@ impl VerifiedAuthorizationRequestProof {
 pub fn verify_authorization_request(
     input: AuthorizationRequestVerificationInput<'_>,
 ) -> Result<VerifiedAuthorizationRequestProof, ProtocolError> {
+    verify_request(input, None)
+}
+
+/// Verify a Transfer caller proof with exact session signal reply binding.
+///
+/// The caller must first compute the canonical compact frame digest from the
+/// received descriptor and bytes and supply it as `raw_payload`. Only caller
+/// upload DATA and control subjects are admitted. The pinned consumer must match
+/// the issuer-signed context; all ordinary authority, freshness and session-key
+/// signature checks remain mandatory.
+///
+/// # Errors
+/// Returns an error for invalid session coordinates, reply, compact digest,
+/// context identity, authority, freshness or signature.
+pub fn verify_transfer_authorization_request(
+    input: AuthorizationRequestVerificationInput<'_>,
+    provider_id: &str,
+    expected_consumer_connection: &str,
+    transfer_id: &str,
+) -> Result<VerifiedAuthorizationRequestProof, ProtocolError> {
+    let subjects = crate::transfer::derive_transfer_subjects(
+        provider_id,
+        expected_consumer_connection,
+        transfer_id,
+    )?;
+    if input.context.connection_id() != expected_consumer_connection
+        || (input.subject != subjects.upload_data_subject
+            && input.subject != subjects.control_subject)
+        || input.raw_payload.len() != 32
+    {
+        return Err(authorization_error(
+            AuthorizationErrorCode::InvalidRequestProof,
+            ["subject"],
+            "Transfer request does not match pinned consumer, session subjects or compact digest",
+        ));
+    }
+    verify_request(input, Some(&subjects.signal_subject))
+}
+
+// None preserves ordinary inbox policy; Some permits only one derived session
+// reply. This policy is private so callers cannot supply arbitrary exceptions.
+fn verify_request(
+    input: AuthorizationRequestVerificationInput<'_>,
+    exact_reply: Option<&str>,
+) -> Result<VerifiedAuthorizationRequestProof, ProtocolError> {
     let AuthorizationRequestVerificationInput {
         context,
         subject,
@@ -1370,7 +1415,15 @@ pub fn verify_authorization_request(
             "request id exceeds the protocol limit",
         ));
     }
-    if let Some(reply) = reply_subject {
+    if let Some(expected) = exact_reply {
+        if reply_subject != Some(expected) {
+            return Err(authorization_error(
+                AuthorizationErrorCode::ReplySubjectMismatch,
+                ["reply"],
+                "reply subject does not match the exact Transfer session signal subject",
+            ));
+        }
+    } else if let Some(reply) = reply_subject {
         let mut required_prefix = context.inbox_prefix().to_owned();
         required_prefix.push('.');
         if !reply.starts_with(&required_prefix) {
@@ -1937,6 +1990,76 @@ mod tests {
             .is_err(),
             "admin must not manufacture ordinary action grants"
         );
+    }
+
+    #[test]
+    fn transfer_request_proofs_admit_only_pinned_session_signal_replies() {
+        use crate::transfer::{
+            derive_transfer_subjects, transfer_frame_digest, TransferDirection,
+            TransferFrameDescriptor, TransferFrameKind,
+        };
+        let (issuer, context, key) = issued();
+        let policy = policy(1_100);
+        let verified = verify_authorization_context(
+            &issuer,
+            &context,
+            &policy,
+            AuthorizationContextPurpose::Live,
+        )
+        .unwrap();
+        let permissions = [permission()];
+        let consumer = verified.connection_id();
+        let id = encode_base64url(&[7; 16]);
+        let other_id = encode_base64url(&[8; 16]);
+        let subjects = derive_transfer_subjects("provider", consumer, &id).unwrap();
+        let other_session = derive_transfer_subjects("provider", consumer, &other_id).unwrap();
+        // Exercise both activation's control lane and upload's raw DATA lane.
+        for (subject, descriptor, payload) in [
+            (&subjects.control_subject, TransferFrameDescriptor { transfer_id: id.clone(), direction: TransferDirection::Send, sequence: crate::U64s::new(1), kind: TransferFrameKind::Control, terminal: None }, format!(r#"{{"format":"trellis.transfer.v2","type":"control","action":"activate","transferId":"{id}","controlSeq":"1","receivedSeq":"0","consumedSeq":"0","receiveMaxFrameBytes":4096}}"#).into_bytes()),
+            (&subjects.upload_data_subject, TransferFrameDescriptor { transfer_id: id.clone(), direction: TransferDirection::Send, sequence: crate::U64s::new(1), kind: TransferFrameKind::Data, terminal: None }, b"actual file bytes".to_vec()),
+        ] {
+            let compact = transfer_frame_digest(&descriptor, &payload).unwrap();
+            let proof = sign_authorization_request(verified.context_digest(), subject, Some(&subjects.signal_subject), &compact, 1_100, "transfer-request", &key).unwrap();
+            let request = AuthorizationRequestVerificationInput { context: &verified, subject, reply_subject: Some(&subjects.signal_subject), raw_payload: &compact, iat: 1_100, request_id: "transfer-request", proof: &proof, policy: &policy, required_permissions: &permissions };
+            assert!(verify_authorization_request(request).is_err(), "ordinary RPC must not admit a Transfer signal reply");
+            verify_transfer_authorization_request(request, "provider", consumer, &id).unwrap();
+            for (provider, caller, transfer) in [("foreign-provider", consumer, id.as_str()), ("provider", "foreign-consumer", id.as_str()), ("provider", consumer, other_id.as_str())] {
+                assert!(verify_transfer_authorization_request(request, provider, caller, transfer).is_err());
+            }
+            let tampered_payload = match descriptor.kind {
+                TransferFrameKind::Control => String::from_utf8(payload.clone()).unwrap().replace("4096", "2048").into_bytes(),
+                _ => b"tampered bytes".to_vec(),
+            };
+            let tampered = transfer_frame_digest(&descriptor, &tampered_payload).unwrap();
+            assert!(verify_transfer_authorization_request(AuthorizationRequestVerificationInput { raw_payload: &tampered, ..request }, "provider", consumer, &id).is_err());
+            for changed in [
+                AuthorizationRequestVerificationInput { reply_subject: Some(&other_session.signal_subject), ..request },
+                AuthorizationRequestVerificationInput { reply_subject: Some("_INBOX.test.reply"), ..request },
+                AuthorizationRequestVerificationInput { reply_subject: None, ..request },
+                AuthorizationRequestVerificationInput { subject: &subjects.download_data_subject, ..request },
+                AuthorizationRequestVerificationInput { subject: &subjects.signal_subject, ..request },
+                AuthorizationRequestVerificationInput { subject: "rpc.v1.Documents.Get", ..request },
+                AuthorizationRequestVerificationInput { request_id: "changed-request-id", ..request },
+                AuthorizationRequestVerificationInput { iat: 0, ..request },
+            ] {
+                assert!(verify_transfer_authorization_request(changed, "provider", consumer, &id).is_err());
+            }
+            let missing = [PermissionAtom::new(PermissionTarget::api_surface("documents@v1", ApiSurfaceKind::Rpc, "Documents.Delete").unwrap(), PermissionAction::Call).unwrap()];
+            assert!(verify_transfer_authorization_request(AuthorizationRequestVerificationInput { required_permissions: &missing, ..request }, "provider", consumer, &id).is_err());
+            let expired_policy = self::policy(1_400);
+            assert!(verify_transfer_authorization_request(AuthorizationRequestVerificationInput { policy: &expired_policy, ..request }, "provider", consumer, &id).is_err());
+            // Re-signing for foreign coordinates cannot bypass context identity.
+            let foreign = derive_transfer_subjects("provider", "foreign-consumer", &id).unwrap();
+            let foreign_proof = sign_authorization_request(verified.context_digest(), &foreign.control_subject, Some(&foreign.signal_subject), &compact, 1_100, "transfer-request", &key).unwrap();
+            assert!(verify_transfer_authorization_request(AuthorizationRequestVerificationInput { subject: &foreign.control_subject, reply_subject: Some(&foreign.signal_subject), proof: &foreign_proof, ..request }, "provider", "foreign-consumer", &id).is_err());
+            // Same session key, another correctly issuer-signed context cannot
+            // reuse a proof: the normal signature domain binds context digest.
+            let mut unsigned = context.unsigned.clone();
+            unsigned.grant_revision += 1;
+            let changed_context = sign_authorization_context(unsigned, &SigningKey::from_bytes(&[2; 32])).unwrap();
+            let changed_context = verify_authorization_context(&issuer, &changed_context, &policy, AuthorizationContextPurpose::Live).unwrap();
+            assert!(verify_transfer_authorization_request(AuthorizationRequestVerificationInput { context: &changed_context, ..request }, "provider", consumer, &id).is_err());
+        }
     }
 
     #[test]

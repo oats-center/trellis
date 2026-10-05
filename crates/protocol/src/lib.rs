@@ -15,6 +15,7 @@ mod participant;
 mod permissions;
 mod session_proof;
 mod subjects;
+pub mod transfer;
 pub mod transport_authorization;
 
 pub use authorization::{
@@ -22,15 +23,15 @@ pub use authorization::{
     build_authorization_event_proof_input, build_authorization_request_proof_input,
     parse_authorization_context, sign_authorization_context, sign_authorization_event,
     sign_authorization_request, verify_authorization_context, verify_authorization_event,
-    verify_authorization_request, AuthorizationContextPurpose, AuthorizationEventProof,
-    AuthorizationEventProofInput, AuthorizationEventPublisher, AuthorizationEventVerificationInput,
-    AuthorizationIssuerKey, AuthorizationIssuerState, AuthorizationPrincipalKind,
-    AuthorizationRequestProof, AuthorizationRequestProofInput,
-    AuthorizationRequestVerificationInput, AuthorizationVerificationPolicy,
-    SignedAuthorizationContext, UnsignedAuthorizationContext, VerifiedAuthorizationContext,
-    VerifiedAuthorizationEventProof, VerifiedAuthorizationRequestProof,
-    AUTHORIZATION_CONTEXT_FORMAT_V1, AUTHORIZATION_EVENT_PROOF_DOMAIN_V1,
-    AUTHORIZATION_REQUEST_PROOF_DOMAIN_V1,
+    verify_authorization_request, verify_transfer_authorization_request,
+    AuthorizationContextPurpose, AuthorizationEventProof, AuthorizationEventProofInput,
+    AuthorizationEventPublisher, AuthorizationEventVerificationInput, AuthorizationIssuerKey,
+    AuthorizationIssuerState, AuthorizationPrincipalKind, AuthorizationRequestProof,
+    AuthorizationRequestProofInput, AuthorizationRequestVerificationInput,
+    AuthorizationVerificationPolicy, SignedAuthorizationContext, UnsignedAuthorizationContext,
+    VerifiedAuthorizationContext, VerifiedAuthorizationEventProof,
+    VerifiedAuthorizationRequestProof, AUTHORIZATION_CONTEXT_FORMAT_V1,
+    AUTHORIZATION_EVENT_PROOF_DOMAIN_V1, AUTHORIZATION_REQUEST_PROOF_DOMAIN_V1,
 };
 pub use canonical::{canonicalize_json, digest_json, sha256_base64url};
 pub use error::{AuthorizationErrorCode, ProtocolError, SessionProofErrorCode};

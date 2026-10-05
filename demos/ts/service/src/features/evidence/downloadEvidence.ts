@@ -1,5 +1,5 @@
 import { BaseError, isErr, ok, Result, StoreError } from "@oatscenter/trellis";
-import type { TransferError } from "@oatscenter/trellis";
+import { TransferError } from "@oatscenter/trellis";
 import type { RpcHandler } from "@oatscenter/trellis/service";
 import { type participants } from "../../../trellis/index.js";
 import type { FieldOpsDeps } from "../../deps.ts";
@@ -121,13 +121,28 @@ export function createDownloadEvidenceHandler(
   deps: FieldOpsDeps,
 ): Handler {
   return async ({ context, input }) => {
+    if (context.caller.type !== "verified") {
+      return Result.err(
+        new TransferError({
+          operation: "initiateDownload",
+          cause: new Error(
+            "Evidence download requires an authenticated caller",
+          ),
+        }),
+      );
+    }
     const transferIssuer = deps.transferIssuer;
     const storeTtlMs = transferIssuer.store?.uploads?.binding?.ttlMs;
     const transfer = await transferIssuer.createTransfer({
       direction: "receive",
       store: EVIDENCE_STORE,
       key: input.key,
-      sessionKey: context.sessionKey,
+      sessionKey: context.caller.sessionKey,
+      connectionId: context.caller.connectionId,
+      contextDigest: context.caller.contextDigest,
+      permission: context.permission,
+      requiredCapabilities: context.requiredCapabilities,
+      inboxPrefix: context.inboxPrefix,
       expiresInMs: TRANSFER_GRANT_TTL_MS,
     }).take();
 
@@ -146,7 +161,12 @@ export function createDownloadEvidenceHandler(
             direction: "receive",
             store: EVIDENCE_STORE,
             key: input.key,
-            sessionKey: context.sessionKey,
+            sessionKey: context.caller.sessionKey,
+            connectionId: context.caller.connectionId,
+            contextDigest: context.caller.contextDigest,
+            permission: context.permission,
+            requiredCapabilities: context.requiredCapabilities,
+            inboxPrefix: context.inboxPrefix,
             expiresInMs: TRANSFER_GRANT_TTL_MS,
           }).take();
           if (!isErr(retried)) {

@@ -580,8 +580,29 @@ function snapshotToEvent<TProgress, TOutput, TUpdate = unknown>(
 ): OperationEvent<TProgress, TOutput, TUpdate> {
   switch (snapshot.state) {
     case "pending":
+      if (snapshot.transfer) {
+        return {
+          type: "transfer",
+          transfer: snapshot.transfer,
+          snapshot: { ...snapshot, transfer: snapshot.transfer },
+        };
+      }
       return { type: "accepted", snapshot };
     case "running":
+      if (snapshot.progress !== undefined) {
+        return {
+          type: "progress",
+          progress: snapshot.progress,
+          snapshot: { ...snapshot, progress: snapshot.progress },
+        };
+      }
+      if (snapshot.transfer) {
+        return {
+          type: "transfer",
+          transfer: snapshot.transfer,
+          snapshot: { ...snapshot, transfer: snapshot.transfer },
+        };
+      }
       return { type: "started", snapshot };
     case "completed":
       return {

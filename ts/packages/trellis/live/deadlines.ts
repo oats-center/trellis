@@ -12,6 +12,7 @@
 // expires.
 
 import { liveConstants } from "../auth/protocol_wasm.ts";
+import { CreditScheduler } from "../data_plane/credit.ts";
 
 const C = liveConstants();
 
@@ -66,7 +67,10 @@ export class LiveDeadlines {
   #outstandingChallenge: string | undefined;
   #unconsumedSince: number | undefined;
   #lastConsumptionAt: number | undefined;
-  #nextCreditAt: number | undefined;
+  readonly #credit = new CreditScheduler({
+    frameStep: C.ackFrameThreshold,
+    maxDelayMs: C.ackMaxDelayMs,
+  });
   #closeUntil: number | undefined;
   #cleanupUntil: number | undefined;
   #tombstoneUntil: number | undefined;
@@ -164,11 +168,7 @@ export class LiveDeadlines {
   /** Record real consumption progress and arm the credit schedule. */
   noteConsumption(nowMs: number, newlyConsumed: number): void {
     this.#lastConsumptionAt = nowMs;
-    if (newlyConsumed >= C.ackFrameThreshold) {
-      this.#nextCreditAt = nowMs;
-    } else if (this.#nextCreditAt === undefined) {
-      this.#nextCreditAt = nowMs + C.ackMaxDelayMs;
-    }
+    this.#credit.notePending(nowMs, newlyConsumed, 0);
   }
 
   /** Reset the consumption-stall clock without scheduling consumer credit. */
@@ -183,12 +183,12 @@ export class LiveDeadlines {
 
   /** Record that accumulated credit was handed off. */
   creditSent(): void {
-    this.#nextCreditAt = undefined;
+    this.#credit.clear();
   }
 
   /** Wake the existing cumulative control after a local context replacement. */
   promptCredit(nowMs: number): void {
-    if (this.#phase === "active") this.#nextCreditAt = nowMs;
+    if (this.#phase === "active") this.#credit.force(nowMs);
   }
 
   /** Wake the existing challenge (or its retry) after provider renewal. */
@@ -215,7 +215,7 @@ export class LiveDeadlines {
   /** Enter CLOSING with one absolute close exchange and one cleanup grace. */
   beginClosing(nowMs: number): void {
     this.#phase = "closing";
-    this.#nextCreditAt = undefined;
+    this.#credit.clear();
     this.#nextChallengeAt = undefined;
     this.#challengeRetryAt = undefined;
     this.#closeUntil = nowMs + C.closeExchangeMs;
@@ -231,7 +231,7 @@ export class LiveDeadlines {
     this.#challengeRetryAt = undefined;
     this.#outstandingChallenge = undefined;
     this.#unconsumedSince = undefined;
-    this.#nextCreditAt = undefined;
+    this.#credit.clear();
     this.#closeUntil = undefined;
     this.#cleanupUntil = undefined;
     this.#tombstoneUntil = nowMs + C.tombstoneMs;
@@ -262,7 +262,7 @@ export class LiveDeadlines {
         consider(this.#nextChallengeAt);
         consider(this.#peerDeadline());
         consider(this.#consumptionDeadline());
-        consider(this.#nextCreditAt);
+        consider(this.#credit.nextDue());
         break;
       case "draining":
         consider(this.#consumptionDeadline());
@@ -291,7 +291,7 @@ export class LiveDeadlines {
         if (due(this.#consumptionDeadline(), nowMs)) return "consumer_stalled";
         if (due(this.#challengeRetryAt, nowMs)) return "challenge_retry";
         if (due(this.#nextChallengeAt, nowMs)) return "challenge_due";
-        if (due(this.#nextCreditAt, nowMs)) return "credit_due";
+        if (this.#credit.isDue(nowMs)) return "credit_due";
         break;
       case "draining":
         if (due(this.#consumptionDeadline(), nowMs)) return "consumer_stalled";

@@ -81,8 +81,8 @@ pub use subject::resolve_subject;
 pub(crate) use subject::resolve_subject;
 pub use subject::SubjectError;
 pub use transfer::{
-    download_transfer_grant_from_value, DownloadTransferDirection, DownloadTransferGrant, FileInfo,
-    TransferCancellation, TransferGrantType, UploadTransferDirection, UploadTransferGrant,
+    download_transfer_grant_from_value, DownloadTransferGrant, FileInfo, TransferCancellation,
+    UploadTransferGrant,
 };
 pub(crate) use transport_generations::{
     GenerationIntake, GenerationIntakeHandle, GenerationIntakeRetireReason, LogicalTerminalCause,

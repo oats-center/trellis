@@ -75,7 +75,7 @@ pub(crate) struct LiveDeadlines {
     outstanding_challenge: Option<String>,
     unconsumed_since: Option<Instant>,
     last_consumption_at: Option<Instant>,
-    next_credit_at: Option<Instant>,
+    credit: crate::data_plane::credit::CreditScheduler,
     close_until: Option<Instant>,
     cleanup_until: Option<Instant>,
     tombstone_until: Option<Instant>,
@@ -116,7 +116,13 @@ impl LiveDeadlines {
             outstanding_challenge: None,
             unconsumed_since: None,
             last_consumption_at: None,
-            next_credit_at: None,
+            credit: crate::data_plane::credit::CreditScheduler::new(
+                crate::data_plane::credit::CreditPolicy {
+                    frame_step: ACK_FRAME_THRESHOLD,
+                    byte_step: None,
+                    max_delay: Duration::from_millis(ACK_MAX_DELAY_MS),
+                },
+            ),
             close_until: None,
             cleanup_until: None,
             tombstone_until: None,
@@ -205,11 +211,7 @@ impl LiveDeadlines {
     /// Record real consumption progress.
     pub(crate) fn note_consumption(&mut self, now: Instant, newly_consumed: u64) {
         self.last_consumption_at = Some(now);
-        if newly_consumed >= ACK_FRAME_THRESHOLD {
-            self.next_credit_at = Some(now);
-        } else if self.next_credit_at.is_none() {
-            self.next_credit_at = Some(now + Duration::from_millis(ACK_MAX_DELAY_MS));
-        }
+        self.credit.note_pending(now, newly_consumed, 0);
     }
 
     /// Reset the consumption-stall clock without scheduling consumer credit.
@@ -232,7 +234,7 @@ impl LiveDeadlines {
 
     /// Record that accumulated credit was handed off.
     pub(crate) fn credit_sent(&mut self) {
-        self.next_credit_at = None;
+        self.credit.clear();
     }
 
     /// Enter DRAINING after a verified normal end with queued items.
@@ -250,7 +252,7 @@ impl LiveDeadlines {
     /// Enter CLOSING with one absolute close exchange and one cleanup grace.
     pub(crate) fn begin_closing(&mut self, now: Instant) {
         self.phase = LiveDeadlinePhase::Closing;
-        self.next_credit_at = None;
+        self.credit.clear();
         self.next_challenge_at = None;
         self.challenge_retry_at = None;
         self.close_until = Some(now + Duration::from_millis(CLOSE_EXCHANGE_MS));
@@ -268,7 +270,7 @@ impl LiveDeadlines {
         self.challenge_retry_at = None;
         self.outstanding_challenge = None;
         self.unconsumed_since = None;
-        self.next_credit_at = None;
+        self.credit.clear();
         self.close_until = None;
         self.cleanup_until = None;
         self.tombstone_until = Some(now + Duration::from_millis(TOMBSTONE_MS));
@@ -302,7 +304,7 @@ impl LiveDeadlines {
                 consider(self.next_challenge_at);
                 consider(self.peer_deadline());
                 consider(self.consumption_deadline());
-                consider(self.next_credit_at);
+                consider(self.credit.next_due());
             }
             LiveDeadlinePhase::Draining => consider(self.consumption_deadline()),
             LiveDeadlinePhase::Closing => {
@@ -347,7 +349,7 @@ impl LiveDeadlines {
                 if self.next_challenge_at.is_some_and(|until| now >= until) {
                     return Some(DeadlineAction::ChallengeDue);
                 }
-                if self.next_credit_at.is_some_and(|until| now >= until) {
+                if self.credit.is_due(now) {
                     return Some(DeadlineAction::CreditDue);
                 }
             }

@@ -1645,11 +1645,27 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       aborted || this.#closed || this.#isGenerationClosed(generation);
     let closed = false;
     const task = (async () => {
+      this.#log.debug(
+        {
+          generationId: generation.id,
+          physicalClientId: generation.nc.info?.client_id,
+          leaseCount: generation.leaseCount,
+        },
+        "transport generation retirement waiting for intake",
+      );
       await Promise.race([
         this.#intakeStoppedAll(generation.id),
         cancel.promise,
       ]);
       if (abandoned()) return;
+      this.#log.debug(
+        {
+          generationId: generation.id,
+          physicalClientId: generation.nc.info?.client_id,
+          leaseCount: generation.leaseCount,
+        },
+        "transport generation intake stopped; waiting for leases",
+      );
       for (;;) {
         await Promise.race([this.#awaitLeaseZero(generation), cancel.promise]);
         if (abandoned() || generation.state !== "draining") return;
@@ -1658,7 +1674,21 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         // Check the actual count and prohibit new leases in one synchronous step.
         if (generation.beginDisposal()) break;
       }
+      this.#log.debug(
+        {
+          generationId: generation.id,
+          physicalClientId: generation.nc.info?.client_id,
+        },
+        "transport generation leases settled; disposing owners",
+      );
       await this.#disposeAll(generation.id);
+      this.#log.debug(
+        {
+          generationId: generation.id,
+          physicalClientId: generation.nc.info?.client_id,
+        },
+        "transport generation owner disposal completed",
+      );
       this.#finalizeRetired(generation, reason);
       closed = true;
     })().catch((error) => {

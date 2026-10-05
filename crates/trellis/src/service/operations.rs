@@ -12,7 +12,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, watch, Mutex};
 use trellis_protocol::{ApiSurfaceKind, PermissionAction};
 
 use super::{
@@ -165,15 +165,16 @@ impl OperationFailureLike for OperationFailure {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-#[doc = concat!("Public Trellis data type `", stringify!(OperationTransferProgress), "`.")]
+/// Backend-consumed upload progress. Durable snapshots may coalesce frames;
+/// transferred bytes are monotonic within an attempt and exact at commit.
 pub struct OperationTransferProgress {
-    /// Zero-based transfer chunk index.
+    /// Latest credited frame represented by this checkpoint.
     #[doc = concat!("The `", stringify!(chunk_index), "` value.")]
     pub chunk_index: u64,
-    /// Number of bytes carried by this chunk.
+    /// Number of bytes carried by the latest credited frame.
     #[doc = concat!("The `", stringify!(chunk_bytes), "` value.")]
     pub chunk_bytes: u64,
-    /// Total number of bytes transferred after this chunk.
+    /// Total backend-consumed bytes represented by this checkpoint.
     #[doc = concat!("The `", stringify!(transferred_bytes), "` value.")]
     pub transferred_bytes: u64,
 }
@@ -985,16 +986,7 @@ where
                             }) else {
                                 continue;
                             };
-                            if upload.state != "committed"
-                                && OffsetDateTime::parse(&upload.expires_at, &Rfc3339)
-                                    .ok()
-                                    .map(|expiry| {
-                                        expiry
-                                            + time::Duration::hours(23)
-                                            + time::Duration::minutes(45)
-                                    })
-                                    .is_none_or(|cleanup| cleanup > OffsetDateTime::now_utc())
-                            {
+                            if upload.state == "invalid" {
                                 continue;
                             }
                         }
@@ -1033,11 +1025,10 @@ where
                             record_ownership_event("claim", claim.is_ok());
                             if let Ok(claimed) = claim {
                                 let reconciled = async {
-                                    if !D::UPLOAD || claimed.record.cancellation_requested {
-                                        return Ok(claimed);
+                                    if !D::UPLOAD || claimed.record.transfer.is_none() {
+                                        return Ok(Some(claimed));
                                     }
-                                    let mut claimed = claimed;
-                                    let mut upload: DurableOperationUpload =
+                                    let upload: DurableOperationUpload =
                                         serde_json::from_value(
                                             claimed.record.transfer.clone().ok_or_else(|| {
                                                 ServerError::Nats(
@@ -1059,53 +1050,23 @@ where
                                                      })
                                                  })
                                         }) {
-                                            return Ok(claimed);
+                                             return Ok(Some(claimed));
                                         }
                                         return Err(ServerError::Nats(
                                             "committed operation upload metadata does not match staging"
                                                 .to_owned(),
                                         ));
                                     }
-                                    let cleanup_at =
-                                        OffsetDateTime::parse(&upload.expires_at, &Rfc3339)
-                                            .ok()
-                                            .map(|expiry| {
-                                                expiry
-                                                    + time::Duration::hours(23)
-                                                    + time::Duration::minutes(45)
-                                            });
-                                    if cleanup_at
-                                        .is_none_or(|cleanup| cleanup > OffsetDateTime::now_utc())
-                                    {
-                                        return Err(ServerError::Nats(
-                                            "operation upload is not committed".to_owned(),
-                                        ));
-                                    }
-                                    upload.state = "invalid".to_owned();
-                                    upload.size = None;
-                                    upload.digest = None;
-                                    upload.updated_at = None;
-                                    let staging_key = upload.staging_key.clone();
                                     let fence = OwnerFence::from(&claimed.record)?;
-                                    claimed.record.revision += 1;
-                                    claimed.record.lease_expires_at_ms = Some(now_ms());
-                                    claimed.record.transfer = Some(serde_json::to_value(upload)?);
-                                    repository
-                                        .compare_exchange(
-                                            claimed.revision,
-                                            &fence.executor_id,
-                                            fence.owner_epoch,
-                                            claimed.record,
-                                        )
-                                        .await?;
-                                    let _ = staging.delete(&staging_key).await;
-                                    Err(ServerError::Nats(
-                                        "operation upload is not committed".to_owned(),
-                                    ))
+                                    settle_operation_upload(
+                                        &repository, &fence, &mutation_gate, &operation_id,
+                                        &staging, &upload.staging_key,
+                                    ).await
                                 }
                                 .await;
                                 let claimed = match reconciled {
-                                    Ok(claimed) => claimed,
+                                    Ok(Some(claimed)) => claimed,
+                                    Ok(None) => return,
                                     Err(error) => {
                                         tracing::error!(%error, %operation_id, "operation upload recovery failed");
                                         return;
@@ -1234,20 +1195,17 @@ where
             )?;
             let timestamp = now_timestamp();
             let upload = if D::UPLOAD && !cancellation_requested {
-                let transfer_id = ulid::Ulid::new().to_string();
-                let expires_at = (OffsetDateTime::now_utc() + time::Duration::minutes(15))
-                    .format(&Rfc3339)
-                    .map_err(|error| ServerError::Nats(error.to_string()))?;
                 Some(DurableOperationUpload {
                     staging_key: format!("operation-{invocation_id}"),
                     state: "pending".to_owned(),
-                    subject: super::transfer::transfer_subject(
-                        super::transfer::upload_subject_prefix(),
+                    grant: operation_upload_grant(
+                        &service,
                         &service_session_key,
-                        &transfer_id,
-                    ),
-                    transfer_id,
-                    expires_at,
+                        &connection_id,
+                        caller,
+                        support.nats.server_info().max_payload as u64,
+                        None,
+                    )?,
                     size: None,
                     digest: None,
                     updated_at: None,
@@ -1331,7 +1289,7 @@ where
                     .filter(|upload| {
                         upload.state != "committed" && !created.record.cancellation_requested
                     })
-                    .map(|upload| operation_upload_grant(&service, &caller.session_key, &upload));
+                    .map(|upload| upload.grant);
                 return Ok(AcceptedOperation {
                     kind: "accepted".to_owned(),
                     operation_ref: OperationRefData {
@@ -1374,9 +1332,7 @@ where
                                 upload.state != "committed"
                                     && !current.record.cancellation_requested
                             })
-                            .map(|upload| {
-                                operation_upload_grant(&service, &caller.session_key, &upload)
-                            });
+                            .map(|upload| upload.grant);
                         return Ok(AcceptedOperation {
                             kind: "accepted".to_owned(),
                             operation_ref: OperationRefData {
@@ -1446,22 +1402,28 @@ where
                     return Ok(accepted);
                 }
 
+                let previous_staging_key =
+                    (upload.state != "pending").then(|| upload.staging_key.clone());
                 if upload.state != "pending" {
-                    upload.transfer_id = ulid::Ulid::new().to_string();
-                    upload.subject = super::transfer::transfer_subject(
-                        super::transfer::upload_subject_prefix(),
+                    upload.grant = operation_upload_grant(
+                        &service,
                         &service_session_key,
-                        &upload.transfer_id,
-                    );
-                    upload.expires_at = (OffsetDateTime::now_utc() + time::Duration::minutes(15))
-                        .format(&Rfc3339)
-                        .map_err(|error| ServerError::Nats(error.to_string()))?;
+                        &connection_id,
+                        caller,
+                        support.nats.server_info().max_payload as u64,
+                        upload.content_type.clone(),
+                    )?;
+                    upload.staging_key =
+                        format!("operation-{invocation_id}-{}", upload.grant.transfer_id);
                     upload.size = None;
                     upload.digest = None;
                     upload.updated_at = None;
                 }
                 upload.state = "uploading".to_owned();
                 let mut staged = claimed.record;
+                staged.snapshot.transfer = None;
+                staged.snapshot.revision += 1;
+                staged.snapshot.updated_at = Some(now_timestamp());
                 staged.revision += 1;
                 staged.transfer = Some(serde_json::to_value(&upload)?);
                 let fence = OwnerFence::from(&staged)?;
@@ -1473,70 +1435,76 @@ where
                         staged,
                     )
                     .await?;
-                let _ = staging.delete(&upload.staging_key).await;
-                let grant = operation_upload_grant(&service, &caller.session_key, &upload);
+                if let Some(previous_staging_key) = previous_staging_key {
+                    if staging
+                        .list_objects()
+                        .await?
+                        .into_iter()
+                        .any(|object| object.key == previous_staging_key)
+                    {
+                        staging.delete(&previous_staging_key).await?;
+                    }
+                }
+                let grant = upload.grant.clone();
                 let plan = UploadTransferGrantPlan {
+                    admission: context.clone(),
                     grant: grant.clone(),
                     store_alias: "__operations".to_owned(),
                     store: format!("trellis_operation_staging_{}", staged.record.deployment_id),
                     key: upload.staging_key.clone(),
                 };
-                let progress_repository = repository.clone();
-                let progress_fence = fence.clone();
-                let progress_gate = Arc::clone(&mutation_gate);
-                let progress_operation_id = invocation_id.clone();
+                let (progress_sender, progress_receiver) = watch::channel(None);
+                let checkpoint_bytes = Arc::new(AtomicU64::new(0));
+                let (stop_progress, stop_receiver) = oneshot::channel();
+                let (final_progress_sender, final_progress_receiver) = oneshot::channel();
+                let progress_worker = coalesce_operation_upload_progress(
+                    repository.clone(),
+                    fence.clone(),
+                    Arc::clone(&mutation_gate),
+                    invocation_id.clone(),
+                    progress_receiver,
+                    stop_receiver,
+                    Arc::clone(&checkpoint_bytes),
+                );
                 // The acknowledgement task below owns `support` (and its accepting
                 // generation lease) until the durable transfer completes, so the
                 // upload's physical exchange stays pinned to the accepting
                 // generation for its whole lifetime.
                 let completion =
                     super::transfer::spawn_upload_transfer_endpoint_with_progress_and_completion(
-                        support.nats.clone(),
+                        publisher.clone().ok_or_else(|| {
+                            ServerError::Nats(
+                                "operation upload is missing its signing client".to_owned(),
+                            )
+                        })?,
                         UploadTransferSession::new(plan, now_timestamp()),
                         staging.clone(),
-                        validator,
+                        support.lease.clone().ok_or_else(|| {
+                            ServerError::Nats(
+                                "operation upload is missing its accepting generation".to_owned(),
+                            )
+                        })?,
                         move |progress| {
-                            let repository = progress_repository.clone();
-                            let fence = progress_fence.clone();
-                            let gate = Arc::clone(&progress_gate);
-                            let operation_id = progress_operation_id.clone();
-                            tokio::spawn(async move {
-                                let _guard = gate.lock().await;
-                                let Ok(Some(current)) = repository.get(&operation_id).await else {
-                                    return;
-                                };
-                                if !fence.matches(&current.record)
-                                    || current.record.snapshot.state.is_terminal()
-                                    || current.record.cancellation_requested
-                                    || current
-                                        .record
-                                        .lease_expires_at_ms
-                                        .is_none_or(|expiry| expiry <= now_ms())
-                                {
-                                    return;
+                            progress_sender.send_if_modified(|latest| {
+                                if latest.as_ref().is_some_and(
+                                    |previous: &(
+                                        OperationTransferProgress,
+                                        tokio::time::Instant,
+                                    )| {
+                                        previous.0.transferred_bytes >= progress.transferred_bytes
+                                    },
+                                ) {
+                                    return false;
                                 }
-                                let mut record = current.record;
-                                let Ok(mut upload) =
-                                    record.transfer.clone().ok_or(()).and_then(|value| {
-                                        serde_json::from_value::<DurableOperationUpload>(value)
-                                            .map_err(|_| ())
+                                let pending_since = latest
+                                    .as_ref()
+                                    .filter(|previous| {
+                                        previous.0.transferred_bytes
+                                            > checkpoint_bytes.load(Ordering::Relaxed)
                                     })
-                                else {
-                                    return;
-                                };
-                                upload.size = Some(progress.transferred_bytes);
-                                record.revision += 1;
-                                record.snapshot.revision += 1;
-                                record.snapshot.transfer = Some(progress);
-                                record.transfer = serde_json::to_value(upload).ok();
-                                let _ = repository
-                                    .compare_exchange(
-                                        current.revision,
-                                        &fence.executor_id,
-                                        fence.owner_epoch,
-                                        record,
-                                    )
-                                    .await;
+                                    .map_or_else(tokio::time::Instant::now, |previous| previous.1);
+                                *latest = Some((progress, pending_since));
+                                true
                             });
                         },
                     )
@@ -1577,140 +1545,101 @@ where
                 let acknowledgement_fence = fence_for_completion.clone();
                 let acknowledgement_gate = Arc::clone(&gate_for_completion);
                 let acknowledgement_operation_id = operation_id.clone();
+                let staging_key_for_completion = upload.staging_key.clone();
                 tokio::spawn(async move {
-                    match completion
-                        .completed_after(move |info| {
-                            persist_operation_upload(
-                                acknowledgement_repository,
-                                acknowledgement_fence,
-                                acknowledgement_gate,
-                                acknowledgement_operation_id,
-                                info,
-                            )
-                        })
+                    let completion = completion.completed_after(move |info| async move {
+                        let _ = stop_progress.send(());
+                        let progress = final_progress_receiver
+                            .await
+                            .map_err(|error| ServerError::Nats(error.to_string()))??;
+                        persist_operation_upload(
+                            acknowledgement_repository,
+                            acknowledgement_fence,
+                            acknowledgement_gate,
+                            acknowledgement_operation_id,
+                            info,
+                            progress,
+                        )
                         .await
+                    });
+                    // Both futures belong to this upload task. No detached per-frame
+                    // work can race the final fenced mutation or outlive completion.
+                    let (result, ()) = tokio::join!(completion, async move {
+                        let _ = final_progress_sender.send(progress_worker.await);
+                    });
+                    if let Err(error) = result {
+                        tracing::warn!(%error, %operation_id, "operation upload endpoint completion failed");
+                    }
+                    // The durable transaction, not delivery of the client reply,
+                    // decides whether execution is runnable. The same path also
+                    // removes uncommitted backend output after cancellation.
+                    match settle_operation_upload(
+                        &repository_for_completion,
+                        &fence_for_completion,
+                        &gate_for_completion,
+                        &operation_id,
+                        &staging,
+                        &staging_key_for_completion,
+                    )
+                    .await
                     {
-                        Ok(info) => {
-                            let _guard = gate_for_completion.lock().await;
-                            let result = async {
-                                let current = repository_for_completion
-                                    .get(&operation_id)
-                                    .await?
-                                    .ok_or_else(|| ServerError::OperationNotFound {
-                                    operation_id: operation_id.clone(),
-                                })?;
-                                if !fence_for_completion.matches(&current.record)
-                                    || current.record.snapshot.state.is_terminal()
-                                    || current.record.cancellation_requested
-                                    || current
-                                        .record
-                                        .lease_expires_at_ms
-                                        .is_none_or(|expiry| expiry <= now_ms())
-                                {
-                                    return Err(ServerError::Nats(
-                                        "operation owner fence is stale".to_owned(),
-                                    ));
-                                }
-                                let mut record = current.record;
-                                let mut upload: DurableOperationUpload = serde_json::from_value(
-                                    record.transfer.clone().ok_or_else(|| {
-                                        ServerError::Nats(
-                                            "operation upload staging state is missing".to_owned(),
-                                        )
-                                    })?,
-                                )?;
-                                upload.state = "committed".to_owned();
-                                upload.size = Some(info.size);
-                                upload.digest = Some(info.digest);
-                                upload.updated_at = Some(info.updated_at);
-                                upload.content_type = info.content_type;
-                                record.revision += 1;
-                                record.transfer = Some(serde_json::to_value(upload)?);
-                                repository_for_completion
-                                    .compare_exchange(
-                                        current.revision,
-                                        &fence_for_completion.executor_id,
-                                        fence_for_completion.owner_epoch,
-                                        record,
-                                    )
-                                    .await
-                            }
+                        Ok(Some(claimed)) => {
+                            let resumed = Self::resume(
+                                service_for_resume,
+                                deployment_id_for_resume,
+                                fence_for_completion.clone(),
+                                repository_for_completion.clone(),
+                                Arc::clone(&gate_for_completion),
+                                handler,
+                                support.clone(),
+                                staging.clone(),
+                                publisher.clone(),
+                                update_subject.clone(),
+                                Arc::clone(&next_update_sequence),
+                                claimed,
+                            )
                             .await;
-                            drop(_guard);
-                            match result {
-                                Ok(_) => {
-                                    if durable_snapshot_update::<D>(
-                                        &repository_for_completion,
-                                        &fence_for_completion,
-                                        &gate_for_completion,
-                                        &operation_id,
-                                        SnapshotUpdate {
-                                            state: OperationState::Running,
-                                            progress: None,
-                                            output: None,
-                                            error: None,
-                                            cancellation_requested: false,
-                                        },
-                                        None,
-                                    )
-                                    .await
-                                    .is_ok()
+                            if let Err(error) = resumed {
+                                tracing::error!(%error, %operation_id, "committed operation upload handler admission failed");
+                                heartbeat.abort();
+                                let _guard = gate_for_completion.lock().await;
+                                let release = async {
+                                    let Some(current) =
+                                        repository_for_completion.get(&operation_id).await?
+                                    else {
+                                        return Ok::<(), ServerError>(());
+                                    };
+                                    if !fence_for_completion.matches(&current.record)
+                                        || current.record.snapshot.state.is_terminal()
                                     {
-                                        if let Ok(Some(claimed)) =
-                                            repository_for_completion.get(&operation_id).await
-                                        {
-                                            let _ = Self::resume(
-                                                service_for_resume,
-                                                deployment_id_for_resume,
-                                                fence_for_completion,
-                                                repository_for_completion,
-                                                gate_for_completion,
-                                                handler,
-                                                support.clone(),
-                                                staging.clone(),
-                                                publisher.clone(),
-                                                update_subject.clone(),
-                                                Arc::clone(&next_update_sequence),
-                                                claimed,
-                                            )
-                                            .await;
-                                        }
+                                        return Ok(());
                                     }
+                                    // Lease renewal owns lease-only changes and
+                                    // preserves the snapshot, including a pending
+                                    // cancellation. Shorten the real lease to the
+                                    // next millisecond instead of a forbidden
+                                    // nonterminal domain mutation.
+                                    let now = now_ms();
+                                    repository_for_completion
+                                        .renew(
+                                            &operation_id,
+                                            &fence_for_completion.executor_id,
+                                            fence_for_completion.owner_epoch,
+                                            now,
+                                            now + 1,
+                                        )
+                                        .await?;
+                                    Ok(())
                                 }
-                                Err(error) => {
-                                    tracing::error!(%error, %operation_id, "operation upload commit was fenced")
+                                .await;
+                                if let Err(error) = release {
+                                    tracing::error!(%error, %operation_id, "operation upload owner release failed");
                                 }
                             }
                         }
+                        Ok(None) => {}
                         Err(error) => {
-                            let _guard = gate_for_completion.lock().await;
-                            if let Ok(Some(current)) =
-                                repository_for_completion.get(&operation_id).await
-                            {
-                                let mut record = current.record;
-                                if let Ok(mut persisted) =
-                                    record.transfer.clone().ok_or(()).and_then(|value| {
-                                        serde_json::from_value::<DurableOperationUpload>(value)
-                                            .map_err(|_| ())
-                                    })
-                                {
-                                    persisted.state = "invalid".to_owned();
-                                    persisted.size = None;
-                                    persisted.digest = None;
-                                    record.revision += 1;
-                                    record.lease_expires_at_ms = Some(now_ms());
-                                    record.transfer = serde_json::to_value(persisted).ok();
-                                    let _ = repository_for_completion
-                                        .compare_exchange(
-                                            current.revision,
-                                            &fence_for_completion.executor_id,
-                                            fence_for_completion.owner_epoch,
-                                            record,
-                                        )
-                                        .await;
-                                }
-                            }
-                            tracing::warn!(%error, %operation_id, "operation upload staging invalidated");
+                            tracing::error!(%error, %operation_id, "operation upload settlement failed")
                         }
                     }
                     heartbeat.abort();
@@ -2446,9 +2375,7 @@ impl OwnerFence {
 struct DurableOperationUpload {
     staging_key: String,
     state: String,
-    transfer_id: String,
-    subject: String,
-    expires_at: String,
+    grant: UploadTransferGrant,
     size: Option<u64>,
     digest: Option<String>,
     updated_at: Option<String>,
@@ -2457,21 +2384,227 @@ struct DurableOperationUpload {
 
 fn operation_upload_grant(
     service: &str,
-    session_key: &str,
-    upload: &DurableOperationUpload,
-) -> UploadTransferGrant {
-    UploadTransferGrant {
+    service_session_key: &str,
+    connection_id: &str,
+    caller: &crate::client::VerifiedCaller,
+    max_payload: u64,
+    content_type: Option<String>,
+) -> Result<UploadTransferGrant, ServerError> {
+    use trellis_protocol::transfer::{
+        derive_transfer_subject, generate_transfer_id, negotiate_transfer_max_frame_bytes,
+        TransferSubjectKind, TRANSFER_VERSION, TRANSFER_WINDOW_BYTES, TRANSFER_WINDOW_FRAMES,
+    };
+    let transfer_id =
+        generate_transfer_id().map_err(|error| ServerError::Nats(error.to_string()))?;
+    let subject = |kind| {
+        derive_transfer_subject(kind, connection_id, &caller.connection_id, &transfer_id)
+            .map_err(|error| ServerError::Nats(error.to_string()))
+    };
+    Ok(UploadTransferGrant {
+        format: TRANSFER_VERSION.to_owned(),
         type_name: "TransferGrant".to_owned(),
         direction: "send".to_owned(),
         service: service.to_owned(),
-        session_key: session_key.to_owned(),
-        transfer_id: upload.transfer_id.clone(),
-        subject: upload.subject.clone(),
-        expires_at: upload.expires_at.clone(),
-        chunk_bytes: 64 * 1024,
+        provider: super::transfer::TransferIdentity {
+            connection_id: connection_id.to_owned(),
+            session_key: service_session_key.to_owned(),
+        },
+        consumer: super::transfer::TransferIdentity {
+            connection_id: caller.connection_id.clone(),
+            session_key: caller.session_key.clone(),
+        },
+        data_subject: subject(TransferSubjectKind::UploadData)?,
+        control_subject: subject(TransferSubjectKind::Control)?,
+        signal_subject: subject(TransferSubjectKind::Signal)?,
+        expires_at: (OffsetDateTime::now_utc() + time::Duration::minutes(15))
+            .format(&Rfc3339)
+            .map_err(|error| ServerError::Nats(error.to_string()))?,
+        max_frame_bytes: negotiate_transfer_max_frame_bytes(max_payload, max_payload)
+            .map_err(|error| ServerError::Nats(error.to_string()))?,
+        window_frames: TRANSFER_WINDOW_FRAMES,
+        window_bytes: TRANSFER_WINDOW_BYTES,
+        transfer_id,
         max_bytes: Some(512 * 1024 * 1024),
-        content_type: upload.content_type.clone(),
+        content_type,
         metadata: Default::default(),
+    })
+}
+
+async fn settle_operation_upload(
+    repository: &KvOperationRepository,
+    fence: &OwnerFence,
+    gate: &Mutex<()>,
+    operation_id: &str,
+    staging: &BoundStoreResourceClient,
+    staging_key: &str,
+) -> Result<Option<RevisionedOperationRecord>, ServerError> {
+    let _guard = gate.lock().await;
+    let current =
+        repository
+            .get(operation_id)
+            .await?
+            .ok_or_else(|| ServerError::OperationNotFound {
+                operation_id: operation_id.to_owned(),
+            })?;
+    let upload: DurableOperationUpload =
+        serde_json::from_value(current.record.transfer.clone().ok_or_else(|| {
+            ServerError::Nats("operation upload staging state is missing".to_owned())
+        })?)?;
+    if upload.state == "committed" && upload.staging_key == staging_key {
+        // A failed committed reply is not a failed durable upload. Only the
+        // current nonterminal owner may start (or cancel) its handler.
+        return Ok((fence.matches(&current.record)
+            && !current.record.snapshot.state.is_terminal())
+        .then_some(current));
+    }
+    let owns_attempt = fence.matches(&current.record)
+        && !current.record.snapshot.state.is_terminal()
+        && upload.staging_key == staging_key;
+    // Each replacement uses a different key. Even after owner loss, deleting
+    // this uncommitted attempt cannot remove a newer attempt's staged bytes.
+    // Missing output is normal when cancellation interrupted the store write.
+    if staging
+        .list_objects()
+        .await?
+        .into_iter()
+        .any(|object| object.key == staging_key)
+    {
+        staging.delete(staging_key).await?;
+    }
+    if !owns_attempt {
+        return Ok(None);
+    }
+    // Cancellation forbids every non-Cancelled CAS. Cleanup must not depend
+    // on such an intermediate write; the unique attempt key and mutation gate
+    // prevent this delete from racing the local final commit or a replacement.
+    let Some(current) = repository.get(operation_id).await? else {
+        return Ok(None);
+    };
+    let mut upload: DurableOperationUpload =
+        serde_json::from_value(current.record.transfer.clone().ok_or_else(|| {
+            ServerError::Nats("operation upload staging state is missing".to_owned())
+        })?)?;
+    if !fence.matches(&current.record)
+        || current.record.snapshot.state.is_terminal()
+        || upload.staging_key != staging_key
+    {
+        return Ok(None);
+    }
+    if current.record.cancellation_requested {
+        return Ok(Some(current));
+    }
+    upload.state = "invalid".to_owned();
+    upload.size = None;
+    upload.digest = None;
+    upload.updated_at = None;
+    let mut record = current.record;
+    record.revision += 1;
+    // The next ordinary Start can claim immediately and restart at zero.
+    record.lease_expires_at_ms = Some(now_ms());
+    record.transfer = Some(serde_json::to_value(upload)?);
+    let settled = repository
+        .compare_exchange(
+            current.revision,
+            &fence.executor_id,
+            fence.owner_epoch,
+            record,
+        )
+        .await;
+    match settled {
+        Ok(_) => Ok(None),
+        Err(ServerError::OperationAlreadyTerminal { state, .. }) if state == "cancelled" => {
+            // A real cancellation can win between the read and CAS. Its output
+            // is already removed; hand cleanup to the still-current owner.
+            Ok(repository.get(operation_id).await?.filter(|current| {
+                fence.matches(&current.record)
+                    && current.record.cancellation_requested
+                    && !current.record.snapshot.state.is_terminal()
+            }))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn coalesce_operation_upload_progress(
+    repository: KvOperationRepository,
+    fence: OwnerFence,
+    gate: Arc<Mutex<()>>,
+    operation_id: String,
+    mut receiver: watch::Receiver<Option<(OperationTransferProgress, tokio::time::Instant)>>,
+    mut stop: oneshot::Receiver<()>,
+    checkpoint_bytes: Arc<AtomicU64>,
+) -> Result<Option<OperationTransferProgress>, ServerError> {
+    let mut persisted_bytes = 0;
+    let mut deadline = None;
+    loop {
+        let progress = receiver.borrow_and_update().clone();
+        if progress
+            .as_ref()
+            .is_some_and(|value| value.0.transferred_bytes > persisted_bytes)
+        {
+            let due = progress.as_ref().expect("pending progress exists").1
+                + std::time::Duration::from_millis(250);
+            deadline = Some(due);
+            if progress.as_ref().is_some_and(|value| {
+                value.0.transferred_bytes.saturating_sub(persisted_bytes) >= 1024 * 1024
+            }) || tokio::time::Instant::now() >= due
+            {
+                let progress = progress.expect("pending progress exists").0;
+                // Newer submissions retain their own first-pending timestamp
+                // while this checkpoint awaits its transaction.
+                checkpoint_bytes.store(progress.transferred_bytes, Ordering::Relaxed);
+                let _guard = gate.lock().await;
+                let current = repository.get(&operation_id).await?.ok_or_else(|| {
+                    ServerError::OperationNotFound {
+                        operation_id: operation_id.clone(),
+                    }
+                })?;
+                if !fence.matches(&current.record)
+                    || current.record.snapshot.state.is_terminal()
+                    || current.record.cancellation_requested
+                {
+                    return Err(ServerError::Nats(
+                        "operation owner fence is stale".to_owned(),
+                    ));
+                }
+                let mut record = current.record;
+                if record
+                    .snapshot
+                    .transfer
+                    .as_ref()
+                    .is_none_or(|previous| previous.transferred_bytes < progress.transferred_bytes)
+                {
+                    record.revision += 1;
+                    record.snapshot.revision += 1;
+                    record.snapshot.updated_at = Some(now_timestamp());
+                    record.snapshot.transfer = Some(progress.clone());
+                    repository
+                        .compare_exchange(
+                            current.revision,
+                            &fence.executor_id,
+                            fence.owner_epoch,
+                            record,
+                        )
+                        .await?;
+                }
+                persisted_bytes = progress.transferred_bytes;
+                deadline = None;
+                continue;
+            }
+        }
+        tokio::select! {
+            biased;
+            _ = &mut stop => return Ok(receiver.borrow().clone().map(|value| value.0)),
+            changed = receiver.changed() => {
+                if changed.is_err() { return Ok(receiver.borrow().clone().map(|value| value.0)); }
+            }
+            _ = async {
+                match deadline {
+                    Some(due) => tokio::time::sleep_until(due).await,
+                    None => std::future::pending().await,
+                }
+            } => {}
+        }
     }
 }
 
@@ -2481,6 +2614,7 @@ async fn persist_operation_upload(
     gate: Arc<Mutex<()>>,
     operation_id: String,
     info: FileTransferInfo,
+    progress: Option<OperationTransferProgress>,
 ) -> Result<(), ServerError> {
     let _guard = gate.lock().await;
     let current =
@@ -2490,6 +2624,14 @@ async fn persist_operation_upload(
             .ok_or_else(|| ServerError::OperationNotFound {
                 operation_id: operation_id.clone(),
             })?;
+    if !fence.matches(&current.record)
+        || current.record.snapshot.state.is_terminal()
+        || current.record.cancellation_requested
+    {
+        return Err(ServerError::Nats(
+            "operation owner fence is stale".to_owned(),
+        ));
+    }
     let mut record = current.record;
     let mut upload: DurableOperationUpload =
         serde_json::from_value(record.transfer.clone().ok_or_else(|| {
@@ -2501,6 +2643,20 @@ async fn persist_operation_upload(
     upload.updated_at = Some(info.updated_at);
     upload.content_type = info.content_type;
     record.revision += 1;
+    record.snapshot.revision += 1;
+    record.snapshot.state = OperationState::Running;
+    record.snapshot.updated_at = Some(now_timestamp());
+    let progress = progress.unwrap_or(OperationTransferProgress {
+        chunk_index: 0,
+        chunk_bytes: 0,
+        transferred_bytes: 0,
+    });
+    if progress.transferred_bytes != info.size {
+        return Err(ServerError::Nats(
+            "final operation upload progress does not match stored size".to_owned(),
+        ));
+    }
+    record.snapshot.transfer = Some(progress);
     record.transfer = Some(serde_json::to_value(upload)?);
     repository
         .compare_exchange(
@@ -3408,15 +3564,430 @@ mod tests {
                 .unwrap(),
         );
         let object_bucket = format!("trellis_test_operation_staging_{}", ulid::Ulid::new());
-        let staging = BoundStoreResourceClient::new(
-            jetstream
-                .create_object_store(async_nats::jetstream::object_store::Config {
-                    bucket: object_bucket.clone(),
-                    ..Default::default()
-                })
+        jetstream
+            .create_object_store(async_nats::jetstream::object_store::Config {
+                bucket: object_bucket.clone(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let staging = BoundStoreResourceClient::new(client.clone(), object_bucket.clone());
+
+        // A paused reader must leave the rest of a real object at the broker,
+        // then resume byte-exactly. Dropping a partial reader must remove its
+        // ephemeral consumer rather than leave it taking deliveries.
+        let reader_staging = staging.clone();
+        let reader_jetstream = jetstream.clone();
+        let reader_bucket = object_bucket.clone();
+        tokio::spawn(async move {
+            use futures_util::TryStreamExt;
+            use tokio::io::AsyncReadExt;
+
+            let payload = vec![0x5a; 8 * 1024 * 1024];
+            reader_staging
+                .write_from("bounded_read", &mut payload.as_slice())
                 .await
+                .unwrap();
+            let stream = reader_jetstream
+                .get_stream(format!("OBJ_{reader_bucket}"))
+                .await
+                .unwrap();
+            let mut reader = reader_staging.open("bounded_read").await.unwrap().unwrap();
+            let first = reader.read_u8().await.unwrap();
+            let consumers: Vec<_> = stream.consumers().try_collect().await.unwrap();
+            assert_eq!(consumers.len(), 1);
+            // Another reader must complete independently without causing the
+            // held reader to drain its object into the client in the background.
+            let mut independent = Vec::new();
+            reader_staging
+                .read_into("bounded_read", &mut independent)
+                .await
+                .unwrap();
+            assert_eq!(independent, payload);
+            let consumers: Vec<_> = stream.consumers().try_collect().await.unwrap();
+            assert_eq!(consumers.len(), 1);
+            assert_eq!(consumers[0].delivered.consumer_sequence, 1);
+            assert_eq!(consumers[0].num_pending, reader.info().chunks as u64 - 1);
+            // Ordinary broker deletion exercises the same recovery path as
+            // inactivity cleanup, without a five-minute timing-based test.
+            stream.delete_consumer(&consumers[0].name).await.unwrap();
+            let mut received = vec![first];
+            reader.read_to_end(&mut received).await.unwrap();
+            assert_eq!(received, payload);
+            assert!(stream
+                .consumer_names()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap()
+                .is_empty());
+
+            let mut reader = reader_staging.open("bounded_read").await.unwrap().unwrap();
+            reader.read_u8().await.unwrap();
+            std::thread::spawn(move || drop(reader)).join().unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if stream
+                        .consumer_names()
+                        .try_collect::<Vec<_>>()
+                        .await
+                        .unwrap()
+                        .is_empty()
+                    {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+
+            reader_staging
+                .write_from("empty_read", &mut [].as_slice())
+                .await
+                .unwrap();
+            let mut reader = reader_staging.open("empty_read").await.unwrap().unwrap();
+            let mut empty = Vec::new();
+            reader.read_to_end(&mut empty).await.unwrap();
+            assert!(empty.is_empty());
+
+            // Corrupt bytes through the real backing stream while preserving
+            // the object metadata, so size alone cannot establish integrity.
+            let original = vec![0x5a; 256];
+            reader_staging
+                .write_from("corrupt_read", &mut original.as_slice())
+                .await
+                .unwrap();
+            let native_store = reader_jetstream
+                .get_object_store(&reader_bucket)
+                .await
+                .unwrap();
+            let info = native_store.info("corrupt_read").await.unwrap();
+            let subject = format!("$O.{reader_bucket}.C.{}", info.nuid);
+            stream.purge().filter(&subject).await.unwrap();
+            reader_jetstream
+                .publish(subject, bytes::Bytes::from(vec![0xa5; 256]))
+                .await
+                .unwrap()
+                .await
+                .unwrap();
+            let mut received = Vec::new();
+            assert!(reader_staging
+                .read_into("corrupt_read", &mut received)
+                .await
+                .is_err());
+        })
+        .await
+        .unwrap();
+
+        // Exercise the production persistence worker against real KV: a durable
+        // checkpoint is visible before completion, and a sub-checkpoint tail is
+        // flushed in the same mutation that unlocks the committed staged upload.
+        let persistence_repository = repository.clone();
+        let persistence_staging = staging.clone();
+        let persistence_client = client.clone();
+        // Poll this stage as an owned task rather than nesting its debug poll
+        // frame beneath the rest of the combined real-KV fixture.
+        tokio::spawn(async move {
+            let repository = persistence_repository;
+            let staging = persistence_staging;
+            let client = persistence_client;
+            let progress_id = ulid::Ulid::new().to_string();
+            let mut progress_record = operation(
+                progress_id.clone(),
+                UploadOperation::API_ID,
+                UploadOperation::KEY,
+            );
+            let progress_grant = operation_upload_grant(
+                "service",
+                "provider-session",
+                "provider-connection",
+                progress_record.caller.as_ref().unwrap(),
+                1024 * 1024,
+                None,
+            )
+            .unwrap();
+            progress_record.transfer = Some(
+                serde_json::to_value(DurableOperationUpload {
+                    staging_key: progress_id.clone(),
+                    state: "uploading".to_owned(),
+                    grant: progress_grant,
+                    size: None,
+                    digest: None,
+                    updated_at: None,
+                    content_type: None,
+                })
                 .unwrap(),
-        );
+            );
+            repository.create(progress_record).await.unwrap();
+            let claimed = repository
+                .claim(&progress_id, "progress-owner", now_ms(), now_ms() + 30_000)
+                .await
+                .unwrap();
+            let fence = OwnerFence::from(&claimed.record).unwrap();
+            let gate = Arc::new(Mutex::new(()));
+            let mut snapshots = repository.watch(&progress_id).await.unwrap();
+            let (progress_sender, progress_receiver) = watch::channel(None);
+            let (stop, stopped) = oneshot::channel();
+            let worker = tokio::spawn(coalesce_operation_upload_progress(
+                repository.clone(),
+                fence.clone(),
+                Arc::clone(&gate),
+                progress_id.clone(),
+                progress_receiver,
+                stopped,
+                Arc::new(AtomicU64::new(0)),
+            ));
+            progress_sender.send_replace(Some((
+                OperationTransferProgress {
+                    chunk_index: 1,
+                    chunk_bytes: 1024 * 1024,
+                    transferred_bytes: 1024 * 1024,
+                },
+                tokio::time::Instant::now(),
+            )));
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while let Some(snapshot) = snapshots.next().await {
+                    if snapshot
+                        .unwrap()
+                        .record
+                        .snapshot
+                        .transfer
+                        .is_some_and(|progress| progress.transferred_bytes > 0)
+                    {
+                        return;
+                    }
+                }
+                panic!("progress watch ended before checkpoint");
+            })
+            .await
+            .unwrap();
+            let payload = vec![42; 1024 * 1024 + 7];
+            let stored = staging
+                .write_from(&progress_id, &mut payload.as_slice())
+                .await
+                .unwrap();
+            progress_sender.send_replace(Some((
+                OperationTransferProgress {
+                    chunk_index: 2,
+                    chunk_bytes: 7,
+                    transferred_bytes: stored.size,
+                },
+                tokio::time::Instant::now(),
+            )));
+            stop.send(()).unwrap();
+            let final_progress = worker.await.unwrap().unwrap();
+            let info = FileTransferInfo {
+                key: progress_id.clone(),
+                size: stored.size,
+                digest: stored.digest.unwrap(),
+                updated_at: now_timestamp(),
+                content_type: None,
+                metadata: Default::default(),
+            };
+            persist_operation_upload(
+                repository.clone(),
+                fence.clone(),
+                Arc::clone(&gate),
+                progress_id.clone(),
+                info.clone(),
+                final_progress.clone(),
+            )
+            .await
+            .unwrap();
+            let progress_control = control::<UploadOperation>(
+                repository.clone(),
+                client.clone(),
+                staging.clone(),
+                "progress-owner",
+                &progress_id,
+            )
+            .await;
+            assert_eq!(progress_control.upload().await.unwrap().unwrap(), info);
+            let committed = repository.get(&progress_id).await.unwrap().unwrap();
+            assert_eq!(
+                committed
+                    .record
+                    .snapshot
+                    .transfer
+                    .unwrap()
+                    .transferred_bytes,
+                payload.len() as u64
+            );
+            assert_eq!(committed.record.snapshot.state, OperationState::Running);
+            // Resume from the committed durable record without depending on an
+            // endpoint reply result, and execute the ordinary handler boundary.
+            let runnable = settle_operation_upload(
+                &repository,
+                &fence,
+                &gate,
+                &progress_id,
+                &staging,
+                &progress_id,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(staging.list().await.unwrap().contains(&progress_id));
+            let obsolete_key = format!("obsolete-{progress_id}");
+            put(&staging, &obsolete_key).await;
+            let obsolete_fence = OwnerFence {
+                owner_epoch: fence.owner_epoch - 1,
+                ..fence.clone()
+            };
+            assert!(settle_operation_upload(
+                &repository,
+                &obsolete_fence,
+                &gate,
+                &progress_id,
+                &staging,
+                &obsolete_key
+            )
+            .await
+            .unwrap()
+            .is_none());
+            assert!(!staging.list().await.unwrap().contains(&obsolete_key));
+            assert!(staging.list().await.unwrap().contains(&progress_id));
+            let committed_runs = Arc::new(AtomicUsize::new(0));
+            let runs = Arc::clone(&committed_runs);
+            RuntimeOperationProvider::<UploadOperation, _, Allow>::resume(
+                "service".to_owned(),
+                "deployment".to_owned(),
+                fence.clone(),
+                repository.clone(),
+                Arc::clone(&gate),
+                Arc::new(
+                    move |_context, _input, control: OperationControl<UploadOperation>| {
+                        runs.fetch_add(1, Ordering::Relaxed);
+                        async move {
+                            control
+                                .complete(json!({ "stored": true }))
+                                .await
+                                .map(|_| ())
+                        }
+                    },
+                ),
+                SupportTransport {
+                    nats: client.clone(),
+                    lease: None,
+                },
+                staging.clone(),
+                None,
+                operation_update_subject::<UploadOperation>("deployment", &progress_id),
+                Arc::new(AtomicU64::new(1)),
+                runnable,
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while let Some(snapshot) = snapshots.next().await {
+                    if snapshot.unwrap().record.snapshot.state == OperationState::Completed {
+                        return;
+                    }
+                }
+                panic!("committed handler did not complete");
+            })
+            .await
+            .unwrap();
+            assert_eq!(committed_runs.load(Ordering::Relaxed), 1);
+            assert!(persist_operation_upload(
+                repository.clone(),
+                fence,
+                Arc::clone(&gate),
+                progress_id.clone(),
+                info,
+                final_progress
+            )
+            .await
+            .is_err());
+            assert_eq!(
+                repository
+                    .get(&progress_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .record
+                    .snapshot
+                    .state,
+                OperationState::Completed
+            );
+
+            // Cancellation after a successful backend write must reject the final
+            // commit, delete the uncommitted object, and leave cleanup runnable.
+            let cancelled_upload_id = ulid::Ulid::new().to_string();
+            let mut cancelled_upload = operation(
+                cancelled_upload_id.clone(),
+                UploadOperation::API_ID,
+                UploadOperation::KEY,
+            );
+            cancelled_upload.transfer = Some(json!({
+                "stagingKey": cancelled_upload_id, "state": "uploading",
+                "grant": operation_upload_grant("service", "provider-session", "provider-connection", cancelled_upload.caller.as_ref().unwrap(), 1024 * 1024, None).unwrap(),
+                "size": null, "digest": null, "updatedAt": null, "contentType": null,
+            }));
+            repository.create(cancelled_upload).await.unwrap();
+            let claimed = repository
+                .claim(
+                    &cancelled_upload_id,
+                    "cancelled-upload-owner",
+                    now_ms(),
+                    now_ms() + 30_000,
+                )
+                .await
+                .unwrap();
+            let cancelled_fence = OwnerFence::from(&claimed.record).unwrap();
+            let (size, digest) = put(&staging, &cancelled_upload_id).await;
+            let mut cancellation = claimed.record;
+            cancellation.cancellation_requested = true;
+            repository.create(cancellation).await.unwrap();
+            assert!(persist_operation_upload(
+                repository.clone(),
+                cancelled_fence.clone(),
+                Arc::clone(&gate),
+                cancelled_upload_id.clone(),
+                FileTransferInfo {
+                    key: cancelled_upload_id.clone(),
+                    size,
+                    digest: digest.unwrap(),
+                    updated_at: now_timestamp(),
+                    content_type: None,
+                    metadata: Default::default(),
+                },
+                Some(OperationTransferProgress {
+                    chunk_index: 0,
+                    chunk_bytes: size,
+                    transferred_bytes: size
+                })
+            )
+            .await
+            .is_err());
+            let cancelled = settle_operation_upload(
+                &repository,
+                &cancelled_fence,
+                &gate,
+                &cancelled_upload_id,
+                &staging,
+                &cancelled_upload_id,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(cancelled.record.cancellation_requested);
+            assert!(!staging.list().await.unwrap().contains(&cancelled_upload_id));
+            assert_eq!(
+                finalize_cancellation::<UploadOperation>(
+                    &repository,
+                    &cancelled_fence,
+                    &gate,
+                    &cancelled_upload_id,
+                    None,
+                )
+                .await
+                .unwrap()
+                .state,
+                OperationState::Cancelled
+            );
+
+            }).await.unwrap();
 
         let old_key = "abandoned";
         let committed_key = "committed";
@@ -3424,28 +3995,46 @@ mod tests {
         let _ = put(&staging, old_key).await;
         let (committed_size, committed_digest) = put(&staging, committed_key).await;
         let _ = put(&staging, interrupted_commit_key).await;
-        let expired = (OffsetDateTime::now_utc() - time::Duration::hours(25))
-            .format(&Rfc3339)
-            .unwrap();
         let mut abandoned = operation(
             ulid::Ulid::new().to_string(),
             UploadOperation::API_ID,
             UploadOperation::KEY,
         );
+        let live_grant = operation_upload_grant(
+            "service",
+            "provider-session",
+            "provider-connection",
+            abandoned.caller.as_ref().unwrap(),
+            1024 * 1024,
+            None,
+        )
+        .unwrap();
         abandoned.transfer = Some(json!({
-            "stagingKey": old_key, "state": "uploading", "transferId": ulid::Ulid::new().to_string(),
-            "subject": "_INBOX.upload", "expiresAt": expired, "size": null, "digest": null,
+            "stagingKey": old_key, "state": "uploading", "grant": live_grant,
+            "size": null, "digest": null,
             "updatedAt": null, "contentType": null
         }));
+        let abandoned_id = abandoned.invocation_id.clone();
         repository.create(abandoned).await.unwrap();
+        let now = now_ms();
+        let interrupted_lease_expires_at = now + 100;
+        repository
+            .claim(
+                &abandoned_id,
+                "interrupted-owner",
+                now,
+                interrupted_lease_expires_at,
+            )
+            .await
+            .unwrap();
         let mut committed = operation(
             ulid::Ulid::new().to_string(),
             UploadOperation::API_ID,
             UploadOperation::KEY,
         );
         committed.transfer = Some(json!({
-            "stagingKey": committed_key, "state": "committed", "transferId": ulid::Ulid::new().to_string(),
-            "subject": "_INBOX.upload", "expiresAt": expired, "size": committed_size,
+            "stagingKey": committed_key, "state": "committed", "grant": live_grant,
+            "size": committed_size,
             "digest": committed_digest,
             "updatedAt": "2026-09-10T00:00:00Z", "contentType": null
         }));
@@ -3458,8 +4047,8 @@ mod tests {
             UploadOperation::KEY,
         );
         mismatched.transfer = Some(json!({
-            "stagingKey": mismatched_key, "state": "committed", "transferId": ulid::Ulid::new().to_string(),
-            "subject": "_INBOX.upload", "expiresAt": expired, "size": 7, "digest": "SHA-256=wrong",
+            "stagingKey": mismatched_key, "state": "committed", "grant": live_grant,
+            "size": 7, "digest": "SHA-256=wrong",
             "updatedAt": "2026-09-10T00:00:00Z", "contentType": null
         }));
         repository.create(mismatched).await.unwrap();
@@ -3471,8 +4060,8 @@ mod tests {
         );
         interrupted_commit.transfer = Some(json!({
             "stagingKey": interrupted_commit_key, "state": "uploading",
-            "transferId": ulid::Ulid::new().to_string(), "subject": "_INBOX.upload",
-            "expiresAt": expired, "size": 8, "digest": null, "updatedAt": null,
+            "grant": live_grant,
+            "size": 8, "digest": null, "updatedAt": null,
             "contentType": null
         }));
         repository.create(interrupted_commit).await.unwrap();
@@ -3495,6 +4084,12 @@ mod tests {
                 async { std::future::pending::<Result<(), ServerError>>().await }
             },
         );
+        // Recovery may not steal a live owner. Cross the actual lease deadline
+        // before starting discovery, rather than racing its first scan.
+        tokio::time::sleep(std::time::Duration::from_millis(
+            interrupted_lease_expires_at.saturating_sub(now_ms()).max(0) as u64,
+        ))
+        .await;
         upload_provider.recover().await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while staging.list().await.unwrap().contains(&old_key.to_owned()) {
@@ -3543,808 +4138,820 @@ mod tests {
             .unwrap()
             .contains(&mismatched_key.to_owned()));
 
-        let id = ulid::Ulid::new().to_string();
-        repository
-            .create(operation(
-                id.clone(),
-                TestOperation::API_ID,
-                TestOperation::KEY,
-            ))
-            .await
-            .unwrap();
-        let now = now_ms();
-        repository
-            .claim(&id, "executor-a", now, now + 30_000)
-            .await
-            .unwrap();
-        let provider = RuntimeOperationProvider::<TestOperation, _, _>::new(
-            OperationHandlerRuntime {
-                service: "service".to_owned(),
-                deployment_id: "deployment".to_owned(),
-                executor_id: "executor-a".to_owned(),
-                connection_id: "executor-a".to_owned(),
-                repository: repository.clone(),
-                transport: OperationTransport::fixed(client.clone()),
-                service_session_key: "session".to_owned(),
-                staging: staging.clone(),
-                validator: Allow,
-            },
-            |_context, _input, _control| async { Ok(()) },
-        );
-        provider.recover().await.unwrap();
-        let survivor_id = ulid::Ulid::new().to_string();
-        repository
-            .create(operation(
-                survivor_id.clone(),
-                TestOperation::API_ID,
-                TestOperation::KEY,
-            ))
-            .await
-            .unwrap();
-        let now = now_ms();
-        repository
-            .claim(&survivor_id, "expired-executor", now, now + 100)
-            .await
-            .unwrap();
-        let survived = tokio::time::timeout(std::time::Duration::from_secs(12), async {
-            loop {
-                let current = repository.get(&survivor_id).await.unwrap().unwrap();
-                if current.record.owner_executor_id.as_deref() == Some("executor-a") {
-                    break current;
+        let controls_repository = repository.clone();
+        let controls_staging = staging.clone();
+        let controls_client = client.clone();
+        tokio::spawn(async move {
+            let repository = controls_repository;
+            let staging = controls_staging;
+            let client = controls_client;
+            let id = ulid::Ulid::new().to_string();
+            repository
+                .create(operation(
+                    id.clone(),
+                    TestOperation::API_ID,
+                    TestOperation::KEY,
+                ))
+                .await
+                .unwrap();
+            let now = now_ms();
+            repository
+                .claim(&id, "executor-a", now, now + 30_000)
+                .await
+                .unwrap();
+            let provider = RuntimeOperationProvider::<TestOperation, _, _>::new(
+                OperationHandlerRuntime {
+                    service: "service".to_owned(),
+                    deployment_id: "deployment".to_owned(),
+                    executor_id: "executor-a".to_owned(),
+                    connection_id: "executor-a".to_owned(),
+                    repository: repository.clone(),
+                    transport: OperationTransport::fixed(client.clone()),
+                    service_session_key: "session".to_owned(),
+                    staging: staging.clone(),
+                    validator: Allow,
+                },
+                |_context, _input, _control| async { Ok(()) },
+            );
+            provider.recover().await.unwrap();
+            let survivor_id = ulid::Ulid::new().to_string();
+            repository
+                .create(operation(
+                    survivor_id.clone(),
+                    TestOperation::API_ID,
+                    TestOperation::KEY,
+                ))
+                .await
+                .unwrap();
+            let now = now_ms();
+            repository
+                .claim(&survivor_id, "expired-executor", now, now + 100)
+                .await
+                .unwrap();
+            let survived = tokio::time::timeout(std::time::Duration::from_secs(12), async {
+                loop {
+                    let current = repository.get(&survivor_id).await.unwrap().unwrap();
+                    if current.record.owner_executor_id.as_deref() == Some("executor-a") {
+                        break current;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(survived.record.owner_epoch, 2);
-        let other_api_id = ulid::Ulid::new().to_string();
-        repository
-            .create(operation(
-                other_api_id.clone(),
-                "test.other-operations@v1",
-                TestOperation::KEY,
-            ))
+            })
             .await
             .unwrap();
-        let other_before = repository.get(&other_api_id).await.unwrap().unwrap();
-        assert!(matches!(
-            provider
-                .get(
-                    context("cross-api-get", PermissionAction::Observe, None),
+            assert_eq!(survived.record.owner_epoch, 2);
+            let other_api_id = ulid::Ulid::new().to_string();
+            repository
+                .create(operation(
                     other_api_id.clone(),
+                    "test.other-operations@v1",
+                    TestOperation::KEY,
+                ))
+                .await
+                .unwrap();
+            let other_before = repository.get(&other_api_id).await.unwrap().unwrap();
+            assert!(matches!(
+                provider
+                    .get(
+                        context("cross-api-get", PermissionAction::Observe, None),
+                        other_api_id.clone(),
+                    )
+                    .await,
+                Err(ServerError::RequestDenied { .. })
+            ));
+            assert_eq!(
+                repository.get(&other_api_id).await.unwrap().unwrap(),
+                other_before
+            );
+
+            let lease_revision_id = ulid::Ulid::new().to_string();
+            repository
+                .create(operation(
+                    lease_revision_id.clone(),
+                    TestOperation::API_ID,
+                    TestOperation::KEY,
+                ))
+                .await
+                .unwrap();
+            let mut lease_watch = repository.watch(&lease_revision_id).await.unwrap();
+            assert_eq!(
+                lease_watch
+                    .next()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .record
+                    .snapshot
+                    .revision,
+                1
+            );
+            let lease = repository
+                .claim(&lease_revision_id, "lease-a", 0, 1)
+                .await
+                .unwrap();
+            repository
+                .renew(
+                    &lease_revision_id,
+                    "lease-a",
+                    lease.record.owner_epoch,
+                    0,
+                    2,
                 )
-                .await,
-            Err(ServerError::RequestDenied { .. })
-        ));
-        assert_eq!(
-            repository.get(&other_api_id).await.unwrap().unwrap(),
-            other_before
-        );
-
-        let lease_revision_id = ulid::Ulid::new().to_string();
-        repository
-            .create(operation(
-                lease_revision_id.clone(),
-                TestOperation::API_ID,
-                TestOperation::KEY,
-            ))
-            .await
-            .unwrap();
-        let mut lease_watch = repository.watch(&lease_revision_id).await.unwrap();
-        assert_eq!(
-            lease_watch
-                .next()
                 .await
-                .unwrap()
-                .unwrap()
-                .record
-                .snapshot
-                .revision,
-            1
-        );
-        let lease = repository
-            .claim(&lease_revision_id, "lease-a", 0, 1)
-            .await
-            .unwrap();
-        repository
-            .renew(
-                &lease_revision_id,
-                "lease-a",
-                lease.record.owner_epoch,
-                0,
-                2,
-            )
-            .await
-            .unwrap();
-        repository
-            .claim(&lease_revision_id, "lease-b", 2, 3)
-            .await
-            .unwrap();
-        for expected in 2..=4 {
-            let revision = lease_watch.next().await.unwrap().unwrap().record;
-            assert_eq!(revision.revision, expected);
-            assert_eq!(revision.snapshot.revision, expected);
-        }
-
-        let long_running_id = ulid::Ulid::new().to_string();
-        let mut long_running = operation(
-            long_running_id.clone(),
-            TestOperation::API_ID,
-            TestOperation::KEY,
-        );
-        long_running.snapshot.created_at = Some("2026-08-01T00:00:00Z".to_owned());
-        long_running.snapshot.updated_at = Some("2026-09-01T00:00:00Z".to_owned());
-        assert_eq!(
+                .unwrap();
             repository
-                .create(long_running)
+                .claim(&lease_revision_id, "lease-b", 2, 3)
                 .await
-                .unwrap()
-                .record
-                .invocation_id,
-            long_running_id
-        );
-
-        let expired_signal_id = ulid::Ulid::new().to_string();
-        repository
-            .create(operation(
-                expired_signal_id.clone(),
-                TestOperation::API_ID,
-                TestOperation::KEY,
-            ))
-            .await
-            .unwrap();
-        let past = now_ms() - 2_000;
-        repository
-            .claim(
-                &expired_signal_id,
-                "expired-signal-owner",
-                past,
-                past + 1_000,
-            )
-            .await
-            .unwrap();
-        provider
-            .signal(
-                context(
-                    "expired-owner-signal",
-                    PermissionAction::Control,
-                    Some("resume"),
-                ),
-                expired_signal_id.clone(),
-                "resume".to_owned(),
-                None,
-            )
-            .await
-            .unwrap();
-        let expired_signal = repository.get(&expired_signal_id).await.unwrap().unwrap();
-        assert_eq!(
-            expired_signal.record.owner_executor_id.as_deref(),
-            Some("expired-signal-owner")
-        );
-        assert_eq!(expired_signal.record.owner_epoch, 1);
-        assert_eq!(expired_signal.record.signals.len(), 1);
-
-        let expired_cancel_id = ulid::Ulid::new().to_string();
-        repository
-            .create(operation(
-                expired_cancel_id.clone(),
-                TestOperation::API_ID,
-                TestOperation::KEY,
-            ))
-            .await
-            .unwrap();
-        repository
-            .claim(
-                &expired_cancel_id,
-                "expired-cancel-owner",
-                past,
-                past + 1_000,
-            )
-            .await
-            .unwrap();
-        let cancel_result = provider.cancel(
-            context("expired-owner-cancel", PermissionAction::Cancel, None),
-            expired_cancel_id.clone(),
-        );
-        assert!(!cancel_result.await.unwrap().state.is_terminal());
-        let expired_cancel = repository.get(&expired_cancel_id).await.unwrap().unwrap();
-        assert_eq!(
-            expired_cancel.record.owner_executor_id.as_deref(),
-            Some("expired-cancel-owner")
-        );
-        assert_eq!(expired_cancel.record.owner_epoch, 1);
-        assert!(expired_cancel.record.cancellation_requested);
-
-        let handler_started = Arc::new(tokio::sync::Notify::new());
-        let handler_stopped = Arc::new(AtomicBool::new(false));
-        let started = Arc::clone(&handler_started);
-        let stopped = Arc::clone(&handler_stopped);
-        let cancellation_provider = RuntimeOperationProvider::<TestOperation, _, _>::new(
-            OperationHandlerRuntime {
-                service: "service".to_owned(),
-                deployment_id: "deployment".to_owned(),
-                executor_id: "cancellation-executor".to_owned(),
-                connection_id: "cancellation-executor".to_owned(),
-                repository: repository.clone(),
-                transport: OperationTransport::fixed(client.clone()),
-                service_session_key: "session".to_owned(),
-                staging: staging.clone(),
-                validator: Allow,
-            },
-            move |_context, _input, control: OperationControl<TestOperation>| {
-                let started = Arc::clone(&started);
-                let stopped = Arc::clone(&stopped);
-                async move {
-                    let _drop = HandlerDrop(stopped);
-                    started.notify_one();
-                    assert_eq!(
-                        control.cancellation().cancelled().await,
-                        OperationCancellationReason::Requested
-                    );
-                    Ok(())
-                }
-            },
-        );
-        let handler_cancel_id = ulid::Ulid::new().to_string();
-        cancellation_provider
-            .start_invocation(
-                context("start-cancellable-handler", PermissionAction::Invoke, None),
-                handler_cancel_id.clone(),
-                json!({"value": 1}),
-                None,
-            )
-            .await
-            .unwrap();
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            handler_started.notified(),
-        )
-        .await
-        .unwrap();
-        let mut cancellation_watch = repository.watch(&handler_cancel_id).await.unwrap();
-        cancellation_watch.next().await.unwrap().unwrap();
-        let observe_cancellation = async {
-            let mut requested_revision = None;
-            loop {
-                let current = cancellation_watch.next().await.unwrap().unwrap().record;
-                assert_eq!(current.snapshot.revision, current.revision);
-                if current.cancellation_requested && !current.snapshot.state.is_terminal() {
-                    requested_revision = Some(current.snapshot.revision);
-                }
-                if current.snapshot.state == OperationState::Cancelled {
-                    assert!(handler_stopped.load(Ordering::SeqCst));
-                    assert!(requested_revision.is_some_and(|revision| revision < current.revision));
-                    break;
-                }
+                .unwrap();
+            for expected in 2..=4 {
+                let revision = lease_watch.next().await.unwrap().unwrap().record;
+                assert_eq!(revision.revision, expected);
+                assert_eq!(revision.snapshot.revision, expected);
             }
-        };
-        let (cancelled, ()) = tokio::join!(
-            cancellation_provider.cancel(
-                context("cancel-running-handler", PermissionAction::Cancel, None),
-                handler_cancel_id.clone(),
-            ),
-            observe_cancellation,
-        );
-        assert!(!cancelled.unwrap().state.is_terminal());
-        assert_eq!(
+
+            let long_running_id = ulid::Ulid::new().to_string();
+            let mut long_running = operation(
+                long_running_id.clone(),
+                TestOperation::API_ID,
+                TestOperation::KEY,
+            );
+            long_running.snapshot.created_at = Some("2026-08-01T00:00:00Z".to_owned());
+            long_running.snapshot.updated_at = Some("2026-09-01T00:00:00Z".to_owned());
+            assert_eq!(
+                repository
+                    .create(long_running)
+                    .await
+                    .unwrap()
+                    .record
+                    .invocation_id,
+                long_running_id
+            );
+
+            let expired_signal_id = ulid::Ulid::new().to_string();
             repository
-                .get(&handler_cancel_id)
+                .create(operation(
+                    expired_signal_id.clone(),
+                    TestOperation::API_ID,
+                    TestOperation::KEY,
+                ))
                 .await
-                .unwrap()
-                .unwrap()
-                .record
-                .snapshot
-                .state,
-            OperationState::Cancelled
-        );
-        assert!(handler_stopped.load(Ordering::SeqCst));
-
-        let (control_tx, mut control_rx) = tokio::sync::mpsc::unbounded_channel();
-        let ownership_stopped = Arc::new(AtomicBool::new(false));
-        let stopped = Arc::clone(&ownership_stopped);
-        let ownership_provider = RuntimeOperationProvider::<TestOperation, _, _>::new(
-            OperationHandlerRuntime {
-                service: "service".to_owned(),
-                deployment_id: "deployment".to_owned(),
-                executor_id: "ownership-a".to_owned(),
-                connection_id: "ownership-a".to_owned(),
-                repository: repository.clone(),
-                transport: OperationTransport::fixed(client.clone()),
-                service_session_key: "session".to_owned(),
-                staging: staging.clone(),
-                validator: Allow,
-            },
-            move |_context, _input, control: OperationControl<TestOperation>| {
-                let cancellation = control.cancellation();
-                control_tx.send(control).unwrap();
-                let stopped = Arc::clone(&stopped);
-                async move {
-                    let _drop = HandlerDrop(stopped);
-                    assert_eq!(
-                        cancellation.cancelled().await,
-                        OperationCancellationReason::OwnershipLost
-                    );
-                    Ok(())
-                }
-            },
-        );
-        let ownership_id = ulid::Ulid::new().to_string();
-        ownership_provider
-            .start_invocation(
-                context("start-owned-handler", PermissionAction::Invoke, None),
-                ownership_id.clone(),
-                json!({"value": 1}),
-                None,
-            )
-            .await
-            .unwrap();
-        let stale_handler_control = control_rx.recv().await.unwrap();
-        let current = repository.get(&ownership_id).await.unwrap().unwrap();
-        let mut expired = current.record.clone();
-        expired.revision += 1;
-        expired.lease_expires_at_ms = Some(0);
-        repository
-            .compare_exchange(
-                current.revision,
-                "ownership-a",
-                current.record.owner_epoch,
-                expired,
-            )
-            .await
-            .unwrap();
-        repository
-            .claim(&ownership_id, "ownership-b", now_ms(), now_ms() + 30_000)
-            .await
-            .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while !ownership_stopped.load(Ordering::SeqCst) {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        assert!(stale_handler_control
-            .progress(json!({"stale": true}))
-            .await
-            .is_err());
-
-        let first = provider
-            .signal(
-                context("request-1", PermissionAction::Control, Some("resume")),
-                id.clone(),
-                "resume".to_owned(),
-                Some(json!({"choice": 1})),
-            )
-            .await
-            .unwrap();
-        let replay = provider
-            .signal(
-                context("request-1", PermissionAction::Control, Some("resume")),
-                id.clone(),
-                "resume".to_owned(),
-                Some(json!({"choice": 1})),
-            )
-            .await
-            .unwrap();
-        assert_eq!(replay.signal_sequence, first.signal_sequence);
-        assert!(matches!(
+                .unwrap();
+            let past = now_ms() - 2_000;
+            repository
+                .claim(
+                    &expired_signal_id,
+                    "expired-signal-owner",
+                    past,
+                    past + 1_000,
+                )
+                .await
+                .unwrap();
             provider
+                .signal(
+                    context(
+                        "expired-owner-signal",
+                        PermissionAction::Control,
+                        Some("resume"),
+                    ),
+                    expired_signal_id.clone(),
+                    "resume".to_owned(),
+                    None,
+                )
+                .await
+                .unwrap();
+            let expired_signal = repository.get(&expired_signal_id).await.unwrap().unwrap();
+            assert_eq!(
+                expired_signal.record.owner_executor_id.as_deref(),
+                Some("expired-signal-owner")
+            );
+            assert_eq!(expired_signal.record.owner_epoch, 1);
+            assert_eq!(expired_signal.record.signals.len(), 1);
+
+            let expired_cancel_id = ulid::Ulid::new().to_string();
+            repository
+                .create(operation(
+                    expired_cancel_id.clone(),
+                    TestOperation::API_ID,
+                    TestOperation::KEY,
+                ))
+                .await
+                .unwrap();
+            repository
+                .claim(
+                    &expired_cancel_id,
+                    "expired-cancel-owner",
+                    past,
+                    past + 1_000,
+                )
+                .await
+                .unwrap();
+            let cancel_result = provider.cancel(
+                context("expired-owner-cancel", PermissionAction::Cancel, None),
+                expired_cancel_id.clone(),
+            );
+            assert!(!cancel_result.await.unwrap().state.is_terminal());
+            let expired_cancel = repository.get(&expired_cancel_id).await.unwrap().unwrap();
+            assert_eq!(
+                expired_cancel.record.owner_executor_id.as_deref(),
+                Some("expired-cancel-owner")
+            );
+            assert_eq!(expired_cancel.record.owner_epoch, 1);
+            assert!(expired_cancel.record.cancellation_requested);
+
+            let handler_started = Arc::new(tokio::sync::Notify::new());
+            let handler_stopped = Arc::new(AtomicBool::new(false));
+            let started = Arc::clone(&handler_started);
+            let stopped = Arc::clone(&handler_stopped);
+            let cancellation_provider = RuntimeOperationProvider::<TestOperation, _, _>::new(
+                OperationHandlerRuntime {
+                    service: "service".to_owned(),
+                    deployment_id: "deployment".to_owned(),
+                    executor_id: "cancellation-executor".to_owned(),
+                    connection_id: "cancellation-executor".to_owned(),
+                    repository: repository.clone(),
+                    transport: OperationTransport::fixed(client.clone()),
+                    service_session_key: "session".to_owned(),
+                    staging: staging.clone(),
+                    validator: Allow,
+                },
+                move |_context, _input, control: OperationControl<TestOperation>| {
+                    let started = Arc::clone(&started);
+                    let stopped = Arc::clone(&stopped);
+                    async move {
+                        let _drop = HandlerDrop(stopped);
+                        started.notify_one();
+                        assert_eq!(
+                            control.cancellation().cancelled().await,
+                            OperationCancellationReason::Requested
+                        );
+                        Ok(())
+                    }
+                },
+            );
+            let handler_cancel_id = ulid::Ulid::new().to_string();
+            cancellation_provider
+                .start_invocation(
+                    context("start-cancellable-handler", PermissionAction::Invoke, None),
+                    handler_cancel_id.clone(),
+                    json!({"value": 1}),
+                    None,
+                )
+                .await
+                .unwrap();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                handler_started.notified(),
+            )
+            .await
+            .unwrap();
+            let mut cancellation_watch = repository.watch(&handler_cancel_id).await.unwrap();
+            cancellation_watch.next().await.unwrap().unwrap();
+            let observe_cancellation = async {
+                let mut requested_revision = None;
+                loop {
+                    let current = cancellation_watch.next().await.unwrap().unwrap().record;
+                    assert_eq!(current.snapshot.revision, current.revision);
+                    if current.cancellation_requested && !current.snapshot.state.is_terminal() {
+                        requested_revision = Some(current.snapshot.revision);
+                    }
+                    if current.snapshot.state == OperationState::Cancelled {
+                        assert!(handler_stopped.load(Ordering::SeqCst));
+                        assert!(
+                            requested_revision.is_some_and(|revision| revision < current.revision)
+                        );
+                        break;
+                    }
+                }
+            };
+            let (cancelled, ()) = tokio::join!(
+                cancellation_provider.cancel(
+                    context("cancel-running-handler", PermissionAction::Cancel, None),
+                    handler_cancel_id.clone(),
+                ),
+                observe_cancellation,
+            );
+            assert!(!cancelled.unwrap().state.is_terminal());
+            assert_eq!(
+                repository
+                    .get(&handler_cancel_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .record
+                    .snapshot
+                    .state,
+                OperationState::Cancelled
+            );
+            assert!(handler_stopped.load(Ordering::SeqCst));
+
+            let (control_tx, mut control_rx) = tokio::sync::mpsc::unbounded_channel();
+            let ownership_stopped = Arc::new(AtomicBool::new(false));
+            let stopped = Arc::clone(&ownership_stopped);
+            let ownership_provider = RuntimeOperationProvider::<TestOperation, _, _>::new(
+                OperationHandlerRuntime {
+                    service: "service".to_owned(),
+                    deployment_id: "deployment".to_owned(),
+                    executor_id: "ownership-a".to_owned(),
+                    connection_id: "ownership-a".to_owned(),
+                    repository: repository.clone(),
+                    transport: OperationTransport::fixed(client.clone()),
+                    service_session_key: "session".to_owned(),
+                    staging: staging.clone(),
+                    validator: Allow,
+                },
+                move |_context, _input, control: OperationControl<TestOperation>| {
+                    let cancellation = control.cancellation();
+                    control_tx.send(control).unwrap();
+                    let stopped = Arc::clone(&stopped);
+                    async move {
+                        let _drop = HandlerDrop(stopped);
+                        assert_eq!(
+                            cancellation.cancelled().await,
+                            OperationCancellationReason::OwnershipLost
+                        );
+                        Ok(())
+                    }
+                },
+            );
+            let ownership_id = ulid::Ulid::new().to_string();
+            ownership_provider
+                .start_invocation(
+                    context("start-owned-handler", PermissionAction::Invoke, None),
+                    ownership_id.clone(),
+                    json!({"value": 1}),
+                    None,
+                )
+                .await
+                .unwrap();
+            let stale_handler_control = control_rx.recv().await.unwrap();
+            let current = repository.get(&ownership_id).await.unwrap().unwrap();
+            let mut expired = current.record.clone();
+            expired.revision += 1;
+            expired.lease_expires_at_ms = Some(0);
+            repository
+                .compare_exchange(
+                    current.revision,
+                    "ownership-a",
+                    current.record.owner_epoch,
+                    expired,
+                )
+                .await
+                .unwrap();
+            repository
+                .claim(&ownership_id, "ownership-b", now_ms(), now_ms() + 30_000)
+                .await
+                .unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !ownership_stopped.load(Ordering::SeqCst) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(stale_handler_control
+                .progress(json!({"stale": true}))
+                .await
+                .is_err());
+
+            let first = provider
                 .signal(
                     context("request-1", PermissionAction::Control, Some("resume")),
                     id.clone(),
                     "resume".to_owned(),
-                    Some(json!({"choice": 9})),
-                )
-                .await,
-            Err(ServerError::OperationIdempotencyConflict { kind: "signal", .. })
-        ));
-        assert!(matches!(
-            provider
-                .signal(
-                    context("request-1", PermissionAction::Control, Some("different")),
-                    id.clone(),
-                    "different".to_owned(),
                     Some(json!({"choice": 1})),
                 )
-                .await,
-            Err(ServerError::OperationIdempotencyConflict { kind: "signal", .. })
-        ));
-        provider
-            .signal(
-                context("request-2", PermissionAction::Control, Some("resume")),
-                id.clone(),
-                "resume".to_owned(),
-                Some(json!({"choice": 2})),
-            )
-            .await
-            .unwrap();
-        let signalled = repository.get(&id).await.unwrap().unwrap();
-        assert_eq!(
-            signalled
-                .record
-                .signals
-                .iter()
-                .map(|signal| signal.sequence)
-                .collect::<Vec<_>>(),
-            vec![1, 2]
-        );
-        assert_eq!(signalled.record.signals.len(), 2);
-
-        let first_control = control::<TestOperation>(
-            repository.clone(),
-            client.clone(),
-            staging.clone(),
-            "executor-a",
-            &id,
-        )
-        .await;
-        let mut signals = first_control.signals().await.unwrap();
-        assert_eq!(signals.next().await.unwrap().unwrap().signal_sequence, 1);
-        drop(signals);
-        let mut expired_owner = repository.get(&id).await.unwrap().unwrap().record;
-        expired_owner.revision += 1;
-        expired_owner.lease_expires_at_ms = Some(0);
-        repository
-            .compare_exchange(
-                signalled.revision,
-                "executor-a",
-                signalled.record.owner_epoch,
-                expired_owner,
-            )
-            .await
-            .unwrap();
-        let same_executor = repository
-            .claim(&id, "executor-a", now_ms(), now_ms() + 30_000)
-            .await
-            .unwrap();
-        assert_eq!(
-            same_executor.record.owner_epoch,
-            signalled.record.owner_epoch + 1
-        );
-        assert!(first_control
-            .progress(json!({"stale": true}))
-            .await
-            .is_err());
-        let mut expired_same_executor = same_executor.record.clone();
-        expired_same_executor.revision += 1;
-        expired_same_executor.lease_expires_at_ms = Some(0);
-        repository
-            .compare_exchange(
-                same_executor.revision,
-                "executor-a",
-                same_executor.record.owner_epoch,
-                expired_same_executor,
-            )
-            .await
-            .unwrap();
-        let recovered = repository
-            .claim(&id, "executor-b", now_ms(), now_ms() + 30_000)
-            .await
-            .unwrap();
-        let second_control = control::<TestOperation>(
-            repository.clone(),
-            client.clone(),
-            staging.clone(),
-            "executor-b",
-            &id,
-        )
-        .await;
-        let mut redelivered = second_control.signals().await.unwrap();
-        assert_eq!(
-            redelivered.next().await.unwrap().unwrap().signal_sequence,
-            1
-        );
-        assert_eq!(
-            redelivered.next().await.unwrap().unwrap().signal_sequence,
-            2
-        );
-        assert!(first_control.acknowledge_signal(1).await.is_err());
-        assert!(first_control
-            .complete(json!({"stale": true}))
-            .await
-            .is_err());
-        assert!(first_control
-            .emit_update(json!({"stale": true}))
-            .await
-            .is_err());
-        assert!(first_control.upload().await.is_err());
-        second_control.acknowledge_signal(1).await.unwrap();
-        assert!(repository.get(&id).await.unwrap().unwrap().record.signals[0].acknowledged);
-
-        // A delayed E1 execution cannot enter after E2 acquired the operation,
-        // and the current acquisition is still admitted by the same boundary.
-        let stale_fence = OwnerFence {
-            executor_id: "executor-a".to_owned(),
-            connection_id: "executor-a".to_owned(),
-            owner_epoch: signalled.record.owner_epoch,
-        };
-        assert!(admit_operation_execution::<TestOperation>(
-            &repository,
-            &provider.mutation_gate,
-            &stale_fence,
-            "deployment",
-            &id,
-        )
-        .await
-        .unwrap()
-        .is_none());
-        let current_fence = OwnerFence {
-            executor_id: "executor-b".to_owned(),
-            connection_id: "executor-b".to_owned(),
-            owner_epoch: recovered.record.owner_epoch,
-        };
-        assert!(admit_operation_execution::<TestOperation>(
-            &repository,
-            &provider.mutation_gate,
-            &current_fence,
-            "deployment",
-            &id,
-        )
-        .await
-        .unwrap()
-        .is_some());
-
-        let mut live = provider.watch(
-            context("watch-replica", PermissionAction::Observe, None),
-            id.clone(),
-        );
-        assert!(matches!(
-            live.next().await.unwrap().unwrap(),
-            OperationLiveEvent::Snapshot(_)
-        ));
-        second_control
-            .progress(json!({"durable": true}))
-            .await
-            .unwrap();
-        assert!(matches!(
-            live.next().await.unwrap().unwrap(),
-            OperationLiveEvent::Snapshot(_)
-        ));
-        let current = repository.get(&id).await.unwrap().unwrap();
-        let payload = Bytes::from_static(br#"{"forged":true}"#);
-        let mut forged = async_nats::HeaderMap::new();
-        forged.insert("trellis-owner-executor", "executor-b");
-        forged.insert(
-            "trellis-owner-epoch",
-            current.record.owner_epoch.to_string().as_str(),
-        );
-        forged.insert("trellis-update-sequence", "1");
-        forged.insert("trellis-update-time", "2026-09-13T00:00:00Z");
-        client
-            .publish_with_reply_and_headers(
-                operation_update_subject::<TestOperation>("deployment", &id),
-                client.new_inbox(),
-                forged,
-                payload,
-            )
-            .await
-            .unwrap();
-        client.flush().await.unwrap();
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), live.next())
                 .await
-                .is_err()
-        );
-        drop(live);
-
-        let cancel_id = ulid::Ulid::new().to_string();
-        let pending = repository
-            .create(operation(
-                cancel_id.clone(),
-                TestOperation::API_ID,
-                TestOperation::KEY,
-            ))
-            .await
-            .unwrap();
-        assert!(pending.record.owner_executor_id.is_none());
-        let pending_cancel = provider.cancel(
-            context("cancel-request", PermissionAction::Cancel, None),
-            cancel_id.clone(),
-        );
-        assert_eq!(pending_cancel.await.unwrap().state, OperationState::Pending);
-        let cancelled = repository.get(&cancel_id).await.unwrap().unwrap();
-        assert!(cancelled.record.cancellation_requested);
-        assert_eq!(cancelled.record.snapshot.state, OperationState::Pending);
-
-        // E2 alone persists cancellation. E1's later terminal read still
-        // returns the business snapshot but cannot claim E2's witness.
-        let e2 = repository
-            .claim(&cancel_id, "executor-b", now_ms(), now_ms() + 30_000)
-            .await
-            .unwrap();
-        let e2_fence = OwnerFence::from(&e2.record).unwrap();
-        let e2_witness = TerminalWitness::default();
-        let e1_witness = TerminalWitness::default();
-        let terminal = finalize_cancellation::<TestOperation>(
-            &repository,
-            &e2_fence,
-            &provider.mutation_gate,
-            &cancel_id,
-            Some(&e2_witness),
-        )
-        .await
-        .unwrap();
-        assert_eq!(terminal.state, OperationState::Cancelled);
-        assert_eq!(e2_witness.get(), Some("cancelled"));
-        let stale_read = finalize_cancellation::<TestOperation>(
-            &repository,
-            &stale_fence,
-            &provider.mutation_gate,
-            &cancel_id,
-            Some(&e1_witness),
-        )
-        .await
-        .unwrap();
-        assert_eq!(stale_read.state, OperationState::Cancelled);
-        assert_eq!(e1_witness.get(), None);
-
-        let progress_race_id = ulid::Ulid::new().to_string();
-        repository
-            .create(operation(
-                progress_race_id.clone(),
-                TestOperation::API_ID,
-                TestOperation::KEY,
-            ))
-            .await
-            .unwrap();
-        let past = now_ms() - 2_000;
-        repository
-            .claim(&progress_race_id, "executor-a", past, past + 1_000)
-            .await
-            .unwrap();
-        let mut progress_control = control::<TestOperation>(
-            repository.clone(),
-            client.clone(),
-            staging.clone(),
-            "executor-a",
-            &progress_race_id,
-        )
-        .await;
-        progress_control.durable.mutation_gate = Arc::clone(&provider.mutation_gate);
-        let (cancel_result, progress_result) = tokio::join!(
-            cancellation_provider.cancel(
-                context("cancel-progress-race", PermissionAction::Cancel, None),
-                progress_race_id.clone(),
-            ),
-            progress_control.progress(json!({"value": "racing"})),
-        );
-        cancel_result.unwrap();
-        assert!(progress_result.is_err());
-        let progress_race = repository.get(&progress_race_id).await.unwrap().unwrap();
-        assert!(!progress_race.record.snapshot.state.is_terminal());
-        assert!(progress_race.record.cancellation_requested);
-
-        let completion_race_id = ulid::Ulid::new().to_string();
-        repository
-            .create(operation(
-                completion_race_id.clone(),
-                TestOperation::API_ID,
-                TestOperation::KEY,
-            ))
-            .await
-            .unwrap();
-        repository
-            .claim(
-                &completion_race_id,
-                "executor-a",
-                now_ms(),
-                now_ms() + 30_000,
-            )
-            .await
-            .unwrap();
-        let mut completion_control = control::<TestOperation>(
-            repository.clone(),
-            client.clone(),
-            staging.clone(),
-            "executor-a",
-            &completion_race_id,
-        )
-        .await;
-        completion_control.durable.mutation_gate = Arc::clone(&provider.mutation_gate);
-        let (completion_result, cancel_result) = tokio::join!(
-            completion_control.complete(json!({"value": "completed"})),
-            cancellation_provider.cancel(
-                context("cancel-complete-race", PermissionAction::Cancel, None),
-                completion_race_id.clone(),
-            ),
-        );
-        completion_result.unwrap();
-        assert!(cancel_result.is_err());
-        let completion_race = repository.get(&completion_race_id).await.unwrap().unwrap();
-        assert_eq!(
-            completion_race.record.snapshot.state,
-            OperationState::Completed
-        );
-        assert_eq!(
-            completion_race.record.snapshot.output,
-            Some(json!({"value": "completed"}))
-        );
-        assert!(!completion_race.record.cancellation_requested);
-
-        let completed_id = ulid::Ulid::new().to_string();
-        repository
-            .create(operation(
-                completed_id.clone(),
-                TestOperation::API_ID,
-                TestOperation::KEY,
-            ))
-            .await
-            .unwrap();
-        repository
-            .claim(&completed_id, "executor-a", now_ms(), now_ms() + 30_000)
-            .await
-            .unwrap();
-        let completed_control = control::<TestOperation>(
-            repository.clone(),
-            client.clone(),
-            staging.clone(),
-            "executor-a",
-            &completed_id,
-        )
-        .await;
-        completed_control
-            .complete(json!({"value": "final"}))
-            .await
-            .unwrap();
-        let completed = repository.get(&completed_id).await.unwrap().unwrap();
-        assert!(matches!(
-            provider
-                .cancel(
-                    context("post-complete-cancel", PermissionAction::Cancel, None),
-                    completed_id.clone(),
+                .unwrap();
+            let replay = provider
+                .signal(
+                    context("request-1", PermissionAction::Control, Some("resume")),
+                    id.clone(),
+                    "resume".to_owned(),
+                    Some(json!({"choice": 1})),
                 )
-                .await,
-            Err(ServerError::OperationAlreadyTerminal { state, .. }) if state == "completed"
-        ));
-        assert!(matches!(
-            completed_control.progress(json!({"value": "late"})).await,
-            Err(ServerError::OperationAlreadyTerminal { state, .. }) if state == "completed"
-        ));
-        assert!(matches!(
-            completed_control.complete(json!({"value": "late"})).await,
-            Err(ServerError::OperationAlreadyTerminal { state, .. }) if state == "completed"
-        ));
-        assert!(matches!(
-            completed_control
-                .fail(OperationFailure {
-                    message: "late".to_owned(),
-                })
-                .await,
-            Err(ServerError::OperationAlreadyTerminal { state, .. }) if state == "completed"
-        ));
-        assert!(matches!(
-            completed_control.emit_update(json!({"value": "late"})).await,
-            Err(ServerError::OperationAlreadyTerminal { state, .. }) if state == "completed"
-        ));
-        assert!(matches!(
-            completed_control.acknowledge_signal(1).await,
-            Err(ServerError::OperationAlreadyTerminal { state, .. }) if state == "completed"
-        ));
-        assert!(matches!(
+                .await
+                .unwrap();
+            assert_eq!(replay.signal_sequence, first.signal_sequence);
+            assert!(matches!(
+                provider
+                    .signal(
+                        context("request-1", PermissionAction::Control, Some("resume")),
+                        id.clone(),
+                        "resume".to_owned(),
+                        Some(json!({"choice": 9})),
+                    )
+                    .await,
+                Err(ServerError::OperationIdempotencyConflict { kind: "signal", .. })
+            ));
+            assert!(matches!(
+                provider
+                    .signal(
+                        context("request-1", PermissionAction::Control, Some("different")),
+                        id.clone(),
+                        "different".to_owned(),
+                        Some(json!({"choice": 1})),
+                    )
+                    .await,
+                Err(ServerError::OperationIdempotencyConflict { kind: "signal", .. })
+            ));
             provider
                 .signal(
-                    context(
-                        "post-complete-signal",
-                        PermissionAction::Control,
-                        Some("resume"),
-                    ),
-                    completed_id.clone(),
+                    context("request-2", PermissionAction::Control, Some("resume")),
+                    id.clone(),
                     "resume".to_owned(),
-                    None,
+                    Some(json!({"choice": 2})),
                 )
-                .await,
-            Err(ServerError::OperationAlreadyTerminal { state, .. }) if state == "completed"
-        ));
-        assert_eq!(
-            repository.get(&completed_id).await.unwrap().unwrap(),
-            completed
-        );
+                .await
+                .unwrap();
+            let signalled = repository.get(&id).await.unwrap().unwrap();
+            assert_eq!(
+                signalled
+                    .record
+                    .signals
+                    .iter()
+                    .map(|signal| signal.sequence)
+                    .collect::<Vec<_>>(),
+                vec![1, 2]
+            );
+            assert_eq!(signalled.record.signals.len(), 2);
 
+            let first_control = control::<TestOperation>(
+                repository.clone(),
+                client.clone(),
+                staging.clone(),
+                "executor-a",
+                &id,
+            )
+            .await;
+            let mut signals = first_control.signals().await.unwrap();
+            assert_eq!(signals.next().await.unwrap().unwrap().signal_sequence, 1);
+            drop(signals);
+            let mut expired_owner = repository.get(&id).await.unwrap().unwrap().record;
+            expired_owner.revision += 1;
+            expired_owner.lease_expires_at_ms = Some(0);
+            repository
+                .compare_exchange(
+                    signalled.revision,
+                    "executor-a",
+                    signalled.record.owner_epoch,
+                    expired_owner,
+                )
+                .await
+                .unwrap();
+            let same_executor = repository
+                .claim(&id, "executor-a", now_ms(), now_ms() + 30_000)
+                .await
+                .unwrap();
+            assert_eq!(
+                same_executor.record.owner_epoch,
+                signalled.record.owner_epoch + 1
+            );
+            assert!(first_control
+                .progress(json!({"stale": true}))
+                .await
+                .is_err());
+            let mut expired_same_executor = same_executor.record.clone();
+            expired_same_executor.revision += 1;
+            expired_same_executor.lease_expires_at_ms = Some(0);
+            repository
+                .compare_exchange(
+                    same_executor.revision,
+                    "executor-a",
+                    same_executor.record.owner_epoch,
+                    expired_same_executor,
+                )
+                .await
+                .unwrap();
+            let recovered = repository
+                .claim(&id, "executor-b", now_ms(), now_ms() + 30_000)
+                .await
+                .unwrap();
+            let second_control = control::<TestOperation>(
+                repository.clone(),
+                client.clone(),
+                staging.clone(),
+                "executor-b",
+                &id,
+            )
+            .await;
+            let mut redelivered = second_control.signals().await.unwrap();
+            assert_eq!(
+                redelivered.next().await.unwrap().unwrap().signal_sequence,
+                1
+            );
+            assert_eq!(
+                redelivered.next().await.unwrap().unwrap().signal_sequence,
+                2
+            );
+            assert!(first_control.acknowledge_signal(1).await.is_err());
+            assert!(first_control
+                .complete(json!({"stale": true}))
+                .await
+                .is_err());
+            assert!(first_control
+                .emit_update(json!({"stale": true}))
+                .await
+                .is_err());
+            assert!(first_control.upload().await.is_err());
+            second_control.acknowledge_signal(1).await.unwrap();
+            assert!(repository.get(&id).await.unwrap().unwrap().record.signals[0].acknowledged);
+
+            // A delayed E1 execution cannot enter after E2 acquired the operation,
+            // and the current acquisition is still admitted by the same boundary.
+            let stale_fence = OwnerFence {
+                executor_id: "executor-a".to_owned(),
+                connection_id: "executor-a".to_owned(),
+                owner_epoch: signalled.record.owner_epoch,
+            };
+            assert!(admit_operation_execution::<TestOperation>(
+                &repository,
+                &provider.mutation_gate,
+                &stale_fence,
+                "deployment",
+                &id,
+            )
+            .await
+            .unwrap()
+            .is_none());
+            let current_fence = OwnerFence {
+                executor_id: "executor-b".to_owned(),
+                connection_id: "executor-b".to_owned(),
+                owner_epoch: recovered.record.owner_epoch,
+            };
+            assert!(admit_operation_execution::<TestOperation>(
+                &repository,
+                &provider.mutation_gate,
+                &current_fence,
+                "deployment",
+                &id,
+            )
+            .await
+            .unwrap()
+            .is_some());
+
+            let mut live = provider.watch(
+                context("watch-replica", PermissionAction::Observe, None),
+                id.clone(),
+            );
+            assert!(matches!(
+                live.next().await.unwrap().unwrap(),
+                OperationLiveEvent::Snapshot(_)
+            ));
+            second_control
+                .progress(json!({"durable": true}))
+                .await
+                .unwrap();
+            assert!(matches!(
+                live.next().await.unwrap().unwrap(),
+                OperationLiveEvent::Snapshot(_)
+            ));
+            let current = repository.get(&id).await.unwrap().unwrap();
+            let payload = Bytes::from_static(br#"{"forged":true}"#);
+            let mut forged = async_nats::HeaderMap::new();
+            forged.insert("trellis-owner-executor", "executor-b");
+            forged.insert(
+                "trellis-owner-epoch",
+                current.record.owner_epoch.to_string().as_str(),
+            );
+            forged.insert("trellis-update-sequence", "1");
+            forged.insert("trellis-update-time", "2026-09-13T00:00:00Z");
+            client
+                .publish_with_reply_and_headers(
+                    operation_update_subject::<TestOperation>("deployment", &id),
+                    client.new_inbox(),
+                    forged,
+                    payload,
+                )
+                .await
+                .unwrap();
+            client.flush().await.unwrap();
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(100), live.next())
+                    .await
+                    .is_err()
+            );
+            drop(live);
+
+            let cancel_id = ulid::Ulid::new().to_string();
+            let pending = repository
+                .create(operation(
+                    cancel_id.clone(),
+                    TestOperation::API_ID,
+                    TestOperation::KEY,
+                ))
+                .await
+                .unwrap();
+            assert!(pending.record.owner_executor_id.is_none());
+            let pending_cancel = provider.cancel(
+                context("cancel-request", PermissionAction::Cancel, None),
+                cancel_id.clone(),
+            );
+            assert_eq!(pending_cancel.await.unwrap().state, OperationState::Pending);
+            let cancelled = repository.get(&cancel_id).await.unwrap().unwrap();
+            assert!(cancelled.record.cancellation_requested);
+            assert_eq!(cancelled.record.snapshot.state, OperationState::Pending);
+
+            // E2 alone persists cancellation. E1's later terminal read still
+            // returns the business snapshot but cannot claim E2's witness.
+            let e2 = repository
+                .claim(&cancel_id, "executor-b", now_ms(), now_ms() + 30_000)
+                .await
+                .unwrap();
+            let e2_fence = OwnerFence::from(&e2.record).unwrap();
+            let e2_witness = TerminalWitness::default();
+            let e1_witness = TerminalWitness::default();
+            let terminal = finalize_cancellation::<TestOperation>(
+                &repository,
+                &e2_fence,
+                &provider.mutation_gate,
+                &cancel_id,
+                Some(&e2_witness),
+            )
+            .await
+            .unwrap();
+            assert_eq!(terminal.state, OperationState::Cancelled);
+            assert_eq!(e2_witness.get(), Some("cancelled"));
+            let stale_read = finalize_cancellation::<TestOperation>(
+                &repository,
+                &stale_fence,
+                &provider.mutation_gate,
+                &cancel_id,
+                Some(&e1_witness),
+            )
+            .await
+            .unwrap();
+            assert_eq!(stale_read.state, OperationState::Cancelled);
+            assert_eq!(e1_witness.get(), None);
+
+            let progress_race_id = ulid::Ulid::new().to_string();
+            repository
+                .create(operation(
+                    progress_race_id.clone(),
+                    TestOperation::API_ID,
+                    TestOperation::KEY,
+                ))
+                .await
+                .unwrap();
+            let past = now_ms() - 2_000;
+            repository
+                .claim(&progress_race_id, "executor-a", past, past + 1_000)
+                .await
+                .unwrap();
+            let mut progress_control = control::<TestOperation>(
+                repository.clone(),
+                client.clone(),
+                staging.clone(),
+                "executor-a",
+                &progress_race_id,
+            )
+            .await;
+            progress_control.durable.mutation_gate = Arc::clone(&provider.mutation_gate);
+            let (cancel_result, progress_result) = tokio::join!(
+                cancellation_provider.cancel(
+                    context("cancel-progress-race", PermissionAction::Cancel, None),
+                    progress_race_id.clone(),
+                ),
+                progress_control.progress(json!({"value": "racing"})),
+            );
+            cancel_result.unwrap();
+            assert!(progress_result.is_err());
+            let progress_race = repository.get(&progress_race_id).await.unwrap().unwrap();
+            assert!(!progress_race.record.snapshot.state.is_terminal());
+            assert!(progress_race.record.cancellation_requested);
+
+            let completion_race_id = ulid::Ulid::new().to_string();
+            repository
+                .create(operation(
+                    completion_race_id.clone(),
+                    TestOperation::API_ID,
+                    TestOperation::KEY,
+                ))
+                .await
+                .unwrap();
+            repository
+                .claim(
+                    &completion_race_id,
+                    "executor-a",
+                    now_ms(),
+                    now_ms() + 30_000,
+                )
+                .await
+                .unwrap();
+            let mut completion_control = control::<TestOperation>(
+                repository.clone(),
+                client.clone(),
+                staging.clone(),
+                "executor-a",
+                &completion_race_id,
+            )
+            .await;
+            completion_control.durable.mutation_gate = Arc::clone(&provider.mutation_gate);
+            let (completion_result, cancel_result) = tokio::join!(
+                completion_control.complete(json!({"value": "completed"})),
+                cancellation_provider.cancel(
+                    context("cancel-complete-race", PermissionAction::Cancel, None),
+                    completion_race_id.clone(),
+                ),
+            );
+            completion_result.unwrap();
+            assert!(cancel_result.is_err());
+            let completion_race = repository.get(&completion_race_id).await.unwrap().unwrap();
+            assert_eq!(
+                completion_race.record.snapshot.state,
+                OperationState::Completed
+            );
+            assert_eq!(
+                completion_race.record.snapshot.output,
+                Some(json!({"value": "completed"}))
+            );
+            assert!(!completion_race.record.cancellation_requested);
+
+            let completed_id = ulid::Ulid::new().to_string();
+            repository
+                .create(operation(
+                    completed_id.clone(),
+                    TestOperation::API_ID,
+                    TestOperation::KEY,
+                ))
+                .await
+                .unwrap();
+            repository
+                .claim(&completed_id, "executor-a", now_ms(), now_ms() + 30_000)
+                .await
+                .unwrap();
+            let completed_control = control::<TestOperation>(
+                repository.clone(),
+                client.clone(),
+                staging.clone(),
+                "executor-a",
+                &completed_id,
+            )
+            .await;
+            completed_control
+                .complete(json!({"value": "final"}))
+                .await
+                .unwrap();
+            let completed = repository.get(&completed_id).await.unwrap().unwrap();
+            assert!(matches!(
+                provider
+                    .cancel(
+                        context("post-complete-cancel", PermissionAction::Cancel, None),
+                        completed_id.clone(),
+                    )
+                    .await,
+                Err(ServerError::OperationAlreadyTerminal { state, .. }) if state == "completed"
+            ));
+            assert!(matches!(
+                completed_control.progress(json!({"value": "late"})).await,
+                Err(ServerError::OperationAlreadyTerminal { state, .. }) if state == "completed"
+            ));
+            assert!(matches!(
+                completed_control.complete(json!({"value": "late"})).await,
+                Err(ServerError::OperationAlreadyTerminal { state, .. }) if state == "completed"
+            ));
+            assert!(matches!(
+                completed_control
+                    .fail(OperationFailure {
+                        message: "late".to_owned(),
+                    })
+                    .await,
+                Err(ServerError::OperationAlreadyTerminal { state, .. }) if state == "completed"
+            ));
+            assert!(matches!(
+                completed_control.emit_update(json!({"value": "late"})).await,
+                Err(ServerError::OperationAlreadyTerminal { state, .. }) if state == "completed"
+            ));
+            assert!(matches!(
+                completed_control.acknowledge_signal(1).await,
+                Err(ServerError::OperationAlreadyTerminal { state, .. }) if state == "completed"
+            ));
+            assert!(matches!(
+                provider
+                    .signal(
+                        context(
+                            "post-complete-signal",
+                            PermissionAction::Control,
+                            Some("resume"),
+                        ),
+                        completed_id.clone(),
+                        "resume".to_owned(),
+                        None,
+                    )
+                    .await,
+                Err(ServerError::OperationAlreadyTerminal { state, .. }) if state == "completed"
+            ));
+            assert_eq!(
+                repository.get(&completed_id).await.unwrap().unwrap(),
+                completed
+            );
+
+            drop(recovered);
+        })
+        .await
+        .unwrap();
         jetstream.delete_key_value(bucket).await.unwrap();
         jetstream.delete_object_store(object_bucket).await.unwrap();
         nats.stop().unwrap();
-        drop(recovered);
     }
 
     #[tokio::test]
@@ -4388,15 +4995,15 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let staging = BoundStoreResourceClient::new(
-            jetstream
-                .create_object_store(async_nats::jetstream::object_store::Config {
-                    bucket: format!("trellis_cancel_staging_{}", ulid::Ulid::new()),
-                    ..Default::default()
-                })
-                .await
-                .unwrap(),
-        );
+        let staging_bucket = format!("trellis_cancel_staging_{}", ulid::Ulid::new());
+        jetstream
+            .create_object_store(async_nats::jetstream::object_store::Config {
+                bucket: staging_bucket.clone(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let staging = BoundStoreResourceClient::new(client.clone(), staging_bucket);
         let (child_started_tx, child_started_rx) = tokio::sync::oneshot::channel();
         let child_started_tx = Arc::new(std::sync::Mutex::new(Some(child_started_tx)));
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
@@ -4536,15 +5143,15 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let staging = BoundStoreResourceClient::new(
-            jetstream
-                .create_object_store(async_nats::jetstream::object_store::Config {
-                    bucket: format!("trellis_cancel_recover_staging_{}", ulid::Ulid::new()),
-                    ..Default::default()
-                })
-                .await
-                .unwrap(),
-        );
+        let staging_bucket = format!("trellis_cancel_recover_staging_{}", ulid::Ulid::new());
+        jetstream
+            .create_object_store(async_nats::jetstream::object_store::Config {
+                bucket: staging_bucket.clone(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let staging = BoundStoreResourceClient::new(client.clone(), staging_bucket);
         let id = ulid::Ulid::new().to_string();
         repository
             .create(operation(
@@ -4660,18 +5267,18 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let staging = BoundStoreResourceClient::new(
-            jetstream
-                .create_object_store(async_nats::jetstream::object_store::Config {
-                    bucket: format!(
-                        "trellis_test_operation_channels_staging_{}",
-                        ulid::Ulid::new()
-                    ),
-                    ..Default::default()
-                })
-                .await
-                .unwrap(),
+        let staging_bucket = format!(
+            "trellis_test_operation_channels_staging_{}",
+            ulid::Ulid::new()
         );
+        jetstream
+            .create_object_store(async_nats::jetstream::object_store::Config {
+                bucket: staging_bucket.clone(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let staging = BoundStoreResourceClient::new(client.clone(), staging_bucket);
         let id = ulid::Ulid::new().to_string();
         repository
             .create(operation(

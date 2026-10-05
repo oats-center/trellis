@@ -274,6 +274,11 @@ impl ProviderSessionRecord {
         control: &LiveControl,
         now: Instant,
     ) -> Result<ControlOutcome, LiveErrorCode> {
+        // A peer can receive DATA before the awaited publish resumes locally.
+        // Serialize cursor validation and mutation with that handoff's commit,
+        // so valid credit cannot observe an uncommitted sent watermark. Release
+        // this lane on return, before dispatch publishes the acknowledgement.
+        let _lane = self.output_lane.lock().await;
         let seq = control.control_seq().get();
         let hash = trellis_protocol::logical_control_hash(control)
             .map_err(|_| LiveErrorCode::InvalidRequest)?;
@@ -315,7 +320,7 @@ impl ProviderSessionRecord {
                 }
                 let challenge_id =
                     trellis_protocol::generate_nonce().map_err(|_| LiveErrorCode::ProtocolError)?;
-                let last_sent_seq = self.session.highest_sent.load(Ordering::Acquire);
+                let last_sent_seq = self.session.flow.highest_sent.load(Ordering::Acquire);
                 self.session.set_phase(ProviderPhase::Activating);
                 if let Ok(mut telemetry) = self.telemetry.lock() {
                     telemetry.activating();
@@ -837,9 +842,9 @@ impl ProviderSessionRecord {
         consumed: u64,
         now: Instant,
     ) -> Result<(), LiveErrorCode> {
-        let before = self.session.highest_consumed.load(Ordering::Acquire);
+        let before = self.session.flow.highest_consumed.load(Ordering::Acquire);
         self.session.apply_credit(received, consumed)?;
-        let after = self.session.highest_consumed.load(Ordering::Acquire);
+        let after = self.session.flow.highest_consumed.load(Ordering::Acquire);
         let advanced = after > before;
         self.with_deadlines(|deadlines| {
             if advanced {
@@ -913,7 +918,7 @@ impl ProviderSessionRecord {
                     self.spawn_close_driver(nats.clone());
                     return true;
                 };
-                let last_sent_seq = self.session.highest_sent.load(Ordering::Acquire);
+                let last_sent_seq = self.session.flow.highest_sent.load(Ordering::Acquire);
                 let challenge = super::provider::ChallengeState {
                     challenge_id: challenge_id.clone(),
                     last_sent_seq,
@@ -1010,7 +1015,7 @@ pub(crate) async fn publish_data_frame(
     ) {
         return Err(LiveErrorCode::Closed);
     }
-    let seq = session.next_frame_seq();
+    let seq = session.next_frame_seq()?;
     let body = serde_json::to_vec(&data_frame(&session.session_id, seq, value))
         .map_err(|_| LiveErrorCode::ProtocolError)?;
     let body_len = body.len() as u64;
@@ -1100,7 +1105,7 @@ pub(crate) async fn publish_end(
     if session.phase() == ProviderPhase::Closed {
         return Err(LiveErrorCode::Closed);
     }
-    let final_seq = session.highest_sent.load(Ordering::Acquire);
+    let final_seq = session.flow.highest_sent.load(Ordering::Acquire);
     let body = serde_json::to_vec(&end_frame(&session.session_id, final_seq, terminal))
         .map_err(|_| LiveErrorCode::ProtocolError)?;
     let headers = record.signed_headers(&session.data_subject, &body).await?;
@@ -1227,6 +1232,9 @@ pub(crate) async fn drive_source<S>(
                 // control path runs on its own task and the output lane is
                 // released between attempts.
                 loop {
+                    let credit = session.flow.credit.notified();
+                    tokio::pin!(credit);
+                    credit.as_mut().enable();
                     if !matches!(session.phase(), ProviderPhase::Active) {
                         return;
                     }
@@ -1243,7 +1251,7 @@ pub(crate) async fn drive_source<S>(
                                     record.begin_close(Instant::now());
                                     return;
                                 }
-                                _ = session.credit.notified() => {}
+                                _ = &mut credit => {}
                             }
                         }
                         Err(code) => {

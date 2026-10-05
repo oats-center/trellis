@@ -99,6 +99,13 @@ extending liveness and without closing an otherwise valid session.
 
 ## Credit and buffering
 
+Live and Transfer share internal sequence/window accounting and
+cumulative-credit scheduling. This is not a public API or a shared wire
+protocol. Live retains its typed/filtered queues, encoded-body costs, existing
+limits, challenge/heartbeat and closure semantics; Transfer owns raw-byte queues
+and storage completion. Operation Watch remains Live, while Operation upload
+uses Transfer v2.
+
 - The provider window is 64 outstanding frames and 1 MiB of exact encoded `DATA`
   bodies. Cost is the whole serialized frame body, not a surrogate.
 - The consumer releases credit when a validated item is **handed to the
