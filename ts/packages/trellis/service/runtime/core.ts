@@ -1405,6 +1405,24 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           this.#releaseOperationFence(runtime.id, getFence());
         });
       },
+      reconcileCommit: async (storageKey: string, transferId: string) => {
+        const runtime = getRuntime();
+        const durable = await this.loadOperationRecord(runtime.id);
+        if (!durable) return undefined;
+        const committed = durable.transferGrant &&
+          Reflect.get(durable.transferGrant, "committed");
+        if (
+          durable.uploadStorageKey === storageKey &&
+          durable.transferGrant?.transferId === transferId &&
+          Value.Check(FileInfoSchema, committed)
+        ) return true;
+        // An unchanged read cannot rule out an in-flight CAS. Only a newer
+        // uncommitted revision fences that write; unknown/corrupt commit state
+        // retains bytes rather than deleting a potentially committed object.
+        return committed === undefined && durable.revision > runtime.revision
+          ? false
+          : undefined;
+      },
     };
   }
 

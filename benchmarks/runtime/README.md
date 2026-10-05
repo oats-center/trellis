@@ -11,6 +11,42 @@ deno task -c ts/deno.json bench:runtime --output=/tmp/opencode/trellis-perf-base
 deno task -c ts/deno.json bench:runtime:report /tmp/opencode/trellis-perf-baseline
 ```
 
+## Focused Rust Store-reader comparison
+
+`store_reader.ts` downloads the existing Rust fixture's 8 MiB object through a
+generated public client, checks every byte, and records three warmups plus
+twenty samples and the fixture binary hash. Supply prebuilt
+`transfer_generation` executables for the reviewed and candidate trees; use the
+same server, CLI, client, build profile, and host for both. This is a component
+comparison, not the release-suite performance or memory acceptance gate.
+
+```sh
+TRELLIS_TEST_SERVER_BIN="$PWD/target/debug/trellis-server" \
+TRELLIS_TEST_CLI_BIN="$PWD/target/debug/trellis" \
+deno run -A -c ts/integration/deno.json benchmarks/runtime/store_reader.ts \
+  /tmp/opencode/transfer-reader-before-c43 /tmp/opencode/before-rtt0.json 0
+```
+
+Repeat with the candidate executable. To add 10 ms round-trip delay without
+changing the host's network, use a fresh Linux user/network namespace for each
+run (requires `unshare`, `ip`, and `tc`):
+
+```sh
+export TRELLIS_TEST_SERVER_BIN="$PWD/target/debug/trellis-server"
+export TRELLIS_TEST_CLI_BIN="$PWD/target/debug/trellis"
+unshare --user --map-root-user --net bash -c '
+  ip link set lo up &&
+  tc qdisc add dev lo root netem delay 5ms &&
+  tc -s qdisc show dev lo &&
+  exec deno run -A -c ts/integration/deno.json benchmarks/runtime/store_reader.ts \
+    /tmp/opencode/transfer-reader-before-c43 /tmp/opencode/before-rtt10.json 10
+'
+```
+
+The reported RTT is the configured network delay, not a measured endpoint RTT.
+Keep other builds and benchmarks idle and retain all raw samples, including
+failures. Never infer a process-memory bound from these timings.
+
 ## Complete repeated suite
 
 Build producer artifacts once, before measuring. The suite executes prebuilt

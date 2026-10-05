@@ -389,7 +389,13 @@ Transfers authenticate cancellation and completion and independently verify size
 and SHA-256. Frames are bounded by negotiated peer payload limits, up to 1 MiB.
 Credit follows downstream consumption, not durable persistence. Upload success
 requires completed backend staging and durable Operation transfer commit before
-the handler runs. Watch transfer progress is monotonic and may be coalesced:
+the handler runs. A lost commit reply is not proof of rollback: staged bytes are
+retained for durable reconciliation. Resume the Operation before retrying. Once
+commit is underway, wire cancellation cannot promise an uncommitted outcome.
+TypeScript's connection timeout bounds activation from transport acquisition
+through the provider reply and separately bounds each cancellation exchange,
+not the body lifetime. Cancellation timeout releases local ownership without
+confirming remote cleanup. Watch transfer progress is monotonic and may be coalesced:
 `chunkIndex`/`chunkBytes` identify the latest credited frame represented, not one
 event per frame. Final persisted `transferredBytes` is exact. Interrupted uploads
 restart from byte zero; partial replay/resumption is not supported.

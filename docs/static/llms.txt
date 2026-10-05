@@ -165,6 +165,9 @@ upload Operations and download helpers, not raw subjects. Network credit is not
 durability: upload success follows verified backend and durable Operation commit.
 Durable transfer progress is monotonic and may be coalesced; interrupted uploads
 restart from byte zero.
+An upload transport error is not proof that durable commit failed. Resume its
+Operation before retrying. TypeScript's connection timeout bounds transfer
+activation and each cancellation exchange, not the streaming body lifetime.
 
 Consumer AGENTS templates are available under `templates/`. They describe the
 Trellis boundary; application policies belong in the consumer repository.

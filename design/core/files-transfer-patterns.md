@@ -276,9 +276,13 @@ received -> consumed/credited -> backend committed -> Operation committed
 ```
 
 Credit is bounded network backpressure, never evidence of durable persistence.
-Cancellation before commit aborts storage ingress and cannot expose a committed
-staged upload; cancellation after durable commit cannot undo it. Interrupted
-uploads restart from byte zero, without partial replay or resumption.
+Cancellation acknowledged before the durable commit handoff aborts storage
+ingress and cannot expose a committed staged upload. Once that handoff begins,
+settle the in-flight commit rather than acknowledge an uncommitted cancellation;
+cancellation after durable commit cannot undo it. A lost commit response is not
+proof of rollback: retain staged bytes until reconciliation confirms commit or a
+newer uncommitted revision fences the uncertain write. Interrupted uploads
+restart from byte zero, without partial replay or resumption.
 
 A download streams through the runtime's store boundary, splitting arbitrary
 backend chunks into bounded frames while credit is available. Signed EOF follows

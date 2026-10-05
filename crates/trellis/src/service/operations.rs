@@ -3606,8 +3606,18 @@ mod tests {
             assert_eq!(independent, payload);
             let consumers: Vec<_> = stream.consumers().try_collect().await.unwrap();
             assert_eq!(consumers.len(), 1);
-            assert_eq!(consumers[0].delivered.consumer_sequence, 1);
-            assert_eq!(consumers[0].num_pending, reader.info().chunks as u64 - 1);
+            let delivered = consumers[0].delivered.consumer_sequence;
+            let chunk_bytes = payload.len() / reader.info().chunks;
+            assert!(delivered > 0);
+            assert!(delivered * chunk_bytes as u64 <= consumers[0].config.max_bytes as u64);
+            assert!(
+                consumers[0].num_pending > 0,
+                "paused read must leave object chunks at the broker"
+            );
+            assert_eq!(
+                consumers[0].num_pending,
+                reader.info().chunks as u64 - delivered
+            );
             // Ordinary broker deletion exercises the same recovery path as
             // inactivity cleanup, without a five-minute timing-based test.
             stream.delete_consumer(&consumers[0].name).await.unwrap();

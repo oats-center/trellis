@@ -457,6 +457,9 @@ struct StoreReadState {
     received_bytes: usize,
     stream_sequence: u64,
     consumer_epoch_chunks: usize,
+    batch: Option<async_nats::jetstream::consumer::pull::Batch>,
+    batch_chunks: usize,
+    batch_bytes: usize,
     digest: Vec<u8>,
     hasher: Sha256,
 }
@@ -464,17 +467,22 @@ struct StoreReadState {
 impl Drop for StoreReadState {
     fn drop(&mut self) {
         if let Some(name) = self.name.take() {
+            let batch = self.batch.take();
             let context = self.guard.context.clone();
             let stream = self.stream.clone();
             let lease = self.guard._lease.take();
             self.runtime.spawn(async move {
                 let _lease = lease;
+                drop(batch);
                 let _ = tokio::time::timeout(
                     Duration::from_secs(5),
                     context.delete_consumer_from_stream(name, stream),
                 )
                 .await;
             });
+        } else {
+            let _entered = self.runtime.enter();
+            drop(self.batch.take());
         }
     }
 }
@@ -663,6 +671,9 @@ impl BoundStoreResourceClient {
                 received_bytes: 0,
                 stream_sequence: 0,
                 consumer_epoch_chunks: 0,
+                batch: None,
+                batch_chunks: 0,
+                batch_bytes: 0,
                 digest,
                 hasher: Sha256::new(),
             };
@@ -675,7 +686,7 @@ impl BoundStoreResourceClient {
                         filter_subject: format!("$O.{}.C.{}", state.guard.bucket, info.nuid),
                         ack_policy: async_nats::jetstream::consumer::AckPolicy::None,
                         max_waiting: 1,
-                        max_batch: 1,
+                        max_batch: 100,
                         max_bytes: state.guard.read_batch_bytes.try_into().map_err(nats_error)?,
                         inactive_threshold: Duration::from_secs(300),
                         ..Default::default()
@@ -706,14 +717,40 @@ impl BoundStoreResourceClient {
                     drop(state.name.take());
                     return Ok(None);
                 }
-                // async-nats 0.50's finite Batch reports byte-limit batch
-                // completion as an error. One message avoids that ambiguity
-                // while max_bytes still bounds even historical large chunks.
-                // Ephemeral consumers may be removed while the caller holds a
-                // chunk. Reopen at the exact next stream sequence on demand;
-                // no heartbeat task or idle deadline belongs to the reader.
+                let message = loop {
+                    if state.batch.is_none() {
+                        // No SDK expiry timer: a held reader must not discard
+                        // already queued chunks when application demand resumes.
+                        state.batch = Some(state.consumer.as_ref().expect("opened store consumer")
+                            .fetch().max_messages(100).max_bytes(state.guard.read_batch_bytes)
+                            .messages().await.map_err(std::io::Error::other)?);
+                        state.batch_chunks = 0;
+                        state.batch_bytes = 0;
+                    }
+                    let next = tokio::time::timeout(Duration::from_secs(5), state.batch.as_mut().expect("active batch").next())
+                        .await.map_err(std::io::Error::other)?;
+                    let error = match next {
+                        Some(Ok(message)) => break message,
+                        // async-nats 0.50 erases the typed status in finite Batch.
+                        // Accept only the precise byte-boundary status after data;
+                        // an oversized first chunk remains an error.
+                        Some(Err(error)) if state.batch_chunks > 0 && error.to_string().eq_ignore_ascii_case(
+                            "error while processing messages from the stream: 409, Some(\"Message Size Exceeds MaxBytes\")") => {
+                            state.batch = None;
+                            continue;
+                        }
+                        None if state.batch_chunks > 0 => {
+                            state.batch = None;
+                            continue;
+                        }
+                        Some(Err(error)) => std::io::Error::other(error),
+                        None => std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "object chunks missing"),
+                    };
+                    state.batch = None;
+                    // Only a failed/empty pull requires management reconciliation.
+                    // Missing consumers resume at the exact last yielded cursor.
                 match state.guard.context.get_consumer_from_stream::<async_nats::jetstream::consumer::pull::Config, _, _>(state.name.as_ref().expect("active store consumer"), &state.stream).await {
-                    Ok(consumer) => state.consumer = Some(consumer),
+                    Ok(_) => return Err(error),
                     Err(error) if matches!(error.kind(), async_nats::jetstream::stream::ConsumerErrorKind::JetStream(error) if error.error_code() == async_nats::jetstream::ErrorCode::CONSUMER_NOT_FOUND) => {
                         let consumer = state.guard.context.create_consumer_on_stream(
                             async_nats::jetstream::consumer::pull::Config {
@@ -722,7 +759,7 @@ impl BoundStoreResourceClient {
                                 deliver_policy: async_nats::jetstream::consumer::DeliverPolicy::ByStartSequence { start_sequence: state.stream_sequence + 1 },
                                 ack_policy: async_nats::jetstream::consumer::AckPolicy::None,
                                 max_waiting: 1,
-                                max_batch: 1,
+                                max_batch: 100,
                                 max_bytes: state.guard.read_batch_bytes.try_into().map_err(std::io::Error::other)?,
                                 inactive_threshold: Duration::from_secs(300),
                                 ..Default::default()
@@ -732,27 +769,12 @@ impl BoundStoreResourceClient {
                     }
                     Err(error) => return Err(std::io::Error::other(error)),
                 }
-                let mut batch = state
-                    .consumer
-                    .as_ref()
-                    .expect("opened store consumer")
-                    .fetch()
-                    .max_messages(1)
-                    .max_bytes(state.guard.read_batch_bytes)
-                    .expires(Duration::from_secs(5))
-                    .messages()
-                    .await
-                    .map_err(std::io::Error::other)?;
-                let message = batch
-                    .next()
-                    .await
-                    .ok_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::UnexpectedEof,
-                            "object chunks missing",
-                        )
-                    })?
-                    .map_err(std::io::Error::other)?;
+                };
+                state.batch_chunks += 1;
+                state.batch_bytes = state.batch_bytes.checked_add(message.payload.len()).ok_or_else(|| std::io::Error::other("batch size overflow"))?;
+                if state.batch_chunks > 100 || state.batch_bytes > state.guard.read_batch_bytes {
+                    return Err(std::io::Error::other("object batch exceeds read budget"));
+                }
                 let message_info = message.info().map_err(std::io::Error::other)?;
                 if message_info.consumer_sequence != (state.received_chunks - state.consumer_epoch_chunks) as u64 + 1
                     || message_info.stream_sequence <= state.stream_sequence {

@@ -257,6 +257,8 @@ receipt. Transfer v2 uses bounded windowed one-way raw NATS DATA, not one RPC pe
 frame. Download destination writes and upload backend-reader consumption release
 cumulative credit; credit is not persistence. Upload success awaits backend write
 completion and durable Operation transfer commit, before handler execution.
+Across language boundaries, an upload transport error is not proof of rollback;
+resume the Operation to reconcile its durable result before retrying.
 Streaming grants contain logical session identities and runtime subjects only,
 never physical storage details. Transfers remain pinned through authority growth;
 physical disconnect interrupts them, and interrupted uploads restart from zero.

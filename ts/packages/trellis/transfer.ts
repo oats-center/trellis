@@ -182,10 +182,15 @@ class ClientSession {
   #lane = Promise.resolve();
   #pending = 0;
   #active = false;
+  #cancelled = false;
   #activationRequestId: string | undefined;
   #offeredMaxFrameBytes = 0;
 
-  constructor(readonly session: TransferSession) {
+  constructor(
+    readonly session: TransferSession,
+    readonly activationDeadlineMs: number,
+    readonly timeoutMs: number,
+  ) {
     // Reject only through owned cancellation races; no unobserved rejected gates.
     session.subscriptions.push(
       session.lease.nc.subscribe(session.grant.signalSubject, {
@@ -289,7 +294,9 @@ class ClientSession {
         this.committed.resolve(signal.info);
         break;
       case "cancelled":
+        this.#cancelled = true;
         this.terminal.resolve();
+        this.session.fail(new Error("transfer cancelled"));
         break;
       case "error":
         throw new Error(`transfer failed: ${signal.code}`);
@@ -354,25 +361,57 @@ class ClientSession {
 
   async activate(): Promise<number> {
     const session = this.session;
-    await session.retainLocal();
-    const maxFrameBytes = Math.min(
-      session.grant.maxFrameBytes,
-      (session.lease.nc.info?.max_payload ?? 0) -
-        transferConstants().headerReserve,
-    );
-    if (maxFrameBytes < 1) {
-      throw new Error("NATS payload limit cannot carry transfer frames");
+    const timer = setTimeout(() =>
+      session.fail(
+        new TransportError({
+          code: "trellis.request.unavailable",
+          message: "Transfer activation timed out.",
+          hint:
+            "Check that the transfer provider is responding, then try again.",
+        }),
+      ), Math.max(0, this.activationDeadlineMs - Date.now()));
+    try {
+      await session.retainLocal();
+      const maxFrameBytes = Math.min(
+        session.grant.maxFrameBytes,
+        (session.lease.nc.info?.max_payload ?? 0) -
+          transferConstants().headerReserve,
+      );
+      if (maxFrameBytes < 1) {
+        throw new Error("NATS payload limit cannot carry transfer frames");
+      }
+      this.#offeredMaxFrameBytes = maxFrameBytes;
+      await transferWait(session.lease.nc.flush(), session.abort.signal);
+      await transferWait(
+        this.control("activate", 0n, 0n, maxFrameBytes),
+        session.abort.signal,
+      );
+      return await transferWait(this.activated.promise, session.abort.signal);
+    } finally {
+      clearTimeout(timer);
     }
-    this.#offeredMaxFrameBytes = maxFrameBytes;
-    await session.lease.nc.flush();
-    await this.control("activate", 0n, 0n, maxFrameBytes);
-    return await transferWait(this.activated.promise, session.abort.signal);
   }
 
   async cancel(): Promise<void> {
-    if (!this.session.abort.signal.aborted) {
-      await this.control("cancel");
-      await transferWait(this.terminal.promise, this.session.abort.signal);
+    const timer = setTimeout(() =>
+      this.session.fail(
+        new TransportError({
+          code: "trellis.request.unavailable",
+          message:
+            "Transfer cancellation timed out; remote cleanup is unconfirmed.",
+          hint:
+            "Local ownership has been released. Reconcile the upload Operation before retrying.",
+        }),
+      ), this.timeoutMs);
+    try {
+      if (!this.session.abort.signal.aborted) {
+        await transferWait(this.control("cancel"), this.session.abort.signal);
+        await transferWait(this.terminal.promise, this.session.abort.signal);
+      }
+    } catch (cause) {
+      if (!this.#cancelled) throw cause;
+    } finally {
+      clearTimeout(timer);
     }
   }
 }
@@ -389,6 +428,10 @@ abstract class BaseTransferHandle {
       grant.consumer.sessionKey !== this.auth.sessionKey ||
       Date.now() >= Date.parse(grant.expiresAt)
     ) throw new Error("invalid or expired transfer grant");
+    const activationDeadlineMs = Math.min(
+      Date.now() + this.timeoutMs,
+      Date.parse(grant.expiresAt),
+    );
     const lease = await this.transport.acquireFor({
       publish: grant.direction === "send"
         ? [grant.controlSubject, grant.dataSubject]
@@ -397,13 +440,12 @@ abstract class BaseTransferHandle {
         ? [grant.signalSubject]
         : [grant.signalSubject, grant.dataSubject],
     }, {
-      deadlineMs: Math.min(
-        Date.now() + this.timeoutMs,
-        Date.parse(grant.expiresAt),
-      ),
+      deadlineMs: activationDeadlineMs,
     });
     return new ClientSession(
       new TransferSession(grant, lease, this.auth, false),
+      activationDeadlineMs,
+      this.timeoutMs,
     );
   }
 }
@@ -511,7 +553,7 @@ export class SendTransferHandle extends BaseTransferHandle {
           observe("upload", started, true);
           return Result.ok(info);
         } catch (cause) {
-          // Cancellation is bounded by grant expiry and never substitutes for success.
+          // Cancellation has its own exchange budget and never substitutes for success.
           if (client && !client.session.abort.signal.aborted) {
             await client
               .cancel().catch(() => {});

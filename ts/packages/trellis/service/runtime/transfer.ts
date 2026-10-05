@@ -81,6 +81,11 @@ export type InitiateUploadArgs = {
     progress: RuntimeOperationTransferProgress,
   ) => Promise<void>;
   onComplete?: (info: FileInfo) => Promise<void> | void;
+  /** Reconcile durable ownership before cleanup; unknown state retains bytes. */
+  reconcileCommit?: (
+    storageKey: string,
+    transferId: string,
+  ) => Promise<boolean | undefined>;
   onError?: (error: TransferError) => Promise<void> | void;
   onStored?: (stored: StoredTransfer) => Promise<void> | void;
 };
@@ -150,6 +155,7 @@ type ProviderSession = {
   storageKey: string;
   logicalKey: string;
   committed: boolean;
+  cancelling: boolean;
   completing: boolean;
   progress: RuntimeOperationTransferProgress;
   progressTask?: Promise<void>;
@@ -249,6 +255,7 @@ export class ServiceTransfer {
         storageKey,
         logicalKey,
         committed: false,
+        cancelling: false,
         completing: false,
         progress: { chunkIndex: 0, chunkBytes: 0, transferredBytes: 0 },
         progressPending: false,
@@ -885,6 +892,13 @@ export class ServiceTransfer {
       }
     } else if (control.action === "cancel") {
       if (session.committed) return;
+      // Entering the durable barrier is the point after which wire cancellation
+      // cannot promise an uncommitted outcome. Let its actual result win.
+      if (session.barrier) {
+        await session.barrier.catch(() => {});
+        return;
+      }
+      session.cancelling = true;
       await this.#signal(session, { type: "cancelled" });
       session.wire.fail(new Error("transfer cancelled"));
     } else if (control.action === "credit" || control.action === "end-ack") {
@@ -1072,6 +1086,9 @@ export class ServiceTransfer {
         info: { ...info, key: session.logicalKey, digest },
       };
       session.wire.throwIfAborted();
+      if (session.cancelling) {
+        throw new Error("transfer cancelled before commit");
+      }
       session.barrier = (async () => {
         await session.upload?.commit?.(stored, session.progress);
         await session.upload?.onComplete?.(stored.info);
@@ -1253,9 +1270,18 @@ export class ServiceTransfer {
         session.ingress?.fail(error);
         await session.backend?.catch(() => {});
         log?.debug("Transfer upload backend joined");
-        // A backend that finished just before cancellation may have committed an
-        // object, but it is never exposed as an Operation-committed staged upload.
-        if (session.completing) await session.store.delete(session.storageKey);
+        // A lost CAS response is not evidence that the durable write failed.
+        // Unknown authoritative state retains this attempt for reconciliation.
+        const committed = session.upload?.reconcileCommit
+          ? await session.upload.reconcileCommit(
+            session.storageKey,
+            session.wire.grant.transferId,
+          ).catch(() => undefined)
+          : false;
+        if (committed === true) session.committed = true;
+        if (committed === false && session.completing) {
+          await session.store.delete(session.storageKey);
+        }
         await session.upload?.onError?.(error);
         log?.debug("Transfer upload error callback returned");
       }

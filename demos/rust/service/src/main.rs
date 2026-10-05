@@ -181,7 +181,6 @@ async fn main() -> anyhow::Result<()> {
         api.register_evidence_download({
             move |context, input| async move {
                 const TRANSFER_TTL_SECONDS: i64 = 60;
-                const TRANSFER_CHUNK_BYTES: u64 = 64 * 1024;
 
                 let store = context.handle().store_client("uploads").await?;
                 let metadata = store
@@ -211,7 +210,6 @@ async fn main() -> anyhow::Result<()> {
                     "uploads",
                     &transfer_id,
                     &expires_at,
-                    TRANSFER_CHUNK_BYTES,
                     FileTransferInfo {
                         key: metadata.key.clone(),
                         size: metadata.size,

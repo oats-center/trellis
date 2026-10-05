@@ -223,6 +223,12 @@ credited frame represented rather than one event per frame. Grants hide physical
 storage protocols and credentials. Authority growth retains an in-flight
 transfer's admitting generation; physical disconnect interrupts it, and an
 uncommitted upload restarts from byte zero.
+The connection `timeout` covers transfer activation from transport acquisition
+through the provider reply, and separately bounds cancellation; it is not a body
+lifetime limit. A cancellation timeout releases local ownership but does not
+confirm remote cleanup. Once durable commit is underway, wire cancellation
+cannot promise an uncommitted outcome. A lost commit reply retains staged bytes;
+resume the Operation to reconcile its durable result before retrying.
 
 For an ordinary TypeScript operation, cancellation-first admission uses
 `.start(undefined, { invocationId, cancellationRequested: true })` with a
