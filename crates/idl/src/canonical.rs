@@ -80,6 +80,15 @@ pub fn selected_surface_digest(
     graph: &PackageGraph,
     selection: &InteractionSelection,
 ) -> miette::Result<String> {
+    selected_surface_digest_cached(graph, selection, &mut BTreeMap::new())
+}
+
+/// Reuse serialized schemas only within the same immutable compiled graph.
+pub(crate) fn selected_surface_digest_cached(
+    graph: &PackageGraph,
+    selection: &InteractionSelection,
+    schemas: &mut BTreeMap<TypeRef, String>,
+) -> miette::Result<String> {
     let (_, api) = find_api(graph, &selection.api)?;
     let mut output = String::new();
     append_digest_field(&mut output, selection.api.as_str());
@@ -103,14 +112,14 @@ pub fn selected_surface_digest(
                 download,
                 pagination,
             } => {
-                append_schema(&mut output, graph, input)?;
-                append_schema(&mut output, graph, result)?;
+                append_schema(&mut output, graph, input, schemas)?;
+                append_schema(&mut output, graph, result, schemas)?;
                 append_digest_field(&mut output, if *download { "download" } else { "" });
                 append_digest_field(
                     &mut output,
                     if pagination.is_some() { "cursor" } else { "" },
                 );
-                append_errors(&mut output, graph, api, errors)?;
+                append_errors(&mut output, graph, api, errors, schemas)?;
             }
             ActionDefinition::Operation {
                 input,
@@ -121,38 +130,38 @@ pub fn selected_surface_digest(
                 signals,
                 upload,
             } => {
-                append_schema(&mut output, graph, input)?;
-                append_schema(&mut output, graph, result)?;
+                append_schema(&mut output, graph, input, schemas)?;
+                append_schema(&mut output, graph, result, schemas)?;
                 if let Some(progress) = progress {
-                    append_schema(&mut output, graph, progress)?;
+                    append_schema(&mut output, graph, progress, schemas)?;
                 } else {
                     append_digest_field(&mut output, "");
                 }
                 // A dedicated update schema extends the digest; progress-only
                 // declarations keep their previous digest byte stream.
                 if let Some(update) = update {
-                    append_schema(&mut output, graph, update)?;
+                    append_schema(&mut output, graph, update, schemas)?;
                 }
                 for (name, signal) in signals {
                     append_digest_field(&mut output, name);
-                    append_schema(&mut output, graph, signal)?;
+                    append_schema(&mut output, graph, signal, schemas)?;
                 }
                 append_digest_field(&mut output, if *upload { "upload" } else { "" });
-                append_errors(&mut output, graph, api, errors)?;
+                append_errors(&mut output, graph, api, errors, schemas)?;
             }
             ActionDefinition::Event {
                 payload,
                 parameters,
             } => {
-                append_schema(&mut output, graph, payload)?;
+                append_schema(&mut output, graph, payload, schemas)?;
                 append_digest_field(
                     &mut output,
                     &serde_json::to_string(parameters).expect("event paths serialize"),
                 );
             }
             ActionDefinition::Live { input, event } => {
-                append_schema(&mut output, graph, input)?;
-                append_schema(&mut output, graph, event)?;
+                append_schema(&mut output, graph, input, schemas)?;
+                append_schema(&mut output, graph, event, schemas)?;
             }
         }
     }
@@ -167,11 +176,12 @@ fn append_errors(
     graph: &PackageGraph,
     api: &ApiDefinition,
     errors: &BTreeSet<String>,
+    schemas: &mut BTreeMap<TypeRef, String>,
 ) -> miette::Result<()> {
     for name in errors {
         append_digest_field(output, name);
         if let Some(payload) = &api.errors[name] {
-            append_schema(output, graph, payload)?;
+            append_schema(output, graph, payload, schemas)?;
         } else {
             append_digest_field(output, "");
         }
@@ -183,11 +193,16 @@ fn append_schema(
     output: &mut String,
     graph: &PackageGraph,
     reference: &TypeRef,
+    schemas: &mut BTreeMap<TypeRef, String>,
 ) -> miette::Result<()> {
-    append_digest_field(
-        output,
-        &serde_json::to_string(&crate::json_schema(graph, reference)?).expect("schema serializes"),
-    );
+    let schema = match schemas.entry(reference.clone()) {
+        std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+        std::collections::btree_map::Entry::Vacant(entry) => entry.insert(
+            serde_json::to_string(&crate::json_schema(graph, reference)?)
+                .expect("schema serializes"),
+        ),
+    };
+    append_digest_field(output, schema);
     Ok(())
 }
 

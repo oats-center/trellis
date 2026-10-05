@@ -8,11 +8,13 @@ pub fn json_schema(graph: &PackageGraph, root: &TypeRef) -> miette::Result<Value
     let mut definitions = Map::new();
     let mut visiting = BTreeSet::new();
     project_named(graph, root, &mut definitions, &mut visiting)?;
-    Ok(json!({
+    let mut schema = json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$ref": format!("#/$defs/{}", definition_key(root)),
-        "$defs": definitions,
-    }))
+        "$defs": null,
+    });
+    schema["$defs"] = Value::Object(definitions);
+    Ok(schema)
 }
 
 fn project_named(
@@ -48,7 +50,10 @@ fn project_named(
                     required.push(Value::String(name.clone()));
                 }
             }
-            json!({"type":"object", "properties":properties, "required":required, "additionalProperties":true})
+            let mut schema = json!({"type":"object", "properties":null, "required":null, "additionalProperties":true});
+            schema["properties"] = Value::Object(properties);
+            schema["required"] = Value::Array(required);
+            schema
         }
         TypeDefinition::Enum(symbols) => json!({"type":"string", "x-trellis-symbols":symbols}),
         TypeDefinition::Alias(value) => project_expr(graph, value, definitions, visiting)?,

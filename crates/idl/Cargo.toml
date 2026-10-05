@@ -22,3 +22,7 @@ trellis-protocol.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+
+[[bench]]
+name = "compile"
+harness = false

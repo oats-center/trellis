@@ -204,8 +204,9 @@ pub(crate) fn compile(
         .values()
         .flat_map(|package| package.participants.keys().cloned())
         .collect::<Vec<_>>();
+    let mut schemas = BTreeMap::new();
     for participant in participants {
-        let needs = derive_participant_needs(&graph, &participant)?;
+        let needs = derive_participant_needs(&graph, &participant, &mut schemas)?;
         graph.participant_needs.insert(participant, needs);
     }
     Ok(graph)
@@ -416,13 +417,27 @@ fn validate_imports(
     packages: &BTreeMap<PackageId, SemanticPackage>,
     dependencies: &DependencyLookup,
 ) -> miette::Result<()> {
+    let local_exports = parsed
+        .iter()
+        .map(|source| {
+            let names = source
+                .declarations
+                .iter()
+                .filter_map(|declaration| match &declaration.value {
+                    Declaration::Model(value) => Some(value.name.as_str()),
+                    Declaration::Enum(value) => Some(value.name.as_str()),
+                    Declaration::Alias(value) => Some(value.name.as_str()),
+                    Declaration::Api(value) => Some(value.name.as_str()),
+                    Declaration::Participant(_) => None,
+                })
+                .collect::<BTreeSet<_>>();
+            (source.alias.as_str(), names)
+        })
+        .collect::<BTreeMap<_, _>>();
     for source in parsed {
         for (local, import) in &source.imports {
-            if let Some(target) = parsed.iter().find(|unit| unit.alias == import.from) {
-                if !target.declarations.iter().any(|declaration| {
-                    declaration_name(&declaration.value) == import.name
-                        && !matches!(declaration.value, Declaration::Participant(_))
-                }) {
+            if let Some(names) = local_exports.get(import.from.as_str()) {
+                if !names.contains(import.name.as_str()) {
                     return Err(parser::diagnostic(
                         &SourceUnit {
                             alias: source.alias.clone(),
@@ -720,47 +735,28 @@ fn resolve_name(
     scope: &Scope<'_>,
 ) -> miette::Result<(PackageId, String)> {
     if let Some(import) = scope.parsed[source].imports.get(name) {
-        if let Some(target) = scope.parsed.iter().find(|unit| unit.alias == import.from) {
-            if target
-                .declarations
-                .iter()
-                .any(|declaration| declaration_name(&declaration.value) == import.name)
-            {
-                return Ok((scope.package.clone(), import.name.clone()));
-            }
-            return Err(miette!(
-                "source '{}' does not declare '{}'",
-                import.from,
-                import.name
-            ));
+        // validate_imports already checked the name in this exact local source.
+        if scope.parsed.iter().any(|unit| unit.alias == import.from) {
+            return Ok((scope.package.clone(), import.name.clone()));
         }
         let Some((package, _)) = scope.dependency_aliases.get(&import.from) else {
             return Err(miette!("unknown import source '{}'", import.from));
         };
         return Ok((package.clone(), import.name.clone()));
     }
-    if declaration_in_source(&scope.parsed[source], name) {
+    if scope
+        .declarations
+        .types
+        .get(name)
+        .or_else(|| scope.declarations.apis.get(name))
+        .or_else(|| scope.declarations.participants.get(name))
+        .is_some_and(|(declared_source, _)| *declared_source == source)
+    {
         return Ok((scope.package.clone(), name.to_owned()));
     }
     Err(miette!(
         "name '{name}' is not declared in this file or explicitly imported"
     ))
-}
-
-fn declaration_in_source(source: &ParsedSource, name: &str) -> bool {
-    source
-        .declarations
-        .iter()
-        .any(|value| declaration_name(&value.value) == name)
-}
-fn declaration_name(value: &Declaration) -> String {
-    match value {
-        Declaration::Model(v) => v.name.clone(),
-        Declaration::Enum(v) => v.name.clone(),
-        Declaration::Alias(v) => v.name.clone(),
-        Declaration::Api(v) => v.name.clone(),
-        Declaration::Participant(v) => v.name.clone(),
-    }
 }
 
 fn resolve_api(
@@ -2110,6 +2106,7 @@ fn mark_recursive_model_fields(package: &mut SemanticPackage) {
 fn derive_participant_needs(
     graph: &PackageGraph,
     participant_id: &ParticipantId,
+    schemas: &mut BTreeMap<TypeRef, String>,
 ) -> miette::Result<ParticipantNeeds> {
     let participant = graph
         .packages
@@ -2197,7 +2194,9 @@ fn derive_participant_needs(
         append(&crate::api_digest(graph, api)?);
     }
     for selection in participant.uses.values() {
-        append(&crate::selected_surface_digest(graph, selection)?);
+        append(&crate::canonical::selected_surface_digest_cached(
+            graph, selection, schemas,
+        )?);
     }
     for (name, resource) in &participant.resources {
         append(name.as_str());
