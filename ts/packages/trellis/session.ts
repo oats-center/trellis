@@ -3079,25 +3079,6 @@ export class Trellis<
     return value.value ?? null;
   }
 
-  protected async listNonterminalOperationRecords(): Promise<
-    DurableOperationRecord[]
-  > {
-    const store = await this.operationStoreHandle();
-    const keys = await store.keys();
-    const keyValue = keys.take();
-    if (isErr(keyValue)) throw keyValue.error;
-    const records: DurableOperationRecord[] = [];
-    for await (const key of keyValue) {
-      const record = await this.loadOperationRecord(key);
-      if (
-        record && record.snapshot.state !== "completed" &&
-        record.snapshot.state !== "failed" &&
-        record.snapshot.state !== "cancelled"
-      ) records.push(record);
-    }
-    return records;
-  }
-
   /** Persists a fenced operation; fresh admission must never replace an invocation. */
   async saveOperationRecord(
     runtime: RuntimeOperationRecord,

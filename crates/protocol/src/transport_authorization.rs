@@ -179,10 +179,17 @@ impl TransportAuthorizationV1 {
         allowed: &Self,
         now_unix_seconds: i64,
     ) -> Result<TransportPolicyClass, ProtocolError> {
+        let identical = self == allowed;
+        if identical {
+            self.validate()?;
+        }
         if let Some(deadline) = self.hard_expires_at {
             if deadline <= now_unix_seconds {
                 return Ok(TransportPolicyClass::ReductionRequired);
             }
+        }
+        if identical {
+            return Ok(TransportPolicyClass::Current);
         }
         if !self.is_covered_by(allowed)? {
             return Ok(TransportPolicyClass::ReductionRequired);
@@ -513,6 +520,14 @@ mod tests {
     fn elapsed_hard_deadline_requires_reduction() {
         let mut admitted = policy(&["a"], &[]);
         admitted.hard_expires_at = Some(50);
+        assert_eq!(
+            admitted.classify(&admitted, 49).unwrap(),
+            TransportPolicyClass::Current
+        );
+        assert_eq!(
+            admitted.classify(&admitted, 50).unwrap(),
+            TransportPolicyClass::ReductionRequired
+        );
         let mut allowed = policy(&["a"], &[]);
         allowed.hard_expires_at = Some(500);
         assert_eq!(
@@ -541,11 +556,14 @@ mod tests {
             );
         }
         let mut policy = policy(&["b", "a"], &[]);
-        assert!(policy.validate().is_err());
+        assert!(policy.classify(&policy, 0).is_err());
         policy.publish_allow = v(&["a"]);
-        assert!(policy.validate().is_ok());
+        assert_eq!(
+            policy.classify(&policy, 0).unwrap(),
+            TransportPolicyClass::Current
+        );
         policy.publish_allow = v(&["a", "a"]);
-        assert!(policy.validate().is_err());
+        assert!(policy.classify(&policy, 0).is_err());
     }
 
     #[test]
