@@ -113,7 +113,9 @@ export function browserOwner(
       if (active === undefined) {
         const work = run([
           () => tracerProvider.forceFlush(),
-          () => meterProvider.forceFlush(),
+          async () => {
+            if (!closing) await meterProvider.forceFlush();
+          },
         ], deadline);
         active = work;
         void work.finally(() => {

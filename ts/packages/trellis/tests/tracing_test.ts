@@ -388,6 +388,43 @@ Deno.test("browser owner retains work after timeout and serializes shutdown", as
   assertEquals(events, ["trace flush", "trace shutdown", "metric shutdown"]);
 });
 
+Deno.test("browser shutdown joins active work without starting its pending flush", async () => {
+  const { browserOwner } = await import("../telemetry/browser.ts");
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => release = resolve);
+  const events: string[] = [];
+  const handle = browserOwner(
+    {
+      forceFlush: async () => {
+        events.push("trace flush");
+        await blocked;
+      },
+      shutdown: async () => {
+        events.push("trace shutdown");
+      },
+    },
+    {
+      forceFlush: async () => {
+        events.push("metric flush");
+      },
+      shutdown: async () => {
+        events.push("metric shutdown");
+      },
+    },
+  );
+  const flushing = handle.forceFlush();
+  const firstShutdown = handle.shutdown();
+  const secondShutdown = handle.shutdown();
+  try {
+    await handle.forceFlush();
+    assertEquals(events, ["trace flush"]);
+  } finally {
+    release();
+    await Promise.all([flushing, firstShutdown, secondShutdown]);
+  }
+  assertEquals(events, ["trace flush", "trace shutdown", "metric shutdown"]);
+});
+
 Deno.test("browser owner coalesces a caller that stops waiting", async () => {
   const { browserOwner } = await import("../telemetry/browser.ts");
   let release!: () => void;
