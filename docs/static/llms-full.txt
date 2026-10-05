@@ -416,7 +416,10 @@ test crates: it links the real production runtime in-process with no CLI/server
 executable prerequisite, selects loopback ports automatically, and returns
 normal SDK connection options for generated participants. Both harnesses run
 real NATS child processes; the Rust bare builder defaults to the verified pinned
-download, requiring network on first use. `TRELLIS_TEST_NATS_BIN` or
+download, requiring network on first use. Its verified executable/archive cache
+is shared (`TRELLIS_CACHE_DIR`, otherwise the platform cache); warmed-cache boots
+work offline. Credentials, broker state, databases, PID files, and logs remain
+sandbox-local. `TRELLIS_TEST_NATS_BIN` or
 `NatsSource::Path` selects a prebuilt broker; `NatsSource::PathLookup` uses
 PATH. Runtime/bootstrap Cargo dependencies are distribution-only implementation
 crates, not service-author APIs. The TypeScript harness acquires its

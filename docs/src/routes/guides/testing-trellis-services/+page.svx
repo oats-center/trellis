@@ -130,7 +130,10 @@ are required. Its implementation dependencies are distributed through Cargo,
 not supported APIs for services to import directly.
 
 NATS remains a real child process. The default uses the verified pinned download
-(first use requires network). For a prebuilt broker, set `TRELLIS_TEST_NATS_BIN`
+(first use requires network). Its verified executable/archive cache is shared
+(`TRELLIS_CACHE_DIR`, otherwise the platform cache), so later runtimes can boot
+offline. Credentials, broker state, databases, PID files, and logs remain private
+to each sandbox. For a prebuilt broker, set `TRELLIS_TEST_NATS_BIN`
 or use `.nats(NatsSource::Path(path))`; `.nats(NatsSource::PathLookup)` resolves
 `nats-server` from `PATH`. This does not change the TypeScript harness, which
 still requires the Trellis executables.

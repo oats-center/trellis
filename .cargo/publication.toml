@@ -1,0 +1,13 @@
+# Use the same candidate sources for Check preparation and Release verification.
+# These build-time overrides are not part of the published manifests.
+[patch.crates-io]
+trellis-protocol = { path = "crates/protocol" }
+trellis-rs = { path = "crates/trellis" }
+trellis-idl = { path = "crates/idl" }
+trellis-local-bootstrap = { path = "crates/local-bootstrap" }
+trellis-local-nats = { path = "crates/local-nats" }
+trellis-runtime-apis = { path = "crates/runtime-apis" }
+trellis-events-runtime = { path = "crates/events-runtime" }
+trellis-jobs-runtime = { path = "crates/jobs-runtime" }
+trellis-runtime = { path = "crates/runtime" }
+trellis-bootstrap = { path = "crates/bootstrap" }

@@ -927,27 +927,21 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Verify publication content comparison
+        run: python3 scripts/tests/test_rust_crate_contents.py
+
       - name: Package the public crates
-        # Assemble all three archives together. The SDK's dev-dependency on the
-        # testkit creates a cycle that makes Cargo's source-patched verification
-        # collide with the packaged SDK. The required artifact-only consumer job
-        # compiles these unmodified archives and runs their full live acceptance.
+        # Prepare the complete publication closure together. The required
+        # artifact-only consumer compiles these unmodified archives and runs
+        # their full live acceptance; Release compares its verified publication
+        # contents against these accepted inputs before uploading each crate.
         run: |
-          cargo package --manifest-path Cargo.toml --no-verify \
+          cargo package --manifest-path Cargo.toml --locked --no-verify \
             -p trellis-protocol -p trellis-rs -p trellis-idl \
             -p trellis-local-bootstrap -p trellis-local-nats -p trellis-runtime-apis \
             -p trellis-events-runtime -p trellis-jobs-runtime -p trellis-runtime \
             -p trellis-bootstrap -p trellis-testkit \
-            --config 'patch.crates-io.trellis-protocol.path="crates/protocol"' \
-            --config 'patch.crates-io.trellis-rs.path="crates/trellis"' \
-            --config 'patch.crates-io.trellis-idl.path="crates/idl"' \
-            --config 'patch.crates-io.trellis-local-bootstrap.path="crates/local-bootstrap"' \
-            --config 'patch.crates-io.trellis-local-nats.path="crates/local-nats"' \
-            --config 'patch.crates-io.trellis-runtime-apis.path="crates/runtime-apis"' \
-            --config 'patch.crates-io.trellis-events-runtime.path="crates/events-runtime"' \
-            --config 'patch.crates-io.trellis-jobs-runtime.path="crates/jobs-runtime"' \
-            --config 'patch.crates-io.trellis-runtime.path="crates/runtime"' \
-            --config 'patch.crates-io.trellis-bootstrap.path="crates/bootstrap"'
+            --config .cargo/publication.toml
 
       - name: Upload public Rust packages
         uses: actions/upload-artifact@v4

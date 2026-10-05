@@ -119,10 +119,17 @@ descriptor or its package evidence.
 ## Isolation and retention
 
 Each runtime creates a fresh `trellis-testkit-<id>` sandbox with its own home,
-config, data, cache, and logs, and binds only loopback addresses. It never
-mutates the calling process's environment. Retention is `OnFailure` by default
-(keep the sandbox after a failure); `Always` and `Never` are available through
+config, data, credentials, broker state, PID files, and logs, and binds only
+loopback addresses. It never mutates the calling process's environment.
+Retention is `OnFailure` by default (keep the sandbox after a failure); `Always`
+and `Never` are available through
 `TrellisTestRuntime::builder().retention(...)`.
+
+Only the cryptographically verified NATS executable and archive cache is shared:
+`TRELLIS_CACHE_DIR` selects it, otherwise the production downloader uses the
+platform cache directory. A warmed cache permits subsequent runtimes to start
+without network access. Keep any override outside runtime sandboxes so sandbox
+removal does not delete it.
 
 Call `TrellisTestRuntime::shutdown` to remove a sandbox according to the
 retention policy. `Drop` and process termination are best-effort: a sandbox can

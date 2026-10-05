@@ -54,7 +54,7 @@ tempfile = "3.27.0"
 tokio = { workspace = true, features = ["test-util"] }
 trellis-local-nats = { path = "../local-nats" }
 trellis-bootstrap = { path = "../bootstrap" }
-trellis-testkit = { path = "../trellis-testkit", version = "0.100.0" }
+trellis-testkit = { path = "../trellis-testkit" }
 trellis-runtime-apis = { path = "../runtime-apis" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]

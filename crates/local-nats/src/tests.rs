@@ -880,13 +880,6 @@ fn missing_path_binary_and_explicit_path_never_create_download_cache() {
     assert!(!cache.exists());
 }
 
-#[test]
-fn pinned_download_requires_explicit_cache() {
-    let error = NatsServerBinary::resolve(&NatsBinarySource::DownloadPinned, None)
-        .expect_err("download without cache rejected");
-    assert!(matches!(error, LocalNatsError::MissingCacheDir));
-}
-
 #[cfg(unix)]
 #[test]
 fn from_path_returns_canonical_path_through_symlinked_parents() {

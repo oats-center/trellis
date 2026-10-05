@@ -159,7 +159,10 @@ Trellis boundary; application policies belong in the consumer repository.
 For live Rust tests, `trellis-testkit` links the real production runtime and
 manages a real NATS child without requiring the CLI/server executables. Its bare
 builder defaults to the verified pinned broker download; a prebuilt broker can
-be selected with `TRELLIS_TEST_NATS_BIN` or `NatsSource`. The TypeScript testkit
+be selected with `TRELLIS_TEST_NATS_BIN` or `NatsSource`. Only the verified NATS
+executable/archive cache is shared (`TRELLIS_CACHE_DIR` or the platform cache),
+allowing offline reuse; credentials and runtime state remain private. The
+TypeScript testkit
 acquires exact-version SHA-256-pinned production CLI/server archives (currently Linux x86-64 only)
 automatically; no installed Trellis executables or nsc are required. Production
 commands generate configuration and own managed NATS. Graceful TypeScript host

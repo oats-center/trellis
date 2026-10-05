@@ -275,7 +275,10 @@ production runtime in-process, chooses loopback ports automatically, and returns
 the existing SDK connection options so your generated service and app facades
 connect normally. No CLI/server executable or Trellis source checkout is
 required. NATS is a real child process: the bare builder defaults to the
-verified pinned download (network on first use). Set `TRELLIS_TEST_NATS_BIN`,
+verified pinned download (network on first use). Only the verified executable and
+archive cache is shared (`TRELLIS_CACHE_DIR`, otherwise the platform cache), so
+later runtimes can boot offline. Credentials, broker state, databases, PID files,
+and logs remain sandbox-local. Set `TRELLIS_TEST_NATS_BIN`,
 choose `NatsSource::Path`, or choose `NatsSource::PathLookup` for a prebuilt
 broker. Runtime/bootstrap crates are registry-distributed implementation
 dependencies, not supported service-author surfaces; a service repository uses

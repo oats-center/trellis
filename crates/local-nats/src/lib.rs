@@ -108,10 +108,6 @@ pub enum LocalNatsError {
         /// Why the path is unusable.
         reason: String,
     },
-    /// Pinned acquisition was requested without an explicit cache directory.
-    #[error("pinned nats-server download requires an explicit cache directory")]
-    MissingCacheDir,
-
     /// A required local NATS builder choice was omitted or contradictory.
     #[error("invalid local NATS policy: {0}")]
     InvalidPolicy(String),
@@ -346,8 +342,8 @@ pub enum NatsBinarySource {
 }
 
 impl NatsServerBinary {
-    /// Resolve an explicit binary source. Download mode requires `cache_dir`; all other
-    /// modes ignore it and never access the network.
+    /// Resolve an explicit binary source. Download mode uses `cache_dir` when provided,
+    /// otherwise the shared platform cache. Other modes never access the network.
     pub fn resolve(
         source: &NatsBinarySource,
         cache_dir: Option<&Path>,
@@ -355,9 +351,7 @@ impl NatsServerBinary {
         match source {
             NatsBinarySource::PathLookup => Self::from_path_lookup(),
             NatsBinarySource::Path(path) => Self::from_path(path),
-            NatsBinarySource::DownloadPinned => {
-                Self::ensure(Some(cache_dir.ok_or(LocalNatsError::MissingCacheDir)?))
-            }
+            NatsBinarySource::DownloadPinned => Self::ensure(cache_dir),
         }
     }
 

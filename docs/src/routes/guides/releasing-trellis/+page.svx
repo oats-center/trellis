@@ -154,6 +154,15 @@ enter the index before its consumers. Only `trellis-protocol`, `trellis-rs`, and
 registry-distributed implementation dependencies for the linked testkit runtime,
 not recommended imports for services/apps.
 
+`publish-crates` restores `check-generated`, `check-portal`, and
+`rust-testkit-packages` from the accepted Check run. Check preparation and Cargo
+publication verification use the same `.cargo/publication.toml` source overrides;
+published production dependencies retain their registry version requirements.
+The SDK's workspace-only testkit development dependency is path-only and is
+omitted from its published manifest. Before each upload, Cargo's verified archive
+must match every accepted file's contents and permissions, including embedded
+browser assets and the lockfile. Release does not rebuild browser applications.
+
 `release prepare` also rewrites the external testkit fixture manifests under
 `integration/fixtures/testkit` so its generated application package carries the
 prepared version. The normal `Check` workflow builds a verification

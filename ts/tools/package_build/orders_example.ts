@@ -121,11 +121,19 @@ try {
 
   const bin = join(isolated, "bin");
   await ensureDir(bin);
-  await Deno.copyFile(
-    Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
-      join(repository, "target/debug/trellis-server"),
-    join(bin, "trellis-server"),
-  );
+  const native = join(isolated, "native");
+  await ensureDir(native);
+  for (
+    const [name, variable] of [
+      ["trellis", "TRELLIS_TEST_CLI_BIN"],
+      ["trellis-server", "TRELLIS_TEST_SERVER_BIN"],
+    ]
+  ) {
+    await Deno.copyFile(
+      Deno.env.get(variable) ?? join(repository, "target/debug", name),
+      join(native, name),
+    );
+  }
   await Deno.symlink(Deno.execPath(), join(bin, "deno"));
   const node = await new Deno.Command("node", {
     args: ["-p", "process.execPath"],
@@ -138,8 +146,8 @@ try {
   const env = {
     PATH: `${bin}:/usr/bin:/bin`,
     NODE_PATH: "",
-    TRELLIS_TEST_CLI_BIN: join(bin, "trellis"),
-    TRELLIS_TEST_SERVER_BIN: join(bin, "trellis-server"),
+    TRELLIS_TEST_CLI_BIN: join(native, "trellis"),
+    TRELLIS_TEST_SERVER_BIN: join(native, "trellis-server"),
     TRELLIS_CACHE: join(isolated, "empty-api-cache"),
   };
   assertEquals(
@@ -148,13 +156,13 @@ try {
       env,
     }).output()).success,
     false,
-    "isolated consumer must not have a Trellis CLI",
+    "isolated consumer must not have a Trellis CLI on PATH",
   );
   console.log(await run(Deno.execPath(), ["install"], env));
   console.log(await run(Deno.execPath(), ["task", "check"], env));
   console.log(await run(Deno.execPath(), ["task", "test"], env));
   console.log(
-    "Orders builds and tests with no Trellis CLI, API cache, or parent repository imports.",
+    "Orders builds and tests with a managed native distribution, no Trellis CLI on PATH, no API cache, and no parent repository imports.",
   );
 } finally {
   await Deno.remove(isolated, { recursive: true });

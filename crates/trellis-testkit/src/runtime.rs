@@ -429,7 +429,6 @@ async fn start_once(
             .binary(source)
             .source(config_dir.join("nats"))
             .state(root.join("state/nats"))
-            .cache_dir(root.join("cache/nats"))
             .pid_file(root.join("runtime/nats-server.pid"))
             .output(NatsOutput::Log {
                 path: root.join("logs/nats-server.log"),
