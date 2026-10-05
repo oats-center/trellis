@@ -114,6 +114,7 @@ const TRELLIS_PROJECTS: &[&str] = &[
     "integration/fixtures/client-upgrade-consent",
     "integration/fixtures/runtime-pinned",
     "integration/fixtures/testkit",
+    "benchmarks/runtime",
     "demos/ts/service",
     "demos/ts/device",
     "demos/app",

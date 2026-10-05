@@ -1,0 +1,28 @@
+format = 2
+root = "performance-trellis"
+
+[[packages]]
+name = "performance-trellis"
+version = "0.100.0"
+digest = "T2NO6cIT8qPcf6WEDgoV1-DpskwOGMk57EbuzaTPdsg"
+distribution-digest = "sha256:7045b40907616d58703857edb66bda716e1c6665d5f96f83fa2c3edf1056349a"
+
+[[packages.dependencies]]
+name = "trellis"
+version = "0.100.0"
+digest = "5opbdbI2qlmKFK_nNnO0lChCk3XR1hHFK_1FjdeUNSo"
+
+[packages.source]
+kind = "path"
+path = "."
+
+[[packages]]
+name = "trellis"
+version = "0.100.0"
+digest = "5opbdbI2qlmKFK_nNnO0lChCk3XR1hHFK_1FjdeUNSo"
+distribution-digest = "sha256:f54dfd7a16b79f6b49deaaa31814d896f2a7c7668bbf04bec386d6300c18987b"
+dependencies = []
+
+[packages.source]
+kind = "path"
+path = "../../crates/runtime"

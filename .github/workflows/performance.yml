@@ -1,0 +1,124 @@
+name: Performance
+
+on:
+  workflow_dispatch:
+    inputs:
+      check_run_id:
+        description: Successful Check run on the exact commit to measure (artifacts must still exist)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: trellis-performance
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 30
+    outputs:
+      sha: ${{ steps.checked.outputs.sha }}
+    steps:
+      - name: Resolve verified commit
+        id: checked
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECK_RUN: ${{ inputs.check_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CHECK_RUN" =~ ^[0-9]+$ ]]
+          gh api "repos/${{ github.repository }}/actions/runs/$CHECK_RUN" > "$RUNNER_TEMP/performance-check.json"
+          jq -e '.name == "Check" and .status == "completed" and .conclusion == "success"' "$RUNNER_TEMP/performance-check.json"
+          echo "sha=$(jq -r .head_sha "$RUNNER_TEMP/performance-check.json")" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.checked.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: check-generated
+          run-id: ${{ inputs.check_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: check-protocol-wasm
+          run-id: ${{ inputs.check_run_id }}
+          github-token: ${{ github.token }}
+          path: ts/packages/trellis/auth/protocol_wasm
+      - uses: actions/download-artifact@v4
+        with:
+          name: check-runtime-binaries
+          run-id: ${{ inputs.check_run_id }}
+          github-token: ${{ github.token }}
+          path: dist/performance
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: 2.9.4
+      - name: Build workload artifacts once (do not rebuild server or CLI)
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --manifest-path benchmarks/runtime/native/Cargo.toml --target-dir target
+          cp target/release/trellis-performance dist/performance/
+          deno task -c ts/deno.json bench:runtime:browser:build
+          cp benchmarks/runtime/browser.bundle.js dist/performance/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: performance-workloads
+          path: dist/performance
+          retention-days: 3
+
+  measure:
+    needs: prepare
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: performance-workloads
+          path: dist/performance
+      - uses: actions/download-artifact@v4
+        with:
+          name: check-generated-artifacts
+          run-id: ${{ inputs.check_run_id }}
+          github-token: ${{ github.token }}
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: check-protocol-wasm
+          run-id: ${{ inputs.check_run_id }}
+          github-token: ${{ github.token }}
+          path: ts/packages/trellis/auth/protocol_wasm
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: 2.9.4
+      - name: Require installed production dependencies
+        run: |
+          command -v nats-server
+          command -v python3
+          command -v agent-browser
+          chmod +x dist/performance/trellis dist/performance/trellis-server dist/performance/trellis-performance
+      - name: Run isolated sequential repetitions
+        run: |
+          deno task -c ts/deno.json bench:runtime:suite --output=benchmarks/runtime/results/ci --server=dist/performance/trellis-server --cli=dist/performance/trellis --rust-bin=dist/performance/trellis-performance --browser-bundle=dist/performance/browser.bundle.js
+      - name: Publish Markdown job summary
+        if: always()
+        run: |
+          if test -f benchmarks/runtime/results/ci/report.md; then
+            cat benchmarks/runtime/results/ci/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: performance-${{ needs.prepare.outputs.sha }}
+          path: benchmarks/runtime/results/ci
+          retention-days: 30
