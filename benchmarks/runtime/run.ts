@@ -8,12 +8,14 @@ import { deadline, type Sample, summarize } from "./model.ts";
 import { snapshotResources } from "./resources.ts";
 import { TrellisTestRuntime } from "../../ts/packages/trellis-testkit/index.ts";
 import { participants } from "./packages/performance-trellis/index.js";
+import { rawTransfer } from "./raw_transfer.ts";
 
 const root = fromFileUrl(new URL("../../", import.meta.url));
 const args = parseArgs(Deno.args, {
   string: [
     "output",
     "server",
+    "cli",
     "samples",
     "calls",
     "sizes",
@@ -27,6 +29,7 @@ const args = parseArgs(Deno.args, {
     "rust-bin",
     "contract-entry",
     "contract-worker",
+    "warmups",
   ],
   boolean: ["keep-workdir"],
   default: {
@@ -39,16 +42,30 @@ const args = parseArgs(Deno.args, {
     "max-outstanding": "128",
     lane: "typescript",
     providers: "1",
+    warmups: "0",
   },
 });
 const positive = z.coerce.number().int().positive();
 const samples = positive.parse(args.samples);
 const calls = positive.parse(args.calls);
-const lane = z.enum(["typescript", "lifecycle", "browser", "rust", "contract"])
+const warmups = z.coerce.number().int().nonnegative().parse(args.warmups);
+const lane = z.enum([
+  "typescript",
+  "transfer",
+  "lifecycle",
+  "browser",
+  "rust",
+  "contract",
+])
   .parse(
     args.lane,
   );
 const providerCount = positive.parse(args.providers);
+if (lane === "transfer" && providerCount !== 1) {
+  throw new Error(
+    "The focused transfer audit uses one provider; replica scaling belongs to the full suite",
+  );
+}
 const arrivalRate = z.coerce.number().nonnegative().parse(args["arrival-rate"]);
 const maxOutstanding = positive.parse(args["max-outstanding"]);
 const sizes = z.array(positive.max(64 * 1024 * 1024)).nonempty().parse(
@@ -62,6 +79,7 @@ const server = resolve(
   args.server ?? Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
     `${root}/target/release/trellis-server`,
 );
+const cli = resolve(args.cli ?? `${root}/target/release/trellis`);
 const output = resolve(
   args.output ??
     `${root}/benchmarks/runtime/results/${
@@ -154,8 +172,22 @@ try {
     args: ["diff", "HEAD"],
     cwd: root,
   }).output();
-  await Deno.writeFile(`${output}/source.diff`, diff.stdout);
+  const snapshotRevision = await Deno.readTextFile(`${root}/.source-revision`)
+    .catch((error: unknown) => {
+      if (error instanceof Deno.errors.NotFound) return undefined;
+      throw error;
+    });
+  const revision = snapshotRevision === undefined
+    ? new TextDecoder().decode(git.stdout).trim()
+    : z.string().regex(/^[0-9a-f]{40}$/).parse(snapshotRevision.trim());
+  await Deno.writeFile(
+    `${output}/source.diff`,
+    snapshotRevision === undefined
+      ? diff.stdout
+      : await Deno.readFile(`${root}/.benchmark-overlay.diff`),
+  );
   const hash = await new Deno.Command("sha256sum", { args: [server] }).output();
+  const cliHash = await new Deno.Command("sha256sum", { args: [cli] }).output();
   const cpuInfo = await Deno.readTextFile("/proc/cpuinfo");
   const cgroupPath = (await Deno.readTextFile("/proc/self/cgroup")).split("\n")
     .find((line) => line.startsWith("0::"))?.slice(3);
@@ -173,24 +205,27 @@ try {
       ]),
     ),
   );
-  if (!hash.success) {
+  if (!hash.success || !cliHash.success) {
     throw new Error(
-      "Supply an existing ordinary release server through --server; the benchmark does not build it",
+      "Supply an existing matching ordinary release CLI/server pair through --cli and --server; the benchmark does not build them",
     );
   }
   await Deno.writeTextFile(
     `${output}/metadata.json`,
     JSON.stringify(
       {
-        revision: new TextDecoder().decode(git.stdout).trim(),
+        revision,
+        sourceSnapshot: snapshotRevision !== undefined,
         trackedDiff: "source.diff",
         serverSha256: new TextDecoder().decode(hash.stdout).split(" ")[0],
+        cliSha256: new TextDecoder().decode(cliHash.stdout).split(" ")[0],
         startedAt: new Date().toISOString(),
         deno: Deno.version,
         host: Deno.hostname(),
         os: Deno.build,
         samples,
         calls,
+        warmups,
         sizes,
         sessionCounts,
         idleSeconds,
@@ -317,7 +352,8 @@ try {
   runtime = await TrellisTestRuntime.start({
     keepWorkdir: Boolean(args["keep-workdir"]),
     trellis: {
-      command: { cmd: server, args: ["--config", "{config}", "all"] },
+      source: { kind: "path", cli, server },
+      mode: "all",
     },
     adminPassword: "benchmark-isolated-password",
     timeouts: { startupMs: 60_000, waitForMs: 30_000 },
@@ -333,7 +369,7 @@ try {
     args: [
       "-c",
       "import sqlite3,json,sys; db=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True); rows=db.execute('SELECT DISTINCT password_hash FROM auth_local_credentials').fetchall(); print(json.dumps(sorted({'$'.join(row[0].split('$')[:4]) for row in rows})))",
-      `${runtime.workdir}/trellis/trellis.sqlite.platform`,
+      `${runtime.workdir}/data/trellis/platform.sqlite`,
     ],
   }).output();
   if (!hashing.success) {
@@ -435,6 +471,8 @@ try {
     sizes,
     sessionCounts,
     idleSeconds,
+    warmups,
+    workload: lane === "transfer" ? "transfer" : "all",
   };
   const providers: Deno.ChildProcess[] = [];
   for (let providerIndex = 0; providerIndex < providerCount; providerIndex++) {
@@ -822,6 +860,40 @@ try {
       throw new Error(
         `Load generator exited ${result.code}; partial samples are retained in ${output}`,
       );
+    }
+  }
+  if (lane === "transfer") {
+    // Do not charge the later raw reference to the client's after-disconnect
+    // observation window; it is a distinct unsigned diagnostic workload.
+    await Deno.writeTextFile(`${output}/phase.txt`, "raw-core-nats-diagnostic");
+    const store = z.array(z.object({
+      scenario: z.string(),
+      transport: z.literal("store"),
+      bytes: z.number(),
+      warmup: z.boolean(),
+      startedUnixMs: z.number(),
+      durationMs: z.number(),
+      error: z.string().optional(),
+    })).parse(
+      JSON.parse(await Deno.readTextFile(`${output}/store-samples.json`)),
+    );
+    const raw = await rawTransfer({
+      connect: runtime.connectNats.bind(runtime),
+      sizes,
+      samples,
+      warmups,
+    });
+    const results = JSON.parse(
+      await Deno.readTextFile(`${output}/samples.json`),
+    );
+    results.samples.push(...store, ...raw);
+    results.summary = summarize(results.samples);
+    await Deno.writeTextFile(
+      `${output}/samples.json`,
+      JSON.stringify(results, null, 2),
+    );
+    if (results.samples.some((sample: Sample) => sample.error)) {
+      throw new Error("Transfer diagnostics failed; see samples.json");
     }
   }
   for (const provider of providers) provider.kill("SIGTERM");

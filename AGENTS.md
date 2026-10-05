@@ -39,8 +39,8 @@ assertions encountered in the affected area rather than preserving them.
   a server, and do not substitute mocks for distributed functionality.
 - Do not add or retain tests that merely repeat defaults, constructor field
   assignments, constants, configuration literals, private object shapes,
-  source/AST substrings, documentation wording, or implementation inventories.
-  A value asserted after a real operation, transformation, round trip, or
+  source/AST substrings, documentation wording, or implementation inventories. A
+  value asserted after a real operation, transformation, round trip, or
   lifecycle transition can prove functionality; assigning a value and asserting
   that same value does not.
 - Do not test that an unreleased command, field, alias, code path, or earlier
@@ -67,12 +67,12 @@ a check.
 Validate external or persisted state when a mismatch would violate a concrete
 supported requirement, such as authorization, data integrity, retention, or
 promised restart durability. Explain that failure, validate only what the
-requirement needs, and exercise the resulting behavior at a real boundary.
-Do not delete genuine safety checks merely because they compare values.
+requirement needs, and exercise the resulting behavior at a real boundary. Do
+not delete genuine safety checks merely because they compare values.
 
 For example, hardcoding `storage == File` is not evidence that State works.
-Exercise put/get, revision conflicts, deletion, and the promised lifecycle.
-An ephemeral fixture does not need cross-run durability; a deployment promising
+Exercise put/get, revision conflicts, deletion, and the promised lifecycle. An
+ephemeral fixture does not need cross-run durability; a deployment promising
 persistent state does. Treat a requirement-changing storage choice explicitly,
 not as an excuse for a test-only runtime or a configuration-equality test.
 
@@ -171,9 +171,9 @@ inventories, or evidence ledgers to enforce this section.
   Rust xtask release commands, verify `CHANGELOG.md` against changes since the
   previous release, and run the release verification checklist before the
   release commit.
-- If changes make design/** or docs/** out of date with the implementation, then
-  please propose changes to those documents and ask before applying them. This
-  way we can catch accidental design drift.
+- Keep design/** and docs/** current with implementation changes; documentation
+  updates do not require separate approval. Surface architectural disagreements
+  explicitly rather than silently changing the intended design.
 - Keep `docs/static/llms.txt`, `docs/static/llms-full.txt`,
   `docs/static/llms-typescript.txt`, and `docs/static/llms-rust.txt` current
   when Trellis features, service-author workflows, public TypeScript APIs,

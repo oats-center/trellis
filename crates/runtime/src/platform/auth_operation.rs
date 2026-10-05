@@ -774,10 +774,10 @@ impl AuthOperationRuntime {
             .get_key_value(format!("trellis_operations_{DEPLOYMENT_ID}"))
             .await
             .map_err(|error| RuntimeError::Nats(error.to_string()))?;
-        let staging = async_nats::jetstream::new(client.clone())
-            .get_object_store(format!("trellis_operation_staging_{DEPLOYMENT_ID}"))
-            .await
-            .map_err(|error| RuntimeError::Nats(error.to_string()))?;
+        let staging = trellis_rs::service::internal::BoundStoreResourceClient::new(
+            client.clone(),
+            format!("trellis_operation_staging_{DEPLOYMENT_ID}"),
+        );
         let mut router = Router::new();
         router.set_provider_deployment_id("dep_trellis_auth_runtime");
         router.register_operation_handler::<AuthDeviceUserAuthoritiesResolveOperation, _, _, _>(
@@ -789,7 +789,7 @@ impl AuthOperationRuntime {
                 repository: trellis_rs::service::KvOperationRepository::new(store),
                 transport: trellis_rs::service::internal::OperationTransport::fixed(client.clone()),
                 service_session_key: "trellis-auth-runtime".to_owned(),
-                staging: trellis_rs::service::internal::BoundStoreResourceClient::new(staging),
+                staging,
                 validator: verifier.clone(),
             },
             move |context, input, operation| {

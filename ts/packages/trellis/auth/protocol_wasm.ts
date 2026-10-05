@@ -481,6 +481,27 @@ export async function verifyAuthorizationRequestWasm(
   ) as VerifyAuthorizationRequestResult;
 }
 
+/** Verify a compact Transfer proof against exact pinned session coordinates. */
+export async function verifyTransferAuthorizationRequestWasm(
+  args: VerifyAuthorizationRequestArgs,
+  providerId: string,
+  expectedConsumerConnection: string,
+  transferId: string,
+): Promise<VerifyAuthorizationRequestResult> {
+  await initializeProtocolWasm();
+  const { contextHandle, payload, ...input } = args;
+  return JSON.parse(
+    protocolWasm.verify_transfer_authorization_request(
+      contextHandle,
+      JSON.stringify({ ...input, policy: wasmVerificationPolicy(args.policy) }),
+      payload,
+      providerId,
+      expectedConsumerConnection,
+      transferId,
+    ),
+  ) as VerifyAuthorizationRequestResult;
+}
+
 /** Verify one context-bound event proof, including historical time/revocation checks. */
 export async function verifyAuthorizationEventWasm(
   args: VerifyAuthorizationEventArgs,
@@ -853,6 +874,313 @@ export function liveVerifyServerProof(
     contextDigest,
     subject,
     rawBody,
+    providerKey,
+  );
+}
+
+/** Canonical Transfer session subject family. */
+export type TransferSubjectKind =
+  | "upload-data"
+  | "download-data"
+  | "control"
+  | "signal";
+
+/** Logical final object declaration authenticated by completion or EOF. */
+export type TransferTerminalWire = {
+  finalSeq: string;
+  size: number;
+  digest: string;
+};
+
+/** Compact authenticated identity; file bytes remain the raw NATS payload. */
+export type TransferFrameDescriptor = {
+  transferId: string;
+  direction: "send" | "receive";
+  sequence: string;
+  kind: "data" | "complete" | "eof" | "control" | "signal";
+  terminal?: TransferTerminalWire;
+};
+
+/** Shared caller-control prefix. All counters remain decimal strings. */
+type TransferControlBase = {
+  format: "trellis.transfer.v2";
+  type: "control";
+  transferId: string;
+  controlSeq: string;
+  receivedSeq: string;
+  consumedSeq: string;
+};
+
+/** Strict v2 caller controls, parsed and validated by canonical Rust/WASM. */
+export type TransferControlWire =
+  & TransferControlBase
+  & (
+    | { action: "activate"; receiveMaxFrameBytes: number }
+    | { action: "credit" | "cancel"; consumedBytes: string }
+    | { action: "end-ack"; consumedBytes: string; finalSeq: string }
+  );
+
+/** Logical FileInfo in provider completion, without storage identity. */
+export type TransferFileInfoWire = {
+  key: string;
+  size: number;
+  updatedAt: string;
+  digest: string;
+  contentType?: string;
+  metadata: Record<string, string>;
+};
+
+/** Logical provider or consumer identity pinned by the grant. */
+export type TransferGrantIdentityWire = {
+  connectionId: string;
+  sessionKey: string;
+};
+
+/** Shared public grant coordinates, with no physical backend identifiers. */
+type TransferGrantBaseWire = {
+  format: "trellis.transfer.v2";
+  type: "TransferGrant";
+  service: string;
+  transferId: string;
+  expiresAt: string;
+  provider: TransferGrantIdentityWire;
+  consumer: TransferGrantIdentityWire;
+  dataSubject: string;
+  controlSubject: string;
+  signalSubject: string;
+  maxFrameBytes: number;
+  windowFrames: number;
+  windowBytes: number;
+};
+
+/** Prepared caller-to-provider session, matching the public send grant shape. */
+export type TransferSendGrantWire = TransferGrantBaseWire & {
+  direction: "send";
+  maxBytes?: number;
+  contentType?: string;
+  metadata?: Record<string, string>;
+};
+
+/** Prepared provider-to-caller session, matching the public receive grant shape. */
+export type TransferReceiveGrantWire = TransferGrantBaseWire & {
+  direction: "receive";
+  info: TransferFileInfoWire;
+};
+
+/** Canonically validated direction-specific public grant. */
+export type TransferGrantWire =
+  | TransferSendGrantWire
+  | TransferReceiveGrantWire;
+
+/** Canonical terminal error categories, not physical backend diagnostics. */
+export type TransferErrorCode =
+  | "invalid_request"
+  | "permission_denied"
+  | "expired"
+  | "authorization_lost"
+  | "disconnected"
+  | "delivery_gap"
+  | "window_exceeded"
+  | "payload_too_large"
+  | "integrity_failed"
+  | "storage_failed"
+  | "commit_failed"
+  | "closed"
+  | "not_found"
+  | "resource_exhausted"
+  | "control_conflict"
+  | "control_gap"
+  | "cancelled";
+
+/** Strict provider signals; consumed credit is distinct from durable commit. */
+export type TransferSignalWire =
+  & {
+    format: "trellis.transfer.v2";
+    transferId: string;
+  }
+  & (
+    | {
+      type: "activated";
+      controlSeq: string;
+      requestId: string;
+      maxFrameBytes: number;
+      windowFrames: number;
+      windowBytes: number;
+    }
+    | {
+      type: "credit";
+      receivedSeq: string;
+      consumedSeq: string;
+      consumedBytes: string;
+    }
+    | { type: "committed"; finalSeq: string; info: TransferFileInfoWire }
+    | { type: "cancelled" }
+    | { type: "error"; code: TransferErrorCode }
+  );
+
+/** Ordered upload completion on the same subject as upload DATA. */
+export type TransferCompleteWire = TransferTerminalWire & {
+  format: "trellis.transfer.v2";
+  type: "complete";
+  transferId: string;
+};
+
+/** Canonical protocol limits and header names exported by Rust/WASM. */
+export type TransferConstants = {
+  format: "trellis.transfer.v2";
+  maxFrameBytes: number;
+  windowFrames: number;
+  windowBytes: number;
+  creditFrameStep: number;
+  creditByteStep: number;
+  creditMaxDelayMs: number;
+  headerReserve: number;
+  maxControlBytes: number;
+  sequenceHeader: string;
+  controlHeader: string;
+  terminalHeader: string;
+  proofHeader: string;
+};
+
+/** Read canonical Transfer constants, initializing WASM only on first access. */
+export function transferConstants(): TransferConstants {
+  let constants: TransferConstants | undefined;
+  return new Proxy({} as TransferConstants, {
+    get(_target, property) {
+      initializeProtocolWasmSync();
+      constants ??= JSON.parse(
+        protocolWasm.transfer_constants(),
+      ) as TransferConstants;
+      return constants[property as keyof TransferConstants];
+    },
+  });
+}
+
+/** Generate a canonical random transfer ID. */
+export function transferGenerateId(): string {
+  initializeProtocolWasmSync();
+  return protocolWasm.transfer_generate_id();
+}
+
+/** Derive an exact session subject from both logical endpoint identities. */
+export function transferSubject(
+  kind: TransferSubjectKind,
+  provider: string,
+  consumer: string,
+  transferId: string,
+): string {
+  initializeProtocolWasmSync();
+  return protocolWasm.transfer_subject(kind, provider, consumer, transferId);
+}
+
+/** Validate an exact subject and return its canonical family. */
+export function transferValidateSubject(subject: string): TransferSubjectKind {
+  initializeProtocolWasmSync();
+  return JSON.parse(
+    protocolWasm.transfer_validate_subject(subject),
+  ) as TransferSubjectKind;
+}
+
+/** Parse a wire counter as bigint without a lossy number conversion. */
+export function transferParseCounter(value: string): bigint {
+  initializeProtocolWasmSync();
+  return BigInt(protocolWasm.transfer_parse_counter(value));
+}
+
+/** Negotiate usable DATA capacity from both actual NATS payload limits. */
+export function transferNegotiateMaxFrameBytes(
+  consumer: number,
+  provider: number,
+): number {
+  initializeProtocolWasmSync();
+  return protocolWasm.transfer_negotiate_max_frame_bytes(consumer, provider);
+}
+
+/** Validate a direction-specific public grant before any transport acquisition. */
+export function transferParseGrant(raw: Uint8Array): TransferGrantWire {
+  initializeProtocolWasmSync();
+  return JSON.parse(
+    protocolWasm.transfer_parse_grant(raw),
+  ) as TransferGrantWire;
+}
+
+/** Strictly parse and validate a caller control through Rust/WASM. */
+export function transferParseControl(raw: Uint8Array): TransferControlWire {
+  initializeProtocolWasmSync();
+  return JSON.parse(
+    protocolWasm.transfer_parse_control(raw),
+  ) as TransferControlWire;
+}
+
+/** Strictly parse and validate a provider signal through Rust/WASM. */
+export function transferParseSignal(raw: Uint8Array): TransferSignalWire {
+  initializeProtocolWasmSync();
+  return JSON.parse(
+    protocolWasm.transfer_parse_signal(raw),
+  ) as TransferSignalWire;
+}
+
+/** Strictly parse ordered upload completion through Rust/WASM. */
+export function transferParseComplete(raw: Uint8Array): TransferCompleteWire {
+  initializeProtocolWasmSync();
+  return JSON.parse(
+    protocolWasm.transfer_parse_complete(raw),
+  ) as TransferCompleteWire;
+}
+
+/** Strictly parse zero-byte EOF's authenticated terminal header. */
+export function transferParseTerminal(raw: Uint8Array): TransferTerminalWire {
+  initializeProtocolWasmSync();
+  return JSON.parse(
+    protocolWasm.transfer_parse_terminal(raw),
+  ) as TransferTerminalWire;
+}
+
+/** Return the compact 32-byte request-proof payload; never copies file bytes into it. */
+export function transferFrameDigest(
+  descriptor: TransferFrameDescriptor,
+  payload: Uint8Array,
+): Uint8Array {
+  initializeProtocolWasmSync();
+  return base64urlDecode(
+    protocolWasm.transfer_frame_digest(JSON.stringify(descriptor), payload),
+  );
+}
+
+/** Return the Transfer-only provider signature digest over actual subject and bytes. */
+export function transferServerProofDigest(
+  contextDigest: string,
+  subject: string,
+  descriptor: TransferFrameDescriptor,
+  payload: Uint8Array,
+): Uint8Array {
+  initializeProtocolWasmSync();
+  return base64urlDecode(
+    protocolWasm.transfer_server_proof_digest(
+      contextDigest,
+      subject,
+      JSON.stringify(descriptor),
+      payload,
+    ),
+  );
+}
+
+/** Verify the provider proof against its pinned session key and current context. */
+export function transferVerifyServerProof(
+  proof: string,
+  contextDigest: string,
+  subject: string,
+  descriptor: TransferFrameDescriptor,
+  payload: Uint8Array,
+  providerKey: string,
+): void {
+  initializeProtocolWasmSync();
+  protocolWasm.transfer_verify_server_proof(
+    proof,
+    contextDigest,
+    subject,
+    JSON.stringify(descriptor),
+    payload,
     providerKey,
   );
 }

@@ -198,6 +198,17 @@ type LocalAuthorizationArgs =
     identityOnly?: boolean;
   }
   | {
+    kind: "transfer";
+    cache: AuthorizationProviderCache | undefined;
+    message: LocalAuthorizationRequestMessage;
+    proofPayload?: Uint8Array;
+    permission: DescriptorPermissionAtom | undefined;
+    requiredCapabilities: readonly string[];
+    transferId: string;
+    providerConnectionId: string;
+    consumerConnectionId: string;
+  }
+  | {
     kind: "event";
     cache: AuthorizationProviderCache | undefined;
     message: LocalAuthorizationEventMessage;
@@ -250,7 +261,7 @@ export async function verifyLocalAuthorization(
       | VerifyAuthorizationRequestResultLike
       | VerifyAuthorizationEventResultLike;
     try {
-      if (args.kind === "request") {
+      if (args.kind === "request" || args.kind === "transfer") {
         const iatHeader = args.message.headers?.get("iat");
         const requestId = args.message.headers?.get("request-id");
         const reply = args.message.reply;
@@ -273,7 +284,14 @@ export async function verifyLocalAuthorization(
             : [],
           requiredCapabilities: [...args.requiredCapabilities],
         };
-        result = await args.cache.verifyRequest(request);
+        result = args.kind === "transfer"
+          ? await args.cache.verifyTransferRequest({
+            ...request,
+            transferId: args.transferId,
+            providerConnectionId: args.providerConnectionId,
+            consumerConnectionId: args.consumerConnectionId,
+          })
+          : await args.cache.verifyRequest(request);
       } else {
         const eventId = args.message.headers?.get("Nats-Msg-Id");
         const eventTime = args.message.headers?.get("Trellis-Event-Time");
@@ -1469,6 +1487,8 @@ export type RuntimeOperationRecord = {
   leaseExpiresAt: string;
   cancelRequestedAt?: string;
   transferGrant?: SendTransferGrant;
+  /** Internal physical staging key committed with the upload; never public metadata. */
+  uploadStorageKey?: string;
   snapshot: RuntimeOperationSnapshot;
   sequence: number;
   signalSequence: number;
@@ -1499,6 +1519,8 @@ export type DurableOperationRecord = {
   leaseExpiresAt: string;
   cancelRequestedAt?: string;
   transferGrant?: SendTransferGrant;
+  /** Persisted physical staging locator, separate from the public logical FileInfo key. */
+  uploadStorageKey?: string;
   sequence: number;
   signalSequence: number;
   signals: RuntimeOperationSignal[];
@@ -1562,6 +1584,7 @@ export const DurableOperationRecordSchema = Type.Object({
   leaseExpiresAt: Type.String(),
   cancelRequestedAt: Type.Optional(Type.String()),
   transferGrant: Type.Optional(Type.Any()),
+  uploadStorageKey: Type.Optional(Type.String()),
   sequence: Type.Number(),
   signalSequence: Type.Number(),
   signals: Type.Array(DurableOperationSignalSchema),
@@ -3120,6 +3143,9 @@ export class Trellis<
         : {}),
       ...(runtime.transferGrant
         ? { transferGrant: runtime.transferGrant }
+        : {}),
+      ...(runtime.uploadStorageKey
+        ? { uploadStorageKey: runtime.uploadStorageKey }
         : {}),
       sequence: runtime.sequence,
       signalSequence: runtime.signalSequence,

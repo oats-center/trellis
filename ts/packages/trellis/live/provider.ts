@@ -7,6 +7,7 @@ import {
 import { encodeEventSubjectParameterToken } from "../helpers.ts";
 import { base64urlEncode } from "../auth/utils.ts";
 import type { TransportLease } from "../transport/generations.ts";
+import { SenderWindow } from "../data_plane/flow.ts";
 import type { PermissionAtom } from "../auth/protocol_wasm.ts";
 import {
   liveConstants,
@@ -133,8 +134,6 @@ export type LiveProviderHost = {
   clock?: LiveClock;
 };
 
-type Outstanding = { seq: bigint; bytes: number };
-
 type Challenge = { id: string; lastSentSeq: string };
 
 type ControlOutcome = {
@@ -173,11 +172,11 @@ class ProviderSessionRecord {
   readonly timer: LiveTimer;
   challenge: Challenge | undefined;
   lastChallengeContextDigest = "";
-  readonly outstanding: Outstanding[] = [];
-  outstandingBytes = 0;
-  highestSent = 0n;
-  highestConsumed = 0n;
-  highestReceived = 0n;
+  readonly flow = new SenderWindow({
+    maxFrameBytes: C.windowBytes,
+    windowFrames: C.windowFrames,
+    windowBytes: C.windowBytes,
+  });
   sourceStarted = false;
   endPublished = false;
   terminal: LiveEnd | undefined;
@@ -189,7 +188,6 @@ class ProviderSessionRecord {
   pendingClose: PendingClose | undefined;
   cleanupState: "complete" | "incomplete" | "unknown" = "unknown";
   settlement: Promise<void> | undefined;
-  creditWaiter: (() => void) | undefined;
   closeSettled: Promise<void> | undefined;
   permit: { [Symbol.dispose](): void } | undefined;
   deregister: (() => void) | undefined;
@@ -232,13 +230,21 @@ class ProviderSessionRecord {
   }
 
   outstandingEmpty(): boolean {
-    return this.outstanding.length === 0;
+    return this.flow.outstandingEmpty();
+  }
+
+  get highestSent(): bigint {
+    return this.flow.highestSent;
+  }
+  get highestReceived(): bigint {
+    return this.flow.highestReceived;
+  }
+  get highestConsumed(): bigint {
+    return this.flow.highestConsumed;
   }
 
   wakeCredit(): void {
-    const waiter = this.creditWaiter;
-    this.creditWaiter = undefined;
-    waiter?.();
+    this.flow.wakeCredit();
   }
 }
 
@@ -699,7 +705,10 @@ export class LiveProvider {
       record.telemetry.frame("control", "receive");
       const now = this.#clock.nowMs();
       const requestId = singletonHeader(msg.headers, "request-id") ?? "";
-      const result = this.#applyControl(record, control, msg.data, now);
+      const result = await this.#withSessionLane(
+        record,
+        async () => this.#applyControl(record, control, msg.data, now),
+      );
       if (result.kind === "error") {
         const error = this.#controlErrorBody(
           record,
@@ -935,29 +944,16 @@ export class LiveProvider {
   ): boolean {
     const received = control.receivedSeq ? BigInt(control.receivedSeq) : 0n;
     const consumed = control.consumedSeq ? BigInt(control.consumedSeq) : 0n;
-    if (consumed > received || received > record.highestSent) return false;
-    if (consumed < record.highestConsumed) return false;
-    if (received < record.highestReceived) return false;
-    return true;
+    return record.flow.validateCredit(received, consumed) === undefined;
   }
 
   #applyCredit(record: ProviderSessionRecord, control: LiveControlWire): void {
     const received = control.receivedSeq ? BigInt(control.receivedSeq) : 0n;
     const consumed = control.consumedSeq ? BigInt(control.consumedSeq) : 0n;
-    if (consumed > received || received > record.highestSent) return;
-    if (consumed < record.highestConsumed) return;
     const advanced = consumed > record.highestConsumed;
-    record.highestConsumed = consumed;
-    record.highestReceived = received;
-    while (
-      record.outstanding.length > 0 && record.outstanding[0].seq <= consumed
-    ) {
-      const frame = record.outstanding.shift();
-      if (frame) record.outstandingBytes -= frame.bytes;
-    }
+    if (record.flow.applyCredit(received, consumed)) return;
     if (advanced) record.deadlines.noteStallReset(this.#clock.nowMs());
     if (record.outstandingEmpty()) record.deadlines.outstandingCleared();
-    record.wakeCredit();
   }
 
   #ackBody(
@@ -1318,7 +1314,13 @@ export class LiveProvider {
       );
     }
     const maxDataBodyBytes = record.maxDataBodyBytes;
-    const seq = record.highestSent + 1n;
+    const seq = record.flow.nextFrameSeq();
+    if (seq === undefined) {
+      throw new LiveStreamError(
+        "resource_exhausted",
+        "live sequence exhausted",
+      );
+    }
     const body = jsonBytes({
       format: LIVE_VERSION,
       type: "data",
@@ -1326,7 +1328,10 @@ export class LiveProvider {
       seq: seq.toString(),
       value,
     });
-    if (body.length > maxDataBodyBytes) {
+    if (
+      record.flow.validateFrameSlot(body.length, maxDataBodyBytes) ===
+        "payload_too_large"
+    ) {
       throw new LiveStreamError(
         "payload_too_large",
         "live data frame exceeds the negotiated body limit",
@@ -1337,30 +1342,31 @@ export class LiveProvider {
     try {
       // Wait for credit through an owned notification, not a zero-delay spin.
       while (
-        record.outstanding.length + 1 > C.windowFrames ||
-        record.outstandingBytes + body.length > C.windowBytes
+        record.flow.validateFrameSlot(body.length, maxDataBodyBytes) ===
+          "window_full"
       ) {
         if (record.abort.signal.aborted || record.closed) {
           throw new LiveStreamError("cancelled", "live session was cancelled");
         }
-        await new Promise<void>((resolve) => {
-          record.creditWaiter = resolve;
-        });
+        await record.flow.waitCredit();
         if (record.abort.signal.aborted || record.closed) {
           throw new LiveStreamError("cancelled", "live session was cancelled");
         }
       }
-      const published = await this.#withSessionLane(
-        record,
-        () => this.#tryPublishFrame(record, body, "data"),
-      );
-      if (!published) {
-        throw new LiveStreamError("source_failed", "live publication failed");
-      }
-      // The watermark advances only after a successful handoff.
-      record.highestSent = seq;
-      record.outstanding.push({ seq, bytes: body.length });
-      record.outstandingBytes += body.length;
+      await this.#withSessionLane(record, async () => {
+        const published = await this.#tryPublishFrame(record, body, "data");
+        if (!published) {
+          throw new LiveStreamError("source_failed", "live publication failed");
+        }
+        // Keep successful handoff and watermark commit indivisible to controls.
+        const error = record.flow.commitFrame(seq, body.length);
+        if (error) {
+          throw new LiveStreamError(
+            "source_failed",
+            `live handoff accounting failed: ${error}`,
+          );
+        }
+      });
       record.deadlines.dataAdmitted(this.#clock.nowMs());
       this.#armTimer(record);
     } finally {

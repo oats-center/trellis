@@ -20,7 +20,8 @@ class AsyncValueQueue<T> implements AsyncIterable<T> {
     if (resolver) {
       resolver({ value, done: false });
     } else {
-      this.#values.push(value);
+      // Progress is a latest-value observation, not an unbounded event log.
+      this.#values = [value];
     }
   }
 
@@ -82,57 +83,90 @@ export class AsyncValueBroadcaster<T> {
   }
 }
 
-export class AsyncChunkQueue implements AsyncIterable<Uint8Array> {
-  #values: Array<{ chunk: Uint8Array; consumed: () => void }> = [];
-  #pending: Array<{
-    resolve: (result: IteratorResult<Uint8Array>) => void;
-    reject: (error: unknown) => void;
-  }> = [];
+/** Frame-aware ingress. Credit follows ownership handoff to the storage reader. */
+export class TransferIngress implements AsyncIterable<Uint8Array> {
+  #values: Array<{ seq: bigint; chunk: Uint8Array }> = [];
+  #bytes = 0;
+  #received = 0n;
   #closed = false;
   #error: unknown;
+  #wake: (() => void) | undefined;
 
-  async push(chunk: Uint8Array): Promise<void> {
-    if (this.#closed) return;
-    const pending = this.#pending.shift();
-    if (pending) {
-      pending.resolve({ value: chunk, done: false });
-      return;
-    }
-    await new Promise<void>((consumed) => {
-      this.#values.push({ chunk, consumed });
+  constructor(
+    readonly maxFrameBytes: number,
+    readonly windowFrames: number,
+    readonly windowBytes: number,
+    readonly consumed: (seq: bigint, bytes: number) => void,
+    readonly direction: "upload" | "download" = "upload",
+  ) {}
+
+  /** Bytes retained by the downstream ingress, excluding the verification lane. */
+  get bufferedBytes(): number {
+    return this.#bytes;
+  }
+
+  /** Whole frames retained by the downstream ingress. */
+  get bufferedFrames(): number {
+    return this.#values.length;
+  }
+
+  /** Admit an authenticated contiguous frame without blocking the wire reader. */
+  push(seq: bigint, chunk: Uint8Array): void {
+    if (this.#closed) throw new Error("transfer ingress is closed");
+    if (seq !== this.#received + 1n) throw new Error("transfer sequence gap");
+    if (
+      chunk.length === 0 || chunk.length > this.maxFrameBytes ||
+      this.#values.length >= this.windowFrames ||
+      this.#bytes + chunk.length > this.windowBytes
+    ) throw new Error("transfer receive window exceeded");
+    this.#received = seq;
+    this.#values.push({ seq, chunk });
+    this.#bytes += chunk.length;
+    recordCatalogUpDown("trellis.transfer.buffered.bytes", chunk.length, {
+      "trellis.direction": this.direction,
     });
+    this.#wake?.();
   }
 
-  close(): void {
-    if (this.#closed) return;
+  /** Close only after the authenticated completion declared every admitted frame. */
+  close(finalSeq: bigint): void {
+    if (finalSeq !== this.#received) throw new Error("transfer completion gap");
     this.#closed = true;
-    for (const pending of this.#pending.splice(0)) {
-      pending.resolve({ value: undefined, done: true });
-    }
+    this.#wake?.();
   }
 
+  /** Abort queued and pending backend reads; aborted bytes never earn credit. */
   fail(error: unknown): void {
-    if (this.#closed) return;
     this.#error = error;
     this.#closed = true;
-    for (const value of this.#values.splice(0)) value.consumed();
-    for (const pending of this.#pending.splice(0)) pending.reject(error);
-  }
-
-  async next(): Promise<IteratorResult<Uint8Array>> {
-    const value = this.#values.shift();
-    if (value) {
-      value.consumed();
-      return { value: value.chunk, done: false };
-    }
-    if (this.#error) throw this.#error;
-    if (this.#closed) return { value: undefined, done: true };
-    return await new Promise<IteratorResult<Uint8Array>>((resolve, reject) => {
-      this.#pending.push({ resolve, reject });
+    this.#values = [];
+    recordCatalogUpDown("trellis.transfer.buffered.bytes", -this.#bytes, {
+      "trellis.direction": this.direction,
     });
+    this.#bytes = 0;
+    this.#wake?.();
   }
 
-  [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
-    return { next: () => this.next() };
+  async *[Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+    while (true) {
+      if (this.#error !== undefined) throw this.#error;
+      const value = this.#values.shift();
+      if (value) {
+        this.#bytes -= value.chunk.length;
+        recordCatalogUpDown(
+          "trellis.transfer.buffered.bytes",
+          -value.chunk.length,
+          { "trellis.direction": this.direction },
+        );
+        this.consumed(value.seq, value.chunk.length);
+        yield value.chunk;
+      } else if (this.#closed) {
+        return;
+      } else {
+        await new Promise<void>((resolve) => this.#wake = resolve);
+        this.#wake = undefined;
+      }
+    }
   }
 }
+import { recordCatalogUpDown } from "../../../telemetry/metrics.ts";

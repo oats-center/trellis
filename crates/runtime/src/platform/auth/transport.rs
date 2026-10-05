@@ -132,7 +132,6 @@ pub(crate) fn compile_transport_authorization(
         let instance_id = inputs
             .instance_id
             .ok_or_else(|| invalid_error("API provider is missing instance identity"))?;
-        let session_prefix = &inputs.session_key[..16.min(inputs.session_key.len())];
         for (key, action) in &api.actions {
             let name = key.split_once(':').map_or(key.as_str(), |(_, name)| name);
             compile_provider_action(
@@ -140,7 +139,6 @@ pub(crate) fn compile_transport_authorization(
                 ProviderActionIdentity {
                     deployment_id,
                     instance_id,
-                    session_prefix,
                     connection_id: inputs.connection_id,
                 },
                 name,
@@ -272,7 +270,6 @@ pub(crate) fn transport_response_allowance(
 struct ProviderActionIdentity<'a> {
     deployment_id: &'a str,
     instance_id: &'a str,
-    session_prefix: &'a str,
     connection_id: &'a str,
 }
 
@@ -287,7 +284,6 @@ fn compile_provider_action(
     let ProviderActionIdentity {
         deployment_id,
         instance_id,
-        session_prefix,
         connection_id,
     } = provider;
     let own_token = URL_SAFE_NO_PAD.encode(connection_id.as_bytes());
@@ -298,7 +294,22 @@ fn compile_provider_action(
                     .map_err(|error| invalid_error(error.to_string()))?,
             );
             if action.download {
-                subscribe.insert(format!("transfer.v1.download.{session_prefix}.*"));
+                publish.insert(
+                    trellis_protocol::transfer::derive_transfer_provider_download_data_wildcard_subject(connection_id)
+                        .map_err(|error| invalid_error(error.to_string()))?,
+                );
+                publish.insert(
+                    trellis_protocol::transfer::derive_transfer_provider_signal_wildcard_subject(
+                        connection_id,
+                    )
+                    .map_err(|error| invalid_error(error.to_string()))?,
+                );
+                subscribe.insert(
+                    trellis_protocol::transfer::derive_transfer_provider_control_wildcard_subject(
+                        connection_id,
+                    )
+                    .map_err(|error| invalid_error(error.to_string()))?,
+                );
             }
         }
         RuntimeActionKind::Operation => {
@@ -316,7 +327,22 @@ fn compile_provider_action(
             subscribe.insert(format!("{subject}.observe.{own_token}.*"));
             publish.insert(format!("live.v1.data.{own_token}.*.*"));
             if action.upload {
-                subscribe.insert(format!("transfer.v1.upload.{session_prefix}.*"));
+                subscribe.insert(
+                    trellis_protocol::transfer::derive_transfer_provider_upload_data_wildcard_subject(connection_id)
+                        .map_err(|error| invalid_error(error.to_string()))?,
+                );
+                subscribe.insert(
+                    trellis_protocol::transfer::derive_transfer_provider_control_wildcard_subject(
+                        connection_id,
+                    )
+                    .map_err(|error| invalid_error(error.to_string()))?,
+                );
+                publish.insert(
+                    trellis_protocol::transfer::derive_transfer_provider_signal_wildcard_subject(
+                        connection_id,
+                    )
+                    .map_err(|error| invalid_error(error.to_string()))?,
+                );
             }
         }
         RuntimeActionKind::Live => {
@@ -386,7 +412,22 @@ fn compile_api_surface(
                     .map_err(|error| invalid_error(error.to_string()))?,
             );
             if projected.download {
-                publish.insert("transfer.v1.download.*.*".to_owned());
+                subscribe.insert(
+                    trellis_protocol::transfer::derive_transfer_consumer_download_data_wildcard_subject(connection_id)
+                        .map_err(|error| invalid_error(error.to_string()))?,
+                );
+                subscribe.insert(
+                    trellis_protocol::transfer::derive_transfer_consumer_signal_wildcard_subject(
+                        connection_id,
+                    )
+                    .map_err(|error| invalid_error(error.to_string()))?,
+                );
+                publish.insert(
+                    trellis_protocol::transfer::derive_transfer_consumer_control_wildcard_subject(
+                        connection_id,
+                    )
+                    .map_err(|error| invalid_error(error.to_string()))?,
+                );
             }
         }
         (ApiSurfaceKind::Operation, PermissionAction::Invoke) => {
@@ -400,7 +441,22 @@ fn compile_api_surface(
             publish.insert(subject.clone());
             publish.insert(format!("{subject}.control"));
             if projected.upload {
-                publish.insert("transfer.v1.upload.*.*".to_owned());
+                publish.insert(
+                    trellis_protocol::transfer::derive_transfer_consumer_upload_data_wildcard_subject(connection_id)
+                        .map_err(|error| invalid_error(error.to_string()))?,
+                );
+                publish.insert(
+                    trellis_protocol::transfer::derive_transfer_consumer_control_wildcard_subject(
+                        connection_id,
+                    )
+                    .map_err(|error| invalid_error(error.to_string()))?,
+                );
+                subscribe.insert(
+                    trellis_protocol::transfer::derive_transfer_consumer_signal_wildcard_subject(
+                        connection_id,
+                    )
+                    .map_err(|error| invalid_error(error.to_string()))?,
+                );
             }
         }
         (ApiSurfaceKind::Operation, PermissionAction::Observe) => {
@@ -698,119 +754,6 @@ mod tests {
     }
 
     #[test]
-    fn operation_provider_subscribes_only_to_bound_routes_it_serves() {
-        let action = ActionRuntimeProjection {
-            kind: RuntimeActionKind::Operation,
-            upload: true,
-            download: false,
-            event_parameter_count: 0,
-        };
-        let mut publish = BTreeSet::new();
-        let mut subscribe = BTreeSet::new();
-
-        compile_provider_action(
-            "fieldops.sites@v1",
-            ProviderActionIdentity {
-                deployment_id: "sites-deployment",
-                instance_id: "sites-instance",
-                session_prefix: "session-prefix",
-                connection_id: "sites-connection",
-            },
-            "Refresh",
-            &action,
-            &mut publish,
-            &mut subscribe,
-        )
-        .unwrap();
-
-        let subject = trellis_protocol::derive_bound_operation_subject(
-            "fieldops.sites@v1",
-            "sites-deployment",
-            "Refresh",
-        )
-        .unwrap();
-        let own_token = URL_SAFE_NO_PAD.encode(b"sites-connection");
-        assert_eq!(
-            subscribe,
-            BTreeSet::from([
-                subject.clone(),
-                format!("{subject}.control"),
-                format!("{subject}.updates.*"),
-                format!("{subject}.reconcile.{own_token}"),
-                format!("{subject}.observe.{own_token}.*"),
-                "transfer.v1.upload.session-prefix.*".to_owned(),
-            ])
-        );
-        assert!(!subscribe.contains(&format!("{subject}.>")));
-        assert!(!subscribe.contains("operations.>"));
-        assert_eq!(
-            publish,
-            BTreeSet::from([
-                format!("{subject}.updates.*"),
-                format!("{subject}.reconcile.*"),
-                format!("live.v1.data.{own_token}.*.*"),
-            ])
-        );
-    }
-
-    #[test]
-    fn operation_caller_publishes_only_bound_caller_surfaces() {
-        let api_id = "fieldops.sites@v1";
-        let api = ApiRuntimeProjection {
-            digest: "digest".to_owned(),
-            major: 1,
-            actions: BTreeMap::from([(
-                "operation:Refresh".to_owned(),
-                ActionRuntimeProjection {
-                    kind: RuntimeActionKind::Operation,
-                    upload: true,
-                    download: false,
-                    event_parameter_count: 0,
-                },
-            )]),
-            capabilities: BTreeMap::new(),
-        };
-        let bindings = BTreeMap::from([(
-            api_id.to_owned(),
-            AuthorizationApiBinding {
-                provider_deployment_id: "sites-deployment".to_owned(),
-            },
-        )]);
-        let mut publish = BTreeSet::new();
-        let mut subscribe = BTreeSet::new();
-
-        compile_api_surface(
-            &api,
-            &bindings,
-            "caller-connection",
-            &api_permission(
-                api_id,
-                ApiSurfaceKind::Operation,
-                "Refresh",
-                PermissionAction::Invoke,
-            ),
-            &mut publish,
-            &mut subscribe,
-        )
-        .unwrap();
-
-        let subject =
-            trellis_protocol::derive_bound_operation_subject(api_id, "sites-deployment", "Refresh")
-                .unwrap();
-        assert_eq!(
-            publish,
-            BTreeSet::from([
-                subject.clone(),
-                format!("{subject}.control"),
-                "transfer.v1.upload.*.*".to_owned(),
-            ])
-        );
-        assert!(subscribe.is_empty());
-        assert!(!publish.contains("operations.v1.Refresh"));
-        assert!(!publish.contains("operations.>"));
-    }
-
-    #[test]
     fn state_transport_is_exact_and_rejects_undeclared_resources() {
         let api_id = trellis_runtime_apis::apis::trellis_state_v1::API_ID;
         let api = ApiRuntimeProjection {
@@ -907,7 +850,6 @@ mod tests {
             ProviderActionIdentity {
                 deployment_id: "sites-deployment",
                 instance_id: "sites-instance",
-                session_prefix: "session-prefix",
                 connection_id: "sites-connection",
             },
             "Watch",
@@ -1158,6 +1100,24 @@ mod nats_reply_permission_tests {
                         event_parameter_count: 0,
                     },
                 ),
+                (
+                    "operation:Upload".to_owned(),
+                    ActionRuntimeProjection {
+                        kind: RuntimeActionKind::Operation,
+                        upload: true,
+                        download: false,
+                        event_parameter_count: 0,
+                    },
+                ),
+                (
+                    "rpc:Download".to_owned(),
+                    ActionRuntimeProjection {
+                        kind: RuntimeActionKind::Rpc,
+                        upload: false,
+                        download: true,
+                        event_parameter_count: 0,
+                    },
+                ),
             ]),
             capabilities: BTreeMap::new(),
         }
@@ -1217,8 +1177,17 @@ mod nats_reply_permission_tests {
         }
     }
 
-    fn provider_policy() -> TransportAuthorizationV1 {
+    fn provider_policy(transfer: bool) -> TransportAuthorizationV1 {
         let grants = GrantSet::new(Vec::new());
+        let mut provider_binding = binding("fieldops.Sites", "Sites", true);
+        if !transfer {
+            for api in provider_binding.projection.implemented_apis.values_mut() {
+                for action in api.actions.values_mut() {
+                    action.upload = false;
+                    action.download = false;
+                }
+            }
+        }
         compile_transport_authorization(TransportAuthorizationInputs {
             account: "ATESTACCOUNT",
             principal_kind: AuthorizationPrincipalKind::Service,
@@ -1229,7 +1198,7 @@ mod nats_reply_permission_tests {
             deployment_id: Some(PROVIDER_DEPLOYMENT),
             instance_id: Some("sites-instance"),
             grants: &grants,
-            binding: &binding("fieldops.Sites", "Sites", true),
+            binding: &provider_binding,
             resource_bindings: &[],
             api_bindings: &api_bindings(),
             registry: &registry(),
@@ -1283,7 +1252,7 @@ mod nats_reply_permission_tests {
 
     fn compiled_permissions() -> (TransportAuthorizationV1, TransportAuthorizationV1) {
         (
-            provider_policy(),
+            provider_policy(true),
             consumer_policy(live_subscribe_permission()),
         )
     }
@@ -1359,7 +1328,14 @@ mod nats_reply_permission_tests {
             response_allowance: &str,
             consumer: TransportAuthorizationV1,
         ) -> Self {
-            let provider = provider_policy();
+            Self::start_with_policies(response_allowance, provider_policy(true), consumer)
+        }
+
+        fn start_with_policies(
+            response_allowance: &str,
+            provider: TransportAuthorizationV1,
+            consumer: TransportAuthorizationV1,
+        ) -> Self {
             let binary = resolve_pinned_binary();
             // Broker tests run in parallel, so an ephemeral port observed by
             // `free_port()` can be claimed by a sibling test before this
@@ -1423,10 +1399,16 @@ mod nats_reply_permission_tests {
         }
     }
 
-    type Errors = Arc<Mutex<Vec<String>>>;
+    #[derive(Default)]
+    struct BrokerEvents {
+        messages: Mutex<Vec<String>>,
+        changed: tokio::sync::Notify,
+    }
+
+    type Errors = Arc<BrokerEvents>;
 
     async fn connect(url: &str, user: &str) -> (async_nats::Client, Errors) {
-        let errors: Errors = Arc::new(Mutex::new(Vec::new()));
+        let errors: Errors = Arc::default();
         let sink = errors.clone();
         let inbox_prefix = match user {
             "provider" => "_INBOX.sites".to_owned(),
@@ -1442,7 +1424,8 @@ mod nats_reply_permission_tests {
                 .event_callback(move |event| {
                     let sink = sink.clone();
                     async move {
-                        sink.lock().unwrap().push(format!("{event}"));
+                        sink.messages.lock().unwrap().push(format!("{event}"));
+                        sink.changed.notify_one();
                     }
                 })
                 .connect(url)
@@ -1537,19 +1520,355 @@ mod nats_reply_permission_tests {
     }
 
     async fn error_mentioning(errors: &Errors, needle: &str) -> bool {
-        for _ in 0..100 {
-            if errors.lock().unwrap().iter().any(|e| e.contains(needle)) {
-                return true;
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let changed = errors.changed.notified();
+                if errors
+                    .messages
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|e| e.contains("Permissions Violation") && e.contains(needle))
+                {
+                    return;
+                }
+                changed.await;
             }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        false
+        })
+        .await
+        .is_ok()
     }
 
     /// The broker tests each start a real nats-server on ephemeral ports; running
     /// them concurrently races their port reservations and can hang a test, so
     /// serialize them.
     static BROKER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[tokio::test]
+    async fn transfer_v2_upload_and_download_deliver_on_compiled_connection_permissions() {
+        let _broker = BROKER_LOCK.lock().await;
+        for (surface, action, name, upload) in [
+            (
+                ApiSurfaceKind::Operation,
+                PermissionAction::Invoke,
+                "Upload",
+                true,
+            ),
+            (
+                ApiSurfaceKind::Rpc,
+                PermissionAction::Call,
+                "Download",
+                false,
+            ),
+        ] {
+            let permission = PermissionAtom::new(
+                PermissionTarget::api_surface(API_ID, surface, name).unwrap(),
+                action,
+            )
+            .unwrap();
+            // No retained response permission: transfer signals and download
+            // frames must remain publishable through the compiled static policy.
+            let broker = TestBroker::start_with_consumer("false", consumer_policy(permission));
+            let (provider, provider_errors) = connect(&broker.url, "provider").await;
+            let (consumer, consumer_errors) = connect(&broker.url, "consumer").await;
+            let subjects = trellis_protocol::transfer::derive_transfer_subjects(
+                PROVIDER_CONNECTION,
+                CONSUMER_CONNECTION,
+                SESSION_ID,
+            )
+            .unwrap();
+            let mut controls = provider
+                .subscribe(subjects.control_subject.clone())
+                .await
+                .unwrap();
+            let mut signals = consumer
+                .subscribe(subjects.signal_subject.clone())
+                .await
+                .unwrap();
+            let data_subject = if upload {
+                subjects.upload_data_subject
+            } else {
+                subjects.download_data_subject
+            };
+            let (sender, receiver) = if upload {
+                (&consumer, &provider)
+            } else {
+                (&provider, &consumer)
+            };
+            let mut data = receiver.subscribe(data_subject.clone()).await.unwrap();
+            subscriptions_ready(&provider).await;
+            subscriptions_ready(&consumer).await;
+
+            consumer
+                .publish_with_reply(
+                    subjects.control_subject,
+                    subjects.signal_subject.clone(),
+                    b"activate".to_vec().into(),
+                )
+                .await
+                .unwrap();
+            let control = next_within(&mut controls, "transfer control").await;
+            assert_eq!(control.payload.as_ref(), b"activate");
+            assert_eq!(
+                control.reply.as_deref(),
+                Some(subjects.signal_subject.as_str())
+            );
+            provider
+                .publish(
+                    subjects.signal_subject.clone(),
+                    b"activated".to_vec().into(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                next_within(&mut signals, "activation signal")
+                    .await
+                    .payload
+                    .as_ref(),
+                b"activated"
+            );
+
+            for payload in [
+                b"first".as_slice(),
+                b"second".as_slice(),
+                b"last".as_slice(),
+            ] {
+                sender
+                    .publish(data_subject.clone(), payload.to_vec().into())
+                    .await
+                    .unwrap();
+            }
+            for expected in [
+                b"first".as_slice(),
+                b"second".as_slice(),
+                b"last".as_slice(),
+            ] {
+                assert_eq!(
+                    next_within(&mut data, "transfer data")
+                        .await
+                        .payload
+                        .as_ref(),
+                    expected
+                );
+            }
+            provider
+                .publish(subjects.signal_subject, b"finished".to_vec().into())
+                .await
+                .unwrap();
+            assert_eq!(
+                next_within(&mut signals, "final signal")
+                    .await
+                    .payload
+                    .as_ref(),
+                b"finished"
+            );
+            assert!(!provider_errors
+                .messages
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| event.contains("Permissions Violation")));
+            assert!(!consumer_errors
+                .messages
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| event.contains("Permissions Violation")));
+        }
+    }
+
+    #[tokio::test]
+    async fn transfer_v2_denies_foreign_connections_wrong_roles_and_missing_authority() {
+        let _broker = BROKER_LOCK.lock().await;
+        for (surface, action, name, upload) in [
+            (
+                ApiSurfaceKind::Operation,
+                PermissionAction::Invoke,
+                "Upload",
+                true,
+            ),
+            (
+                ApiSurfaceKind::Rpc,
+                PermissionAction::Call,
+                "Download",
+                false,
+            ),
+        ] {
+            let permission = PermissionAtom::new(
+                PermissionTarget::api_surface(API_ID, surface, name).unwrap(),
+                action,
+            )
+            .unwrap();
+            let broker = TestBroker::start_with_consumer("false", consumer_policy(permission));
+            let (provider, provider_errors) = connect(&broker.url, "provider").await;
+            let (consumer, consumer_errors) = connect(&broker.url, "consumer").await;
+            let own = trellis_protocol::transfer::derive_transfer_subjects(
+                PROVIDER_CONNECTION,
+                CONSUMER_CONNECTION,
+                SESSION_ID,
+            )
+            .unwrap();
+            let foreign_provider = trellis_protocol::transfer::derive_transfer_subjects(
+                "other.provider.*",
+                CONSUMER_CONNECTION,
+                SESSION_ID,
+            )
+            .unwrap();
+            let foreign_consumer = trellis_protocol::transfer::derive_transfer_subjects(
+                PROVIDER_CONNECTION,
+                "other.consumer.*",
+                SESSION_ID,
+            )
+            .unwrap();
+
+            for (client, events, subject) in [
+                (
+                    &consumer,
+                    &consumer_errors,
+                    foreign_consumer.control_subject,
+                ),
+                (&provider, &provider_errors, foreign_provider.signal_subject),
+                (&consumer, &consumer_errors, own.signal_subject.clone()),
+                (&provider, &provider_errors, own.control_subject.clone()),
+                if upload {
+                    (
+                        &consumer,
+                        &consumer_errors,
+                        foreign_consumer.upload_data_subject,
+                    )
+                } else {
+                    (
+                        &provider,
+                        &provider_errors,
+                        foreign_provider.download_data_subject,
+                    )
+                },
+                if upload {
+                    (&provider, &provider_errors, own.upload_data_subject.clone())
+                } else {
+                    (
+                        &consumer,
+                        &consumer_errors,
+                        own.download_data_subject.clone(),
+                    )
+                },
+                (&consumer, &consumer_errors, "$O.private.C.chunk".to_owned()),
+                if upload {
+                    (
+                        &consumer,
+                        &consumer_errors,
+                        own.download_data_subject.clone(),
+                    )
+                } else {
+                    (&consumer, &consumer_errors, own.upload_data_subject.clone())
+                },
+            ] {
+                events.messages.lock().unwrap().clear();
+                client
+                    .publish(subject.clone(), b"forbidden".to_vec().into())
+                    .await
+                    .unwrap();
+                assert!(
+                    error_mentioning(events, &subject).await,
+                    "broker must refuse publishing {subject}"
+                );
+            }
+            for (client, events, subject) in [
+                (&consumer, &consumer_errors, foreign_consumer.signal_subject),
+                (
+                    &provider,
+                    &provider_errors,
+                    foreign_provider.control_subject,
+                ),
+                (&consumer, &consumer_errors, own.control_subject),
+                (&provider, &provider_errors, own.signal_subject),
+                if upload {
+                    (
+                        &provider,
+                        &provider_errors,
+                        foreign_provider.upload_data_subject,
+                    )
+                } else {
+                    (
+                        &consumer,
+                        &consumer_errors,
+                        foreign_consumer.download_data_subject,
+                    )
+                },
+                if upload {
+                    (&consumer, &consumer_errors, own.upload_data_subject.clone())
+                } else {
+                    (
+                        &provider,
+                        &provider_errors,
+                        own.download_data_subject.clone(),
+                    )
+                },
+                if upload {
+                    (&consumer, &consumer_errors, own.download_data_subject)
+                } else {
+                    (&consumer, &consumer_errors, own.upload_data_subject)
+                },
+            ] {
+                events.messages.lock().unwrap().clear();
+                let _subscription = client.subscribe(subject.clone()).await.unwrap();
+                assert!(
+                    error_mentioning(events, &subject).await,
+                    "broker must refuse subscribing to {subject}"
+                );
+            }
+        }
+
+        // Observation cannot substitute for invocation, and implementing the
+        // same routes without upload/download markers grants no data plane.
+        let observe_upload = PermissionAtom::new(
+            PermissionTarget::api_surface(API_ID, ApiSurfaceKind::Operation, "Upload").unwrap(),
+            PermissionAction::Observe,
+        )
+        .unwrap();
+        let broker = TestBroker::start_with_policies(
+            "false",
+            provider_policy(false),
+            consumer_policy(observe_upload),
+        );
+        let (consumer, errors) = connect(&broker.url, "consumer").await;
+        let (provider, provider_errors) = connect(&broker.url, "provider").await;
+        let own = trellis_protocol::transfer::derive_transfer_subjects(
+            PROVIDER_CONNECTION,
+            CONSUMER_CONNECTION,
+            SESSION_ID,
+        )
+        .unwrap();
+        for subject in [own.upload_data_subject.clone(), own.control_subject.clone()] {
+            errors.messages.lock().unwrap().clear();
+            consumer
+                .publish(subject.clone(), b"forbidden".to_vec().into())
+                .await
+                .unwrap();
+            assert!(error_mentioning(&errors, &subject).await);
+        }
+        for subject in [
+            own.download_data_subject.clone(),
+            own.signal_subject.clone(),
+        ] {
+            errors.messages.lock().unwrap().clear();
+            let _subscription = consumer.subscribe(subject.clone()).await.unwrap();
+            assert!(error_mentioning(&errors, &subject).await);
+        }
+        for subject in [own.download_data_subject, own.signal_subject] {
+            provider_errors.messages.lock().unwrap().clear();
+            provider
+                .publish(subject.clone(), b"forbidden".to_vec().into())
+                .await
+                .unwrap();
+            assert!(error_mentioning(&provider_errors, &subject).await);
+        }
+        for subject in [own.upload_data_subject, own.control_subject] {
+            provider_errors.messages.lock().unwrap().clear();
+            let _subscription = provider.subscribe(subject.clone()).await.unwrap();
+            assert!(error_mentioning(&provider_errors, &subject).await);
+        }
+    }
 
     #[tokio::test]
     async fn bt01_response_expiry_is_independent_of_the_large_count_allowance() {

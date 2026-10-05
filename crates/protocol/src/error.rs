@@ -77,6 +77,14 @@ pub enum SessionProofErrorCode {
 /// Errors produced while validating or canonicalizing Trellis protocol values.
 #[derive(Debug, thiserror::Error)]
 pub enum ProtocolError {
+    /// A transfer-session protocol value or provider proof failed validation.
+    #[error("transfer protocol validation failed at '{field}': {message}")]
+    Transfer {
+        /// Invalid wire field or proof component.
+        field: &'static str,
+        /// Safe diagnostic without payloads or secrets.
+        message: &'static str,
+    },
     /// JSON encoding or decoding failed.
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),

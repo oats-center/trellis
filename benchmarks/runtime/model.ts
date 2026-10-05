@@ -18,12 +18,17 @@ export const WorkerOptions = z.object({
   arrivalRate: z.number().nonnegative(),
   maxOutstanding: z.number().int().positive(),
   providerIndex: z.number().int().nonnegative().default(0),
+  workload: z.enum(["all", "transfer"]).default("all"),
+  warmups: z.number().int().nonnegative().default(0),
 });
 
 /** One observable operation, including failures rather than success-only timing. */
 export type Sample = {
   scenario: string;
-  transport: "trellis" | "http";
+  transport: "trellis" | "http" | "store" | "nats";
+  warmup?: boolean;
+  dataFrames?: number;
+  maxFrameBytes?: number;
   startedUnixMs: number;
   durationMs: number;
   bytes?: number;
@@ -81,7 +86,7 @@ export async function deadline<T>(
 /** Summary plus raw samples; no histogram-bucket interpolation for percentiles. */
 export function summarize(samples: Sample[]) {
   const groups = Map.groupBy(
-    samples,
+    samples.filter((sample) => !sample.warmup),
     (sample) =>
       `${sample.transport}/${sample.scenario}/${sample.bytes ?? 0}/${
         sample.sessions ?? 1

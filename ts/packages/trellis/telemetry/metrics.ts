@@ -542,6 +542,8 @@ export const TRELLIS_CATALOG_COUNTERS = [
   "trellis.live.frames",
   "trellis.live.rejections",
   "trellis.transfer.wire.bytes",
+  "trellis.transfer.frames",
+  "trellis.transfer.credit.controls",
   "trellis.runtime.lease.events",
   "trellis.snapshot.errors",
   "trellis.telemetry.route_overflow",
@@ -558,6 +560,7 @@ export const TRELLIS_CATALOG_UPDOWNS = [
   "trellis.live.sessions",
   "trellis.live.buffered.bytes",
   "trellis.live.cleanup.pending",
+  "trellis.transfer.buffered.bytes",
 ] as const;
 
 /** Up/down metric names accepted by {@link recordCatalogUpDown}. */

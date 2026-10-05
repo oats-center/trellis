@@ -73,13 +73,13 @@ Deno.test("resource migration is direct, fallible, and read-only", async () => {
 });
 
 Deno.test("bucket watch initializes last values, delivers changes and stops on abort", async () => {
-  const workdir = await Deno.makeTempDir({ prefix: "trellis-kv-watch-" });
-  let nats: NatsTestContainer | undefined;
+  let nats: TrellisTestRuntime | undefined;
   const abort = new AbortController();
   try {
-    nats = await NatsTestContainer.start(workdir);
+    nats = await startTrellisRuntime();
+    const nc = await nats.connectNats();
     const kv = await TypedKV.open(
-      fixedTransportProvider(nats.nc),
+      fixedTransportProvider(nc),
       "watch_bucket",
       current,
       { history: 5 },
@@ -110,7 +110,6 @@ Deno.test("bucket watch initializes last values, delivers changes and stops on a
   } finally {
     abort.abort();
     await nats?.stop();
-    await Deno.remove(workdir, { recursive: true });
   }
 });
 

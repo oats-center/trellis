@@ -1,280 +1,231 @@
-use std::pin::Pin;
-use std::sync::{
-    atomic::{AtomicU8, Ordering},
-    Arc,
-};
-use std::task::{Context, Poll};
+use std::sync::atomic::Ordering;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use bytes::Bytes;
 use sha2::{Digest as _, Sha256};
-use tokio::io::{AsyncRead, AsyncWriteExt, ReadBuf};
-use tokio::task::JoinHandle;
+use tokio::sync::{mpsc, watch};
 
 use super::super::{OperationTransferProgress, ServerError, StoreObjectInfo, StoreResourceClient};
 use super::{
-    abort_store_task, enforce_transfer_not_expired, enforce_upload_max_bytes,
-    transfer_digests_match, FileTransferInfo, UploadTransferAck, UploadTransferChunk,
-    UploadTransferControl, UploadTransferGrantPlan,
+    ingress::{Consumed, FrameReader, Ingress},
+    transfer_digests_match, FileTransferInfo, UploadTransferGrantPlan,
 };
+use crate::data_plane::flow::{FlowLimits, SenderWindow};
 
-/// One bounded, store-backed upload session.
-///
-/// Data is backpressured through a single-frame pipe. The store sees EOF only
-/// after an authenticated completion control validates size and SHA-256; drop
-/// or cancellation before that point aborts the backend reader instead.
+/// One frame-aware bounded storage upload. Its backend future is driven by the endpoint.
 pub struct UploadTransferSession {
     pub(super) plan: UploadTransferGrantPlan,
-    next_seq: u64,
+    pub(super) received: SenderWindow,
+    pub(super) consumed: watch::Receiver<Consumed>,
+    sender: Option<mpsc::Sender<Ingress>>,
+    pub(super) upload_future:
+        Option<futures_util::future::BoxFuture<'static, Result<StoreObjectInfo, ServerError>>>,
     transferred_bytes: u64,
     hasher: Sha256,
-    pipe: Option<tokio::io::DuplexStream>,
-    pub(super) upload_state: Arc<AtomicU8>,
-    upload_task: Option<JoinHandle<Result<StoreObjectInfo, ServerError>>>,
     complete: bool,
     updated_at: String,
 }
 
-impl std::fmt::Debug for UploadTransferSession {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("UploadTransferSession")
-            .field("plan", &self.plan)
-            .field("next_seq", &self.next_seq)
-            .field("transferred_bytes", &self.transferred_bytes)
-            .field("complete", &self.complete)
-            .field("updated_at", &self.updated_at)
-            .finish_non_exhaustive()
-    }
-}
-
-const UPLOAD_OPEN: u8 = 0;
-pub(super) const UPLOAD_COMMIT: u8 = 1;
-const UPLOAD_ABORT: u8 = 2;
-
-struct UploadPipeReader {
-    reader: tokio::io::DuplexStream,
-    state: Arc<AtomicU8>,
-}
-
-impl AsyncRead for UploadPipeReader {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        let this = self.get_mut();
-        let before = buf.filled().len();
-        match Pin::new(&mut this.reader).poll_read(cx, buf) {
-            Poll::Ready(Ok(()))
-                if buf.filled().len() == before
-                    && this.state.load(Ordering::Acquire) != UPLOAD_COMMIT =>
-            {
-                Poll::Ready(Err(std::io::Error::other("upload transfer aborted")))
-            }
-            result => result,
-        }
-    }
-}
-
 impl UploadTransferSession {
-    /// Create an unopened session reporting `updated_at` after durable commit.
+    /// Prepare storage ingress; no backend work begins until authenticated activation.
     pub fn new(plan: UploadTransferGrantPlan, updated_at: impl Into<String>) -> Self {
+        let (_, consumed) = watch::channel(Consumed::default());
+        let received = SenderWindow::new(FlowLimits {
+            max_frame_bytes: plan.grant.max_frame_bytes,
+            window_frames: plan.grant.window_frames,
+            window_bytes: plan.grant.window_bytes,
+        });
         Self {
             plan,
-            next_seq: 0,
+            received,
+            consumed,
+            sender: None,
+            upload_future: None,
             transferred_bytes: 0,
             hasher: Sha256::new(),
-            pipe: None,
-            upload_state: Arc::new(AtomicU8::new(UPLOAD_OPEN)),
-            upload_task: None,
             complete: false,
             updated_at: updated_at.into(),
         }
     }
 
-    /// Return the private NATS endpoint for this session.
+    /// Exact one-way DATA subject.
     pub fn subject(&self) -> &str {
-        &self.plan.grant.subject
+        &self.plan.grant.data_subject
     }
 
-    /// Return the caller session key required by every frame proof.
+    /// Session public key pinned by the grant.
     pub fn session_key(&self) -> &str {
-        &self.plan.grant.session_key
+        &self.plan.grant.consumer.session_key
     }
 
-    /// Compute progress after accepting `chunk`, without mutating the session.
-    pub fn progress_for_chunk(&self, chunk: &UploadTransferChunk) -> OperationTransferProgress {
-        OperationTransferProgress {
-            chunk_index: chunk.seq,
-            chunk_bytes: chunk.payload.len() as u64,
-            transferred_bytes: self
-                .transferred_bytes
-                .saturating_add(chunk.payload.len() as u64),
-        }
-    }
-
-    pub(super) async fn start<C>(&mut self, store: C) -> Result<(), ServerError>
-    where
-        C: StoreResourceClient,
-    {
-        let capacity = usize::try_from(self.plan.grant.chunk_bytes)
-            .unwrap_or(usize::MAX)
-            .max(1);
-        let (writer, reader) = tokio::io::duplex(capacity);
-        let mut reader = UploadPipeReader {
-            reader,
-            state: Arc::clone(&self.upload_state),
-        };
+    pub(super) fn start<C: StoreResourceClient>(&mut self, store: C) -> Result<(), ServerError> {
+        let (sender, receiver) = mpsc::channel(self.plan.grant.window_frames as usize + 1);
+        let (consumed, progress) = watch::channel(Consumed::default());
+        let mut reader = FrameReader::new(receiver, consumed);
         let key = self.plan.key.clone();
-        self.pipe = Some(writer);
-        self.upload_task = Some(tokio::spawn(async move {
+        self.consumed = progress;
+        self.sender = Some(sender);
+        self.upload_future = Some(Box::pin(async move {
             store.write_from(&key, &mut reader).await
         }));
         Ok(())
     }
 
-    pub(super) async fn receive_at(
-        &mut self,
-        chunk: UploadTransferChunk,
-        now_iso: &str,
-    ) -> Result<UploadTransferAck, ServerError> {
-        if self.complete {
-            return Err(ServerError::TransferAlreadyComplete {
-                transfer_id: self.plan.grant.transfer_id.clone(),
-            });
+    pub(super) fn consumption(&self) -> Consumed {
+        *self.consumed.borrow()
+    }
+
+    pub(super) fn progress(&self) -> OperationTransferProgress {
+        let consumed = self.consumption();
+        OperationTransferProgress {
+            chunk_index: consumed.seq.saturating_sub(1),
+            chunk_bytes: consumed.frame_bytes,
+            transferred_bytes: consumed.bytes,
         }
-        enforce_transfer_not_expired(
-            &self.plan.grant.transfer_id,
-            &self.plan.grant.expires_at,
-            now_iso,
-        )?;
-        if chunk.seq != self.next_seq {
+    }
+
+    pub(super) fn admit(&mut self, seq: u64, bytes: Bytes) -> Result<(), ServerError> {
+        if bytes.is_empty() || self.complete {
+            return Err(ServerError::Nats("invalid upload DATA state".into()));
+        }
+        let consumed = self.consumption();
+        let received = self.received.highest_sent.load(Ordering::Acquire);
+        self.received
+            .apply_credit(received, consumed.seq, Some(consumed.bytes))
+            .map_err(|e| ServerError::Nats(format!("upload credit: {e:?}")))?;
+        self.received
+            .validate_frame_slot(bytes.len() as u64, self.plan.grant.max_frame_bytes)
+            .map_err(|e| ServerError::Nats(format!("upload window violation: {e:?}")))?;
+        if seq
+            != self
+                .received
+                .next_frame_seq()
+                .map_err(|e| ServerError::Nats(format!("upload sequence: {e:?}")))?
+        {
             return Err(ServerError::TransferSequenceOutOfOrder {
                 transfer_id: self.plan.grant.transfer_id.clone(),
-                expected_seq: self.next_seq,
-                actual_seq: chunk.seq,
+                expected_seq: received + 1,
+                actual_seq: seq,
             });
         }
-        let chunk_limit = self.plan.grant.chunk_bytes;
-        if !chunk.eof && chunk.payload.len() as u64 > chunk_limit {
-            return Err(ServerError::TransferObjectTooLarge {
-                service_name: self.plan.grant.service.clone(),
-                store: self.plan.store_alias.clone(),
-                key: self.plan.key.clone(),
-                size: chunk.payload.len() as u64,
-                max_bytes: chunk_limit,
-            });
-        }
-        if !chunk.eof {
-            let next_size = self
-                .transferred_bytes
-                .checked_add(chunk.payload.len() as u64)
-                .ok_or_else(|| ServerError::Nats("upload transfer size overflow".to_string()))?;
-            enforce_upload_max_bytes(&self.plan, next_size)?;
-            self.pipe
-                .as_mut()
-                .ok_or_else(|| ServerError::Nats("upload transfer pipe is not open".to_string()))?
-                .write_all(&chunk.payload)
-                .await
-                .map_err(|error| ServerError::Nats(error.to_string()))?;
-            self.hasher.update(&chunk.payload);
-            self.transferred_bytes = next_size;
-            self.next_seq = self.next_seq.checked_add(1).ok_or_else(|| {
-                ServerError::Nats("upload transfer sequence overflow".to_string())
-            })?;
-            return Ok(UploadTransferAck::Continue);
-        }
+        let total = self
+            .transferred_bytes
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| ServerError::Nats("upload size overflow".into()))?;
+        super::enforce_upload_max_bytes(&self.plan, total)?;
+        self.hasher.update(&bytes);
+        let len = bytes.len() as u64;
+        self.sender
+            .as_ref()
+            .ok_or_else(|| ServerError::Nats("upload ingress not activated".into()))?
+            .try_send(Ingress::Frame {
+                seq,
+                bytes: super::telemetry::Payload::new(
+                    bytes,
+                    trellis_protocol::transfer::TransferDirection::Send,
+                    "provider-rx",
+                ),
+            })
+            .map_err(|e| ServerError::Nats(format!("upload ingress closed/full: {e}")))?;
+        self.received
+            .commit_frame(seq, len)
+            .map_err(|e| ServerError::Nats(format!("upload sequence: {e:?}")))?;
+        self.transferred_bytes = total;
+        Ok(())
+    }
 
-        let control: UploadTransferControl = serde_json::from_slice(&chunk.payload)?;
-        let UploadTransferControl::Complete { size, digest } = control else {
-            self.abort().await;
-            return Err(ServerError::TransferCancelled {
-                transfer_id: self.plan.grant.transfer_id.clone(),
-            });
-        };
-        if size != self.transferred_bytes {
-            self.abort().await;
-            return Err(ServerError::TransferObjectSizeMismatch {
-                store: self.plan.store_alias.clone(),
-                key: self.plan.key.clone(),
-                expected_size: size,
-                actual_size: self.transferred_bytes,
-            });
-        }
+    pub(super) async fn finish(
+        &mut self,
+        final_seq: u64,
+        size: u64,
+        digest: &str,
+    ) -> Result<FileTransferInfo, ServerError> {
         let actual_digest = format!(
             "SHA-256={}",
             URL_SAFE_NO_PAD.encode(self.hasher.clone().finalize())
         );
-        if digest != actual_digest {
-            self.abort().await;
-            return Err(ServerError::TransferDigestMismatch {
-                transfer_id: self.plan.grant.transfer_id.clone(),
-                expected_digest: digest,
-                actual_digest,
-            });
+        if final_seq != self.received.highest_sent.load(Ordering::Acquire)
+            || size != self.transferred_bytes
+            || !transfer_digests_match(digest, &actual_digest)
+        {
+            tracing::warn!(
+                sequence_matches = final_seq == self.received.highest_sent.load(Ordering::Acquire),
+                size_matches = size == self.transferred_bytes,
+                digest_matches = digest == actual_digest,
+                digest_bytes_match = transfer_digests_match(digest, &actual_digest),
+                "upload completion integrity mismatch"
+            );
+            return Err(ServerError::Nats(
+                "upload completion sequence/size/digest mismatch".into(),
+            ));
         }
-
-        self.upload_state.store(UPLOAD_COMMIT, Ordering::Release);
-        self.pipe.take();
-        let stored = self
-            .upload_task
-            .take()
-            .ok_or_else(|| ServerError::Nats("upload transfer task is not running".to_string()))?
+        self.sender
+            .as_ref()
+            .ok_or_else(|| ServerError::Nats("upload ingress not activated".into()))?
+            .send(Ingress::Complete)
             .await
-            .map_err(|error| {
-                ServerError::Nats(format!("upload transfer task failed: {error}"))
-            })??;
-        if stored.key != self.plan.key {
-            return Err(ServerError::Nats(format!(
-                "upload stored key mismatch: expected {}, got {}",
-                self.plan.key, stored.key
-            )));
+            .map_err(|e| ServerError::Nats(e.to_string()))?;
+        self.sender.take();
+        // Keep the future in self while awaiting; dropping the endpoint cancels it.
+        let stored = self
+            .upload_future
+            .as_mut()
+            .ok_or_else(|| ServerError::Nats("upload backend missing".into()))?
+            .await;
+        self.upload_future.take();
+        let stored = stored?;
+        if stored.key != self.plan.key
+            || stored.size != size
+            || !stored
+                .digest
+                .as_deref()
+                .is_some_and(|value| transfer_digests_match(value, &actual_digest))
+        {
+            return Err(ServerError::Nats("upload backend metadata mismatch".into()));
         }
-        if stored.size != self.transferred_bytes {
-            return Err(ServerError::TransferObjectSizeMismatch {
-                store: self.plan.store_alias.clone(),
-                key: self.plan.key.clone(),
-                expected_size: self.transferred_bytes,
-                actual_size: stored.size,
-            });
-        }
-        let stored_digest = stored
-            .digest
-            .ok_or_else(|| ServerError::TransferDigestMismatch {
-                transfer_id: self.plan.grant.transfer_id.clone(),
-                expected_digest: actual_digest.clone(),
-                actual_digest: "missing backend digest".to_string(),
-            })?;
-        if !transfer_digests_match(&stored_digest, &actual_digest) {
-            return Err(ServerError::TransferDigestMismatch {
-                transfer_id: self.plan.grant.transfer_id.clone(),
-                expected_digest: actual_digest,
-                actual_digest: stored_digest,
-            });
-        }
-        let info = FileTransferInfo {
+        let consumed = self.consumption();
+        self.received
+            .apply_credit(final_seq, consumed.seq, Some(consumed.bytes))
+            .map_err(|e| ServerError::Nats(format!("upload credit: {e:?}")))?;
+        self.received.validate_complete(final_seq).map_err(|e| {
+            ServerError::Nats(format!("upload incomplete storage consumption: {e:?}"))
+        })?;
+        self.complete = true;
+        Ok(FileTransferInfo {
             key: self.plan.key.clone(),
-            size: self.transferred_bytes,
-            updated_at: self.updated_at.clone(),
+            size,
+            updated_at: match stored.modified_at {
+                Some(timestamp) => timestamp
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .map_err(|error| ServerError::Nats(error.to_string()))?,
+                None => self.updated_at.clone(),
+            },
             digest: actual_digest,
             content_type: self.plan.grant.content_type.clone(),
             metadata: self.plan.grant.metadata.clone(),
-        };
-        self.next_seq = self
-            .next_seq
-            .checked_add(1)
-            .ok_or_else(|| ServerError::Nats("upload transfer sequence overflow".to_string()))?;
-        self.complete = true;
-        Ok(UploadTransferAck::Complete { info })
+        })
     }
 
     pub(super) async fn abort(&mut self) {
-        self.upload_state.store(UPLOAD_ABORT, Ordering::Release);
-        self.pipe.take();
-        abort_store_task(&mut self.upload_task).await;
+        self.sender.take();
+        self.upload_future.take();
     }
 
-    /// Verify that an authenticated completion frame committed the backend object.
+    pub(super) async fn early_backend_failure(&mut self) -> ServerError {
+        let result = match self.upload_future.as_mut() {
+            Some(future) => future.await,
+            None => return ServerError::Nats("upload backend missing".into()),
+        };
+        self.upload_future.take();
+        match result {
+            Err(error) => error,
+            Ok(_) => {
+                ServerError::Nats("upload backend returned before validated completion".into())
+            }
+        }
+    }
+
+    /// Verify that authenticated completion reached backend commit.
     pub fn ensure_complete(&self) -> Result<(), ServerError> {
         if self.complete {
             Ok(())
@@ -283,5 +234,16 @@ impl UploadTransferSession {
                 transfer_id: self.plan.grant.transfer_id.clone(),
             })
         }
+    }
+}
+
+impl std::fmt::Debug for UploadTransferSession {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("UploadTransferSession")
+            .field("plan", &self.plan)
+            .field("transferred_bytes", &self.transferred_bytes)
+            .field("complete", &self.complete)
+            .finish_non_exhaustive()
     }
 }

@@ -1,10 +1,10 @@
 //! Provider-side live session: prepared source, serialized publication, credit,
 //! challenge liveness and owned cleanup.
 
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::data_plane::flow::{FlowError, FlowLimits, SenderWindow};
 use bytes::Bytes;
 
 use trellis_protocol::{
@@ -35,10 +35,14 @@ pub(crate) struct StagedFrame {
     pub len: u64,
 }
 
-/// One outstanding sent frame's credit cost.
-pub(crate) struct OutstandingFrame {
-    pub seq: u64,
-    pub len: u64,
+fn flow_error(error: FlowError) -> LiveErrorCode {
+    match error {
+        FlowError::PayloadTooLarge => LiveErrorCode::PayloadTooLarge,
+        FlowError::InvalidCursor => LiveErrorCode::InvalidCursor,
+        FlowError::WindowFull | FlowError::SequenceExhausted | FlowError::Unavailable => {
+            LiveErrorCode::ResourceExhausted
+        }
+    }
 }
 
 /// Provider-side session state, owned by one manager.
@@ -56,15 +60,10 @@ pub(crate) struct ProviderSession {
     /// Timing (retry/heartbeat/peer deadlines) lives in [`super::deadlines`];
     /// this holds only the values needed to re-publish the same challenge.
     pub challenge: Mutex<Option<ChallengeState>>,
-    pub highest_sent: AtomicU64,
-    pub highest_received: AtomicU64,
-    pub highest_consumed: AtomicU64,
-    pub outstanding: Mutex<VecDeque<OutstandingFrame>>,
-    pub outstanding_bytes: AtomicU64,
+    pub flow: SenderWindow,
     pub cleanup_complete: AtomicBool,
     /// One staged producer application frame; a second concurrent emit is rejected.
     pub staged: Mutex<Option<StagedFrame>>,
-    pub credit: tokio::sync::Notify,
 }
 
 /// Identity fields of one offered provider reservation.
@@ -121,14 +120,13 @@ impl ProviderSession {
             consumer,
             phase: Mutex::new(ProviderPhase::Offered),
             challenge: Mutex::new(None),
-            highest_sent: AtomicU64::new(0),
-            highest_received: AtomicU64::new(0),
-            highest_consumed: AtomicU64::new(0),
-            outstanding: Mutex::new(VecDeque::new()),
-            outstanding_bytes: AtomicU64::new(0),
+            flow: SenderWindow::new(FlowLimits {
+                max_frame_bytes: WINDOW_BYTES,
+                window_frames: WINDOW_FRAMES,
+                window_bytes: WINDOW_BYTES,
+            }),
             cleanup_complete: AtomicBool::new(true),
             staged: Mutex::new(None),
-            credit: tokio::sync::Notify::new(),
         }
     }
 
@@ -147,13 +145,11 @@ impl ProviderSession {
     /// Return whether the credit window has no outstanding frames.
     #[must_use]
     pub(crate) fn outstanding_empty(&self) -> bool {
-        self.outstanding
-            .lock()
-            .is_ok_and(|outstanding| outstanding.is_empty())
+        self.flow.outstanding_empty()
     }
 
     pub(crate) fn wake_credit(&self) {
-        self.credit.notify_waiters();
+        self.flow.wake_credit();
     }
 
     /// Return the next uncommitted DATA sequence.
@@ -162,9 +158,8 @@ impl ProviderSession {
     /// handoff, so the returned sequence cannot race another publication. The
     /// watermark only advances in [`Self::commit_frame`] after a successful
     /// handoff, so a challenge cannot advertise an unsent frame.
-    #[must_use]
-    pub(crate) fn next_frame_seq(&self) -> u64 {
-        self.highest_sent.load(Ordering::Acquire) + 1
+    pub(crate) fn next_frame_seq(&self) -> Result<u64, LiveErrorCode> {
+        self.flow.next_frame_seq().map_err(flow_error)
     }
 
     /// Validate one application frame against the exact credit window without
@@ -179,21 +174,9 @@ impl ProviderSession {
         len: u64,
         max_data_body_bytes: u64,
     ) -> Result<(), LiveErrorCode> {
-        if len > max_data_body_bytes {
-            return Err(LiveErrorCode::PayloadTooLarge);
-        }
-        let outstanding_frames = self
-            .outstanding
-            .lock()
-            .map_err(|_| LiveErrorCode::ResourceExhausted)?
-            .len() as u64;
-        if outstanding_frames + 1 > WINDOW_FRAMES {
-            return Err(LiveErrorCode::ResourceExhausted);
-        }
-        if self.outstanding_bytes.load(Ordering::Acquire) + len > WINDOW_BYTES {
-            return Err(LiveErrorCode::ResourceExhausted);
-        }
-        Ok(())
+        self.flow
+            .validate_frame_slot(len, max_data_body_bytes)
+            .map_err(flow_error)
     }
 
     /// Commit one successfully handed-off application frame.
@@ -206,15 +189,7 @@ impl ProviderSession {
     /// Returns [`LiveErrorCode::ResourceExhausted`] when the ledger is
     /// unavailable. Bounds were validated by [`Self::validate_frame_slot`].
     pub(crate) fn commit_frame(&self, seq: u64, len: u64) -> Result<(), LiveErrorCode> {
-        let mut outstanding = self
-            .outstanding
-            .lock()
-            .map_err(|_| LiveErrorCode::ResourceExhausted)?;
-        outstanding.push_back(OutstandingFrame { seq, len });
-        drop(outstanding);
-        self.outstanding_bytes.fetch_add(len, Ordering::AcqRel);
-        self.highest_sent.store(seq, Ordering::Release);
-        Ok(())
+        self.flow.commit_frame(seq, len).map_err(flow_error)
     }
 
     /// Validate one reported cursor pair before any state mutation.
@@ -228,16 +203,9 @@ impl ProviderSession {
         received: u64,
         consumed: u64,
     ) -> Result<(), LiveErrorCode> {
-        let highest_sent = self.highest_sent.load(Ordering::Acquire);
-        let current_received = self.highest_received.load(Ordering::Acquire);
-        let current_consumed = self.highest_consumed.load(Ordering::Acquire);
-        if consumed > received || received > highest_sent {
-            return Err(LiveErrorCode::InvalidCursor);
-        }
-        if received < current_received || consumed < current_consumed {
-            return Err(LiveErrorCode::InvalidCursor);
-        }
-        Ok(())
+        self.flow
+            .validate_credit(received, consumed, None)
+            .map_err(flow_error)
     }
 
     /// Apply one accepted credit cursor from the authenticated owner.
@@ -247,24 +215,9 @@ impl ProviderSession {
     /// Returns [`LiveErrorCode::InvalidCursor`] for impossible or regressing
     /// cursors reported by the authenticated owner.
     pub(crate) fn apply_credit(&self, received: u64, consumed: u64) -> Result<(), LiveErrorCode> {
-        self.validate_credit(received, consumed)?;
-        self.highest_received.store(received, Ordering::Release);
-        self.highest_consumed.store(consumed, Ordering::Release);
-        let mut outstanding = self
-            .outstanding
-            .lock()
-            .map_err(|_| LiveErrorCode::InvalidCursor)?;
-        while let Some(front) = outstanding.front() {
-            if front.seq <= consumed {
-                let len = outstanding.pop_front().map(|frame| frame.len).unwrap_or(0);
-                self.outstanding_bytes.fetch_sub(len, Ordering::AcqRel);
-            } else {
-                break;
-            }
-        }
-        drop(outstanding);
-        self.wake_credit();
-        Ok(())
+        self.flow
+            .apply_credit(received, consumed, None)
+            .map_err(flow_error)
     }
 }
 
@@ -283,7 +236,7 @@ pub(crate) fn receipt_for(
         reason: end.reason(),
         error_code: end.error().map(|error| error.code()),
         cleanup,
-        final_seq: session.highest_sent.load(Ordering::Acquire),
+        final_seq: session.flow.highest_sent.load(Ordering::Acquire),
         expires_at_ms: super::manager::receipt_expiry(now_ms),
     }
 }
@@ -318,8 +271,8 @@ pub(crate) fn control_ack(
             LiveControl::EndAck(_) => LiveControlAckAction::EndAck,
         },
         state,
-        accepted_received_seq: U64s::new(session.highest_received.load(Ordering::Acquire)),
-        accepted_consumed_seq: U64s::new(session.highest_consumed.load(Ordering::Acquire)),
+        accepted_received_seq: U64s::new(session.flow.highest_received.load(Ordering::Acquire)),
+        accepted_consumed_seq: U64s::new(session.flow.highest_consumed.load(Ordering::Acquire)),
         terminal,
         cleanup,
     }

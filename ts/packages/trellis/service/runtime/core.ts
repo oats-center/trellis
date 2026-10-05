@@ -103,11 +103,15 @@ import {
   verifyLocalAuthorization,
 } from "../../session.ts";
 import { LiveAuthorityGuard } from "../../live/authority.ts";
+import type { StoredTransfer } from "./transfer.ts";
 import type { ProviderAuthorityPort } from "../../live/provider.ts";
-import type {
-  TransportLease,
-  TrellisTransportProvider,
+import {
+  fixedTransportProvider,
+  TransportGenerationManager,
+  type TransportLease,
+  type TrellisTransportProvider,
 } from "../../transport/generations.ts";
+import { TypedKV } from "../../kv.ts";
 import {
   type FileInfo,
   FileInfoSchema,
@@ -159,6 +163,8 @@ type RuntimeOperationTransferSession = {
 type RuntimeOperationTransferSupport = {
   openOperationTransfer(args: {
     sessionKey: string;
+    connectionId: string;
+    contextDigest: string;
     permission: PermissionAtom | undefined;
     requiredCapabilities: readonly string[];
     operationId: string;
@@ -166,11 +172,19 @@ type RuntimeOperationTransferSupport = {
     maxBytes?: number;
     contentType?: string;
     metadata?: Record<string, string>;
-    onComplete?: (info: FileInfo) => Promise<void>;
+    commit?: (
+      stored: StoredTransfer,
+      progress: NonNullable<RuntimeOperationSnapshot["transfer"]>,
+    ) => Promise<void>;
+    onError?: (error: TransferError) => Promise<void>;
+    onProgress?: (
+      progress: NonNullable<RuntimeOperationSnapshot["transfer"]>,
+    ) => void;
   }): AsyncResult<RuntimeOperationTransferSession, TransferError>;
-  /** Reads an already-staged upload object without re-initiating a transfer. */
+  /** Reads the exact committed attempt key without re-initiating a transfer. */
   openStagedOperation(
-    operationId: string,
+    stagingKey: string,
+    committed: FileInfo,
   ): AsyncResult<OperationTransferHandle, TransferError>;
 };
 
@@ -556,9 +570,12 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     string,
     (record: DurableOperationRecord) => Promise<void>
   >();
-  #operationRecoveryRecords = new Map<string, DurableOperationRecord>();
+  #operationRecoveryIndexes = new Set<{
+    nc: NatsConnection;
+    records: Map<string, DurableOperationRecord>;
+  }>();
   #operationRecoveryAbort = new AbortController();
-  #operationRecoveryWatch?: Promise<void>;
+  #operationRecoveryInstall?: Promise<void>;
   #operationRecoveryScan?: ReturnType<typeof setInterval>;
   #operationRecoveryTask?: Promise<void>;
   /** Drains fixed-connection intake subscriptions on stop. */
@@ -738,6 +755,8 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         existing.sequence = durable.sequence;
         existing.signalSequence = durable.signalSequence;
         existing.signals = durable.signals;
+        existing.transferGrant = durable.transferGrant;
+        existing.uploadStorageKey = durable.uploadStorageKey;
         existing.terminal = durable.snapshot.state === "completed" ||
           durable.snapshot.state === "failed" ||
           durable.snapshot.state === "cancelled";
@@ -778,6 +797,9 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       ...(durable.transferGrant
         ? { transferGrant: durable.transferGrant }
         : {}),
+      ...(durable.uploadStorageKey
+        ? { uploadStorageKey: durable.uploadStorageKey }
+        : {}),
       snapshot: durable.snapshot,
       sequence: durable.sequence,
       terminal: durable.snapshot.state === "completed" ||
@@ -800,38 +822,28 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
   async #recoverExpiredOperations(): Promise<void> {
     const signal = this.#operationRecoveryAbort.signal;
     if (signal.aborted) return;
-    if (!this.#operationRecoveryWatch) {
-      const store = await this.operationStoreHandle();
-      const watcher = await store.watch(undefined, { signal }).orThrow();
-      this.#operationRecoveryRecords.clear();
-      this.#operationRecoveryWatch = (async () => {
-        for await (const item of watcher) {
-          if (signal.aborted) break;
-          const entry = item.orThrow();
-          const record = entry.value;
-          if (record && !isTerminalRuntimeOperationSnapshot(record.snapshot)) {
-            this.#operationRecoveryRecords.set(entry.key, record);
-          } else {
-            this.#operationRecoveryRecords.delete(entry.key);
-          }
-        }
-      })().catch((error) => {
-        if (!signal.aborted) {
-          this.#log.warn({ error }, "Operation recovery watch failed");
-        }
-      }).finally(() => {
-        // An ended watch cannot be trusted as a complete index. The next tick
-        // installs a new last-value snapshot and resumes updates, never a
-        // repeated key enumeration or a permanently stale recovery cache.
-        this.#operationRecoveryRecords.clear();
-        this.#operationRecoveryWatch = undefined;
-      });
-    }
-    for (const record of [...this.#operationRecoveryRecords.values()]) {
-      if (signal.aborted) break;
+    // currentNats() permits an unpublished fallback on the managed provider.
+    // Recovery claims require its actual published generation instead.
+    const publishedNats = () =>
+      this.#transport instanceof TransportGenerationManager
+        ? this.#transport.currentGeneration()?.nc
+        : this.#transport?.currentNats() ?? this.#nats;
+    const nc = publishedNats();
+    if (!nc) return;
+    const index = [...this.#operationRecoveryIndexes].find((entry) =>
+      entry.nc === nc
+    );
+    if (!index) return;
+    for (const record of [...index.records.values()]) {
+      if (
+        signal.aborted || publishedNats() !== nc
+      ) break;
       if (Date.parse(record.leaseExpiresAt) > Date.now()) continue;
       for (const recover of this.#operationRecoverers.values()) {
-        if (signal.aborted) break;
+        if (
+          signal.aborted ||
+          publishedNats() !== nc
+        ) break;
         // Recovery still rereads the authoritative record and claims via CAS;
         // the watch is only an index of candidates, never an ownership fence.
         await recover(record);
@@ -840,6 +852,132 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
   }
 
   async #ensureOperationRecovery(): Promise<void> {
+    this.#operationRecoveryInstall ??= (async () => {
+      const logicalStore = await this.operationStoreHandle();
+      const install = async (target: { nc: NatsConnection }) => {
+        const controller = new AbortController();
+        const index = {
+          nc: target.nc,
+          records: new Map<string, DurableOperationRecord>(),
+        };
+        let done: Promise<void> | undefined;
+        const stop = async () => {
+          controller.abort();
+          this.#operationRecoveryIndexes.delete(index);
+          index.records.clear();
+          await done;
+        };
+        const abort = () => {
+          controller.abort();
+        };
+        this.#operationRecoveryAbort.signal.addEventListener("abort", abort, {
+          once: true,
+        });
+        try {
+          this.#operationRecoveryAbort.signal.throwIfAborted();
+          const store = await TypedKV.open(
+            fixedTransportProvider(target.nc),
+            logicalStore.name,
+            logicalStore.representation,
+            {
+              bindOnly: true,
+              ttl: 30 * 24 * 60 * 60 * 1_000,
+              maxValueBytes: 1024 * 1024,
+            },
+          ).orThrow();
+          controller.signal.throwIfAborted();
+          let watcher = await store.watch(undefined, {
+            signal: controller.signal,
+          }).orThrow();
+          // Readiness is consumer establishment, not completion of retained replay.
+          this.#operationRecoveryIndexes.add(index);
+          done = (async () => {
+            try {
+              while (!controller.signal.aborted) {
+                try {
+                  for await (const item of watcher) {
+                    if (controller.signal.aborted) break;
+                    const entry = item.orThrow();
+                    const record = entry.value;
+                    if (
+                      record &&
+                      !isTerminalRuntimeOperationSnapshot(record.snapshot)
+                    ) index.records.set(entry.key, record);
+                    else index.records.delete(entry.key);
+                  }
+                } catch (error) {
+                  if (!controller.signal.aborted) {
+                    this.#log.warn(
+                      { error },
+                      "Operation recovery watch failed",
+                    );
+                  }
+                }
+                index.records.clear();
+                if (controller.signal.aborted) break;
+                // Re-establish an unexpectedly ended index without enumerating
+                // keys. Retirement interrupts the backoff and joins this task.
+                await new Promise<void>((resolve) => {
+                  const finish = () => {
+                    clearTimeout(timer);
+                    controller.signal.removeEventListener("abort", finish);
+                    resolve();
+                  };
+                  const timer = setTimeout(finish, 1_000);
+                  controller.signal.addEventListener("abort", finish, {
+                    once: true,
+                  });
+                  if (controller.signal.aborted) finish();
+                });
+                if (controller.signal.aborted) break;
+                try {
+                  watcher = await store.watch(undefined, {
+                    signal: controller.signal,
+                  }).orThrow();
+                } catch (error) {
+                  if (!controller.signal.aborted) {
+                    this.#log.warn(
+                      { error },
+                      "Operation recovery watch restart failed",
+                    );
+                  }
+                }
+              }
+            } finally {
+              controller.abort();
+              this.#operationRecoveryIndexes.delete(index);
+              index.records.clear();
+              this.#operationRecoveryAbort.signal.removeEventListener(
+                "abort",
+                abort,
+              );
+            }
+          })();
+          if (controller.signal.aborted) {
+            await stop();
+            controller.signal.throwIfAborted();
+          }
+          return { drain: stop, done, dispose: stop };
+        } catch (error) {
+          await stop();
+          this.#operationRecoveryAbort.signal.removeEventListener(
+            "abort",
+            abort,
+          );
+          throw error;
+        }
+      };
+      if (this.adaptiveTransport) {
+        await this.declareGenerationIntake("operation-recovery", install);
+      } else {
+        const installed = await install({ nc: this.#nats });
+        this.#operationIntakeClosers.add(() => {
+          void installed.drain();
+        });
+        this.#operationIntakeDrains.add(installed.drain);
+      }
+    })();
+    await this.#operationRecoveryInstall;
     const scan = () => {
       if (
         !this.#operationRecoveryTask &&
@@ -943,9 +1081,19 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       active.ownerConnectionId === fence.ownerConnectionId &&
       active.ownerEpoch === fence.ownerEpoch
     ) {
+      this.#log.debug(
+        { operationId, ...fence },
+        "Operation owner fence released",
+      );
       this.#activeOperationFences.delete(operationId);
       this.#operationTransferSessions.delete(operationId);
       this.#releaseOperationTransport(operationId);
+    } else {
+      this.#log.debug({
+        operationId,
+        ...fence,
+        activeOwnerEpoch: active?.ownerEpoch,
+      }, "Operation owner fence release did not match active owner");
     }
   }
 
@@ -955,6 +1103,11 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     if (!held) return;
     this.#operationTransport.delete(operationId);
     held.lease?.release();
+    this.#log.debug({
+      operationId,
+      physicalClientId: held.nc.info?.client_id,
+      leased: held.lease !== undefined,
+    }, "Operation execution transport pin released");
   }
 
   /** The connection that should carry this operation's execution support traffic. */
@@ -986,6 +1139,11 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       return;
     }
     this.#operationTransport.set(operationId, { nc: lease.nc, lease });
+    this.#log.debug({
+      operationId,
+      ...this.#activeOperationFences.get(operationId),
+      physicalClientId: lease.nc.info?.client_id,
+    }, "Recovered operation execution transport pin captured");
   }
 
   /** The runtime's own current authorization context digest, if any. */
@@ -1002,6 +1160,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     opts: {
       patch?: Partial<RuntimeOperationSnapshot>;
       event: Record<string, unknown> & { type: string };
+      uploadCommit?: { info: FileInfo; storageKey: string };
     },
   ): AsyncResult<RuntimeOperationSnapshot, BaseError> {
     return AsyncResult.from((async () => {
@@ -1034,6 +1193,19 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           runtime.sequence = durable.sequence + 1;
           runtime.signalSequence = durable.signalSequence;
           runtime.signals = durable.signals;
+          runtime.uploadStorageKey = durable.uploadStorageKey;
+          if (opts.uploadCommit) {
+            if (!durable.transferGrant) {
+              throw new Error("operation upload grant is missing");
+            }
+            runtime.transferGrant = { ...durable.transferGrant };
+            Reflect.set(
+              runtime.transferGrant,
+              "committed",
+              opts.uploadCommit.info,
+            );
+            runtime.uploadStorageKey = opts.uploadCommit.storageKey;
+          }
           runtime.leaseExpiresAt = new Date(Date.now() + 30_000).toISOString();
           runtime.snapshot = buildRuntimeOperationSnapshot(
             runtime,
@@ -1080,6 +1252,160 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         return ok(runtime.snapshot);
       });
     })());
+  }
+
+  #operationUploadPersistence(
+    getRuntime: () => RuntimeOperationRecord,
+    getFence: () => RuntimeOperationFence,
+  ) {
+    type Progress = NonNullable<RuntimeOperationSnapshot["transfer"]>;
+    let latest: Progress | undefined;
+    let persistedBytes = 0;
+    let pendingSince: number | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let worker: Promise<void> | undefined;
+    let failure: unknown;
+    let stopped = false;
+    const drain = () => {
+      if (worker || stopped || failure) return;
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+      worker = (async () => {
+        while (!stopped && latest && latest.transferredBytes > persistedBytes) {
+          const remaining = 250 -
+            (performance.now() - (pendingSince ?? performance.now()));
+          if (
+            latest.transferredBytes - persistedBytes < 1024 * 1024 &&
+            remaining > 0
+          ) {
+            timer = setTimeout(drain, remaining);
+            return;
+          }
+          const progress = latest;
+          pendingSince = undefined;
+          const result = await this.#applyOperationUpdate(
+            getRuntime(),
+            getFence(),
+            "pending",
+            {
+              patch: { transfer: progress },
+              event: { type: "transfer", transfer: progress },
+            },
+          ).take();
+          if (isErr(result)) throw result.error;
+          persistedBytes = progress.transferredBytes;
+          this.#log.debug({
+            operationId: getRuntime().id,
+            transferredBytes: persistedBytes,
+            revision: result.revision,
+          }, "Operation upload progress checkpoint written");
+          if (latest.transferredBytes <= persistedBytes) {
+            pendingSince = undefined;
+          }
+        }
+      })().catch((cause) => {
+        failure = cause;
+        this.#log.error(
+          { cause, operationId: getRuntime().id },
+          "Operation upload progress persistence failed",
+        );
+        getRuntime().cancellation.abort(
+          "operation upload progress persistence failed",
+        );
+      }).finally(() => {
+        worker = undefined;
+        if (
+          !stopped && latest && latest.transferredBytes > persistedBytes &&
+          (timer === undefined ||
+            latest.transferredBytes - persistedBytes >= 1024 * 1024)
+        ) drain();
+      });
+    };
+    const stop = () => {
+      stopped = true;
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+    };
+    let listening = false;
+    return {
+      onProgress: (progress: Progress) => {
+        this.#log.debug({
+          operationId: getRuntime().id,
+          transferredBytes: progress.transferredBytes,
+          chunkIndex: progress.chunkIndex,
+        }, "Operation upload consumed progress submitted");
+        if (
+          stopped ||
+          latest && progress.transferredBytes <= latest.transferredBytes
+        ) return;
+        if (!listening) {
+          getRuntime().cancellation.signal.addEventListener("abort", stop, {
+            once: true,
+          });
+          listening = true;
+        }
+        latest = progress;
+        pendingSince ??= performance.now();
+        drain();
+      },
+      commit: async (
+        stored: StoredTransfer,
+        progress: NonNullable<RuntimeOperationSnapshot["transfer"]>,
+      ) => {
+        stop();
+        await worker;
+        getRuntime().cancellation.signal.removeEventListener("abort", stop);
+        if (failure) throw failure;
+        if (progress.transferredBytes !== stored.info.size) {
+          throw new Error(
+            "final operation upload progress does not match stored size",
+          );
+        }
+        // One fenced CAS flushes exact progress, the commit metadata, and the
+        // handler-runnable snapshot before the transfer sends committed.
+        const result = await this.#applyOperationUpdate(
+          getRuntime(),
+          getFence(),
+          "running",
+          {
+            patch: { transfer: progress },
+            event: { type: "transfer", transfer: progress },
+            uploadCommit: { info: stored.info, storageKey: stored.storageKey },
+          },
+        ).take();
+        if (isErr(result)) throw result.error;
+      },
+      onError: async (_error: TransferError) => {
+        stop();
+        await worker;
+        const runtime = getRuntime();
+        runtime.cancellation.signal.removeEventListener("abort", stop);
+        await this.#queueOperationFrame(runtime, async () => {
+          const durable = await this.loadOperationRecord(runtime.id);
+          if (
+            !durable || !this.#ownsOperation(durable, getFence()) ||
+            isTerminalRuntimeOperationSnapshot(durable.snapshot) ||
+            durable.cancelRequestedAt ||
+            durable.transferGrant &&
+              Value.Check(
+                FileInfoSchema,
+                Reflect.get(durable.transferGrant, "committed"),
+              )
+          ) return;
+          runtime.revision = durable.revision;
+          runtime.snapshot = durable.snapshot;
+          runtime.transferGrant = durable.transferGrant;
+          runtime.uploadStorageKey = durable.uploadStorageKey;
+          runtime.sequence = durable.sequence;
+          runtime.signalSequence = durable.signalSequence;
+          runtime.signals = durable.signals;
+          runtime.leaseExpiresAt = new Date().toISOString();
+          await this.saveOperationRecord(runtime);
+          runtime.cancellation.abort("operation upload interrupted");
+          this.#releaseOperationFence(runtime.id, getFence());
+        });
+      },
+    };
   }
 
   #applyOwnedOperationUpdate(
@@ -1220,6 +1546,11 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         runtime.terminal = true;
         try {
           await this.saveOperationRecord(runtime);
+          this.#log.debug({
+            operationId: runtime.id,
+            ...fence,
+            revision: runtime.snapshot.revision,
+          }, "Operation cancellation durably finalized");
           recordCatalogDuration(
             "trellis.operation.cancellation.cleanup.duration",
             Math.max(0, Date.now() - Date.parse(durable.cancelRequestedAt)),
@@ -2447,6 +2778,11 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         throw this.#operationNotFoundError(operationId);
       }
       await arbiter.snapshot({ kind: "snapshot", snapshot: current.snapshot });
+      this.#log.debug({
+        operationId,
+        transferredBytes: current.snapshot.transfer?.transferredBytes,
+        revision: current.snapshot.revision,
+      }, "Operation observer initial snapshot emitted");
       if (
         current.snapshot.state === "completed" ||
         current.snapshot.state === "failed" ||
@@ -2610,6 +2946,11 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           kind: "snapshot",
           snapshot: durable.value.snapshot,
         });
+        this.#log.debug({
+          operationId,
+          transferredBytes: durable.value.snapshot.transfer?.transferredBytes,
+          revision: durable.value.snapshot.revision,
+        }, "Operation observer durable snapshot emitted");
         if (terminal) return;
       }
     } finally {
@@ -2805,12 +3146,47 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           operationContext: { requestId?: string; traceId?: string } = {},
           resuming = false,
         ) => {
+          if (transferSession && !runtime.cancellation.signal.aborted) {
+            let interrupted: (() => void) | undefined;
+            const cancelled = new Promise<undefined>((resolve) => {
+              interrupted = () => resolve(undefined);
+              runtime.cancellation.signal.addEventListener(
+                "abort",
+                interrupted,
+                { once: true },
+              );
+              if (runtime.cancellation.signal.aborted) interrupted();
+            });
+            try {
+              await Promise.race([
+                transferSession.transfer.completed().take(),
+                cancelled,
+              ]);
+            } finally {
+              if (interrupted) {
+                runtime.cancellation.signal.removeEventListener(
+                  "abort",
+                  interrupted,
+                );
+              }
+            }
+          }
+          if (
+            transferSession && runtime.cancellation.signal.aborted &&
+            !runtime.cancelRequestedAt
+          ) return;
           const admitted = await this.loadOperationRecord(runtime.id);
           if (
             !admitted || !this.#ownsOperation(admitted, fence) ||
             admitted.snapshot.state === "completed" ||
             admitted.snapshot.state === "failed" ||
             admitted.snapshot.state === "cancelled" ||
+            transferSession && !admitted.cancelRequestedAt &&
+              (!admitted.transferGrant ||
+                !Value.Check(
+                  FileInfoSchema,
+                  Reflect.get(admitted.transferGrant, "committed"),
+                )) ||
             !this.#matchesOperationRoute(
               admitted,
               String(operation),
@@ -3190,8 +3566,9 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             const committed = Reflect.get(runtime.transferGrant, "committed");
             if (Value.Check(FileInfoSchema, committed)) {
               if (!this.#transferSupport) return;
+              if (!runtime.uploadStorageKey) return;
               const staged = await this.#transferSupport
-                .openStagedOperation(runtime.id)
+                .openStagedOperation(runtime.uploadStorageKey, committed)
                 .take();
               if (isErr(staged)) return;
               startLeaseHeartbeat(runtime, fence);
@@ -3224,6 +3601,8 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             const reopened = await this.#transferSupport
               .openOperationTransfer({
                 sessionKey: runtime.callerSessionKey,
+                connectionId: runtime.caller.connectionId,
+                contextDigest: runtime.caller.contextDigest,
                 permission: ctx.permissions?.invoke,
                 requiredCapabilities: ctx.callerCapabilities ?? [],
                 operationId: runtime.id,
@@ -3233,49 +3612,23 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                   : {}),
                 ...(contentType !== undefined ? { contentType } : {}),
                 ...(metadata !== undefined ? { metadata } : {}),
-                onComplete: async (info) => {
-                  await this.#queueOperationFrame(runtime, async () => {
-                    if (!runtime.transferGrant) return;
-                    const durable = await this.loadOperationRecord(runtime.id);
-                    if (
-                      !durable || !this.#ownsOperation(durable, fence) ||
-                      durable.cancelRequestedAt ||
-                      durable.snapshot.state === "completed" ||
-                      durable.snapshot.state === "failed" ||
-                      durable.snapshot.state === "cancelled"
-                    ) {
-                      runtime.cancellation.abort("operation ownership lost");
-                      return;
-                    }
-                    runtime.revision = durable.revision;
-                    Reflect.set(runtime.transferGrant, "committed", info);
-                    await this.saveOperationRecord(runtime);
-                  });
-                },
+                ...this.#operationUploadPersistence(() => runtime, () => fence),
               }).take();
             if (isErr(reopened)) return;
             runtime.transferGrant = reopened.grant;
+            delete runtime.uploadStorageKey;
             const current = await this.loadOperationRecord(runtime.id);
             if (!current || !this.#ownsOperation(current, fence)) {
               runtime.cancellation.abort("operation ownership lost");
               return;
             }
             runtime.revision = current.revision;
+            runtime.snapshot = { ...current.snapshot };
+            delete runtime.snapshot.transfer;
+            runtime.snapshot.revision++;
+            runtime.snapshot.updatedAt = now();
             await this.saveOperationRecord(runtime);
             startLeaseHeartbeat(runtime, fence);
-            void (async () => {
-              for await (const progress of reopened.transfer.updates()) {
-                await this.#applyOperationUpdate(
-                  runtime,
-                  fence,
-                  "running",
-                  {
-                    patch: { transfer: progress },
-                    event: { type: "transfer", transfer: progress },
-                  },
-                );
-              }
-            })();
             watchCancellation(runtime, fence);
             this.#operationTransferSessions.set(runtime.id, reopened);
             void scheduleHandler(
@@ -3684,6 +4037,8 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               const openedTransferValue = await this.#transferSupport
                 .openOperationTransfer({
                   sessionKey: value.sessionKey,
+                  connectionId: value.caller.connectionId,
+                  contextDigest: value.caller.contextDigest,
                   permission: ctx.permissions?.invoke,
                   requiredCapabilities: ctx.callerCapabilities ?? [],
                   operationId,
@@ -3693,28 +4048,10 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                     : {}),
                   ...(contentType !== undefined ? { contentType } : {}),
                   ...(metadata !== undefined ? { metadata } : {}),
-                  onComplete: async (info) => {
-                    await this.#queueOperationFrame(runtime, async () => {
-                      if (!runtime.transferGrant || !transferFence) return;
-                      const durable = await this.loadOperationRecord(
-                        runtime.id,
-                      );
-                      if (
-                        !durable ||
-                        !this.#ownsOperation(durable, transferFence) ||
-                        durable.cancelRequestedAt ||
-                        durable.snapshot.state === "completed" ||
-                        durable.snapshot.state === "failed" ||
-                        durable.snapshot.state === "cancelled"
-                      ) {
-                        runtime.cancellation.abort("operation ownership lost");
-                        return;
-                      }
-                      runtime.revision = durable.revision;
-                      Reflect.set(runtime.transferGrant, "committed", info);
-                      await this.saveOperationRecord(runtime);
-                    });
-                  },
+                  ...this.#operationUploadPersistence(
+                    () => runtime,
+                    () => transferFence,
+                  ),
                 }).take();
               if (isErr(openedTransferValue)) {
                 recordOperationServiceError(openedTransferValue.error, {
@@ -3860,24 +4197,6 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               }
             }
 
-            if (transferSession) {
-              void (async () => {
-                for await (
-                  const progress of transferSession.transfer.updates()
-                ) {
-                  await this.#applyOperationUpdate(
-                    runtime,
-                    transferFence!,
-                    "running",
-                    {
-                      patch: { transfer: progress },
-                      event: { type: "transfer", transfer: progress },
-                    },
-                  );
-                }
-              })();
-            }
-
             startLeaseHeartbeat(runtime, transferFence!);
             watchCancellation(runtime, transferFence!);
 
@@ -3957,6 +4276,12 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     const lease = delivery.lease;
     delivery.lease = undefined;
     this.#operationTransport.set(operationId, { nc, lease });
+    this.#log.debug({
+      operationId,
+      ...this.#activeOperationFences.get(operationId),
+      physicalClientId: nc.info?.client_id,
+      leased: lease !== undefined,
+    }, "Accepted operation execution transport pin captured");
   }
 
   async stop(): Promise<void> {
@@ -3968,11 +4293,12 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       // must not skip terminating intake, releasing queued generation pins, or
       // clearing logical recovery scans.
       this.#operationRecoveryAbort.abort();
+      await this.retractFrameworkIntake("operation-recovery");
       if (this.#operationRecoveryScan) {
         clearInterval(this.#operationRecoveryScan);
       }
       this.#operationRecoverers.clear();
-      this.#operationRecoveryRecords.clear();
+      this.#operationRecoveryIndexes.clear();
       for (const close of this.#operationIntakeClosers) close();
       for (const drain of this.#operationIntakeDrains) {
         void drain().catch(() => undefined);
@@ -4032,7 +4358,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         if (
           await untilReleased(Promise.all([
             this.#operationRecoveryTask,
-            this.#operationRecoveryWatch,
+            this.#operationRecoveryInstall,
           ]))
         ) return;
 

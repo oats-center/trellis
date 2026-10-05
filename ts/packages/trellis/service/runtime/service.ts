@@ -1399,8 +1399,8 @@ export function createConnectedService<
       transferSupport: {
         openOperationTransfer: (transferArgs) =>
           getTransfer().createOperationUpload(transferArgs),
-        openStagedOperation: (operationId) =>
-          getTransfer().openStagedOperation(operationId),
+        openStagedOperation: (storageKey, committed) =>
+          getTransfer().openStagedOperation(storageKey, committed),
       },
       operationDeploymentId: args.healthIdentity?.deploymentId,
       operationConnectionId: args.operationConnectionId,
@@ -1564,9 +1564,11 @@ export function createConnectedService<
   });
 
   const operationTransfer = new ServiceTransfer({
+    log: resolvedLog,
     name: args.name,
+    connectionId: args.operationConnectionId,
     transport: serviceTransport,
-    auth: args.auth,
+    auth: { ...args.auth, contextDigest: args.contextDigest },
     stores: Object.fromEntries(
       Object.entries(args.bindings.store ?? {}).map(([alias, binding]) => [
         alias,
@@ -4021,6 +4023,8 @@ export class TrellisServiceSession<
     store: string;
     key: string;
     sessionKey: string;
+    connectionId: string;
+    contextDigest: string;
     permission: PermissionAtom;
     requiredCapabilities?: readonly string[];
     inboxPrefix: string;
@@ -4031,6 +4035,8 @@ export class TrellisServiceSession<
         store: args.store,
         key: args.key,
         sessionKey: args.sessionKey,
+        connectionId: args.connectionId,
+        contextDigest: args.contextDigest,
         permission: args.permission,
         requiredCapabilities: args.requiredCapabilities,
         inboxPrefix: args.inboxPrefix,

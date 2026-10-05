@@ -109,7 +109,6 @@ async fn main() -> Result<(), Error> {
                             "files",
                             &ulid::Ulid::new().to_string(),
                             &expires,
-                            16384,
                             FileTransferInfo {
                                 key: input.value.clone(),
                                 size: metadata.size,

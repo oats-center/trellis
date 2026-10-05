@@ -27,3 +27,17 @@ Deno.test("latency summaries retain failures and separate session cohorts", () =
   assertEquals(ten.medianMs, 200);
   assertEquals(ten.attempts, 1);
 });
+
+Deno.test("warmups stay raw but do not skew measured percentiles", () => {
+  const rows: Sample[] = Array.from({ length: 20 }, (_, index) => ({
+    scenario: "download",
+    transport: "trellis",
+    startedUnixMs: index,
+    durationMs: index + 1,
+  }));
+  rows.push({ ...rows[0], durationMs: 1000, warmup: true });
+  const [summary] = summarize(rows);
+  assertEquals(summary.attempts, 20);
+  assertEquals(summary.medianMs, 10.5);
+  assertEquals(summary.p95Ms, 19);
+});

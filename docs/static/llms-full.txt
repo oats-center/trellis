@@ -369,10 +369,30 @@ Bindings are runtime internals. Use generated resource handles instead of
 constructing Trellis storage subjects or opening internal buckets. This does not
 constrain the application's own database or external storage clients.
 
-Store and transfer APIs support streaming. Whole-buffer helpers collect the
-entire value in memory. Transfers authenticate cancellation and completion;
-successful completion verifies size and SHA-256. Frame sizes are bounded by the
-grant, up to 1 MiB.
+Store and transfer APIs support streaming. Shared Store adapters pull finite,
+byte-capped batches on demand and verify chunk order/count, size, and SHA-256
+before successful EOF. Partial output is not a verified complete object.
+Backend consumer expiry does not impose a reader idle limit: reads resume at the
+exact next chunk while the pinned connection and stored chunks remain available.
+Consumers are cleaned up before their generation lease is released; native
+ObjectStore links are unsupported. Whole-buffer helpers collect the entire value
+in memory, so bounded adapter buffering is not a whole-process memory guarantee.
+Transfer v2 uses raw-byte one-way NATS DATA with bounded
+frame/byte windows and cumulative consumed credit, not a request/reply per chunk.
+Grants bind logical connection/session identities and exact session subjects,
+never physical storage names, backend protocols, credentials, or presigned URLs.
+Use generated upload Operations and high-level download helpers rather than
+constructing grants. In-flight transfers pin their admitting transport generation;
+authority growth does not migrate them and physical disconnect interrupts them.
+
+Transfers authenticate cancellation and completion and independently verify size
+and SHA-256. Frames are bounded by negotiated peer payload limits, up to 1 MiB.
+Credit follows downstream consumption, not durable persistence. Upload success
+requires completed backend staging and durable Operation transfer commit before
+the handler runs. Watch transfer progress is monotonic and may be coalesced:
+`chunkIndex`/`chunkBytes` identify the latest credited frame represented, not one
+event per frame. Final persisted `transferredBytes` is exact. Interrupted uploads
+restart from byte zero; partial replay/resumption is not supported.
 
 Store and file metadata listing is key-sorted keyset pagination. The limit
 defaults to 100 and must be at most 500. Cursors are opaque and bound to the

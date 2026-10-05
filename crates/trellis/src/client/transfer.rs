@@ -1,40 +1,43 @@
-use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
-
-use async_nats::header::HeaderMap;
+use super::{TransportLease, TrellisClient, TrellisClientError};
+use crate::{
+    data_plane::{
+        credit::CreditScheduler,
+        flow::{FlowLimits, SenderWindow},
+    },
+    service::transfer::{
+        self,
+        wire::{self, TransferPeer},
+    },
+};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use bytes::Bytes;
-use serde::{Deserialize, Serialize};
+use futures_util::StreamExt;
 use sha2::{Digest as _, Sha256};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::watch;
+use std::{collections::VecDeque, sync::atomic::Ordering};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    sync::watch,
+};
+use trellis_protocol::transfer::*;
 
-use crate::client::connection::signed_headers;
-use crate::client::{SessionAuth, TrellisClient, TrellisClientError};
+pub use crate::service::transfer::{DownloadTransferGrant, TransferIdentity, UploadTransferGrant};
+pub use trellis_protocol::transfer::TransferFileInfo as FileInfo;
 
-const TRANSFER_SEQUENCE_HEADER: &str = "trellis-transfer-seq";
-const TRANSFER_EOF_HEADER: &str = "trellis-transfer-eof";
-const TRANSFER_CONTROL_HEADER: &str = "trellis-transfer-control";
-const MAX_TRANSFER_CHUNK_BYTES: u64 = 1024 * 1024;
-
-/// Cloneable cancellation signal for an active transfer.
+/// Cloneable cancellation for an active transfer.
 #[derive(Debug, Clone)]
 pub struct TransferCancellation {
     sender: watch::Sender<bool>,
 }
-
 impl TransferCancellation {
-    /// Create a cancellation signal in the active state.
+    /// Create an active cancellation signal.
     pub fn new() -> Self {
         let (sender, _) = watch::channel(false);
         Self { sender }
     }
-
-    /// Request transfer cancellation.
+    /// Request terminal cancellation.
     pub fn cancel(&self) {
         self.sender.send_replace(true);
     }
-
     async fn cancelled(&self) {
         let mut receiver = self.sender.subscribe();
         while !*receiver.borrow_and_update() {
@@ -43,183 +46,309 @@ impl TransferCancellation {
             }
         }
     }
-
-    fn is_cancelled(&self) -> bool {
-        *self.sender.borrow()
-    }
 }
-
 impl Default for TransferCancellation {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Metadata verified after a completed download or committed upload.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct FileInfo {
-    /// Logical object key within the authorized store resource.
-    pub key: String,
-    /// Complete object size in bytes.
-    pub size: u64,
-    /// Backend commit timestamp encoded as RFC 3339.
-    pub updated_at: String,
-    /// Required SHA-256 digest used for independent end-to-end verification.
-    pub digest: String,
-    /// Media type retained with the object when one was supplied.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content_type: Option<String>,
-    /// Application metadata retained with the object.
-    pub metadata: BTreeMap<String, String>,
+fn fail(value: impl std::fmt::Display) -> TrellisClientError {
+    TrellisClientError::TransferProtocol(value.to_string())
 }
-
-/// Short-lived, session-bound authority to upload one object.
-///
-/// The client must use the declared subject and frame size unchanged. Completion
-/// is accepted only after the receiver verifies the authenticated size and digest.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct UploadTransferGrant {
-    /// Wire discriminator, always `TransferGrant`.
-    #[serde(rename = "type")]
-    pub type_name: TransferGrantType,
-    /// Caller-to-service transfer direction, always `send`.
-    pub direction: UploadTransferDirection,
-    /// Service that issued and serves this grant.
-    pub service: String,
-    /// Session public key to which this grant is bound.
-    pub session_key: String,
-    /// Unique transfer identifier included in signed frame proofs.
-    pub transfer_id: String,
-    /// Exact NATS endpoint authorized for this upload.
-    pub subject: String,
-    /// Grant expiry encoded as RFC 3339.
-    pub expires_at: String,
-    /// Maximum bytes in one non-completion data frame.
-    #[serde(deserialize_with = "deserialize_chunk_bytes")]
-    pub chunk_bytes: u64,
-    /// Optional complete-object size limit enforced by the receiver.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_bytes: Option<u64>,
-    /// Media type to retain with the committed object.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content_type: Option<String>,
-    /// Application metadata to retain with the committed object.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<BTreeMap<String, String>>,
-}
-
-/// Short-lived, session-bound authority to download one verified object.
-///
-/// Download requests pull one frame at a time. The client verifies the final
-/// byte count and digest against [`DownloadTransferGrant::info`].
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct DownloadTransferGrant {
-    /// Wire discriminator, always `TransferGrant`.
-    #[serde(rename = "type")]
-    pub type_name: TransferGrantType,
-    /// Service-to-caller transfer direction, always `receive`.
-    pub direction: DownloadTransferDirection,
-    /// Service that issued and serves this grant.
-    pub service: String,
-    /// Session public key to which this grant is bound.
-    pub session_key: String,
-    /// Unique transfer identifier included in signed frame proofs.
-    pub transfer_id: String,
-    /// Exact NATS endpoint authorized for this download.
-    pub subject: String,
-    /// Grant expiry encoded as RFC 3339.
-    pub expires_at: String,
-    /// Maximum bytes returned in one data frame.
-    #[serde(deserialize_with = "deserialize_chunk_bytes")]
-    pub chunk_bytes: u64,
-    /// Expected committed object metadata used for final verification.
-    pub info: FileInfo,
-}
-
-/// Transfer grant wire discriminator.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum TransferGrantType {
-    /// Identifies a transfer grant.
-    #[serde(rename = "TransferGrant")]
-    TransferGrant,
-}
-
-/// Caller-to-service transfer direction.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum UploadTransferDirection {
-    /// The caller sends bytes to the service.
-    #[serde(rename = "send")]
-    Send,
-}
-
-/// Service-to-caller transfer direction.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum DownloadTransferDirection {
-    /// The caller receives bytes from the service.
-    #[serde(rename = "receive")]
-    Receive,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "status", rename_all = "lowercase")]
-enum UploadAck {
-    Continue,
-    Complete { info: FileInfo },
-    Cancelled,
-}
-
-#[derive(Serialize)]
-#[serde(tag = "action", rename_all = "lowercase")]
-enum UploadControl<'a> {
-    Complete { size: u64, digest: &'a str },
-    Cancel,
-}
-
-fn upload_headers(
-    auth: &SessionAuth,
-    context_digest: &str,
-    subject: &str,
-    reply: &str,
-    payload: &[u8],
-    seq: u64,
-    control: Option<&str>,
-) -> Result<HeaderMap, TrellisClientError> {
-    let proof_payload = crate::service::transfer_frame_proof_payload(seq, control, payload);
-    let mut headers = signed_headers(auth, context_digest, subject, reply, &proof_payload)?;
-    headers.insert(TRANSFER_SEQUENCE_HEADER, seq.to_string().as_str());
-    if let Some(control) = control {
-        headers.insert(TRANSFER_CONTROL_HEADER, control);
+async fn cancelled(signal: Option<&TransferCancellation>) {
+    match signal {
+        Some(signal) => signal.cancelled().await,
+        None => std::future::pending().await,
     }
-    Ok(headers)
 }
 
-fn transfer_chunk_size(chunk_bytes: u64) -> Result<usize, TrellisClientError> {
-    if !(1..=MAX_TRANSFER_CHUNK_BYTES).contains(&chunk_bytes) {
-        return Err(TrellisClientError::TransferProtocol(format!(
-            "transfer chunk size must be between 1 and {MAX_TRANSFER_CHUNK_BYTES} bytes, got {chunk_bytes}"
-        )));
+/// Exact immutable grant coordinates shared by the two streaming directions.
+struct Coordinates<'a> {
+    id: &'a str,
+    expires: &'a str,
+    provider: &'a TransferIdentity,
+    consumer: &'a TransferIdentity,
+    data: &'a str,
+    control: &'a str,
+    signal: &'a str,
+    direction: TransferDirection,
+    max_frame: u64,
+    frames: u64,
+    bytes: u64,
+}
+
+fn validate_coordinates(
+    client: &TrellisClient,
+    coordinates: &Coordinates<'_>,
+    format: &str,
+    kind: &str,
+    direction: &str,
+) -> Result<(), TrellisClientError> {
+    if format != TRANSFER_VERSION
+        || kind != "TransferGrant"
+        || direction
+            != match coordinates.direction {
+                TransferDirection::Send => "send",
+                TransferDirection::Receive => "receive",
+            }
+    {
+        return Err(fail("invalid Transfer v2 grant discriminator"));
     }
-    usize::try_from(chunk_bytes).map_err(|_| {
-        TrellisClientError::TransferProtocol(
-            "transfer chunk size does not fit in usize".to_string(),
+    if coordinates.consumer.session_key != client.auth().session_key
+        || coordinates.consumer.connection_id != client.own_connection_id()?
+    {
+        return Err(fail("transfer grant consumer identity mismatch"));
+    }
+    transfer::transfer_expiry_delay(coordinates.expires).map_err(fail)?;
+    Ok(())
+}
+
+struct Active {
+    lease: TransportLease,
+    signals: async_nats::Subscriber,
+    data: Option<async_nats::Subscriber>,
+    peer: TransferPeer,
+    local: TransferPeer,
+    max_frame: u64,
+}
+
+async fn activate(
+    client: &TrellisClient,
+    coordinates: &Coordinates<'_>,
+    cancellation: Option<&TransferCancellation>,
+) -> Result<Active, TrellisClientError> {
+    let publish = match coordinates.direction {
+        TransferDirection::Send => {
+            vec![coordinates.data.to_owned(), coordinates.control.to_owned()]
+        }
+        TransferDirection::Receive => vec![coordinates.control.to_owned()],
+    };
+    let mut subscribe = vec![coordinates.signal.to_owned()];
+    if coordinates.direction == TransferDirection::Receive {
+        subscribe.push(coordinates.data.to_owned());
+    }
+    let deadline = client.transport_deadline();
+    let lease = tokio::select! { biased; _ = cancelled(cancellation) => return Err(TrellisClientError::TransferCancelled), result = client.acquire_transport(&publish, &subscribe, deadline) => result? };
+    let mut signals = lease
+        .nats()
+        .subscribe(coordinates.signal.to_owned())
+        .await
+        .map_err(fail)?;
+    let data = if coordinates.direction == TransferDirection::Receive {
+        Some(
+            lease
+                .nats()
+                .subscribe(coordinates.data.to_owned())
+                .await
+                .map_err(fail)?,
         )
+    } else {
+        None
+    };
+    lease.nats().flush().await.map_err(fail)?;
+    let max_frame = coordinates.max_frame.min(
+        negotiate_transfer_max_frame_bytes(
+            lease.nats().server_info().max_payload as u64,
+            lease.nats().server_info().max_payload as u64,
+        )
+        .map_err(fail)?,
+    );
+    let body = TransferControl::Activate {
+        format: TransferFormat::V2,
+        kind: TransferControlKind::Control,
+        transfer_id: coordinates.id.into(),
+        control_seq: U64s::new(1),
+        received_seq: U64s::new(0),
+        consumed_seq: U64s::new(0),
+        receive_max_frame_bytes: max_frame,
+    };
+    let payload = Bytes::from(serde_json::to_vec(&body)?);
+    let descriptor = TransferFrameDescriptor {
+        transfer_id: coordinates.id.into(),
+        direction: coordinates.direction,
+        sequence: U64s::new(1),
+        kind: TransferFrameKind::Control,
+        terminal: None,
+    };
+    let headers = wire::caller_headers(
+        client,
+        coordinates.control,
+        coordinates.signal,
+        &descriptor,
+        &payload,
+    )
+    .map_err(fail)?;
+    let request_id = wire::header(&headers, "request-id").map_err(fail)?;
+    let local = TransferPeer::retain(
+        client.authorization_provider(),
+        &client.authorization_context_digest()?,
+        coordinates.consumer,
+        None,
+    )
+    .await
+    .map_err(fail)?;
+    lease
+        .nats()
+        .publish_with_reply_and_headers(
+            coordinates.control.to_owned(),
+            coordinates.signal.to_owned(),
+            headers,
+            payload.clone(),
+        )
+        .await
+        .map_err(fail)?;
+    let wait = async {
+        let mut cancelled_sent = false;
+        loop {
+            let message = tokio::select! {
+                _ = cancelled(cancellation), if !cancelled_sent => {
+                    local.guard.reconcile().await.map_err(|error| fail(format!("activation cancellation authority: {error:?}")))?;
+                    // Activation has not returned: no DATA has been authenticated or consumed.
+                    let body = TransferControl::Cancel { format: TransferFormat::V2, kind: TransferControlKind::Control, transfer_id: coordinates.id.into(), control_seq: U64s::new(2), received_seq: U64s::new(0), consumed_seq: U64s::new(0), consumed_bytes: U64s::new(0) };
+                    let payload = Bytes::from(serde_json::to_vec(&body)?);
+                    let descriptor = TransferFrameDescriptor { transfer_id: coordinates.id.into(), direction: coordinates.direction, sequence: U64s::new(2), kind: TransferFrameKind::Control, terminal: None };
+                    let headers = wire::caller_headers(client, coordinates.control, coordinates.signal, &descriptor, &payload).map_err(fail)?;
+                    lease.nats().publish_with_reply_and_headers(coordinates.control.to_owned(), coordinates.signal.to_owned(), headers, payload.clone()).await.map_err(fail)?;
+                    transfer::telemetry::frame(&descriptor, &payload, "client-tx");
+                    cancelled_sent = true;
+                    continue;
+                },
+                message = signals.next() => message,
+            }
+                .ok_or_else(|| fail("transfer signal subscription closed"))?;
+            if message.subject.as_str() != coordinates.signal {
+                continue;
+            }
+            let descriptor = match wire::descriptor(&message, coordinates.id, coordinates.direction)
+            {
+                Ok(value) if value.kind == TransferFrameKind::Signal => value,
+                _ => continue,
+            };
+            let headers = message
+                .headers
+                .as_ref()
+                .ok_or_else(|| fail("signal headers missing"))?;
+            let digest = wire::header(headers, "authorization-context").map_err(fail)?;
+            let peer = match TransferPeer::retain(
+                client.authorization_provider(),
+                &digest,
+                coordinates.provider,
+                None,
+            )
+            .await
+            {
+                Ok(peer) => peer,
+                Err(_) => continue,
+            };
+            if peer.verify_provider(&message, &descriptor).await.is_err() {
+                continue;
+            }
+            match parse_transfer_signal(&message.payload).map_err(fail)? {
+                TransferSignal::Activated {
+                    request_id: received_request,
+                    control_seq,
+                    max_frame_bytes,
+                    window_frames,
+                    window_bytes,
+                    ..
+                } if !cancelled_sent
+                    && received_request == request_id
+                    && control_seq.get() == 1
+                    && max_frame_bytes <= max_frame
+                    && window_frames == coordinates.frames
+                    && window_bytes == coordinates.bytes =>
+                {
+                    return Ok((peer, max_frame_bytes))
+                }
+                TransferSignal::Error { code, .. } => {
+                    return Err(fail(format!("transfer activation failed: {code:?}")))
+                }
+                TransferSignal::Cancelled { .. } if cancelled_sent => {
+                    return Err(TrellisClientError::TransferCancelled)
+                }
+                _ => continue,
+            }
+        }
+    };
+    let (peer, max_frame) = tokio::select! {
+        _ = lease.wait_lost() => return Err(fail("transfer pinned transport lost during activation")),
+        result = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), wait) => result.map_err(|_| TrellisClientError::Timeout)??,
+    };
+    Ok(Active {
+        lease,
+        signals,
+        data,
+        peer,
+        local,
+        max_frame,
     })
 }
 
-fn deserialize_chunk_bytes<'de, D>(deserializer: D) -> Result<u64, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let chunk_bytes = u64::deserialize(deserializer)?;
-    if !(1..=MAX_TRANSFER_CHUNK_BYTES).contains(&chunk_bytes) {
-        return Err(serde::de::Error::custom(format!(
-            "transfer chunk size must be between 1 and {MAX_TRANSFER_CHUNK_BYTES} bytes"
-        )));
+async fn verified_signal(
+    active: &TransferPeer,
+    message: async_nats::Message,
+    coordinates: &Coordinates<'_>,
+) -> Result<Option<TransferSignal>, TrellisClientError> {
+    if message.subject.as_str() != coordinates.signal {
+        return Ok(None);
     }
-    Ok(chunk_bytes)
+    let descriptor = match wire::descriptor(&message, coordinates.id, coordinates.direction) {
+        Ok(value) if value.kind == TransferFrameKind::Signal => value,
+        _ => return Ok(None),
+    };
+    if active.verify_provider(&message, &descriptor).await.is_err() {
+        return Ok(None);
+    }
+    Ok(Some(parse_transfer_signal(&message.payload).map_err(fail)?))
+}
+
+async fn publish_control(
+    client: &TrellisClient,
+    active: &Active,
+    coordinates: &Coordinates<'_>,
+    body: TransferControl,
+) -> Result<(), TrellisClientError> {
+    active
+        .local
+        .guard
+        .reconcile()
+        .await
+        .map_err(|e| fail(format!("transfer local authority: {e:?}")))?;
+    active
+        .peer
+        .guard
+        .check_now()
+        .map_err(|e| fail(format!("transfer peer authority: {e:?}")))?;
+    let payload = Bytes::from(serde_json::to_vec(&body)?);
+    let descriptor = TransferFrameDescriptor {
+        transfer_id: coordinates.id.into(),
+        direction: coordinates.direction,
+        sequence: body.control_seq(),
+        kind: TransferFrameKind::Control,
+        terminal: None,
+    };
+    let headers = wire::caller_headers(
+        client,
+        coordinates.control,
+        coordinates.signal,
+        &descriptor,
+        &payload,
+    )
+    .map_err(fail)?;
+    active
+        .lease
+        .nats()
+        .publish_with_reply_and_headers(
+            coordinates.control.to_owned(),
+            coordinates.signal.to_owned(),
+            headers,
+            payload.clone(),
+        )
+        .await
+        .map_err(fail)?;
+    transfer::telemetry::frame(&descriptor, &payload, "client-tx");
+    Ok(())
 }
 
 pub(crate) async fn put_upload_grant(
@@ -227,885 +356,419 @@ pub(crate) async fn put_upload_grant(
     grant: &UploadTransferGrant,
     body: impl AsRef<[u8]>,
 ) -> Result<FileInfo, TrellisClientError> {
-    let bytes = body.as_ref();
-    let mut reader = std::io::Cursor::new(bytes);
-    put_upload_grant_from(client, grant, &mut reader).await
+    put_upload_grant_from(client, grant, &mut std::io::Cursor::new(body.as_ref())).await
 }
-
-pub(crate) async fn put_upload_grant_from<R>(
+pub(crate) async fn put_upload_grant_from<R: AsyncRead + Unpin + Send + ?Sized>(
     client: &TrellisClient,
     grant: &UploadTransferGrant,
     reader: &mut R,
-) -> Result<FileInfo, TrellisClientError>
-where
-    R: AsyncRead + Unpin + Send + ?Sized,
-{
+) -> Result<FileInfo, TrellisClientError> {
     put_upload_grant_from_with_cancel(client, grant, reader, None).await
 }
 
-pub(crate) async fn put_upload_grant_from_with_cancel<R>(
+pub(crate) async fn put_upload_grant_from_with_cancel<R: AsyncRead + Unpin + Send + ?Sized>(
     client: &TrellisClient,
     grant: &UploadTransferGrant,
     reader: &mut R,
     cancellation: Option<&TransferCancellation>,
-) -> Result<FileInfo, TrellisClientError>
-where
-    R: AsyncRead + Unpin + Send + ?Sized,
-{
-    validate_grant(&grant.session_key, client)?;
-    let max_chunk = transfer_chunk_size(grant.chunk_bytes)?;
-    let context_digest = client.authorization_context_digest()?;
-    // Pin one generation for the whole upload transfer; every chunk and the
-    // cancel path use this exact physical attachment.
-    let deadline = client.transport_deadline();
-    let subscribe = [format!("{}.>", client.inbox_prefix())];
-    let acquire =
-        client.acquire_transport(std::slice::from_ref(&grant.subject), &subscribe, deadline);
-    let lease = if let Some(cancellation) = cancellation {
-        tokio::select! {
-            biased;
-            () = cancellation.cancelled() => return Err(TrellisClientError::TransferCancelled),
-            result = acquire => result?,
-        }
-    } else {
-        acquire.await?
+) -> Result<FileInfo, TrellisClientError> {
+    parse_transfer_grant(&serde_json::to_vec(grant)?).map_err(fail)?;
+    let coordinates = Coordinates {
+        id: &grant.transfer_id,
+        expires: &grant.expires_at,
+        provider: &grant.provider,
+        consumer: &grant.consumer,
+        data: &grant.data_subject,
+        control: &grant.control_subject,
+        signal: &grant.signal_subject,
+        direction: TransferDirection::Send,
+        max_frame: grant.max_frame_bytes,
+        frames: grant.window_frames,
+        bytes: grant.window_bytes,
     };
-    let nats = lease.nats();
-    // Acquisition is charged against the first physical exchange; later chunks
-    // keep their ordinary per-exchange timeout.
-    let mut first_deadline = Some(deadline);
-    let mut seq: u64 = 0;
-    let mut transferred = 0_u64;
+    validate_coordinates(
+        client,
+        &coordinates,
+        &grant.format,
+        &grant.type_name,
+        &grant.direction,
+    )?;
+    let mut active = activate(client, &coordinates, cancellation).await?;
+    let window = SenderWindow::new(FlowLimits {
+        max_frame_bytes: active.max_frame,
+        window_frames: grant.window_frames,
+        window_bytes: grant.window_bytes,
+    });
+    let mut changes = active.peer.guard.subscribe_changes();
+    let mut local_changes = active.local.guard.subscribe_changes();
+    let expiry =
+        tokio::time::sleep(transfer::transfer_expiry_delay(&grant.expires_at).map_err(fail)?);
+    tokio::pin!(expiry);
+    let mut source_done = false;
+    let mut complete_sent = false;
+    let mut cancelled_sent = false;
+    let mut transferred = 0u64;
+    let mut consumed_bytes = 0;
     let mut hasher = Sha256::new();
-    let mut buffer = vec![0_u8; max_chunk];
-
-    loop {
-        let count = if let Some(cancellation) = cancellation {
-            tokio::select! {
-                biased;
-                () = cancellation.cancelled() => {
-                    send_transfer_cancel(nats, client.auth(), client.timeout_ms(), &grant.subject, &context_digest, seq).await?;
-                    return Err(TrellisClientError::TransferCancelled);
+    let observation = transfer::telemetry::observation(TransferDirection::Send, "client");
+    let mut staged: Option<transfer::telemetry::Payload> = None;
+    let mut buffer = vec![0u8; active.max_frame as usize];
+    let outcome = async {
+        loop {
+            if let Some(bytes) = &staged {
+                if window.validate_frame_slot(bytes.len() as u64, active.max_frame).is_ok() {
+                    active.local.guard.reconcile().await.map_err(|e| fail(format!("upload local authority: {e:?}")))?;
+                    active.peer.guard.check_now().map_err(|e| fail(format!("upload peer authority: {e:?}")))?;
+                    let seq = window.next_frame_seq().map_err(|e| fail(format!("upload sequence: {e:?}")))?;
+                    let bytes = staged.take().ok_or_else(|| fail("upload staged frame missing"))?;
+                    let next = transferred.checked_add(bytes.len() as u64).ok_or_else(|| fail("upload size overflow"))?;
+                    if grant.max_bytes.is_some_and(|max| next > max) { return Err(fail("upload exceeds object limit")); }
+                    let descriptor = TransferFrameDescriptor { transfer_id: grant.transfer_id.clone(), direction: TransferDirection::Send, sequence: U64s::new(seq), kind: TransferFrameKind::Data, terminal: None };
+                    let headers = wire::caller_headers(client, &grant.data_subject, &grant.signal_subject, &descriptor, &bytes).map_err(fail)?;
+                    hasher.update(&bytes);
+                    let len = bytes.len() as u64;
+                    active.lease.nats().publish_with_reply_and_headers(grant.data_subject.clone(), grant.signal_subject.clone(), headers, bytes.bytes.clone()).await.map_err(fail)?;
+                    transfer::telemetry::frame(&descriptor, &bytes, "client-tx");
+                    window.commit_frame(seq, len).map_err(|e| fail(format!("upload sender window: {e:?}")))?;
+                    transferred = next;
+                    continue;
                 }
-                count = reader.read(&mut buffer) => match count {
-                    Ok(count) => count,
-                    Err(error) => {
-                        let _ = send_transfer_cancel(nats, client.auth(), client.timeout_ms(), &grant.subject, &context_digest, seq).await;
-                        return Err(error.into());
+            }
+            if source_done && !complete_sent && staged.is_none() && !cancelled_sent {
+                let body = TransferComplete { format: TransferFormat::V2, kind: TransferCompleteKind::Complete, transfer_id: grant.transfer_id.clone(), final_seq: U64s::new(window.highest_sent.load(Ordering::Acquire)), size: transferred, digest: format!("SHA-256={}", URL_SAFE_NO_PAD.encode(hasher.clone().finalize())) };
+                let payload = Bytes::from(serde_json::to_vec(&body)?);
+                let descriptor = TransferFrameDescriptor { transfer_id: grant.transfer_id.clone(), direction: TransferDirection::Send, sequence: body.final_seq, kind: TransferFrameKind::Complete, terminal: None };
+                let headers = wire::caller_headers(client, &grant.data_subject, &grant.signal_subject, &descriptor, &payload).map_err(fail)?;
+                active.lease.nats().publish_with_reply_and_headers(grant.data_subject.clone(), grant.signal_subject.clone(), headers, payload).await.map_err(fail)?;
+                complete_sent = true;
+            }
+            tokio::select! {
+                _ = &mut expiry => return Err(fail("upload grant expired")),
+                _ = active.lease.wait_lost() => return Err(fail("upload pinned transport lost")),
+                failure = wire::authority_failure(&active.local, &active.peer) => return Err(fail(failure)),
+                _ = changes.recv() => { active.peer.guard.check_now().map_err(|e| fail(format!("upload authority lost: {e:?}")))?; },
+                _ = local_changes.recv() => { active.local.guard.reconcile().await.map_err(|e| fail(format!("upload local authority lost: {e:?}")))?; },
+                _ = cancelled(cancellation), if !cancelled_sent => {
+                    publish_control(client, &active, &coordinates, TransferControl::Cancel { format: TransferFormat::V2, kind: TransferControlKind::Control, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(2), received_seq: U64s::new(window.highest_received.load(Ordering::Acquire)), consumed_seq: U64s::new(window.highest_consumed.load(Ordering::Acquire)), consumed_bytes: U64s::new(consumed_bytes) }).await?;
+                    cancelled_sent = true;
+                    staged.take();
+                },
+                count = reader.read(&mut buffer), if !source_done && staged.is_none() && !cancelled_sent => {
+                    let count = count?;
+                    if count == 0 { source_done = true; }
+                    else { let mut frame = std::mem::replace(&mut buffer, vec![0u8; active.max_frame as usize]); frame.truncate(count); staged = Some(transfer::telemetry::Payload::new(Bytes::from(frame.into_boxed_slice()), TransferDirection::Send, "client-tx")); }
+                },
+                message = active.signals.next() => {
+                    let message = message.ok_or_else(|| fail("upload signal subscription closed"))?;
+                    match verified_signal(&active.peer, message, &coordinates).await? {
+                        Some(TransferSignal::Credit { received_seq, consumed_seq, consumed_bytes: bytes, .. }) => {
+                            if bytes.get() < consumed_bytes || bytes.get() > transferred { return Err(fail("invalid upload consumed byte cursor")); }
+                            window.apply_credit(received_seq.get(), consumed_seq.get(), Some(bytes.get())).map_err(|e| fail(format!("upload credit: {e:?}")))?;
+                            consumed_bytes = bytes.get();
+                        },
+                        Some(TransferSignal::Committed { final_seq, info, .. }) => {
+                            if !complete_sent || final_seq.get() != window.highest_sent.load(Ordering::Acquire) || info.size != transferred || !transfer::transfer_digests_match(&info.digest, &format!("SHA-256={}", URL_SAFE_NO_PAD.encode(hasher.clone().finalize()))) { return Err(fail("upload committed metadata mismatch")); }
+                            return Ok(info);
+                        },
+                        Some(TransferSignal::Cancelled { .. }) if cancelled_sent => return Err(TrellisClientError::TransferCancelled),
+                        Some(TransferSignal::Error { code, .. }) => return Err(fail(format!("upload failed: {code:?}"))),
+                        _ => {},
                     }
                 },
             }
-        } else {
-            match reader.read(&mut buffer).await {
-                Ok(count) => count,
-                Err(error) => {
-                    let _ = send_transfer_cancel(
-                        nats,
-                        client.auth(),
-                        client.timeout_ms(),
-                        &grant.subject,
-                        &context_digest,
-                        seq,
-                    )
-                    .await;
-                    return Err(error.into());
-                }
-            }
-        };
-        if count == 0 {
-            break;
         }
-        let chunk = &buffer[..count];
-        let next = transferred.checked_add(count as u64).ok_or_else(|| {
-            TrellisClientError::TransferProtocol("upload size overflow".to_string())
-        })?;
-        if let Some(max_bytes) = grant.max_bytes {
-            if next > max_bytes {
-                let _ = send_transfer_cancel(
-                    nats,
-                    client.auth(),
-                    client.timeout_ms(),
-                    &grant.subject,
-                    &context_digest,
-                    seq,
-                )
-                .await;
-                return Err(TrellisClientError::TransferProtocol(format!(
-                    "upload exceeds max bytes: attempted {next}, max {max_bytes}"
-                )));
-            }
-        }
-        let reply = nats.new_inbox();
-        let headers = upload_headers(
-            client.auth(),
-            &context_digest,
-            &grant.subject,
-            &reply,
-            chunk,
-            seq,
-            None,
-        )?;
-        let request = async_nats::Request::new()
-            .inbox(reply)
-            .headers(headers)
-            .payload(Bytes::copy_from_slice(chunk));
-        let chunk_timeout = match first_deadline.take() {
-            Some(deadline) => deadline.saturating_duration_since(Instant::now()),
-            None => Duration::from_millis(client.timeout_ms()),
-        };
-        let response = {
-            let request = tokio::time::timeout(
-                chunk_timeout,
-                nats.send_request(grant.subject.clone(), request),
-            );
-            tokio::pin!(request);
-            if let Some(cancellation) = cancellation {
-                tokio::select! {
-                    biased;
-                    () = cancellation.cancelled() => None,
-                    response = &mut request => Some(response),
-                }
-            } else {
-                Some(request.await)
-            }
-        };
-        let Some(response) = response else {
-            send_transfer_cancel(
-                nats,
-                client.auth(),
-                client.timeout_ms(),
-                &grant.subject,
-                &context_digest,
-                seq,
-            )
-            .await?;
-            return Err(TrellisClientError::TransferCancelled);
-        };
-        let response = match response {
-            Ok(Ok(response)) => response,
-            Ok(Err(error)) => {
-                let _ = send_transfer_cancel(
-                    nats,
-                    client.auth(),
-                    client.timeout_ms(),
-                    &grant.subject,
-                    &context_digest,
-                    seq,
-                )
-                .await;
-                return Err(TrellisClientError::from(error));
-            }
-            Err(_) => {
-                let _ = send_transfer_cancel(
-                    nats,
-                    client.auth(),
-                    client.timeout_ms(),
-                    &grant.subject,
-                    &context_digest,
-                    seq,
-                )
-                .await;
-                return Err(TrellisClientError::Timeout);
-            }
-        };
-
-        let ack = match parse_upload_ack(response) {
-            Ok(ack) => ack,
-            Err(error) => {
-                let _ = send_transfer_cancel(
-                    nats,
-                    client.auth(),
-                    client.timeout_ms(),
-                    &grant.subject,
-                    &context_digest,
-                    seq,
-                )
-                .await;
-                return Err(error);
-            }
-        };
-        if !matches!(ack, UploadAck::Continue) {
-            let _ = send_transfer_cancel(
-                nats,
-                client.auth(),
-                client.timeout_ms(),
-                &grant.subject,
-                &context_digest,
-                seq,
-            )
-            .await;
-            return Err(TrellisClientError::TransferProtocol(
-                "upload completed before eof frame".into(),
-            ));
-        }
-        hasher.update(chunk);
-        transferred = next;
-        seq = seq.checked_add(1).ok_or_else(|| {
-            TrellisClientError::TransferProtocol("upload sequence overflow".to_string())
-        })?;
+    }.await;
+    if outcome.is_err() && !cancelled_sent {
+        let _ = publish_control(
+            client,
+            &active,
+            &coordinates,
+            TransferControl::Cancel {
+                format: TransferFormat::V2,
+                kind: TransferControlKind::Control,
+                transfer_id: grant.transfer_id.clone(),
+                control_seq: U64s::new(2),
+                received_seq: U64s::new(window.highest_received.load(Ordering::Acquire)),
+                consumed_seq: U64s::new(window.highest_consumed.load(Ordering::Acquire)),
+                consumed_bytes: U64s::new(consumed_bytes),
+            },
+        )
+        .await;
     }
-
-    let digest = format!("SHA-256={}", URL_SAFE_NO_PAD.encode(hasher.finalize()));
-    let completion = serde_json::to_vec(&UploadControl::Complete {
-        size: transferred,
-        digest: &digest,
-    })?;
-
-    let reply = nats.new_inbox();
-    let headers = upload_headers(
-        client.auth(),
-        &context_digest,
-        &grant.subject,
-        &reply,
-        &completion,
-        seq,
-        Some("complete"),
-    )?;
-    let request = async_nats::Request::new()
-        .inbox(reply)
-        .headers(headers)
-        .payload(Bytes::from(completion));
-    let response = tokio::time::timeout(
-        Duration::from_millis(client.timeout_ms()),
-        nats.send_request(grant.subject.clone(), request),
-    )
-    .await
-    .map_err(|_| TrellisClientError::Timeout)?
-    .map_err(TrellisClientError::from)?;
-
-    match parse_upload_ack(response)? {
-        UploadAck::Continue | UploadAck::Cancelled => Err(TrellisClientError::TransferProtocol(
-            "upload finished without completion payload".into(),
-        )),
-        UploadAck::Complete { info } => {
-            if info.size != transferred {
-                return Err(TrellisClientError::TransferProtocol(format!(
-                    "upload result size mismatch: expected {transferred}, got {}",
-                    info.size
-                )));
-            }
-            if !transfer_digests_match(&info.digest, &digest) {
-                return Err(TrellisClientError::TransferProtocol(format!(
-                    "upload result digest mismatch: expected {digest}, got {:?}",
-                    info.digest
-                )));
-            }
-            Ok(info)
-        }
-    }
-}
-
-async fn send_transfer_cancel(
-    nats: &async_nats::Client,
-    auth: &crate::client::SessionAuth,
-    timeout_ms: u64,
-    subject: &str,
-    context_digest: &str,
-    seq: u64,
-) -> Result<(), TrellisClientError> {
-    let payload = Bytes::from(serde_json::to_vec(&UploadControl::Cancel)?);
-    let reply = nats.new_inbox();
-    let headers = upload_headers(
-        auth,
-        context_digest,
-        subject,
-        &reply,
-        &payload,
-        seq,
-        Some("cancel"),
-    )?;
-    let response = tokio::time::timeout(
-        Duration::from_millis(timeout_ms),
-        nats.send_request(
-            subject.to_string(),
-            async_nats::Request::new()
-                .inbox(reply)
-                .headers(headers)
-                .payload(payload),
-        ),
-    )
-    .await
-    .map_err(|_| TrellisClientError::Timeout)?
-    .map_err(TrellisClientError::from)?;
-    if !matches!(parse_upload_ack(response)?, UploadAck::Cancelled) {
-        return Err(TrellisClientError::TransferProtocol(
-            "transfer cancellation was not acknowledged".to_string(),
-        ));
-    }
-    Ok(())
+    observation.finish(if outcome.is_ok() { "ok" } else { "error" });
+    outcome
 }
 
 pub(crate) async fn get_download_grant(
     client: &TrellisClient,
     grant: &DownloadTransferGrant,
 ) -> Result<Vec<u8>, TrellisClientError> {
-    let mut writer = std::io::Cursor::new(Vec::new());
-    get_download_grant_into(client, grant, &mut writer).await?;
-    Ok(writer.into_inner())
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    get_download_grant_into(client, grant, &mut bytes).await?;
+    Ok(bytes.into_inner())
 }
-
-pub(crate) async fn get_download_grant_into<W>(
+pub(crate) async fn get_download_grant_into<W: AsyncWrite + Unpin + Send + ?Sized>(
     client: &TrellisClient,
     grant: &DownloadTransferGrant,
     writer: &mut W,
-) -> Result<FileInfo, TrellisClientError>
-where
-    W: AsyncWrite + Unpin + Send + ?Sized,
-{
+) -> Result<FileInfo, TrellisClientError> {
     get_download_grant_into_with_cancel(client, grant, writer, None).await
 }
 
-pub(crate) async fn get_download_grant_into_with_cancel<W>(
+pub(crate) async fn get_download_grant_into_with_cancel<W: AsyncWrite + Unpin + Send + ?Sized>(
     client: &TrellisClient,
     grant: &DownloadTransferGrant,
     writer: &mut W,
     cancellation: Option<&TransferCancellation>,
-) -> Result<FileInfo, TrellisClientError>
-where
-    W: AsyncWrite + Unpin + Send + ?Sized,
-{
-    // Pin one generation for the whole download transfer, cancelling promptly
-    // even while the generation is being acquired.
-    let deadline = client.transport_deadline();
-    let subscribe = [format!("{}.>", client.inbox_prefix())];
-    let acquire =
-        client.acquire_transport(std::slice::from_ref(&grant.subject), &subscribe, deadline);
-    let lease = if let Some(cancellation) = cancellation {
-        tokio::select! {
-            biased;
-            () = cancellation.cancelled() => return Err(TrellisClientError::TransferCancelled),
-            result = acquire => result?,
-        }
-    } else {
-        acquire.await?
+) -> Result<FileInfo, TrellisClientError> {
+    parse_transfer_grant(&serde_json::to_vec(grant)?).map_err(fail)?;
+    let coordinates = Coordinates {
+        id: &grant.transfer_id,
+        expires: &grant.expires_at,
+        provider: &grant.provider,
+        consumer: &grant.consumer,
+        data: &grant.data_subject,
+        control: &grant.control_subject,
+        signal: &grant.signal_subject,
+        direction: TransferDirection::Receive,
+        max_frame: grant.max_frame_bytes,
+        frames: grant.window_frames,
+        bytes: grant.window_bytes,
     };
-    let nats = lease.nats();
-    let result =
-        get_download_grant_into_inner(client, nats, grant, writer, cancellation, deadline).await;
-    if result.is_err()
-        && !matches!(&result, Err(TrellisClientError::TransferCancelled))
-        && grant.session_key == client.auth().session_key
-    {
-        if let Ok(context_digest) = client.authorization_context_digest() {
-            let _ = send_transfer_cancel(
-                nats,
-                client.auth(),
-                client.timeout_ms(),
-                &grant.subject,
-                &context_digest,
-                0,
-            )
-            .await;
-        }
-    }
-    result
-}
-
-async fn get_download_grant_into_inner<W>(
-    client: &TrellisClient,
-    nats: &async_nats::Client,
-    grant: &DownloadTransferGrant,
-    writer: &mut W,
-    cancellation: Option<&TransferCancellation>,
-    first_deadline: Instant,
-) -> Result<FileInfo, TrellisClientError>
-where
-    W: AsyncWrite + Unpin + Send + ?Sized,
-{
-    validate_grant(&grant.session_key, client)?;
-    transfer_chunk_size(grant.chunk_bytes)?;
-    let expected_digest = &grant.info.digest;
-    let context_digest = client.authorization_context_digest()?;
-
-    let mut expected_seq = 0_u64;
-    let mut transferred = 0_u64;
+    validate_coordinates(
+        client,
+        &coordinates,
+        &grant.format,
+        &grant.type_name,
+        &grant.direction,
+    )?;
+    validate_transfer_digest(&grant.info.digest).map_err(fail)?;
+    let mut active = activate(client, &coordinates, cancellation).await?;
+    let mut data = active
+        .data
+        .take()
+        .ok_or_else(|| fail("download data subscription missing"))?;
+    let received = SenderWindow::new(FlowLimits {
+        max_frame_bytes: active.max_frame,
+        window_frames: grant.window_frames,
+        window_bytes: grant.window_bytes,
+    });
+    let observation = transfer::telemetry::observation(TransferDirection::Receive, "client");
+    let mut queue = VecDeque::<(u64, transfer::telemetry::Payload)>::new();
+    let mut transferred = 0u64;
+    let mut consumed = 0u64;
+    let mut admitted_bytes = 0u64;
     let mut hasher = Sha256::new();
-    let mut next_first_deadline = Some(first_deadline);
-    loop {
-        if cancellation.is_some_and(TransferCancellation::is_cancelled) {
-            send_transfer_cancel(
-                nats,
-                client.auth(),
-                client.timeout_ms(),
-                &grant.subject,
-                &context_digest,
-                expected_seq,
-            )
-            .await?;
-            return Err(TrellisClientError::TransferCancelled);
-        }
-        let reply = nats.new_inbox();
-        let headers = upload_headers(
-            client.auth(),
-            &context_digest,
-            &grant.subject,
-            &reply,
-            &[],
-            expected_seq,
-            None,
-        )?;
-        let request = async_nats::Request::new()
-            .inbox(reply)
-            .headers(headers)
-            .payload(Bytes::new());
-        // Acquisition is charged against the first physical exchange; later
-        // exchanges keep their ordinary per-exchange timeout.
-        let exchange_timeout = match next_first_deadline.take() {
-            Some(deadline) => deadline.saturating_duration_since(Instant::now()),
-            None => Duration::from_millis(client.timeout_ms()),
-        };
-        let response = nats.send_request(grant.subject.clone(), request);
-        let message = if let Some(cancellation) = cancellation {
-            tokio::select! {
-                biased;
-                () = cancellation.cancelled() => {
-                    send_transfer_cancel(
-                        nats,
-                        client.auth(),
-                        client.timeout_ms(),
-                        &grant.subject,
-                        &context_digest,
-                        expected_seq,
-                    ).await?;
-                    return Err(TrellisClientError::TransferCancelled);
-                }
-                response = tokio::time::timeout(exchange_timeout, response) => {
-                    response.map_err(|_| TrellisClientError::Timeout)?
-                }
-            }
-        } else {
-            tokio::time::timeout(exchange_timeout, response)
-                .await
-                .map_err(|_| TrellisClientError::Timeout)?
-        }
-        .map_err(TrellisClientError::from)?;
-
-        if message
-            .headers
-            .as_ref()
-            .and_then(|headers| headers.get("status"))
-            .is_some_and(|status| status.as_str() == "error")
-        {
-            let value: serde_json::Value = serde_json::from_slice(&message.payload)?;
-            return Err(TrellisClientError::TransferProtocol(value.to_string()));
-        }
-
-        let actual_seq = message
-            .headers
-            .as_ref()
-            .and_then(|headers| headers.get(TRANSFER_SEQUENCE_HEADER))
-            .ok_or_else(|| {
-                TrellisClientError::TransferProtocol(
-                    "download frame missing transfer sequence".to_string(),
-                )
-            })?
-            .as_str()
-            .parse::<u64>()
-            .map_err(|_| {
-                TrellisClientError::TransferProtocol(
-                    "download frame has invalid transfer sequence".to_string(),
-                )
-            })?;
-        if actual_seq != expected_seq {
-            return Err(TrellisClientError::TransferProtocol(format!(
-                "download sequence mismatch: expected {expected_seq}, got {actual_seq}"
-            )));
-        }
-        if message.payload.len() as u64 > grant.chunk_bytes {
-            return Err(TrellisClientError::TransferProtocol(format!(
-                "download frame exceeds chunk size: attempted {}, max {}",
-                message.payload.len(),
-                grant.chunk_bytes
-            )));
-        }
-        let next = transferred
-            .checked_add(message.payload.len() as u64)
-            .ok_or_else(|| {
-                TrellisClientError::TransferProtocol("download size overflow".to_string())
-            })?;
-        if next > grant.info.size {
-            return Err(TrellisClientError::TransferProtocol(format!(
-                "download exceeds declared size: attempted {next}, expected {}",
-                grant.info.size
-            )));
-        }
-
-        let eof = message
-            .headers
-            .as_ref()
-            .and_then(|headers| headers.get(TRANSFER_EOF_HEADER))
-            .is_some_and(|value| value.as_str() == "true");
-        if eof {
-            if !message.payload.is_empty() {
-                return Err(TrellisClientError::TransferProtocol(
-                    "download eof frame must be empty".to_string(),
-                ));
-            }
-            if transferred != grant.info.size {
-                return Err(TrellisClientError::TransferProtocol(format!(
-                    "download size mismatch: expected {}, got {transferred}",
-                    grant.info.size
-                )));
-            }
-            let actual_digest = format!("SHA-256={}", URL_SAFE_NO_PAD.encode(hasher.finalize()));
-            if !transfer_digests_match(&actual_digest, expected_digest) {
-                return Err(TrellisClientError::TransferProtocol(format!(
-                    "download digest mismatch: expected {expected_digest}, got {actual_digest}"
-                )));
-            }
-            return Ok(grant.info.clone());
-        }
-
-        let write = writer.write_all(&message.payload);
-        if let Some(cancellation) = cancellation {
-            tokio::select! {
-                biased;
-                () = cancellation.cancelled() => {
-                    send_transfer_cancel(nats, client.auth(), client.timeout_ms(), &grant.subject, &context_digest, expected_seq).await?;
-                    return Err(TrellisClientError::TransferCancelled);
-                }
-                result = write => {
-                    if let Err(error) = result {
-                        let _ = send_transfer_cancel(nats, client.auth(), client.timeout_ms(), &grant.subject, &context_digest, expected_seq).await;
-                        return Err(error.into());
+    let mut eof: Option<TransferTerminal> = None;
+    let mut control_seq = 1u64;
+    let mut scheduler: CreditScheduler = transfer::credit_scheduler();
+    let mut reported = 0u64;
+    let mut reported_bytes = 0u64;
+    let mut changes = active.peer.guard.subscribe_changes();
+    let mut local_changes = active.local.guard.subscribe_changes();
+    let expiry =
+        tokio::time::sleep(transfer::transfer_expiry_delay(&grant.expires_at).map_err(fail)?);
+    tokio::pin!(expiry);
+    let outcome = async {
+        loop {
+            if let Some((seq, bytes)) = queue.pop_front() {
+                let write = writer.write_all(&bytes);
+                tokio::pin!(write);
+                loop {
+                    tokio::select! {
+                        result = &mut write => { result?; break; },
+                        _ = cancelled(cancellation) => return Err(TrellisClientError::TransferCancelled),
+                        _ = active.lease.wait_lost() => return Err(fail("download pinned transport lost")),
+                        failure = wire::authority_failure(&active.local, &active.peer) => return Err(fail(failure)),
+                        _ = &mut expiry => return Err(fail("download grant expired")),
+                        _ = changes.recv() => { active.peer.guard.check_now().map_err(|e| fail(format!("download authority lost: {e:?}")))?; },
+                        _ = local_changes.recv() => { active.local.guard.reconcile().await.map_err(|e| fail(format!("download local authority lost: {e:?}")))?; },
+                        _ = transfer::credit_due(&scheduler) => {
+                            control_seq = control_seq.checked_add(1).ok_or_else(|| fail("control sequence overflow"))?;
+                            publish_control(client, &active, &coordinates, TransferControl::Credit { format: TransferFormat::V2, kind: TransferControlKind::Control, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(control_seq), received_seq: U64s::new(received.highest_sent.load(Ordering::Acquire)), consumed_seq: U64s::new(consumed), consumed_bytes: U64s::new(transferred) }).await?;
+                            reported = consumed; reported_bytes = transferred; scheduler.clear();
+                        },
+                        message = active.signals.next() => {
+                            match verified_signal(&active.peer, message.ok_or_else(|| fail("download signal subscription closed"))?, &coordinates).await? {
+                                Some(TransferSignal::Error { code, .. }) => return Err(fail(format!("download failed: {code:?}"))),
+                                Some(TransferSignal::Cancelled { .. }) => return Err(TrellisClientError::TransferCancelled),
+                                _ => {},
+                            }
+                        },
+                        message = data.next() => {
+                            let message = message.ok_or_else(|| fail("download data subscription closed"))?;
+                            admit_download(&active.peer, message, &coordinates, &received, &mut queue, &mut eof, &mut admitted_bytes, grant.info.size).await?;
+                        },
                     }
                 }
+                hasher.update(&bytes);
+                transferred = transferred.checked_add(bytes.len() as u64).ok_or_else(|| fail("download size overflow"))?;
+                consumed = seq;
+                received.apply_credit(received.highest_sent.load(Ordering::Acquire), consumed, Some(transferred)).map_err(|e| fail(format!("download consumer window: {e:?}")))?;
+                scheduler.note_pending(tokio::time::Instant::now(), consumed - reported, transferred - reported_bytes);
             }
-        } else if let Err(error) = write.await {
-            let _ = send_transfer_cancel(
-                nats,
-                client.auth(),
-                client.timeout_ms(),
-                &grant.subject,
-                &context_digest,
-                expected_seq,
-            )
-            .await;
-            return Err(error.into());
+            if queue.is_empty() {
+                if let Some(terminal) = &eof {
+                    if terminal.final_seq.get() != consumed || terminal.size != transferred || transferred != grant.info.size || !transfer::transfer_digests_match(&terminal.digest, &grant.info.digest) || !transfer::transfer_digests_match(&terminal.digest, &format!("SHA-256={}", URL_SAFE_NO_PAD.encode(hasher.clone().finalize()))) { return Err(fail("download EOF integrity mismatch")); }
+                    control_seq = control_seq.checked_add(1).ok_or_else(|| fail("control sequence overflow"))?;
+                    publish_control(client, &active, &coordinates, TransferControl::EndAck { format: TransferFormat::V2, kind: TransferControlKind::Control, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(control_seq), received_seq: terminal.final_seq, consumed_seq: terminal.final_seq, consumed_bytes: U64s::new(transferred), final_seq: terminal.final_seq }).await?;
+                    active.lease.nats().flush().await.map_err(fail)?;
+                    return Ok(grant.info.clone());
+                }
+            }
+            if scheduler.is_due(tokio::time::Instant::now()) {
+                control_seq = control_seq.checked_add(1).ok_or_else(|| fail("control sequence overflow"))?;
+                publish_control(client, &active, &coordinates, TransferControl::Credit { format: TransferFormat::V2, kind: TransferControlKind::Control, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(control_seq), received_seq: U64s::new(received.highest_sent.load(Ordering::Acquire)), consumed_seq: U64s::new(consumed), consumed_bytes: U64s::new(transferred) }).await?;
+                reported = consumed; reported_bytes = transferred; scheduler.clear();
+            }
+            if !queue.is_empty() { continue; }
+            tokio::select! {
+                _ = cancelled(cancellation) => return Err(TrellisClientError::TransferCancelled),
+                _ = active.lease.wait_lost() => return Err(fail("download pinned transport lost")),
+                failure = wire::authority_failure(&active.local, &active.peer) => return Err(fail(failure)),
+                _ = &mut expiry => return Err(fail("download grant expired")),
+                _ = changes.recv() => { active.peer.guard.check_now().map_err(|e| fail(format!("download authority lost: {e:?}")))?; },
+                _ = local_changes.recv() => { active.local.guard.reconcile().await.map_err(|e| fail(format!("download local authority lost: {e:?}")))?; },
+                _ = transfer::credit_due(&scheduler) => {},
+                message = data.next() => {
+                    admit_download(&active.peer, message.ok_or_else(|| fail("download data subscription closed"))?, &coordinates, &received, &mut queue, &mut eof, &mut admitted_bytes, grant.info.size).await?;
+                },
+                message = active.signals.next() => {
+                    match verified_signal(&active.peer, message.ok_or_else(|| fail("download signal subscription closed"))?, &coordinates).await? {
+                        Some(TransferSignal::Error { code, .. }) => return Err(fail(format!("download failed: {code:?}"))),
+                        Some(TransferSignal::Cancelled { .. }) => return Err(TrellisClientError::TransferCancelled),
+                        _ => {},
+                    }
+                },
+            }
         }
-        hasher.update(&message.payload);
-        transferred = next;
-        expected_seq = expected_seq.checked_add(1).ok_or_else(|| {
-            TrellisClientError::TransferProtocol("download sequence overflow".to_string())
-        })?;
+    }.await;
+    if outcome.is_err() {
+        control_seq = control_seq
+            .checked_add(1)
+            .ok_or_else(|| fail("control sequence overflow"))?;
+        let _ = publish_control(
+            client,
+            &active,
+            &coordinates,
+            TransferControl::Cancel {
+                format: TransferFormat::V2,
+                kind: TransferControlKind::Control,
+                transfer_id: grant.transfer_id.clone(),
+                control_seq: U64s::new(control_seq),
+                received_seq: U64s::new(received.highest_sent.load(Ordering::Acquire)),
+                consumed_seq: U64s::new(consumed),
+                consumed_bytes: U64s::new(transferred),
+            },
+        )
+        .await;
     }
+    observation.finish(if outcome.is_ok() { "ok" } else { "error" });
+    outcome
 }
 
-/// Parse a receive transfer grant from generated SDK or raw JSON values.
-pub fn download_transfer_grant_from_value(
-    value: serde_json::Value,
-) -> Result<DownloadTransferGrant, TrellisClientError> {
-    Ok(serde_json::from_value(value)?)
-}
-
-fn validate_grant(
-    expected_session_key: &str,
-    client: &TrellisClient,
+#[expect(
+    clippy::too_many_arguments,
+    reason = "admission borrows the existing receive-loop state without introducing another owner"
+)]
+async fn admit_download(
+    peer: &TransferPeer,
+    message: async_nats::Message,
+    coordinates: &Coordinates<'_>,
+    window: &SenderWindow,
+    queue: &mut VecDeque<(u64, transfer::telemetry::Payload)>,
+    eof: &mut Option<TransferTerminal>,
+    admitted_bytes: &mut u64,
+    expected_size: u64,
 ) -> Result<(), TrellisClientError> {
-    if expected_session_key != client.auth().session_key {
-        return Err(TrellisClientError::TransferProtocol(
-            "transfer grant session key does not match client session".into(),
-        ));
+    if message.subject.as_str() != coordinates.data {
+        return Ok(());
+    }
+    let descriptor = match wire::descriptor(&message, coordinates.id, coordinates.direction) {
+        Ok(value) => value,
+        Err(_) => return Ok(()),
+    };
+    if peer.verify_provider(&message, &descriptor).await.is_err() {
+        return Ok(());
+    }
+    if eof.is_some() {
+        return Err(fail("download DATA after EOF"));
+    }
+    match descriptor.kind {
+        TransferFrameKind::Data => {
+            window
+                .validate_frame_slot(message.payload.len() as u64, coordinates.max_frame)
+                .map_err(|e| fail(format!("download window violation: {e:?}")))?;
+            if descriptor.sequence.get()
+                != window
+                    .next_frame_seq()
+                    .map_err(|e| fail(format!("download sequence: {e:?}")))?
+            {
+                return Err(fail("verified download delivery gap"));
+            }
+            *admitted_bytes = admitted_bytes
+                .checked_add(message.payload.len() as u64)
+                .ok_or_else(|| fail("download size overflow"))?;
+            if *admitted_bytes > expected_size {
+                return Err(fail("download exceeds declared size"));
+            }
+            window
+                .commit_frame(descriptor.sequence.get(), message.payload.len() as u64)
+                .map_err(|e| fail(format!("download window: {e:?}")))?;
+            queue.push_back((
+                descriptor.sequence.get(),
+                transfer::telemetry::Payload::new(
+                    message.payload,
+                    TransferDirection::Receive,
+                    "client-rx",
+                ),
+            ));
+        }
+        TransferFrameKind::Eof => {
+            let terminal = descriptor
+                .terminal
+                .ok_or_else(|| fail("download EOF missing terminal"))?;
+            if terminal.final_seq.get() != window.highest_sent.load(Ordering::Acquire) {
+                return Err(fail("verified download EOF delivery gap"));
+            }
+            *eof = Some(terminal);
+        }
+        _ => return Err(fail("invalid download frame kind")),
     }
     Ok(())
 }
 
-fn transfer_digests_match(left: &str, right: &str) -> bool {
-    left.trim_end_matches('=') == right.trim_end_matches('=')
-}
-
-fn parse_upload_ack(message: async_nats::Message) -> Result<UploadAck, TrellisClientError> {
-    if message
-        .headers
-        .as_ref()
-        .and_then(|headers| headers.get("status"))
-        .is_some_and(|status| status.as_str() == "error")
-    {
-        let value: serde_json::Value = serde_json::from_slice(&message.payload)?;
-        return Err(TrellisClientError::TransferProtocol(value.to_string()));
+/// Decode a generated SDK receive grant; runtime validates identities before use.
+pub fn download_transfer_grant_from_value(
+    value: serde_json::Value,
+) -> Result<DownloadTransferGrant, TrellisClientError> {
+    if !matches!(
+        parse_transfer_grant(&serde_json::to_vec(&value)?).map_err(fail)?,
+        TransferGrant::Receive(_)
+    ) {
+        return Err(fail("expected receive transfer grant"));
     }
-
-    Ok(serde_json::from_slice(&message.payload)?)
+    Ok(serde_json::from_value(value)?)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::client::proof::{verify_event_proof, VerifyEventProofInput};
-    use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
-    use trellis_protocol::build_authorization_request_proof_input;
-
     use super::*;
-
-    fn test_auth() -> SessionAuth {
-        SessionAuth::from_seed_base64url("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-            .expect("session auth")
-    }
-
-    const TEST_CONTEXT_DIGEST: &str = "byhVYTUxr4iVywgon-utTJesrl5WZVm1MC0PXqCU06c";
-
+    use std::time::Duration;
     #[tokio::test]
     async fn cancellation_cannot_lose_registration_wakeups() {
-        for _ in 0..2_000 {
-            let cancellation = TransferCancellation::new();
-            let waiter = {
-                let cancellation = cancellation.clone();
-                tokio::spawn(async move { cancellation.cancelled().await })
-            };
-            tokio::task::yield_now().await;
-            cancellation.cancel();
-            tokio::time::timeout(Duration::from_secs(1), waiter)
-                .await
-                .expect("cancellation waiter must wake")
-                .expect("cancellation waiter task");
-        }
-    }
+        let cancellation = TransferCancellation::new();
+        cancellation.cancel();
+        tokio::time::timeout(Duration::from_secs(1), cancellation.cancelled())
+            .await
+            .expect("cancellation before registration remains observable");
 
-    #[test]
-    fn transfer_chunk_size_is_bounded() {
-        assert!(transfer_chunk_size(0).is_err());
-        assert_eq!(transfer_chunk_size(6).unwrap(), 6);
-        assert!(transfer_chunk_size(MAX_TRANSFER_CHUNK_BYTES + 1).is_err());
-    }
-
-    #[test]
-    fn transfer_grants_validate_wire_literals_bounds_and_digest() {
-        let upload = serde_json::json!({
-            "type": "TransferGrant",
-            "direction": "send",
-            "service": "service",
-            "sessionKey": "session",
-            "transferId": "transfer",
-            "subject": "transfer.v1.upload.service.transfer",
-            "expiresAt": "2099-01-01T00:00:00Z",
-            "chunkBytes": 1
-        });
-        let upload_grant = serde_json::from_value::<UploadTransferGrant>(upload.clone()).unwrap();
-        assert_eq!(serde_json::to_value(upload_grant).unwrap(), upload);
-
-        let grant = serde_json::json!({
-            "type": "TransferGrant",
-            "direction": "receive",
-            "service": "service",
-            "sessionKey": "session",
-            "transferId": "transfer",
-            "subject": "transfer.v1.download.service.transfer",
-            "expiresAt": "2099-01-01T00:00:00Z",
-            "chunkBytes": 1,
-            "info": {
-                "key": "object",
-                "size": 0,
-                "updatedAt": "2099-01-01T00:00:00Z",
-                "digest": "SHA-256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU",
-                "metadata": {}
-            }
-        });
-        let download_grant =
-            serde_json::from_value::<DownloadTransferGrant>(grant.clone()).unwrap();
-        assert_eq!(serde_json::to_value(download_grant).unwrap(), grant);
-
-        for (field, value) in [("type", "transfer.v1"), ("direction", "download")] {
-            let mut invalid = grant.clone();
-            invalid[field] = value.into();
-            assert!(serde_json::from_value::<DownloadTransferGrant>(invalid).is_err());
-        }
-        for (field, value) in [("type", "transfer.v1"), ("direction", "upload")] {
-            let mut invalid = upload.clone();
-            invalid[field] = value.into();
-            assert!(serde_json::from_value::<UploadTransferGrant>(invalid).is_err());
-        }
-
-        for chunk_bytes in [0, MAX_TRANSFER_CHUNK_BYTES + 1] {
-            let mut invalid = grant.clone();
-            invalid["chunkBytes"] = chunk_bytes.into();
-            assert!(serde_json::from_value::<DownloadTransferGrant>(invalid).is_err());
-        }
-        let mut missing_digest = grant;
-        missing_digest["info"]
-            .as_object_mut()
-            .unwrap()
-            .remove("digest");
-        assert!(serde_json::from_value::<DownloadTransferGrant>(missing_digest).is_err());
-    }
-
-    #[test]
-    fn upload_chunks_match_raw_transfer_sequence() {
-        let body = b"hello world";
-        let chunks: Vec<&[u8]> = body.chunks(transfer_chunk_size(6).unwrap()).collect();
-
-        assert_eq!(chunks, vec![b"hello ".as_slice(), b"world".as_slice()]);
-        assert_eq!(chunks.len() as u64, 2);
-    }
-
-    fn verify_request_proof_headers(
-        auth: &SessionAuth,
-        subject: &str,
-        reply: &str,
-        payload: &[u8],
-        headers: &HeaderMap,
-    ) -> bool {
-        let context_digest: [u8; 32] = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(TEST_CONTEXT_DIGEST)
-            .expect("context digest")
-            .try_into()
-            .expect("context digest bytes");
-        let seq = headers
-            .get(TRANSFER_SEQUENCE_HEADER)
-            .expect("sequence")
-            .as_str()
-            .parse()
-            .expect("sequence integer");
-        let proof_payload = crate::service::transfer_frame_proof_payload(
-            seq,
-            headers
-                .get(TRANSFER_CONTROL_HEADER)
-                .map(async_nats::HeaderValue::as_str),
-            payload,
-        );
-        let input = build_authorization_request_proof_input(
-            &context_digest,
-            subject,
-            Some(reply),
-            &proof_payload,
-            headers
-                .get("iat")
-                .expect("iat")
-                .as_str()
-                .parse()
-                .expect("iat integer"),
-            headers.get("request-id").expect("request-id").as_str(),
-        )
-        .expect("proof input");
-        let public_key = VerifyingKey::from_bytes(
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .decode(&auth.session_key)
-                .expect("session key")
-                .try_into()
-                .expect("session key bytes"),
-        )
-        .expect("public key");
-        let signature = Signature::from_bytes(
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .decode(headers.get("proof").expect("proof").as_str())
-                .expect("proof bytes")
-                .try_into()
-                .expect("proof signature"),
-        );
-        public_key.verify(input.digest(), &signature).is_ok()
-    }
-
-    #[test]
-    fn upload_headers_include_context_proof_sequence_and_control_kind() {
-        let auth = test_auth();
-        let subject = "transfer.v1.upload.test.tx1";
-        let reply = "_INBOX.test.reply";
-        let payload = b"hello ";
-
-        let chunk_headers =
-            upload_headers(&auth, TEST_CONTEXT_DIGEST, subject, reply, payload, 0, None)
-                .expect("chunk headers");
-
-        assert_eq!(
-            chunk_headers
-                .get("session-key")
-                .expect("session-key")
-                .as_str(),
-            auth.session_key
-        );
-        assert_eq!(
-            chunk_headers
-                .get("authorization-context")
-                .expect("authorization-context")
-                .as_str(),
-            TEST_CONTEXT_DIGEST
-        );
-        assert!(verify_request_proof_headers(
-            &auth,
-            subject,
-            reply,
-            payload,
-            &chunk_headers
-        ));
-        assert_eq!(
-            chunk_headers
-                .get(TRANSFER_SEQUENCE_HEADER)
-                .expect("sequence")
-                .as_str(),
-            "0"
-        );
-        assert!(chunk_headers.get(TRANSFER_EOF_HEADER).is_none());
-
-        let eof_headers = upload_headers(
-            &auth,
-            TEST_CONTEXT_DIGEST,
-            subject,
-            reply,
-            &[],
-            2,
-            Some("complete"),
-        )
-        .expect("control headers");
-
-        assert_eq!(
-            eof_headers
-                .get(TRANSFER_SEQUENCE_HEADER)
-                .expect("eof sequence")
-                .as_str(),
-            "2"
-        );
-        assert_eq!(
-            eof_headers
-                .get(TRANSFER_CONTROL_HEADER)
-                .expect("control marker")
-                .as_str(),
-            "complete"
-        );
-        assert!(verify_request_proof_headers(
-            &auth,
-            subject,
-            reply,
-            &[],
-            &eof_headers
-        ));
-    }
-
-    #[test]
-    fn event_proof_verifies_with_context_digest() {
-        let auth = test_auth();
-        let subject = "events.v1.Documents.Changed.doc-1";
-        let payload = br#"{"id":"doc-1"}"#;
-        let event_id = "evt_doc_1";
-        let event_time = "1970-01-01T00:19:10Z";
-        let proof = auth
-            .create_event_proof(
-                TEST_CONTEXT_DIGEST,
-                "test-event-descriptor",
-                subject,
-                payload,
-                event_id,
-                event_time,
-            )
-            .expect("event proof");
-        assert!(verify_event_proof(VerifyEventProofInput {
-            public_session_key: &auth.session_key,
-            context_digest: TEST_CONTEXT_DIGEST,
-            descriptor_identity: "test-event-descriptor",
-            subject,
-            payload,
-            event_id,
-            event_time,
-            proof_base64url: proof.as_str(),
-        })
-        .expect("event proof verifies"));
-        assert!(!verify_event_proof(VerifyEventProofInput {
-            public_session_key: &auth.session_key,
-            context_digest: TEST_CONTEXT_DIGEST,
-            descriptor_identity: "test-event-descriptor",
-            subject,
-            payload,
-            event_id: "evt_other",
-            event_time,
-            proof_base64url: proof.as_str(),
-        })
-        .expect("changed event id rejects"));
+        let cancellation = TransferCancellation::new();
+        let mut waiter = Box::pin(cancellation.cancelled());
+        assert!(futures_util::poll!(waiter.as_mut()).is_pending());
+        cancellation.cancel();
+        tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("registered cancel waiter wakes");
     }
 }

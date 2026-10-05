@@ -88,3 +88,20 @@ Upload/download staging is platform-managed rather than mapped to a participant
 Store. Committed staged bytes survive executor replacement. An interrupted
 in-flight upload is invalidated and restarted from byte zero. Generated transfer
 handles keep grant metadata outside application output types.
+
+Operation upload uses Transfer v2's bounded one-way raw-byte stream,
+independently of Live-based Operation Watch. Network credit follows
+complete-frame consumption by staging storage, never durable Operation progress
+persistence. One owned latest-value worker coalesces durable progress at 1 MiB
+of newer consumption or 250 ms of pending progress; it does not enqueue one
+repository mutation per frame. `transferredBytes` is monotonic, while
+`chunkIndex` and `chunkBytes` describe the latest credited frame represented.
+Watch consumers must not assume one durable event per frame.
+
+Completion synchronizes the newest progress with the owner-fenced, nonterminal
+durable transfer mutation: exact final progress, committed staged metadata, and
+handler-runnable state must be persisted before the authoritative snapshot and
+handler continuation. Client `committed` cannot precede that durable boundary.
+Backend completion alone does not make an Operation upload successful. An
+interrupted uncommitted attempt is invalidated and replaced from byte zero;
+observers neither own nor cancel this execution lifecycle.

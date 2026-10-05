@@ -1975,25 +1975,30 @@ fn descriptors_and_facades_use_generated_support() {
 
 #[test]
 fn download_output_round_trips_transfer_grant() {
-    use trellis_rs::client::{
-        DownloadTransferDirection, DownloadTransferGrant, FileInfo, TransferGrantType,
-    };
+    use trellis_rs::client::{DownloadTransferGrant, FileInfo};
+    use trellis_rs::service::TransferIdentity;
     use trellis_rs::generated::Codec;
 
     let grant = DownloadTransferGrant {
-        type_name: TransferGrantType::TransferGrant,
-        direction: DownloadTransferDirection::Receive,
+        format: "trellis.transfer.v2".into(),
+        type_name: "TransferGrant".into(),
+        direction: "receive".into(),
         service: "backend".into(),
-        session_key: "session".into(),
-        transfer_id: "transfer".into(),
-        subject: "transfer.v1.download.backend.transfer".into(),
+        provider: TransferIdentity { connection_id: "provider".into(), session_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into() },
+        consumer: TransferIdentity { connection_id: "consumer".into(), session_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into() },
+        transfer_id: "AAAAAAAAAAAAAAAAAAAAAA".into(),
+        data_subject: "transfer.v2.download.data.cHJvdmlkZXI.Y29uc3VtZXI.AAAAAAAAAAAAAAAAAAAAAA".into(),
+        control_subject: "transfer.v2.control.cHJvdmlkZXI.Y29uc3VtZXI.AAAAAAAAAAAAAAAAAAAAAA".into(),
+        signal_subject: "transfer.v2.signal.cHJvdmlkZXI.Y29uc3VtZXI.AAAAAAAAAAAAAAAAAAAAAA".into(),
         expires_at: "2030-01-01T00:00:00Z".into(),
-        chunk_bytes: 1024,
+        max_frame_bytes: 1_048_576,
+        window_frames: 16,
+        window_bytes: 4_194_304,
         info: FileInfo {
             key: "evidence/a".into(),
             size: 3,
             updated_at: "2030-01-01T00:00:00Z".into(),
-            digest: "SHA-256=abc".into(),
+            digest: "SHA-256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
             content_type: None,
             metadata: Default::default(),
         },
