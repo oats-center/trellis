@@ -45,8 +45,9 @@ result. No helper should replace a real boundary with a fabricated result.
 ## Ownership and Waiting
 
 The released package acquires the exact-version production CLI and server from
-release archives pinned by SHA-256. It supports Linux and macOS x86-64/arm64.
-Production `trellis init config` generates configuration and accounts;
+release archives pinned by SHA-256. Automatic acquisition currently supports
+Linux x86-64 only; other native targets are not staged for release. Production
+`trellis init config` generates configuration and accounts;
 `trellis-server --local-nats` owns the real broker. There is no `nsc` dependency
 or TypeScript configuration renderer. `TRELLIS_TEST_CACHE_DIR` shares only
 verified native binaries; each runtime has private configuration, credentials,

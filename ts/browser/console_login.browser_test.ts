@@ -173,3 +173,56 @@ Deno.test("idle signed-intent portal survives reload and completes the initiatin
     }
   }, browserRuntimeOptions());
 });
+
+Deno.test("portal recovers an accepted transaction start after losing its response and reloading", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    await runtime.ensureAdmin();
+    const context = await launchProfile(runtime);
+    try {
+      let acceptedTransactionId: string | undefined;
+      await context.route("**/auth/transactions", async (route) => {
+        const response = await route.fetch();
+        assertEquals(response.status(), 200);
+        acceptedTransactionId = (await response.json()).transactionId;
+        await route.abort("failed");
+      }, { times: 1 });
+      const page = await context.newPage();
+      await page.goto(`${runtime.trellisUrl}/console`, {
+        waitUntil: "domcontentloaded",
+      });
+      await page.getByLabel("Username", { exact: true }).fill(
+        runtime.adminUsername,
+      );
+      await page.getByLabel("Password", { exact: true }).fill(
+        runtime.adminPassword,
+      );
+      const failedStart = page.waitForEvent(
+        "requestfailed",
+        (request) => new URL(request.url()).pathname === "/auth/transactions",
+      );
+      await page.getByRole("button", { name: "Sign in", exact: true }).click();
+      await failedStart;
+      await page.reload({ waitUntil: "domcontentloaded" });
+      const retriedStart = page.waitForResponse((response) =>
+        new URL(response.url()).pathname === "/auth/transactions"
+      );
+      const resumedLogin = page.waitForRequest((request) =>
+        new URL(request.url()).pathname === "/auth/login/local" &&
+        request.method() === "POST"
+      );
+      await signInIfPrompted(page, {
+        username: runtime.adminUsername,
+        password: runtime.adminPassword,
+      });
+      const response = await retriedStart;
+      assertEquals(response.status(), 200);
+      assertEquals(
+        (await resumedLogin).postDataJSON().transactionId,
+        acceptedTransactionId,
+      );
+      await waitForConsoleReady(page);
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});

@@ -9,9 +9,12 @@ const __participant = participantDescriptor({
 	identity: "client-upgrade-fixture.Provider",
 	id: "client-upgrade-fixture.Provider",
 	path: "Provider",
+	digest: "dvHR82SHVd78ZYl0bJarMpnOAi2rlK-WmveY0bWY594",
 	implements: [Api0.API],
 	uses: [],
 	optionalGrants: {},
+	requiredGrants: [],
+	requiredCapabilities: [],
 	actionNames: {
 		"client-upgrade-fixture.upgrade@v1:rpc:Echo": "Echo",
 		"client-upgrade-fixture.upgrade@v1:rpc:Extra": "Extra"

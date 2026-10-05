@@ -137,9 +137,11 @@ deadline. Identity, provider state, consent, and completion belong to
 device review lifetimes remain separate. Expiry leaves the intent available for
 a fresh attempt, without returning to the initiating app.
 
-Only one outstanding transaction can claim an intent. A concurrent or duplicate
-start receives `transaction_active` instead of replacing that attempt, including
-while it is approved but awaiting bind. Denial, expiry, and consumed completion
+Only one outstanding transaction can claim an intent. Persist the pending portal
+binding before starting it and reuse that binding after response loss or reload.
+A same-binding retry returns the existing active transaction without resetting
+state or expiry; a different binding receives `intent_transaction_active`,
+including while approval awaits bind. Denial, expiry, and consumed completion
 permit another transaction. Public `/auth/intents/view` is for portal rendering,
 not transaction discovery. Detached clients use `/auth/intents/progress` with a
 fresh initiating-key proof; only `ready` returns a transaction ID. Portal
@@ -418,7 +420,7 @@ download, requiring network on first use. `TRELLIS_TEST_NATS_BIN` or
 `NatsSource::Path` selects a prebuilt broker; `NatsSource::PathLookup` uses
 PATH. Runtime/bootstrap Cargo dependencies are distribution-only implementation
 crates, not service-author APIs. The TypeScript harness acquires its
-exact-version production CLI/server from SHA-256-pinned release archives
+exact-version production CLI/server from SHA-256-pinned release archives (currently Linux x86-64 only)
 automatically: no installed Trellis or nsc required. Production commands
 generate config and own managed NATS in a private sandbox with seeded admin.
 `trellis: { source: { kind: "path", cli, server } }` selects an exact-version

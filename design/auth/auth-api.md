@@ -44,12 +44,14 @@ lifetimes. Portal-binding and OIDC-cookie/CAS controls are documented in
 `auth-protocol.md`.
 
 An intent has at most one outstanding authentication transaction. Repository
-creation atomically claims the intent index; an existing unexpired transaction,
-including one approved but not yet bound, rejects another start with
-`intent_transaction_active`. Denied, expired, and consumed transactions permit
-another attempt. Public intent rendering never discovers an attempt. Detached
-callers use their initiating private key to sign each `/auth/intents/progress`
-request.
+creation atomically claims the intent index. Retrying the same intent with the
+same portal binding returns its existing unexpired transaction without changing
+its deadline or state, including after approval while bind is outstanding. A
+different binding receives `intent_transaction_active`. The portal persists its
+pending binding before the first start request and reuses it after an uncertain
+response or reload. Denied, expired, and consumed transactions permit another
+attempt. Public intent rendering never discovers an attempt. Detached callers
+use their initiating private key to sign each `/auth/intents/progress` request.
 
 Native bootstrap request DTOs are strict and accept only identity/proof inputs.
 Browser request and bind proofs bind the complete raw body. All HTTP timestamps

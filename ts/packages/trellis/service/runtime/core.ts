@@ -552,12 +552,15 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
   >();
   /** Closes shared operation intake queues, releasing any queued delivery pins. */
   #operationIntakeClosers = new Set<() => void>();
-  /**
-   * Recovery-scan intervals owned by registered operation handlers. They are
-   * logical (record-driven), not bound to any one physical generation, and are
-   * cleared explicitly on stop rather than by watching a generation's socket.
-   */
-  #operationRecoveryScans = new Set<ReturnType<typeof setInterval>>();
+  #operationRecoverers = new Map<
+    string,
+    (record: DurableOperationRecord) => Promise<void>
+  >();
+  #operationRecoveryRecords = new Map<string, DurableOperationRecord>();
+  #operationRecoveryAbort = new AbortController();
+  #operationRecoveryWatch?: Promise<void>;
+  #operationRecoveryScan?: ReturnType<typeof setInterval>;
+  #operationRecoveryTask?: Promise<void>;
   /** Drains fixed-connection intake subscriptions on stop. */
   #operationIntakeDrains = new Set<() => Promise<void>>();
   #stopPromise?: Promise<void>;
@@ -792,6 +795,72 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     }
     this.#operations.set(operationId, runtime);
     return runtime;
+  }
+
+  async #recoverExpiredOperations(): Promise<void> {
+    const signal = this.#operationRecoveryAbort.signal;
+    if (signal.aborted) return;
+    if (!this.#operationRecoveryWatch) {
+      const store = await this.operationStoreHandle();
+      const watcher = await store.watch(undefined, { signal }).orThrow();
+      this.#operationRecoveryRecords.clear();
+      this.#operationRecoveryWatch = (async () => {
+        for await (const item of watcher) {
+          if (signal.aborted) break;
+          const entry = item.orThrow();
+          const record = entry.value;
+          if (record && !isTerminalRuntimeOperationSnapshot(record.snapshot)) {
+            this.#operationRecoveryRecords.set(entry.key, record);
+          } else {
+            this.#operationRecoveryRecords.delete(entry.key);
+          }
+        }
+      })().catch((error) => {
+        if (!signal.aborted) {
+          this.#log.warn({ error }, "Operation recovery watch failed");
+        }
+      }).finally(() => {
+        // An ended watch cannot be trusted as a complete index. The next tick
+        // installs a new last-value snapshot and resumes updates, never a
+        // repeated key enumeration or a permanently stale recovery cache.
+        this.#operationRecoveryRecords.clear();
+        this.#operationRecoveryWatch = undefined;
+      });
+    }
+    for (const record of [...this.#operationRecoveryRecords.values()]) {
+      if (signal.aborted) break;
+      if (Date.parse(record.leaseExpiresAt) > Date.now()) continue;
+      for (const recover of this.#operationRecoverers.values()) {
+        if (signal.aborted) break;
+        // Recovery still rereads the authoritative record and claims via CAS;
+        // the watch is only an index of candidates, never an ownership fence.
+        await recover(record);
+      }
+    }
+  }
+
+  async #ensureOperationRecovery(): Promise<void> {
+    const scan = () => {
+      if (
+        !this.#operationRecoveryTask &&
+        !this.#operationRecoveryAbort.signal.aborted
+      ) {
+        this.#operationRecoveryTask = this.#recoverExpiredOperations().catch(
+          (error) => {
+            if (!this.#operationRecoveryAbort.signal.aborted) {
+              this.#log.warn({ error }, "Operation recovery scan failed");
+            }
+          },
+        ).finally(() => {
+          this.#operationRecoveryTask = undefined;
+        });
+      }
+      return this.#operationRecoveryTask;
+    };
+    this.#operationRecoveryScan ??= setInterval(() => {
+      void scan();
+    }, 1_000);
+    await scan();
   }
 
   async #acquireOperation(
@@ -2848,6 +2917,13 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             const execution = otelContext.with(
               observation.attemptContext,
               async () => {
+                const progress = runtime.snapshot.progress === undefined
+                  ? undefined
+                  : this.#decodeOperationValue(
+                    ctx,
+                    "progress",
+                    runtime.snapshot.progress,
+                  ).orThrow();
                 const handlerResult: unknown = await handler(
                   transferSession
                     ? {
@@ -2856,9 +2932,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                       caller,
                       signal: runtime.cancellation.signal,
                       resuming,
-                      ...(runtime.snapshot.progress !== undefined
-                        ? { progress: runtime.snapshot.progress }
-                        : {}),
+                      ...(progress !== undefined ? { progress } : {}),
                       transfer: transferSession.transfer,
                     }
                     : {
@@ -2867,9 +2941,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                       caller,
                       signal: runtime.cancellation.signal,
                       resuming,
-                      ...(runtime.snapshot.progress !== undefined
-                        ? { progress: runtime.snapshot.progress }
-                        : {}),
+                      ...(progress !== undefined ? { progress } : {}),
                     },
                 );
                 const handlerOutcome = isResultLike(handlerResult)
@@ -3108,6 +3180,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           }
           const runtime = await this.#acquireOperation(durable);
           if (!runtime?.reclaimed) return;
+          if (this.#operationRecoveryAbort.signal.aborted) return;
           runtime.reclaimed = false;
           // Recovered execution pins the current generation so its support
           // traffic does not resurrect the seed socket or outlive its carrier.
@@ -3474,24 +3547,8 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             }
           }
         })();
-        const recoverExpired = async () => {
-          for (const durable of await this.listNonterminalOperationRecords()) {
-            if (Date.parse(durable.leaseExpiresAt) <= Date.now()) {
-              await recover(durable);
-            }
-          }
-        };
-        await recoverExpired();
-        const recoveryScan = setInterval(() => {
-          void recoverExpired().catch((error) => {
-            if (!this.#operationRecoveryScans.has(recoveryScan)) return;
-            this.#log.warn(
-              { error, operation: String(operation) },
-              "Operation recovery scan failed",
-            );
-          });
-        }, 1_000);
-        this.#operationRecoveryScans.add(recoveryScan);
+        this.#operationRecoverers.set(ctx.subject, recover);
+        await this.#ensureOperationRecovery();
         void (async () => {
           for await (const delivery of startIntake) {
             const { msg, nc } = delivery;
@@ -3910,8 +3967,12 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       // Logical cleanup is unconditional: a transport that is already closed
       // must not skip terminating intake, releasing queued generation pins, or
       // clearing logical recovery scans.
-      for (const scan of this.#operationRecoveryScans) clearInterval(scan);
-      this.#operationRecoveryScans.clear();
+      this.#operationRecoveryAbort.abort();
+      if (this.#operationRecoveryScan) {
+        clearInterval(this.#operationRecoveryScan);
+      }
+      this.#operationRecoverers.clear();
+      this.#operationRecoveryRecords.clear();
       for (const close of this.#operationIntakeClosers) close();
       for (const drain of this.#operationIntakeDrains) {
         void drain().catch(() => undefined);
@@ -3967,6 +4028,13 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         if (cache !== undefined && !cache.health().healthy) {
           return;
         }
+
+        if (
+          await untilReleased(Promise.all([
+            this.#operationRecoveryTask,
+            this.#operationRecoveryWatch,
+          ]))
+        ) return;
 
         // Intake is already terminated above; settle admitted control work
         // before draining, so a stopping replica never answers a control

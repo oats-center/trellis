@@ -72,6 +72,48 @@ Deno.test("resource migration is direct, fallible, and read-only", async () => {
   );
 });
 
+Deno.test("bucket watch initializes last values, delivers changes and stops on abort", async () => {
+  const workdir = await Deno.makeTempDir({ prefix: "trellis-kv-watch-" });
+  let nats: NatsTestContainer | undefined;
+  const abort = new AbortController();
+  try {
+    nats = await NatsTestContainer.start(workdir);
+    const kv = await TypedKV.open(
+      fixedTransportProvider(nats.nc),
+      "watch_bucket",
+      current,
+      { history: 5 },
+    ).orThrow();
+    await kv.put("first", { count: 1 }).orThrow();
+    await kv.put("first", { count: 2 }).orThrow();
+    await kv.put("second", { count: 3 }).orThrow();
+    const watcher = (await kv.watch(undefined, {
+      signal: AbortSignal.any([abort.signal, AbortSignal.timeout(15_000)]),
+    }).orThrow())
+      [Symbol.asyncIterator]();
+    const initial = new Map<string, number | undefined>();
+    for (let i = 0; i < 2; i++) {
+      const next = await watcher.next();
+      const entry = next.value!.orThrow();
+      initial.set(entry.key, entry.value?.count);
+    }
+    assertEquals(initial, new Map([["first", 2], ["second", 3]]));
+    await kv.put("first", { count: 4 }).orThrow();
+    const update = (await watcher.next()).value!.orThrow();
+    assertEquals([update.key, update.value?.count], ["first", 4]);
+    await kv.delete("second").orThrow();
+    const deleted = (await watcher.next()).value!.orThrow();
+    assertEquals([deleted.key, deleted.operation], ["second", "delete"]);
+    const pending = watcher.next();
+    abort.abort();
+    assertEquals((await pending).done, true);
+  } finally {
+    abort.abort();
+    await nats?.stop();
+    await Deno.remove(workdir, { recursive: true });
+  }
+});
+
 Deno.test("KV keys exposes the broker error if its bucket disappears", async () => {
   const workdir = await Deno.makeTempDir({ prefix: "trellis-kv-keys-" });
   let nats: TrellisTestRuntime | undefined;

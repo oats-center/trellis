@@ -624,6 +624,7 @@ pub(crate) fn resolve_authority(
             && !resolved.optional_capability_definitions.contains_key(*id)
         {
             missing_required.push(format!("capability:{id}"));
+            approval_missing = true;
         }
     }
     if approval_mode == ApprovalMode::Capabilities {

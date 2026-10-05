@@ -9,6 +9,7 @@ const __participant = participantDescriptor({
 	identity: "runtime-trellis.Alpha",
 	id: "runtime-trellis.Alpha",
 	path: "Alpha",
+	digest: "1aubvcd5g2tv0V80M9dyeJsVhPpIih2oVxRvaM4Gw7U",
 	implements: [],
 	uses: [{
 		api: Api0.API,
@@ -32,6 +33,36 @@ const __participant = participantDescriptor({
 		optionalCapabilities: []
 	}],
 	optionalGrants: {},
+	requiredGrants: [
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "runtime-trellis.events@v1",
+				"surface": "event",
+				"name": "Alpha"
+			},
+			"action": "publish"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "runtime-trellis.events@v1",
+				"surface": "rpc",
+				"name": "DropAlpha"
+			},
+			"action": "call"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "runtime-trellis.events@v1",
+				"surface": "rpc",
+				"name": "Observed"
+			},
+			"action": "call"
+		}
+	],
+	requiredCapabilities: [],
 	actionNames: {
 		"runtime-trellis.events@v1:rpc:DropAlpha": "DropAlpha",
 		"runtime-trellis.events@v1:rpc:Observed": "Observed",

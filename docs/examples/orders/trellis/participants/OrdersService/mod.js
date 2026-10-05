@@ -9,9 +9,12 @@ const __participant = participantDescriptor({
 	identity: "acme-orders.OrdersService",
 	id: "acme-orders.OrdersService",
 	path: "OrdersService",
+	digest: "kWeMPGnhB6W5HBkUqXihR5b9EpXeLpfZrQv1Zhu7VW8",
 	implements: [Api0.API],
 	uses: [],
 	optionalGrants: {},
+	requiredGrants: [],
+	requiredCapabilities: [],
 	actionNames: { "acme-orders.orders@v1:rpc:Create": "Create" },
 	resources: {},
 	packageEvidence: {

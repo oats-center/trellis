@@ -9,6 +9,7 @@ const __participant = participantDescriptor({
 	identity: "acme-orders.OrdersCaller",
 	id: "acme-orders.OrdersCaller",
 	path: "OrdersCaller",
+	digest: "s8I-Qjr78Y7LIyxro2m6WtFikWvqkfGNlgccy5ZxRfw",
 	implements: [],
 	uses: [{
 		api: Api0.API,
@@ -20,6 +21,16 @@ const __participant = participantDescriptor({
 		optionalCapabilities: []
 	}],
 	optionalGrants: {},
+	requiredGrants: [{
+		"target": {
+			"kind": "apiSurface",
+			"api": "acme-orders.orders@v1",
+			"surface": "rpc",
+			"name": "Create"
+		},
+		"action": "call"
+	}],
+	requiredCapabilities: [],
 	actionNames: { "acme-orders.orders@v1:rpc:Create": "Create" },
 	resources: {},
 	packageEvidence: {

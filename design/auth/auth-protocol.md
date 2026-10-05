@@ -120,23 +120,31 @@ transaction creation; its transaction progress and consent reads require the raw
 portal binding, not possession of a public ID or intent.
 
 When the user starts local authentication or chooses an OIDC provider, the
-portal calls `POST /auth/transactions` with the intent and a fresh
-`portalBindingDigest`, carrying the raw binding in `Trellis-Portal-Binding`.
-Trellis verifies the intent and current eligibility, selects the current
-participant revision, and assigns an independent `transactionId`. The attempt's
-deadline begins here, not when the intent was created or the page rendered.
+portal persists a fresh pending binding indexed by intent before calling
+`POST /auth/transactions` with the intent and its `portalBindingDigest`,
+carrying the raw binding in `Trellis-Portal-Binding`. Trellis verifies the
+intent and current eligibility, selects the current participant revision, and
+assigns an independent `transactionId`. The attempt's deadline begins here, not
+when the intent was created or the page rendered.
 
 Creation atomically claims the intent-to-transaction index at the repository
-boundary. At most one outstanding attempt exists per intent: a concurrent start
-or duplicate action cannot replace an unexpired attempt, including an approved
-attempt awaiting bind, and receives `intent_transaction_active`. Denial, expiry,
-or consumed completion permits a fresh independent transaction. NATS index
-changes use revision CAS; an unclaimed candidate is never usable as a
-transaction.
+boundary. At most one outstanding attempt exists per intent. A retry with the
+same binding returns the existing unexpired transaction without resetting its
+state or deadline; a different binding receives `intent_transaction_active`,
+including while approval awaits bind. Denial, expiry, or consumed completion
+permits a fresh independent transaction. NATS index changes use revision CAS; an
+unclaimed candidate is never usable as a transaction. After a failed or
+uncertain index acknowledgment, an exact read from the stream leader confirms
+success only if the index selects the candidate. Unconfirmed writes retain their
+candidate until the normal KV deadline because the write may still commit;
+same-binding retries can recover the selected attempt.
 
-The portal retains the raw 32-byte binding in portal-origin `sessionStorage`;
-only its SHA-256 digest is persisted server-side. Bound actions require the
-binding as designed. The transaction owns authenticated identity, provider
+The portal retains the raw 32-byte binding in portal-origin `sessionStorage`; it
+reuses the pending binding on retry or reload and associates it with the
+transaction only after receiving the ID. Removing the pending association
+follows successful transaction persistence and URL continuation, not the first
+request. Only its SHA-256 digest is persisted server-side. Bound actions require
+the binding as designed. The transaction owns authenticated identity, provider
 attributes, current consent, expected grant revision, approval/denial, and
 completion. OIDC PKCE, nonce, state, and callback association refer to this
 transaction. Callback continuity still requires the Trellis-origin HttpOnly

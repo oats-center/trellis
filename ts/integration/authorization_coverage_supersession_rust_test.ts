@@ -187,6 +187,13 @@ Deno.test("Rust retained peer coverage supersedes pending G2 setup before its IN
       await runtime.contracts.approveApply(firstGrowth.pendingId, {
         excludeCapabilities: [extend2],
       });
+      // Prepare consent before the ten-second INFO proof window. Only its
+      // acceptance below changes authority and triggers G3 supersession.
+      const secondGrowth = await runtime.contracts.requestApply({
+        deployment,
+        contract,
+      });
+      assert(secondGrowth.status === "approval_required");
       const firstRefreshStart = lines.length;
       await send("REFRESH");
       let admission: Awaited<typeof hold.held> | undefined;
@@ -284,15 +291,6 @@ Deno.test("Rust retained peer coverage supersedes pending G2 setup before its IN
         ),
         "the authoritative baseline peer watch belongs to the G1 receiving socket",
       );
-
-      // Preparing an unapproved proposal does not advance authority. Keep that
-      // administrative setup outside the held INFO request's proof window;
-      // approval and actual G3 adoption must still happen inside it.
-      const secondGrowth = await runtime.contracts.requestApply({
-        deployment,
-        contract,
-      });
-      assert(secondGrowth.status === "approval_required");
 
       // Disarm synchronously and rearm before forwarding can trigger G2's later
       // post-SUB readiness round trip. This is the same physical G2, not the
@@ -689,6 +687,10 @@ Deno.test("Rust retained peer coverage supersedes pending G2 setup before its IN
       await marker("OPERATION_PROVIDER_DONE");
       await runtime.waitFor(() => exited ? true : undefined);
       assert((await status).success, lines.join("\n"));
+    } catch (cause) {
+      throw new Error(`provider fixture output:\n${lines.join("\n")}`, {
+        cause,
+      });
     } finally {
       await gate.release().catch(() => undefined);
       await hold?.release().catch(() => undefined);

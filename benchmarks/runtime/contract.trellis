@@ -1,0 +1,42 @@
+import { auth } from trellis;
+
+model Value { value: string; }
+model Empty {}
+model KeyedValue { key: string; value: string; }
+
+api performance@v1 {
+  title "Performance workloads";
+  description "Real SDK performance workloads, independent of application UI.";
+  rpc Echo { input Value; output Value; }
+  rpc PutRecord { input Value; output Value; }
+  rpc ReadRecord { input Value; output Value; }
+  rpc Download { input Value; output Value; download; }
+  operation Upload { input Value; output Value; upload; }
+  operation Work { input Value; progress Value; output Value; }
+  operation QueueWork { input Value; output Value; }
+  operation AwaitCancellation { input Value; progress Value; output Value; }
+  operation AwaitObject { input Value; output Value; }
+  operation QueueKeyed { input KeyedValue; output KeyedValue; }
+  live Watch { input Value; event Value; }
+  event Changed { payload Value; }
+  event Delivered { payload Value; }
+  capabilities {
+    public { allows { rpc Echo; rpc PutRecord; rpc ReadRecord; rpc Download; operation Upload; operation Work; operation QueueWork; operation AwaitCancellation; operation AwaitObject; operation QueueKeyed; live Watch; publish event Changed; subscribe event Changed; publish event Delivered; subscribe event Delivered; } }
+  }
+}
+
+service Provider {
+  implements performance;
+  job work { title "Work"; description "Measured private job execution."; payload Value; result Value; }
+  job waitForObject { title "Wait for object"; description "Retry while a required object is genuinely absent."; payload Value; result Value; retry { attempts 3; backoff [250ms, 500ms]; } }
+  job keyedWork { title "Keyed work"; description "Measure same-key queue contention."; payload KeyedValue; result KeyedValue; key_concurrency { path key; policy queue; } }
+  kv records { title "Records"; description "Measured KV round trips."; schema Value; version 1; history 1; ttl 0ms; }
+  store files { title "Files"; description "Measured transfer objects."; ttl 0; desired_max_object 64MiB; desired_max_total 1GiB; }
+  consumer changes { title "Changes"; description "Measured durable event delivery."; events [performance.Changed]; concurrency 1; replay new; }
+}
+
+app Caller {
+  use performance { rpc Echo; rpc PutRecord; rpc ReadRecord; rpc Download; operation Upload; operation Work; operation QueueWork; operation AwaitCancellation; operation AwaitObject; operation QueueKeyed; live Watch; publish event Changed; subscribe event Changed; subscribe event Delivered; }
+  use auth { rpc Sessions.Me; rpc Sessions.Logout; }
+  state saved { title "Saved"; description "Measured client state round trips."; schema Value; version 1; }
+}

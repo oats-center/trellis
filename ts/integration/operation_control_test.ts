@@ -10,6 +10,85 @@ import { assert, assertEquals, assertRejects } from "@std/assert";
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
+Deno.test("restarted provider recovers nonterminal work among retained terminal history", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: "recovery-history",
+      contract: participants.Provider.participant,
+    });
+    const connect = () =>
+      TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant: participants.Provider.participant,
+        name: "recovery-history",
+        seed: identity.seed,
+      }).orThrow();
+    const original = await connect();
+    const deferred = Promise.withResolvers<void>();
+    await original.handleWork(async ({ input, op }) => {
+      if (input.value !== "resume") {
+        return await op.complete({ value: input.value }).orThrow();
+      }
+      await op.started().orThrow();
+      await op.progress({
+        value: "checkpoint",
+        nested: { count: 1n, payload: new Uint8Array([1, 2]) },
+      }).orThrow();
+      deferred.resolve();
+      return op.defer();
+    });
+    const client = await runtime.connectClient({
+      name: "recovery-history-caller",
+      contract: participants.Caller.participant,
+    });
+    let replacement: typeof original | undefined;
+    try {
+      for (let index = 0; index < 20; index++) {
+        const terminal = await client.work({ value: `terminal-${index}` })
+          .start().orThrow();
+        assertEquals(
+          (await terminal.wait().orThrow()).output?.value,
+          `terminal-${index}`,
+        );
+      }
+      const pending = await client.work({ value: "resume" }).start().orThrow();
+      await deferred.promise;
+      await original.stop();
+      await original.wait();
+      replacement = await connect();
+      let resumed = 0;
+      await replacement.handleWork(
+        async ({ input, op, resuming, progress }) => {
+          assertEquals(input.value, "resume");
+          assertEquals(resuming, true);
+          assertEquals(progress?.value, "checkpoint");
+          assertEquals(progress?.nested, {
+            count: 1n,
+            payload: new Uint8Array([1, 2]),
+          });
+          resumed++;
+          return await op.complete({ value: "recovered" }).orThrow();
+        },
+      );
+      const result = await pending.wait({
+        observationSignal: AbortSignal.timeout(45_000),
+      }).orThrow();
+      assertEquals(
+        result.state,
+        "completed",
+        Deno.inspect(result, { depth: 8 }),
+      );
+      assertEquals(result.output?.value, "recovered");
+      assertEquals(resumed, 1);
+    } finally {
+      await client.connection.close();
+      await original.stop();
+      await replacement?.stop();
+      await replacement?.wait();
+    }
+  });
+});
+
 Deno.test("generated operation control requires the local owner fence", async () => {
   await withTrellisRuntime(async (runtime) => {
     const firstIdentity = await runtime.registerService({

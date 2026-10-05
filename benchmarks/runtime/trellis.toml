@@ -1,0 +1,15 @@
+[package]
+name = "performance-trellis"
+version = "0.100.0"
+
+[sources]
+performance = "contract.trellis"
+
+[generate.typescript]
+output = "packages/performance-trellis"
+
+[generate.rust]
+output = "crates/performance-trellis"
+
+[dependencies]
+trellis = { package = "trellis", path = "../../crates/runtime" }

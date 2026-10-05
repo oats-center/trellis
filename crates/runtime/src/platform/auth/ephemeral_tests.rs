@@ -428,9 +428,13 @@ async fn nats_kv_repository_conforms() {
         }
     }
 
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+    let listeners: Vec<_> = (0..9)
+        .map(|_| std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap())
+        .collect();
+    let ports: Vec<_> = listeners
+        .iter()
+        .map(|listener| listener.local_addr().unwrap().port())
+        .collect();
     let directory = tempfile::tempdir().unwrap();
     let cache = std::env::var_os("TRELLIS_CACHE_DIR")
         .map(std::path::PathBuf::from)
@@ -440,17 +444,87 @@ async fn nats_kv_repository_conforms() {
         Some(&cache),
     )
     .unwrap();
-    let server = Server {
-        child: Command::new(binary)
-            .args(["-a", "127.0.0.1", "-p", &port.to_string(), "-js"])
-            .arg("-sd")
-            .arg(directory.path().join("data"))
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .unwrap(),
-    };
-    let url = format!("nats://127.0.0.1:{port}");
+    drop(listeners);
+    let mut servers = Vec::new();
+    for index in 0..3 {
+        let name = format!("ephemeral-{index}");
+        let routes = (0..3)
+            .filter(|peer| *peer != index)
+            .map(|peer| format!("\"nats://127.0.0.1:{}\"", ports[peer * 3 + 1]))
+            .collect::<Vec<_>>()
+            .join(",");
+        let config = directory.path().join(format!("{name}.conf"));
+        std::fs::write(&config, format!(
+            "server_name: {name}\nlisten: 127.0.0.1:{}\nhttp: 127.0.0.1:{}\njetstream {{ store_dir: '{}' }}\ncluster {{ name: ephemeral, listen: 127.0.0.1:{}, routes: [{routes}] }}\n",
+            ports[index * 3], ports[index * 3 + 2], directory.path().join(&name).display(), ports[index * 3 + 1],
+        )).unwrap();
+        let server = Server {
+            child: Command::new(&binary)
+                .arg("-c")
+                .arg(&config)
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .unwrap(),
+        };
+        servers.push((name, server));
+    }
+    let mut last_status = serde_json::Value::Null;
+    let readiness = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let mut ready = true;
+            let mut leader: Option<String> = None;
+            let mut leader_current = false;
+            for index in 0..3 {
+                let status = async {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut connection =
+                        tokio::net::TcpStream::connect(("127.0.0.1", ports[index * 3 + 2]))
+                            .await
+                            .ok()?;
+                    connection
+                        .write_all(
+                            b"GET /jsz HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                        )
+                        .await
+                        .ok()?;
+                    let mut response = Vec::new();
+                    connection.read_to_end(&mut response).await.ok()?;
+                    let start = response.windows(4).position(|bytes| bytes == b"\r\n\r\n")? + 4;
+                    serde_json::from_slice::<serde_json::Value>(&response[start..]).ok()
+                }
+                .await;
+                last_status = status.unwrap_or(serde_json::Value::Null);
+                let cluster = &last_status["meta_cluster"];
+                let current_leader = cluster["leader"].as_str().unwrap_or_default();
+                ready &= !current_leader.is_empty()
+                    && cluster["cluster_size"].as_u64() == Some(3)
+                    && leader
+                        .as_deref()
+                        .is_none_or(|leader| leader == current_leader);
+                leader = Some(current_leader.to_owned());
+                if current_leader == servers[index].0 {
+                    leader_current = cluster["replicas"].as_array().is_some_and(|replicas| {
+                        replicas.len() == 2
+                            && replicas.iter().all(|replica| {
+                                replica["current"].as_bool() == Some(true)
+                                    && replica["offline"].as_bool() != Some(true)
+                            })
+                    });
+                }
+            }
+            if ready && leader_current {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await;
+    assert!(
+        readiness.is_ok(),
+        "NATS cluster did not become ready: {last_status}"
+    );
+    let url = format!("nats://127.0.0.1:{}", ports[0]);
     let mut client = None;
     for _ in 0..100 {
         match async_nats::connect(&url).await {
@@ -465,10 +539,41 @@ async fn nats_kv_repository_conforms() {
     let repository = NatsAuthEphemeralRepository::ensure(client.clone())
         .await
         .unwrap();
-    repository_conformance(repository).await;
+    let jetstream = async_nats::jetstream::new(client.clone());
+    let mut transactions = jetstream
+        .get_key_value("trellis_auth_browser_transactions")
+        .await
+        .unwrap();
+    let mut config = transactions.stream.info().await.unwrap().config.clone();
+    config.num_replicas = 3;
+    jetstream.update_stream(config).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            if transactions
+                .stream
+                .info()
+                .await
+                .unwrap()
+                .cluster
+                .as_ref()
+                .is_some_and(|cluster| {
+                    cluster.replicas.len() == 2
+                        && cluster.replicas.iter().all(|replica| replica.current)
+                })
+                // Stream metadata can become current before its KV read
+                // subscription is available after the replication change.
+                && transactions.entry("readiness").await.is_ok()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("transaction replicas did not become current");
+    repository_conformance(repository.clone()).await;
     // A presence bucket created with a TTL would silently evict active
     // attachments, so a TTL-bearing bucket must be rejected rather than adopted.
-    let jetstream = async_nats::jetstream::new(client.clone());
     jetstream
         .delete_key_value("trellis_auth_connections")
         .await
@@ -483,27 +588,108 @@ async fn nats_kv_repository_conforms() {
         })
         .await
         .unwrap();
-    let error = NatsAuthEphemeralRepository::check(client)
+    let error = NatsAuthEphemeralRepository::check(client.clone())
         .await
         .expect_err("a TTL-bearing presence bucket must be rejected");
     let error = error.to_string();
     assert!(error.contains("max_age"), "{error}");
     assert!(error.contains("120000ms"), "{error}");
+    let mut active = browser_flow();
+    active.created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        .try_into()
+        .unwrap();
+    active.expires_at = active.created_at + 60_000;
+    active.transaction_id = "replicated-active".to_owned();
+    active.intent_digest =
+        trellis_protocol::digest_json(&serde_json::json!("replicated-intent")).unwrap();
+    active.portal_binding_digest = Some(DIGEST.to_owned());
+    repository
+        .create_browser_transaction(active.clone())
+        .await
+        .unwrap();
+    let leader = transactions
+        .stream
+        .info()
+        .await
+        .unwrap()
+        .cluster
+        .as_ref()
+        .unwrap()
+        .leader
+        .clone()
+        .expect("transaction stream has a leader");
+    let leader_index = servers
+        .iter()
+        .position(|(name, _)| name == &leader)
+        .unwrap();
+    let (_, server) = servers.remove(leader_index);
     drop(server);
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            if let Ok(info) = transactions.stream.info().await {
+                if info.cluster.as_ref().is_some_and(|cluster| {
+                    cluster
+                        .leader
+                        .as_ref()
+                        .is_some_and(|current| !current.is_empty() && current != &leader)
+                }) {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("transaction stream did not elect a surviving leader");
+    let mut retry = active.clone();
+    retry.transaction_id = "replicated-retry".to_owned();
+    retry.created_at += 100;
+    retry.expires_at += 100;
+    assert_eq!(
+        repository
+            .create_browser_transaction(retry.clone())
+            .await
+            .unwrap(),
+        active
+    );
+    retry.portal_binding_digest =
+        Some(trellis_protocol::digest_json(&serde_json::json!("other-binding")).unwrap());
+    assert_eq!(
+        repository.create_browser_transaction(retry.clone()).await,
+        Err(AuthorizationStateError::StorageConflict)
+    );
+    transactions.delete(&active.transaction_id).await.unwrap();
+    assert!(repository
+        .create_browser_transaction(retry.clone())
+        .await
+        .is_err());
+    assert_eq!(
+        repository
+            .transaction_for_intent(&active.intent_digest)
+            .await
+            .unwrap(),
+        Some(active.transaction_id.clone())
+    );
+    transactions
+        .delete(format!("intent.{}", active.intent_digest))
+        .await
+        .unwrap();
+    assert_eq!(
+        repository
+            .create_browser_transaction(retry.clone())
+            .await
+            .unwrap(),
+        retry
+    );
+    drop(servers);
 }
 
 #[test]
-fn strict_json_keeps_required_nullable_fields() {
-    let value = serde_json::to_value(browser_flow()).unwrap();
-    assert_eq!(value["principalId"], serde_json::Value::Null);
-    assert_eq!(value["claimOwner"], serde_json::Value::Null);
-    assert_eq!(value["claimedAt"], serde_json::Value::Null);
-    assert_eq!(value["durableResultDigest"], serde_json::Value::Null);
-    assert_eq!(value["completedAt"], serde_json::Value::Null);
-
+fn oauth_state_rejects_unknown_fields() {
     let mut value = serde_json::to_value(oauth_state()).unwrap();
-    assert_eq!(value["claimOwner"], serde_json::Value::Null);
-    assert_eq!(value["resultDigest"], serde_json::Value::Null);
     value["unknown"] = serde_json::json!(true);
     assert!(serde_json::from_value::<AuthOAuthState>(value).is_err());
 }

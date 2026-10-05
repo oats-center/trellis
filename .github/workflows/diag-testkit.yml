@@ -4,123 +4,65 @@ on:
   workflow_dispatch:
     inputs:
       source-run-id:
-        description: "Check run id providing codegen artifacts"
-        required: false
-        default: "36065521784"
+        description: "Check run providing the exact runtime and testkit executables"
+        required: true
+        type: string
 
 permissions:
   contents: read
   actions: read
 
-env:
-  DENO_VERSION: 2.9.4
-
 jobs:
   testkit:
-    name: Reproduce testkit integration
-    runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 90
+    name: Compare exact testkit (${{ matrix.host }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: self-hosted
+            runner: [self-hosted, Linux, X64]
+          - host: github-hosted
+            runner: ubuntu-latest
+    env:
+      EXECUTION_ROOT: ${{ github.workspace }}/.local/ci/testkit-diag-${{ github.run_id }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download generated artifacts
+      - name: Download Check-built runtime and testkit binaries
         uses: actions/download-artifact@v4
         with:
-          name: check-generated
+          name: check-runtime-binaries
+          path: ${{ env.EXECUTION_ROOT }}/binaries
           run-id: ${{ inputs.source-run-id }}
           github-token: ${{ github.token }}
 
-      - name: Download embedded browser apps
-        uses: actions/download-artifact@v4
-        with:
-          name: check-portal
-          path: crates/runtime/generated
-          run-id: ${{ inputs.source-run-id }}
-          github-token: ${{ github.token }}
-
-      - name: Download protocol WASM
-        uses: actions/download-artifact@v4
-        with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
-          run-id: ${{ inputs.source-run-id }}
-          github-token: ${{ github.token }}
-
-      - name: Expose installed Cargo binaries
-        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: ${{ env.DENO_VERSION }}
-
-      - name: Cache Rust build artifacts
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: cargo-${{ runner.os }}-${{ runner.arch }}-diag-testkit-${{ github.sha }}
-          restore-keys: |
-            cargo-${{ runner.os }}-${{ runner.arch }}-runtime-binaries-
-            cargo-
-
-      - name: Build the linked testkit live binary
-        env:
-          TRELLIS_OFFICIAL_BUILD: "1"
-          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      - name: Prepare exact executables
         run: |
           set -euo pipefail
-          cargo test --no-run \
-            --manifest-path integration/fixtures/testkit/Cargo.toml \
-            --config "patch.crates-io.trellis-protocol.path=\"$GITHUB_WORKSPACE/crates/protocol\"" \
-            --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\"" \
-            --config "patch.crates-io.trellis-testkit.path=\"$GITHUB_WORKSPACE/crates/trellis-testkit\"" \
-            --config "patch.crates-io.trellis-runtime.path=\"$GITHUB_WORKSPACE/crates/runtime\"" \
-            --config "patch.crates-io.trellis-bootstrap.path=\"$GITHUB_WORKSPACE/crates/bootstrap\"" \
-            --config "patch.crates-io.trellis-local-bootstrap.path=\"$GITHUB_WORKSPACE/crates/local-bootstrap\"" \
-            --config "patch.crates-io.trellis-local-nats.path=\"$GITHUB_WORKSPACE/crates/local-nats\"" \
-            --config "patch.crates-io.trellis-runtime-apis.path=\"$GITHUB_WORKSPACE/crates/runtime-apis\"" \
-            --config "patch.crates-io.trellis-events-runtime.path=\"$GITHUB_WORKSPACE/crates/events-runtime\"" \
-            --config "patch.crates-io.trellis-jobs-runtime.path=\"$GITHUB_WORKSPACE/crates/jobs-runtime\"" \
-            --config "patch.crates-io.trellis-idl.path=\"$GITHUB_WORKSPACE/crates/idl\"" \
-            --test live \
-            --message-format=json > "$RUNNER_TEMP/testkit-live.json"
-          executable="$(jq -r 'select(.executable != null) | .executable' "$RUNNER_TEMP/testkit-live.json" | tail -n1)"
-          cp "${executable}" target/debug/trellis-testkit-live
+          umask 077
+          chmod go-w "$HOME"
+          mkdir -p "$EXECUTION_ROOT/nats" "$EXECUTION_ROOT/runtime"
+          chmod 700 "$EXECUTION_ROOT" "$EXECUTION_ROOT/nats" "$EXECUTION_ROOT/runtime"
+          tar -xzf "$EXECUTION_ROOT/binaries/runtime-binaries.tar.gz" -C "$EXECUTION_ROOT/binaries"
+          bash scripts/acquire-test-nats.sh --dest "$EXECUTION_ROOT/nats"
+          sha256sum "$EXECUTION_ROOT/binaries/trellis-server" "$EXECUTION_ROOT/binaries/trellis" "$EXECUTION_ROOT/binaries/trellis-testkit-live" "$EXECUTION_ROOT/nats/nats-server"
 
-      - name: Acquire the pinned NATS executable
-        run: bash scripts/acquire-test-nats.sh --dest /tmp/trellis-testkit-nats
-
-      - name: Run the prebuilt testkit live binary with a host probe
+      - name: Run unchanged parallel suite without instrumentation
         env:
-          TRELLIS_TEST_NATS_BIN: /tmp/trellis-testkit-nats/nats-server
           RUST_BACKTRACE: "1"
         run: |
-          set +e
-          probe_log="$RUNNER_TEMP/host-probe.log"
-          : > "$probe_log"
-          (
-            while true; do
-              echo "=== $(date -u +%H:%M:%S) ==="
-              echo "loadavg: $(cat /proc/loadavg)"
-              grep -E 'MemTotal|MemAvailable|SwapTotal|SwapFree' /proc/meminfo
-              for pressure in cpu io memory; do
-                [ -r "/proc/pressure/${pressure}" ] && echo "psi ${pressure}: $(cat "/proc/pressure/${pressure}")"
-              done
-              df -h /tmp "$GITHUB_WORKSPACE" 2>/dev/null | tail -3
-              vmstat 1 2 2>/dev/null | tail -1
-              ps -eo pcpu,pmem,stat,comm --sort=-pcpu 2>/dev/null | head -12
-              sleep 2
-            done
-          ) >> "$probe_log" 2>&1 &
-          probe_pid=$!
-          "$GITHUB_WORKSPACE/target/debug/trellis-testkit-live"
-          status=$?
-          kill "$probe_pid" 2>/dev/null || true
-          wait "$probe_pid" 2>/dev/null || true
-          echo "===== HOST PROBE (${probe_log}) ====="
-          cat "$probe_log"
-          exit "$status"
+          set -euo pipefail
+          umask 077
+          export TMPDIR="$EXECUTION_ROOT/runtime"
+          export TRELLIS_TEST_SERVER_BIN="$EXECUTION_ROOT/binaries/trellis-server"
+          export TRELLIS_TEST_CLI_BIN="$EXECUTION_ROOT/binaries/trellis"
+          export TRELLIS_TEST_NATS_BIN="$EXECUTION_ROOT/nats/nats-server"
+          uname -a
+          df -h "$EXECUTION_ROOT"
+          for pressure in cpu io memory; do
+            cat "/proc/pressure/$pressure"
+          done
+          "$EXECUTION_ROOT/binaries/trellis-testkit-live" --test-threads=4

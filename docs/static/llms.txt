@@ -129,7 +129,10 @@ redundant `session-key`, and a message-specific proof.
 Browser sign-in carries a reusable signed intent; a bounded authentication
 transaction starts only when authentication begins, not when the portal renders.
 Only one outstanding attempt can claim an intent; concurrent starts cannot
-replace it. Detached progress requires the initiating key's fresh proof, while
+replace it. Persist the pending portal binding before the start request and
+reuse it after response loss or reload: same-binding retries recover the active
+transaction; another binding conflicts. Detached progress requires the initiating
+key's fresh proof, while
 public portal rendering exposes no transaction discovery. Denied, expired, or
 consumed attempts can restart from the same intent. Invalid login requires
 authentication; valid-login authorization denial surfaces its machine code
@@ -157,7 +160,7 @@ For live Rust tests, `trellis-testkit` links the real production runtime and
 manages a real NATS child without requiring the CLI/server executables. Its bare
 builder defaults to the verified pinned broker download; a prebuilt broker can
 be selected with `TRELLIS_TEST_NATS_BIN` or `NatsSource`. The TypeScript testkit
-acquires exact-version SHA-256-pinned production CLI/server archives
+acquires exact-version SHA-256-pinned production CLI/server archives (currently Linux x86-64 only)
 automatically; no installed Trellis executables or nsc are required. Production
 commands generate configuration and own managed NATS. Graceful TypeScript host
 shutdown has a bounded fallback that reclaims the isolated host/broker process

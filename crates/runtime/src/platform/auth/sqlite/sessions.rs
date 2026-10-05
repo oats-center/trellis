@@ -61,10 +61,11 @@ impl SessionRepository for SqliteAuthorizationStore {
                     return Err(AuthorizationStateError::SessionExpired);
                 }
                 previous.last_authenticated_at = previous.last_authenticated_at.max(command.session.last_authenticated_at);
+                previous.installed_revision = command.session.installed_revision;
                 previous.version = next_version(previous.version)?;
                 transaction.execute(
-                    "UPDATE auth_sessions SET last_authenticated_at = ?1, version = ?2 WHERE session_id = ?3",
-                    params![previous.last_authenticated_at, to_sql_version(previous.version)?, previous.session_id],
+                    "UPDATE auth_sessions SET last_authenticated_at = ?1, version = ?2, installed_revision = ?4 WHERE session_id = ?3",
+                    params![previous.last_authenticated_at, to_sql_version(previous.version)?, previous.session_id, to_sql_version(previous.installed_revision)?],
                 ).map_err(map_write_error)?;
                 previous
             } else {

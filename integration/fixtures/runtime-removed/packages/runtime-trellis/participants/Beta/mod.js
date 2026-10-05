@@ -9,6 +9,7 @@ const __participant = participantDescriptor({
 	identity: "runtime-trellis.Beta",
 	id: "runtime-trellis.Beta",
 	path: "Beta",
+	digest: "CWMEHF4fYMkCcoHhlwv9H8a0tcZjZxZQQ723Wq8Xpoc",
 	implements: [],
 	uses: [{
 		api: Api0.API,
@@ -20,6 +21,16 @@ const __participant = participantDescriptor({
 		optionalCapabilities: []
 	}],
 	optionalGrants: {},
+	requiredGrants: [{
+		"target": {
+			"kind": "apiSurface",
+			"api": "runtime-trellis.events@v1",
+			"surface": "event",
+			"name": "Beta"
+		},
+		"action": "publish"
+	}],
+	requiredCapabilities: [],
 	actionNames: {
 		"runtime-trellis.events@v1:rpc:DropAlpha": "DropAlpha",
 		"runtime-trellis.events@v1:rpc:Observed": "Observed",

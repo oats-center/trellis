@@ -25,12 +25,7 @@ const root = configSchema.omit({ version: true }).parse(
 );
 const targets: Record<string, { archive: string; sha256: string }> = {};
 for (
-  const target of [
-    "x86_64-unknown-linux-gnu",
-    "aarch64-unknown-linux-gnu",
-    "x86_64-apple-darwin",
-    "aarch64-apple-darwin",
-  ]
+  const target of ["x86_64-unknown-linux-gnu"]
 ) {
   const archive = `trellis-${config.version}-${target}.tar.gz`;
   const sha256 = (await Deno.readTextFile(

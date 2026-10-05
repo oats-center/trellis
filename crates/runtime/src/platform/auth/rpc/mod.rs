@@ -2193,7 +2193,7 @@ impl AuthRpcProcessor {
         let input = json!({
             "sessionId": login_session_id,
             "expectedVersion": session.version.to_string(),
-            "idempotencyKey": "logout",
+            "idempotencyKey": format!("logout:{login_session_id}"),
             "reason": null,
         });
         self.sessions_revoke(

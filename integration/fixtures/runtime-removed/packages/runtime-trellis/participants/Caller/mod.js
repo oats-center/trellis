@@ -9,6 +9,7 @@ const __participant = participantDescriptor({
 	identity: "runtime-trellis.Caller",
 	id: "runtime-trellis.Caller",
 	path: "Caller",
+	digest: "dtrmFlXQgzeI9AywEU7roHkTrW2YKPzGqwQ-NWFSrIg",
 	implements: [],
 	uses: [{
 		api: Api0.API,
@@ -47,6 +48,99 @@ const __participant = participantDescriptor({
 		optionalCapabilities: []
 	}],
 	optionalGrants: {},
+	requiredGrants: [
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "runtime-trellis.runtime@v1",
+				"surface": "event",
+				"name": "Changed"
+			},
+			"action": "publish"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "runtime-trellis.runtime@v1",
+				"surface": "event",
+				"name": "Changed"
+			},
+			"action": "subscribe"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "runtime-trellis.runtime@v1",
+				"surface": "live",
+				"name": "Watch"
+			},
+			"action": "subscribe"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "runtime-trellis.runtime@v1",
+				"surface": "operation",
+				"name": "Upload"
+			},
+			"action": "cancel"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "runtime-trellis.runtime@v1",
+				"surface": "operation",
+				"name": "Upload"
+			},
+			"action": "invoke"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "runtime-trellis.runtime@v1",
+				"surface": "operation",
+				"name": "Upload"
+			},
+			"action": "observe"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "runtime-trellis.runtime@v1",
+				"surface": "operation",
+				"name": "Work"
+			},
+			"action": "cancel"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "runtime-trellis.runtime@v1",
+				"surface": "operation",
+				"name": "Work"
+			},
+			"action": "invoke"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "runtime-trellis.runtime@v1",
+				"surface": "operation",
+				"name": "Work"
+			},
+			"action": "observe"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "runtime-trellis.runtime@v1",
+				"surface": "rpc",
+				"name": "Echo"
+			},
+			"action": "call"
+		}
+	],
+	requiredCapabilities: [],
 	actionNames: {
 		"runtime-trellis.runtime@v1:rpc:Echo": "Echo",
 		"runtime-trellis.runtime@v1:operation:Upload": "Upload",

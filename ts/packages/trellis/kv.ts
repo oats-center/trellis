@@ -626,22 +626,28 @@ export class TypedKV<T> {
       })()));
   }
 
-  /** Watches retained initialization and subsequent revisions for one key. */
+  /**
+   * Watches retained initialization and subsequent revisions. A key retains its
+   * history; omitting the key watches the bucket's last values and updates.
+   * Aborting stops the watcher and releases its pinned transport generation.
+   */
   watch(
-    key: string,
+    key?: string,
+    options: { signal?: AbortSignal } = {},
   ): AsyncResult<AsyncIterable<KvWatchItem<T>>, KVOperationError> {
     return this.#observe("watch_setup", () =>
       AsyncResult.from((async () => {
         try {
           this.#assertCurrent();
+          options.signal?.throwIfAborted();
           // A watcher is a pinned observation: it holds its generation until the
           // iteration ends so a rollover cannot retire the backend underneath it.
           const acquired = await this.#acquire("read");
           let watcher;
           try {
             watcher = await acquired.kv.watch({
-              key: escapeKvKey(key),
-              include: "history",
+              ...(key === undefined ? {} : { key: escapeKvKey(key) }),
+              include: key === undefined ? "" : "history",
             });
           } catch (cause) {
             acquired.release();
@@ -650,6 +656,16 @@ export class TypedKV<T> {
           const representation = this.representation;
           const migrations = this.migrations;
           const isCurrent = this.isCurrent;
+          let released = false;
+          const stop = () => {
+            watcher.stop();
+            if (!released) {
+              released = true;
+              acquired.release();
+            }
+          };
+          options.signal?.addEventListener("abort", stop, { once: true });
+          if (options.signal?.aborted) stop();
           return Result.ok({
             async *[Symbol.asyncIterator]() {
               try {
@@ -660,8 +676,8 @@ export class TypedKV<T> {
                   yield await decodeEntry(representation, migrations, entry);
                 }
               } finally {
-                watcher.stop();
-                acquired.release();
+                stop();
+                options.signal?.removeEventListener("abort", stop);
               }
             },
           });

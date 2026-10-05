@@ -413,6 +413,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
   #logicalConnected = false;
   readonly #closeDeferred = Promise.withResolvers<void | Error>();
   readonly #changeWaiters = new Set<() => void>();
+  #changeVersion = 0;
   readonly #logicalListeners = new Set<(event: unknown) => void>();
   readonly #logicalClosers = new Set<() => void>();
   /** Retained publication subscribers; fired only on an actual current-id change. */
@@ -1069,9 +1070,10 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     for (;;) {
       this.#throwIfClosed();
       this.#assertNotAborted(opts);
+      const changeVersion = this.#changeVersion;
       if (!this.#initialized) {
         this.#requestAdoption("authorization_growth");
-        await this.#waitForChange(opts);
+        await this.#waitForChange(changeVersion, opts);
         continue;
       }
       const selected = await this.#selectGeneration(requirement);
@@ -1098,7 +1100,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       const desired = this.#options.desiredPolicy();
       if (!desired) {
         this.#requestAdoption("authorization_growth");
-        await this.#waitForChange(opts);
+        await this.#waitForChange(changeVersion, opts);
         continue;
       }
       if (
@@ -1110,7 +1112,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       ) {
         this.#assertNotAborted(opts);
         this.#requestAdoption("authorization_growth");
-        await this.#waitForChange(opts);
+        await this.#waitForChange(changeVersion, opts);
         continue;
       }
       const current = this.#currentGeneration();
@@ -1139,7 +1141,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         }
       }
       this.#requestAdoption("reduction");
-      await this.#waitForChange(opts);
+      await this.#waitForChange(changeVersion, opts);
     }
   }
 
@@ -2402,6 +2404,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
   }
 
   #notify(): void {
+    this.#changeVersion += 1;
     if (this.#changeWaiters.size === 0) return;
     const waiters = [...this.#changeWaiters];
     this.#changeWaiters.clear();
@@ -2446,7 +2449,14 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     this.#failure = undefined;
   }
 
-  #waitForChange(opts?: TransportAcquireOptions): Promise<void> {
+  #waitForChange(
+    observedVersion: number,
+    opts?: TransportAcquireOptions,
+  ): Promise<void> {
+    this.#assertNotAborted(opts);
+    // Selection and policy checks await. Recheck instead of sleeping if their
+    // awaited work crossed a notification, even when no waiter existed then.
+    if (observedVersion !== this.#changeVersion) return Promise.resolve();
     const signal = opts?.signal;
     const deadlineMs = opts?.deadlineMs;
     // With no caller deadline, a failed-adoption retry window still bounds the

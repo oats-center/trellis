@@ -8,6 +8,10 @@
     "./packages/trellis"
   ],
   "tasks": {
+    "bench:runtime": "cd .. && deno run -A -c ts/deno.json benchmarks/runtime/run.ts",
+    "bench:runtime:report": "cd .. && deno run -A -c ts/deno.json benchmarks/runtime/report.ts",
+    "bench:runtime:suite": "cd .. && deno run -A -c ts/deno.json benchmarks/runtime/suite.ts",
+    "bench:runtime:browser:build": "cd .. && deno bundle -c ts/deno.json --platform=browser --output=benchmarks/runtime/browser.bundle.js benchmarks/runtime/browser.ts",
     "install": "cargo run --manifest-path ../xtask/Cargo.toml -- install",
     "protocol:wasm": "cargo run --manifest-path ../xtask/Cargo.toml -- protocol-wasm",
     "browser:embedded": "deno task -c ../web/deno.json build:embedded",
@@ -160,6 +164,7 @@
   },
   "fmt": {
     "exclude": [
+      "../benchmarks/runtime/packages",
       "packages/trellis-testkit/trellis",
       "packages/trellis-testkit/fixtures/authorization-trust",
       "packages/trellis/auth/protocol_wasm"

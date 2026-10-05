@@ -83,9 +83,11 @@ Trellis integration behavior:
   state-specific `HttpOnly` cookie and current portal policy at callback.
   Start through the portal controller's POST-backed provider action, not a GET
   link to `/auth/login/{providerId}`; callback continuation carries `transactionId`.
-  Portal progress requires the raw transaction binding. A duplicate start cannot
-  replace an outstanding attempt; `transaction_active` is a conflict, not a new
-  transaction. Public intent rendering exposes no transaction discovery; detached
+  Portal progress requires the raw transaction binding. The controller persists
+  the pending binding before starting and reuses it after response loss or reload;
+  same-binding retries recover the active transaction without resetting its
+  state or expiry. Another binding receives `intent_transaction_active` and cannot
+  replace it. Public intent rendering exposes no transaction discovery; detached
   initiating clients use a separate fresh initiating-key proof.
 - Trusted portal policy is administered for one exact portal + participant.
   Capability groups and provider-role mappings are server-side macros bounded by

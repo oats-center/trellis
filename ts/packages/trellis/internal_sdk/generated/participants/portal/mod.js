@@ -9,6 +9,7 @@ const __participant = participantDescriptor({
 	identity: "trellis.portal",
 	id: "trellis.portal",
 	path: "portal",
+	digest: "cEJGKiXSG-DR6lshlUuWGtt58N_0J1V8yXDyA2O7_Ik",
 	implements: [],
 	uses: [{
 		api: Api0.API,
@@ -20,6 +21,36 @@ const __participant = participantDescriptor({
 		optionalCapabilities: []
 	}],
 	optionalGrants: {},
+	requiredGrants: [
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "operation",
+				"name": "DeviceUserAuthorities.Resolve"
+			},
+			"action": "cancel"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "operation",
+				"name": "DeviceUserAuthorities.Resolve"
+			},
+			"action": "invoke"
+		},
+		{
+			"target": {
+				"kind": "apiSurface",
+				"api": "trellis.auth@v1",
+				"surface": "operation",
+				"name": "DeviceUserAuthorities.Resolve"
+			},
+			"action": "observe"
+		}
+	],
+	requiredCapabilities: [],
 	actionNames: {
 		"trellis.auth@v1:rpc:Capabilities.List": "Capabilities.List",
 		"trellis.auth@v1:rpc:CapabilityGroups.Delete": "CapabilityGroups.Delete",

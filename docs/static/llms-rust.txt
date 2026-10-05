@@ -104,13 +104,17 @@ as the origin and challenge. It submits a fresh `browser-auth-progress` proof to
 returns the ID only when ready. Public intent rendering exposes no discovery.
 Only one outstanding transaction can claim the intent; a concurrent start cannot
 replace an unexpired attempt, even after approval while bind is outstanding.
-Denied, expired, and consumed attempts permit a fresh transaction. Completion
-binds that transaction with the initiating private key and verifies the returned
-intent, participant, and key bindings before context refresh. Exact supported
-replay returns the same semantic login result, not another session. An idle
-valid intent is not an expired attempt or an invalid login; attempt expiry
-permits a fresh transaction from the retained intent. Treat authorization denial
-separately from invalid login rather than starting a login loop.
+The portal persists its pending binding before starting; retrying that intent
+with the same binding recovers the active transaction after response loss or
+reload. Another binding conflicts and cannot replace the rendezvous.
+Denied, expired, and consumed attempts permit a fresh transaction.
+Completion binds that transaction with the initiating private key and verifies
+the returned intent, participant, and key bindings before context refresh.
+Exact supported replay returns the same semantic login result, not another
+session. An idle valid intent is not an expired attempt or an invalid login;
+attempt expiry permits a fresh transaction from the retained intent. Treat
+authorization denial separately from invalid login rather than starting a
+login loop.
 
 A generated device companion is established only through the parent device's
 activation flow and separate user consent. It receives an independent ordinary

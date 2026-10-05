@@ -310,7 +310,7 @@ before using a retained older database.
 
 For live Deno tests, `await using runtime = await TrellisTestRuntime.start()`
 from `@oatscenter/trellis-testkit` acquires exact-version production CLI/server
-archives pinned by SHA-256. No installed Trellis executables or nsc are
+archives pinned by SHA-256, currently for Linux x86-64 only. No installed Trellis executables or nsc are
 required. Production commands generate config and own managed NATS in a private
 sandbox with seeded admin. Network is needed on first use;
 `TRELLIS_TEST_CACHE_DIR` reuses verified binaries only. Use
@@ -343,10 +343,13 @@ Custom portals use the public browser-auth helpers `portalIntentFromUrl`,
 new transaction when the user continues; do not send the user back to the app
 just to restart. The portal receives no initiating app private key. Its fresh
 transaction binding is separate from the app's key-bound completion proof.
-Portal progress requires that raw binding. A concurrent or duplicate transaction
-start receives `transaction_active`; it must not displace an outstanding
-attempt. Public intent rendering never returns transaction discovery. Detached
-discovery uses the initiating key's fresh `userAuthProgress` session proof at
+Portal progress requires that raw binding. Persist a pending binding indexed by
+intent before `startPortalTransaction`; reuse it on retry or reload, then
+associate it with the returned transaction ID. A same-binding retry recovers the
+active transaction without resetting state or expiry; another binding receives
+`intent_transaction_active` and must not displace it.
+Public intent rendering never returns transaction discovery. Detached discovery
+uses the initiating key's fresh `userAuthProgress` session proof at
 `/auth/intents/progress` and receives a transaction ID only when ready to bind.
 Browser OIDC uses `portalProviderLoginUrl()` to POST JSON transaction inputs and
 navigate to the returned provider URL; first and replayed callbacks return to

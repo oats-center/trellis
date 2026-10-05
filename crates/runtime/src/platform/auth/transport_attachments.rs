@@ -522,15 +522,6 @@ mod tests {
             .expect("resolve pinned nats-server")
     }
 
-    #[cfg(feature = "nats-leases")]
-    fn free_port() -> u16 {
-        std::net::TcpListener::bind("127.0.0.1:0")
-            .expect("bind ephemeral port")
-            .local_addr()
-            .expect("local addr")
-            .port()
-    }
-
     /// A real broker with a system account answers the production `CONNZ`
     /// inventory path. The wrapped reply must identify the requested server and
     /// expose a known authenticated socket, and unavailable evidence must fail
@@ -543,9 +534,14 @@ mod tests {
         let binary = pinned_nats_binary();
         let dir = tempfile::tempdir().expect("temp dir");
         let config_path = dir.path().join("nats.conf");
-        let nats_port = free_port();
-        let http_port = free_port();
-        let ws_port = free_port();
+        // Reserve all three listeners together so the OS cannot hand the same
+        // ephemeral port back to this broker's next listener.
+        let listeners = std::array::from_fn::<_, 3, _>(|_| {
+            std::net::TcpListener::bind("0.0.0.0:0").expect("reserve broker listener")
+        });
+        let [nats_port, http_port, ws_port] = listeners
+            .each_ref()
+            .map(|listener| listener.local_addr().expect("listener address").port());
         let config = format!(
             "port: {nats_port}\nhttp_port: {http_port}\n\
              websocket {{ port: {ws_port}, no_tls: true }}\n\
@@ -553,6 +549,7 @@ mod tests {
              system_account: SYS\n"
         );
         std::fs::write(&config_path, config).expect("write broker config");
+        drop(listeners);
         let mut server = ManagedNatsServer::start(
             &binary,
             &config_path,
@@ -565,7 +562,12 @@ mod tests {
                 mirror: false,
             },
         )
-        .expect("start broker");
+        .unwrap_or_else(|error| {
+            panic!(
+                "start broker: {error}\n{}",
+                std::fs::read_to_string(dir.path().join("nats.log")).unwrap_or_default()
+            )
+        });
         let url = format!("nats://127.0.0.1:{nats_port}");
 
         let system =

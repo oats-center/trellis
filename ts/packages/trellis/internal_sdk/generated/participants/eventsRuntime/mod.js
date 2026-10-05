@@ -9,9 +9,12 @@ const __participant = participantDescriptor({
 	identity: "trellis.eventsRuntime",
 	id: "trellis.eventsRuntime",
 	path: "eventsRuntime",
+	digest: "o7tkMWeETdl1YsHXnMMF9CfWqXV_5r4Syl24pNK6ilc",
 	implements: [Api0.API],
 	uses: [],
 	optionalGrants: {},
+	requiredGrants: [],
+	requiredCapabilities: [],
 	actionNames: {
 		"trellis.events@v1:rpc:Consumers.Inspect": "Consumers.Inspect",
 		"trellis.events@v1:rpc:Consumers.Query": "Consumers.Query",

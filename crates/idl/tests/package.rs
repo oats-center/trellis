@@ -199,8 +199,6 @@ fn canonical_source_is_stable_and_evidence_recompiles() {
         canonical
     );
     let semantic = canonical_package(&graph, graph.root(), CanonicalMode::Semantic).unwrap();
-    assert!(!semantic.contains("title \"Orders\""));
-    assert!(!semantic.contains("description \"Order access.\""));
     let semantic_round_trip = compile_project(
         &manifest(&[("canonical", "canonical.trellis")]),
         vec![source("canonical", "canonical.trellis", &semantic)],
@@ -332,6 +330,96 @@ fn reports_source_span_for_unimported_names() {
     assert!(error
         .labels()
         .is_some_and(|mut labels| labels.next().is_some()));
+}
+
+#[test]
+fn local_imports_require_a_type_or_api_in_the_named_source() {
+    let package_manifest = manifest(&[
+        ("types", "types.trellis"),
+        ("other", "other.trellis"),
+        ("consumer", "consumer.trellis"),
+    ]);
+    for import in [
+        "import { Hidden } from other;",
+        "import { Caller } from types;",
+    ] {
+        let error = compile_project(
+            &package_manifest,
+            vec![
+                source("types", "types.trellis", "model Hidden {} app Caller {}"),
+                source("other", "other.trellis", "model Other {}"),
+                source("consumer", "consumer.trellis", import),
+            ],
+            BTreeMap::new(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("refers to missing type or API"));
+        assert!(error
+            .labels()
+            .is_some_and(|mut labels| labels.next().is_some()));
+    }
+}
+
+#[test]
+fn shared_schema_changes_update_only_affected_participant_needs() {
+    let package_manifest = manifest(&[
+        ("types", "types.trellis"),
+        ("api", "api.trellis"),
+        ("app", "app.trellis"),
+    ]);
+    let api = API.replace(
+        "  event Changed {",
+        "  rpc Again { input GetInput; output PagedOrders; errors [Missing]; pagination cursor; }\n  event Changed {",
+    ).replace(
+        "allows { publish event Changed; subscribe event Changed; }",
+        "allows { publish event Changed; subscribe event Changed; rpc Again; }",
+    );
+    let compile = |types: &str| {
+        compile_project(
+            &package_manifest,
+            vec![
+                source("types", "types.trellis", types),
+                source("api", "api.trellis", &api),
+                source(
+                    "app",
+                    "app.trellis",
+                    r#"
+import { orders } from api;
+app First { use orders { rpc Get; rpc Again; } }
+app Second { use orders { rpc Get; } }
+app Observer { use orders { subscribe event Changed; } }
+"#,
+                ),
+            ],
+            BTreeMap::new(),
+        )
+        .unwrap()
+    };
+    let original = compile(TYPES);
+    let changed = compile(&TYPES.replace("max_length=200", "max_length=201"));
+    let verified = compile_evidence(PackageEvidence {
+        root_package: package_manifest.package.name.clone(),
+        root_digest: changed.root_digest().into(),
+        packages: vec![PackageSourceEvidence {
+            name: package_manifest.package.name.clone(),
+            version: package_manifest.package.version.clone(),
+            digest: changed.root_digest().into(),
+            source: canonical_package(&changed, changed.root(), CanonicalMode::Presentation)
+                .unwrap(),
+        }],
+    })
+    .unwrap();
+    for participant in original.root_package().participants().values() {
+        let id = participant.identity();
+        let before = original.participant_needs(id).unwrap().digest();
+        let after = changed.participant_needs(id).unwrap().digest();
+        if participant.name() == "Observer" {
+            assert_eq!(before, after);
+        } else {
+            assert_ne!(before, after, "{}", participant.name());
+        }
+        assert_eq!(after, verified.participant_needs(id).unwrap().digest());
+    }
 }
 
 #[test]

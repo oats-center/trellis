@@ -36,7 +36,7 @@ function decodeBase64Url(value: string): Uint8Array | null {
   }
 }
 
-/** Returns the portal browser's per-flow verifier, creating it when absent. */
+/** Returns and persists a portal verifier keyed by transaction or pending intent. */
 export async function createPortalBinding(): Promise<PortalBinding> {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   return {
