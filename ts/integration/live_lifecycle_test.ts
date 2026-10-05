@@ -18,15 +18,9 @@ import {
 } from "npm:@opentelemetry/sdk-metrics@^2.7.0";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
-import { withTrellisRuntime } from "./_support/runtime.ts";
+import { repoTrellisSource, withTrellisRuntime } from "./_support/runtime.ts";
 
 /** Built server binary supplied by the live test harness. */
-function serverBinary(): string {
-  return Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
-    fromFileUrl(
-      new URL("../../target/debug/trellis-server", import.meta.url),
-    );
-}
 
 /** In-process metric capture rebinding Trellis instruments to a test reader. */
 function startMetricCapture() {
@@ -91,12 +85,7 @@ async function startProvider(
 }
 
 const runtimeOptions = {
-  trellis: {
-    command: {
-      cmd: serverBinary(),
-      args: ["--config", "{config}", "all"],
-    },
-  },
+  trellis: { source: repoTrellisSource() },
 };
 
 Deno.test("connection close synchronously cancels active and prepared Live consumers", async () => {

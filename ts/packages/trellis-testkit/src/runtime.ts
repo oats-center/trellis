@@ -6,27 +6,29 @@ import {
 } from "@oatscenter/trellis";
 import { recordTrellisDuration } from "@oatscenter/trellis/telemetry";
 import { dirname, join } from "@std/path";
+import type { ConnectionOptions, NatsConnection } from "@nats-io/nats-core";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { z } from "zod";
 
 import { NativeTransportGate, type SerialWriter } from "./native_gate.ts";
 import { NatsFrameParser } from "./nats_wire.ts";
 
 import { TrellisTestAdminAutomation } from "./admin_client.ts";
 import { ADMIN_USERNAME } from "./admin/methods.ts";
+import { generateSessionSeed } from "./auth/random.ts";
 import type { AdminRpc, AdminRpcInput } from "./admin/methods.ts";
 import {
   removeStaleMarkedDirectories,
   writeTrellisTestOwnerMarker,
 } from "./cleanup.ts";
+import { type ReservedPort, reserveLocalPort } from "./ports.ts";
 import {
-  buildControlPlaneConfig,
-  generateSessionSeed,
-  type ReservedPort,
-  reserveLocalPort,
-  writeTrellisConfig,
-} from "./control_plane_config.ts";
-import { NatsTestContainer } from "./nats_container.ts";
+  resolveNativeDistribution,
+  trellisTestCacheDir,
+} from "./native_distribution.ts";
 import { sqliteMemoryUrl as sqliteMemoryUrlHelper } from "./temp.ts";
 import {
+  type ResolvedTrellisProcessCommand,
   startTrellisProcess,
   type TrellisProcessHandle,
 } from "./trellis_process.ts";
@@ -50,6 +52,87 @@ type RuntimeTimeouts = {
   waitForMs: number;
   shutdownMs: number;
 };
+
+type LaunchPlan = {
+  server: string;
+  configPath: string;
+  credsPath: string;
+  environment: Record<string, string>;
+  mode: string;
+  ports: readonly number[];
+  cache: string;
+  advertisedNative?: string;
+  advertisedWebsocket?: string;
+};
+
+function serverCommand(plan: LaunchPlan): ResolvedTrellisProcessCommand {
+  const args = [
+    "--config",
+    plan.configPath,
+    "--nats-download",
+    "--isolated-process-group",
+    `--local-nats-ports=${plan.ports.slice(1).join(",")}`,
+    `--local-nats-cache=${plan.cache}`,
+  ];
+  if (plan.advertisedNative) {
+    args.push("--advertise-nats-server", plan.advertisedNative);
+  }
+  if (plan.advertisedWebsocket) {
+    args.push("--advertise-nats-websocket", plan.advertisedWebsocket);
+  }
+  args.push(plan.mode);
+  return {
+    cmd: plan.server,
+    args,
+    env: plan.environment,
+    isolatedProcessGroup: true,
+  };
+}
+
+async function runBootstrapCommand(
+  cmd: string,
+  args: string[],
+  environment: Record<string, string>,
+  timeoutMs: number,
+  input?: string,
+): Promise<Uint8Array> {
+  const child = new Deno.Command(cmd, {
+    args,
+    env: environment,
+    clearEnv: true,
+    stdin: input === undefined ? "null" : "piped",
+    stdout: "piped",
+    stderr: "piped",
+  }).spawn();
+  const output = child.output();
+  const timeout = setTimeout(() => {
+    try {
+      child.kill("SIGKILL");
+    } catch { /* already exited */ }
+  }, timeoutMs);
+  try {
+    if (input !== undefined) {
+      const writer = child.stdin.getWriter();
+      await writer.write(new TextEncoder().encode(input));
+      await writer.close();
+    }
+    const result = await output;
+    if (!result.success) {
+      throw new Error(
+        `Production bootstrap failed (exit ${result.code}): ${
+          new TextDecoder().decode(result.stderr).slice(-8192)
+        }`,
+      );
+    }
+    return result.stdout;
+  } finally {
+    clearTimeout(timeout);
+    try {
+      child.kill("SIGTERM");
+    } catch { /* already exited */ }
+    await output.catch(() => undefined);
+  }
+}
 
 const WORKDIR_PREFIX = "trellis-testkit-";
 const WORKDIR_OWNER_MARKER = ".trellis-testkit-owner";
@@ -374,14 +457,14 @@ export class TrellisTestRuntime implements AsyncDisposable {
     ): Promise<AdminRpc["eventsDeadLettersReplay"]["output"]>;
   };
   #controlPlane: TrellisProcessHandle | undefined;
-  #nats: NatsTestContainer;
+  #nc: NatsConnection;
+  #observations = new Set<NatsConnection>();
   #admin: TrellisTestAdminAutomation;
-  #configPath: string | undefined;
-  #config: ReturnType<typeof buildControlPlaneConfig> | undefined;
+  #launch: LaunchPlan;
+  #directWebsocket: string;
   #websocketProxy: TcpProxy | undefined;
   #nativeProxy: TcpProxy | undefined;
   #nativeGate: NativeTransportGate | undefined;
-  #trellisOptions: TrellisTestRuntimeStartOptions["trellis"] | undefined;
   #keepWorkdir: boolean;
   #ownsWorkdir: boolean;
   #deployment: string;
@@ -420,21 +503,21 @@ export class TrellisTestRuntime implements AsyncDisposable {
     timeouts: RuntimeTimeouts;
     adminPassword: string;
     getBootstrapUrl: () => Promise<string>;
-    configPath?: string;
-    config?: ReturnType<typeof buildControlPlaneConfig>;
+    launch: LaunchPlan;
+    natsUrl: string;
+    websocketUrl: string;
     websocketProxy?: TcpProxy;
     nativeProxy?: TcpProxy;
     nativeGate?: NativeTransportGate;
-    trellisOptions?: TrellisTestRuntimeStartOptions["trellis"];
-    nats: NatsTestContainer;
+    nc: NatsConnection;
     controlPlane?: TrellisProcessHandle;
     admin: TrellisTestAdminAutomation;
     ownsWorkdir?: boolean;
   }) {
     this.trellisUrl = args.trellisUrl;
     this.publicOrigin = args.publicOrigin;
-    this.natsUrl = args.nats.natsUrl;
-    this.natsWebsocketUrl = args.websocketProxy?.url ?? args.nats.websocketUrl;
+    this.natsUrl = args.natsUrl;
+    this.natsWebsocketUrl = args.websocketProxy?.url ?? args.websocketUrl;
     this.workdir = args.workdir;
     this.#deployment = args.deployment;
     this.#keepWorkdir = args.keepWorkdir;
@@ -442,14 +525,13 @@ export class TrellisTestRuntime implements AsyncDisposable {
     this.#getBootstrapUrl = args.getBootstrapUrl;
     this.adminPassword = args.adminPassword;
     this.#timeouts = args.timeouts;
-    this.#nats = args.nats;
+    this.#nc = args.nc;
     this.#controlPlane = args.controlPlane;
-    this.#configPath = args.configPath;
-    this.#config = args.config;
+    this.#launch = args.launch;
+    this.#directWebsocket = args.websocketUrl;
     this.#websocketProxy = args.websocketProxy;
     this.#nativeProxy = args.nativeProxy;
     this.#nativeGate = args.nativeGate;
-    this.#trellisOptions = args.trellisOptions;
     this.#admin = args.admin;
     this.deployments = {
       create: ({ id, kind, reviewMode }) =>
@@ -504,11 +586,8 @@ export class TrellisTestRuntime implements AsyncDisposable {
 
   /** Starts an isolated Trellis test runtime. */
   static async start(
-    options: TrellisTestRuntimeStartOptions,
+    options: TrellisTestRuntimeStartOptions = {},
   ): Promise<TrellisTestRuntime> {
-    if (options?.trellis?.command === undefined) {
-      throw new Error("TrellisTestRuntime.start requires trellis.command");
-    }
     for (let attempt = 1;; attempt++) {
       try {
         return await TrellisTestRuntime.#startOnce(options);
@@ -526,16 +605,18 @@ export class TrellisTestRuntime implements AsyncDisposable {
   static async #startOnce(
     options: TrellisTestRuntimeStartOptions,
   ): Promise<TrellisTestRuntime> {
+    const native = await resolveNativeDistribution(options.trellis?.source);
     const workdir = await Deno.makeTempDir({ prefix: WORKDIR_PREFIX });
+    await Deno.chmod(workdir, 0o700);
     await writeTrellisTestOwnerMarker(workdir, WORKDIR_OWNER_MARKER);
     await removeStaleMarkedDirectories({
       parent: dirname(workdir),
       prefix: WORKDIR_PREFIX,
       markerName: WORKDIR_OWNER_MARKER,
     });
-    let nats: NatsTestContainer | undefined;
+    let nc: NatsConnection | undefined;
     let controlPlane: TrellisProcessHandle | undefined;
-    let portLease: ReservedPort | undefined;
+    const portLeases: ReservedPort[] = [];
     let websocketProxy: TcpProxy | undefined;
     let nativeProxy: TcpProxy | undefined;
     let nativeGate: NativeTransportGate | undefined;
@@ -545,13 +626,43 @@ export class TrellisTestRuntime implements AsyncDisposable {
         waitForMs: options.timeouts?.waitForMs ?? 5_000,
         shutdownMs: options.timeouts?.shutdownMs ?? 5_000,
       };
-      await Deno.mkdir(join(workdir, "trellis"), { recursive: true });
-      nats = await NatsTestContainer.start(workdir, {
-        startupMs: timeouts.startupMs,
-      });
+      const policy = options.trellis?.environment;
+      const environment = policy?.inherit === false ? {} : Deno.env.toObject();
+      for (const name of policy?.unset ?? []) delete environment[name];
+      Object.assign(environment, policy?.set);
+      for (
+        const [variable, directory] of Object.entries({
+          HOME: "home",
+          XDG_CONFIG_HOME: "config",
+          XDG_DATA_HOME: "data",
+          XDG_STATE_HOME: "state",
+          XDG_RUNTIME_DIR: "runtime",
+        })
+      ) {
+        const path = join(workdir, directory);
+        await Deno.mkdir(path, { mode: 0o700 });
+        environment[variable] = path;
+      }
+      environment.NO_COLOR = "1";
+      environment.TOKIO_WORKER_THREADS ??= "2";
+      environment.TRELLIS_CACHE_DIR = trellisTestCacheDir();
+      environment.TRELLIS_CONFIG = join(
+        workdir,
+        "config",
+        "trellis",
+        "config.toml",
+      );
+      for (let index = 0; index < 4; index++) {
+        portLeases.push(reserveLocalPort());
+      }
+      const [port, nativePort, monitorPort, websocketPort] = portLeases.map((
+        lease,
+      ) => lease.port);
+      const natsUrl = `nats://127.0.0.1:${nativePort}`;
+      const websocketUrl = `ws://127.0.0.1:${websocketPort}`;
       const browserHost = options.browserHost;
       if (options.rotatableWebsocketProxy || browserHost) {
-        websocketProxy = TcpProxy.start(nats.websocketUrl, {
+        websocketProxy = TcpProxy.start(websocketUrl, {
           ...(browserHost
             ? { bindHostname: "0.0.0.0", advertisedHost: browserHost }
             : {}),
@@ -559,55 +670,167 @@ export class TrellisTestRuntime implements AsyncDisposable {
       }
       if (options.interruptibleNativeProxy) {
         nativeGate = new NativeTransportGate();
-        nativeProxy = TcpProxy.start(nats.natsUrl, {
+        nativeProxy = TcpProxy.start(natsUrl, {
           scheme: "nats",
           gate: nativeGate,
         });
       }
-      portLease = reserveLocalPort();
-      const port = portLease.port;
       const trellisUrl = browserHost
         ? `http://${browserHost}:${port}`
         : `http://localhost:${port}`;
       const publicOrigin = trellisUrl;
-      const config = buildControlPlaneConfig({
-        workdir,
-        natsUrl: nats.natsUrl,
-        websocketUrl: websocketProxy?.url ?? nats.websocketUrl,
-        nativeNatsServers: nativeProxy?.url,
-        manifest: nats.manifest,
-        port,
+      const initArgs = [
+        "--format",
+        "json",
+        "init",
+        "config",
+        "--out",
+        join(workdir, "config", "trellis"),
+        "--trellis-port",
+        String(port),
+        "--nats-port",
+        String(nativePort),
+        "--nats-monitor-port",
+        String(monitorPort),
+        "--nats-ws-port",
+        String(websocketPort),
+        "--nats-server-url",
+        natsUrl,
+        "--nats-websocket-url",
+        websocketUrl,
+        "--public-origin",
         publicOrigin,
-        oauthProviders: options.oauthProviders,
-        webOrigins: options.webOrigins,
-        webSource: options.webSource,
-        portalSource: options.portalSource,
-        consoleSource: options.consoleSource,
-        ttlMs: options.ttlMs,
-        authorization: options.authorization,
-      });
-      const configPath = await writeTrellisConfig({ workdir, config });
+        "--bind-address",
+        browserHost ? "0.0.0.0" : "127.0.0.1",
+        "--rate-limit-max",
+        "0",
+      ];
+      for (const origin of options.webOrigins ?? []) {
+        initArgs.push("--extra-origin", origin);
+      }
+      for (
+        const [surface, source] of [["web", options.webSource], [
+          "portal",
+          options.portalSource,
+        ], ["console", options.consoleSource]] as const
+      ) {
+        if (source) {
+          initArgs.push(
+            `--${surface}-${"directory" in source ? "directory" : "proxy"}`,
+            "directory" in source ? source.directory : source.proxy,
+          );
+        }
+      }
+      for (
+        const [flag, value] of [
+          ["platform-sessions-ttl-ms", options.ttlMs?.sessions],
+          ["platform-oauth-ttl-ms", options.ttlMs?.oauth],
+          ["platform-device-flow-ttl-ms", options.ttlMs?.deviceFlow],
+          ["platform-pending-auth-ttl-ms", options.ttlMs?.pendingAuth],
+          [
+            "auth-context-lifetime-seconds",
+            options.authorization?.contextLifetimeSeconds,
+          ],
+          [
+            "auth-refresh-lead-seconds",
+            options.authorization?.refreshLeadSeconds,
+          ],
+          [
+            "auth-refresh-jitter-seconds",
+            options.authorization?.refreshJitterSeconds,
+          ],
+          [
+            "auth-minimum-context-lifetime-seconds",
+            options.authorization?.minimumContextLifetimeSeconds,
+          ],
+        ] as const
+      ) if (value !== undefined) initArgs.push(`--${flag}`, String(value));
+      if (
+        options.oauthProviders && Object.keys(options.oauthProviders).length
+      ) {
+        const inputPath = join(workdir, "config", "oauth-providers.json");
+        await Deno.writeTextFile(
+          inputPath,
+          JSON.stringify(options.oauthProviders),
+          { mode: 0o600 },
+        );
+        initArgs.push("--oauth-providers-file", inputPath);
+      }
+      const output = await runBootstrapCommand(
+        native.cli,
+        initArgs,
+        environment,
+        timeouts.startupMs,
+      );
+      const bootstrap = z.object({
+        trellisConfig: z.string(),
+        trellisRuntimeCreds: z.string(),
+      }).parse(JSON.parse(new TextDecoder().decode(output)));
+      environment.TRELLIS_CONFIG = bootstrap.trellisConfig;
+      const adminPassword = options.adminPassword ??
+        `trellis-testkit-${crypto.randomUUID()}`;
+      const seeded = (options.firstAdmin ?? "seeded") === "seeded";
+      if (seeded) {
+        await runBootstrapCommand(
+          native.server,
+          [
+            "--config",
+            bootstrap.trellisConfig,
+            "bootstrap-admin",
+            "--username",
+            ADMIN_USERNAME,
+            "--password-stdin",
+          ],
+          environment,
+          timeouts.startupMs,
+          `${adminPassword}\n`,
+        );
+      }
+      const launch: LaunchPlan = {
+        server: native.server,
+        configPath: bootstrap.trellisConfig,
+        credsPath: bootstrap.trellisRuntimeCreds,
+        environment,
+        mode: options.trellis?.mode ?? "all",
+        ports: [port, nativePort, monitorPort, websocketPort],
+        cache: trellisTestCacheDir(),
+        advertisedNative: nativeProxy?.url,
+        advertisedWebsocket: websocketProxy?.url,
+      };
       const startedControlPlane = await startTrellisProcess({
         trellisUrl,
-        configPath,
-        options: options.trellis,
+        configPath: launch.configPath,
+        command: serverCommand(launch),
         startupTimeoutMs: timeouts.startupMs,
         shutdownTimeoutMs: timeouts.shutdownMs,
-        portLease,
+        portLeases,
       });
-      portLease = undefined;
-      const deployment = options.deployment ?? "test";
-      const adminPassword = options.adminPassword ??
-        `trellis-testkit-${generateSessionSeed()}`;
       controlPlane = startedControlPlane;
-      const getBootstrapUrl = (): Promise<string> =>
-        startedControlPlane.waitForBootstrapUrl(timeouts.startupMs);
+      nc = await connect({
+        servers: natsUrl,
+        authenticator: credsAuthenticator(
+          await Deno.readFile(launch.credsPath),
+        ),
+        timeout: timeouts.startupMs,
+      });
+      const deployment = options.deployment ?? "test";
+      const getBootstrapUrl = (): Promise<string> => {
+        if (seeded) {
+          return Promise.reject(
+            new Error(
+              "bootstrapUrl() is only available with firstAdmin: browser-flow",
+            ),
+          );
+        }
+        return startedControlPlane.waitForBootstrapUrl(timeouts.startupMs);
+      };
       const admin = new TrellisTestAdminAutomation({
         trellisUrl: startedControlPlane.trellisUrl,
         adminPassword,
         defaultDeployment: deployment,
         getBootstrapUrl,
         resourceReadyTimeoutMs: timeouts.startupMs,
+        bootstrapComplete: seeded,
       });
       return new TrellisTestRuntime({
         trellisUrl: startedControlPlane.trellisUrl,
@@ -618,22 +841,22 @@ export class TrellisTestRuntime implements AsyncDisposable {
         timeouts,
         adminPassword,
         getBootstrapUrl,
-        configPath,
-        config,
+        launch,
+        natsUrl,
+        websocketUrl,
         websocketProxy,
         nativeProxy,
         nativeGate,
-        trellisOptions: options.trellis,
-        nats,
+        nc,
         controlPlane: startedControlPlane,
         admin,
       });
     } catch (error) {
-      portLease?.release();
+      for (const lease of portLeases) lease.release();
+      await nc?.close().catch(() => undefined);
       await controlPlane?.stop().catch(() => undefined);
       websocketProxy?.stop();
       nativeProxy?.stop();
-      await nats?.stop().catch(() => undefined);
       if (!options.keepWorkdir) {
         await Deno.remove(workdir, { recursive: true }).catch(() => undefined);
       }
@@ -774,38 +997,78 @@ export class TrellisTestRuntime implements AsyncDisposable {
 
   /** Flushes the underlying NATS connection. */
   async flush(): Promise<void> {
-    await this.#nats.nc.flush();
+    await this.#nc.flush();
+  }
+
+  /** Connect an isolated privileged broker observer for real adapter integration.
+   * This connection does not own the broker. It closes on stop; reconnect after
+   * restart. Service-author tests should normally use registerService/connectClient.
+   */
+  async connectNats(
+    options: Pick<
+      ConnectionOptions,
+      "servers" | "timeout" | "maxReconnectAttempts" | "reconnectTimeWait"
+    > = {},
+  ): Promise<NatsConnection> {
+    const connection = await connect({
+      servers: this.natsUrl,
+      timeout: this.#timeouts.startupMs,
+      ...options,
+      authenticator: credsAuthenticator(
+        await Deno.readFile(this.#launch.credsPath),
+      ),
+    });
+    if (this.#stopped) {
+      await connection.close();
+      throw new Error("Trellis test runtime is stopped");
+    }
+    this.#observations.add(connection);
+    return connection;
   }
 
   /** Drains the underlying NATS connection. */
   async drain(): Promise<void> {
-    await this.#nats.nc.drain();
+    await this.#nc.drain();
   }
 
-  /** Restarts only the Trellis control-plane process, preserving workdir, SQLite state, and NATS. */
-  async restartControlPlane(): Promise<void> {
+  /** Restarts the production host and managed broker, preserving SQLite and NATS storage. */
+  async restart(): Promise<void> {
     if (this.#stopped) {
       throw new Error("Cannot restart a stopped Trellis test runtime");
     }
-    if (
-      this.#controlPlane === undefined || this.#configPath === undefined ||
-      this.#trellisOptions === undefined
-    ) {
-      throw new Error("Cannot restart an attached Trellis test runtime");
-    }
-
     await this.#admin.prepareForControlPlaneRestart();
-    await this.#controlPlane.stop();
-    const port = Number(new URL(this.trellisUrl).port);
-    const portLease = reserveLocalPort(port);
-    this.#controlPlane = await startTrellisProcess({
-      trellisUrl: this.trellisUrl,
-      configPath: this.#configPath,
-      options: this.#trellisOptions,
-      startupTimeoutMs: this.#timeouts.startupMs,
-      shutdownTimeoutMs: this.#timeouts.shutdownMs,
-      portLease,
-    });
+    await Promise.all(
+      [...this.#observations].map((connection) => connection.close()),
+    );
+    this.#observations.clear();
+    await this.#nc.close();
+    await this.#controlPlane?.stop();
+    const portLeases: ReservedPort[] = [];
+    try {
+      for (const port of this.#launch.ports) {
+        portLeases.push(reserveLocalPort(port));
+      }
+      this.#controlPlane = await startTrellisProcess({
+        trellisUrl: this.trellisUrl,
+        configPath: this.#launch.configPath,
+        command: serverCommand(this.#launch),
+        startupTimeoutMs: this.#timeouts.startupMs,
+        shutdownTimeoutMs: this.#timeouts.shutdownMs,
+        portLeases,
+      });
+      this.#nc = await connect({
+        servers: this.natsUrl,
+        authenticator: credsAuthenticator(
+          await Deno.readFile(this.#launch.credsPath),
+        ),
+        timeout: this.#timeouts.startupMs,
+      });
+    } catch (error) {
+      await this.#controlPlane?.stop();
+      throw error;
+    } finally {
+      for (const lease of portLeases) lease.release();
+    }
   }
 
   /**
@@ -828,6 +1091,14 @@ export class TrellisTestRuntime implements AsyncDisposable {
     this.#nativeProxy.restore();
   }
 
+  /** Returns the advertised native proxy endpoint for raw transport clients. */
+  nativeProxyUrl(): string {
+    if (!this.#nativeProxy) {
+      throw new Error("Runtime was not started with interruptibleNativeProxy");
+    }
+    return this.#nativeProxy.url;
+  }
+
   /**
    * Observation and readiness barrier for the native NATS path. The barrier can
    * hold one generation's post-subscription readiness flush and the gate records
@@ -845,20 +1116,21 @@ export class TrellisTestRuntime implements AsyncDisposable {
   /** Replaces the browser WebSocket endpoint and retires the prior listener. */
   async rotateWebsocketProxy(): Promise<[string, string]> {
     if (
-      this.#websocketProxy === undefined || this.#config === undefined ||
-      this.#configPath === undefined
+      this.#websocketProxy === undefined
     ) {
       throw new Error("Runtime was not started with rotatableWebsocketProxy");
     }
     const retired = this.#websocketProxy;
-    const replacement = TcpProxy.start(this.#nats.websocketUrl);
-    this.#config.client.natsServers = [replacement.url];
-    await writeTrellisConfig({
-      workdir: this.workdir,
-      config: this.#config,
-      configPath: this.#configPath,
-    });
-    await this.restartControlPlane();
+    const replacement = TcpProxy.start(this.#directWebsocket);
+    const previous = this.#launch.advertisedWebsocket;
+    this.#launch.advertisedWebsocket = replacement.url;
+    try {
+      await this.restart();
+    } catch (error) {
+      replacement.stop();
+      this.#launch.advertisedWebsocket = previous;
+      throw error;
+    }
     this.#websocketProxy = replacement;
     retired.stop();
     return [retired.url, replacement.url];
@@ -876,7 +1148,11 @@ export class TrellisTestRuntime implements AsyncDisposable {
     return sqliteMemoryUrlHelper();
   }
 
-  /** Stops clients, control plane, NATS, and the temp directory. */
+  /**
+   * Stops clients and requests graceful host shutdown before removing the sandbox.
+   * Remaining host/broker processes are force-closed as an isolated group after
+   * the shutdown bound or host exit.
+   */
   async stop(): Promise<void> {
     if (this.#stopped) return;
     this.#stopped = true;
@@ -894,14 +1170,18 @@ export class TrellisTestRuntime implements AsyncDisposable {
       failures.push(error);
     }
     try {
-      await this.#controlPlane?.stop();
+      await Promise.all(
+        [...this.#observations].map((connection) => connection.close()),
+      );
+      this.#observations.clear();
+      await this.#nc.close();
     } catch (error) {
       failures.push(error);
     }
     this.#websocketProxy?.stop();
     this.#nativeProxy?.stop();
     try {
-      await this.#nats.stop();
+      await this.#controlPlane?.stop();
     } catch (error) {
       failures.push(error);
     }

@@ -123,7 +123,14 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
         await Deno.readFile(
-          join(runtime.workdir, "nats", "creds", "trellis-auth.creds"),
+          join(
+            runtime.workdir,
+            "config",
+            "trellis",
+            "nats",
+            "creds",
+            "trellis-auth.creds",
+          ),
         ),
       ),
     });
@@ -273,13 +280,12 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
     try {
       record("fixture-child", { pid: child.pid });
       await marker("TRANSPORT_GROWTH_ADVANCE_OK");
-      // Open the peer shortly before the subject's actual persisted refresh
-      // deadline. Its first refresh then falls after the timeout/loss experiment,
-      // so ordinary signed peer renewal cannot legitimately replace the guard's
-      // digest before the old watch is lost.
+      // Open the peer shortly before the subject's persisted refresh deadline.
+      // Preparation can outlast the peer's own refresh window, so select the
+      // currently retained peer guard when the loss experiment actually starts.
       const database = createClient({
         url: `file:${
-          join(runtime.workdir, "trellis", "trellis.sqlite.platform")
+          join(runtime.workdir, "data", "trellis", "platform.sqlite")
         }`,
       });
       let subjectRefreshAt: number;
@@ -308,7 +314,7 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
       assert(peer, "the ordinary observer must be admitted");
       const peerDatabase = createClient({
         url: `file:${
-          join(runtime.workdir, "trellis", "trellis.sqlite.platform")
+          join(runtime.workdir, "data", "trellis", "platform.sqlite")
         }`,
       });
       try {
@@ -332,10 +338,16 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
         peerDatabase.close();
       }
       const controlContexts = new Set<string>();
+      const controlRequests: string[] = [];
+      let currentPeerDigest = peer.contextDigest;
       controls = privileged.subscribe("live.v1.route.>", {
         callback: (_error, message) => {
           if (!message.subject.includes(".Watch.observe.")) return;
           const context = message.headers?.get("authorization-context");
+          if (context) {
+            currentPeerDigest = context;
+            controlRequests.push(context);
+          }
           if (context && !controlContexts.has(context)) {
             controlContexts.add(context);
             record("accepted-watch-control-context", { context });
@@ -444,7 +456,7 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
         sockets: gate.connections(),
       });
       assert(oldInfo);
-      const old = oldInfo;
+      let old = oldInfo;
       const oldConnection = initialHeld!.connectionId;
       assertEquals(oldConnection, rustOwner.id);
       assert(watchDelivery, "the opening Watch must actually reach a provider");
@@ -548,7 +560,9 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
             }
             if (
               !info.push_bound || info.name === old.name ||
-              info.config?.filter_subject !== old.config.filter_subject
+              !info.config?.filter_subject.endsWith(
+                `.revocation.${currentPeerDigest}`,
+              )
             ) return false;
             const owners = gate.connections().filter((connection) =>
               !connection.closed && connection.id !== oldConnection &&
@@ -594,7 +608,8 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
             ) as { config?: { filter_subject?: string } };
             if (
               !replacementHeld ||
-              request.config?.filter_subject !== old.config.filter_subject
+              request.config?.filter_subject !==
+                replacement?.config.filter_subject
             ) return;
             if (
               !gate.connection(replacementHeld.connectionId)!.outboundContexts
@@ -662,6 +677,17 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
         "accepted old Watch must keep delivering through setup failure",
       );
       record("setup-failure-retry-held", { elapsedMs: heldAt - firstHeldAt });
+      const lossPeerDigest = currentPeerDigest;
+      const lossControlOffset = controlRequests.length - 1;
+      assert(
+        lossControlOffset >= 0,
+        "observe the live caller's signed control",
+      );
+      assertEquals(
+        replacement?.config.filter_subject,
+        `$KV.trellis_authorization_contexts.revocation.${lossPeerDigest}`,
+        "withhold replacement coverage for the currently retained peer",
+      );
       const listed = JSON.parse(
         new TextDecoder().decode(
           (await privileged.request(
@@ -671,6 +697,52 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
           )).data,
         ),
       ) as { consumers: ConsumerInfo[] };
+      const activeOld = listed.consumers.filter((info) =>
+        info.push_bound &&
+        info.config.filter_subject === replacement!.config.filter_subject &&
+        gate.connection(oldConnection)!.subs.some((sub) =>
+          sub.subject === info.config.deliver_subject
+        )
+      );
+      assertEquals(
+        activeOld.length,
+        1,
+        "the current peer must have one bound guard on the original Watch owner",
+      );
+      old = activeOld[0];
+      const identityDatabase = createClient({
+        url: `file:${
+          join(runtime.workdir, "data", "trellis", "platform.sqlite")
+        }`,
+      });
+      try {
+        const identity = await identityDatabase.execute({
+          sql: `SELECT
+            original.session_public_key = current.session_public_key
+            AND original.principal_id = current.principal_id
+            AND original.principal_kind = current.principal_kind
+            AND original.participant_id = current.participant_id
+            AND original.inbox_prefix = current.inbox_prefix AS same_identity
+            FROM auth_authorization_contexts AS original
+            JOIN auth_authorization_contexts AS current
+              ON current.context_digest = ?
+            WHERE original.context_digest = ?`,
+          args: [lossPeerDigest, peer.contextDigest],
+        });
+        assertEquals(
+          Number(identity.rows[0]?.same_identity),
+          1,
+          "renewal must preserve the accepted caller identity and reply boundary",
+        );
+      } finally {
+        identityDatabase.close();
+      }
+      record("loss-peer-guard-selected", {
+        openingDigest: peer.contextDigest,
+        currentDigest: lossPeerDigest,
+        consumer: old,
+        oldConnection,
+      });
       assert(
         listed.consumers.some((info) =>
           info.name === old.name && info.created === old.created &&
@@ -678,7 +750,7 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
           info.config.filter_subject === old.config.filter_subject &&
           info.config.deliver_subject === old.config.deliver_subject
         ),
-        "delete only the exact still-bound original peer consumer",
+        "delete only the exact still-bound current peer consumer",
       );
       const flushAt = Date.now();
       await send("FLUSH_TELEMETRY");
@@ -704,6 +776,11 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
         authorizationLostEnds: beforeLoss,
         providerSessions: total(metricBaseline, "trellis.live.sessions"),
       });
+      assertEquals(
+        currentPeerDigest,
+        lossPeerDigest,
+        "the selected peer guard must still serve the accepted Watch at deletion",
+      );
       const deletion = await privileged.request(
         `$JS.API.CONSUMER.DELETE.${old.stream_name}.${old.name}`,
         "",
@@ -774,9 +851,9 @@ Deno.test("Rust peer authorization loss remains observable while replacement set
         heldAgeMs: Date.now() - heldAt,
       });
       assertEquals(
-        [...controlContexts],
-        [peer.contextDigest],
-        "the accepted Watch must retain this peer digest, not renew onto unrelated coverage before loss",
+        [...new Set(controlRequests.slice(lossControlOffset))],
+        [lossPeerDigest],
+        "the accepted Watch must retain the selected peer digest throughout the loss experiment",
       );
       assertEquals(
         gate.connections().find((connection) => connection.id === oldConnection)

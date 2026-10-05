@@ -255,6 +255,14 @@ jobs:
             --config "patch.crates-io.trellis-protocol.path=\"$GITHUB_WORKSPACE/crates/protocol\"" \
             --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\"" \
             --config "patch.crates-io.trellis-testkit.path=\"$GITHUB_WORKSPACE/crates/trellis-testkit\"" \
+            --config "patch.crates-io.trellis-runtime.path=\"$GITHUB_WORKSPACE/crates/runtime\"" \
+            --config "patch.crates-io.trellis-bootstrap.path=\"$GITHUB_WORKSPACE/crates/bootstrap\"" \
+            --config "patch.crates-io.trellis-local-bootstrap.path=\"$GITHUB_WORKSPACE/crates/local-bootstrap\"" \
+            --config "patch.crates-io.trellis-local-nats.path=\"$GITHUB_WORKSPACE/crates/local-nats\"" \
+            --config "patch.crates-io.trellis-runtime-apis.path=\"$GITHUB_WORKSPACE/crates/runtime-apis\"" \
+            --config "patch.crates-io.trellis-events-runtime.path=\"$GITHUB_WORKSPACE/crates/events-runtime\"" \
+            --config "patch.crates-io.trellis-jobs-runtime.path=\"$GITHUB_WORKSPACE/crates/jobs-runtime\"" \
+            --config "patch.crates-io.trellis-idl.path=\"$GITHUB_WORKSPACE/crates/idl\"" \
             --test live \
             --message-format=json > "$RUNNER_TEMP/testkit-live.json"
           executable="$(jq -r 'select(.executable != null) | .executable' "$RUNNER_TEMP/testkit-live.json" | tail -n1)"
@@ -359,7 +367,7 @@ jobs:
 
   typescript:
     name: TypeScript
-    needs: [install, wasm]
+    needs: [install, wasm, build]
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 20
     steps:
@@ -396,7 +404,19 @@ jobs:
       - name: Check TypeScript integration
         run: deno task -c ts/integration/deno.json check
 
+      - name: Download producer-built adapter-test runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: check-runtime-binaries
+          path: dist
+
+      - name: Extract producer-built adapter-test runtime
+        run: mkdir -p dist/runtime-binaries && tar -xzf dist/runtime-binaries.tar.gz -C dist/runtime-binaries ./trellis ./trellis-server
+
       - name: Test TypeScript packages
+        env:
+          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis-server
         run: deno task -c ts/deno.json test
 
   demos:
@@ -549,7 +569,7 @@ jobs:
 
   live-testkit:
     name: Rust testkit integration
-    needs: [install, wasm, portal, build]
+    needs: build
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 45
     env:
@@ -558,34 +578,17 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: check-generated
-
-      - name: Download embedded browser apps
-        uses: actions/download-artifact@v4
-        with:
-          name: check-portal
-          path: crates/runtime/generated
-
-      - name: Download protocol WASM
-        uses: actions/download-artifact@v4
-        with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
-
       - name: Download runtime binaries
         uses: actions/download-artifact@v4
         with:
           name: check-runtime-binaries
           path: ${{ env.TESTKIT_EXECUTION_ROOT }}/runtime-binaries
 
-      - name: Stage runtime binaries
+      - name: Stage only the linked testkit executable
         run: |
           set -euo pipefail
           mkdir -p target/debug
-          tar -xzf "$TESTKIT_EXECUTION_ROOT/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
+          tar -xzf "$TESTKIT_EXECUTION_ROOT/runtime-binaries/runtime-binaries.tar.gz" -C target/debug ./trellis-testkit-live
 
       - name: Acquire the pinned NATS executable
         run: |
@@ -600,8 +603,6 @@ jobs:
       - name: Run the prebuilt testkit live binary with a host probe
         id: testkit-live
         env:
-          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
-          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
           TRELLIS_TEST_NATS_BIN: ${{ env.TESTKIT_EXECUTION_ROOT }}/nats/nats-server
           RUST_BACKTRACE: "1"
         run: |
@@ -625,7 +626,7 @@ jobs:
               for cg in /sys/fs/cgroup/io.stat /sys/fs/cgroup/io.max /sys/fs/cgroup/cpu.max /sys/fs/cgroup/memory.max; do
                 [ -r "$cg" ] && echo "cgroup $cg: $(tr '\n' '|' < "$cg")"
               done
-              for pid in $(pgrep -x trellis-server 2>/dev/null; pgrep -x nats-server 2>/dev/null); do
+              for pid in $(pgrep -f '/target/debug/trellis-testkit-live' 2>/dev/null; pgrep -x nats-server 2>/dev/null); do
                 echo "io pid $pid $(grep -E 'read_bytes|write_bytes' "/proc/$pid/io" 2>/dev/null | tr '\n' ' ')"
               done
               df -h /tmp "$GITHUB_WORKSPACE" 2>/dev/null | tail -3
@@ -646,9 +647,9 @@ jobs:
             for owner in "$testkit_tmp"/trellis-testkit-*/.trellis-testkit-owner; do
               [ -f "$owner" ] && [ ! -L "$owner" ] || continue
               sandbox="${owner%/.trellis-testkit-owner}"
-              log="$sandbox/state/trellis/log/nats-server.log"
+              log="$sandbox/logs/nats-server.log"
               [ -f "$log" ] && [ ! -L "$log" ] || continue
-              [ "$(realpath -e -- "$log")" = "$(realpath -e -- "$testkit_tmp")/${sandbox##*/}/state/trellis/log/nats-server.log" ] || continue
+              [ "$(realpath -e -- "$log")" = "$(realpath -e -- "$testkit_tmp")/${sandbox##*/}/logs/nats-server.log" ] || continue
               destination="$diagnostics/nats/${sandbox##*/}"
               mkdir -p "$destination" && cp -- "$log" "$destination/nats-server.log"
               echo "===== NATS CHILD LOG ($log; PID in NATS log prefix) ====="
@@ -896,7 +897,7 @@ jobs:
 
   rust-testkit-package:
     name: Rust testkit bundle
-    needs: [install, wasm, portal, build]
+    needs: [install, wasm, portal]
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 45
     steps:
@@ -917,27 +918,26 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Download runtime binaries
-        uses: actions/download-artifact@v4
-        with:
-          name: check-runtime-binaries
-          path: ${{ runner.temp }}/runtime-binaries
-
-      - name: Stage runtime binaries
-        run: |
-          set -euo pipefail
-          mkdir -p target/debug
-          tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
-
       - name: Package the public crates
         # Verify the packaged crates against the workspace crates being released
         # rather than whatever versions crates.io currently holds: `cargo package`
         # ignores the manifest's [patch] section, so the patches are explicit.
         run: |
-          cargo package --manifest-path Cargo.toml \
-            -p trellis-protocol -p trellis-rs -p trellis-testkit \
+          cargo package --manifest-path Cargo.toml --no-verify \
+            -p trellis-protocol -p trellis-rs -p trellis-idl \
+            -p trellis-local-bootstrap -p trellis-local-nats -p trellis-runtime-apis \
+            -p trellis-events-runtime -p trellis-jobs-runtime -p trellis-runtime \
+            -p trellis-bootstrap -p trellis-testkit \
             --config 'patch.crates-io.trellis-protocol.path="crates/protocol"' \
-            --config 'patch.crates-io.trellis-rs.path="crates/trellis"'
+            --config 'patch.crates-io.trellis-rs.path="crates/trellis"' \
+            --config 'patch.crates-io.trellis-idl.path="crates/idl"' \
+            --config 'patch.crates-io.trellis-local-bootstrap.path="crates/local-bootstrap"' \
+            --config 'patch.crates-io.trellis-local-nats.path="crates/local-nats"' \
+            --config 'patch.crates-io.trellis-runtime-apis.path="crates/runtime-apis"' \
+            --config 'patch.crates-io.trellis-events-runtime.path="crates/events-runtime"' \
+            --config 'patch.crates-io.trellis-jobs-runtime.path="crates/jobs-runtime"' \
+            --config 'patch.crates-io.trellis-runtime.path="crates/runtime"' \
+            --config 'patch.crates-io.trellis-bootstrap.path="crates/bootstrap"'
 
       - name: Upload public Rust packages
         uses: actions/upload-artifact@v4
@@ -951,11 +951,18 @@ jobs:
           set -euo pipefail
           bundle="$RUNNER_TEMP/testkit-bundle"
           rm -rf "$bundle"
-          mkdir -p "$bundle/packages" "$bundle/binaries" "$bundle/nats" "$bundle/consumer"
+          mkdir -p "$bundle/packages" "$bundle/nats" "$bundle/consumer"
           cp target/package/trellis-protocol-*.crate \
              target/package/trellis-rs-*.crate \
+             target/package/trellis-idl-*.crate \
+             target/package/trellis-local-bootstrap-*.crate \
+             target/package/trellis-local-nats-*.crate \
+             target/package/trellis-runtime-apis-*.crate \
+             target/package/trellis-events-runtime-*.crate \
+             target/package/trellis-jobs-runtime-*.crate \
+             target/package/trellis-runtime-[0-9]*.crate \
+             target/package/trellis-bootstrap-*.crate \
              target/package/trellis-testkit-*.crate "$bundle/packages/"
-          cp target/debug/trellis target/debug/trellis-server "$bundle/binaries/"
           cp -R integration/fixtures/testkit/. "$bundle/consumer/"
           rm -rf "$bundle/consumer/target"
           bash scripts/acquire-test-nats.sh --dest "$bundle/nats"
@@ -1332,6 +1339,46 @@ jobs:
         shell: bash
         run: bash scripts/smoke-trellis-image.sh --image trellis-smoke-arm64:test
 
+  typescript-testkit-package:
+    name: Stage exact TypeScript testkit release input
+    needs: [install, wasm, build-targets-linux, build-targets-darwin]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: check-generated
+      - uses: actions/download-artifact@v4
+        with:
+          name: check-protocol-wasm
+          path: ts/packages/trellis/auth/protocol_wasm
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: trellis-cli-*
+          merge-multiple: true
+          path: dist/native
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+      - name: Generate pins from the verified Check archives and stage the package
+        run: deno run -A -c ts/deno.json ts/tools/stage_testkit.ts dist/native dist/testkit-jsr
+      - name: Resolve unreleased SDK dependencies in an isolated verification workspace
+        run: deno run -A -c ts/deno.json ts/tools/prepare_testkit_verification.ts dist/testkit-jsr
+      - name: Dry-run the staged JSR publication input
+        working-directory: dist/testkit-jsr
+        run: deno publish --dry-run --allow-slow-types --allow-dirty
+      - name: Check and test the exact staged package
+        working-directory: dist/testkit-jsr
+        run: deno check index.ts && deno test -A tests
+      - name: Freeze the staged package
+        run: tar -C dist/testkit-jsr -czf dist/testkit-jsr.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: check-testkit-jsr
+          path: dist/testkit-jsr.tar.gz
+          retention-days: 3
+
   acceptance:
     name: Acceptance gate
     needs:
@@ -1346,6 +1393,7 @@ jobs:
       - live-testkit
       - live-typescript
       - rust-testkit-consumer
+      - typescript-testkit-package
       - build-targets-linux
       - build-targets-darwin
       - verify-images

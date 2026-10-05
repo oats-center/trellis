@@ -1,4 +1,7 @@
+use std::collections::BTreeMap;
+use std::net::IpAddr;
 use std::path::PathBuf;
+use trellis_runtime::{OAuthProviderConfig, PlatformTtlConfig, WebSourceConfig};
 
 use crate::{
     DEFAULT_AUTH_ACCOUNT, DEFAULT_NATS_MONITOR_PORT, DEFAULT_NATS_PORT, DEFAULT_NATS_SERVER_URL,
@@ -110,6 +113,24 @@ pub struct TrellisRuntimeBootstrapConfig {
     /// Every entry is added to both the accepted request origins and the insecure-origin
     /// allow-list, so a browser app on its own development origin can complete a portal login.
     pub extra_origins: Vec<String>,
+    /// Optional HTTP listener address; omission retains the production default.
+    pub bind_address: Option<IpAddr>,
+    /// Maximum requests per rate-limit window; zero disables limiting.
+    pub rate_limit_max: u32,
+    /// Duration of the rate-limit window in milliseconds.
+    pub rate_limit_window_ms: u64,
+    /// Shared filesystem or reverse-proxy web source.
+    pub web_source: Option<WebSourceConfig>,
+    /// Login portal source overriding the shared web source.
+    pub portal_source: Option<WebSourceConfig>,
+    /// Console source overriding the shared web source.
+    pub console_source: Option<WebSourceConfig>,
+    /// Platform flow TTL overrides; omitted values retain bootstrap defaults.
+    pub ttl_ms: PlatformTtlConfig,
+    /// Authorization timing without access to generated signing material.
+    pub authorization: BootstrapAuthorizationPolicy,
+    /// OAuth providers consumed by the production runtime.
+    pub oauth_providers: BTreeMap<String, OAuthProviderConfig>,
 }
 
 impl Default for TrellisRuntimeBootstrapConfig {
@@ -121,8 +142,35 @@ impl Default for TrellisRuntimeBootstrapConfig {
             nats_websocket_url: DEFAULT_NATS_WEBSOCKET_URL.to_string(),
             public_origin: DEFAULT_PUBLIC_ORIGIN.to_string(),
             extra_origins: Vec::new(),
+            bind_address: None,
+            rate_limit_max: 60,
+            rate_limit_window_ms: 60_000,
+            web_source: None,
+            portal_source: None,
+            console_source: None,
+            ttl_ms: PlatformTtlConfig {
+                sessions: None,
+                oauth: None,
+                device_flow: None,
+                pending_auth: None,
+            },
+            authorization: BootstrapAuthorizationPolicy::default(),
+            oauth_providers: BTreeMap::new(),
         }
     }
+}
+
+/// Bootstrap-owned authorization timing policy; secret paths remain generated.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BootstrapAuthorizationPolicy {
+    /// Signed context lifetime in seconds.
+    pub context_lifetime_seconds: Option<u64>,
+    /// Seconds before expiry at which refresh begins.
+    pub refresh_lead_seconds: Option<u64>,
+    /// Maximum earlier-only refresh jitter in seconds.
+    pub refresh_jitter_seconds: Option<u64>,
+    /// Minimum acceptable context lifetime in seconds.
+    pub minimum_context_lifetime_seconds: Option<u64>,
 }
 
 /// Options for generating a complete Trellis bootstrap bundle.

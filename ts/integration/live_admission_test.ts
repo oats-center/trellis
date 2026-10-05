@@ -171,7 +171,7 @@ async function platformConnection(runtime: Runtime): Promise<NatsConnection> {
     servers: runtime.natsUrl,
     authenticator: credsAuthenticator(
       await Deno.readFile(
-        join(runtime.workdir, "nats/creds/trellis-auth.creds"),
+        join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
       ),
     ),
   });

@@ -36,7 +36,7 @@ import type { PermissionAtom } from "./protocol_wasm.ts";
 import { createAuth } from "./session_auth.ts";
 import { refreshAuthorizationContextWithMetadata } from "./authorization/refresh.ts";
 import { installAuthorizationRefresh } from "./authorization/install_refresh.ts";
-import { NatsTestContainer } from "../../trellis-testkit/src/nats_container.ts";
+import { startTrellisRuntime } from "../../../integration/_support/runtime.ts";
 import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { waitFor } from "../../trellis-testkit/src/wait.ts";
@@ -1068,11 +1068,12 @@ Deno.test("provider observes revocation after watch initialization", async () =>
 
 Deno.test("provider authorization hints retain one trailing refresh from a real broker burst", async () => {
   const workdir = await Deno.makeTempDir({ dir: Deno.env.get("TMPDIR") });
-  const server = await NatsTestContainer.start(workdir);
+  const server = await startTrellisRuntime();
+  const nc = await server.connectNats();
   const installed = await installedCache();
-  await new Kvm(server.nc).create("contexts");
+  await new Kvm(nc).create("contexts");
   const value = await AuthorizationProviderCache.attach(
-    server.nc,
+    nc,
     installed.bundle().authorizationRegistry,
     "_INBOX.hint-burst",
     installed,
@@ -1083,9 +1084,9 @@ Deno.test("provider authorization hints retain one trailing refresh from a real 
   });
   value.start();
   try {
-    await server.nc.flush();
+    await nc.flush();
     const sent = performance.now();
-    server.nc.publish(
+    nc.publish(
       "_INBOX.hint-burst._trellis.authorization",
       utf8(JSON.stringify({ format: "trellis.authorization-change.v1" })),
     );
@@ -1096,12 +1097,12 @@ Deno.test("provider authorization hints retain one trailing refresh from a real 
     );
     const burstSent = performance.now();
     for (let i = 0; i < 20; i++) {
-      server.nc.publish(
+      nc.publish(
         "_INBOX.hint-burst._trellis.authorization",
         utf8(JSON.stringify({ format: "trellis.authorization-change.v1" })),
       );
     }
-    await server.nc.flush();
+    await nc.flush();
     // Observe a quiet part of the pacing window, not infrastructure readiness.
     await new Promise((resolve) => setTimeout(resolve, 200));
     assertEquals(
@@ -1134,11 +1135,12 @@ Deno.test("provider authorization hints retain one trailing refresh from a real 
 
 Deno.test("provider stop cancels real-broker trailing hints across restart", async () => {
   const workdir = await Deno.makeTempDir({ dir: Deno.env.get("TMPDIR") });
-  const server = await NatsTestContainer.start(workdir);
+  const server = await startTrellisRuntime();
+  const nc = await server.connectNats();
   const installed = await installedCache();
-  await new Kvm(server.nc).create("contexts");
+  await new Kvm(nc).create("contexts");
   const value = await AuthorizationProviderCache.attach(
-    server.nc,
+    nc,
     installed.bundle().authorizationRegistry,
     "_INBOX.hint-stop",
     installed,
@@ -1149,24 +1151,24 @@ Deno.test("provider stop cancels real-broker trailing hints across restart", asy
   });
   value.start();
   try {
-    await server.nc.flush();
-    server.nc.publish(
+    await nc.flush();
+    nc.publish(
       "_INBOX.hint-stop._trellis.authorization",
       utf8(JSON.stringify({ format: "trellis.authorization-change.v1" })),
     );
     await waitFor(() => triggered.length === 1, { timeoutMs: 500 });
-    server.nc.publish(
+    nc.publish(
       "_INBOX.hint-stop._trellis.authorization",
       utf8(JSON.stringify({ format: "trellis.authorization-change.v1" })),
     );
-    await server.nc.flush();
+    await nc.flush();
     await new Promise((resolve) => setTimeout(resolve, 200));
     assertEquals(triggered.length, 1);
     value.stop();
     value.start();
-    await server.nc.flush();
+    await nc.flush();
     const sent = performance.now();
-    server.nc.publish(
+    nc.publish(
       "_INBOX.hint-stop._trellis.authorization",
       utf8(JSON.stringify({ format: "trellis.authorization-change.v1" })),
     );
@@ -1181,16 +1183,16 @@ Deno.test("provider stop cancels real-broker trailing hints across restart", asy
       2,
       "a stopped lifecycle must not refresh the restarted cache",
     );
-    server.nc.publish(
+    nc.publish(
       "_INBOX.hint-stop._trellis.authorization",
       utf8(JSON.stringify({ format: "trellis.authorization-change.v1" })),
     );
     await waitFor(() => triggered.length === 3, { timeoutMs: 500 });
-    server.nc.publish(
+    nc.publish(
       "_INBOX.hint-stop._trellis.authorization",
       utf8(JSON.stringify({ format: "trellis.authorization-change.v1" })),
     );
-    await server.nc.flush();
+    await nc.flush();
     await new Promise((resolve) => setTimeout(resolve, 200));
     assertEquals(triggered.length, 3);
     value.stop();
@@ -1206,12 +1208,13 @@ Deno.test("provider stop cancels real-broker trailing hints across restart", asy
 
 Deno.test("provider applies revocation state before notifying live coverage", async () => {
   const workdir = await Deno.makeTempDir({ dir: Deno.env.get("TMPDIR") });
-  const server = await NatsTestContainer.start(workdir);
+  const server = await startTrellisRuntime();
+  const nc = await server.connectNats();
   const installed = await installedCache();
-  const kv = await new Kvm(server.nc).create("contexts");
+  const kv = await new Kvm(nc).create("contexts");
   await kv.put(chain.contextDigest, utf8(chain.contextCanonicalJson));
   const value = await AuthorizationProviderCache.attach(
-    server.nc,
+    nc,
     installed.bundle().authorizationRegistry,
     "_INBOX.test",
     installed,
@@ -1249,12 +1252,13 @@ Deno.test("provider applies revocation state before notifying live coverage", as
 
 Deno.test("own refresh fences signed-identical preparations and attempt-owned pins on real registry coverage", async () => {
   const workdir = await Deno.makeTempDir({ dir: Deno.env.get("TMPDIR") });
-  const server = await NatsTestContainer.start(workdir);
+  const server = await startTrellisRuntime();
+  const nc = await server.connectNats();
   const installed = await installedCache();
-  const kv = await new Kvm(server.nc).create("contexts");
+  const kv = await new Kvm(nc).create("contexts");
   await kv.put(chain.contextDigest, utf8(chain.contextCanonicalJson));
   const value = await AuthorizationProviderCache.attach(
-    server.nc,
+    nc,
     installed.bundle().authorizationRegistry,
     "_INBOX.test",
     installed,
@@ -1345,7 +1349,7 @@ Deno.test("own refresh fences signed-identical preparations and attempt-owned pi
       assertEquals(value.liveLeaseCoverage(borrowed), "covered");
       assertEquals(installed.routingJwt(), "route-C");
       assertEquals(value.ownUsable(), true);
-      const manager = await jetstreamManager(server.nc);
+      const manager = await jetstreamManager(nc);
       const consumers = await manager.consumers.list("KV_contexts").next();
       const watch = consumers.find((consumer) =>
         consumer.config.filter_subject === `$KV.contexts.revocation.${digest}`
@@ -1937,12 +1941,13 @@ Deno.test("provider coverage gauge follows the retained own and peer installatio
   const installed = await installedCache();
   const [peerDigest, peerContext] = await signedContext("peer-connection");
   const workdir = await Deno.makeTempDir({ dir: Deno.env.get("TMPDIR") });
-  const server = await NatsTestContainer.start(workdir);
-  const kv = await new Kvm(server.nc).create("contexts");
+  const server = await startTrellisRuntime();
+  const nc = await server.connectNats();
+  const kv = await new Kvm(nc).create("contexts");
   await kv.put(chain.contextDigest, utf8(chain.contextCanonicalJson));
   await kv.put(peerDigest, utf8(peerContext));
   const value = await AuthorizationProviderCache.attach(
-    server.nc,
+    nc,
     installed.bundle().authorizationRegistry,
     "_INBOX.test",
     installed,

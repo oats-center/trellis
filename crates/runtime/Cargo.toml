@@ -4,8 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Rust runtime entrypoint and configuration for Trellis."
-publish = false
+description = "Internal production runtime entrypoint and configuration for Trellis."
+publish = ["crates-io"]
+include = ["Cargo.toml", "build.rs", "src/**", "migrations/**", "generated/web/**"]
 
 [lib]
 name = "trellis_runtime"
@@ -47,17 +48,18 @@ refinery = { workspace = true, optional = true }
 thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["net", "signal"] }
+tokio-util = { version = "0.7.18", features = ["rt"] }
 toml = "1.1.2"
 tower_governor.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 trellis-protocol.workspace = true
-trellis-runtime-apis = { path = "../runtime-apis" }
+trellis-runtime-apis = { path = "../runtime-apis", version = "0.100.0" }
 trellis-events-runtime = { path = "../events-runtime", version = "0.100.0" }
 trellis-idl = { path = "../idl", version = "0.100.0" }
 trellis-jobs-runtime = { path = "../jobs-runtime", version = "0.100.0" }
-trellis-rs = { path = "../trellis", features = ["runtime-internals"] }
+trellis-rs = { path = "../trellis", version = "0.100.0", features = ["runtime-internals"] }
 tower = { version = "0.5.3", features = ["util"] }
 ulid = "1.2.1"
 url.workspace = true

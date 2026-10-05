@@ -44,7 +44,7 @@ Deno.test("BI05 live provider identity is stable across a control-plane restart"
       "managed live provider seeds must exist on disk",
     );
 
-    await runtime.restartControlPlane();
+    await runtime.restart();
 
     assertEquals(
       seedBytes(runtime.workdir),

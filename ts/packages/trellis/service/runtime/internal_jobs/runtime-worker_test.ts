@@ -5,7 +5,8 @@ import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { join } from "@std/path";
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 
-import { NatsTestContainer } from "../../../../trellis-testkit/src/nats_container.ts";
+import { startTrellisRuntime } from "../../../../../integration/_support/runtime.ts";
+import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import { ActiveJobCancellationRegistry } from "./cancellation-registry.ts";
 import {
   JobManager,
@@ -31,7 +32,7 @@ import type { Job, JobEvent } from "./types.ts";
 Deno.test("republishing a completed prepared submission after broker deduplication does not execute it again", async () => {
   await withBroker(async (fixture) => {
     const { manager, jsm, host, settled, completed, nc, encode } = fixture;
-    await jsm.streams.update("JOBS", { duplicate_window: 100_000_000 });
+    await jsm.streams.update("ADAPTER_JOBS", { duplicate_window: 100_000_000 });
     const submission = prepareJobSubmission({
       submissionId: crypto.randomUUID(),
       mode: "create",
@@ -49,7 +50,7 @@ Deno.test("republishing a completed prepared submission after broker deduplicati
     for (let index = 0; index < 50_000; index++) {
       const eventType = index % 2 === 0 ? "progress" : "logged";
       nc.publish(
-        `trellis.jobs.svc.refresh.${job.id}.${eventType}`,
+        `adapter.jobs.svc.refresh.${job.id}.${eventType}`,
         encode({
           ...original,
           eventType,
@@ -60,17 +61,20 @@ Deno.test("republishing a completed prepared submission after broker deduplicati
     }
     await nc.flush();
     await waitFor(async () =>
-      (await jsm.streams.info("JOBS")).state.messages >= 50_003
+      (await jsm.streams.info("ADAPTER_JOBS")).state.messages >= 50_003
     );
     let recoveryReads = 0;
     const scanSubjects = new Set<string>();
-    const reads = ["$JS.API.DIRECT.GET.JOBS", "$JS.API.DIRECT.GET.JOBS.>"].map((
+    const reads = [
+      "$JS.API.DIRECT.GET.ADAPTER_JOBS",
+      "$JS.API.DIRECT.GET.ADAPTER_JOBS.>",
+    ].map((
       subject,
     ) =>
       nc.subscribe(subject, {
         callback: (_error, message) => {
           recoveryReads++;
-          if (message.subject === "$JS.API.DIRECT.GET.JOBS") {
+          if (message.subject === "$JS.API.DIRECT.GET.ADAPTER_JOBS") {
             const query = message.json<{ next_by_subj?: string }>();
             if (query.next_by_subj) scanSubjects.add(query.next_by_subj);
           }
@@ -102,7 +106,8 @@ Deno.test("republishing a completed prepared submission after broker deduplicati
     );
     assertEquals((await completed(job)).result, original.result);
     assertEquals(
-      (await jsm.consumers.info("JOBS", "worker")).ack_floor.consumer_seq,
+      (await jsm.consumers.info("ADAPTER_JOBS", "worker")).ack_floor
+        .consumer_seq,
       2,
     );
   });
@@ -121,7 +126,7 @@ Deno.test("deadline recovery excludes retained observation traffic before invoki
     });
     const job = await manager.create("refresh", {});
     const prefix = f.binding.jobs.queues.refresh.publishPrefix;
-    const message = await f.jsm.direct.getMessage("JOBS", {
+    const message = await f.jsm.direct.getMessage("ADAPTER_JOBS", {
       last_by_subj: `${prefix}.${job.id}.created`,
     });
     assert(message);
@@ -144,17 +149,20 @@ Deno.test("deadline recovery excludes retained observation traffic before invoki
     }
     await f.nc.flush();
     await waitFor(async () =>
-      (await f.jsm.streams.info("JOBS")).state.messages >= 50_002
+      (await f.jsm.streams.info("ADAPTER_JOBS")).state.messages >= 50_002
     );
     let recoveryReads = 0;
     const scanSubjects = new Set<string>();
-    const reads = ["$JS.API.DIRECT.GET.JOBS", "$JS.API.DIRECT.GET.JOBS.>"].map((
+    const reads = [
+      "$JS.API.DIRECT.GET.ADAPTER_JOBS",
+      "$JS.API.DIRECT.GET.ADAPTER_JOBS.>",
+    ].map((
       subject,
     ) =>
       f.nc.subscribe(subject, {
         callback: (_error, message) => {
           recoveryReads++;
-          if (message.subject === "$JS.API.DIRECT.GET.JOBS") {
+          if (message.subject === "$JS.API.DIRECT.GET.ADAPTER_JOBS") {
             const query = message.json<{ next_by_subj?: string }>();
             if (query.next_by_subj) scanSubjects.add(query.next_by_subj);
           }
@@ -188,7 +196,8 @@ Deno.test("deadline recovery excludes retained observation traffic before invoki
       `deadline cleanup must exclude observations, got ${recoveryReads} direct reads`,
     );
     assertEquals(
-      (await getLatestLifecycleEvent(f.jsm.direct, "JOBS", prefix, job))?.state,
+      (await getLatestLifecycleEvent(f.jsm.direct, "ADAPTER_JOBS", prefix, job))
+        ?.state,
       "expired",
     );
   });
@@ -198,7 +207,7 @@ Deno.test("deadline recovery excludes retained observation traffic before invoki
 // Full resource provisioning and generation handoff belong to live integration.
 Deno.test("a duplicate prepared publication is retired without repeating an active handler", async () => {
   await withBroker(async ({ manager, jsm, host, settled }) => {
-    await jsm.streams.update("JOBS", { duplicate_window: 100_000_000 });
+    await jsm.streams.update("ADAPTER_JOBS", { duplicate_window: 100_000_000 });
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const submission = prepareJobSubmission({
@@ -225,7 +234,7 @@ Deno.test("a duplicate prepared publication is retired without repeating an acti
       await new Promise((resolve) => setTimeout(resolve, 150));
       await manager.createPrepared(submission);
       await waitFor(async () => {
-        const info = await jsm.consumers.info("JOBS", "worker");
+        const info = await jsm.consumers.info("ADAPTER_JOBS", "worker");
         return info.delivered.consumer_seq >= 2 && info.num_pending === 0 &&
           info.num_ack_pending === 1;
       });
@@ -242,10 +251,10 @@ async function withBroker(
   keyed = false,
 ) {
   const workdir = await Deno.makeTempDir({ prefix: "jobs-worker-" });
-  let nats: NatsTestContainer | undefined;
+  let nats: TrellisTestRuntime | undefined;
   let fixture: Awaited<ReturnType<typeof brokerFixture>> | undefined;
   try {
-    nats = await NatsTestContainer.start(workdir);
+    nats = await startTrellisRuntime();
     fixture = await brokerFixture(nats, keyed, workdir);
     await run(fixture);
   } finally {
@@ -259,14 +268,14 @@ async function withBroker(
 }
 
 async function brokerFixture(
-  nats: NatsTestContainer,
+  nats: TrellisTestRuntime,
   keyed: boolean,
   workdir: string,
 ) {
-  const nc = nats.nc;
+  const nc = await nats.connectNats();
   const js = jetstream(nc);
   const jsm = await jetstreamManager(nc);
-  const prefix = "trellis.jobs.svc.refresh";
+  const prefix = "adapter.jobs.svc.refresh";
   const queue = {
     queueType: "refresh",
     publishPrefix: prefix,
@@ -290,7 +299,7 @@ async function brokerFixture(
       : {}),
   };
   const binding = {
-    workStream: "JOBS",
+    workStream: "ADAPTER_JOBS",
     jobs: {
       serviceName: "svc",
       namespace: "svc",
@@ -298,11 +307,11 @@ async function brokerFixture(
     },
   };
   await jsm.streams.add({
-    name: "JOBS",
+    name: "ADAPTER_JOBS",
     subjects: [`${prefix}.>`],
     allow_direct: true,
   });
-  await jsm.consumers.add("JOBS", {
+  await jsm.consumers.add("ADAPTER_JOBS", {
     durable_name: "worker",
     ack_policy: AckPolicy.Explicit,
     ack_wait: 100_000_000,
@@ -321,7 +330,7 @@ async function brokerFixture(
   const encode = (value: unknown) =>
     new TextEncoder().encode(JSON.stringify(value));
   const lifecycle = (job: Job) =>
-    getLatestLifecycleEvent(jsm.direct, "JOBS", prefix, job);
+    getLatestLifecycleEvent(jsm.direct, "ADAPTER_JOBS", prefix, job);
   const projected = async (job: Job): Promise<Job | undefined> => {
     const entry = await projection.get(job.id);
     return entry ? JSON.parse(entry.string()) : undefined;
@@ -364,7 +373,7 @@ async function brokerFixture(
     return JSON.parse(entry.string()) as JobKeyState;
   };
   const completed = async (job: Job) => {
-    const msg = await jsm.direct.getMessage("JOBS", {
+    const msg = await jsm.direct.getMessage("ADAPTER_JOBS", {
       last_by_subj: `${prefix}.${job.id}.completed`,
     });
     assert(msg);
@@ -372,7 +381,7 @@ async function brokerFixture(
   };
   const settled = () =>
     waitFor(async () => {
-      const info = await jsm.consumers.info("JOBS", "worker");
+      const info = await jsm.consumers.info("ADAPTER_JOBS", "worker");
       return info.num_pending === 0 && info.num_ack_pending === 0;
     });
   const host = async (
@@ -395,7 +404,9 @@ async function brokerFixture(
     readLifecycle = true,
     readProjection = projected,
   ) => {
-    const consumer = toWorkerConsumer(await js.consumers.get("JOBS", "worker"));
+    const consumer = toWorkerConsumer(
+      await js.consumers.get("ADAPTER_JOBS", "worker"),
+    );
     const worker = await startQueueWorkerLoop({
       cancellationRegistry: new ActiveJobCancellationRegistry(),
       acquireSession: () =>
@@ -453,7 +464,7 @@ Deno.test("terminal projected work is acknowledged without handler execution", (
       false,
     );
     await f.settled();
-    const info = await f.jsm.streams.info("JOBS", {
+    const info = await f.jsm.streams.info("ADAPTER_JOBS", {
       subjects_filter:
         `${f.binding.jobs.queues.refresh.publishPrefix}.${job.id}.started`,
     });
@@ -486,12 +497,13 @@ Deno.test("progress acknowledgements prevent redelivery during a held handler", 
         return { held: true };
       });
       await deadline(entered.promise, 5_000);
-      const competitor = await f.js.consumers.get("JOBS", "worker");
+      const competitor = await f.js.consumers.get("ADAPTER_JOBS", "worker");
       const receive = competitor.next({ expires: 1_000 });
       const since = performance.now();
       await waitFor(() => Promise.resolve(performance.now() - since > 350));
       assertEquals(
-        (await f.jsm.consumers.info("JOBS", "worker")).delivered.consumer_seq,
+        (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).delivered
+          .consumer_seq,
         1,
         "held job must not be redelivered across multiple ack waits",
       );
@@ -511,14 +523,7 @@ Deno.test("progress acknowledgements prevent redelivery during a held handler", 
 Deno.test("a real projection outage NAKs work and the slot processes later deliveries", () =>
   withBroker(async (f) => {
     const job = await f.manager.create("refresh", {});
-    const readerConnection = await connect({
-      servers: f.nats.natsUrl,
-      authenticator: credsAuthenticator(
-        await Deno.readFile(
-          join(f.workdir, "nats", f.nats.manifest.paths.creds.trellisService),
-        ),
-      ),
-    });
+    const readerConnection = await f.nats.connectNats();
     let projection = await new Kvm(readerConnection).open("WORKER_PROJECTION");
     await readerConnection.close();
     await assertRejects(() => projection.get(job.id));
@@ -531,15 +536,17 @@ Deno.test("a real projection outage NAKs work and the slot processes later deliv
       },
     );
     await waitFor(async () =>
-      (await f.jsm.consumers.info("JOBS", "worker")).delivered.consumer_seq >= 1
+      (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).delivered
+        .consumer_seq >= 1
     );
     await waitFor(async () =>
-      (await f.jsm.consumers.info("JOBS", "worker")).num_waiting === 1
+      (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).num_waiting === 1
     );
     const failedAt = performance.now();
     await waitFor(() => Promise.resolve(performance.now() - failedAt > 350));
     assertEquals(
-      (await f.jsm.consumers.info("JOBS", "worker")).delivered.consumer_seq,
+      (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).delivered
+        .consumer_seq,
       1,
       "the delayed NAK must defer redelivery beyond several ordinary ack waits",
     );
@@ -553,7 +560,8 @@ Deno.test("a real projection outage NAKs work and the slot processes later deliv
     );
     assertEquals((await f.completed(later)).result, { recovered: true });
     assertEquals(
-      (await f.jsm.consumers.info("JOBS", "worker")).delivered.consumer_seq,
+      (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).delivered
+        .consumer_seq,
       3,
       "one failed read, a later job, and redelivery must all be accounted",
     );
@@ -561,7 +569,7 @@ Deno.test("a real projection outage NAKs work and the slot processes later deliv
 
 Deno.test("final ordinary retry redelivers for execution-owned reconciliation", () =>
   withBroker(async (f) => {
-    await f.jsm.consumers.update("JOBS", "worker", { max_deliver: -1 });
+    await f.jsm.consumers.update("ADAPTER_JOBS", "worker", { max_deliver: -1 });
     let handled = 0;
     let reconciled = 0;
     const job = await f.manager.create("refresh", {});
@@ -575,7 +583,7 @@ Deno.test("final ordinary retry redelivers for execution-owned reconciliation", 
       return Promise.reject(JobProcessError.retryable("retry again"));
     });
     await f.settled();
-    const retry = await f.jsm.direct.getMessage("JOBS", {
+    const retry = await f.jsm.direct.getMessage("ADAPTER_JOBS", {
       last_by_subj:
         `${f.binding.jobs.queues.refresh.publishPrefix}.${job.id}.retry`,
     });
@@ -586,13 +594,13 @@ Deno.test("final ordinary retry redelivers for execution-owned reconciliation", 
     assertEquals(
       (await getLatestLifecycleEvent(
         f.jsm.direct,
-        "JOBS",
+        "ADAPTER_JOBS",
         f.binding.jobs.queues.refresh.publishPrefix,
         job,
       ))?.eventType,
       "dead",
     );
-    const info = await f.jsm.consumers.info("JOBS", "worker");
+    const info = await f.jsm.consumers.info("ADAPTER_JOBS", "worker");
     assertEquals(info.delivered.consumer_seq, 3);
     assertEquals(
       info.ack_floor.stream_seq,
@@ -614,7 +622,7 @@ Deno.test("terminal lifecycle is ACKed and removes its queued KV reservation", (
     await f.settled();
     const terminal = await getLatestLifecycleEvent(
       f.jsm.direct,
-      "JOBS",
+      "ADAPTER_JOBS",
       f.binding.jobs.queues.refresh.publishPrefix,
       job,
     );
@@ -636,16 +644,17 @@ Deno.test("terminal work redelivers until its real key bucket recovers and clean
       payload,
       template: ["/tenant"],
     });
-    await f.jsm.consumers.update("JOBS", "worker", { max_deliver: -1 });
+    await f.jsm.consumers.update("ADAPTER_JOBS", "worker", { max_deliver: -1 });
     await f.event(job, "skipped", "skipped");
     await f.jsm.streams.delete("KV_JOBS_KEYS_svc");
     const worker = await f.host(() =>
       Promise.reject(new Error("terminal work executed"))
     );
     await waitFor(async () =>
-      (await f.jsm.consumers.info("JOBS", "worker")).delivered.consumer_seq >= 2
+      (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).delivered
+        .consumer_seq >= 2
     );
-    const info = await f.jsm.consumers.info("JOBS", "worker");
+    const info = await f.jsm.consumers.info("ADAPTER_JOBS", "worker");
     assertEquals(
       info.ack_floor.stream_seq,
       0,
@@ -658,14 +667,15 @@ Deno.test("terminal work redelivers until its real key bucket recovers and clean
     await f.settled();
     assertEquals((await f.keyState(payload)).queued, []);
     assertEquals(
-      (await f.jsm.consumers.info("JOBS", "worker")).ack_floor.stream_seq,
+      (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).ack_floor
+        .stream_seq,
       1,
       "successful cleanup must acknowledge the source",
     );
     assertEquals(
       (await getLatestLifecycleEvent(
         f.jsm.direct,
-        "JOBS",
+        "ADAPTER_JOBS",
         f.binding.jobs.queues.refresh.publishPrefix,
         job,
       ))?.state,
@@ -693,9 +703,10 @@ Deno.test("keyed capacity deferral retains the delivery until a real KV slot rel
       // active slot before submitting the job whose deferral is being tested.
       const second = await f.manager.create("refresh", payload);
       await waitFor(async () =>
-        (await f.jsm.consumers.info("JOBS", "worker")).num_ack_pending === 2
+        (await f.jsm.consumers.info("ADAPTER_JOBS", "worker"))
+          .num_ack_pending === 2
       );
-      const competitor = await f.js.consumers.get("JOBS", "worker");
+      const competitor = await f.js.consumers.get("ADAPTER_JOBS", "worker");
       const receive = competitor.next({ expires: 1_000 });
       const since = performance.now();
       await waitFor(() => Promise.resolve(performance.now() - since > 350));
@@ -703,7 +714,8 @@ Deno.test("keyed capacity deferral retains the delivery until a real KV slot rel
       assertEquals(state.active.map((entry) => entry.jobId), [first.id]);
       assertEquals(state.queued.map((entry) => entry.jobId), [second.id]);
       assertEquals(
-        (await f.jsm.consumers.info("JOBS", "worker")).delivered.consumer_seq,
+        (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).delivered
+          .consumer_seq,
         2,
       );
       release.resolve();
@@ -727,7 +739,7 @@ Deno.test("manual retry of failed keyed work reacquires a real KV slot without c
     await failedHost.stop();
     const latest = await getLatestLifecycleEvent(
       f.jsm.direct,
-      "JOBS",
+      "ADAPTER_JOBS",
       f.binding.jobs.queues.refresh.publishPrefix,
       job,
     );
@@ -744,13 +756,13 @@ Deno.test("manual retry of failed keyed work reacquires a real KV slot without c
 
 Deno.test("missing approved consumer fails closed against actual JetStream", () =>
   withBroker(async (f) => {
-    await f.jsm.consumers.delete("JOBS", "worker");
+    await f.jsm.consumers.delete("ADAPTER_JOBS", "worker");
     await assertRejects(
       () => f.host(() => Promise.resolve({})),
       JobsConsumerMissingError,
     );
     await f.manager.create("refresh", {});
-    const info = await f.jsm.streams.info("JOBS");
+    const info = await f.jsm.streams.info("ADAPTER_JOBS");
     assertEquals(
       info.state.messages,
       1,
@@ -804,7 +816,7 @@ Deno.test("progress ACK cadence floors and clamps to whole milliseconds", () => 
     queueType: "refresh",
     ackWaitMs: 1_000,
     backoffMs: [],
-    publishPrefix: "trellis.jobs.svc.refresh",
+    publishPrefix: "adapter.jobs.svc.refresh",
     workSubject: "trellis.work.svc.refresh",
     consumerName: "worker",
     maxDeliver: 2,
@@ -825,7 +837,7 @@ Deno.test("progress ACK cadence rejects sub-millisecond policies", () => {
           queueType: "refresh",
           ackWaitMs: 1_000,
           backoffMs: [wait],
-          publishPrefix: "trellis.jobs.svc.refresh",
+          publishPrefix: "adapter.jobs.svc.refresh",
           workSubject: "trellis.work.svc.refresh",
           consumerName: "worker",
           maxDeliver: 2,

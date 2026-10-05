@@ -80,7 +80,7 @@ for (const closeWhileHeld of [false, true]) {
           servers: runtime.natsUrl,
           authenticator: credsAuthenticator(
             await Deno.readFile(
-              join(runtime.workdir, "nats/creds/system.creds"),
+              join(runtime.workdir, "config/trellis/nats/creds/system.creds"),
             ),
           ),
         });

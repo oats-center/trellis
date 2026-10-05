@@ -409,9 +409,16 @@ jobs:
           }
 
           publish_workspace_crate trellis-protocol
-          # run_publish waits for protocol to enter the index before this contracts dry-run.
           publish_workspace_crate trellis-rs
-          # The public testkit follows the facade into the index.
+          publish_workspace_crate trellis-runtime-apis
+          publish_workspace_crate trellis-idl
+          publish_workspace_crate trellis-local-bootstrap
+          publish_workspace_crate trellis-events-runtime
+          publish_workspace_crate trellis-jobs-runtime
+          publish_workspace_crate trellis-runtime
+          publish_workspace_crate trellis-bootstrap
+          publish_workspace_crate trellis-local-nats
+          # Each dependency is available in the index before its consumer publishes.
           publish_workspace_crate trellis-testkit
 
           echo "Published ${#published[@]} crate(s)"
@@ -627,6 +634,17 @@ jobs:
           restore-keys: |
             deno-${{ runner.os }}-${{ env.DENO_VERSION }}-
 
+      - name: Download the exact staged testkit publication input
+        uses: actions/download-artifact@v4
+        with:
+          name: check-testkit-jsr
+          path: dist
+          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
+          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
+
+      - name: Extract the exact staged testkit
+        run: mkdir -p dist/testkit-jsr && tar -xzf dist/testkit-jsr.tar.gz -C dist/testkit-jsr
+
       - name: Publish JSR packages
         shell: bash
         run: |
@@ -722,7 +740,16 @@ jobs:
 
           publish_or_skip ts/packages/result
           publish_or_skip ts/packages/trellis
-          publish_or_skip ts/packages/trellis-testkit
+          # GitHub release assets already exist. With fresh state and no source
+          # override, exercise the exact staged package's pinned acquisition and
+          # a real generated RPC before authorizing its publication.
+          smoke_root="$(mktemp -d "$RUNNER_TEMP/testkit-release.XXXXXX")"
+          deno_bin="$(command -v deno)"
+          mkdir -p "$smoke_root/home"
+          PATH='' HOME="$smoke_root/home" TRELLIS_TEST_CACHE_DIR="$smoke_root/cache" TMPDIR="$smoke_root" \
+            "$deno_bin" run -A --config dist/testkit-jsr/deno.json \
+              dist/testkit-jsr/tests/release_smoke.ts
+          publish_or_skip dist/testkit-jsr
 
           TRELLIS_SVELTE_JSR_RUNTIME_DEPENDENCY_VERSION="${RELEASE_VERSION}" \
             deno task -c ts/packages/trellis-svelte/deno.json build:npm

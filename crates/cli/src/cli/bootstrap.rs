@@ -75,6 +75,60 @@ pub struct InitConfigArgs {
     /// insecure-origin allow-list, so a browser app on its own development
     /// origin can complete a portal login.
     pub extra_origin: Vec<String>,
+    /// HTTP listener IP address.
+    #[arg(long)]
+    pub bind_address: Option<std::net::IpAddr>,
+    /// Maximum requests per rate-limit window; zero disables limiting.
+    #[arg(long, default_value_t = 60)]
+    pub rate_limit_max: u32,
+    /// Rate-limit window in milliseconds.
+    #[arg(long, default_value_t = 60_000)]
+    pub rate_limit_window_ms: u64,
+    /// Shared static web artifact directory.
+    #[arg(long, conflicts_with = "web_proxy")]
+    pub web_directory: Option<PathBuf>,
+    /// Shared HTTP(S) reverse-proxy upstream.
+    #[arg(long)]
+    pub web_proxy: Option<String>,
+    /// Static Login Portal artifact directory.
+    #[arg(long, conflicts_with = "portal_proxy")]
+    pub portal_directory: Option<PathBuf>,
+    /// Login Portal HTTP(S) reverse-proxy upstream.
+    #[arg(long)]
+    pub portal_proxy: Option<String>,
+    /// Static Console artifact directory.
+    #[arg(long, conflicts_with = "console_proxy")]
+    pub console_directory: Option<PathBuf>,
+    /// Console HTTP(S) reverse-proxy upstream.
+    #[arg(long)]
+    pub console_proxy: Option<String>,
+    /// Session TTL in milliseconds.
+    #[arg(long)]
+    pub platform_sessions_ttl_ms: Option<u64>,
+    /// OAuth flow TTL in milliseconds.
+    #[arg(long)]
+    pub platform_oauth_ttl_ms: Option<u64>,
+    /// Device-flow TTL in milliseconds.
+    #[arg(long)]
+    pub platform_device_flow_ttl_ms: Option<u64>,
+    /// Pending authentication TTL in milliseconds.
+    #[arg(long)]
+    pub platform_pending_auth_ttl_ms: Option<u64>,
+    /// Authorization context lifetime in seconds.
+    #[arg(long)]
+    pub auth_context_lifetime_seconds: Option<u64>,
+    /// Authorization refresh lead in seconds.
+    #[arg(long)]
+    pub auth_refresh_lead_seconds: Option<u64>,
+    /// Earlier-only authorization refresh jitter in seconds.
+    #[arg(long)]
+    pub auth_refresh_jitter_seconds: Option<u64>,
+    /// Minimum authorization context lifetime in seconds.
+    #[arg(long)]
+    pub auth_minimum_context_lifetime_seconds: Option<u64>,
+    /// Private JSON provider input file; repeatable, duplicate IDs are rejected.
+    #[arg(long)]
+    pub oauth_providers_file: Vec<PathBuf>,
 }
 
 #[cfg(feature = "runtime")]

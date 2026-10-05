@@ -30,14 +30,7 @@ import { participants } from "orders-trellis";
 import { createOrder } from "./service.ts";
 
 Deno.test("orders caller invokes the real service", async () => {
-  const runtime = await TrellisTestRuntime.start({
-    trellis: {
-      command: {
-        cmd: Deno.env.get("TRELLIS_TEST_SERVER_BIN") ?? "trellis-server",
-        args: ["--config", "{config}", "all"],
-      },
-    },
-  });
+  const runtime = await TrellisTestRuntime.start();
   try {
     const identity = await runtime.registerService({
       name: "orders",
@@ -79,14 +72,19 @@ assertion fails; lifecycle failures are rethrown rather than hidden.
 
 ## Run it
 
-In a standalone service project with executables on `PATH`:
+In a standalone service project (no Trellis executables or `nsc` required on `PATH`):
 
 ```sh
 deno test -A service_test.ts
 ```
 
-This test's `TRELLIS_TEST_SERVER_BIN` variable can select a runtime executable
-instead of `trellis-server` on `PATH`. In the checked-in or copied Orders example:
+The released testkit acquires its exact-version native CLI/server from SHA-256-pinned
+release archives. Production commands generate configuration and own managed NATS;
+each test has private state and a seeded administrator. For prebuilt local artifacts,
+pass `trellis: { source: { kind: "path", cli, server } }` with both exact-version
+executables. `restart()` retains data and identity while restarting the full host
+and broker; `firstAdmin: "browser-flow"` opts into the first-admin browser flow.
+In the checked-in or copied Orders example:
 
 ```sh
 deno task check
@@ -125,9 +123,17 @@ let _ = task.await;
 # }
 ```
 
-Provide the matching `trellis`, `trellis-server`, and `nats-server` executables;
-`trellis-testkit` chooses its loopback ports automatically. Released usage needs
-no private dependency patches and no Trellis source checkout.
+Add `trellis-testkit` as a development dependency. The bare builder links and
+runs the real production runtime and chooses its loopback ports automatically;
+no `trellis` or `trellis-server` executable, source checkout, or private patches
+are required. Its implementation dependencies are distributed through Cargo,
+not supported APIs for services to import directly.
+
+NATS remains a real child process. The default uses the verified pinned download
+(first use requires network). For a prebuilt broker, set `TRELLIS_TEST_NATS_BIN`
+or use `.nats(NatsSource::Path(path))`; `.nats(NatsSource::PathLookup)` resolves
+`nats-server` from `PATH`. This does not change the TypeScript harness, which
+still requires the Trellis executables.
 
 For deterministic application transaction behavior, test the actual adapter and
 database instead of starting a network solely to check SQL. In particular,

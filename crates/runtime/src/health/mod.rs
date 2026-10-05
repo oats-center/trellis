@@ -129,7 +129,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let live_owner = context
         .live_providers
         .receiver(crate::platform::LiveProviderRole::Health);
-    let join = tokio::spawn(async move {
+    let join = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
         let invalidation_loop = run_invalidation_subscriber(
             nats.clone(),
             invalidation_subject.clone(),
@@ -196,7 +196,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             let _ = join.await;
         }
         result
-    });
+    }));
 
     Ok(SubsystemHandle {
         name: SubsystemName::Health,

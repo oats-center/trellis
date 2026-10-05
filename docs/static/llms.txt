@@ -38,9 +38,9 @@ Console user management supports profile and local-username edits, participant
 access grants, target-user password-reset and identity-link flows, sign-in
 methods, sessions, and connections. Exact grants apply capability groups as
 one-time presets, not live memberships. See the authentication-and-authorization
-guide for administrative scope and protected-account safeguards.
-Exact snapshots may initiate resource provisioning; readiness still gates access,
-and read-only resource approval does not grant write access.
+guide for administrative scope and protected-account safeguards. Exact snapshots
+may initiate resource provisioning; readiness still gates access, and read-only
+resource approval does not grant write access.
 
 Capability discovery includes installed application APIs. Access editors use the
 selected participant revision; global discovery distinguishes API definitions by
@@ -48,8 +48,8 @@ digest rather than choosing one definition for a shared API ID.
 
 1. Author the `.trellis` files explicitly listed by `[sources]`.
 2. Set `[package]`, `[dependencies]`, and language outputs in `trellis.toml`;
-   run `trellis update` to resolve changes into `trellis.lock`.
-   A durable `consumer` needs a direct `trellis` package dependency containing
+   run `trellis update` to resolve changes into `trellis.lock`. A durable
+   `consumer` needs a direct `trellis` package dependency containing
    `trellis.events@v1`; choose its version explicitly.
 3. Run `trellis install` to reproduce locked dependencies and `trellis generate`
    after IDL edits. `trellis generate --watch` supports the edit loop.
@@ -78,45 +78,45 @@ reconnects, and terminal states are immutable. An Operation observer is a
 separate live session from the durable executor: a watcher reconciles the
 current authoritative snapshot once its transport is ready, then delivers typed
 transient updates and terminal state. Transient updates are ordered and never
-silently dropped, while not-yet-delivered nonterminal snapshots may be conflated.
-Opening or closing a watcher never starts, cancels, or completes the durable
-work, and a transport interruption surfaces as an observation error rather than
-an invented terminal business state. Jobs are service-private; keyed
-capacity waits do not consume attempts.
-Service operation registrations expose local owner-fenced `control(id)` and
-owner-routed `reconcile(id)`, which re-enters the handler with persisted input,
-caller, and progress. A cancellation request stays nonterminal while the owner
-renews its lease and joins handler cleanup; only then is `Cancelled` persisted.
-Stalled cleanup has no forced terminal timeout, and external side effects may
-overlap across owner loss.
+silently dropped, while not-yet-delivered nonterminal snapshots may be
+conflated. Opening or closing a watcher never starts, cancels, or completes the
+durable work, and a transport interruption surfaces as an observation error
+rather than an invented terminal business state. Jobs are service-private; keyed
+capacity waits do not consume attempts. Service operation registrations expose
+local owner-fenced `control(id)` and owner-routed `reconcile(id)`, which
+re-enters the handler with persisted input, caller, and progress. A cancellation
+request stays nonterminal while the owner renews its lease and joins handler
+cleanup; only then is `Cancelled` persisted. Stalled cleanup has no forced
+terminal timeout, and external side effects may overlap across owner loss.
 Cancellation-first admission requires both Invoke and Cancel authority and the
 same caller-chosen invocation ID and input on every retry. It atomically records
 non-clearable cancellation intent; the handler must perform already-aborted
 cleanup before business work. Errors or explicit deferral leave cleanup pending.
-Job deadlines are creation-relative;
-retry defaults to five ordinary attempts delayed by 5s, 30s, 2m, and 10m. Broker
-redelivery is unlimited so execution owners can finish cleanup before Expired or
-Dead. Already-cancelled handlers must reconcile earlier side effects; cleanup
-errors preserve redelivery. Never-started expiration confirms terminal publication
-before releasing recovered key slots, without running handlers; terminal redelivery
-reconciles any remaining slot before acknowledgement. Ordinary queues use Block. At the coordinator boundary,
-fail-stale takeover preserves cleanup for the displaced job's recovered owner
-under a fresh fence; only that owner settles Stale. Ignored stale completions are
-nonterminal diagnostics and retain redelivery until cleanup settles. A never-started
-displaced reservation settles Pending to Stale without handler execution. Lifecycle
-publication awaits JetStream acknowledgement; typed live updates remain transient.
-Execution state and attempts follow accepted lifecycle transitions in broker
-stream-sequence order. Created initializes but cannot reopen a job. Diagnostics
-cannot override settlement or attempts. A valid Retried opens a new run without
-deleting history. Old-run deliveries are identified by their original lifecycle
-sequence and acknowledged without touching newer-run coordination. Deferred work
-rereads lifecycle state before acquisition.
-Jobs Summary is independent of Query pages. Capability approval is not an exact grant. Resource commitments are
-approvals; desired capacities are hints, while observed bindings are the usable
-limits. Trellis neither adopts nor destroys foreign-owned physical resources.
-Removal detaches access without deleting new-version data, allowing compatible
-approved reattachment. Store and file metadata listing uses opaque, query-bound
-keyset cursors with a default limit of 100 and maximum of 500. An administrator
+Job deadlines are creation-relative; retry defaults to five ordinary attempts
+delayed by 5s, 30s, 2m, and 10m. Broker redelivery is unlimited so execution
+owners can finish cleanup before Expired or Dead. Already-cancelled handlers
+must reconcile earlier side effects; cleanup errors preserve redelivery.
+Never-started expiration confirms terminal publication before releasing
+recovered key slots, without running handlers; terminal redelivery reconciles
+any remaining slot before acknowledgement. Ordinary queues use Block. At the
+coordinator boundary, fail-stale takeover preserves cleanup for the displaced
+job's recovered owner under a fresh fence; only that owner settles Stale.
+Ignored stale completions are nonterminal diagnostics and retain redelivery
+until cleanup settles. A never-started displaced reservation settles Pending to
+Stale without handler execution. Lifecycle publication awaits JetStream
+acknowledgement; typed live updates remain transient. Execution state and
+attempts follow accepted lifecycle transitions in broker stream-sequence order.
+Created initializes but cannot reopen a job. Diagnostics cannot override
+settlement or attempts. A valid Retried opens a new run without deleting
+history. Old-run deliveries are identified by their original lifecycle sequence
+and acknowledged without touching newer-run coordination. Deferred work rereads
+lifecycle state before acquisition. Jobs Summary is independent of Query pages.
+Capability approval is not an exact grant. Resource commitments are approvals;
+desired capacities are hints, while observed bindings are the usable limits.
+Trellis neither adopts nor destroys foreign-owned physical resources. Removal
+detaches access without deleting new-version data, allowing compatible approved
+reattachment. Store and file metadata listing uses opaque, query-bound keyset
+cursors with a default limit of 100 and maximum of 500. An administrator
 installs the immutable participant revision and writes a participant-scoped
 `GrantBinding`; deployment apply provisions exact resource evidence.
 Services/devices bootstrap with identity and proof inputs only, while browsers
@@ -136,18 +136,30 @@ authentication; valid-login authorization denial surfaces its machine code
 without automatically sending the user through another login.
 
 Events use API-qualified subjects and base64url parameter tokens; their signed
-descriptor binds the exact API, dotted event name, and parameter count. Durable delivery acknowledges success only
-after the handler succeeds; final exhaustion is durably recorded in the
-per-Consumer DLQ before acknowledgement. Manual replay uses the same handler and
-a fresh delivery budget without rewinding the original Consumer, and successful
-replay is durably resolved before acknowledgement. Live observations and Operation watchers
-are authorized live sessions negotiated with bounded opening requests; the
-provider signs its offer and frames, control responses bind the session ID,
-logical command sequence, and command hash, and continued authority is rechecked
-from retained context rather than by a network lookup per frame. Sessions have
-protocol liveness and credit bounds, not a total age or message cap; an explicit
-close returns a receipt whose remote-cleanup state is complete, incomplete, or
-unconfirmed, and reconnect is an explicit new open rather than a silent reopen.
+descriptor binds the exact API, dotted event name, and parameter count. Durable
+delivery acknowledges success only after the handler succeeds; final exhaustion
+is durably recorded in the per-Consumer DLQ before acknowledgement. Manual
+replay uses the same handler and a fresh delivery budget without rewinding the
+original Consumer, and successful replay is durably resolved before
+acknowledgement. Live observations and Operation watchers are authorized live
+sessions negotiated with bounded opening requests; the provider signs its offer
+and frames, control responses bind the session ID, logical command sequence, and
+command hash, and continued authority is rechecked from retained context rather
+than by a network lookup per frame. Sessions have protocol liveness and credit
+bounds, not a total age or message cap; an explicit close returns a receipt
+whose remote-cleanup state is complete, incomplete, or unconfirmed, and
+reconnect is an explicit new open rather than a silent reopen.
 
 Consumer AGENTS templates are available under `templates/`. They describe the
 Trellis boundary; application policies belong in the consumer repository.
+
+For live Rust tests, `trellis-testkit` links the real production runtime and
+manages a real NATS child without requiring the CLI/server executables. Its bare
+builder defaults to the verified pinned broker download; a prebuilt broker can
+be selected with `TRELLIS_TEST_NATS_BIN` or `NatsSource`. The TypeScript testkit
+acquires exact-version SHA-256-pinned production CLI/server archives
+automatically; no installed Trellis executables or nsc are required. Production
+commands generate configuration and own managed NATS. Graceful TypeScript host
+shutdown has a bounded fallback that reclaims the isolated host/broker process
+group. Registry-distributed Rust implementation crates are not supported
+service-author APIs.

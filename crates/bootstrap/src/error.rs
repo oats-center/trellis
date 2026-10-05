@@ -6,6 +6,15 @@ use thiserror::Error;
 /// Error returned while generating bootstrap output.
 #[derive(Debug, Diagnostic, Error)]
 pub enum BootstrapError {
+    /// Provider JSON is invalid; input values are intentionally not echoed.
+    #[error("invalid OAuth provider input; check provider types and required fields")]
+    InvalidOAuthInput,
+    /// A web source cannot be served by the production HTTP host.
+    #[error("invalid bootstrap web source: {0}")]
+    InvalidWebSource(String),
+    /// Authorization timing cannot form a usable signed context.
+    #[error("invalid bootstrap authorization policy: {0}")]
+    InvalidAuthorization(String),
     /// The output directory exists and contains files while force is disabled.
     #[error("output directory {path} is not empty; pass --force to replace it")]
     OutputDirectoryNotEmpty {

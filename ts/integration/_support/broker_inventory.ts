@@ -387,7 +387,7 @@ export async function readRuntimeBrokerInventory(
   options: BrokerInventoryOptions = {},
 ): Promise<BrokerConnection[]> {
   const creds = await Deno.readTextFile(
-    `${runtime.workdir}/nats/creds/system.creds`,
+    `${runtime.workdir}/config/trellis/nats/creds/system.creds`,
   );
   const connection = await connect({
     servers: runtime.natsUrl,

@@ -26,7 +26,7 @@ Deno.test("State and authentication survive restart with retained KV history", a
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
         await Deno.readFile(
-          join(runtime.workdir, "nats/creds/trellis-auth.creds"),
+          join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
         ),
       ),
     });
@@ -50,7 +50,7 @@ Deno.test("State and authentication survive restart with retained KV history", a
     const previous = await client.state.saved.set({ value: "superseded" })
       .orThrow();
     await client.state.saved.set({ value: "durable" }).orThrow();
-    await runtime.restartControlPlane();
+    await runtime.restart();
     const stored = await client.state.saved.get().orThrow();
 
     assert(stored);

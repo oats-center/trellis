@@ -53,25 +53,41 @@ Rust-only runtime behavior remains in ordinary Rust integration tests.
 
 ### Case-Owned Runtime
 
-Each live test starts and stops its own real NATS and `trellis-server` processes
-and owns its temporary SQLite state. Built-in Jobs and Events run inside that
-server. Tests use generated participants from a small native-IDL fixture; they
-do not construct substitute API descriptors. Prebuilt server and CLI paths may
-be supplied through environment variables. There is no shared-runner registry,
-tenant allocator, artifact manifest, or host-wide scheduler.
+Each live test owns real NATS and temporary SQLite state. TypeScript harnesses
+and executable acceptance own a real `trellis-server` process; the Rust testkit
+owns the linked production runtime task. Built-in Jobs and Events run in the
+ordinary production runtime. Tests use generated participants from a small
+native-IDL fixture; they do not construct substitute API descriptors. Prebuilt
+server and CLI paths are passed through the explicit native path source by the
+repository integration helper. The released TypeScript testkit defaults to
+exact-version SHA-256-pinned CLI/server acquisition; production `init config`
+owns bootstrap and `trellis-server --local-nats` owns the broker. The private
+sandbox retains config, data, state, and identity across full-host restart; only
+verified immutable binaries are shared. Seeded admin is the default, with an
+explicit browser-flow option for first-admin tests. Real broker adapters use an
+isolated observer connection rather than a second TypeScript-owned NATS process.
+The TypeScript host runs in a dedicated Unix process group: shutdown first asks
+the host to stop gracefully, then force-closes remaining owned descendants after
+the deadline or host exit. Process-failure tests may deliberately kill or
+replace their isolated broker, but must keep a replacement available while its
+original host releases broker-backed ownership and reap it before normal managed
+restart. There is no shared-runner registry, tenant allocator, artifact
+manifest, or host-wide scheduler.
 
 Rust and TypeScript live tests use ordinary Rust and Deno discovery. The normal
 Check runs both discovered suites against real Trellis infrastructure. Focused
 local runs select tests through the native Rust and Deno test runners rather
 than a second registry or scheduler.
 
-The external `trellis-testkit` Rust harness follows the same process-based
-ownership for service repositories. It starts the released `trellis` and
-`trellis-server` executables out of process, chooses its loopback ports
-automatically, and drives real bootstrap, login, consent, and provisioning
-boundaries. The harness owns the infrastructure processes; the test owns the
-generated clients and service tasks it connects. Internal runtime crates stay
-unpublished: a service repository consumes only `trellis-rs` and `trellis-testkit`.
+The external `trellis-testkit` Rust harness links the real production runtime
+for service repositories, manages a real NATS process, chooses its loopback
+ports automatically, and drives real bootstrap, login, consent, and provisioning
+boundaries. The harness owns the runtime task and broker; the test owns the
+generated clients and service tasks it connects. Runtime task ownership is
+cancellation-safe, including nested startup tasks and native provider clients.
+Implementation crates are registry-distributed only to resolve the testkit's
+Cargo dependency closure; a service repository uses the supported `trellis-rs`
+and `trellis-testkit` APIs, not implementation crates directly.
 
 ### Live Observation Timing Proof
 

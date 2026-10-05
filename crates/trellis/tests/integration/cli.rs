@@ -59,6 +59,125 @@ fn repo_root() -> &'static Path {
         .expect("trellis-rs crate should live under crates/trellis")
 }
 
+/// Real CLI login and repeat participant installation preserve both optional bundle kinds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn optional_bundles_decode_and_repeat_cli_install() {
+    use trellis_rs::auth::{complete_local_login, connect_admin_client_async, AdminSessionState};
+    use trellis_runtime_apis::apis::trellis_auth_v1::Client as AuthClient;
+    use trellis_runtime_apis::types::AuthParticipantsGetRequest;
+    use trellis_testkit::TrellisTestRuntime;
+
+    let mut runtime = TrellisTestRuntime::builder()
+        .start()
+        .await
+        .expect("start runtime");
+    let cli = std::env::var_os("TRELLIS_TEST_CLI_BIN").expect("producer-built CLI path");
+    let config_home = runtime.workdir().join("cli-profile");
+    let login_url_file = runtime.workdir().join("cli-login-url");
+    let mut login = tokio::process::Command::new(&cli)
+        .args([
+            "--format",
+            "json",
+            "login",
+            runtime.trellis_url(),
+            "--login-url-file",
+        ])
+        .arg(&login_url_file)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("ordinary CLI login");
+    let login_url = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Ok(url) = fs::read_to_string(&login_url_file) {
+                break url;
+            }
+            assert!(
+                login.try_wait().unwrap().is_none(),
+                "CLI exited before login URL"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("CLI login URL deadline");
+    complete_local_login(
+        runtime.trellis_url(),
+        login_url.trim(),
+        runtime.admin_username(),
+        runtime.admin_password(),
+    )
+    .await
+    .expect("complete real portal login");
+    let logged_in = tokio::time::timeout(Duration::from_secs(30), login.wait_with_output())
+        .await
+        .expect("CLI login deadline")
+        .expect("CLI login completion");
+    assert!(
+        logged_in.status.success(),
+        "CLI login: {}",
+        String::from_utf8_lossy(&logged_in.stderr)
+    );
+    let state: AdminSessionState =
+        serde_json::from_slice(&fs::read(config_home.join("trellis/admin-session.json")).unwrap())
+            .unwrap();
+    let connected = connect_admin_client_async(&state)
+        .await
+        .expect("connect administrator");
+    let auth = AuthClient::from_generated(connected.clone());
+    let source =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/optional-bundle-source");
+    for installation in ["initial", "repeat"] {
+        // No expected-revision: repeat installation must read the actual participant.
+        let output = tokio::time::timeout(
+            Duration::from_secs(30),
+            tokio::process::Command::new(&cli)
+                .args(["--format", "json", "participants", "install", "--source"])
+                .arg(&source)
+                .env("XDG_CONFIG_HOME", &config_home)
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .expect("participant install deadline")
+        .expect("run participant install");
+        assert!(
+            output.status.success(),
+            "{installation} install: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let detail = auth
+        .participants_get(&AuthParticipantsGetRequest {
+            participant_id: "optional-bundle-fixture.Caller".to_owned().into(),
+            revision: None,
+            extra: Default::default(),
+        })
+        .await
+        .expect("generated Participants.Get must decode both kinds");
+    let bundles = &detail.participant.optional_bundles;
+    let capability = bundles
+        .iter()
+        .find(|bundle| bundle.id.as_ref() == "optional-bundle-fixture.echo@v1::optionalEcho")
+        .expect("optional API bundle");
+    assert_eq!(
+        capability.api_id.as_ref().map(AsRef::<str>::as_ref),
+        Some("optional-bundle-fixture.echo@v1")
+    );
+    assert!(!capability.permissions.is_empty());
+    let resource = bundles
+        .iter()
+        .find(|bundle| bundle.id.as_ref() == "resource.cache")
+        .expect("optional resource bundle");
+    assert!(resource.api_id.is_none());
+    assert!(!resource.permissions.is_empty());
+    drop(auth);
+    drop(connected);
+    runtime.shutdown().await.expect("shutdown runtime");
+}
+
 fn cli_command() -> Command {
     let mut command = if let Some(binary) = std::env::var_os("TRELLIS_TEST_CLI_BIN") {
         Command::new(binary)

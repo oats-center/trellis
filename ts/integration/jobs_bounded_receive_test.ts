@@ -3,7 +3,8 @@ import { assert, assertEquals, assertRejects } from "@std/assert";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import type { NatsConnection } from "@nats-io/nats-core";
 import { join } from "@std/path";
-import { NatsTestContainer } from "../packages/trellis-testkit/src/nats_container.ts";
+import { startTrellisRuntime } from "./_support/runtime.ts";
+import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import { JobManager } from "../packages/trellis/service/runtime/internal_jobs/job-manager.ts";
 import { ActiveJobCancellationRegistry } from "../packages/trellis/service/runtime/internal_jobs/cancellation-registry.ts";
 import {
@@ -18,7 +19,7 @@ import {
 // This does not claim generation migration or Trellis resource provisioning.
 Deno.test("Jobs slots bound broker deliveries and account outstanding pulls on stop", async () => {
   const workdir = await Deno.makeTempDir({ prefix: "jobs-bounded-receive-" });
-  let nats: NatsTestContainer | undefined;
+  let nats: TrellisTestRuntime | undefined;
   let replacement: NatsConnection | undefined;
   let receivingConnection: NatsConnection | undefined;
   let slot: Awaited<ReturnType<typeof startQueueWorkerLoop>> | undefined;
@@ -28,13 +29,13 @@ Deno.test("Jobs slots bound broker deliveries and account outstanding pulls on s
     | undefined;
   const release = Promise.withResolvers<void>();
   try {
-    nats = await NatsTestContainer.start(workdir);
-    const nc = nats.nc;
+    nats = await startTrellisRuntime();
+    const nc = await nats.connectNats();
     const js = jetstream(nc);
     const jsm = await jetstreamManager(nc);
-    const prefix = "trellis.jobs.bounded.refresh";
+    const prefix = "adapter.jobs.bounded.refresh";
     const binding = {
-      workStream: "JOBS",
+      workStream: "ADAPTER_JOBS",
       jobs: {
         serviceName: "bounded",
         namespace: "bounded",
@@ -53,11 +54,11 @@ Deno.test("Jobs slots bound broker deliveries and account outstanding pulls on s
       },
     };
     await jsm.streams.add({
-      name: "JOBS",
+      name: "ADAPTER_JOBS",
       subjects: [`${prefix}.>`],
       allow_direct: true,
     });
-    await jsm.consumers.add("JOBS", {
+    await jsm.consumers.add("ADAPTER_JOBS", {
       durable_name: "bounded-refresh",
       ack_policy: AckPolicy.Explicit,
       ack_wait: 30_000_000_000,
@@ -84,7 +85,7 @@ Deno.test("Jobs slots bound broker deliveries and account outstanding pulls on s
     });
     await waitFor(() => Promise.resolve(handled === 1));
     await nc.flush();
-    const held = await jsm.consumers.info("JOBS", "bounded-refresh");
+    const held = await jsm.consumers.info("ADAPTER_JOBS", "bounded-refresh");
     assertEquals(
       held.num_ack_pending,
       1,
@@ -96,10 +97,10 @@ Deno.test("Jobs slots bound broker deliveries and account outstanding pulls on s
     );
     release.resolve();
     await waitFor(async () => {
-      const info = await jsm.consumers.info("JOBS", "bounded-refresh");
+      const info = await jsm.consumers.info("ADAPTER_JOBS", "bounded-refresh");
       return info.num_ack_pending === 0 && info.num_pending === 0;
     });
-    const completed = await jsm.direct.getMessage("JOBS", {
+    const completed = await jsm.direct.getMessage("ADAPTER_JOBS", {
       last_by_subj: `${prefix}.${jobs[0]!.id}.completed`,
     });
     assert(completed);
@@ -121,7 +122,8 @@ Deno.test("Jobs slots bound broker deliveries and account outstanding pulls on s
       },
     });
     await waitFor(async () =>
-      (await jsm.consumers.info("JOBS", "bounded-refresh")).num_waiting === 1
+      (await jsm.consumers.info("ADAPTER_JOBS", "bounded-refresh"))
+        .num_waiting === 1
     );
     let stopped = false;
     const stop = host.stop().then(() => {
@@ -133,7 +135,7 @@ Deno.test("Jobs slots bound broker deliveries and account outstanding pulls on s
     await stop;
     host = undefined;
     assertEquals(lateHandled, 0, "shutdown must not start the late job");
-    const consumer = await js.consumers.get("JOBS", "bounded-refresh");
+    const consumer = await js.consumers.get("ADAPTER_JOBS", "bounded-refresh");
     const redelivery = await consumer.next({ expires: 1_000 });
     assert(
       redelivery,
@@ -147,7 +149,7 @@ Deno.test("Jobs slots bound broker deliveries and account outstanding pulls on s
     );
     assert(await redelivery.ackAck());
     await waitFor(async () => {
-      const info = await jsm.consumers.info("JOBS", "bounded-refresh");
+      const info = await jsm.consumers.info("ADAPTER_JOBS", "bounded-refresh");
       return info.num_ack_pending === 0 && info.num_waiting === 0;
     });
     console.log(
@@ -162,7 +164,8 @@ Deno.test("Jobs slots bound broker deliveries and account outstanding pulls on s
       handler: () => Promise.resolve({}),
     });
     await waitFor(async () =>
-      (await jsm.consumers.info("JOBS", "bounded-refresh")).num_waiting === 1
+      (await jsm.consumers.info("ADAPTER_JOBS", "bounded-refresh"))
+        .num_waiting === 1
     );
     stopped = false;
     const idleStop = host.stop().then(() => {
@@ -172,21 +175,14 @@ Deno.test("Jobs slots bound broker deliveries and account outstanding pulls on s
     assertEquals(stopped, false, "an idle slot must await server expiry");
     await idleStop;
     host = undefined;
-    const idle = await jsm.consumers.info("JOBS", "bounded-refresh");
+    const idle = await jsm.consumers.info("ADAPTER_JOBS", "bounded-refresh");
     assertEquals(idle.num_waiting, 0);
     assertEquals(idle.num_ack_pending, 0);
     console.log(
       "idle shutdown: broker expiry completed; waiting=0, ack_pending=0",
     );
 
-    replacement = await connect({
-      servers: nats.natsUrl,
-      authenticator: credsAuthenticator(
-        await Deno.readFile(
-          join(workdir, "nats", nats.manifest.paths.creds.trellisService),
-        ),
-      ),
-    });
+    replacement = await nats.connectNats();
     const rebound = manager.withTransport(jetstream(replacement), undefined);
     await nc.close();
     await assertRejects(() => manager.create("refresh", { index: 5 }));
@@ -199,12 +195,18 @@ Deno.test("Jobs slots bound broker deliveries and account outstanding pulls on s
       handler: () => Promise.resolve({ rebound: true }),
     });
     await waitFor(async () => {
-      const info = await reboundJsm.consumers.info("JOBS", "bounded-refresh");
+      const info = await reboundJsm.consumers.info(
+        "ADAPTER_JOBS",
+        "bounded-refresh",
+      );
       return info.num_pending === 0 && info.num_ack_pending === 0;
     });
-    const reboundCompleted = await reboundJsm.direct.getMessage("JOBS", {
-      last_by_subj: `${prefix}.${reboundJob.id}.completed`,
-    });
+    const reboundCompleted = await reboundJsm.direct.getMessage(
+      "ADAPTER_JOBS",
+      {
+        last_by_subj: `${prefix}.${reboundJob.id}.completed`,
+      },
+    );
     assert(reboundCompleted);
     assertEquals(JSON.parse(reboundCompleted.string()).result, {
       rebound: true,
@@ -252,12 +254,12 @@ Deno.test("Jobs slots bound broker deliveries and account outstanding pulls on s
     }
     await waitFor(() => Promise.resolve(cancelled === 2));
     await waitFor(async () =>
-      (await reboundJsm.consumers.info("JOBS", "bounded-refresh"))
+      (await reboundJsm.consumers.info("ADAPTER_JOBS", "bounded-refresh"))
         .num_ack_pending === 0
     );
     await host.stop();
     host = undefined;
-    const terminalSubjects = await reboundJsm.streams.info("JOBS", {
+    const terminalSubjects = await reboundJsm.streams.info("ADAPTER_JOBS", {
       subjects_filter: `${prefix}.*.completed`,
     });
     assertEquals(
@@ -269,19 +271,12 @@ Deno.test("Jobs slots bound broker deliveries and account outstanding pulls on s
       "host cancellation: both active slots cancelled and acknowledged without completed lifecycle",
     );
 
-    receivingConnection = await connect({
-      servers: nats.natsUrl,
-      authenticator: credsAuthenticator(
-        await Deno.readFile(
-          join(workdir, "nats", nats.manifest.paths.creds.trellisService),
-        ),
-      ),
-    });
+    receivingConnection = await nats.connectNats();
     const physicalLoss = new AbortController();
     void receivingConnection.closed().then(() => physicalLoss.abort());
     const lostConsumer = toWorkerConsumer(
       await jetstream(receivingConnection).consumers.get(
-        "JOBS",
+        "ADAPTER_JOBS",
         "bounded-refresh",
       ),
     );
@@ -290,7 +285,10 @@ Deno.test("Jobs slots bound broker deliveries and account outstanding pulls on s
       undefined,
     );
     const sessionConsumer = toWorkerConsumer(
-      await jetstream(replacement).consumers.get("JOBS", "bounded-refresh"),
+      await jetstream(replacement).consumers.get(
+        "ADAPTER_JOBS",
+        "bounded-refresh",
+      ),
     );
     let acquired = false;
     let oldAcquired = false;
@@ -338,7 +336,7 @@ Deno.test("Jobs slots bound broker deliveries and account outstanding pulls on s
       },
     });
     await waitFor(async () =>
-      (await reboundJsm.consumers.info("JOBS", "bounded-refresh"))
+      (await reboundJsm.consumers.info("ADAPTER_JOBS", "bounded-refresh"))
         .num_waiting === 1
     );
     await receivingConnection.close();
@@ -355,14 +353,17 @@ Deno.test("Jobs slots bound broker deliveries and account outstanding pulls on s
     await slot.stop();
     slot = undefined;
     assertEquals(
-      (await reboundJsm.consumers.info("JOBS", "bounded-refresh"))
+      (await reboundJsm.consumers.info("ADAPTER_JOBS", "bounded-refresh"))
         .num_ack_pending,
       0,
       "session release must follow the source message disposition",
     );
-    const sessionCompleted = await reboundJsm.direct.getMessage("JOBS", {
-      last_by_subj: `${prefix}.${sessionJob.id}.completed`,
-    });
+    const sessionCompleted = await reboundJsm.direct.getMessage(
+      "ADAPTER_JOBS",
+      {
+        last_by_subj: `${prefix}.${sessionJob.id}.completed`,
+      },
+    );
     assert(sessionCompleted);
     assertEquals(JSON.parse(sessionCompleted.string()).result, {
       session: true,

@@ -44,6 +44,66 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
         .clone()
         .unwrap_or_else(|| format!("http://localhost:{}", args.trellis_port));
     options.runtime.extra_origins = args.extra_origin.clone();
+    options.runtime.bind_address = args.bind_address;
+    options.runtime.rate_limit_max = args.rate_limit_max;
+    options.runtime.rate_limit_window_ms = args.rate_limit_window_ms;
+    for (target, directory, proxy) in [
+        (
+            &mut options.runtime.web_source,
+            &args.web_directory,
+            &args.web_proxy,
+        ),
+        (
+            &mut options.runtime.portal_source,
+            &args.portal_directory,
+            &args.portal_proxy,
+        ),
+        (
+            &mut options.runtime.console_source,
+            &args.console_directory,
+            &args.console_proxy,
+        ),
+    ] {
+        *target = directory
+            .as_ref()
+            .map(|path| {
+                path.canonicalize()
+                    .map(trellis_runtime::WebSourceConfig::Directory)
+            })
+            .transpose()
+            .into_diagnostic()?
+            .or_else(|| {
+                proxy
+                    .as_ref()
+                    .map(|url| trellis_runtime::WebSourceConfig::Proxy(url.clone()))
+            });
+    }
+    options.runtime.ttl_ms = trellis_runtime::PlatformTtlConfig {
+        sessions: args.platform_sessions_ttl_ms,
+        oauth: args.platform_oauth_ttl_ms,
+        device_flow: args.platform_device_flow_ttl_ms,
+        pending_auth: args.platform_pending_auth_ttl_ms,
+    };
+    options.runtime.authorization = trellis_bootstrap::BootstrapAuthorizationPolicy {
+        context_lifetime_seconds: args.auth_context_lifetime_seconds,
+        refresh_lead_seconds: args.auth_refresh_lead_seconds,
+        refresh_jitter_seconds: args.auth_refresh_jitter_seconds,
+        minimum_context_lifetime_seconds: args.auth_minimum_context_lifetime_seconds,
+    };
+    for path in &args.oauth_providers_file {
+        for (id, provider) in
+            trellis_bootstrap::read_oauth_providers(path).map_err(bootstrap_report)?
+        {
+            if options
+                .runtime
+                .oauth_providers
+                .insert(id, provider)
+                .is_some()
+            {
+                return Err(miette!("duplicate OAuth provider id in input files"));
+            }
+        }
+    }
     options.nats.nats_port = args.nats_port;
     options.nats.monitor_port = args.nats_monitor_port;
     options.nats.websocket_port = args.nats_ws_port;
@@ -62,6 +122,7 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
             "out": args.out.display().to_string(),
             "trellisConfig": trellis_config.display().to_string(),
             "natsConfig": nats_config.display().to_string(),
+            "trellisRuntimeCreds": args.out.join("nats/creds/trellis-auth.creds").display().to_string(),
             "publicOrigin": options.runtime.public_origin,
             "natsServer": options.runtime.nats_server_url,
             "natsWebsocket": options.runtime.nats_websocket_url,
@@ -318,43 +379,10 @@ mod tests {
     }
 
     #[test]
-    fn init_config_derives_default_and_individual_custom_endpoints() {
+    fn init_config_maps_bootstrap_policies_into_effective_runtime_configuration() {
         let temp = tempfile::tempdir().expect("temp dir");
-
-        let (config, nats_config) = generate_bundle(&temp.path().join("default"), &[]);
-        assert!(config.contains("public_origin = \"http://localhost:3000\""));
-        assert!(config.contains("servers = \"nats://127.0.0.1:4222\""));
-        assert!(config.contains("ws_nats_servers = [\"ws://localhost:8080\"]"));
-        assert!(nats_config.contains("listen: 0.0.0.0:4222"));
-        assert!(nats_config.contains("http: 0.0.0.0:8222"));
-        assert!(nats_config.contains("listen: 0.0.0.0:8080"));
-
-        let (config, _) = generate_bundle(
-            &temp.path().join("trellis-port"),
-            &["--trellis-port", "3444"],
-        );
-        assert!(config.contains("public_origin = \"http://localhost:3444\""));
-        assert!(config.contains("redirect_base = \"http://localhost:3444/auth/callback\""));
-        assert!(config.contains("servers = \"nats://127.0.0.1:4222\""));
-
-        let (config, _) = generate_bundle(&temp.path().join("nats-port"), &["--nats-port", "4333"]);
-        assert!(config.contains("servers = \"nats://127.0.0.1:4333\""));
-        assert!(config.contains("ws_nats_servers = [\"ws://localhost:8080\"]"));
-
-        let (_, nats_config) = generate_bundle(
-            &temp.path().join("monitor-port"),
-            &["--nats-monitor-port", "8333"],
-        );
-        assert!(nats_config.contains("http: 0.0.0.0:8333"));
-        assert!(nats_config.contains("listen: 0.0.0.0:4222"));
-
-        let (config, nats_config) =
-            generate_bundle(&temp.path().join("ws-port"), &["--nats-ws-port", "8183"]);
-        assert!(config.contains("ws_nats_servers = [\"ws://localhost:8183\"]"));
-        assert!(nats_config.contains("listen: 0.0.0.0:8183"));
-
-        let (config, nats_config) = generate_bundle(
-            &temp.path().join("all-custom"),
+        let (config, listeners) = generate_bundle(
+            &temp.path().join("custom"),
             &[
                 "--trellis-port",
                 "3444",
@@ -364,14 +392,68 @@ mod tests {
                 "8333",
                 "--nats-ws-port",
                 "8183",
+                "--bind-address",
+                "127.0.0.1",
+                "--rate-limit-max",
+                "37",
+                "--rate-limit-window-ms",
+                "2300",
+                "--platform-sessions-ttl-ms",
+                "45678",
+                "--platform-oauth-ttl-ms",
+                "23456",
+                "--platform-device-flow-ttl-ms",
+                "34567",
+                "--platform-pending-auth-ttl-ms",
+                "12345",
+                "--auth-context-lifetime-seconds",
+                "90",
+                "--auth-refresh-lead-seconds",
+                "10",
+                "--auth-refresh-jitter-seconds",
+                "2",
+                "--auth-minimum-context-lifetime-seconds",
+                "43",
             ],
         );
-        assert!(config.contains("public_origin = \"http://localhost:3444\""));
-        assert!(config.contains("servers = \"nats://127.0.0.1:4333\""));
-        assert!(config.contains("ws_nats_servers = [\"ws://localhost:8183\"]"));
-        assert!(nats_config.contains("listen: 0.0.0.0:4333"));
-        assert!(nats_config.contains("http: 0.0.0.0:8333"));
-        assert!(nats_config.contains("listen: 0.0.0.0:8183"));
+        let http = config.http.as_ref().expect("http");
+        assert_eq!(http.public_origin.as_deref(), Some("http://localhost:3444"));
+        assert_eq!(http.bind_address, Some("127.0.0.1".parse().unwrap()));
+        assert_eq!(http.rate_limit_max, Some(37));
+        assert_eq!(http.rate_limit_window_ms, Some(2300));
+        assert_eq!(
+            config.resolve_nats_runtime().unwrap().servers,
+            "nats://127.0.0.1:4333"
+        );
+        assert_eq!(
+            (listeners.native, listeners.monitor, listeners.websocket),
+            (4333, 8333, 8183)
+        );
+        assert_eq!(
+            config
+                .client
+                .as_ref()
+                .unwrap()
+                .ws_nats_servers
+                .as_ref()
+                .unwrap(),
+            &["ws://localhost:8183"]
+        );
+        let ttl = config.platform.as_ref().unwrap().ttl_ms.as_ref().unwrap();
+        assert_eq!(
+            (ttl.sessions, ttl.oauth, ttl.device_flow, ttl.pending_auth),
+            (Some(45678), Some(23456), Some(34567), Some(12345))
+        );
+        let auth = config.resolve_authorization().unwrap();
+        assert_eq!(
+            (
+                auth.context_lifetime_seconds,
+                auth.refresh_lead_seconds,
+                auth.refresh_jitter_seconds,
+                auth.minimum_context_lifetime_seconds
+            ),
+            (90, 10, 2, 43)
+        );
     }
 
     #[test]
@@ -380,12 +462,8 @@ mod tests {
         let (config, _) = generate_bundle(
             &temp.path().join("explicit"),
             &[
-                "--trellis-port",
-                "3444",
                 "--nats-port",
                 "4333",
-                "--nats-ws-port",
-                "8183",
                 "--nats-server-url",
                 "nats://nats.example.test:4999",
                 "--nats-websocket-url",
@@ -394,11 +472,24 @@ mod tests {
                 "https://trellis.example.test",
             ],
         );
-        assert!(config.contains("servers = \"nats://nats.example.test:4999\""));
-        assert!(config.contains("ws_nats_servers = [\"wss://nats.example.test/ws\"]"));
-        assert!(config.contains("public_origin = \"https://trellis.example.test\""));
-        assert!(!config.contains("nats://127.0.0.1:4333"));
-        assert!(!config.contains("http://localhost:3444"));
+        assert_eq!(
+            config.resolve_nats_runtime().unwrap().servers,
+            "nats://nats.example.test:4999"
+        );
+        assert_eq!(
+            config
+                .client
+                .as_ref()
+                .unwrap()
+                .ws_nats_servers
+                .as_ref()
+                .unwrap(),
+            &["wss://nats.example.test/ws"]
+        );
+        assert_eq!(
+            config.http.as_ref().unwrap().public_origin.as_deref(),
+            Some("https://trellis.example.test")
+        );
     }
 
     #[test]
@@ -408,10 +499,17 @@ mod tests {
             &temp.path().join("extra-origin"),
             &["--extra-origin", "http://localhost:5174"],
         );
-        assert!(
-            config.matches("http://localhost:5174").count() >= 2,
-            "the extra origin must appear in both accepted and insecure origin lists"
-        );
+        let http = config.http.unwrap();
+        assert!(http
+            .origins
+            .unwrap()
+            .iter()
+            .any(|origin| origin == "http://localhost:5174"));
+        assert!(http
+            .allow_insecure_origins
+            .unwrap()
+            .iter()
+            .any(|origin| origin == "http://localhost:5174"));
     }
 
     #[test]
@@ -436,6 +534,81 @@ mod tests {
         }
     }
 
+    #[test]
+    fn oauth_provider_files_round_trip_and_rejected_input_preserves_existing_bundle() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let input = temp.path().join("providers.json");
+        fs::write(&input, r#"{"identity":{"type":"oidc","issuer":"https://identity.example.test","clientId":"consumer","clientSecret":"private-provider-secret","scopes":["openid","email"],"roleClaims":["/roles"]}}"#).unwrap();
+        let out = temp.path().join("bundle");
+        let input_path = input.to_str().unwrap();
+        let (config, _) = generate_bundle(&out, &["--oauth-providers-file", input_path]);
+        let provider = &config.oauth.as_ref().unwrap().providers["identity"];
+        assert_eq!(
+            provider.issuer.as_deref(),
+            Some("https://identity.example.test")
+        );
+        assert_eq!(provider.client_id.as_deref(), Some("consumer"));
+        assert_eq!(
+            provider.client_secret.as_deref(),
+            Some("private-provider-secret")
+        );
+        assert_eq!(provider.scopes.as_ref().unwrap(), &["openid", "email"]);
+        assert_eq!(provider.role_claims, ["/roles"]);
+        let before = fs::read(out.join("config.toml")).unwrap();
+        let duplicate = init_config_args(
+            &out,
+            &[
+                "--force",
+                "--oauth-providers-file",
+                input_path,
+                "--oauth-providers-file",
+                input_path,
+            ],
+        );
+        init_config_command(OutputFormat::Json, &duplicate).expect_err("duplicate providers");
+        assert_eq!(fs::read(out.join("config.toml")).unwrap(), before);
+        fs::write(&input, r#"{"identity":{"type":"oidc","clientId":"consumer","clientSecret":{"value":"do-not-echo-this-secret"}}}"#).unwrap();
+        let invalid = init_config_args(&out, &["--force", "--oauth-providers-file", input_path]);
+        let error =
+            init_config_command(OutputFormat::Json, &invalid).expect_err("invalid private input");
+        assert!(!format!("{error:?}").contains("do-not-echo-this-secret"));
+        assert_eq!(fs::read(out.join("config.toml")).unwrap(), before);
+    }
+
+    #[test]
+    fn web_source_flags_round_trip_and_invalid_source_preserves_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let web = temp.path().join("web");
+        fs::create_dir(&web).unwrap();
+        let out = temp.path().join("bundle");
+        let (config, _) = generate_bundle(
+            &out,
+            &[
+                "--web-directory",
+                web.to_str().unwrap(),
+                "--portal-proxy",
+                "http://127.0.0.1:5199",
+            ],
+        );
+        let http = config.http.unwrap();
+        assert_eq!(
+            http.web_source,
+            Some(trellis_runtime::WebSourceConfig::Directory(
+                web.canonicalize().unwrap()
+            ))
+        );
+        assert_eq!(
+            http.portal_source,
+            Some(trellis_runtime::WebSourceConfig::Proxy(
+                "http://127.0.0.1:5199".into()
+            ))
+        );
+        let before = fs::read(out.join("config.toml")).unwrap();
+        let args = init_config_args(&out, &["--force", "--web-proxy", "ftp://example.test"]);
+        init_config_command(OutputFormat::Json, &args).expect_err("invalid proxy scheme");
+        assert_eq!(fs::read(out.join("config.toml")).unwrap(), before);
+    }
+
     fn init_config_args(out: &Path, flags: &[&str]) -> InitConfigArgs {
         let out = out.to_str().expect("UTF-8 output path").to_string();
         let mut arguments = vec![
@@ -456,12 +629,20 @@ mod tests {
         }
     }
 
-    fn generate_bundle(out: &Path, flags: &[&str]) -> (String, String) {
+    fn generate_bundle(
+        out: &Path,
+        flags: &[&str],
+    ) -> (
+        trellis_runtime::RuntimeConfig,
+        trellis_bootstrap::NatsListeners,
+    ) {
         let args = init_config_args(out, flags);
         init_config_command(OutputFormat::Json, &args).expect("generate bundle");
         (
-            fs::read_to_string(out.join("config.toml")).expect("read config.toml"),
-            fs::read_to_string(out.join("nats/nats.conf")).expect("read nats.conf"),
+            trellis_runtime::RuntimeConfig::load_from_path(out.join("config.toml"))
+                .expect("load production runtime config"),
+            trellis_bootstrap::read_nats_listen_ports(&out.join("nats/nats.conf"))
+                .expect("resolve native listener configuration"),
         )
     }
 

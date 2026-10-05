@@ -30,7 +30,7 @@ import { fromFileUrl, join } from "@std/path";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import type { NativeTransportGate } from "../../ts/packages/trellis-testkit/src/native_gate.ts";
-import { withTrellisRuntime } from "./_support/runtime.ts";
+import { repoTrellisSource, withTrellisRuntime } from "./_support/runtime.ts";
 
 type Runtime = Parameters<Parameters<typeof withTrellisRuntime>[0]>[0];
 
@@ -55,10 +55,6 @@ const CAPABILITY_EXTEND2 = `${GROWTH_API}::extend2`;
 const PROVIDER_DEPLOYMENT = "candidate-rejection-provider";
 
 /** Built server binary supplied by the live test harness. */
-function serverBinary(): string {
-  return Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
-    fromFileUrl(new URL("../../target/debug/trellis-server", import.meta.url));
-}
 
 /**
  * Short lifetimes so an administrative grant revision reaches the connected
@@ -71,12 +67,7 @@ const runtimeOptions = {
     refreshJitterSeconds: 0,
     minimumContextLifetimeSeconds: 46,
   },
-  trellis: {
-    command: {
-      cmd: serverBinary(),
-      args: ["--config", "{config}", "all"],
-    },
-  },
+  trellis: { source: repoTrellisSource() },
   interruptibleNativeProxy: true,
 };
 
@@ -232,7 +223,7 @@ async function runCandidateRejection(mode: "safe" | "unsafe"): Promise<void> {
     const gate: NativeTransportGate = runtime.nativeTransportGate();
     const database = createClient({
       url: `file:${
-        join(runtime.workdir, "trellis", "trellis.sqlite.platform")
+        join(runtime.workdir, "data", "trellis", "platform.sqlite")
       }`,
     });
     const issuedContexts = async (): Promise<string[]> => {

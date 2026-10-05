@@ -1,7 +1,7 @@
 import { createAuth } from "@oatscenter/trellis";
 import { machineErrorCode } from "@oatscenter/trellis/errors";
 import { ulid } from "ulid";
-import { generateSessionSeed } from "../control_plane_config.ts";
+import { generateSessionSeed } from "../auth/random.ts";
 import type {
   TrellisTestParticipantApplyResult,
   TrellisTestParticipantApproval,

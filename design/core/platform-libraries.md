@@ -76,16 +76,27 @@ connection walkthroughs, and exact public signatures belong in:
 
 ## Public Rust Packages
 
-Exactly three Rust crates are intended for publication: `trellis-rs` (the
-curated facade for clients and services), `trellis-protocol` (canonical protocol
-objects), and `trellis-testkit` (the external live-test harness). Every other
-workspace crate is internal and marked `publish = false`.
+The supported author-facing Rust crates are `trellis-rs` (the curated facade for
+clients and services), `trellis-protocol` (canonical protocol objects), and
+`trellis-testkit` (the external live-test harness).
 
-`trellis-testkit` orchestrates the released `trellis` and `trellis-server`
-executables out of process. Its only Trellis Cargo dependency is the published
-`trellis-rs` facade; it consumes a projected copy of the generated
-administration source rather than linking `trellis-runtime-apis`. It never links
-the runtime implementation.
+`trellis-testkit` links the real production `trellis-runtime` and runs it as an
+owned task, using production bootstrap, direct administrator seeding, and the
+generated `trellis-runtime-apis` administration client. NATS remains a real
+managed child process. Neither Trellis executable is required by Rust tests.
+
+Cargo distribution also requires publishing `trellis-runtime-apis`,
+`trellis-idl`, `trellis-local-bootstrap`, `trellis-events-runtime`,
+`trellis-jobs-runtime`, `trellis-runtime`, `trellis-bootstrap`, and
+`trellis-local-nats` in lockstep. These are registry-distributed implementation
+crates, not supported authoring APIs. Normal services/apps must not depend on
+them directly; registry visibility does not change that boundary. Other private
+workspace crates remain unpublished.
+
+Jobs and Events package their canonical SQLite initialization migrations with
+their storage implementation. The production runtime reuses those refinery
+runners, retaining the same migration identities and history/checksum
+validation.
 
 ## `@oatscenter/trellis`
 

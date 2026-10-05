@@ -4,7 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
+description = "Internal Trellis IDL compiler and contract semantics."
+publish = ["crates-io"]
 
 [lints]
 workspace = true

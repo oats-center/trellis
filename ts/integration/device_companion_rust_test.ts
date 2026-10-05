@@ -302,7 +302,7 @@ Deno.test("Rust device companion activates, connects, renews, and survives resta
     const rootSecret = crypto.getRandomValues(new Uint8Array(32));
     const database = createClient({
       url: `file:${
-        join(runtime.workdir, "trellis", "trellis.sqlite.platform")
+        join(runtime.workdir, "data", "trellis", "platform.sqlite")
       }`,
     });
     /**
@@ -345,7 +345,7 @@ Deno.test("Rust device companion activates, connects, renews, and survives resta
     try {
       // Phase two: the control plane restarts while the session state persists.
       // Reconnecting the same device must not require a second consent.
-      await runtime.restartControlPlane();
+      await runtime.restart();
       const second = await runDeviceCompanionLeg(runtime, rootSecret, {
         deadlineMs: 60_000,
       });

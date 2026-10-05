@@ -340,7 +340,7 @@ pub(crate) async fn start_read_only(
 ) -> Result<
     (
         RuntimeAuthVerifier,
-        tokio::task::JoinHandle<Result<(), crate::supervisor::RuntimeError>>,
+        tokio_util::task::AbortOnDropHandle<Result<(), crate::supervisor::RuntimeError>>,
     ),
     crate::supervisor::RuntimeError,
 > {
@@ -384,17 +384,16 @@ pub(crate) async fn start_read_only(
     .map_err(|error| crate::supervisor::RuntimeError::Platform(error.to_string()))?;
     let watcher = cache.clone();
     let watcher_stop = stop.clone();
-    let join = tokio::spawn(async move {
+    let join = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
         let (sender, receiver) = tokio::sync::watch::channel(());
-        tokio::spawn(async move {
-            watcher_stop.stopped().await;
-            drop(sender);
-        });
-        watcher
-            .run_runtime(receiver)
-            .await
-            .map_err(|error| crate::supervisor::RuntimeError::Platform(error.to_string()))
-    });
+        let run = watcher.run_runtime(receiver);
+        tokio::pin!(run);
+        let result = tokio::select! {
+            result = &mut run => result,
+            () = async { watcher_stop.stopped().await; drop(sender); } => run.await,
+        };
+        result.map_err(|error| crate::supervisor::RuntimeError::Platform(error.to_string()))
+    }));
     tokio::time::timeout(std::time::Duration::from_secs(30), cache.wait_until_ready())
         .await
         .map_err(|_| {
@@ -411,7 +410,7 @@ pub(crate) async fn ensure_read_only(
     context: &crate::supervisor::RuntimeContext,
     stop: crate::shutdown::StopHandle,
 ) -> Result<
-    Option<tokio::task::JoinHandle<Result<(), crate::supervisor::RuntimeError>>>,
+    Option<tokio_util::task::AbortOnDropHandle<Result<(), crate::supervisor::RuntimeError>>>,
     crate::supervisor::RuntimeError,
 > {
     if context.platform_verifier.get().is_some() {

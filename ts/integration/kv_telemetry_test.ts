@@ -48,7 +48,7 @@ Deno.test("typed KV records one bounded storage duration per caller operation", 
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
           await Deno.readFile(
-            `${runtime.workdir}/nats/creds/trellis-auth.creds`,
+            `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
           ),
         ),
       });
@@ -145,7 +145,9 @@ Deno.test("typed KV CAS remains intact with telemetry disabled", async () => {
     const nats = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await Deno.readFile(`${runtime.workdir}/nats/creds/trellis-auth.creds`),
+        await Deno.readFile(
+          `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
+        ),
       ),
     });
     try {

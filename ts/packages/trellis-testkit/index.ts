@@ -2,10 +2,13 @@ export { TrellisTestRuntime } from "./src/runtime.ts";
 export { sqliteMemoryUrl, tempSqlitePath } from "./src/temp.ts";
 export { waitFor } from "./src/wait.ts";
 export type {
+  TrellisControlPlaneAuthorization,
+  TrellisControlPlaneOAuthProvider,
   TrellisControlPlaneTtlMs,
   TrellisControlPlaneWebSource,
-} from "./src/control_plane_config.ts";
+} from "./src/types.ts";
 export type {
+  TrellisNativeSource,
   TrellisTestClientAuth,
   TrellisTestClientKey,
   TrellisTestClientParticipant,
@@ -15,6 +18,7 @@ export type {
   TrellisTestParticipantApproval,
   TrellisTestParticipantLike,
   TrellisTestRuntimeStartOptions,
+  TrellisTestRuntimeTrellisOptions,
   TrellisTestServiceKey,
   WaitForOptions,
 } from "./src/types.ts";

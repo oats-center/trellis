@@ -24,23 +24,12 @@ import {
 import { participants as webParticipants } from "trellis-web-generated";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
-import { withTrellisRuntime } from "./_support/runtime.ts";
+import { repoTrellisSource, withTrellisRuntime } from "./_support/runtime.ts";
 
 /** Built server binary supplied by the live test harness. */
-function serverBinary(): string {
-  return Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
-    fromFileUrl(
-      new URL("../../target/debug/trellis-server", import.meta.url),
-    );
-}
 
 const runtimeOptions = {
-  trellis: {
-    command: {
-      cmd: serverBinary(),
-      args: ["--config", "{config}", "all"],
-    },
-  },
+  trellis: { source: repoTrellisSource() },
 };
 
 type Runtime = Parameters<Parameters<typeof withTrellisRuntime>[0]>[0];

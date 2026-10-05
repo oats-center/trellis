@@ -15,6 +15,12 @@ use trellis_rs::jobs::types::{
 
 use crate::worker_presence::WorkerPresenceRecord;
 
+/// Canonical SQLite migrations shared with the production runtime's migration runner.
+pub mod sqlite_migrations {
+    use refinery::embed_migrations;
+    embed_migrations!("src/storage/sqlite");
+}
+
 /// SQLite-backed Jobs projection store.
 #[derive(Debug, Clone)]
 pub struct SqliteJobsStore {
@@ -389,9 +395,7 @@ impl SqliteJobsStore {
             .connection
             .lock()
             .map_err(|_| SqliteJobsStoreError::Poisoned)?;
-        connection.execute_batch(include_str!(
-            "../../../runtime/src/storage/sqlite/jobs/V2000__jobs_projection_init.sql"
-        ))?;
+        connection.execute_batch(include_str!("sqlite/V2000__jobs_projection_init.sql"))?;
         Ok(())
     }
 

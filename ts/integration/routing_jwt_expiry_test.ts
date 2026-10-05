@@ -10,7 +10,7 @@ import { logger } from "../packages/trellis/globals.ts";
 import { participantEvidence } from "../packages/trellis/participant_runtime/participant.ts";
 import { fetchServiceBootstrapInfo } from "../packages/trellis/service/runtime/bootstrap.ts";
 import { base64urlEncode } from "../packages/trellis/auth/utils.ts";
-import { withTrellisRuntime } from "./_support/runtime.ts";
+import { repoTrellisSource, withTrellisRuntime } from "./_support/runtime.ts";
 
 Deno.test("an expired routing credential cannot admit a fresh NATS attachment", async () => {
   await withTrellisRuntime(async (runtime) => {
@@ -122,14 +122,6 @@ Deno.test("an expired routing credential cannot admit a fresh NATS attachment", 
       refreshJitterSeconds: 0,
       minimumContextLifetimeSeconds: 46,
     },
-    trellis: {
-      command: {
-        cmd: Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
-          fromFileUrl(
-            new URL("../../target/debug/trellis-server", import.meta.url),
-          ),
-        args: ["--config", "{config}", "all"],
-      },
-    },
+    trellis: { source: repoTrellisSource() },
   });
 });

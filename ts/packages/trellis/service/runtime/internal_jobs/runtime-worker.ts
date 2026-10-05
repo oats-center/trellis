@@ -592,7 +592,8 @@ export function startQueueWorkerLoop<TResult>(
         retryReceive = session.physicalLoss !== undefined &&
           !session.physicalLoss.aborted && error instanceof JetStreamError &&
           (error.message === "heartbeats missed" ||
-            ("code" in error && error.code === 503));
+            ("code" in error && (error.code === 503 ||
+              (error.code === 409 && error.message === "server shutdown"))));
         if (!session.physicalLoss?.aborted && !retryReceive) throw error;
         recordTrellisError(error, {
           surface: "job",
@@ -740,7 +741,7 @@ export async function startNatsWorkerHostFromBinding<TResult>(
               ? (job) =>
                 getLatestLifecycleEvent(
                   direct,
-                  "JOBS",
+                  binding.workStream,
                   queue.publishPrefix,
                   job,
                 )

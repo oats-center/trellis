@@ -3,6 +3,7 @@ import { assert, assertEquals } from "@std/assert";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { TrellisClient } from "@oatscenter/trellis";
+import { createClient } from "@libsql/client";
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import {
   admittedConnections,
@@ -42,27 +43,20 @@ Deno.test("Rust retained peer coverage supersedes pending G2 setup before its IN
     const system = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await Deno.readFile(`${runtime.workdir}/nats/creds/system.creds`),
+        await Deno.readFile(
+          `${runtime.workdir}/config/trellis/nats/creds/system.creds`,
+        ),
       ),
     });
     const privileged = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await Deno.readFile(`${runtime.workdir}/nats/creds/trellis-auth.creds`),
+        await Deno.readFile(
+          `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
+        ),
       ),
     });
     const manager = await jetstreamManager(privileged);
-    const bindingHints: string[] = [];
-    const hints = privileged.subscribe("_INBOX.*._trellis.authorization", {
-      callback: (error, message) => {
-        if (error) throw error;
-        if (
-          message.json<{ format: string }>().format ===
-            "trellis.authorization-change.v1"
-        ) bindingHints.push(message.subject);
-      },
-    });
-    await privileged.flush();
     const gate = runtime.nativeTransportGate();
     const child = new Deno.Command("setsid", {
       args: rustFixtureArgv("transport_growth_operation"),
@@ -150,14 +144,10 @@ Deno.test("Rust retained peer coverage supersedes pending G2 setup before its IN
       const g1Key = brokerConnectionKey(original[0]);
       const requiredServerIds = [original[0].server];
 
-      // Issuance awaits the first provider-binding write, but its queued
-      // reevaluation can still hint a refresh after connect completes.
-      // Observe that ordinary publication before creating the proof caller:
-      // reevaluate_transport snapshots its recipients before publishing hints,
-      // so the later caller cannot receive that observed publication. Bootstrap
-      // also installs the bound routes; no warmup RPC should add a second
-      // retained peer to the provider coverage experiment.
-      const beforeWarmup = new Set(gate.connections().map((item) => item.id));
+      // Bootstrap installs the shared provider binding without admitting a
+      // second retained peer through a warmup RPC. Settle its real post-commit
+      // work before creating the proof caller: authorization hints are
+      // best-effort and may have no recipient when that work runs.
       const proofKey = await runtime.registerClient({
         name: "coverage-supersession-caller",
         contract: participants.TransportGrowthCaller.participant,
@@ -169,23 +159,21 @@ Deno.test("Rust retained peer coverage supersedes pending G2 setup before its IN
         ...runtime.clientAuth(proofKey),
         timeout: 90_000,
       }).orThrow();
-      const warmup = gate.connections().filter((connection) =>
-        !beforeWarmup.has(connection.id) &&
-        connection.subs.some((sub) =>
-          sub.subject.endsWith("._trellis.authorization")
-        )
-      );
-      assertEquals(warmup.length, 1);
-      const warmupHints = warmup[0].subs.filter((sub) =>
-        sub.subject.endsWith("._trellis.authorization")
-      );
-      assertEquals(warmupHints.length, 1);
-      await runtime.waitFor(() =>
-        bindingHints.includes(warmupHints[0].subject) ? true : undefined
-      );
+      const database = createClient({
+        url: `file:${runtime.workdir}/data/trellis/platform.sqlite`,
+      });
+      try {
+        await runtime.waitFor(async () => {
+          const pending = await database.execute(
+            "SELECT COUNT(*) AS pending FROM auth_post_commit_actions",
+          );
+          return Number(pending.rows[0]?.pending) === 0 ? true : undefined;
+        });
+      } finally {
+        database.close();
+      }
       await caller.connection.close();
       caller = undefined;
-      hints.unsubscribe();
 
       // Settle slow growth preparation before the peer exists. Withhold G2's
       // initial broker admission reply: intake installation cannot start yet,
@@ -296,6 +284,15 @@ Deno.test("Rust retained peer coverage supersedes pending G2 setup before its IN
         ),
         "the authoritative baseline peer watch belongs to the G1 receiving socket",
       );
+
+      // Preparing an unapproved proposal does not advance authority. Keep that
+      // administrative setup outside the held INFO request's proof window;
+      // approval and actual G3 adoption must still happen inside it.
+      const secondGrowth = await runtime.contracts.requestApply({
+        deployment,
+        contract,
+      });
+      assert(secondGrowth.status === "approval_required");
 
       // Disarm synchronously and rearm before forwarding can trigger G2's later
       // post-SUB readiness round trip. This is the same physical G2, not the
@@ -511,11 +508,6 @@ Deno.test("Rust retained peer coverage supersedes pending G2 setup before its IN
         proofDeadline,
         parkSettled,
       }));
-      const secondGrowth = await runtime.contracts.requestApply({
-        deployment,
-        contract,
-      });
-      assert(secondGrowth.status === "approval_required");
       await runtime.contracts.approveApply(secondGrowth.pendingId);
       // Refresh authorization through the public client; transport adoption and
       // retained-peer supersession remain automatic production behavior.
@@ -555,9 +547,22 @@ Deno.test("Rust retained peer coverage supersedes pending G2 setup before its IN
       await runtime.waitFor(async () => {
         beforeDeadline();
         const previous = gate.connection(g3!)!.deliveries.length;
-        await caller!.advance({}, {
+        const advance = await caller!.advance({}, {
           timeout: Math.max(1, proofDeadline - Date.now()),
-        }).orThrow();
+        });
+        if (advance.isErr()) {
+          console.error(JSON.stringify({
+            event: "rust-coverage-g3-advance-failed",
+            error: advance.error.toSerializable(),
+            at: Date.now(),
+            proofDeadline,
+            g1: gate.connection(g1!),
+            g2: gate.connection(g2!),
+            g3: gate.connection(g3!),
+            fixture: lines,
+          }));
+        }
+        advance.orThrow();
         beforeDeadline();
         return gate.connection(g3!)!.deliveries.slice(previous).some((
             delivery,
@@ -685,7 +690,6 @@ Deno.test("Rust retained peer coverage supersedes pending G2 setup before its IN
       await runtime.waitFor(() => exited ? true : undefined);
       assert((await status).success, lines.join("\n"));
     } finally {
-      hints.unsubscribe();
       await gate.release().catch(() => undefined);
       await hold?.release().catch(() => undefined);
       if (!exited) await send("RELEASE").catch(() => undefined);

@@ -27,7 +27,7 @@ import {
 } from "./admin/methods.ts";
 import { recordTrellisDuration } from "./admin/metrics.ts";
 import { isRecord, postJson } from "./admin/transport.ts";
-import { generateSessionSeed } from "./control_plane_config.ts";
+import { generateSessionSeed } from "./auth/random.ts";
 import type {
   TrellisTestParticipantApplyResult,
   TrellisTestParticipantApproval,

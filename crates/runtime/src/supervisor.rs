@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 use thiserror::Error;
-use tokio::task::JoinHandle;
+use tokio_util::task::AbortOnDropHandle;
 use ulid::Ulid;
 
 const HTTP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -30,12 +30,12 @@ use crate::{
 /// Replacement for configured NATS endpoints used by managed `trellis-server` startup.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NatsEndpointOverride {
-    /// Replacement native NATS server URL, used for the runtime connection and the
-    /// advertised native client endpoint.
-    pub servers: String,
-    /// Replacement advertised websocket endpoint. `None` keeps the configured value
-    /// (external `--nats` deployments); managed mode sets it to the local websocket.
-    pub websocket: Option<String>,
+    /// Native NATS connectivity used by runtime internals, never a client proxy.
+    pub runtime_servers: String,
+    /// Advertised native client endpoints; omission retains configured hints.
+    pub advertised_native: Option<Vec<String>>,
+    /// Advertised WebSocket client endpoints; omission retains configured hints.
+    pub advertised_websocket: Option<Vec<String>>,
 }
 
 /// Runtime startup options for `trellis-server`.
@@ -603,6 +603,12 @@ impl RuntimeContext {
     }
 }
 
+impl Drop for RuntimeContext {
+    fn drop(&mut self) {
+        self.live_providers.abort();
+    }
+}
+
 /// Handle for a started subsystem scaffold.
 #[derive(Debug)]
 pub(crate) struct SubsystemHandle {
@@ -611,7 +617,13 @@ pub(crate) struct SubsystemHandle {
     /// Cooperative stop request handle for the subsystem task.
     pub(crate) stop: StopHandle,
     /// Join handle for the subsystem task.
-    pub(crate) join: JoinHandle<Result<(), RuntimeError>>,
+    pub(crate) join: AbortOnDropHandle<Result<(), RuntimeError>>,
+}
+
+impl Drop for SubsystemHandle {
+    fn drop(&mut self) {
+        self.stop.stop();
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -637,8 +649,12 @@ pub async fn run_with_stop(
 ) -> Result<(), RuntimeError> {
     let config = options.config;
     config.validate_for_mode(options.mode)?;
-    let nats = config
-        .resolve_nats_runtime_with(options.nats_override.as_ref().map(|o| o.servers.as_str()))?;
+    let nats = config.resolve_nats_runtime_with(
+        options
+            .nats_override
+            .as_ref()
+            .map(|o| o.runtime_servers.as_str()),
+    )?;
     let leases = config.resolve_leases()?;
     let trellis_nats = async_nats::ConnectOptions::new()
         .credentials_file(&nats.trellis_creds_path)
@@ -664,8 +680,11 @@ pub async fn run_with_stop(
         stop,
     )
     .await;
+    tracing::info!("runtime subsystem and provider shutdown finished; releasing ownership");
     let release_result = ownership.shutdown().await;
+    tracing::info!("runtime ownership shutdown finished; flushing NATS");
     let flush_result = bounded_flush(trellis_nats.flush(), NATS_FLUSH_TIMEOUT).await;
+    tracing::info!("runtime NATS flush finished");
     preserve_primary(result, release_result, flush_result)
 }
 
@@ -747,6 +766,7 @@ async fn run_owned(
         live_providers: crate::platform::LiveProviderSlots::new(),
     };
     let primary = supervise_owned(&context, ownership, stop).await;
+    tracing::info!("runtime subsystem shutdown finished; closing built-in providers");
     // HTTP and subsystem parents are now stopped. Their detached ingress tasks
     // can still retain clients, so end native logical ownership before runtime
     // ownership and the managed broker are released.
@@ -875,6 +895,7 @@ async fn supervise_owned(
         &component_names,
     )
     .await;
+    tracing::info!(?cause, "runtime shutdown requested");
     // From this point the runtime is stopping, so selected components stop
     // being ready regardless of how the stop was triggered.
     http_ready.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -1103,6 +1124,7 @@ async fn join_subsystems(
     let deadline = tokio::time::Instant::now() + timeout;
     for handle in handles {
         let subsystem = handle.name;
+        tracing::info!(?subsystem, "joining runtime subsystem during shutdown");
         match tokio::time::timeout_at(deadline, &mut handle.join).await {
             Ok(Ok(Ok(()))) => {}
             Ok(Ok(Err(error))) => {
@@ -1131,6 +1153,7 @@ async fn join_subsystems(
                 }
             }
         }
+        tracing::info!(?subsystem, "runtime subsystem shutdown join finished");
     }
 
     first_error.map_or(Ok(()), Err)
@@ -1260,7 +1283,7 @@ allow_insecure_origins = []
         let mut handles = vec![SubsystemHandle {
             name: SubsystemName::Jobs,
             stop: StopHandle::new(),
-            join: tokio::spawn(async { Ok(()) }),
+            join: AbortOnDropHandle::new(tokio::spawn(async { Ok(()) })),
         }];
 
         let readiness = crate::telemetry::snapshots::ComponentReadiness::default();
@@ -1313,7 +1336,7 @@ allow_insecure_origins = []
             vec![SubsystemHandle {
                 name: SubsystemName::Jobs,
                 stop,
-                join,
+                join: AbortOnDropHandle::new(join),
             }],
             RuntimeStopCause::Signal,
             Duration::from_millis(20),
@@ -1365,7 +1388,7 @@ allow_insecure_origins = []
             vec![SubsystemHandle {
                 name: SubsystemName::Jobs,
                 stop: StopHandle::new(),
-                join,
+                join: AbortOnDropHandle::new(join),
             }],
             RuntimeStopCause::Signal,
             Duration::from_millis(20),
@@ -1401,7 +1424,7 @@ allow_insecure_origins = []
             vec![SubsystemHandle {
                 name: SubsystemName::Jobs,
                 stop,
-                join,
+                join: AbortOnDropHandle::new(join),
             }],
             RuntimeStopCause::OwnershipLost,
             Duration::from_secs(5),
@@ -1444,7 +1467,7 @@ allow_insecure_origins = []
             vec![SubsystemHandle {
                 name: SubsystemName::Jobs,
                 stop,
-                join,
+                join: AbortOnDropHandle::new(join),
             }],
             RuntimeStopCause::Signal,
             Duration::from_millis(50),

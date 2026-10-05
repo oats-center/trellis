@@ -32,7 +32,7 @@ import {
   brokerConnectionKey,
   completeBrokerInventory,
 } from "./_support/broker_inventory.ts";
-import { withTrellisRuntime } from "./_support/runtime.ts";
+import { repoTrellisSource, withTrellisRuntime } from "./_support/runtime.ts";
 
 type Runtime = Parameters<Parameters<typeof withTrellisRuntime>[0]>[0];
 
@@ -46,10 +46,6 @@ const GROWTH_API = "runtime-trellis.transport_growth@v1";
 const TARGET_DEPLOYMENT = "auto-generation-target";
 
 /** Built server binary supplied by the live test harness. */
-function serverBinary(): string {
-  return Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
-    fromFileUrl(new URL("../../target/debug/trellis-server", import.meta.url));
-}
 
 /**
  * Short lifetimes so a scheduled refresh crosses the growth promptly, without
@@ -62,12 +58,7 @@ const runtimeOptions = {
     refreshJitterSeconds: 0,
     minimumContextLifetimeSeconds: 46,
   },
-  trellis: {
-    command: {
-      cmd: serverBinary(),
-      args: ["--config", "{config}", "all"],
-    },
-  },
+  trellis: { source: repoTrellisSource() },
 };
 
 /** One admitted attachment as reported by the production admin surface. */
@@ -211,7 +202,7 @@ Deno.test(
       // this caller, the same real-SQLite signal the Rust generation test uses.
       const database = createClient({
         url: `file:${
-          join(runtime.workdir, "trellis", "trellis.sqlite.platform")
+          join(runtime.workdir, "data", "trellis", "platform.sqlite")
         }`,
       });
       const renewalCount = async (): Promise<number> => {
@@ -230,7 +221,7 @@ Deno.test(
           servers: runtime.natsUrl,
           authenticator: credsAuthenticator(
             await Deno.readFile(
-              join(runtime.workdir, "nats/creds/system.creds"),
+              join(runtime.workdir, "config/trellis/nats/creds/system.creds"),
             ),
           ),
         });

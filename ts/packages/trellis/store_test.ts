@@ -1,17 +1,19 @@
 import { assertEquals, assertInstanceOf } from "@std/assert";
 
-import { NatsTestContainer } from "../trellis-testkit/src/nats_container.ts";
+import { startTrellisRuntime } from "../../integration/_support/runtime.ts";
+import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import { StoreError } from "./errors/StoreError.ts";
 import { TypedStore } from "./store.ts";
 import { fixedTransportProvider } from "./transport/generations.ts";
 
 Deno.test("Store round trips objects, waits for keys, and enforces its wait budget", async () => {
   const workdir = await Deno.makeTempDir({ prefix: "trellis-store-" });
-  let nats: NatsTestContainer | undefined;
+  let nats: TrellisTestRuntime | undefined;
   try {
-    nats = await NatsTestContainer.start(workdir);
+    nats = await startTrellisRuntime();
+    const nc = await nats.connectNats();
     const store = (await TypedStore.open(
-      fixedTransportProvider(nats.nc),
+      fixedTransportProvider(nc),
       "store_test",
       {},
     )).orThrow();

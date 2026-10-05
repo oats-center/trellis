@@ -6,12 +6,44 @@ import type {
   ClientAuthRequiredContext,
 } from "@oatscenter/trellis";
 
-import type {
-  TrellisControlPlaneAuthorization,
-  TrellisControlPlaneOAuthProvider,
-  TrellisControlPlaneTtlMs,
-  TrellisControlPlaneWebSource,
-} from "./control_plane_config.ts";
+/** Directory or HTTP(S) proxy used by a production web surface. */
+export type TrellisControlPlaneWebSource = { directory: string } | {
+  proxy: string;
+};
+
+/** Platform flow TTL overrides in milliseconds. */
+export type TrellisControlPlaneTtlMs = {
+  sessions: number;
+  oauth: number;
+  deviceFlow: number;
+  pendingAuth: number;
+};
+
+/** Authorization timing owned by production bootstrap. */
+export type TrellisControlPlaneAuthorization = {
+  contextLifetimeSeconds: number;
+  refreshLeadSeconds: number;
+  refreshJitterSeconds: number;
+  minimumContextLifetimeSeconds: number;
+};
+
+/** Provider input accepted by production bootstrap; secrets travel in private JSON files. */
+export type TrellisControlPlaneOAuthProvider =
+  | {
+    type: "github";
+    clientId: string;
+    clientSecret?: string;
+    displayName?: string;
+  }
+  | {
+    type: "oidc";
+    issuer: string;
+    clientId: string;
+    clientSecret?: string;
+    displayName?: string;
+    scopes?: string[];
+    roleClaims?: string[];
+  };
 
 /** Generated participant descriptor accepted by Trellis test admin automation. */
 export type TrellisTestParticipantLike = Readonly<{
@@ -26,17 +58,22 @@ export type WaitForOptions = {
   intervalMs?: number;
 };
 
-/** Local command override for the spawned Trellis control-plane process. */
-export type TrellisTestRuntimeTrellisCommand = {
-  cmd: string;
-  args: readonly string[];
-  env?: Record<string, string>;
-  cwd?: string;
+/** Exact matching production binaries, acquired from release by default. */
+export type TrellisNativeSource = { kind: "release" } | {
+  kind: "path";
+  cli: string;
+  server: string;
 };
 
 /** Options for the Trellis control-plane started by the test runtime. */
 export type TrellisTestRuntimeTrellisOptions = {
-  command: TrellisTestRuntimeTrellisCommand;
+  source?: TrellisNativeSource;
+  mode?: "all" | "platform" | "jobs" | "health" | "events";
+  environment?: {
+    inherit?: boolean;
+    set?: Record<string, string>;
+    unset?: readonly string[];
+  };
 };
 
 /** Options for starting an isolated Trellis test runtime. */
@@ -45,7 +82,9 @@ export type TrellisTestRuntimeStartOptions = {
   deployment?: string;
   /** Existing or desired local test-admin password. */
   adminPassword?: string;
-  trellis: TrellisTestRuntimeTrellisOptions;
+  trellis?: TrellisTestRuntimeTrellisOptions;
+  /** Seed via production bootstrap-admin by default; browser-flow exercises first-admin UI. */
+  firstAdmin?: "seeded" | "browser-flow";
   /** OAuth/OIDC providers injected into the isolated test control-plane config. */
   oauthProviders?: Record<string, TrellisControlPlaneOAuthProvider>;
   /** Additional exact browser origins allowed by the test runtime. */

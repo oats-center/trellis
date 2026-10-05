@@ -207,17 +207,14 @@ impl AuthorizationContextService {
         self,
         stop: crate::shutdown::StopHandle,
     ) -> Result<(), crate::supervisor::RuntimeError> {
-        self.validator_cache
-            .run_runtime({
-                let (sender, receiver) = tokio::sync::watch::channel(());
-                tokio::spawn(async move {
-                    stop.stopped().await;
-                    drop(sender);
-                });
-                receiver
-            })
-            .await
-            .map_err(|error| crate::supervisor::RuntimeError::Platform(error.to_string()))
+        let (sender, receiver) = tokio::sync::watch::channel(());
+        let run = self.validator_cache.run_runtime(receiver);
+        tokio::pin!(run);
+        let result = tokio::select! {
+            result = &mut run => result,
+            () = async { stop.stopped().await; drop(sender); } => run.await,
+        };
+        result.map_err(|error| crate::supervisor::RuntimeError::Platform(error.to_string()))
     }
 
     pub(crate) async fn wait_for_validator_cache(

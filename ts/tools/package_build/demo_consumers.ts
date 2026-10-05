@@ -114,10 +114,12 @@ try {
       await run(["task", "-c", "device/deno.json", "build"], destination);
       const runtime = await TrellisTestRuntime.start({
         trellis: {
-          command: {
-            cmd: Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
+          source: {
+            kind: "path",
+            cli: Deno.env.get("TRELLIS_TEST_CLI_BIN") ??
+              join(repository, "target/debug/trellis"),
+            server: Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
               join(repository, "target/debug/trellis-server"),
-            args: ["--config", "{config}", "all"],
           },
         },
       });

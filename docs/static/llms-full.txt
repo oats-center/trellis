@@ -46,18 +46,18 @@ Dependency commands:
   available dependencies. Use `--watch` for continuous offline generation.
 
 Dependencies reference local or OCI native source packages. Remote locks pin
-release and digests; credentials use the Docker credential configuration.
-If a participant declares a durable `consumer`, add a direct `trellis` source
-package dependency containing `trellis.events@v1` and choose its version in
+release and digests; credentials use the Docker credential configuration. If a
+participant declares a durable `consumer`, add a direct `trellis` source package
+dependency containing `trellis.events@v1` and choose its version in
 `trellis.toml`. Run `trellis update` to lock it. Compilation fails if the
 dependency or the Events API is missing; the platform does not choose a version
-for the contract owner.
-Installation validates exact remote APIs in the global content-addressed OCI
-cache, without a project-local installation tree. Direct local dependencies
-contribute only requested APIs compiled from their own IDL, without recursively
-resolving producer participants or manifests. Tooling supplies validated API
-values to the compiler; it does not execute source-language modules. Generation
-is offline; install missing remote dependencies first.
+for the contract owner. Installation validates exact remote APIs in the global
+content-addressed OCI cache, without a project-local installation tree. Direct
+local dependencies contribute only requested APIs compiled from their own IDL,
+without recursively resolving producer participants or manifests. Tooling
+supplies validated API values to the compiler; it does not execute
+source-language modules. Generation is offline; install missing remote
+dependencies first.
 
 Configure `[generate.rust].output` and/or `[generate.typescript].output`.
 
@@ -83,11 +83,11 @@ resources by themselves. Approval views distinguish requested commitments from
 observed provider limits; runtime handles use the observed binding limits.
 Trellis refuses to adopt or destroy a physical resource whose ownership marker
 does not match. Removal detaches access without deleting new-version data;
-compatible approved re-add reattaches the same resource identity.
-When running a local Trellis environment, keep the platform database and NATS
-JetStream data together. Trellis refuses to start the platform with a missing or
-different JetStream identity after binding: restore the matching store or use
-fresh platform and JetStream state and provision deployments again. Recreating
+compatible approved re-add reattaches the same resource identity. When running a
+local Trellis environment, keep the platform database and NATS JetStream data
+together. Trellis refuses to start the platform with a missing or different
+JetStream identity after binding: restore the matching store or use fresh
+platform and JetStream state and provision deployments again. Recreating
 consumers and buckets alone does not recover job keys or stored objects.
 
 State is one typed value without a key or TTL. KV is typed history and Store is
@@ -134,23 +134,23 @@ authentication or provider selection starts an independently portal-bound
 transaction, selecting the current participant revision and starting its
 deadline. Identity, provider state, consent, and completion belong to
 `transactionId`. Account continuations use `browserTransactionId`; account and
-device review lifetimes remain separate. Expiry leaves the intent available
-for a fresh attempt, without returning to the initiating app.
+device review lifetimes remain separate. Expiry leaves the intent available for
+a fresh attempt, without returning to the initiating app.
 
 Only one outstanding transaction can claim an intent. A concurrent or duplicate
 start receives `transaction_active` instead of replacing that attempt, including
 while it is approved but awaiting bind. Denial, expiry, and consumed completion
 permit another transaction. Public `/auth/intents/view` is for portal rendering,
 not transaction discovery. Detached clients use `/auth/intents/progress` with a
-fresh initiating-key proof; only `ready` returns a transaction ID. Portal progress
-requires the raw transaction binding. Browser OIDC starts with a JSON POST and
-returns to the selected portal with `transactionId` on both first and replayed
-callbacks.
+fresh initiating-key proof; only `ready` returns a transaction ID. Portal
+progress requires the raw transaction binding. Browser OIDC starts with a JSON
+POST and returns to the selected portal with `transactionId` on both first and
+replayed callbacks.
 
 Existing grants are reused only when shared issuance/policy semantics prove
 compatibility without expanding approved authority; neither activity nor a
-matching revision alone establishes eligibility. Compatible revision changes
-do not force consent. Additional authority eligible for approval presents fresh
+matching revision alone establishes eligibility. Compatible revision changes do
+not force consent. Additional authority eligible for approval presents fresh
 consent after authentication without a second password prompt. Stale consent
 decisions are rejected and refreshed; policy denial is an authorization error,
 while unavailable runtime/resource evidence remains bounded pending.
@@ -171,11 +171,11 @@ package grants nothing by itself. Optional actions remain unavailable unless the
 binding and current optional evidence both permit them. Capability names are
 API-scoped; subjects and physical resource names are not grants.
 
-Console access editors save exact participant-scoped snapshots; capability groups
-are one-time permission presets, not ongoing memberships. Replacing a
+Console access editors save exact participant-scoped snapshots; capability
+groups are one-time permission presets, not ongoing memberships. Replacing a
 policy-approved grant with an exact grant changes its approval mode. Service and
-device grants are deployment-owned, separate from device user delegation.
-Exact snapshots can initiate resource provisioning without bypassing runtime
+device grants are deployment-owned, separate from device user delegation. Exact
+snapshots can initiate resource provisioning without bypassing runtime
 readiness. Resource actions remain within the approved snapshot and delegation
 ceiling; read-only approval does not grant write access.
 
@@ -197,45 +197,45 @@ string in `1..=9007199254740991`. `expiresAt` accepts `null`, or a JSON integer
 or decimal string in `0..=9007199254740991`. The CLI normalizes these inputs for
 the generated request. Omitting `--expected-revision` uses the current binding
 revision, or zero for creation; an explicit zero is also valid. A stale revision
-is rejected without changing the binding.
-`Auth.Users.Update` accepts optional `username` to atomically rename an existing
-local credential and identity, preserving the user ID and password; uniqueness
-conflicts roll back the accompanying profile edits. Accounts without a local
-login establish one through an account flow. `Auth.Users.PasswordReset.Create`
-targets `userId` and returns a time-limited, one-use link; completing it revokes
-the target's existing sessions. `Auth.UserIdentities.List`,
-`Auth.UserIdentities.Unlink`, and `Auth.Users.IdentityLink.Create` accept optional
-`userId`; omission targets the caller, while cross-user actions require platform
-administration. Last-sign-in-method and protected-administrator checks remain.
+is rejected without changing the binding. `Auth.Users.Update` accepts optional
+`username` to atomically rename an existing local credential and identity,
+preserving the user ID and password; uniqueness conflicts roll back the
+accompanying profile edits. Accounts without a local login establish one through
+an account flow. `Auth.Users.PasswordReset.Create` targets `userId` and returns
+a time-limited, one-use link; completing it revokes the target's existing
+sessions. `Auth.UserIdentities.List`, `Auth.UserIdentities.Unlink`, and
+`Auth.Users.IdentityLink.Create` accept optional `userId`; omission targets the
+caller, while cross-user actions require platform administration.
+Last-sign-in-method and protected-administrator checks remain.
 `Auth.Connections.List` accepts `principalId` to filter physical connections.
 
 The server resolves assignment, installed artifacts, grants, resources, online
 issuer, route JWT, inbox, and exact transports. Clients verify that response.
-The libraries own proofs, context verification, proactive refresh, and
-transport maintenance. Renewing unchanged transport authority promotes context
-and routing credentials without replacing a healthy socket. Newly approved
-authority is adopted automatically on a readied successor, while safe accepted
-work retains its receiving connection. Retain the logical client, generated
-facades, and still-bound resources across these changes; no manual transport
-refresh or upgrade notification exists. Old sockets close after their retained
-work releases them. Reduced or revoked authority, physical failure, and hard
+The libraries own proofs, context verification, proactive refresh, and transport
+maintenance. Renewing unchanged transport authority promotes context and routing
+credentials without replacing a healthy socket. Newly approved authority is
+adopted automatically on a readied successor, while safe accepted work retains
+its receiving connection. Retain the logical client, generated facades, and
+still-bound resources across these changes; no manual transport refresh or
+upgrade notification exists. Old sockets close after their retained work
+releases them. Reduced or revoked authority, physical failure, and hard
 authorization deadlines can interrupt affected work.
 
 Fresh application IO cannot proceed when own revocation coverage is unavailable.
 Bounded acquisitions wait within their budget; immediate acquisitions report
-unavailability. Guarded registry maintenance restores continuous
-coverage on an eligible admitted socket and wakes waiting calls. Successful
-make-before-break watch migration preserves cached authority and existing leases;
-actual revocation still fails closed. Jobs and durable event intake keep bounded
+unavailability. Guarded registry maintenance restores continuous coverage on an
+eligible admitted socket and wakes waiting calls. Successful make-before-break
+watch migration preserves cached authority and existing leases; actual
+revocation still fails closed. Jobs and durable event intake keep bounded
 capacity across generations, with each delivery retaining its receiving
 connection through disposition. Raw NATS connections are physical attachments,
-not generation-aware application handles.
-Authorization contexts, route JWTs, transport endpoints, grants, clock offset,
-and issuer keys are process-memory-only. Browser IndexedDB version 3 persists
-only the initiating session seed, nullable login metadata, pending signed
-intent/intent ID, and generation tombstone, keyed by canonical origin plus
-stable participant ID. Generation, public-key, intent, and login compare-and-swap
-fences prevent stale tabs from overwriting or clearing newer state.
+not generation-aware application handles. Authorization contexts, route JWTs,
+transport endpoints, grants, clock offset, and issuer keys are
+process-memory-only. Browser IndexedDB version 3 persists only the initiating
+session seed, nullable login metadata, pending signed intent/intent ID, and
+generation tombstone, keyed by canonical origin plus stable participant ID.
+Generation, public-key, intent, and login compare-and-swap fences prevent stale
+tabs from overwriting or clearing newer state.
 
 Trellis HTTP endpoints serve bootstrap, browser/account flows, recovery, and
 browser assets. Connected Trellis control uses generated APIs over NATS. Use the
@@ -272,11 +272,10 @@ Parameterized events derive their concrete subjects from payload pointers; the
 base subject includes the encoded qualified API identity, and listeners match
 the generated wildcard pattern. Parameter values use unpadded base64url, and the
 message proof binds the exact API, dotted event name, and parameter count. In
-Rust, retain the returned listener guard:
-dropping or aborting it removes that registration without stopping the other
-registrations in its group. Shared pull-loop failures are reported by the
-service lifecycle, and unmatched messages are not acknowledged as completed
-work. Durable names remain Trellis-owned.
+Rust, retain the returned listener guard: dropping or aborting it removes that
+registration without stopping the other registrations in its group. Shared
+pull-loop failures are reported by the service lifecycle, and unmatched messages
+are not acknowledged as completed work. Durable names remain Trellis-owned.
 
 Durable event success is acknowledged only after the handler succeeds. Retryable
 failure uses the declared backoff; final exhaustion is confirmed in that
@@ -289,19 +288,19 @@ Operations and jobs may expose typed live updates through an owned observation
 session that is separate from the durable executor. A watcher reconciles the
 current authoritative snapshot once its transport is ready, then delivers typed
 transient updates and terminal state; transient updates are ordered and never
-silently dropped, while not-yet-delivered nonterminal snapshots may be conflated.
-Updates are at-most-once, not persisted or replayed, and late subscribers may
-miss them. Durable progress and terminal output are separate from updates.
-Opening or closing a watcher does not start, cancel, or complete the durable
-work. Operation get, watch, signal, and cancel remain authorized to the creator
-principal plus participant, not a particular session or connection, so reconnect
-can resume control. Completed, failed, and cancelled records are immutable.
-Generated TypeScript service operation registrations expose the typed local
-owner-fenced `.control(id)` and owner-routed `.reconcile(id)`. Reconciliation
-serializes handler re-entry on the current owner with persisted input, verified
-caller, and progress; it never steals a live lease. Cancellation remains
-nonterminal during handler cleanup and owner lease renewal. `Cancelled` is
-persisted only after the handler joins its owned side-effecting children; a
+silently dropped, while not-yet-delivered nonterminal snapshots may be
+conflated. Updates are at-most-once, not persisted or replayed, and late
+subscribers may miss them. Durable progress and terminal output are separate
+from updates. Opening or closing a watcher does not start, cancel, or complete
+the durable work. Operation get, watch, signal, and cancel remain authorized to
+the creator principal plus participant, not a particular session or connection,
+so reconnect can resume control. Completed, failed, and cancelled records are
+immutable. Generated TypeScript service operation registrations expose the typed
+local owner-fenced `.control(id)` and owner-routed `.reconcile(id)`.
+Reconciliation serializes handler re-entry on the current owner with persisted
+input, verified caller, and progress; it never steals a live lease. Cancellation
+remains nonterminal during handler cleanup and owner lease renewal. `Cancelled`
+is persisted only after the handler joins its owned side-effecting children; a
 stalled cleanup has no forced terminal timeout. After owner loss, epoch fencing
 does not prevent arbitrary external side effects from overlapping.
 Cancellation-first admission requires both Invoke and Cancel authority before
@@ -317,42 +316,40 @@ cancellation-first start option only for ordinary, non-transfer operations.
 Keyed Jobs waiting for an active capacity slot maintain the current delivery and
 do not consume a retry attempt before handler entry. `Jobs.Summary` computes all
 matching totals, groups, and statistics independently of any `Jobs.Query` page.
-Job deadlines are creation-relative. Omitted retry means five ordinary attempts with
-delays of 5s, 30s, 2m, and 10m; explicit retry declares total attempts and
-exactly attempts-minus-one positive ordered backoffs.
-Broker redelivery is unlimited so execution owners can finish cleanup before
-Expired or Dead. Check cancellation before business work: already-cancelled job
-handlers reconcile earlier side effects, and cleanup errors preserve redelivery.
-Never-started expiration confirms terminal publication before releasing recovered
-key slots, without running handlers. Publication failure retains the reservation;
-terminal redelivery reconciles any remaining slot before acknowledgement.
-Ordinary queues use Block; stale-policy selection is not an authored option.
-Coordinator fail-stale takeover fences the old attempt and atomically preserves
-its cleanup obligation. The displaced job waits for capacity, recovers a fresh
-fence, and reconciles with stale-attempt cancellation before settling Stale.
-Only confirmed terminal settlement removes its obligation; the old token cannot
-mutate the replacement owner's slot.
-Ignored stale completions are nonterminal diagnostics and retain redelivery until
-cleanup settles. A never-started displaced reservation settles Pending to Stale
-without handler execution.
+Job deadlines are creation-relative. Omitted retry means five ordinary attempts
+with delays of 5s, 30s, 2m, and 10m; explicit retry declares total attempts and
+exactly attempts-minus-one positive ordered backoffs. Broker redelivery is
+unlimited so execution owners can finish cleanup before Expired or Dead. Check
+cancellation before business work: already-cancelled job handlers reconcile
+earlier side effects, and cleanup errors preserve redelivery. Never-started
+expiration confirms terminal publication before releasing recovered key slots,
+without running handlers. Publication failure retains the reservation; terminal
+redelivery reconciles any remaining slot before acknowledgement. Ordinary queues
+use Block; stale-policy selection is not an authored option. Coordinator
+fail-stale takeover fences the old attempt and atomically preserves its cleanup
+obligation. The displaced job waits for capacity, recovers a fresh fence, and
+reconciles with stale-attempt cancellation before settling Stale. Only confirmed
+terminal settlement removes its obligation; the old token cannot mutate the
+replacement owner's slot. Ignored stale completions are nonterminal diagnostics
+and retain redelivery until cleanup settles. A never-started displaced
+reservation settles Pending to Stale without handler execution.
 
 Lifecycle publication in both SDKs awaits JetStream acknowledgement. Typed live
-updates remain transient and do not require a durable stream.
-Execution state and attempts follow accepted lifecycle transitions in broker
-stream-sequence order. Created initializes but cannot reopen a job. Diagnostics,
-heartbeats, logs, and progress cannot override settlement or attempts. A valid
-Retried opens a new run under the same ID without deleting history. Work retains
-its original lifecycle sequence through broker source metadata. Old-run
-deliveries are acknowledged without touching newer-run coordination. Deferred
-work rereads lifecycle state before acquisition.
-Live observations and Operation watchers are authorized live sessions negotiated with
-bounded opening requests. The provider signs its offer and frames; control
-responses bind the session ID, logical command sequence, and command hash, and
-continued authority is rechecked from retained context rather than by a network
-lookup per frame. A session has protocol liveness and credit bounds, not a total
-age or message cap; closing returns a receipt whose remote-cleanup state is
-complete, incomplete, or unconfirmed, and reconnect is an explicit new open
-rather than a silent reopen.
+updates remain transient and do not require a durable stream. Execution state
+and attempts follow accepted lifecycle transitions in broker stream-sequence
+order. Created initializes but cannot reopen a job. Diagnostics, heartbeats,
+logs, and progress cannot override settlement or attempts. A valid Retried opens
+a new run under the same ID without deleting history. Work retains its original
+lifecycle sequence through broker source metadata. Old-run deliveries are
+acknowledged without touching newer-run coordination. Deferred work rereads
+lifecycle state before acquisition. Live observations and Operation watchers are
+authorized live sessions negotiated with bounded opening requests. The provider
+signs its offer and frames; control responses bind the session ID, logical
+command sequence, and command hash, and continued authority is rechecked from
+retained context rather than by a network lookup per frame. A session has
+protocol liveness and credit bounds, not a total age or message cap; closing
+returns a receipt whose remote-cleanup state is complete, incomplete, or
+unconfirmed, and reconnect is an explicit new open rather than a silent reopen.
 
 Declare expected RPC/operation errors in IDL to obtain typed generated error
 handling. Runtime validation and transport failures remain distinct from those
@@ -412,12 +409,26 @@ Declare these dependencies only when the application uses them:
 Choose application testing tools independently. For a test that needs real
 Trellis transport, authority, or restart behavior, the Deno package
 `@oatscenter/trellis-testkit` provides `TrellisTestRuntime`. The published Rust
-crate `trellis-testkit` provides the equivalent `TrellisTestRuntime` for Rust test
-crates: it starts the released `trellis` and `trellis-server` executables out of
-process, selects its loopback ports automatically, and returns the normal SDK
-connection options for generated participants. Both harnesses run real NATS
-child processes; first use of the pinned download requires network. Provide the
-`trellis-server` and `trellis` executables as described in
+crate `trellis-testkit` provides the equivalent `TrellisTestRuntime` for Rust
+test crates: it links the real production runtime in-process with no CLI/server
+executable prerequisite, selects loopback ports automatically, and returns
+normal SDK connection options for generated participants. Both harnesses run
+real NATS child processes; the Rust bare builder defaults to the verified pinned
+download, requiring network on first use. `TRELLIS_TEST_NATS_BIN` or
+`NatsSource::Path` selects a prebuilt broker; `NatsSource::PathLookup` uses
+PATH. Runtime/bootstrap Cargo dependencies are distribution-only implementation
+crates, not service-author APIs. The TypeScript harness acquires its
+exact-version production CLI/server from SHA-256-pinned release archives
+automatically: no installed Trellis or nsc required. Production commands
+generate config and own managed NATS in a private sandbox with seeded admin.
+`trellis: { source: { kind: "path", cli, server } }` selects an exact-version
+prebuilt pair with no fallback. `restart()` preserves data/identity and restarts
+the full host and broker. Stop first requests graceful host shutdown; on timeout
+or host exit, isolated process-group cleanup reclaims remaining owned children
+before sandbox removal. Startup requires `/readyz` metadata's `processId` to
+match the spawned native host, not another runtime at the selected port.
+`firstAdmin: "browser-flow"` opts into browser setup.
+`TRELLIS_TEST_CACHE_DIR` reuses verified immutable binaries only. See
 `/guides/testing-trellis-services`.
 
 A missing generated method usually means the action was not selected or SDKs

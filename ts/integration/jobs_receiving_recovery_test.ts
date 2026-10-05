@@ -9,7 +9,7 @@ import { deadline } from "@nats-io/nats-core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { join } from "@std/path";
 import { NativeTransportGate } from "../packages/trellis-testkit/src/native_gate.ts";
-import { NatsTestContainer } from "../packages/trellis-testkit/src/nats_container.ts";
+import { startTrellisRuntime } from "./_support/runtime.ts";
 import { TcpProxy } from "../packages/trellis-testkit/src/runtime.ts";
 import { ActiveJobCancellationRegistry } from "../packages/trellis/service/runtime/internal_jobs/cancellation-registry.ts";
 import { JobManager } from "../packages/trellis/service/runtime/internal_jobs/job-manager.ts";
@@ -23,30 +23,27 @@ Deno.test("managed Jobs slot recovers a real missed-heartbeat receive and stops 
   const workdir = await Deno.makeTempDir({
     prefix: "jobs-receiving-recovery-",
   });
-  const nats = await NatsTestContainer.start(workdir);
+  const nats = await startTrellisRuntime();
   const gate = new NativeTransportGate();
   const proxy = TcpProxy.start(nats.natsUrl, { scheme: "nats", gate });
-  const nc = await connect({
+  const nc = await nats.connectNats({
     servers: proxy.url,
-    authenticator: credsAuthenticator(
-      await Deno.readFile(
-        join(workdir, "nats", nats.manifest.paths.creds.trellisService),
-      ),
-    ),
   });
   let slot: Awaited<ReturnType<typeof startQueueWorkerLoop>> | undefined;
-  let hold = gate.armResponseHold("$JS.API.CONSUMER.MSG.NEXT.JOBS.recovery");
+  let hold = gate.armResponseHold(
+    "$JS.API.CONSUMER.MSG.NEXT.ADAPTER_JOBS.recovery",
+  );
   const finishHandler = Promise.withResolvers<void>();
   try {
     const js = jetstream(nc);
-    const jsm = await jetstreamManager(nats.nc);
-    const prefix = "trellis.jobs.recovery.work";
+    const jsm = await jetstreamManager(await nats.connectNats());
+    const prefix = "adapter.jobs.recovery.work";
     await jsm.streams.add({
-      name: "JOBS",
+      name: "ADAPTER_JOBS",
       subjects: [`${prefix}.>`],
       allow_direct: true,
     });
-    const info = await jsm.consumers.add("JOBS", {
+    const info = await jsm.consumers.add("ADAPTER_JOBS", {
       durable_name: "recovery",
       ack_policy: AckPolicy.Explicit,
       ack_wait: 30_000_000_000,
@@ -140,17 +137,19 @@ Deno.test("managed Jobs slot recovers a real missed-heartbeat receive and stops 
     );
     finishHandler.resolve();
     await deadline(disposed.promise, 5_000);
-    const completed = await jsm.direct.getMessage("JOBS", {
+    const completed = await jsm.direct.getMessage("ADAPTER_JOBS", {
       last_by_subj: `${prefix}.${created.id}.completed`,
     });
     assert(completed);
     assertEquals(JSON.parse(completed.string()).result, { recovered: true });
     await nc.flush();
     assertEquals(
-      (await jsm.consumers.info("JOBS", "recovery")).num_ack_pending,
+      (await jsm.consumers.info("ADAPTER_JOBS", "recovery")).num_ack_pending,
       0,
     );
-    hold = gate.armResponseHold("$JS.API.CONSUMER.MSG.NEXT.JOBS.recovery");
+    hold = gate.armResponseHold(
+      "$JS.API.CONSUMER.MSG.NEXT.ADAPTER_JOBS.recovery",
+    );
     await deadline(hold.held, 5_000);
     const secondError = await deadline(failures[1]!.promise, 5_000);
     assert(secondError instanceof JetStreamError);
@@ -169,7 +168,9 @@ Deno.test("managed Jobs slot recovers a real missed-heartbeat receive and stops 
     );
     assertEquals(releases, acquisitions);
     assertEquals(handlerCount, 1);
-    hold = gate.armResponseHold("$JS.API.CONSUMER.MSG.NEXT.JOBS.recovery");
+    hold = gate.armResponseHold(
+      "$JS.API.CONSUMER.MSG.NEXT.ADAPTER_JOBS.recovery",
+    );
     const fixedFailure = Promise.withResolvers<void>();
     const fixedConsumer = toWorkerConsumer(
       js.consumers.getConsumerFromInfo(info),

@@ -113,7 +113,7 @@ Deno.test(
       // generated request below proves the digest is installed.
       const database = createClient({
         url: `file:${
-          join(runtime.workdir, "trellis", "trellis.sqlite.platform")
+          join(runtime.workdir, "data", "trellis", "platform.sqlite")
         }`,
       });
       const issuedProviderDigests = async (): Promise<Set<string>> => {
@@ -219,7 +219,7 @@ Deno.test(
           servers: runtime.natsUrl,
           authenticator: credsAuthenticator(
             await Deno.readFile(
-              join(runtime.workdir, "nats/creds/system.creds"),
+              join(runtime.workdir, "config/trellis/nats/creds/system.creds"),
             ),
           ),
         });

@@ -27,7 +27,9 @@ Deno.test("Rust maintains the accepted Jobs receipt during stalled lifecycle pre
     const nats = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await Deno.readFile(`${runtime.workdir}/nats/creds/trellis-auth.creds`),
+        await Deno.readFile(
+          `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
+        ),
       ),
     });
     const manager = await jetstreamManager(nats);

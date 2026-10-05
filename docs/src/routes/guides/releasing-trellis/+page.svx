@@ -125,19 +125,44 @@ The JSR publish set is:
 
 The workflow runs JSR dry-runs for the publishable core packages before the release gate. The source `@oatscenter/trellis-svelte` package is built and smoke-tested before release, then staged and published after the matching core JSR version is available; a prepublication JSR dry-run cannot resolve that unreleased dependency.
 
+`typescript-testkit-package` stages the TypeScript testkit only after all supported
+native Check archives exist. It generates exact-version SHA-256 pins, checks/tests
+and dry-runs the unchanged staged package with same-version SDK dependencies in an
+isolated Deno workspace, and uploads `check-testkit-jsr`. Release publishes that
+frozen package, not reconstructed source. After the GitHub assets and SDK dependencies
+exist, a fresh-cache default-source smoke creates a user and resolves a password-reset
+flow through real generated RPCs before testkit publication. This smoke never supplies
+local CLI/server paths.
+
 The published Rust crate set is:
 
 - `trellis-protocol`
 - `trellis-rs`
+- `trellis-runtime-apis`
+- `trellis-idl`
+- `trellis-local-bootstrap`
+- `trellis-events-runtime`
+- `trellis-jobs-runtime`
+- `trellis-runtime`
+- `trellis-bootstrap`
+- `trellis-local-nats`
 - `trellis-testkit`
+
+Publication follows this dependency order in lockstep, waiting for each crate to
+enter the index before its consumers. Only `trellis-protocol`, `trellis-rs`, and
+`trellis-testkit` are supported author-facing surfaces; the others are
+registry-distributed implementation dependencies for the linked testkit runtime,
+not recommended imports for services/apps.
 
 `release prepare` also rewrites the external testkit fixture manifests under
 `integration/fixtures/testkit` so its generated application package carries the
-prepared version. The `rust-testkit-consumer` release job builds a verification
-bundle (the three `.crate` archives, matching CLI/server binaries, a verified
-NATS executable, and the fixture) and runs
+prepared version. The normal `Check` workflow builds a verification
+bundle (the complete Rust `.crate` closure, a verified NATS executable, and the
+fixture) and runs
 `scripts/verify-rust-test-package.sh` with no repository checkout, patching only
-the three extracted public artifacts. Before the first `trellis-testkit` upload a
+the extracted staged artifacts. The live consumer runs with an empty `PATH` and
+without CLI/server overrides, proving that only the real NATS child is external.
+Before the first `trellis-testkit` upload a
 maintainer must confirm the crate name is available and owned by the publisher;
 after publication, repeat the fixture smoke against the real crates.io versions
 with no patch entries.
@@ -336,7 +361,6 @@ cargo run --manifest-path xtask/Cargo.toml -- build --workspace --release
 deno task -c ts/deno.json build:npm
 (cd ts/packages/result && deno publish --dry-run --allow-slow-types --allow-dirty)
 (cd ts/packages/trellis && deno publish --dry-run --allow-slow-types --allow-dirty)
-(cd ts/packages/trellis-testkit && deno publish --dry-run --allow-slow-types --allow-dirty)
 # Release assembly packages already-verified executables: stage them first and
 # use the assembly-only recipe.
 goarch="$(case "$(rustc -vV | sed -n 's/^host: //p')" in x86_64-unknown-linux-gnu) echo amd64;; aarch64-unknown-linux-gnu) echo arm64;; *) echo unknown;; esac)"

@@ -6,7 +6,6 @@
 //! narrow step. No lock files, fixed ranges, PID-derived ports, or global
 //! mutex are used, so independent runtimes and processes never coordinate.
 
-use std::ffi::OsString;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 
@@ -55,13 +54,6 @@ pub(crate) struct PortSet {
     pub monitor: u16,
     /// Managed NATS WebSocket listener.
     pub websocket: u16,
-}
-
-impl PortSet {
-    /// All four ports in a stable order.
-    pub(crate) fn all(&self) -> [u16; 4] {
-        [self.http, self.nats, self.monitor, self.websocket]
-    }
 }
 
 /// Four live kernel-assigned loopback reservations.
@@ -114,35 +106,13 @@ impl PortLease {
         })
     }
 
-    /// Closes every reservation in one narrow step just before the server spawn.
+    /// Closes every reservation in one narrow step just before broker startup.
     pub(crate) fn release_for_spawn(self) {
         drop(self.http);
         drop(self.nats);
         drop(self.monitor);
         drop(self.websocket);
     }
-}
-
-/// Classifies whether `diagnostics` describes a bind race on one of `ports`.
-///
-/// Only the managed-NATS `port <selected> is already in use` line and the
-/// runtime HTTP listener's own bind failure for the selected HTTP endpoint
-/// count; any other failure must not be retried.
-pub(crate) fn is_port_conflict(diagnostics: &str, ports: &PortSet) -> bool {
-    let lowered = diagnostics.to_ascii_lowercase();
-    // Managed NATS names the exact selected port it could not bind.
-    if ports
-        .all()
-        .iter()
-        .any(|port| lowered.contains(&format!("port {port} is already in use")))
-    {
-        return true;
-    }
-    // The runtime HTTP listener reports its selected endpoint with an OS bind error.
-    lowered.contains(&format!(
-        "failed to bind runtime http listener at 127.0.0.1:{}",
-        ports.http
-    )) && lowered.contains("address already in use")
 }
 
 /// A private per-attempt sandbox directory.
@@ -194,26 +164,6 @@ impl Sandbox {
     /// Marks the attempt as failed so `OnFailure` retains the sandbox.
     pub(crate) fn mark_failed(&mut self) {
         self.failed = true;
-    }
-
-    /// Applies the sandbox environment to a child command without mutating the parent.
-    pub(crate) fn apply_child_env(&self, command: &mut std::process::Command, path: &OsString) {
-        command.env_clear();
-        command.env("PATH", path);
-        let home = self.root.join("home");
-        let set = |command: &mut std::process::Command, key: &str, value: PathBuf| {
-            command.env(key, value);
-        };
-        set(command, "HOME", home.clone());
-        set(command, "XDG_CONFIG_HOME", self.root.join("config"));
-        set(command, "XDG_DATA_HOME", self.root.join("data"));
-        set(command, "XDG_STATE_HOME", self.root.join("state"));
-        set(command, "XDG_CACHE_HOME", self.root.join("cache"));
-        set(command, "XDG_RUNTIME_DIR", self.root.join("runtime"));
-        set(command, "TMPDIR", self.root.join("state"));
-        set(command, "TRELLIS_CACHE_DIR", self.root.join("cache"));
-        command.env("NO_COLOR", "1");
-        command.env("TOKIO_WORKER_THREADS", "2");
     }
 
     /// Removes the sandbox when policy permits, reporting any cleanup failure.
@@ -353,59 +303,6 @@ pub(crate) fn require_utf8_path(path: &Path, role: &str) -> Result<String, Trell
 mod tests {
     use super::*;
 
-    fn selected_ports() -> PortSet {
-        PortSet {
-            http: 53001,
-            nats: 53002,
-            monitor: 53003,
-            websocket: 53004,
-        }
-    }
-
-    #[test]
-    fn port_conflict_matches_only_selected_ports() {
-        let ports = selected_ports();
-        assert!(is_port_conflict(
-            "failed to bind runtime HTTP listener at 127.0.0.1:53001: Address already in use (os error 98)",
-            &ports
-        ));
-        assert!(is_port_conflict("port 53002 is already in use", &ports));
-    }
-
-    #[test]
-    fn port_conflict_ignores_unrelated_bind_failures() {
-        let ports = selected_ports();
-        // An unrelated socket's OS error must not be retried.
-        assert!(!is_port_conflict(
-            "connecting to another service: Address already in use (os error 98)",
-            &ports
-        ));
-        // A different port on our own listener is not one of the selected ports.
-        assert!(!is_port_conflict("port 59999 is already in use", &ports));
-        assert!(!is_port_conflict(
-            "failed to bind runtime HTTP listener at 127.0.0.1:59999: Address already in use (os error 98)",
-            &ports
-        ));
-        // The HTTP signature without the OS bind error is not a conflict.
-        assert!(!is_port_conflict(
-            "failed to bind runtime HTTP listener at 127.0.0.1:53001: permission denied",
-            &ports
-        ));
-        // Application text, authentication errors, and malformed config never retry.
-        assert!(!is_port_conflict(
-            "address already in use is a common phrase",
-            &ports
-        ));
-        assert!(!is_port_conflict(
-            "authentication failed: invalid session proof",
-            &ports
-        ));
-        assert!(!is_port_conflict(
-            "invalid configuration: missing field `http.port`",
-            &ports
-        ));
-    }
-
     #[test]
     fn remove_retained_workdirs_only_removes_stale_owned_dirs() {
         use std::time::Duration;
@@ -460,11 +357,20 @@ mod tests {
     }
 
     #[test]
-    fn port_lease_reserves_four_distinct_loopback_ports() {
+    fn port_lease_holds_and_releases_its_loopback_listeners() {
         let lease = PortLease::reserve().expect("reserve loopback ports");
         let set = lease.ports().expect("read reserved ports");
-        let unique: std::collections::HashSet<u16> = set.all().into_iter().collect();
-        assert_eq!(unique.len(), 4);
+        let ports = [set.http, set.nats, set.monitor, set.websocket];
+        for port in ports {
+            assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_err());
+        }
+        lease.release_for_spawn();
+        let _listeners: Vec<_> = ports
+            .into_iter()
+            .map(|port| {
+                TcpListener::bind((Ipv4Addr::LOCALHOST, port)).expect("released distinct listener")
+            })
+            .collect();
     }
 
     #[test]

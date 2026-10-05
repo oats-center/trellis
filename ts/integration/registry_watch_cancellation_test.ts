@@ -138,14 +138,7 @@ Deno.test(
   "an aborted revocation watch releases its subscription and leaves normal watches intact",
   async () => {
     await withTrellisRuntime(async (runtime) => {
-      const config = await Deno.readTextFile(
-        join(runtime.workdir, "trellis", "config.toml"),
-      );
-      const nativeServer = config.match(
-        /^\s*nats_servers\s*=\s*\[\s*"([^"]+)"\]/m,
-      );
-      assert(nativeServer, "the runtime must advertise a native NATS server");
-      const proxyUrl = nativeServer[1]!;
+      const proxyUrl = runtime.nativeProxyUrl();
       assert(
         proxyUrl !== runtime.natsUrl,
         "the reader must traverse the native proxy, not bypass it",
@@ -155,7 +148,14 @@ Deno.test(
         servers: proxyUrl,
         authenticator: credsAuthenticator(
           await Deno.readFile(
-            join(runtime.workdir, "nats", "creds", "trellis-auth.creds"),
+            join(
+              runtime.workdir,
+              "config",
+              "trellis",
+              "nats",
+              "creds",
+              "trellis-auth.creds",
+            ),
           ),
         ),
       });

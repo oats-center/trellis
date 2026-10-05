@@ -16,8 +16,9 @@ test -s ts/packages/trellis/auth/protocol_wasm/trellis_protocol_wasm_bg.wasm
 
 for package in \
   ts/packages/result \
-  ts/packages/trellis \
-  ts/packages/trellis-testkit
+  ts/packages/trellis
 do
   (cd "$package" && deno publish --dry-run --allow-slow-types --allow-dirty)
 done
+
+# Check stages and dry-runs trellis-testkit only after native archive pins exist.

@@ -8,9 +8,9 @@ import { TrellisService } from "@oatscenter/trellis/service";
 import { ulid } from "ulid";
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import {
-  parsePidFile,
   processIsGone,
   processMatchesIdentity,
+  recordProcessIdentity,
 } from "../packages/trellis-testkit/src/cleanup.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
@@ -32,7 +32,10 @@ for (const recovery of ["apply", "restart"] as const) {
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
           await Deno.readFile(
-            join(runtime.workdir, "nats/creds/trellis-auth.creds"),
+            join(
+              runtime.workdir,
+              "config/trellis/nats/creds/trellis-auth.creds",
+            ),
           ),
         ),
       });
@@ -55,7 +58,7 @@ for (const recovery of ["apply", "restart"] as const) {
         );
         assert(consumer);
         assert(await manager.consumers.delete("JOBS_WORK", consumer.name));
-        if (recovery === "restart") await runtime.restartControlPlane();
+        if (recovery === "restart") await runtime.restart();
         else await runtime.contracts.apply({ contract });
         await runtime.waitFor(async () => {
           const current = await manager.consumers.list("JOBS_WORK").next();
@@ -114,27 +117,51 @@ Deno.test("resource reapproval progresses after broker restart with historical t
       item.participantId === contract.identity
     );
     assert(historical.length > 0);
-    const natsDir = join(runtime.workdir, "nats");
+    const natsDir = join(runtime.workdir, "state", "trellis", "nats");
     let replacement: Deno.ChildProcess | undefined;
     let replacementOutput: Promise<Deno.CommandOutput> | undefined;
     let repaired: typeof service | undefined;
-    // This fixture owns the exact child named by its process-identity file.
+    // Capture the identity of the broker owned by this native host's pid file.
     // SIGKILL prevents a broker disconnect event from erasing the real presence.
-    const pidFiles: string[] = [];
-    for await (const entry of Deno.readDir(natsDir)) {
-      if (entry.name.startsWith("nats-") && entry.name.endsWith(".pid")) {
-        pidFiles.push(entry.name);
-      }
-    }
-    assertEquals(pidFiles.length, 1);
-    const broker = parsePidFile(
-      await Deno.readTextFile(join(natsDir, pidFiles[0])),
+    const pid = Number(
+      (await Deno.readTextFile(
+        join(runtime.workdir, "runtime", "trellis", "nats-server.pid"),
+      )).trim(),
+    );
+    assert(Number.isSafeInteger(pid) && pid > 0);
+    const broker = await recordProcessIdentity(
+      pid,
+      await Deno.readLink(`/proc/${pid}/exe`),
     );
     assert(broker);
     assert(await processMatchesIdentity(broker));
+    const parent = Number(
+      (await Deno.readTextFile(`/proc/${broker.pid}/status`)).match(
+        /^PPid:\s+(\d+)$/m,
+      )?.[1],
+    );
+    assert(Number.isSafeInteger(parent) && parent > 0);
+    const host = await recordProcessIdentity(
+      parent,
+      await Deno.readLink(`/proc/${parent}/exe`),
+    );
+    assert(host);
     try {
       Deno.kill(broker.pid, "SIGKILL");
-      await runtime.waitFor(() => processIsGone(broker.pid));
+      await runtime.waitFor(async () => {
+        const endpoint = new URL(runtime.natsUrl);
+        try {
+          const connection = await Deno.connect({
+            hostname: endpoint.hostname,
+            port: Number(endpoint.port),
+          });
+          connection.close();
+          return false;
+        } catch (error) {
+          if (error instanceof Deno.errors.ConnectionRefused) return true;
+          throw error;
+        }
+      });
       await service.stop();
       await exit;
       replacement = new Deno.Command(broker.executable, {
@@ -153,7 +180,17 @@ Deno.test("resource reapproval progresses after broker restart with historical t
           return false;
         }
       }, { timeoutMs: 30_000 });
-      await runtime.restartControlPlane();
+      // The fixture's independently replaced broker must stay available until
+      // its original native host has released broker-backed ownership. Stop
+      // that exact host first, then reap the fixture broker before restarting
+      // the testkit's normally managed host/broker pair.
+      assert(await processMatchesIdentity(host));
+      Deno.kill(host.pid, "SIGTERM");
+      await runtime.waitFor(() => processIsGone(host.pid));
+      replacement.kill("SIGTERM");
+      await replacementOutput;
+      replacement = undefined;
+      await runtime.restart();
       const present = await runtime.callAdminRpc("authConnectionsList", {});
       assert(
         historical.some((old) =>
@@ -279,7 +316,7 @@ Deno.test("resource reapproval progresses after broker restart with historical t
           value: "broker recovered",
         }).orThrow();
         assertEquals((await job.wait().orThrow()).state, "completed");
-        await runtime.restartControlPlane();
+        await runtime.restart();
         assertEquals(await repaired.kv.extras.get("retained").orThrow(), {
           value: "original",
         });
@@ -303,7 +340,7 @@ Deno.test("resource reapproval progresses after broker restart with historical t
           return output.includes("transportreevaluate") &&
             output.includes("no responders");
         }, { timeoutMs: 20_000 });
-        await runtime.restartControlPlane();
+        await runtime.restart();
         const denied = await TrellisService.connect({
           trellisUrl: runtime.trellisUrl,
           participant: contract,
@@ -318,11 +355,25 @@ Deno.test("resource reapproval progresses after broker restart with historical t
         await repairedExit;
       }
     } finally {
-      await repaired?.stop();
-      await service.stop();
-      await exit;
-      if (replacement) replacement.kill("SIGTERM");
-      await replacementOutput;
+      try {
+        const cleanup = await Promise.allSettled([
+          repaired?.stop(),
+          service.stop(),
+          exit,
+        ]);
+        const failures = cleanup.filter((result) =>
+          result.status === "rejected"
+        ).map((result) => result.reason);
+        if (failures.length) {
+          throw new AggregateError(
+            failures,
+            "service cleanup failed after broker recovery",
+          );
+        }
+      } finally {
+        if (replacement) replacement.kill("SIGTERM");
+        await replacementOutput;
+      }
     }
   });
 });

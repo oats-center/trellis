@@ -131,23 +131,6 @@ export async function processMatchesIdentity(
   }
 }
 
-/** @internal Renders a pid file carrying a child pid, start identity, and executable. */
-export function formatPidFile(identity: ProcessIdentity): string {
-  return `${identity.pid}\n${identity.start}\n${identity.executable}\n`;
-}
-
-/** @internal Parses a pid file written by `formatPidFile`. */
-export function parsePidFile(content: string): ProcessIdentity | undefined {
-  const lines = content.split("\n");
-  const pid = parsePid(lines[0] ?? "");
-  if (pid === undefined) return undefined;
-  return {
-    pid,
-    start: (lines[1] ?? "").trim(),
-    executable: (lines[2] ?? "").trim(),
-  };
-}
-
 /** @internal Writes the owning process marker used to reap abandoned test directories. */
 export async function writeTrellisTestOwnerMarker(
   dir: string,
@@ -179,18 +162,5 @@ export async function removeStaleMarkedDirectories(args: {
     if (pid !== undefined && await processIsGone(pid)) {
       await Deno.remove(path, { recursive: true }).catch(() => undefined);
     }
-  }
-}
-
-/** @internal Removes PID-named resources whose owner process is gone. */
-export async function removeStalePidNamedResources(args: {
-  readonly names: readonly string[];
-  readonly prefix: string;
-  readonly remove: (name: string) => Promise<void>;
-}): Promise<void> {
-  for (const name of args.names) {
-    if (!name.startsWith(args.prefix)) continue;
-    const pid = parsePid(name.slice(args.prefix.length).split("-", 1)[0]);
-    if (pid !== undefined && await processIsGone(pid)) await args.remove(name);
   }
 }

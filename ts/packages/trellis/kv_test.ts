@@ -1,6 +1,7 @@
 import { assertEquals, assertInstanceOf, assertRejects } from "@std/assert";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { NatsTestContainer } from "../trellis-testkit/src/nats_container.ts";
+import { startTrellisRuntime } from "../../integration/_support/runtime.ts";
+import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import { KVError } from "./errors/KVError.ts";
 import { Result, UnexpectedError } from "@oatscenter/result";
 
@@ -73,11 +74,12 @@ Deno.test("resource migration is direct, fallible, and read-only", async () => {
 
 Deno.test("KV keys exposes the broker error if its bucket disappears", async () => {
   const workdir = await Deno.makeTempDir({ prefix: "trellis-kv-keys-" });
-  let nats: NatsTestContainer | undefined;
+  let nats: TrellisTestRuntime | undefined;
   try {
-    nats = await NatsTestContainer.start(workdir);
+    nats = await startTrellisRuntime();
+    const nc = await nats.connectNats();
     const kv = (await TypedKV.open(
-      fixedTransportProvider(nats.nc),
+      fixedTransportProvider(nc),
       "missing_after_open",
       current,
     ))
@@ -87,7 +89,7 @@ Deno.test("KV keys exposes the broker error if its bucket disappears", async () 
       "present",
     ]);
 
-    await (await jetstreamManager(nats.nc)).streams.delete(
+    await (await jetstreamManager(nc)).streams.delete(
       "KV_missing_after_open",
     );
     let failure: unknown;

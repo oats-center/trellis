@@ -7,6 +7,7 @@ mod error;
 mod generation;
 mod nats_config;
 mod nats_material;
+mod oauth;
 mod output;
 mod runtime_config;
 mod types;
@@ -24,10 +25,11 @@ pub use nats_config::{
     read_nats_listen_ports, render_auth_callout_env, render_local_jwt_config,
     render_local_nats_config, render_nats_config, slug_from_name,
 };
+pub use oauth::{read_oauth_providers, BootstrapOAuthProvider};
 pub use runtime_config::{render_trellis_config, trellis_runtime_config};
 pub use types::{
-    GeneratedMetadata, NatsBootstrapConfig, NatsBootstrapNames, NatsBootstrapOptions,
-    NatsListeners, TrellisBootstrapOptions, TrellisRuntimeBootstrapConfig,
+    BootstrapAuthorizationPolicy, GeneratedMetadata, NatsBootstrapConfig, NatsBootstrapNames,
+    NatsBootstrapOptions, NatsListeners, TrellisBootstrapOptions, TrellisRuntimeBootstrapConfig,
 };
 pub use validate::validate_output_dir;
 

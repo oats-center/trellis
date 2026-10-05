@@ -15,7 +15,9 @@ Deno.test("NATS KV outbox claims recover with CAS-fenced completion", async () =
     const nats = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await Deno.readFile(`${runtime.workdir}/nats/creds/trellis-auth.creds`),
+        await Deno.readFile(
+          `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
+        ),
       ),
     });
     try {

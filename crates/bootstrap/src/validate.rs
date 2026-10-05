@@ -60,6 +60,41 @@ pub(crate) fn validate_required_trellis_options(
     if options.runtime.name.trim().is_empty() {
         return Err(BootstrapError::MissingRequiredOption("name"));
     }
+    for source in [
+        &options.runtime.web_source,
+        &options.runtime.portal_source,
+        &options.runtime.console_source,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        match source {
+            trellis_runtime::WebSourceConfig::Directory(path) => {
+                if !path.is_dir() {
+                    return Err(BootstrapError::InvalidWebSource(
+                        "directory must exist".into(),
+                    ));
+                }
+            }
+            trellis_runtime::WebSourceConfig::Proxy(value) => {
+                let url = url::Url::parse(value).map_err(|_| {
+                    BootstrapError::InvalidWebSource("proxy must be an HTTP(S) URL".into())
+                })?;
+                if !matches!(url.scheme(), "http" | "https")
+                    || url.host_str().is_none()
+                    || !url.username().is_empty()
+                    || url.password().is_some()
+                {
+                    return Err(BootstrapError::InvalidWebSource(
+                        "proxy must be an HTTP(S) URL without credentials".into(),
+                    ));
+                }
+            }
+        }
+    }
+    crate::trellis_runtime_config(options)
+        .resolve_authorization()
+        .map_err(|error| BootstrapError::InvalidAuthorization(error.to_string()))?;
     Ok(())
 }
 

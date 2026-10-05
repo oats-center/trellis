@@ -116,6 +116,7 @@
     "playwright": "npm:playwright@1.59.1",
     "fake-indexeddb": "npm:fake-indexeddb@6.2.5",
     "fflate": "npm:fflate@^0.8.2",
+    "tar": "npm:tar@^7.5.22",
     "serialize-error": "npm:serialize-error@^13.0.1",
     "set-cookie-parser": "npm:set-cookie-parser@^3.1.0",
     "sigma": "npm:sigma@^3.0.2",

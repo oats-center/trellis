@@ -1139,7 +1139,7 @@ for (const rawConsumer of [false, true]) {
               servers: runtime.natsUrl,
               authenticator: credsAuthenticator(
                 await Deno.readFile(
-                  `${runtime.workdir}/nats/creds/trellis-auth.creds`,
+                  `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
                 ),
               ),
             });
@@ -1198,7 +1198,7 @@ for (const rawConsumer of [false, true]) {
                   servers: runtime.natsUrl,
                   authenticator: credsAuthenticator(
                     await Deno.readFile(
-                      `${runtime.workdir}/nats/creds/system.creds`,
+                      `${runtime.workdir}/config/trellis/nats/creds/system.creds`,
                     ),
                   ),
                 });

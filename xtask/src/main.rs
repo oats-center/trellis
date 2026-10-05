@@ -136,7 +136,6 @@ fn run_install(update: bool) -> Result<()> {
         ))?;
     }
     generate_builtin_package(&root).wrap_err("generating built-in package")?;
-    project_testkit_admin_source(&root).wrap_err("projecting testkit administration source")?;
     for project in TRELLIS_PROJECTS {
         let project = root.join(project);
         let project_label = project.display().to_string();
@@ -184,6 +183,21 @@ fn generate_builtin_package(root: &Path) -> Result<()> {
     );
     trellis_codegen_rust::generate_rust_package(&graph, &staging, "trellis-runtime-apis")
         .into_diagnostic()?;
+    // Only this built-in package is distributed as a runtime implementation
+    // dependency. Ordinary generated application packages remain unpublished.
+    let manifest_path = staging.join("Cargo.toml");
+    let mut manifest = std::fs::read_to_string(&manifest_path)
+        .into_diagnostic()?
+        .parse::<toml_edit::DocumentMut>()
+        .into_diagnostic()?;
+    let mut registries = toml_edit::Array::new();
+    registries.push("crates-io");
+    manifest["package"]["publish"] = toml_edit::value(registries);
+    manifest["package"]["license"] = toml_edit::value("Apache-2.0");
+    manifest["package"]["repository"] = toml_edit::value("https://github.com/oats-center/trellis");
+    manifest["package"]["description"] =
+        toml_edit::value("Internal generated administration APIs for the Trellis runtime.");
+    std::fs::write(&manifest_path, manifest.to_string()).into_diagnostic()?;
     rustfmt_generated(&staging)?;
     if target.exists() {
         std::fs::rename(&target, &backup).into_diagnostic()?;
@@ -225,55 +239,6 @@ fn generate_builtin_package(root: &Path) -> Result<()> {
     let builtin_semantics_path = root.join("crates/runtime/src/platform/auth/builtin_semantics.rs");
     std::fs::write(&builtin_semantics_path, builtin_semantics).into_diagnostic()?;
     rustfmt_generated(&builtin_semantics_path)?;
-    Ok(())
-}
-
-fn project_testkit_admin_source(root: &Path) -> Result<()> {
-    let source = root.join("crates/runtime-apis/src");
-    let target = root.join("crates/trellis-testkit/src/runtime_api");
-    let staging = root.join("crates/.trellis-test-runtime-api");
-    let backup = root.join("crates/.trellis-test-runtime-api-backup");
-    if staging.exists() {
-        std::fs::remove_dir_all(&staging).into_diagnostic()?;
-    }
-    miette::ensure!(
-        !backup.exists(),
-        "refusing to overwrite retained testkit projection backup {}",
-        backup.display()
-    );
-    copy_source_tree(&source, &staging)?;
-    if target.exists() {
-        std::fs::rename(&target, &backup).into_diagnostic()?;
-    }
-    if let Err(error) = std::fs::rename(&staging, &target) {
-        if backup.exists() {
-            std::fs::rename(&backup, &target).into_diagnostic()?;
-        }
-        return Err(error).into_diagnostic();
-    }
-    if backup.exists() {
-        std::fs::remove_dir_all(backup).into_diagnostic()?;
-    }
-    Ok(())
-}
-
-/// Copies generated Rust source byte-for-byte, skipping manifests and build output.
-fn copy_source_tree(source: &Path, destination: &Path) -> Result<()> {
-    std::fs::create_dir_all(destination).into_diagnostic()?;
-    for entry in std::fs::read_dir(source).into_diagnostic()? {
-        let entry = entry.into_diagnostic()?;
-        let name = entry.file_name();
-        if name == "Cargo.toml" || name == "Cargo.lock" || name == "target" {
-            continue;
-        }
-        let path = entry.path();
-        let destination_path = destination.join(&name);
-        if path.is_dir() {
-            copy_source_tree(&path, &destination_path)?;
-        } else {
-            std::fs::copy(&path, &destination_path).into_diagnostic()?;
-        }
-    }
     Ok(())
 }
 

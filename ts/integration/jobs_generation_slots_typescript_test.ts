@@ -39,18 +39,22 @@ Deno.test("TS managed Jobs keeps two slots and receiving ownership across publis
     const system = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await Deno.readFile(`${runtime.workdir}/nats/creds/system.creds`),
+        await Deno.readFile(
+          `${runtime.workdir}/config/trellis/nats/creds/system.creds`,
+        ),
       ),
     });
     const observer = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await Deno.readFile(`${runtime.workdir}/nats/creds/trellis-auth.creds`),
+        await Deno.readFile(
+          `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
+        ),
       ),
     });
     const jsm = await jetstreamManager(observer);
     const database = createClient({
-      url: `file:${runtime.workdir}/trellis/trellis.sqlite.jobs`,
+      url: `file:${runtime.workdir}/data/trellis/jobs.sqlite`,
     });
     const gate = runtime.nativeTransportGate();
     const releases = new Map<
@@ -407,7 +411,9 @@ Deno.test("TS managed Jobs stop interrupts withheld preparation without late int
     const observer = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await Deno.readFile(`${runtime.workdir}/nats/creds/trellis-auth.creds`),
+        await Deno.readFile(
+          `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
+        ),
       ),
     });
     const jsm = await jetstreamManager(observer);

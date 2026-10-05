@@ -28,7 +28,7 @@ async function startSplitRole(
   status: Promise<Deno.CommandStatus>;
   kill: () => void;
 }> {
-  const configDir = join(runtime.workdir, "trellis");
+  const configDir = join(runtime.workdir, "config", "trellis");
   const platformConfig = await Deno.readTextFile(
     join(configDir, "config.toml"),
   );
@@ -42,8 +42,11 @@ async function startSplitRole(
     args: ["--config", configPath, role],
     env: {
       PATH: Deno.env.get("PATH") ?? "",
-      HOME: Deno.env.get("HOME") ?? "",
-      TRELLIS_CACHE: Deno.env.get("TRELLIS_CACHE") ?? "",
+      HOME: join(runtime.workdir, "home"),
+      XDG_CONFIG_HOME: join(runtime.workdir, "config"),
+      XDG_DATA_HOME: join(runtime.workdir, "data"),
+      XDG_STATE_HOME: join(runtime.workdir, "state"),
+      XDG_RUNTIME_DIR: join(runtime.workdir, "runtime"),
     },
     // Nobody reads these pipes; piping would eventually block a busy role.
     stdout: "null",
@@ -67,10 +70,7 @@ function jsonFrame(frame: unknown): Record<string, unknown> {
 
 const splitOptions = {
   trellis: {
-    command: {
-      cmd: serverBinary(),
-      args: ["--config", "{config}", "platform"],
-    },
+    mode: "platform" as const,
   },
 };
 

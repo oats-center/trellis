@@ -85,6 +85,16 @@ impl LiveProviderOwner {
         self.client.shutdown_native_runtime().await
     }
 
+    /// Request terminal transport closure when the production runtime owner is cancelled.
+    ///
+    /// Unlike orderly shutdown, this does not await physical generation drainage.
+    /// Retained child references cannot keep recovery or authorization refresh running.
+    #[cfg(feature = "runtime-internals")]
+    #[doc(hidden)]
+    pub fn abort_native_runtime(&self) {
+        self.client.abort_native_runtime();
+    }
+
     /// Return the connection's live manager.
     ///
     /// # Errors

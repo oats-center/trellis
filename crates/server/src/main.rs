@@ -81,6 +81,18 @@ struct ServerArgs {
     /// Managed NATS client, monitor, and websocket ports (default: 4222,8222,8080).
     #[arg(long, global = true, num_args = 1, value_delimiter = ',')]
     local_nats_ports: Option<Vec<u16>>,
+    /// Shared verified managed-NATS executable cache; requires managed NATS.
+    #[arg(long, global = true)]
+    local_nats_cache: Option<PathBuf>,
+    /// Create a dedicated Unix process group so a supervisor can terminate this host and its children together.
+    #[arg(long, global = true)]
+    isolated_process_group: bool,
+    /// Native NATS endpoint advertised to clients only; repeatable.
+    #[arg(long, global = true)]
+    advertise_nats_server: Vec<String>,
+    /// WebSocket NATS endpoint advertised to clients only; repeatable.
+    #[arg(long, global = true)]
+    advertise_nats_websocket: Vec<String>,
     /// User-profile local development preset: PATH NATS and verbose attached logs.
     #[arg(short, long, global = true)]
     dev: bool,
@@ -109,6 +121,9 @@ struct StartupPolicy {
     paths: ServerPaths,
     nats: NatsPolicy,
     nats_ports: Option<LocalNatsPorts>,
+    nats_cache: Option<PathBuf>,
+    advertised_native: Option<Vec<String>>,
+    advertised_websocket: Option<Vec<String>>,
     verbose: bool,
     reset_admin: bool,
     bootstrap_admin: Option<BootstrapAdminArgs>,
@@ -195,6 +210,27 @@ impl StartupPolicy {
         if server.local_nats_ports.is_some() && matches!(nats, NatsPolicy::ExternalConfigured) {
             return Err(miette!("--local-nats-ports requires managed NATS"));
         }
+        if server.local_nats_cache.is_some() && matches!(nats, NatsPolicy::ExternalConfigured) {
+            return Err(miette!("--local-nats-cache requires managed NATS"));
+        }
+        for (endpoints, schemes) in [
+            (&server.advertise_nats_server, &["nats", "tls"][..]),
+            (&server.advertise_nats_websocket, &["ws", "wss"][..]),
+        ] {
+            for endpoint in endpoints {
+                let url = url::Url::parse(endpoint)
+                    .map_err(|_| miette!("invalid advertised NATS endpoint"))?;
+                if !schemes.contains(&url.scheme())
+                    || url.host_str().is_none()
+                    || !url.username().is_empty()
+                    || url.password().is_some()
+                    || url.query().is_some()
+                    || url.fragment().is_some()
+                {
+                    return Err(miette!("invalid advertised NATS endpoint"));
+                }
+            }
+        }
         let nats_ports = match server.local_nats_ports {
             Some(ports) => {
                 let [nats, monitor, websocket]: [u16; 3] = ports
@@ -225,6 +261,11 @@ impl StartupPolicy {
             paths,
             nats,
             nats_ports,
+            nats_cache: server.local_nats_cache,
+            advertised_native: (!server.advertise_nats_server.is_empty())
+                .then_some(server.advertise_nats_server),
+            advertised_websocket: (!server.advertise_nats_websocket.is_empty())
+                .then_some(server.advertise_nats_websocket),
             verbose: server.verbose || server.dev,
             reset_admin,
             bootstrap_admin,
@@ -467,10 +508,21 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
     let nats_override = match &policy.nats {
         NatsPolicy::ExternalConfigured => {
             info!(config = %policy.paths.config.display(), "using configured external NATS");
-            None
+            if policy.advertised_native.is_some() || policy.advertised_websocket.is_some() {
+                Some(NatsEndpointOverride {
+                    runtime_servers: config.resolve_nats_runtime().into_diagnostic()?.servers,
+                    advertised_native: policy.advertised_native.clone(),
+                    advertised_websocket: policy.advertised_websocket.clone(),
+                })
+            } else {
+                None
+            }
         }
         NatsPolicy::Local(source) => {
-            let managed_paths = ManagedNatsPaths::resolve(&policy.paths.config_root, &paths);
+            let mut managed_paths = ManagedNatsPaths::resolve(&policy.paths.config_root, &paths);
+            if let Some(cache) = &policy.nats_cache {
+                managed_paths.cache = cache.clone();
+            }
             prepare_directory(&managed_paths.state)?;
             prepare_directory(&paths.runtime)?;
             prepare_directory(&paths.logs)?;
@@ -513,8 +565,15 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
             let websocket = server.websocket_url().to_string();
             managed = Some(server);
             Some(NatsEndpointOverride {
-                servers,
-                websocket: Some(websocket),
+                runtime_servers: servers.clone(),
+                advertised_native: policy
+                    .advertised_native
+                    .clone()
+                    .or_else(|| Some(vec![servers])),
+                advertised_websocket: policy
+                    .advertised_websocket
+                    .clone()
+                    .or_else(|| Some(vec![websocket])),
             })
         }
     };
@@ -524,7 +583,9 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
             policy.mode,
             policy.paths.config.clone(),
             config,
-            nats_override.as_ref().map(|value| value.servers.as_str()),
+            nats_override
+                .as_ref()
+                .map(|value| value.runtime_servers.as_str()),
         )
         .await
         .into_diagnostic()?;
@@ -548,6 +609,7 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
         .into_diagnostic()
     };
     if let Some(server) = managed.as_mut() {
+        info!("stopping managed NATS");
         if let Err(stop_error) = server.stop() {
             error!(%stop_error, "failed to stop managed NATS");
             if result.is_ok() {
@@ -562,7 +624,27 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
 
 #[tokio::main]
 async fn main() -> miette::Result<()> {
-    let policy = StartupPolicy::resolve(Args::parse())?;
+    let args = Args::parse();
+    if args.server.isolated_process_group {
+        #[cfg(unix)]
+        {
+            // SAFETY: these calls change only this process's group. No pointers
+            // or pre-exec callbacks are involved, and children inherit the group.
+            let result = unsafe {
+                if libc::getpgrp() == libc::getpid() {
+                    0
+                } else {
+                    libc::setpgid(0, 0)
+                }
+            };
+            if result != 0 {
+                return Err(std::io::Error::last_os_error()).into_diagnostic();
+            }
+        }
+        #[cfg(not(unix))]
+        return Err(miette!("--isolated-process-group requires Unix"));
+    }
+    let policy = StartupPolicy::resolve(args)?;
     let telemetry = telemetry::init(policy.verbose, policy.operation == Operation::Check)?;
     let result = run(policy).await;
     telemetry.shutdown().await;

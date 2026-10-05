@@ -2072,6 +2072,12 @@ impl TrellisClient {
 
 impl TrellisClient {
     #[cfg(feature = "runtime-internals")]
+    pub(crate) fn abort_native_runtime(&self) {
+        self.stop_background_tasks();
+        self.generations.close();
+    }
+
+    #[cfg(feature = "runtime-internals")]
     pub(crate) async fn shutdown_native_runtime(&self) -> Result<(), TrellisClientError> {
         {
             let contexts = self.authorization_contexts.as_ref().ok_or_else(|| {

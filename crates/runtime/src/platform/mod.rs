@@ -157,7 +157,12 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     ensure_builtin_portal(&auth_store, now).await?;
     let nats = context
         .config
-        .resolve_nats_runtime_with(context.nats_override.as_ref().map(|o| o.servers.as_str()))
+        .resolve_nats_runtime_with(
+            context
+                .nats_override
+                .as_ref()
+                .map(|o| o.runtime_servers.as_str()),
+        )
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     let callout = context
         .config
@@ -422,7 +427,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let samplers = crate::telemetry::snapshots::SamplerOwner::start(vec![Box::pin(async move {
         let _ = crate::telemetry::snapshots::run_auth_sampler(sampler_store, sampler_stop).await;
     })]);
-    let join = tokio::spawn(async move {
+    let join = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
         let samplers = samplers;
         let result = tokio::select! {
             result = portal_reconciliation_worker.run(task_stop.clone()) => {
@@ -466,7 +471,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         // Telemetry samplers own their tasks and never own business lifetime.
         samplers.stop().await;
         result
-    });
+    }));
 
     Ok(SubsystemHandle {
         name: SubsystemName::Platform,
@@ -698,7 +703,7 @@ async fn start_validator_cache(
 ) -> Result<
     (
         StopHandle,
-        tokio::task::JoinHandle<Result<(), RuntimeError>>,
+        tokio_util::task::AbortOnDropHandle<Result<(), RuntimeError>>,
         auth::verifier::RuntimeAuthVerifier,
     ),
     RuntimeError,
@@ -706,8 +711,9 @@ async fn start_validator_cache(
     let stop = StopHandle::new();
     let validator_stop = stop.clone();
     let validator_contexts = authorization_contexts.clone();
-    let mut validator_join =
-        tokio::spawn(async move { validator_contexts.run_validator_cache(validator_stop).await });
+    let mut validator_join = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+        validator_contexts.run_validator_cache(validator_stop).await
+    }));
     tokio::select! {
         result = authorization_contexts.wait_for_validator_cache() => {
             if let Err(error) = result {
@@ -1195,11 +1201,14 @@ fn advertised_endpoints(
     };
     match nats_override {
         Some(override_) => (
-            vec![override_.servers.clone()],
             override_
-                .websocket
-                .as_ref()
-                .map_or_else(configured_websocket, |websocket| vec![websocket.clone()]),
+                .advertised_native
+                .clone()
+                .unwrap_or_else(configured_native),
+            override_
+                .advertised_websocket
+                .clone()
+                .unwrap_or_else(configured_websocket),
         ),
         None => (configured_native(), configured_websocket()),
     }
@@ -1343,8 +1352,9 @@ ws_nats_servers = ["ws://advertised.example:8080"]
         let config = config_with_client_endpoints();
         let resolved = config.resolve_nats_runtime().expect("resolve nats");
         let override_ = NatsEndpointOverride {
-            servers: "nats://127.0.0.1:4222".to_string(),
-            websocket: Some("ws://127.0.0.1:8080".to_string()),
+            runtime_servers: "nats://127.0.0.1:4222".to_string(),
+            advertised_native: Some(vec!["nats://127.0.0.1:4222".to_string()]),
+            advertised_websocket: Some(vec!["ws://127.0.0.1:8080".to_string()]),
         };
 
         let (native, websocket) = advertised_endpoints(&config, &resolved, Some(&override_));
@@ -1357,8 +1367,9 @@ ws_nats_servers = ["ws://advertised.example:8080"]
         let config = config_with_client_endpoints();
         let resolved = config.resolve_nats_runtime().expect("resolve nats");
         let override_ = NatsEndpointOverride {
-            servers: "nats://external.example:4222".to_string(),
-            websocket: None,
+            runtime_servers: "nats://external.example:4222".to_string(),
+            advertised_native: Some(vec!["nats://external.example:4222".to_string()]),
+            advertised_websocket: None,
         };
 
         let (native, websocket) = advertised_endpoints(&config, &resolved, Some(&override_));

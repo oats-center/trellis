@@ -12,15 +12,9 @@ import { fromFileUrl } from "@std/path";
 import { participants as webParticipants } from "trellis-web-generated";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
-import { withTrellisRuntime } from "./_support/runtime.ts";
+import { repoTrellisSource, withTrellisRuntime } from "./_support/runtime.ts";
 
 /** Built server binary supplied by the live test harness. */
-function serverBinary(): string {
-  return Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
-    fromFileUrl(
-      new URL("../../target/debug/trellis-server", import.meta.url),
-    );
-}
 
 Deno.test("G02/T14 revoking the caller fences a quiet live observation", async () => {
   await withTrellisRuntime(async (runtime) => {
@@ -116,11 +110,6 @@ Deno.test("G02/T14 revoking the caller fences a quiet live observation", async (
       assertEquals(await serviceExit, undefined);
     }
   }, {
-    trellis: {
-      command: {
-        cmd: serverBinary(),
-        args: ["--config", "{config}", "all"],
-      },
-    },
+    trellis: { source: repoTrellisSource() },
   });
 });

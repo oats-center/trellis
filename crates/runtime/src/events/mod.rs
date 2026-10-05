@@ -379,7 +379,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let live_owner = context
         .live_providers
         .receiver(crate::platform::LiveProviderRole::Events);
-    let join = tokio::spawn(async move {
+    let join = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
         let _owner = owner;
         let _samplers = crate::telemetry::snapshots::SamplerOwner::start(vec![
             Box::pin(crate::telemetry::snapshots::run_events_sampler(
@@ -481,7 +481,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             let _ = join.await;
         }
         result
-    });
+    }));
 
     Ok(SubsystemHandle {
         name: SubsystemName::Events,

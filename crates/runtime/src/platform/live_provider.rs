@@ -166,6 +166,15 @@ impl LiveProviderSlots {
     }
 
     /// End every installed logical client even when child tasks retain owners.
+    pub(crate) fn abort(&self) {
+        for sender in self.senders.values() {
+            if let Some(owner) = sender.send_replace(None) {
+                owner.abort_native_runtime();
+            }
+        }
+    }
+
+    /// Drain every installed logical client during cooperative shutdown.
     pub(crate) async fn shutdown(&self) -> Result<(), RuntimeError> {
         let owners: Vec<_> = self
             .senders

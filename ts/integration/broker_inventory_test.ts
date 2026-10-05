@@ -19,20 +19,6 @@ import { withTrellisRuntime } from "./_support/runtime.ts";
 
 const CONNZ_SUFFIX = ".CONNZ";
 
-/** Reads the native proxy URL the runtime advertises to the control plane. */
-function nativeProxyUrl(configText: string, natsUrl: string): string {
-  const match = configText.match(
-    /^\s*nats_servers\s*=\s*\[\s*"([^"]+)"\]/m,
-  );
-  assert(match, "the runtime must advertise a native NATS server");
-  const proxyUrl = match[1]!;
-  assert(
-    proxyUrl !== natsUrl,
-    "the system connection must not bypass the native proxy",
-  );
-  return proxyUrl;
-}
-
 /** Opens a real NATS connection with one of the runtime's credentials. */
 async function connectWithCreds(
   url: string,
@@ -50,12 +36,16 @@ Deno.test(
     await withTrellisRuntime(async (runtime) => {
       const systemCreds = join(
         runtime.workdir,
+        "config",
+        "trellis",
         "nats",
         "creds",
         "system.creds",
       );
       const trellisCreds = join(
         runtime.workdir,
+        "config",
+        "trellis",
         "nats",
         "creds",
         "trellis-auth.creds",
@@ -113,11 +103,8 @@ Deno.test(
       // 3. A withheld reply must not become an empty inventory: hold the exact
       //    CONNZ reply for the captured server on the real native proxy while
       //    the required-server inventory is in flight.
-      const config = await Deno.readTextFile(
-        join(runtime.workdir, "trellis", "config.toml"),
-      );
       const gated = await connectWithCreds(
-        nativeProxyUrl(config, runtime.natsUrl),
+        runtime.nativeProxyUrl(),
         systemCreds,
       );
       try {

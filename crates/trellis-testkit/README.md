@@ -2,10 +2,10 @@
 
 Isolated, live Trellis runtimes for Rust integration tests.
 
-`trellis-testkit` starts normal production Trellis executables — the released
-`trellis` CLI and `trellis-server` — out of process, in a private sandbox, and
-gives your test the URLs and identities it needs to exercise your generated
-service/app facades against a real server.
+`trellis-testkit` links and runs the real production Trellis runtime in-process,
+with a private sandbox and a real managed `nats-server` child, and gives your
+test the URLs and identities it needs to exercise your generated service/app
+facades against a real server.
 
 It is a **development dependency**. Add it to your test crate:
 
@@ -17,14 +17,13 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 ## What it needs
 
-- A matching `trellis` CLI and `trellis-server` executable. Provide them with
-  `TrellisTestRuntime::builder().cli_binary(...).server_binary(...)`, or through
-  the `TRELLIS_TEST_CLI_BIN` / `TRELLIS_TEST_SERVER_BIN` environment variables.
-  Versions must match the `trellis-testkit` version exactly (build metadata is
-  ignored).
-- A NATS executable. By default it is resolved from `PATH`; set
-  `TRELLIS_TEST_NATS_BIN`, choose `NatsSource::Path`, or explicitly request the
-  server's verified pinned download with `NatsSource::DownloadPinned`.
+- No Trellis executables or source checkout. Cargo resolves the linked runtime
+  with the testkit; implementation dependencies are distribution-only crates,
+  not supported service-author APIs.
+- A real NATS executable. By default the bare builder uses the verified pinned
+  download (network required on first use). To use a prebuilt broker, set
+  `TRELLIS_TEST_NATS_BIN`, choose `NatsSource::Path`, or choose
+  `NatsSource::PathLookup` for `PATH` discovery.
 
 Ports are chosen automatically from kernel-assigned loopback reservations; you
 never select them.
@@ -64,15 +63,16 @@ runtime.shutdown().await?;
 
 Your application owns the clients and services it connects; stop those
 transports before calling [`TrellisTestRuntime::shutdown`]. The runtime owns
-only its own administration connection and the server/NATS processes.
+only its own administration connection, production runtime task, and NATS
+process.
 
 ## Browser and portal-driven tests
 
 The runtime exposes the isolated administrator credentials it bootstrapped:
 `TrellisTestRuntime::admin_username()` and `admin_password()`. Use them to drive
-a real browser or portal login against `trellis_url()` (for example the
-first-run administrator setup form). Both values are sandbox-only secrets; never
-log them or include them in uploaded evidence.
+a real browser or portal login against `trellis_url()`. The administrator is
+already seeded, so this is normal login rather than first-run setup. Both values
+are sandbox-only secrets; never log them or include them in uploaded evidence.
 
 You can also pin them so the test knows them up front:
 
@@ -105,8 +105,8 @@ descriptor or its package evidence.
 
 ## What it does not do
 
-- It does not embed a Trellis server, and it does not compile Trellis from
-  source. It has no dependency on private Trellis implementation crates.
+- It does not start a separate `trellis-server` process. The runtime is the same
+  production library the server uses, resolved and compiled by Cargo.
 - It does not simulate authorization. `register_client` runs a real
   participant-bound local login; denied calls are denied by the real server.
 - It does not cover device activation or the full administrator surface in this
@@ -114,8 +114,7 @@ descriptor or its package evidence.
   `register_client`.
 - It does not promise cleanup after machine power loss or an uncatchable parent
   termination. Explicit `shutdown`, `Drop`, cancellation, and panic cleanup are
-  the tested guarantees. On Linux a parent-death signal is applied to the owned
-  server.
+  the tested guarantees.
 
 ## Isolation and retention
 

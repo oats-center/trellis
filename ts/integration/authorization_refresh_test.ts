@@ -16,15 +16,13 @@ import { assert, assertEquals } from "@std/assert";
 import { fromFileUrl, join } from "@std/path";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
-import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
+import {
+  repoTrellisSource,
+  rustFixtureArgv,
+  withTrellisRuntime,
+} from "./_support/runtime.ts";
 
 /** Built server binary supplied by the live test harness. */
-function serverBinary(): string {
-  return Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
-    fromFileUrl(
-      new URL("../../target/debug/trellis-server", import.meta.url),
-    );
-}
 
 /**
  * A short but sane window. `notBefore` precedes issuance by the 30s allowed
@@ -44,12 +42,7 @@ const shortAuthorizationLifetimes = {
 
 const runtimeOptions = {
   authorization: shortAuthorizationLifetimes,
-  trellis: {
-    command: {
-      cmd: serverBinary(),
-      args: ["--config", "{config}", "all"],
-    },
-  },
+  trellis: { source: repoTrellisSource() },
 };
 
 /** Past two 31s refresh cycles and their corresponding 46s expirations. */
@@ -111,7 +104,7 @@ Deno.test("authorization refresh keeps a live RPC client connected and unsuspend
     );
     const database = createClient({
       url: `file:${
-        join(runtime.workdir, "trellis", "trellis.sqlite.platform")
+        join(runtime.workdir, "data", "trellis", "platform.sqlite")
       }`,
     });
     try {

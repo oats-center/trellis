@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use trellis_runtime::{
@@ -41,7 +40,7 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
         paths: None,
         http: Some(HttpConfig {
             port: Some(options.runtime.trellis_port),
-            bind_address: None,
+            bind_address: options.runtime.bind_address,
             public_origin: Some(options.runtime.public_origin.clone()),
             origins: Some({
                 let mut origins = vec![options.runtime.public_origin.clone()];
@@ -53,11 +52,11 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
                 origins.extend(options.runtime.extra_origins.iter().cloned());
                 origins
             }),
-            web_source: None,
-            portal_source: None,
-            console_source: None,
-            rate_limit_max: Some(60),
-            rate_limit_window_ms: Some(60_000),
+            web_source: options.runtime.web_source.clone(),
+            portal_source: options.runtime.portal_source.clone(),
+            console_source: options.runtime.console_source.clone(),
+            rate_limit_max: Some(options.runtime.rate_limit_max),
+            rate_limit_window_ms: Some(options.runtime.rate_limit_window_ms),
         }),
         nats: Some(NatsConfig {
             servers: Some(options.runtime.nats_server_url.clone()),
@@ -94,10 +93,26 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             }),
             authorization: Some(AuthorizationConfig {
                 issuer_signing_seed_file: PathBuf::from("./auth/authorization-issuer.seed"),
-                context_lifetime_seconds: 300,
-                refresh_lead_seconds: 60,
-                refresh_jitter_seconds: 15,
-                minimum_context_lifetime_seconds: 76,
+                context_lifetime_seconds: options
+                    .runtime
+                    .authorization
+                    .context_lifetime_seconds
+                    .unwrap_or(300),
+                refresh_lead_seconds: options
+                    .runtime
+                    .authorization
+                    .refresh_lead_seconds
+                    .unwrap_or(60),
+                refresh_jitter_seconds: options
+                    .runtime
+                    .authorization
+                    .refresh_jitter_seconds
+                    .unwrap_or(15),
+                minimum_context_lifetime_seconds: options
+                    .runtime
+                    .authorization
+                    .minimum_context_lifetime_seconds
+                    .unwrap_or(76),
                 maximum_bootstrap_jwt_lifetime_seconds: 3_600,
                 allowed_clock_skew_seconds: 30,
                 maximum_context_bytes: 65_536,
@@ -112,7 +127,7 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
                 options.runtime.public_origin.trim_end_matches('/')
             )),
             always_show_provider_chooser: Some(false),
-            providers: BTreeMap::new(),
+            providers: options.runtime.oauth_providers.clone(),
         }),
         platform: Some(SubsystemConfig {
             storage: Some(sqlite_storage()),
@@ -121,10 +136,10 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             transport_max_bytes: None,
             retention_days: None,
             ttl_ms: Some(PlatformTtlConfig {
-                sessions: Some(86_400_000),
-                oauth: Some(300_000),
-                device_flow: Some(1_800_000),
-                pending_auth: Some(300_000),
+                sessions: Some(options.runtime.ttl_ms.sessions.unwrap_or(86_400_000)),
+                oauth: Some(options.runtime.ttl_ms.oauth.unwrap_or(300_000)),
+                device_flow: Some(options.runtime.ttl_ms.device_flow.unwrap_or(1_800_000)),
+                pending_auth: Some(options.runtime.ttl_ms.pending_auth.unwrap_or(300_000)),
             }),
         }),
         jobs: Some(SubsystemConfig {

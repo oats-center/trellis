@@ -338,7 +338,9 @@
           "npm:@nats-io/nats-core@^3.3.1",
           "npm:@nats-io/transport-node@^3.3.1",
           "npm:fflate@~0.8.2",
-          "npm:ulid@^3.0.2"
+          "npm:tar@^7.5.22",
+          "npm:ulid@^3.0.2",
+          "npm:zod@^4.3.6"
         ]
       },
       "jsr:@oatscenter/trellis@0.100.0": {}

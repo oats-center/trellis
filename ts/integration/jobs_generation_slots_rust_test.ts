@@ -113,13 +113,13 @@ async function verifyJobsSlots(cancelOverlap: boolean): Promise<void> {
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
         await Deno.readFile(
-          `${runtime.workdir}/nats/creds/trellis-auth.creds`,
+          `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
         ),
       ),
     });
     const manager = await jetstreamManager(nats);
     const database = createClient({
-      url: `file:${runtime.workdir}/trellis/trellis.sqlite.jobs`,
+      url: `file:${runtime.workdir}/data/trellis/jobs.sqlite`,
     });
     const gate = runtime.nativeTransportGate();
     const attachments = async () => {
@@ -702,7 +702,9 @@ Deno.test("Rust retained G1 JobRefs read wait and cancel after physical G1 reap"
     const nats = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await Deno.readFile(`${runtime.workdir}/nats/creds/trellis-auth.creds`),
+        await Deno.readFile(
+          `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
+        ),
       ),
     });
     const manager = await jetstreamManager(nats);

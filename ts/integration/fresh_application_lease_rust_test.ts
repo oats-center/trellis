@@ -26,7 +26,9 @@ Deno.test("Rust fresh Jobs leases reject suspended own coverage and resume on th
     const nats = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await Deno.readFile(`${runtime.workdir}/nats/creds/trellis-auth.creds`),
+        await Deno.readFile(
+          `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
+        ),
       ),
     });
     const js = await jetstreamManager(nats);

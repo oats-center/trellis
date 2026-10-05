@@ -98,6 +98,14 @@ build_testkit_live() {
     --config "patch.crates-io.trellis-protocol.path=\"$root/crates/protocol\"" \
     --config "patch.crates-io.trellis-rs.path=\"$root/crates/trellis\"" \
     --config "patch.crates-io.trellis-testkit.path=\"$root/crates/trellis-testkit\"" \
+    --config "patch.crates-io.trellis-runtime.path=\"$root/crates/runtime\"" \
+    --config "patch.crates-io.trellis-bootstrap.path=\"$root/crates/bootstrap\"" \
+    --config "patch.crates-io.trellis-local-bootstrap.path=\"$root/crates/local-bootstrap\"" \
+    --config "patch.crates-io.trellis-local-nats.path=\"$root/crates/local-nats\"" \
+    --config "patch.crates-io.trellis-runtime-apis.path=\"$root/crates/runtime-apis\"" \
+    --config "patch.crates-io.trellis-events-runtime.path=\"$root/crates/events-runtime\"" \
+    --config "patch.crates-io.trellis-jobs-runtime.path=\"$root/crates/jobs-runtime\"" \
+    --config "patch.crates-io.trellis-idl.path=\"$root/crates/idl\"" \
     --test live \
     --message-format=json > "$json"
   local executable
@@ -140,5 +148,6 @@ export TRELLIS_TESTKIT_LIVE_BIN="$testkit_live"
 export TRELLIS_TEST_SERVER_BIN="$server_bin"
 export TRELLIS_TEST_CLI_BIN="$cli_bin"
 export TRELLIS_TEST_HEALTH_WATCH_BIN="$health_watch_bin"
+export DENO_JOBS="${DENO_JOBS:-4}"
 
 exec deno test --parallel -A -c ts/integration/deno.json ts/integration "$@"

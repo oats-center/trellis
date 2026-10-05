@@ -89,18 +89,12 @@ mod sqlite_migrations {
         use refinery::embed_migrations;
         embed_migrations!("src/storage/sqlite/platform");
     }
-    pub mod jobs {
-        use refinery::embed_migrations;
-        embed_migrations!("src/storage/sqlite/jobs");
-    }
+    pub use trellis_jobs_runtime::storage::sqlite_migrations as jobs;
     pub mod health {
         use refinery::embed_migrations;
         embed_migrations!("src/storage/sqlite/health");
     }
-    pub mod events {
-        use refinery::embed_migrations;
-        embed_migrations!("src/storage/sqlite/events");
-    }
+    pub use trellis_events_runtime::storage::sqlite_migrations as events;
 }
 
 /// SQLite-backed store for a built-in runtime subsystem.

@@ -15,14 +15,7 @@ import { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { participants } from "test-trellis";
 
-await using runtime = await TrellisTestRuntime.start({
-  trellis: {
-    command: {
-      cmd: "/path/to/trellis-server",
-      args: ["--config", "{config}", "all"],
-    },
-  },
-});
+await using runtime = await TrellisTestRuntime.start();
 const identity = await runtime.registerService({
   name: "provider",
   contract: participants.provider.participant,
@@ -51,9 +44,40 @@ result. No helper should replace a real boundary with a fabricated result.
 
 ## Ownership and Waiting
 
-Each runtime owns fresh accounts, a real NATS process, SQLite files, and a real
-control-plane process. `trellis.command` is explicit. The package does not
-attach tests to a shared NATS URL or assign infrastructure by test name.
+The released package acquires the exact-version production CLI and server from
+release archives pinned by SHA-256. It supports Linux and macOS x86-64/arm64.
+Production `trellis init config` generates configuration and accounts;
+`trellis-server --local-nats` owns the real broker. There is no `nsc` dependency
+or TypeScript configuration renderer. `TRELLIS_TEST_CACHE_DIR` shares only
+verified native binaries; each runtime has private configuration, credentials,
+SQLite data, broker state, process files, and logs.
+
+`start()` seeds an administrator by default. Use `firstAdmin: "browser-flow"`
+only when exercising first-admin browser setup. To use producer-built binaries
+without downloading, pass `trellis: { source: { kind: "path", cli, server } }`;
+both files must match the package version. There is no fallback for invalid
+paths.
+
+Startup accepts `/readyz` only when its `processId` identifies the spawned
+native host, so another runtime at the selected port cannot satisfy readiness.
+
+`restart()` restarts the entire production host and its managed broker while
+retaining data and identity. `stop()` waits for child cleanup before removing
+the sandbox. The host receives SIGTERM first; if it exceeds the shutdown bound,
+the testkit force-closes its isolated Unix process group, including the managed
+broker. Descendants are also reclaimed if the host crashes. `await using` shares
+that cleanup path. The package does not attach tests to a shared NATS URL or
+assign infrastructure by test name.
+
+Real broker adapter tests can use `connectNats()` for a privileged isolated
+connection. It does not own the broker and closes on stop or restart; acquire a
+new connection after restart. Ordinary service tests use generated clients and
+`registerService`/`connectClient` instead.
+
+With `interruptibleNativeProxy`, `nativeProxyUrl()` returns the advertised
+endpoint for raw clients exercising `nativeTransportGate()`. Runtime internals
+and `connectNats()` stay on the direct broker endpoint. The advertised override
+is a server launch option, not a change to the generated config file.
 
 `runtime.waitFor` provides bounded polling for public transitions. Prefer an
 observable completion signal when available. `tempSqlitePath` and

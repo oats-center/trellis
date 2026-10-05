@@ -45,19 +45,16 @@ Deno.test("own coverage resumes on the original publication while fresh KV waits
     const system = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await Deno.readFile(join(runtime.workdir, "nats/creds/system.creds")),
+        await Deno.readFile(
+          join(runtime.workdir, "config/trellis/nats/creds/system.creds"),
+        ),
       ),
     });
-    const config = await Deno.readTextFile(
-      join(runtime.workdir, "trellis", "config.toml"),
-    );
-    const server = config.match(/^\s*nats_servers\s*=\s*\[\s*"([^"]+)"\]/m);
-    assert(server);
     const privileged = await connect({
-      servers: server[1],
+      servers: runtime.nativeProxyUrl(),
       authenticator: credsAuthenticator(
         await Deno.readFile(
-          join(runtime.workdir, "nats/creds/trellis-auth.creds"),
+          join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
         ),
       ),
     });

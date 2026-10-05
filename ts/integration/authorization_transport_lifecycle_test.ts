@@ -22,6 +22,11 @@ import { participants } from "../../integration/fixtures/runtime/packages/runtim
 import { TrellisService } from "@oatscenter/trellis/service";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 import {
+  admittedConnections,
+  brokerConnectionKey,
+  readRuntimeBrokerInventory,
+} from "./_support/broker_inventory.ts";
+import {
   issueRawClientConnection,
   observeClientConnection,
 } from "./_support/client_session.ts";
@@ -48,6 +53,7 @@ type Attachment = {
   runtimeConnectionId: string;
   connectionId: string;
   participantId: string;
+  contextDigest: string;
 };
 
 async function attachmentsFor(
@@ -207,7 +213,7 @@ Deno.test("F5 a hard deadline removes the attachment without one installed for r
  * Restarting the control plane with NATS kept alive must leave the healthy
  * marked attachment working, and a later reduction must still remove it.
  */
-Deno.test("F9 enforcement survives a control-plane restart", async () => {
+Deno.test("F9 enforcement resumes on recovered attachments after a runtime restart", async () => {
   await withTrellisRuntime(async (runtime) => {
     const instance = await installProvider(runtime, "restart-provider");
     const contract = participants.Provider.participant;
@@ -225,16 +231,37 @@ Deno.test("F9 enforcement survives a control-plane restart", async () => {
         const items = await attachmentsFor(runtime, participantId);
         return items.length === 1 ? items : false;
       }, { timeoutMs: 60_000 });
+      const beforeSockets = admittedConnections(
+        await readRuntimeBrokerInventory(runtime),
+        new Set([before.contextDigest]),
+      );
+      assert(beforeSockets.length > 0);
 
-      await runtime.restartControlPlane();
+      await runtime.restart();
 
-      // The healthy attachment survived the restart without reconnecting.
-      const [after] = await attachmentsFor(runtime, participantId);
+      // The logical connection persists, but server-owned NATS restarts too:
+      // prove recovery on an authenticated socket on the new broker.
+      const { after, sockets } = await runtime.waitFor(async () => {
+        const attachments = await attachmentsFor(runtime, participantId);
+        const inventory = await readRuntimeBrokerInventory(runtime);
+        for (const after of attachments) {
+          const sockets = admittedConnections(
+            inventory,
+            new Set([after.contextDigest]),
+          );
+          if (sockets.length > 0) return { after, sockets };
+        }
+        return false;
+      }, { timeoutMs: 60_000 });
       assertEquals(
         after.runtimeConnectionId,
         before.runtimeConnectionId,
-        "a restart must not replace the healthy attachment",
+        "recovery preserves the logical connection",
       );
+      assert(
+        sockets.every((socket) => socket.server !== beforeSockets[0]!.server),
+      );
+      const recoveredKeys = new Set(sockets.map(brokerConnectionKey));
 
       // Enforcement still acts after the restart.
       const page = await runtime.callAdminRpc("authGrantsList", {
@@ -258,9 +285,9 @@ Deno.test("F9 enforcement survives a control-plane restart", async () => {
         platformPrivileges: binding.platformPrivileges,
       });
       await runtime.waitFor(async () => {
-        const items = await attachmentsFor(runtime, participantId);
-        return !items.some((item) =>
-          item.runtimeConnectionId === before.runtimeConnectionId
+        const inventory = await readRuntimeBrokerInventory(runtime);
+        return !inventory.some((socket) =>
+          recoveredKeys.has(brokerConnectionKey(socket))
         );
       }, { timeoutMs: 90_000 });
     } finally {

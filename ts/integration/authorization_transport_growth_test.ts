@@ -17,7 +17,7 @@ import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
-import { withTrellisRuntime } from "./_support/runtime.ts";
+import { repoTrellisSource, withTrellisRuntime } from "./_support/runtime.ts";
 
 type Runtime = Parameters<Parameters<typeof withTrellisRuntime>[0]>[0];
 
@@ -32,12 +32,6 @@ const SUBJECT_DEPLOYMENT = "f2-growth-subject";
 const TARGET_DEPLOYMENT = "f2-growth-target";
 
 /** Built server binary supplied by the live test harness. */
-function serverBinary(): string {
-  return Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
-    fromFileUrl(
-      new URL("../../target/debug/trellis-server", import.meta.url),
-    );
-}
 
 /**
  * Short lifetimes so the case crosses a real ordinary context renewal without
@@ -50,12 +44,7 @@ const runtimeOptions = {
     refreshJitterSeconds: 0,
     minimumContextLifetimeSeconds: 46,
   },
-  trellis: {
-    command: {
-      cmd: serverBinary(),
-      args: ["--config", "{config}", "all"],
-    },
-  },
+  trellis: { source: repoTrellisSource() },
 };
 
 /** One admitted attachment as reported by the production admin surface. */

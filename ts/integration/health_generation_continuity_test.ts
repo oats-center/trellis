@@ -35,7 +35,9 @@ Deno.test("service health survives generation reaping and stop fences sampling",
     const system = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await Deno.readFile(join(runtime.workdir, "nats/creds/system.creds")),
+        await Deno.readFile(
+          join(runtime.workdir, "config/trellis/nats/creds/system.creds"),
+        ),
       ),
     });
     let releaseSample = Promise.withResolvers<void>();

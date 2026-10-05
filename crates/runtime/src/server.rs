@@ -21,6 +21,8 @@ pub struct VersionInfo {
     pub version: &'static str,
     /// Runtime mode selected for this process.
     pub mode: String,
+    /// OS process serving this response; local supervisors use it to identify their child.
+    pub process_id: u32,
 }
 
 /// Error returned by the runtime HTTP server.
@@ -46,6 +48,7 @@ pub fn build_version_info(mode: RuntimeMode) -> VersionInfo {
     VersionInfo {
         version: env!("CARGO_PKG_VERSION"),
         mode: mode.to_string(),
+        process_id: std::process::id(),
     }
 }
 

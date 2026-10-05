@@ -1,10 +1,7 @@
-//! Administrator automation through the projected generated Auth API.
+//! Administrator automation through the generated production Auth API.
 //!
-//! All administration uses the generated `trellis.auth@v1` client projected
-//! into this crate; the only HTTP calls are the existing local-login and
-//! first-administrator portal endpoints, which the SDK does not expose as RPCs.
-
-use std::time::Duration;
+//! All administration uses the generated `trellis.auth@v1` client;
+//! login and consent use the existing public auth helpers.
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -15,10 +12,10 @@ use trellis_rs::auth::{
 use trellis_rs::client::CallError;
 use trellis_rs::generated::ParticipantDescriptor;
 
-use crate::apis::trellis_auth_v1::rpc::DeploymentsApplyError;
-use crate::apis::trellis_auth_v1::Client as AuthClient;
 use crate::error::{TrellisTestError, TrellisTestErrorKind, TrellisTestStage};
-use crate::types::{
+use trellis_runtime_apis::apis::trellis_auth_v1::rpc::DeploymentsApplyError;
+use trellis_runtime_apis::apis::trellis_auth_v1::Client as AuthClient;
+use trellis_runtime_apis::types::{
     Approval, ApprovalMode, ApprovedCapability, ApprovedResource, AuthDeploymentsApplyRequest,
     AuthDeploymentsCreateRequest, AuthDeploymentsCreateRequestKind, AuthParticipantsInstallRequest,
     AuthPortalsGrantOverridesPutRequest, AuthServiceInstancesProvisionRequest, ConsentRequest,
@@ -140,11 +137,6 @@ fn login_error(action: &str, error: &impl std::fmt::Display) -> TrellisTestError
     )
 }
 
-/// Redacts a known secret from a message before it can reach a public error.
-fn redact(text: &str, secret: &str) -> String {
-    crate::error::redact_secrets(text, &[secret])
-}
-
 /// An authenticated administrator session for one test runtime.
 pub(crate) struct AdminSession {
     auth: AuthClient,
@@ -159,7 +151,7 @@ impl AdminSession {
     ) -> Result<Self, TrellisTestError> {
         let challenge = start_agent_login(&StartAgentLoginOpts {
             trellis_url,
-            participant_id: crate::participants::trellis_cli::PARTICIPANT_ID,
+            participant_id: trellis_runtime_apis::participants::trellis_cli::PARTICIPANT_ID,
         })
         .await
         .map_err(|error| {
@@ -203,7 +195,7 @@ impl AdminSession {
 
     /// Confirms the administrator boundary with a generated `Sessions.Me` call.
     pub(crate) async fn verify(&self) -> Result<(), TrellisTestError> {
-        let request = crate::types::AuthSessionsMeRequest {
+        let request = trellis_runtime_apis::types::AuthSessionsMeRequest {
             extra: Default::default(),
         };
         let response = self.auth.sessions_me(&request).await.map_err(|error| {
@@ -214,7 +206,7 @@ impl AdminSession {
             )
         })?;
         let participant = value_text(&response.connection.participant_id);
-        if participant != crate::participants::trellis_cli::PARTICIPANT_ID {
+        if participant != trellis_runtime_apis::participants::trellis_cli::PARTICIPANT_ID {
             return Err(TrellisTestError::new(
                 TrellisTestErrorKind::Authentication,
                 TrellisTestStage::AdministratorLogin,
@@ -224,7 +216,7 @@ impl AdminSession {
             ));
         }
         match &response.session {
-            crate::__types::Nullable::Value(session) => {
+            trellis_runtime_apis::__types::Nullable::Value(session) => {
                 let bound = value_text(&session.participant_id);
                 if bound != participant {
                     return Err(TrellisTestError::new(
@@ -234,7 +226,7 @@ impl AdminSession {
                     ));
                 }
             }
-            crate::__types::Nullable::Null => {
+            trellis_runtime_apis::__types::Nullable::Null => {
                 return Err(TrellisTestError::new(
                     TrellisTestErrorKind::Authentication,
                     TrellisTestStage::AdministratorLogin,
@@ -393,7 +385,7 @@ impl AdminSession {
                 )
             })?
             .instance;
-        if let crate::__types::Nullable::Value(assigned) = &instance.participant_id {
+        if let trellis_runtime_apis::__types::Nullable::Value(assigned) = &instance.participant_id {
             if assigned != participant_id {
                 return Err(TrellisTestError::new(
                     TrellisTestErrorKind::AdminRpc,
@@ -440,68 +432,6 @@ impl AdminSession {
             })?;
         Ok(())
     }
-}
-
-/// Completes the first-administrator flow for a bootstrap `token`.
-pub(crate) async fn bootstrap_first_admin(
-    trellis_url: &str,
-    token: &str,
-    username: &str,
-    password: &str,
-    timeout_ms: u64,
-) -> Result<(), TrellisTestError> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(timeout_ms))
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|error| {
-            TrellisTestError::new(
-                TrellisTestErrorKind::Bootstrap,
-                TrellisTestStage::AdministratorBootstrap,
-                format!("building the bootstrap HTTP client: {error}"),
-            )
-        })?;
-    let url = format!(
-        "{}/auth/account-flow/{}/local-password",
-        trellis_url.trim_end_matches('/'),
-        token
-    );
-    let response = client
-        .post(&url)
-        .header("origin", trellis_url)
-        .json(&json!({ "username": username, "password": password }))
-        .send()
-        .await
-        .map_err(|error| {
-            TrellisTestError::new(
-                TrellisTestErrorKind::Bootstrap,
-                TrellisTestStage::AdministratorBootstrap,
-                format!(
-                    "posting the first-administrator credentials: {}",
-                    redact(&error.to_string(), token)
-                ),
-            )
-        })?;
-    let status = response.status();
-    let body: Value = response.json().await.map_err(|error| {
-        TrellisTestError::new(
-            TrellisTestErrorKind::Bootstrap,
-            TrellisTestStage::AdministratorBootstrap,
-            format!(
-                "reading the first-administrator response: {}",
-                redact(&error.to_string(), token)
-            ),
-        )
-    })?;
-    if !status.is_success() || body.get("status").and_then(Value::as_str) != Some("created") {
-        return Err(TrellisTestError::new(
-            TrellisTestErrorKind::Bootstrap,
-            TrellisTestStage::AdministratorBootstrap,
-            format!("first-administrator setup failed with status {status}"),
-        ));
-    }
-    Ok(())
 }
 
 /// Extracts the server-computed consent request from an apply rejection.

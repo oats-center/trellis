@@ -77,14 +77,7 @@ Deno.test(
   "the readiness barrier holds sequential physical connections independently",
   async () => {
     await withTrellisRuntime(async (runtime) => {
-      const config = await Deno.readTextFile(
-        join(runtime.workdir, "trellis", "config.toml"),
-      );
-      const nativeServer = config.match(
-        /^\s*nats_servers\s*=\s*\[\s*"([^"]+)"\]/m,
-      );
-      assert(nativeServer, "the runtime must advertise a native NATS server");
-      const proxyUrl = nativeServer[1]!;
+      const proxyUrl = runtime.nativeProxyUrl();
       assert(
         proxyUrl !== runtime.natsUrl,
         "connections must traverse the proxy",
@@ -94,7 +87,14 @@ Deno.test(
         timeout: REQUEST_TIMEOUT_MS,
         authenticator: credsAuthenticator(
           await Deno.readFile(
-            join(runtime.workdir, "nats", "creds", "system.creds"),
+            join(
+              runtime.workdir,
+              "config",
+              "trellis",
+              "nats",
+              "creds",
+              "system.creds",
+            ),
           ),
         ),
       };
@@ -226,20 +226,20 @@ Deno.test(
   "closed physical connections discard retained PONGs and replies without disturbing fresh holds",
   async () => {
     await withTrellisRuntime(async (runtime) => {
-      const config = await Deno.readTextFile(
-        join(runtime.workdir, "trellis", "config.toml"),
-      );
-      const nativeServer = config.match(
-        /^\s*nats_servers\s*=\s*\[\s*"([^"]+)"\]/m,
-      );
-      assert(nativeServer, "the runtime must advertise a native NATS server");
-      assert(nativeServer[1] !== runtime.natsUrl, "use the native proxy");
+      const proxyUrl = runtime.nativeProxyUrl();
       const options = {
-        servers: nativeServer[1]!,
+        servers: proxyUrl,
         timeout: REQUEST_TIMEOUT_MS,
         authenticator: credsAuthenticator(
           await Deno.readFile(
-            join(runtime.workdir, "nats", "creds", "system.creds"),
+            join(
+              runtime.workdir,
+              "config",
+              "trellis",
+              "nats",
+              "creds",
+              "system.creds",
+            ),
           ),
         ),
       };
@@ -352,14 +352,7 @@ Deno.test(
     await withTrellisRuntime(async (runtime) => {
       // The system connection must traverse the intercepting native proxy, so
       // read its advertised URL from the generated control-plane config.
-      const config = await Deno.readTextFile(
-        join(runtime.workdir, "trellis", "config.toml"),
-      );
-      const nativeServer = config.match(
-        /^\s*nats_servers\s*=\s*\[\s*"([^"]+)"\]/m,
-      );
-      assert(nativeServer, "the runtime must advertise a native NATS server");
-      const proxyUrl = nativeServer[1]!;
+      const proxyUrl = runtime.nativeProxyUrl();
       assert(
         proxyUrl !== runtime.natsUrl,
         "the system connection must not bypass the native proxy",
@@ -369,7 +362,14 @@ Deno.test(
         servers: proxyUrl,
         authenticator: credsAuthenticator(
           await Deno.readFile(
-            join(runtime.workdir, "nats", "creds", "system.creds"),
+            join(
+              runtime.workdir,
+              "config",
+              "trellis",
+              "nats",
+              "creds",
+              "system.creds",
+            ),
           ),
         ),
       });
@@ -450,14 +450,7 @@ Deno.test(
   "the response barrier selects the withheld request by its reply body",
   async () => {
     await withTrellisRuntime(async (runtime) => {
-      const config = await Deno.readTextFile(
-        join(runtime.workdir, "trellis", "config.toml"),
-      );
-      const nativeServer = config.match(
-        /^\s*nats_servers\s*=\s*\[\s*"([^"]+)"\]/m,
-      );
-      assert(nativeServer, "the runtime must advertise a native NATS server");
-      const proxyUrl = nativeServer[1]!;
+      const proxyUrl = runtime.nativeProxyUrl();
       assert(
         proxyUrl !== runtime.natsUrl,
         "the system connection must not bypass the native proxy",
@@ -467,7 +460,14 @@ Deno.test(
         servers: proxyUrl,
         authenticator: credsAuthenticator(
           await Deno.readFile(
-            join(runtime.workdir, "nats", "creds", "system.creds"),
+            join(
+              runtime.workdir,
+              "config",
+              "trellis",
+              "nats",
+              "creds",
+              "system.creds",
+            ),
           ),
         ),
       });
@@ -545,14 +545,7 @@ Deno.test(
   "the response barrier matches the exact reply body behind real NATS headers",
   async () => {
     await withTrellisRuntime(async (runtime) => {
-      const config = await Deno.readTextFile(
-        join(runtime.workdir, "trellis", "config.toml"),
-      );
-      const nativeServer = config.match(
-        /^\s*nats_servers\s*=\s*\[\s*"([^"]+)"\]/m,
-      );
-      assert(nativeServer, "the runtime must advertise a native NATS server");
-      const proxyUrl = nativeServer[1]!;
+      const proxyUrl = runtime.nativeProxyUrl();
       assert(
         proxyUrl !== runtime.natsUrl,
         "the system connection must not bypass the native proxy",
@@ -562,7 +555,14 @@ Deno.test(
         servers: proxyUrl,
         authenticator: credsAuthenticator(
           await Deno.readFile(
-            join(runtime.workdir, "nats", "creds", "system.creds"),
+            join(
+              runtime.workdir,
+              "config",
+              "trellis",
+              "nats",
+              "creds",
+              "system.creds",
+            ),
           ),
         ),
       });
@@ -689,14 +689,7 @@ Deno.test(
   "a throwing reply predicate rejects that hold, forwards the reply, and never disarms a newer hold",
   async () => {
     await withTrellisRuntime(async (runtime) => {
-      const config = await Deno.readTextFile(
-        join(runtime.workdir, "trellis", "config.toml"),
-      );
-      const nativeServer = config.match(
-        /^\s*nats_servers\s*=\s*\[\s*"([^"]+)"\]/m,
-      );
-      assert(nativeServer, "the runtime must advertise a native NATS server");
-      const proxyUrl = nativeServer[1]!;
+      const proxyUrl = runtime.nativeProxyUrl();
       assert(
         proxyUrl !== runtime.natsUrl,
         "the system connection must not bypass the native proxy",
@@ -706,7 +699,14 @@ Deno.test(
         servers: proxyUrl,
         authenticator: credsAuthenticator(
           await Deno.readFile(
-            join(runtime.workdir, "nats", "creds", "system.creds"),
+            join(
+              runtime.workdir,
+              "config",
+              "trellis",
+              "nats",
+              "creds",
+              "system.creds",
+            ),
           ),
         ),
       });

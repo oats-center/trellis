@@ -3,7 +3,10 @@
 name = "trellis-runtime-apis"
 version = "0.100.0"
 edition = "2021"
-publish = false
+publish = ["crates-io"]
+license = "Apache-2.0"
+repository = "https://github.com/oats-center/trellis"
+description = "Internal generated administration APIs for the Trellis runtime."
 
 [package.metadata.trellis]
 generated = true

@@ -48,7 +48,7 @@ Deno.test("ordinary user consent survives a control-plane restart and narrows un
         "the ordinary consent approved a capability",
       );
 
-      await runtime.restartControlPlane();
+      await runtime.restart();
       await page.reload({ waitUntil: "domcontentloaded" });
       await waitForConsoleConnected(page);
 

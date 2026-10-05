@@ -19,6 +19,8 @@
     "@std/assert": "jsr:@std/assert@^1.0.19",
     "@std/path": "jsr:@std/path@^1.1.4",
     "fflate": "npm:fflate@^0.8.2",
+    "tar": "npm:tar@^7.5.22",
+    "zod": "npm:zod@^4.3.6",
     "ulid": "npm:ulid@^3.0.2"
   },
   "publish": {

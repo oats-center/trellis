@@ -136,7 +136,7 @@ Deno.test("browser admin bootstrap reaches the authorized console and survives r
     } finally {
       await context.close();
     }
-  }, browserRuntimeOptions());
+  }, browserRuntimeOptions({ firstAdmin: "browser-flow" }));
 });
 
 Deno.test("idle signed-intent portal survives reload and completes the initiating Console login", async () => {

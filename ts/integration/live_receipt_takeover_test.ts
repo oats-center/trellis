@@ -27,7 +27,7 @@ import {
   brokerConnectionKey,
   readRuntimeBrokerInventory,
 } from "./_support/broker_inventory.ts";
-import { withTrellisRuntime } from "./_support/runtime.ts";
+import { repoTrellisSource, withTrellisRuntime } from "./_support/runtime.ts";
 
 type Runtime = Parameters<Parameters<typeof withTrellisRuntime>[0]>[0];
 
@@ -35,13 +35,6 @@ type Runtime = Parameters<Parameters<typeof withTrellisRuntime>[0]>[0];
 const CAPABILITY_B = "runtime-trellis.transport_growth@v1::extend";
 const SUBJECT_DEPLOYMENT = "receipt-takeover-subject";
 const TARGET_DEPLOYMENT = "receipt-takeover-target";
-
-function serverBinary(): string {
-  return Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
-    fromFileUrl(
-      new URL("../../target/debug/trellis-server", import.meta.url),
-    );
-}
 
 /** Canonical short lifetimes; no timing widening for the receipt window. */
 const runtimeOptions = {
@@ -51,12 +44,7 @@ const runtimeOptions = {
     refreshJitterSeconds: 0,
     minimumContextLifetimeSeconds: 46,
   },
-  trellis: {
-    command: {
-      cmd: serverBinary(),
-      args: ["--config", "{config}", "all"],
-    },
-  },
+  trellis: { source: repoTrellisSource() },
 };
 
 type Attachment = {

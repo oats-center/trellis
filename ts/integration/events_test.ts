@@ -16,6 +16,7 @@ import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
 
 Deno.test("Auth connection lifecycle events survive the fenced outbox", async () => {
   await withTrellisRuntime(async (runtime) => {
+    let phase = "initial-lifecycle";
     const admin = await runtime.connectClient({
       name: "auth-events-admin",
       contract: webParticipants.Console.participant,
@@ -26,9 +27,19 @@ Deno.test("Auth connection lifecycle events survive the fenced outbox", async ()
     });
     const qualified = "events.v1.dHJlbGxpcy5hdXRoQHYx.Connections";
     const lifecycleRows = async (connectionId: string, name: string) => {
-      const rows = (await admin.eventsQuery({
+      const query = await admin.eventsQuery({
         subject: `${qualified}.${name}`,
-      }).orThrow()).items;
+      });
+      if (query.isErr()) {
+        console.error(JSON.stringify({
+          event: "auth-lifecycle-query-failed",
+          phase,
+          connectionId,
+          name,
+          error: query.error.toSerializable(),
+        }));
+      }
+      const rows = query.orThrow().items;
       const matching = [];
       for (const row of rows) {
         const detail =
@@ -41,15 +52,10 @@ Deno.test("Auth connection lifecycle events survive the fenced outbox", async ()
       return matching;
     };
     const waitForEvent = async (connectionId: string, name: string) => {
-      let row;
-      const deadline = Date.now() + 30_000;
-      while (!row && Date.now() < deadline) {
+      const { detail, payload } = await runtime.waitFor(async () => {
         const rows = await lifecycleRows(connectionId, name);
-        if (rows.length === 1) row = rows[0];
-        else await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-      if (!row) throw new Error(`Timed out waiting for Connections.${name}`);
-      const { detail, payload } = row;
+        return rows.length === 1 ? rows[0] : undefined;
+      }, { timeoutMs: 30_000, intervalMs: 100 });
       assertEquals(detail.row.subject, `${qualified}.${name}`);
       webApis.auth.API.actions[
         `event:Connections.${name}` as
@@ -132,7 +138,7 @@ Deno.test("Auth connection lifecycle events survive the fenced outbox", async ()
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
         await Deno.readFile(
-          join(runtime.workdir, "nats/creds/trellis-auth.creds"),
+          join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
         ),
       ),
     });
@@ -143,6 +149,7 @@ Deno.test("Auth connection lifecycle events survive the fenced outbox", async ()
       );
       if (!eventStream) throw new Error("event stream missing");
       const streamConfig = eventStream.config;
+      phase = "outbox-publication-blocked";
       await manager.streams.update(streamConfig.name, {
         ...streamConfig,
         max_msg_size: 1,
@@ -157,7 +164,9 @@ Deno.test("Auth connection lifecycle events survive the fenced outbox", async ()
         0,
       );
       await manager.streams.update(streamConfig.name, streamConfig);
-      await runtime.restartControlPlane();
+      phase = "host-restarting";
+      await runtime.restart();
+      phase = "outbox-replay-after-restart";
       await waitForEvent(recovery.connectionId, "Opened");
       assertEquals(
         await lifecycleRows(recovery.connectionId, "Opened").then((r) =>
@@ -186,7 +195,7 @@ Deno.test("runtime Events transports Health.StatusChanged on its qualified subje
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
         await Deno.readFile(
-          join(runtime.workdir, "nats/creds/trellis-auth.creds"),
+          join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
         ),
       ),
     });
@@ -263,7 +272,7 @@ Deno.test("Events projector retains rejected unsafe times and advances", async (
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
         await Deno.readFile(
-          join(runtime.workdir, "nats/creds/trellis-auth.creds"),
+          join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
         ),
       ),
     });
@@ -355,7 +364,10 @@ Deno.test("Rust durable events match registrations and retain unhandled messages
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
           await Deno.readFile(
-            join(runtime.workdir, "nats/creds/trellis-auth.creds"),
+            join(
+              runtime.workdir,
+              "config/trellis/nats/creds/trellis-auth.creds",
+            ),
           ),
         ),
       });

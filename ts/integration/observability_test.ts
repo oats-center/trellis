@@ -12,15 +12,13 @@ import {
 } from "npm:@opentelemetry/sdk-metrics@^2.7.0";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
-import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
+import {
+  repoTrellisSource,
+  rustFixtureArgv,
+  withTrellisRuntime,
+} from "./_support/runtime.ts";
 
 /** Built server binary used so each scenario can set its own environment. */
-function serverBinary(): string {
-  return Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
-    fromFileUrl(
-      new URL("../../target/debug/trellis-server", import.meta.url),
-    );
-}
 
 const captureEndpoint = Deno.env.get("TRELLIS_OBS_CAPTURE_ENDPOINT");
 
@@ -313,18 +311,11 @@ for (
           }
         }, {
           trellis: {
-            command: {
-              cmd: "env",
-              args: [
-                ...Object.keys(Deno.env.toObject()).filter((key) =>
-                  key.startsWith("OTEL_")
-                ).flatMap((key) => ["-u", key]),
-                ...Object.entries(env).map(([key, value]) => `${key}=${value}`),
-                serverBinary(),
-                "--config",
-                "{config}",
-                "all",
-              ],
+            environment: {
+              unset: Object.keys(Deno.env.toObject()).filter((key) =>
+                key.startsWith("OTEL_")
+              ),
+              set: env,
             },
           },
         });
@@ -464,12 +455,7 @@ Deno.test("TS service connection observes usable, authoritative terminal, and di
       true,
     );
   }, {
-    trellis: {
-      command: {
-        cmd: serverBinary(),
-        args: ["--config", "{config}", "all"],
-      },
-    },
+    trellis: { source: repoTrellisSource() },
   });
 });
 
@@ -562,12 +548,7 @@ Deno.test("TS standalone live telemetry derives exact per-side deltas from one o
         assertEquals(await serviceExit, undefined);
       }
     }, {
-      trellis: {
-        command: {
-          cmd: serverBinary(),
-          args: ["--config", "{config}", "all"],
-        },
-      },
+      trellis: { source: repoTrellisSource() },
     });
   } finally {
     await capture.stop();

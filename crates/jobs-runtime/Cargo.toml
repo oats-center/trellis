@@ -5,12 +5,13 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Internal Rust Jobs admin runtime for Trellis."
-publish = false
+publish = ["crates-io"]
 
 [dependencies]
 async-nats.workspace = true
 futures-util.workspace = true
 rusqlite.workspace = true
+refinery.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -19,7 +20,7 @@ time.workspace = true
 tracing.workspace = true
 trellis-rs = { path = "../trellis", version = "0.100.0", features = ["runtime-internals"] }
 trellis-protocol.workspace = true
-trellis-runtime-apis = { path = "../runtime-apis" }
+trellis-runtime-apis = { path = "../runtime-apis", version = "0.100.0" }
 
 [dev-dependencies]
 tempfile = "3.27.0"

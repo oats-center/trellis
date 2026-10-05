@@ -198,7 +198,7 @@ Deno.test("device companion requires separate selected consent across restart", 
       async () => {
         const database = createClient({
           url: `file:${
-            join(runtime.workdir, "trellis", "trellis.sqlite.platform")
+            join(runtime.workdir, "data", "trellis", "platform.sqlite")
           }`,
         });
         try {
@@ -349,7 +349,7 @@ Deno.test("device companion requires separate selected consent across restart", 
     await device.connection.close();
     await secondDevice.connection.close();
 
-    await runtime.restartControlPlane();
+    await runtime.restart();
     device = await TrellisDevice.connect({
       trellisUrl: runtime.trellisUrl,
       participant: participants.Device.participant,

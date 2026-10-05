@@ -27,20 +27,6 @@ import {
 } from "./_support/broker_inventory.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
-/** Reads the native proxy URL the runtime advertises to the control plane. */
-function nativeProxyUrl(configText: string, natsUrl: string): string {
-  const match = configText.match(
-    /^\s*nats_servers\s*=\s*\[\s*"([^"]+)"\]/m,
-  );
-  assert(match, "the runtime must advertise a native NATS server");
-  const proxyUrl = match[1]!;
-  assert(
-    proxyUrl !== natsUrl,
-    "the subject connection must not bypass the native proxy",
-  );
-  return proxyUrl;
-}
-
 /** Reject with `message` if `promise` has not settled within `ms`. */
 function withTimeout<T>(
   promise: Promise<T>,
@@ -132,17 +118,21 @@ Deno.test(
   async () => {
     await withTrellisRuntime(async (runtime) => {
       const systemCreds = await Deno.readFile(
-        join(runtime.workdir, "nats", "creds", "system.creds"),
+        join(
+          runtime.workdir,
+          "config",
+          "trellis",
+          "nats",
+          "creds",
+          "system.creds",
+        ),
       );
       const system: NatsConnection = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(systemCreds),
       });
       try {
-        const config = await Deno.readTextFile(
-          join(runtime.workdir, "trellis", "config.toml"),
-        );
-        const proxyUrl = nativeProxyUrl(config, runtime.natsUrl);
+        const proxyUrl = runtime.nativeProxyUrl();
         await expectIdentityLeaves(system, proxyUrl, systemCreds, "drain");
         await expectIdentityLeaves(system, proxyUrl, systemCreds, "close");
       } finally {

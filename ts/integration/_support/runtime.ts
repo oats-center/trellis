@@ -17,7 +17,8 @@ export function trellisRepoRuntimeOptions(
     ...options,
     keepWorkdir: options.keepWorkdir ?? keepWorkdirFromEnv(),
     trellis: {
-      command: options.trellis?.command ?? repoTrellisCommand(),
+      ...options.trellis,
+      source: options.trellis?.source ?? repoTrellisSource(),
     },
     timeouts: {
       ...DEFAULT_TIMEOUTS,
@@ -26,14 +27,20 @@ export function trellisRepoRuntimeOptions(
   };
 }
 
-function repoTrellisCommand() {
+/** Resolve the producer-built CLI/server pair without compiling or downloading in execution jobs. */
+export function repoTrellisSource(): {
+  kind: "path";
+  cli: string;
+  server: string;
+} {
   const server = Deno.env.get("TRELLIS_TEST_SERVER_BIN");
-  if (server === undefined) {
+  const cli = Deno.env.get("TRELLIS_TEST_CLI_BIN");
+  if (server === undefined || cli === undefined) {
     throw new Error(
-      "TRELLIS_TEST_SERVER_BIN must point at the prebuilt trellis-server; run `deno task test:integration`",
+      "TRELLIS_TEST_CLI_BIN and TRELLIS_TEST_SERVER_BIN must point at the matching prebuilt binaries; run `deno task test:integration`",
     );
   }
-  return { cmd: server, args: ["--config", "{config}", "all"] };
+  return { kind: "path", cli, server };
 }
 
 /**

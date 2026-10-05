@@ -6,13 +6,20 @@ The public Cargo runtime package is the `trellis-rs` facade; projects author
 APIs and participants in Trellis IDL and generate Rust code with the `trellis`
 CLI. Low-level crates in this workspace support the platform implementation,
 generators, CLIs, and tests; they are not the stable package surface that normal
-Rust services and apps should author against. Internal workspace crates are
-marked `publish = false`; runtime implementation for public authoring lives
-behind modules of the `trellis-rs` facade.
+Rust services and apps should author against. Private workspace crates remain
+unpublished; runtime implementation for public authoring lives behind modules of
+the `trellis-rs` facade.
 
-Exactly three crates are intended for publication: `trellis-rs` (the facade),
+The supported author-facing crates are `trellis-rs` (the facade),
 `trellis-protocol` (canonical protocol objects), and `trellis-testkit` (the
-external live-test harness). Every other workspace crate is internal.
+external live-test harness). The testkit runs the linked production runtime and
+real managed NATS; neither `trellis` nor `trellis-server` is needed to start it.
+
+Cargo also distributes `trellis-runtime-apis`, `trellis-idl`,
+`trellis-local-bootstrap`, `trellis-events-runtime`, `trellis-jobs-runtime`,
+`trellis-runtime`, `trellis-bootstrap`, and `trellis-local-nats` in lockstep.
+These implementation crates are not supported service-author APIs and are not
+added to the public Rustdoc landing surface.
 
 **Crates in this repository:**
 
@@ -22,7 +29,7 @@ external live-test harness). Every other workspace crate is internal.
 | `trellis-auth-adapters`   | Unpublished compatibility/test package for auth adapters         |
 | `trellis-rs`              | Curated public Rust facade for clients and services              |
 | `trellis-protocol`        | Public canonical protocol objects                                |
-| `trellis-testkit`         | Public out-of-process live-test harness                          |
+| `trellis-testkit`         | Public live-test harness with linked production runtime          |
 | `trellis-cli`             | Operator CLI crate for the `trellis` binary                      |
 | `trellis-client`          | Unpublished compatibility package for `trellis_rs::client`       |
 | `trellis-codegen-rust`    | Internal Rust SDK code generation                                |

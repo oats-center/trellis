@@ -1,7 +1,7 @@
 //! Live acceptance tests for the external Rust testkit.
 //!
 //! These tests are explicitly selected by the fixture's `live` target and run
-//! against real `trellis`/`trellis-server` executables. They never start
+//! against the embedded production runtime and a real NATS process. They never start
 //! infrastructure during compilation or documentation generation.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -22,128 +22,46 @@ use trellis_test_fixture::participants::trellis_test_fixture_unsupported_device:
 use trellis_test_fixture::types::Value;
 use trellis_testkit::{TrellisTestErrorKind, TrellisTestRuntime};
 
-/// Generated inspection and repeat CLI installation preserve both optional bundle kinds.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn optional_bundles_decode_and_repeat_cli_install() {
-    use std::process::Stdio;
-    use trellis_rs::auth::{complete_local_login, connect_admin_client_async, AdminSessionState};
-    use trellis_test_fixture::apis::trellis_auth_v1::Client as AuthClient;
-    use trellis_test_fixture::types::AuthParticipantsGetRequest;
-
+/// An ordinary downstream builder serves its bundled apps and permits real administration.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bare_builder_serves_embedded_apps_and_installs_a_participant() {
     let mut runtime = TrellisTestRuntime::builder()
         .start()
         .await
-        .expect("start runtime");
-    let cli = std::env::var_os("TRELLIS_TEST_CLI_BIN").expect("prebuilt CLI path");
-    let config_home = runtime.workdir().join("cli-profile");
-    let login_url_file = runtime.workdir().join("cli-login-url");
-    let mut login = tokio::process::Command::new(&cli)
-        .args([
-            "--format",
-            "json",
-            "login",
-            runtime.trellis_url(),
-            "--login-url-file",
-        ])
-        .arg(&login_url_file)
-        .env("XDG_CONFIG_HOME", &config_home)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .expect("start ordinary CLI login");
-    let login_url = tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if let Ok(url) = std::fs::read_to_string(&login_url_file) {
-                break url;
-            }
-            assert!(
-                login.try_wait().unwrap().is_none(),
-                "CLI exited before login URL"
-            );
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .expect("CLI login URL deadline");
-    complete_local_login(
-        runtime.trellis_url(),
-        login_url.trim(),
-        runtime.admin_username(),
-        runtime.admin_password(),
-    )
-    .await
-    .expect("complete real portal login");
-    let logged_in = tokio::time::timeout(Duration::from_secs(30), login.wait_with_output())
-        .await
-        .expect("CLI login completion deadline")
-        .expect("wait for CLI login");
-    assert!(
-        logged_in.status.success(),
-        "CLI login: {}",
-        String::from_utf8_lossy(&logged_in.stderr)
-    );
-
-    let state: AdminSessionState = serde_json::from_slice(
-        &std::fs::read(config_home.join("trellis/admin-session.json"))
-            .expect("read the CLI's real login session"),
-    )
-    .expect("decode CLI login session");
-    let connected = connect_admin_client_async(&state)
-        .await
-        .expect("connect administrator");
-    let auth = AuthClient::from_generated(connected.clone());
-    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("optional-bundle-source");
-    let participant_id = "optional-bundle-fixture.Caller";
-
-    for installation in ["initial", "repeat"] {
-        // Neither invocation supplies expected-revision. On repeat, the ordinary CLI
-        // must decode Participants.Get and use its revision before installing.
-        let output = tokio::time::timeout(
-            Duration::from_secs(30),
-            tokio::process::Command::new(&cli)
-                .args(["--format", "json", "participants", "install", "--source"])
-                .arg(&source)
-                .env("XDG_CONFIG_HOME", &config_home)
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await
-        .expect("participant install deadline")
-        .expect("run participant install");
+        .expect("bare builder");
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    for route in ["/login", "/console"] {
+        let response = http
+            .get(format!("{}{route}", runtime.trellis_url()))
+            .send()
+            .await
+            .expect("embedded app request");
         assert!(
-            output.status.success(),
-            "{installation} install: {}",
-            String::from_utf8_lossy(&output.stderr)
+            response.status().is_success(),
+            "embedded app {route}: {}",
+            response.status()
+        );
+        assert!(response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("text/html"));
+        assert!(
+            !response.bytes().await.unwrap().is_empty(),
+            "embedded app must have a response body"
         );
     }
-    let detail = auth
-        .participants_get(&AuthParticipantsGetRequest {
-            participant_id: participant_id.to_owned().into(),
-            revision: None,
-            extra: Default::default(),
-        })
+    runtime
+        .install_participant::<ProviderParticipant>()
         .await
-        .expect("generated Participants.Get must decode both kinds");
-    let bundles = &detail.participant.optional_bundles;
-    let capability = bundles
-        .iter()
-        .find(|bundle| bundle.id.as_ref() == "optional-bundle-fixture.echo@v1::optionalEcho")
-        .expect("compiled optional capability bundle");
-    assert_eq!(
-        capability.api_id.as_ref().map(AsRef::<str>::as_ref),
-        Some("optional-bundle-fixture.echo@v1")
-    );
-    assert!(!capability.permissions.is_empty());
-    let resource = bundles
-        .iter()
-        .find(|bundle| bundle.id.as_ref() == "resource.cache")
-        .expect("compiled optional resource bundle");
-    assert!(resource.api_id.is_none(), "a resource has no owning API");
-    assert!(!resource.permissions.is_empty());
-    drop(auth);
-    drop(connected);
-    runtime.shutdown().await.expect("shutdown runtime");
+        .expect("real generated administration RPC");
+    runtime.shutdown().await.expect("orderly shutdown");
 }
 
 /// A running provider service plus the count of executed Echo handlers.
@@ -556,21 +474,6 @@ async fn profile_child_registers_caller() {
         .expect("shutdown runtime in the profile child");
 }
 
-/// T02: missing or explicitly invalid Trellis binaries fail before startup.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn t02_missing_or_invalid_binaries_fail() {
-    let result = TrellisTestRuntime::builder()
-        .cli_binary("/nonexistent/trellis")
-        .server_binary("/nonexistent/trellis-server")
-        .start()
-        .await;
-    let error = match result {
-        Ok(_) => panic!("missing binaries must fail"),
-        Err(error) => error,
-    };
-    assert_eq!(error.kind(), TrellisTestErrorKind::InvalidBinary);
-}
-
 /// T05: an AgentCaller completes its own participant-bound session and calls the
 /// provider.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -679,23 +582,14 @@ async fn t11_missing_nats_fails_cleanly() {
         Ok(_) => panic!("a missing NATS executable must fail"),
         Err(error) => error,
     };
-    assert!(
-        matches!(
-            error.kind(),
-            TrellisTestErrorKind::InvalidBinary
-                | TrellisTestErrorKind::MissingBinary
-                | TrellisTestErrorKind::ProcessExited
-                | TrellisTestErrorKind::Bootstrap
-                | TrellisTestErrorKind::Timeout
-        ),
-        "an explicitly invalid NATS path must fail without falling back, got {:?}",
-        error.kind()
+    assert_eq!(
+        error.kind(),
+        TrellisTestErrorKind::InvalidBinary,
+        "an explicitly invalid NATS path must fail without falling back"
     );
 }
 
-/// T16: cancelling an in-progress `start` after the server process has actually
-/// spawned does not orphan its process group or hold any of its four listeners.
-#[cfg(target_os = "linux")]
+/// T16: cancellation after a real broker listener opens releases all selected endpoints.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn t16_cancelling_start_does_not_orphan_infrastructure() {
     let parent = std::env::temp_dir().join(format!("trellis-cancel-{}", std::process::id()));
@@ -704,32 +598,71 @@ async fn t16_cancelling_start_does_not_orphan_infrastructure() {
     let handle = tokio::spawn(async move {
         TrellisTestRuntime::builder()
             .workdir_parent(parent_for_task)
+            .retention(trellis_testkit::WorkdirRetention::Always)
             .start()
             .await
-            .map(|_| ())
     });
-
-    // Observe a real post-spawn condition: the server process exists and its
-    // command line names the four selected listeners.
-    let mut observed: Option<(u32, [u16; 4])> = None;
-    for _ in 0..2400 {
-        if let Some(pid) = find_server_pid_under(&parent) {
-            if let Some(ports) = server_ports(pid) {
-                observed = Some((pid, ports));
-                break;
+    let ports = tokio::time::timeout(Duration::from_secs(120), async {
+        loop {
+            assert!(
+                !handle.is_finished(),
+                "startup completed before cancellation observation"
+            );
+            for entry in std::fs::read_dir(&parent)
+                .expect("read owned parent")
+                .flatten()
+            {
+                let root = entry.path();
+                let Ok(text) = std::fs::read_to_string(root.join("config/config.toml")) else {
+                    continue;
+                };
+                let Ok(config) = toml::from_str::<toml::Table>(&text) else {
+                    continue;
+                };
+                let Some(http) = config
+                    .get("http")
+                    .and_then(|http| http.get("port"))
+                    .and_then(toml::Value::as_integer)
+                else {
+                    continue;
+                };
+                let Ok(nats) = std::fs::read_to_string(root.join("config/nats/nats.conf")) else {
+                    continue;
+                };
+                // Read the generated listener addresses, not a process command line.
+                let mut ports = vec![u16::try_from(http).expect("HTTP port")];
+                for line in nats.lines() {
+                    let line = line.trim();
+                    if line.starts_with("listen:") || line.starts_with("http:") {
+                        ports.push(
+                            line.rsplit(':')
+                                .next()
+                                .unwrap()
+                                .trim()
+                                .parse::<u16>()
+                                .expect("NATS listener port"),
+                        );
+                    }
+                }
+                if ports.len() == 4
+                    && tokio::net::TcpStream::connect(("127.0.0.1", ports[1]))
+                        .await
+                        .is_ok()
+                {
+                    assert!(
+                        !handle.is_finished(),
+                        "cancellation must occur during startup"
+                    );
+                    return ports;
+                }
             }
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    let (pid, ports) = observed.expect("expected the server to spawn before cancelling");
+    })
+    .await
+    .expect("real broker listener before cancellation");
     handle.abort();
     let _ = handle.await;
-
-    // The owned process and every one of its listeners must disappear.
-    assert!(
-        wait_until_process_gone(pid, Duration::from_secs(30)).await,
-        "server process {pid} survived cancellation"
-    );
     for port in ports {
         assert!(
             wait_until_no_listener(port, Duration::from_secs(30)).await,
@@ -836,166 +769,6 @@ fn t17_panic_unwind_cleanup() {
             );
         }
     });
-}
-
-/// T18: force-stopping the real server returns a meaningful failure and cleanup
-/// also covers its managed NATS descendant. Linux-only: the observer locates the
-/// server through its own process command line, with no harness-side hook.
-#[cfg(target_os = "linux")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn t18_force_stopped_server_cleans_up_nats() {
-    let mut runtime = TrellisTestRuntime::builder()
-        .start()
-        .await
-        .expect("start runtime");
-    let sandbox = runtime.workdir().to_path_buf();
-    let nats_port = endpoint_port(runtime.nats_url());
-    let pid = find_server_pid(&sandbox).expect("locate the running server process");
-    let status = std::process::Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .status()
-        .expect("force-stop the server");
-    assert!(status.success(), "the force-stop signal must be delivered");
-
-    let error = runtime
-        .install_participant::<ProviderParticipant>()
-        .await
-        .expect_err("a force-stopped server must produce a failure");
-    assert!(
-        matches!(
-            error.kind(),
-            TrellisTestErrorKind::AdminRpc
-                | TrellisTestErrorKind::Io
-                | TrellisTestErrorKind::ProcessExited
-                | TrellisTestErrorKind::Timeout
-                | TrellisTestErrorKind::Authentication
-        ),
-        "expected a transport/administration failure, got {:?}",
-        error.kind()
-    );
-
-    let _ = runtime.shutdown().await;
-    assert!(
-        wait_until_no_listener(nats_port, Duration::from_secs(30)).await,
-        "cleanup must also stop the server's managed NATS descendant"
-    );
-}
-
-/// Locates the test runtime's server process from its own command line.
-#[cfg(target_os = "linux")]
-fn find_server_pid(sandbox: &std::path::Path) -> Option<u32> {
-    let needle = sandbox.to_string_lossy().into_owned();
-    for entry in std::fs::read_dir("/proc").ok()? {
-        let Ok(entry) = entry else {
-            continue;
-        };
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
-            continue;
-        };
-        let cmdline = String::from_utf8_lossy(&cmdline);
-        if cmdline.contains("trellis-server") && cmdline.contains(&needle) {
-            return Some(pid);
-        }
-    }
-    None
-}
-
-/// Locates any server process whose command line names a sandbox under `parent`.
-#[cfg(target_os = "linux")]
-fn find_server_pid_under(parent: &std::path::Path) -> Option<u32> {
-    let needle = parent.to_string_lossy().into_owned();
-    for entry in std::fs::read_dir("/proc").ok()? {
-        let Ok(entry) = entry else {
-            continue;
-        };
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
-            continue;
-        };
-        let cmdline = String::from_utf8_lossy(&cmdline);
-        if cmdline.contains("trellis-server") && cmdline.contains(&needle) {
-            return Some(pid);
-        }
-    }
-    None
-}
-
-/// Reads the server's four selected listener ports from its command line and config.
-#[cfg(target_os = "linux")]
-fn server_ports(pid: u32) -> Option<[u16; 4]> {
-    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    let cmdline = String::from_utf8_lossy(&raw).into_owned();
-    let args: Vec<&str> = cmdline.split('\0').collect();
-    let nats_ports = args
-        .iter()
-        .find_map(|arg| arg.strip_prefix("--local-nats-ports="))?;
-    let mut nats = nats_ports.split(',');
-    let nats_port = nats.next()?.parse().ok()?;
-    let monitor_port = nats.next()?.parse().ok()?;
-    let websocket_port = nats.next()?.parse().ok()?;
-    let config = args
-        .iter()
-        .position(|arg| *arg == "--config")
-        .and_then(|index| args.get(index + 1))?;
-    let http_port = http_port_from_config(std::path::Path::new(config))?;
-    Some([http_port, nats_port, monitor_port, websocket_port])
-}
-
-#[cfg(target_os = "linux")]
-fn http_port_from_config(config: &std::path::Path) -> Option<u16> {
-    let text = std::fs::read_to_string(config).ok()?;
-    let mut in_http = false;
-    for line in text.lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
-            in_http = line == "[http]";
-            continue;
-        }
-        if in_http {
-            if let Some(value) = line.strip_prefix("port") {
-                let value = value.trim().trim_start_matches('=').trim();
-                if let Ok(port) = value.parse::<u16>() {
-                    return Some(port);
-                }
-            }
-        }
-    }
-    None
-}
-
-/// True once the process is gone or has become an empty-cmdline zombie.
-#[cfg(target_os = "linux")]
-fn process_gone(pid: u32) -> bool {
-    std::fs::read(format!("/proc/{pid}/cmdline"))
-        .map(|cmdline| cmdline.is_empty())
-        .unwrap_or(true)
-}
-
-#[cfg(target_os = "linux")]
-async fn wait_until_process_gone(pid: u32, timeout: Duration) -> bool {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        if process_gone(pid) {
-            return true;
-        }
-        if std::time::Instant::now() >= deadline {
-            return false;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
 }
 
 /// T19: all three retention policies and a surviving preexisting sibling.

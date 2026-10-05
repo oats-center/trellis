@@ -30,7 +30,7 @@ import { fromFileUrl } from "@std/path";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import type { NativeTransportGate } from "../../ts/packages/trellis-testkit/src/native_gate.ts";
-import { withTrellisRuntime } from "./_support/runtime.ts";
+import { repoTrellisSource, withTrellisRuntime } from "./_support/runtime.ts";
 
 type Runtime = Parameters<Parameters<typeof withTrellisRuntime>[0]>[0];
 
@@ -56,10 +56,6 @@ const PROVIDER_DEPLOYMENT = "held-retiree-provider";
 const CONTEXT_LIFETIME_SECONDS = 300;
 
 /** Built server binary supplied by the live test harness. */
-function serverBinary(): string {
-  return Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
-    fromFileUrl(new URL("../../target/debug/trellis-server", import.meta.url));
-}
 
 const runtimeOptions = {
   authorization: {
@@ -68,12 +64,7 @@ const runtimeOptions = {
     refreshJitterSeconds: 0,
     minimumContextLifetimeSeconds: 240,
   },
-  trellis: {
-    command: {
-      cmd: serverBinary(),
-      args: ["--config", "{config}", "all"],
-    },
-  },
+  trellis: { source: repoTrellisSource() },
   interruptibleNativeProxy: true,
 };
 

@@ -5116,6 +5116,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]
@@ -5410,6 +5411,7 @@ dependencies = [
  "toml",
  "trellis-local-bootstrap",
  "trellis-runtime",
+ "url",
 ]
 
 [[package]]
@@ -5459,6 +5461,7 @@ dependencies = [
  "trellis-local-bootstrap",
  "trellis-protocol",
  "trellis-rs",
+ "trellis-runtime",
  "trellis-runtime-apis",
  "ulid",
 ]
@@ -5500,6 +5503,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "futures-util",
+ "refinery",
  "rusqlite",
  "serde",
  "serde_json",
@@ -5536,6 +5540,7 @@ version = "0.100.0"
 dependencies = [
  "async-nats",
  "futures-util",
+ "refinery",
  "rusqlite",
  "serde",
  "serde_json",
@@ -5679,6 +5684,7 @@ dependencies = [
  "thiserror 2.0.18",
  "time",
  "tokio",
+ "tokio-util",
  "toml",
  "tower",
  "tower-http",
@@ -5724,6 +5730,7 @@ dependencies = [
  "trellis-local-nats",
  "trellis-rs",
  "trellis-runtime",
+ "url",
 ]
 
 [[package]]
@@ -5733,17 +5740,20 @@ dependencies = [
  "base64 0.22.1",
  "futures-util",
  "getrandom 0.3.4",
- "libc",
  "reqwest 0.13.4",
- "semver",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "toml_edit",
+ "tokio-util",
+ "toml",
+ "trellis-bootstrap",
+ "trellis-local-nats",
  "trellis-rs",
+ "trellis-runtime",
+ "trellis-runtime-apis",
  "ulid",
  "url",
 ]
@@ -6586,6 +6596,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "toml_edit",
  "trellis-cli",
  "trellis-codegen-rust",
  "trellis-codegen-ts",

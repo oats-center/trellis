@@ -2,16 +2,14 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { fromFileUrl, join } from "@std/path";
 import { chromium } from "playwright";
 
-import { startTrellisRuntime } from "../integration/_support/runtime.ts";
+import {
+  repoTrellisSource,
+  startTrellisRuntime,
+} from "../integration/_support/runtime.ts";
 
 Deno.test("embedded web source serves both applications", async () => {
   const runtime = await startTrellisRuntime({
-    trellis: {
-      command: {
-        cmd: prebuiltServer(),
-        args: ["--config", "{config}", "all"],
-      },
-    },
+    trellis: { source: repoTrellisSource() },
   });
   try {
     const browser = await chromium.launch({ headless: true });
@@ -41,9 +39,9 @@ Deno.test("embedded web source serves both applications", async () => {
 });
 
 Deno.test("configured UI directories serve both applications", async () => {
-  const runtime = await startTrellisRuntime();
+  const root = await Deno.makeTempDir({ prefix: "trellis-ui-directories-" });
+  let runtime: Awaited<ReturnType<typeof startTrellisRuntime>> | undefined;
   try {
-    const root = join(runtime.workdir, "trellis");
     await Deno.mkdir(join(root, "test-portal/assets/login"), {
       recursive: true,
     });
@@ -65,17 +63,10 @@ Deno.test("configured UI directories serve both applications", async () => {
       "console asset",
     );
 
-    const configPath = join(root, "config.toml");
-    const config = await Deno.readTextFile(configPath);
-    assertStringIncludes(config, "[http]\n");
-    await Deno.writeTextFile(
-      configPath,
-      config.replace(
-        "[http]\n",
-        '[http]\nportal_source = { directory = "./test-portal" }\nconsole_source = { directory = "./test-console" }\n',
-      ),
-    );
-    await runtime.restartControlPlane();
+    runtime = await startTrellisRuntime({
+      portalSource: { directory: join(root, "test-portal") },
+      consoleSource: { directory: join(root, "test-console") },
+    });
 
     for (
       const [path, body, contentType] of [
@@ -96,7 +87,8 @@ Deno.test("configured UI directories serve both applications", async () => {
       );
     }
   } finally {
-    await runtime.stop();
+    await runtime?.stop();
+    await Deno.remove(root, { recursive: true });
   }
 });
 
@@ -135,12 +127,7 @@ Deno.test("the unified web source is fully reverse proxied through Trellis", asy
     await waitForUrl(`${upstream}/login`, vite);
     const runtime = await startTrellisRuntime({
       webSource: { proxy: upstream },
-      trellis: {
-        command: {
-          cmd: prebuiltServer(),
-          args: ["--config", "{config}", "all"],
-        },
-      },
+      trellis: { source: repoTrellisSource() },
     });
     try {
       const browser = await chromium.launch({ headless: true });
@@ -325,16 +312,6 @@ function terminateVite(vite: Deno.ChildProcess): void {
         cause.message === "Child process has already terminated")
     ) throw cause;
   }
-}
-
-function prebuiltServer(): string {
-  const server = Deno.env.get("TRELLIS_TEST_SERVER_BIN");
-  if (server === undefined) {
-    throw new Error(
-      "TRELLIS_TEST_SERVER_BIN must point to a prebuilt trellis-server",
-    );
-  }
-  return server;
 }
 
 function startVite(

@@ -1,15 +1,13 @@
 //! Isolated live Trellis runtimes for Rust integration tests.
 //!
-//! [`TrellisTestRuntime`] orchestrates normal production executables — the
-//! released `trellis` CLI and `trellis-server` — out of process. It generates a
+//! [`TrellisTestRuntime`] links and runs the real production Trellis runtime
+//! in-process, with no `trellis` CLI or `trellis-server` prerequisite. It generates a
 //! real bootstrap bundle, starts managed NATS, reserves four loopback ports
-//! automatically, completes the real first-administrator bootstrap and login,
+//! automatically, seeds a sandbox administrator and completes normal public login,
 //! and exposes helpers that install participants and provision identities using
 //! the generated administration API.
 //!
-//! The crate has no dependency on private Trellis implementation crates: its
-//! only Trellis dependency is the published `trellis-rs` facade, and the
-//! administration API is projected as generated source under `runtime_api`.
+//! Administration uses the same generated production APIs as the runtime.
 //!
 //! Applications own the generated clients and services they connect; stop those
 //! transports before calling [`TrellisTestRuntime::shutdown`].
@@ -28,20 +26,9 @@
 // large-error lint does not apply to this crate's stable signature.
 #![allow(clippy::result_large_err)]
 
-#[path = "runtime_api/lib.rs"]
-#[allow(warnings, clippy::all, clippy::pedantic)]
-mod runtime_api;
-
-// The generated administration source uses crate-root paths such as
-// `crate::apis`, `crate::types`, `crate::__types`, and `crate::PaginationError`.
-// Re-export them at the crate root without exposing them to users.
-#[allow(unused_imports)]
-pub(crate) use runtime_api::*;
-
 mod admin;
 mod error;
 mod identity;
-mod process;
 mod runtime;
 mod sandbox;
 

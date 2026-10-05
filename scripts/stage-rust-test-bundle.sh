@@ -29,7 +29,7 @@ for required in bundle output source_sha target version; do
   [[ -n "${!required}" ]] || { echo "--${required//_/-} is required" >&2; exit 2; }
 done
 [[ -d "$bundle" ]] || { echo "staging directory not found: $bundle" >&2; exit 2; }
-for dir in packages binaries nats consumer; do
+for dir in packages nats consumer; do
   [[ -d "$bundle/$dir" ]] || { echo "missing staging directory: $bundle/$dir" >&2; exit 1; }
 done
 [[ -f "$bundle/verify-rust-test-package.sh" ]] || {
@@ -38,7 +38,7 @@ done
 }
 
 python3 - "$bundle" "$output" "$source_sha" "$target" "$version" <<'PY'
-import hashlib, json, os, sys, tarfile
+import hashlib, json, os, sys, tarfile, tomllib
 
 bundle, output, source_sha, target, version = (
     os.path.abspath(sys.argv[1]),
@@ -69,11 +69,12 @@ packages = {}
 for name in os.listdir(os.path.join(bundle, "packages")):
     if not name.endswith(".crate"):
         continue
-    stem = name[: -len(".crate")]
-    for package in ("trellis-protocol", "trellis-rs", "trellis-testkit"):
-        prefix = f"{package}-"
-        if stem.startswith(prefix):
-            packages[package] = stem[len(prefix):]
+    with tarfile.open(os.path.join(bundle, "packages", name)) as archive:
+        member = archive.extractfile(name[:-len(".crate")] + "/Cargo.toml")
+        package = tomllib.loads(member.read().decode())["package"]
+        if package["name"] in packages:
+            raise SystemExit(f"duplicate archive for {package['name']}")
+        packages[package["name"]] = package["version"]
 for package in ("trellis-protocol", "trellis-rs", "trellis-testkit"):
     if package not in packages:
         raise SystemExit(f"missing {package} .crate in packages/")
@@ -84,7 +85,7 @@ manifest = {
     "version": version,
     "packages": packages,
     "files": files,
-    "executables": ["binaries/trellis", "binaries/trellis-server", "nats/nats-server"],
+    "executables": ["nats/nats-server"],
 }
 with open(os.path.join(bundle, "artifact-manifest.json"), "w") as handle:
     json.dump(manifest, handle, indent=2, sort_keys=True)

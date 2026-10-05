@@ -4,7 +4,8 @@ import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { NativeTransportGate } from "../../../../trellis-testkit/src/native_gate.ts";
-import { NatsTestContainer } from "../../../../trellis-testkit/src/nats_container.ts";
+import { startTrellisRuntime } from "../../../../../integration/_support/runtime.ts";
+import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import { TcpProxy } from "../../../../trellis-testkit/src/runtime.ts";
 import { JobManager } from "./job-manager.ts";
 import { startNatsWorkerHostFromBinding } from "./runtime-worker.ts";
@@ -12,7 +13,7 @@ import type { JobEvent } from "./types.ts";
 
 Deno.test("Jobs reserves the initial delivery during a slow lifecycle query", async () => {
   const workdir = await Deno.makeTempDir({ prefix: "jobs-preflight-" });
-  let nats: NatsTestContainer | undefined;
+  let nats: TrellisTestRuntime | undefined;
   let proxy: TcpProxy | undefined;
   let nc: Awaited<ReturnType<typeof connect>> | undefined;
   let host:
@@ -23,24 +24,20 @@ Deno.test("Jobs reserves the initial delivery during a slow lifecycle query", as
   const handlerEntered = Promise.withResolvers<void>();
   let handlers = 0;
   try {
-    nats = await NatsTestContainer.start(workdir);
+    nats = await startTrellisRuntime();
+    const observer = await nats.connectNats();
     const gate = new NativeTransportGate();
     proxy = TcpProxy.start(nats.natsUrl, { scheme: "nats", gate });
-    nc = await connect({
+    nc = await nats.connectNats({
       servers: proxy.url,
-      authenticator: credsAuthenticator(
-        await Deno.readFile(
-          join(workdir, "nats", nats.manifest.paths.creds.trellisService),
-        ),
-      ),
     });
     const js = jetstream(nc);
     // Broker observations bypass the held worker inbox, not the worker runtime.
-    const jsm = await jetstreamManager(nats.nc);
-    const prefix = "trellis.jobs.preflight.work";
+    const jsm = await jetstreamManager(observer);
+    const prefix = "adapter.jobs.preflight.work";
     const ackWaitMs = 250;
     const binding = {
-      workStream: "JOBS",
+      workStream: "ADAPTER_JOBS",
       jobs: {
         serviceName: "preflight",
         namespace: "preflight",
@@ -59,11 +56,11 @@ Deno.test("Jobs reserves the initial delivery during a slow lifecycle query", as
       },
     };
     await jsm.streams.add({
-      name: "JOBS",
+      name: "ADAPTER_JOBS",
       subjects: [`${prefix}.>`],
       allow_direct: true,
     });
-    await jsm.consumers.add("JOBS", {
+    await jsm.consumers.add("ADAPTER_JOBS", {
       durable_name: "preflight",
       ack_policy: AckPolicy.Explicit,
       ack_wait: ackWaitMs * 1_000_000,
@@ -72,13 +69,14 @@ Deno.test("Jobs reserves the initial delivery during a slow lifecycle query", as
     });
     const manager = new JobManager({ nc: js, jobs: binding.jobs });
     const job = await manager.create("work", { value: "initial" });
-    const created = await jsm.direct.getMessage("JOBS", {
+    const created = await jsm.direct.getMessage("ADAPTER_JOBS", {
       last_by_subj: `${prefix}.${job.id}.created`,
     });
     assert(created);
     const createdBody = created.string();
     const decode = new TextDecoder();
-    const requestSubject = `$JS.API.DIRECT.GET.JOBS.${prefix}.${job.id}.*`;
+    const requestSubject =
+      `$JS.API.DIRECT.GET.ADAPTER_JOBS.${prefix}.${job.id}.*`;
     const requests: {
       connectionId: number;
       subject: string;
@@ -125,7 +123,8 @@ Deno.test("Jobs reserves the initial delivery during a slow lifecycle query", as
     const serverFrame = gate.onServerFrame.bind(gate);
     gate.onServerFrame = (connectionId, op, raw) => {
       if (
-        op.kind === "msg" && op.reply?.startsWith("$JS.ACK.JOBS.preflight.")
+        op.kind === "msg" &&
+        op.reply?.startsWith("$JS.ACK.ADAPTER_JOBS.preflight.")
       ) {
         const body = decode.decode(op.body);
         deliveries.push({
@@ -171,7 +170,7 @@ Deno.test("Jobs reserves the initial delivery during a slow lifecycle query", as
     assertEquals(JSON.parse(receipt.body).jobId, job.id);
     assertEquals(Number(receipt.reply.split(".").at(-5)), 1);
     assertEquals(handlers, 0, "initial lifecycle reply precedes handler entry");
-    const info = () => jsm.consumers.info("JOBS", "preflight");
+    const info = () => jsm.consumers.info("ADAPTER_JOBS", "preflight");
     // Poll authoritative broker state across three AckWait periods. This wait
     // measures the withheld-reply interval; it is not a readiness sleep.
     const during = await waitFor(async () => {
@@ -284,7 +283,7 @@ Deno.test("Jobs reserves the initial delivery during a slow lifecycle query", as
         ? snapshot
         : undefined;
     });
-    const completed = await jsm.direct.getMessage("JOBS", {
+    const completed = await jsm.direct.getMessage("ADAPTER_JOBS", {
       last_by_subj: `${prefix}.${job.id}.completed`,
     });
     assert(completed);
@@ -311,13 +310,13 @@ Deno.test("Jobs reserves the initial delivery during a slow lifecycle query", as
     const stoppedJob = await manager.create("work", {
       value: "stop-preflight",
     });
-    const stoppedCreated = await jsm.direct.getMessage("JOBS", {
+    const stoppedCreated = await jsm.direct.getMessage("ADAPTER_JOBS", {
       last_by_subj: `${prefix}.${stoppedJob.id}.created`,
     });
     assert(stoppedCreated);
     const stoppedBody = stoppedCreated.string();
     hold = gate.armResponseHold(
-      `$JS.API.DIRECT.GET.JOBS.${prefix}.${stoppedJob.id}.*`,
+      `$JS.API.DIRECT.GET.ADAPTER_JOBS.${prefix}.${stoppedJob.id}.*`,
       receipt.connectionId,
       (body) => decode.decode(body) === stoppedBody,
     );
@@ -382,8 +381,8 @@ Deno.test("Jobs reserves the initial delivery during a slow lifecycle query", as
       ).map((ack) => ack.connectionId),
       [stoppedReceipt.connectionId],
     );
-    const consumer = await jetstream(nats.nc).consumers.get(
-      "JOBS",
+    const consumer = await jetstream(observer).consumers.get(
+      "ADAPTER_JOBS",
       "preflight",
     );
     const redelivery = await consumer.next({ expires: 1_000 });

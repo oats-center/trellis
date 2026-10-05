@@ -1,7 +1,6 @@
 import { dirname, join } from "@std/path";
 
-import type { ReservedPort } from "./control_plane_config.ts";
-import type { TrellisTestRuntimeStartOptions } from "./types.ts";
+import type { ReservedPort } from "./ports.ts";
 
 const DEFAULT_OUTPUT_TAIL_CHARS = 8_192;
 const READINESS_POLL_INTERVAL_MS = 25;
@@ -32,16 +31,18 @@ export type ResolvedTrellisProcessCommand = {
   readonly args: readonly string[];
   readonly env?: Record<string, string>;
   readonly cwd?: string;
+  /** The command creates its own Unix process group with its PID as the group ID. */
+  readonly isolatedProcessGroup?: boolean;
 };
 
 /** @internal Arguments for starting a spawned Trellis process. */
 export type StartTrellisProcessArgs = {
   trellisUrl: string;
   configPath: string;
-  options: TrellisTestRuntimeStartOptions["trellis"] | undefined;
+  command: ResolvedTrellisProcessCommand;
   startupTimeoutMs: number;
   shutdownTimeoutMs: number;
-  portLease?: ReservedPort;
+  portLeases?: readonly ReservedPort[];
 };
 
 /** @internal Bounded text buffer for child process output tails. */
@@ -69,6 +70,7 @@ class StartedTrellisProcess implements TrellisProcessHandle {
   readonly #stdoutReader: Promise<void>;
   readonly #stderrReader: Promise<void>;
   readonly #shutdownTimeoutMs: number;
+  readonly #isolatedProcessGroup: boolean;
   readonly #stdoutTail: TextTail;
   readonly #stderrTail: TextTail;
   #bootstrapUrl: string | undefined;
@@ -85,6 +87,7 @@ class StartedTrellisProcess implements TrellisProcessHandle {
       stdoutTail: TextTail;
       stderrTail: TextTail;
       shutdownTimeoutMs: number;
+      isolatedProcessGroup: boolean;
     },
   ) {
     this.trellisUrl = args.trellisUrl;
@@ -95,6 +98,7 @@ class StartedTrellisProcess implements TrellisProcessHandle {
     this.#stdoutTail = args.stdoutTail;
     this.#stderrTail = args.stderrTail;
     this.#shutdownTimeoutMs = args.shutdownTimeoutMs;
+    this.#isolatedProcessGroup = args.isolatedProcessGroup;
   }
 
   get bootstrapUrl(): string | undefined {
@@ -154,11 +158,25 @@ class StartedTrellisProcess implements TrellisProcessHandle {
         this.#shutdownTimeoutMs,
       );
       if (terminated === undefined) {
+        console.error(
+          `Trellis host ${this.#child.pid} exceeded its ${this.#shutdownTimeoutMs}ms shutdown bound; sending SIGKILL`,
+        );
+        console.error(this.outputTails());
         killProcess(this.#child, "SIGKILL");
         await this.#status.catch(() => undefined);
       }
     }
 
+    // A killed or crashed host cannot run its managed-child destructors. Its
+    // dedicated group remains ours even after the leader exits. Also reclaim
+    // descendants before awaiting EOF on any inherited output pipes.
+    if (this.#isolatedProcessGroup) {
+      try {
+        Deno.kill(-this.#child.pid, "SIGKILL");
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+    }
     await Promise.allSettled([this.#stdoutReader, this.#stderrReader]);
   }
 
@@ -304,18 +322,25 @@ function versionUrl(trellisUrl: string): string {
   return `${trellisUrl.replace(/\/+$/, "")}/readyz`;
 }
 
-async function fetchReady(url: string, timeoutMs: number): Promise<boolean> {
+async function fetchReady(
+  url: string,
+  timeoutMs: number,
+  processId: number,
+): Promise<boolean> {
   const abort = new AbortController();
   const timeoutId = setTimeout(() => abort.abort(), timeoutMs);
   try {
     const response = await fetch(url, { signal: abort.signal });
-    return response.ok;
+    const metadata: unknown = await response.json();
+    return response.ok && isRecord(metadata) &&
+      metadata.processId === processId;
   } finally {
     clearTimeout(timeoutId);
   }
 }
 
 async function waitForTrellisReady(args: {
+  processId: number;
   trellisUrl: string;
   startupTimeoutMs: number;
   status: Promise<CommandStatus>;
@@ -342,7 +367,7 @@ async function waitForTrellisReady(args: {
 
     try {
       const fetchTimeoutMs = Math.min(READINESS_FETCH_TIMEOUT_MS, remainingMs);
-      if (await fetchReady(url, fetchTimeoutMs)) return;
+      if (await fetchReady(url, fetchTimeoutMs, args.processId)) return;
     } catch {
       // Keep polling until the process exits or the startup deadline expires.
     }
@@ -373,27 +398,11 @@ async function waitForTrellisReady(args: {
   );
 }
 
-/** @internal Resolves the command used to spawn the Trellis control-plane process. */
-export function resolveTrellisProcessCommand(
-  options: TrellisTestRuntimeStartOptions["trellis"] | undefined,
-): ResolvedTrellisProcessCommand {
-  if (options?.command === undefined) {
-    throw new Error("TrellisTestRuntime.start requires trellis.command");
-  }
-
-  return {
-    cmd: options.command.cmd,
-    args: options.command.args,
-    env: options.command.env,
-    cwd: options.command.cwd,
-  };
-}
-
 /** @internal Starts a spawned Trellis control-plane process. */
 export async function startTrellisProcess(
   args: StartTrellisProcessArgs,
 ): Promise<TrellisProcessHandle> {
-  const command = resolveTrellisProcessCommand(args.options);
+  const command = args.command;
   const stdoutTail = new TextTail(DEFAULT_OUTPUT_TAIL_CHARS);
   const stderrTail = new TextTail(DEFAULT_OUTPUT_TAIL_CHARS);
   const logDir = dirname(args.configPath);
@@ -410,24 +419,18 @@ export async function startTrellisProcess(
 
   let child: Deno.ChildProcess;
   try {
-    args.portLease?.releaseForSpawn();
+    for (const lease of args.portLeases ?? []) lease.releaseForSpawn();
     child = new Deno.Command(command.cmd, {
-      args: command.args.map((arg) =>
-        arg.replaceAll("{config}", args.configPath)
-      ),
+      args: [...command.args],
       cwd: command.cwd,
-      env: {
-        ...command.env,
-        TOKIO_WORKER_THREADS: command.env?.TOKIO_WORKER_THREADS ?? "2",
-        TRELLIS_CONFIG: args.configPath,
-        NO_COLOR: "1",
-      },
+      env: command.env,
+      clearEnv: true,
       stdin: "null",
       stdout: "piped",
       stderr: "piped",
     }).spawn();
   } catch (error) {
-    args.portLease?.release();
+    for (const lease of args.portLeases ?? []) lease.release();
     stdoutLog.close();
     stderrLog.close();
     throw error;
@@ -469,10 +472,12 @@ export async function startTrellisProcess(
     stdoutTail,
     stderrTail,
     shutdownTimeoutMs: args.shutdownTimeoutMs,
+    isolatedProcessGroup: args.command.isolatedProcessGroup ?? false,
   });
 
   try {
     await waitForTrellisReady({
+      processId: child.pid,
       trellisUrl: args.trellisUrl,
       startupTimeoutMs: args.startupTimeoutMs,
       status,
@@ -480,10 +485,10 @@ export async function startTrellisProcess(
       stderrTail,
       readers: [stdoutReader, stderrReader],
     });
-    args.portLease?.release();
+    for (const lease of args.portLeases ?? []) lease.release();
     return handle;
   } catch (error) {
-    args.portLease?.release();
+    for (const lease of args.portLeases ?? []) lease.release();
     try {
       await handle.stop();
     } catch (cleanupError) {

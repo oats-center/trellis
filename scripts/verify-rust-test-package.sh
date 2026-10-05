@@ -3,11 +3,11 @@
 # Artifact-only verification for the public Rust testkit.
 #
 # Consumes the verification bundle produced by the release/check pipeline — a
-# gzipped tarball (or an already-extracted directory) containing the three
-# unmodified public `.crate` archives, matching CLI/server binaries, a verified
+# gzipped tarball (or an already-extracted directory) containing the complete
+# unmodified Rust `.crate` dependency closure, a verified
 # NATS executable, the consumer fixture, and artifact-manifest.json. It validates
-# the manifest, hashes, executable modes, and exact binary versions, extracts the
-# archives with path-safety checks, patches only those three public artifacts into
+# the manifest, hashes, and executable modes, extracts the
+# archives with path-safety checks, patches the staged artifacts into
 # a fresh isolated consumer build, audits the full declared dependency graph, and
 # runs the fixture's live target under `--locked`. No Trellis source checkout is
 # required or used.
@@ -49,7 +49,11 @@ trap cleanup EXIT
 # 0. Accept either a tarball or an already-extracted bundle directory.
 if [[ -f "$bundle" ]]; then
   extracted="$(mktemp -d)"
-  tar -xzf "$bundle" -C "$extracted" --no-same-owner
+  python3 - "$bundle" "$extracted" <<'PY'
+import sys, tarfile
+with tarfile.open(sys.argv[1]) as archive:
+    archive.extractall(sys.argv[2], filter="data")
+PY
   bundle="$extracted"
 fi
 [[ -d "$bundle" ]] || { echo "bundle not found: $bundle" >&2; exit 2; }
@@ -63,7 +67,7 @@ manifest="$bundle/artifact-manifest.json"
 [[ -f "$manifest" ]] || { echo "missing $manifest" >&2; exit 1; }
 
 # 1. Validate the artifact manifest, every recorded hash and mode, and the
-#    identity of the three public packages.
+#    identity of the author-facing roots.
 python3 - "$manifest" "$bundle" <<'PY'
 import hashlib, json, os, sys
 
@@ -116,34 +120,16 @@ PY
 
 # 2. Require the bundle's own executables; never inherit ambient discovery.
 unset TRELLIS_TEST_CLI_BIN TRELLIS_TEST_SERVER_BIN TRELLIS_TEST_NATS_BIN
-export TRELLIS_TEST_CLI_BIN="$bundle/binaries/trellis"
-export TRELLIS_TEST_SERVER_BIN="$bundle/binaries/trellis-server"
 export TRELLIS_TEST_NATS_BIN="$bundle/nats/nats-server"
 
-expected_version="$(python3 - "$manifest" <<'PY'
-import json, sys
-print(json.load(open(sys.argv[1]))["version"])
-PY
-)"
-cli_version="$("$TRELLIS_TEST_CLI_BIN" --format json version | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
-server_version="$("$TRELLIS_TEST_SERVER_BIN" --version | awk '{print $NF}')"
-if [[ "$cli_version" != "$expected_version" ]]; then
-  echo "CLI version $cli_version does not match the bundle version $expected_version" >&2
-  exit 1
-fi
-if [[ "$server_version" != "$expected_version" ]]; then
-  echo "server version $server_version does not match the bundle version $expected_version" >&2
-  exit 1
-fi
-
-# 3. Extract the three public archives with traversal/absolute-path checks.
+# 3. Extract the staged archives with traversal/absolute-path checks.
 mkdir -p "$work/packages"
 python3 - "$packages_dir" "$work/packages" <<'PY'
 import os, sys, tarfile
 packages_dir, dest = sys.argv[1], sys.argv[2]
 crates = sorted(f for f in os.listdir(packages_dir) if f.endswith(".crate"))
-if len(crates) != 3:
-    raise SystemExit(f"expected exactly three .crate files, found {crates}")
+if not crates:
+    raise SystemExit("no staged .crate files")
 for name in crates:
     with tarfile.open(os.path.join(packages_dir, name)) as archive:
         for member in archive.getmembers():
@@ -157,30 +143,31 @@ for name in crates:
 print("extracted", ", ".join(crates))
 PY
 
-protocol_dir="$(find "$work/packages" -maxdepth 1 -type d -name 'trellis-protocol-*' | head -1)"
-rs_dir="$(find "$work/packages" -maxdepth 1 -type d -name 'trellis-rs-*' | head -1)"
-test_dir="$(find "$work/packages" -maxdepth 1 -type d -name 'trellis-testkit-*' | head -1)"
-[[ -n "$protocol_dir" && -n "$rs_dir" && -n "$test_dir" ]] || {
-  echo "missing one of the extracted public crates" >&2
-  exit 1
-}
-
-# The projected generated administration source must ship inside the testkit.
-if ! tar tzf "$packages_dir"/trellis-testkit-*.crate | grep 'src/runtime_api/lib.rs' > /dev/null; then
-  echo "trellis-testkit.crate is missing the generated administration projection" >&2
-  exit 1
-fi
-
-# 4. Isolate the build and patch only the three extracted public artifacts.
+# 4. Isolate the build and patch every extracted artifact.
 #    Run from a directory with no producer Cargo configuration so nothing leaks in.
 cp -R "$consumer_src" "$work/consumer"
 config="$work/cargo-config.toml"
-cat > "$config" <<EOF
-[patch.crates-io]
-trellis-protocol = { path = "$protocol_dir" }
-trellis-rs = { path = "$rs_dir" }
-trellis-testkit = { path = "$test_dir" }
-EOF
+python3 - "$work/packages" "$config" "$manifest" <<'PY'
+import json, os, sys, tomllib
+root, config, manifest = sys.argv[1:]
+expected = json.load(open(manifest))["packages"]
+packages = {}
+for entry in os.scandir(root):
+    if not entry.is_dir():
+        raise SystemExit(f"unexpected archive root: {entry.path}")
+    with open(os.path.join(entry.path, "Cargo.toml"), "rb") as manifest:
+        package = tomllib.load(manifest)["package"]
+    name = package["name"]
+    if expected.get(name) != package["version"]:
+        raise SystemExit(f"archive identity does not match artifact manifest: {name}")
+    if name in packages:
+        raise SystemExit(f"duplicate staged package: {name}")
+    packages[name] = entry.path
+with open(config, "w") as output:
+    output.write("[patch.crates-io]\n")
+    for name, path in sorted(packages.items()):
+        output.write(f'{json.dumps(name)} = {{ path = {json.dumps(path)} }}\n')
+PY
 
 export CARGO_HOME="$work/cargo-home"
 export CARGO_TARGET_DIR="$work/target"
@@ -193,23 +180,17 @@ cargo metadata --manifest-path "$work/consumer/Cargo.toml" --format-version 1 \
   --locked --config "$config" > "$work/metadata.json"
 
 # 5. Audit the full declared dependency graph: every manifest is a registry
-#    package from crates.io, one of the three allowed public roots, or the
+#    package from crates.io, one of the staged artifacts, or the
 #    consumer's own application/generated fixture. Traverse normal, build, dev,
 #    optional, and target-scoped declarations.
 python3 - "$work/metadata.json" "$work/packages" "$work/consumer" <<'PY'
 import json, os, sys
 metadata, packages_root, consumer_root = sys.argv[1], os.path.abspath(sys.argv[2]), os.path.abspath(sys.argv[3])
-forbidden = {
-    "trellis-bootstrap", "trellis-local-bootstrap", "trellis-local-nats",
-    "trellis-runtime", "trellis-runtime-apis", "trellis-events-runtime",
-    "trellis-jobs-runtime", "trellis-idl", "trellis-codegen-rust",
-    "trellis-codegen-ts", "trellis-cli", "trellis-server", "xtask",
-}
 crates_io = ("registry+https://github.com/rust-lang/crates.io-index", "registry+https://index.crates.io/")
 
 
 def allowed_root(path):
-    path = os.path.abspath(path)
+    path = os.path.realpath(path)
     return path.startswith(packages_root + os.sep) or path.startswith(consumer_root + os.sep)
 
 
@@ -226,9 +207,9 @@ data = json.load(open(metadata))
 for package in data["packages"]:
     name = package["name"]
     manifest = os.path.abspath(package["manifest_path"])
-    if name in forbidden:
-        raise SystemExit(f"forbidden package in the testkit closure: {name}")
     source = package.get("source")
+    if name.startswith("trellis-") and source is not None:
+        raise SystemExit(f"Trellis dependency was not staged: {name}")
     if source is None:
         if not allowed_root(manifest):
             raise SystemExit(f"local package outside the allowed roots: {name} ({manifest})")
@@ -244,13 +225,20 @@ PY
 
 # 6. Run the consumer's live target under the frozen lockfile.
 #
-# Run the tests one at a time: a small hosted runner (e.g. ubuntu-latest, four
-# CPUs) cannot host several tests' runtimes at once without starving the
-# servers, and their admission deadlines then fire.
-#
-# t07's eight concurrent runtimes are skipped here regardless of mode. They need
-# more CPU than a small hosted runner provides, and they still run under normal
-# parallel execution in the `Live integration` job, which uses the same
-# packaged sources.
+# Serialize independent cases; the isolation case still starts eight concurrent runtimes.
 cargo test --manifest-path "$work/consumer/Cargo.toml" --locked --config "$config" \
-  --test live -- --test-threads=1 --skip t07_eight_concurrent_runtimes_are_isolated
+  --test live --no-run --message-format=json-render-diagnostics > "$work/build.json"
+mkdir -p "$work/runtime-path"
+python3 - "$work/build.json" "$work/runtime-path" <<'PY'
+import json, os, subprocess, sys
+executable = None
+for line in open(sys.argv[1]):
+    artifact = json.loads(line)
+    if artifact.get("reason") == "compiler-artifact" and artifact.get("executable"):
+        executable = artifact["executable"]
+if executable is None:
+    raise SystemExit("the live consumer executable was not produced")
+# A real user execution boundary: no CLI/server on PATH, and no binary overrides.
+env = dict(os.environ, PATH=sys.argv[2])
+raise SystemExit(subprocess.run([executable, "--test-threads=1"], env=env).returncode)
+PY

@@ -54,14 +54,16 @@ Deno.test(
       const system = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
-          await Deno.readFile(`${runtime.workdir}/nats/creds/system.creds`),
+          await Deno.readFile(
+            `${runtime.workdir}/config/trellis/nats/creds/system.creds`,
+          ),
         ),
       });
       const observer = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
           await Deno.readFile(
-            `${runtime.workdir}/nats/creds/trellis-auth.creds`,
+            `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
           ),
         ),
       });

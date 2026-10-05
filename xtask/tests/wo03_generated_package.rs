@@ -313,10 +313,12 @@ fn codecs_errors_and_generated_surfaces_compile() {
         .join("ts/packages/result/mod.ts")
         .canonicalize()
         .unwrap();
+    let deno_config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(repo.join("ts/deno.json")).unwrap()).unwrap();
     fs::write(
         temp.path().join("deno.json"),
         serde_json::to_string_pretty(&serde_json::json!({
-            "extends": repo.join("ts/deno.json"),
+            "compilerOptions": deno_config["compilerOptions"],
             "imports": {
                 "@oatscenter/result": format!("file://{}", result_package.display()),
                 "@oatscenter/trellis/generated": format!("file://{}", generated_support.display()),
@@ -324,8 +326,7 @@ fn codecs_errors_and_generated_surfaces_compile() {
                 "@fixture/connection": format!("file://{}", connection_runtime.display()),
                 "@fixture/errors": format!("file://{}", errors_runtime.display()),
                 "@fixture/participant-runtime": format!("file://{}", participant_runtime.display())
-            },
-            "compilerOptions": { "strict": true }
+            }
         }))
         .unwrap(),
     )

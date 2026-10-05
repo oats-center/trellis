@@ -17,20 +17,21 @@ base64 = { workspace = true }
 futures-util = { workspace = true }
 getrandom = { workspace = true }
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls"] }
-semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tempfile = "3.15.0"
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
-toml_edit = { workspace = true }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "0.7.18", features = ["rt"] }
+toml = "1.1.2"
 trellis-rs = { path = "../trellis", version = "0.100.0" }
+trellis-runtime-apis = { path = "../runtime-apis", version = "0.100.0" }
+trellis-runtime = { path = "../runtime", version = "0.100.0" }
+trellis-bootstrap = { path = "../bootstrap", version = "0.100.0" }
+trellis-local-nats = { path = "../local-nats", version = "0.100.0" }
 ulid = "1.2.0"
 url = { workspace = true }
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2.186"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

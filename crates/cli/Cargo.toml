@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = ["runtime"]
-runtime = ["dep:trellis-bootstrap", "dep:trellis-rs", "dep:trellis-runtime-apis"]
+runtime = ["dep:trellis-bootstrap", "dep:trellis-runtime", "dep:trellis-rs", "dep:trellis-runtime-apis"]
 
 [dependencies]
 async-nats.workspace = true
@@ -33,6 +33,7 @@ trellis-idl = { path = "../idl", version = "0.100.0" }
 trellis-local-bootstrap = { path = "../local-bootstrap", version = "0.100.0" }
 trellis-protocol = { path = "../protocol", version = "0.100.0" }
 trellis-bootstrap = { path = "../bootstrap", version = "0.100.0", optional = true }
+trellis-runtime = { path = "../runtime", version = "0.100.0", optional = true }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-opentelemetry.workspace = true

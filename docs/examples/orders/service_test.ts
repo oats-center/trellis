@@ -6,14 +6,18 @@ import { participants } from "orders-trellis";
 import { createOrder } from "./service.ts";
 
 Deno.test("orders caller invokes the real service", async () => {
-  const runtime = await TrellisTestRuntime.start({
-    trellis: {
-      command: {
-        cmd: Deno.env.get("TRELLIS_TEST_SERVER_BIN") ?? "trellis-server",
-        args: ["--config", "{config}", "all"],
-      },
-    },
-  });
+  const cli = Deno.env.get("TRELLIS_TEST_CLI_BIN");
+  const server = Deno.env.get("TRELLIS_TEST_SERVER_BIN");
+  if ((cli === undefined) !== (server === undefined)) {
+    throw new Error(
+      "Set both TRELLIS_TEST_CLI_BIN and TRELLIS_TEST_SERVER_BIN or neither",
+    );
+  }
+  const runtime = await TrellisTestRuntime.start(
+    cli && server
+      ? { trellis: { source: { kind: "path", cli, server } } }
+      : undefined,
+  );
   try {
     const identity = await runtime.registerService({
       name: "orders",

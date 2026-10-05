@@ -16,12 +16,12 @@
 //! generation.
 
 use futures_util::StreamExt as _;
-use runtime_trellis::Int64;
 use runtime_trellis::apis::runtime_trellis_transport_growth_v1::events::Tick;
 use runtime_trellis::participants::runtime_trellis_transport_growth_operation_provider::{
-    Participant as ProviderParticipant, Provider as OperationProvider, resources::Held,
+    resources::Held, Participant as ProviderParticipant, Provider as OperationProvider,
 };
 use runtime_trellis::types::{Empty, Update, UpdateDetail, Value};
+use runtime_trellis::Int64;
 use std::io::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt as _, BufReader};

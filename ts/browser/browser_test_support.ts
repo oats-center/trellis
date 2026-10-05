@@ -5,9 +5,11 @@ import { join } from "@std/path";
 import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import type { TrellisTestRuntimeStartOptions } from "@oatscenter/trellis-testkit";
 
+import { repoTrellisSource } from "../integration/_support/runtime.ts";
+
 /** Local administrator credentials created through the browser bootstrap page. */
 export const BROWSER_ADMIN = {
-  username: "browser-admin",
+  username: "trellis-testkit-admin",
   password: "browser-admin-password",
 };
 
@@ -28,11 +30,10 @@ export function browserRuntimeOptions(
 ): Partial<TrellisTestRuntimeStartOptions> {
   return {
     ...options,
+    adminPassword: options.adminPassword ?? BROWSER_ADMIN.password,
     trellis: {
-      command: {
-        cmd: prebuiltServer(),
-        args: ["--config", "{config}", "all"],
-      },
+      ...options.trellis,
+      source: options.trellis?.source ?? repoTrellisSource(),
     },
   };
 }

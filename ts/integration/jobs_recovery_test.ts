@@ -193,7 +193,7 @@ Deno.test("native worker killed after key persistence but before Started recover
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
         await Deno.readFile(
-          join(runtime.workdir, "nats/creds/trellis-auth.creds"),
+          join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
         ),
       ),
     });
@@ -356,7 +356,7 @@ Deno.test("native failed retry and dead-letter replay execute again while histor
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
         await Deno.readFile(
-          join(runtime.workdir, "nats/creds/trellis-auth.creds"),
+          join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
         ),
       ),
     });
@@ -476,7 +476,10 @@ for (
           servers: runtime.natsUrl,
           authenticator: credsAuthenticator(
             await Deno.readFile(
-              join(runtime.workdir, "nats/creds/trellis-auth.creds"),
+              join(
+                runtime.workdir,
+                "config/trellis/nats/creds/trellis-auth.creds",
+              ),
             ),
           ),
         });
@@ -491,7 +494,10 @@ for (
             servers: proxy.url,
             authenticator: credsAuthenticator(
               await Deno.readFile(
-                join(runtime.workdir, "nats/creds/trellis-auth.creds"),
+                join(
+                  runtime.workdir,
+                  "config/trellis/nats/creds/trellis-auth.creds",
+                ),
               ),
             ),
           })
@@ -847,7 +853,7 @@ Deno.test("expired work with a persisted pre-Started slot releases a block-polic
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
         await Deno.readFile(
-          join(runtime.workdir, "nats/creds/trellis-auth.creds"),
+          join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
         ),
       ),
     });

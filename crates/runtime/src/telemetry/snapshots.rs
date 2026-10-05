@@ -445,7 +445,7 @@ pub(crate) fn spawn_component_sampler(
     components: Vec<&'static str>,
     ready: Arc<ComponentReadiness>,
     stop: StopHandle,
-) -> tokio::task::JoinHandle<()> {
+) -> tokio_util::task::AbortOnDropHandle<()> {
     let source = SnapshotSource::register(
         None,
         &[
@@ -453,7 +453,7 @@ pub(crate) fn spawn_component_sampler(
             ObservableFamily::ComponentObservedTime,
         ],
     );
-    tokio::spawn(async move {
+    tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
         loop {
             let now = unix_seconds();
             let mut gauges = Vec::new();
@@ -475,7 +475,7 @@ pub(crate) fn spawn_component_sampler(
                 _ = stop.stopped() => return,
             }
         }
-    })
+    }))
 }
 
 /// Per-component readiness written by the supervisor lifecycle.

@@ -297,7 +297,7 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
 
     const database = createClient({
       url: `file:${
-        join(runtime.workdir, "trellis", "trellis.sqlite.platform")
+        join(runtime.workdir, "data", "trellis", "platform.sqlite")
       }`,
     });
     /** Distinct authorization-context digests persisted for the subject. */

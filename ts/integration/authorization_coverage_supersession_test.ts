@@ -52,7 +52,7 @@ import {
   brokerConnectionKey,
   completeBrokerInventory,
 } from "./_support/broker_inventory.ts";
-import { withTrellisRuntime } from "./_support/runtime.ts";
+import { repoTrellisSource, withTrellisRuntime } from "./_support/runtime.ts";
 
 type Runtime = Parameters<Parameters<typeof withTrellisRuntime>[0]>[0];
 
@@ -85,10 +85,6 @@ const PROVIDER_DEPLOYMENT = "coverage-supersession-provider";
 const CONSUMER_INFO_PREFIX = "$JS.API.CONSUMER.INFO.";
 
 /** Built server binary supplied by the live test harness. */
-function serverBinary(): string {
-  return Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
-    fromFileUrl(new URL("../../target/debug/trellis-server", import.meta.url));
-}
 
 /**
  * Long lifetimes: growth is driven by real administrative grant revisions and
@@ -103,12 +99,7 @@ const runtimeOptions = {
     refreshJitterSeconds: 0,
     minimumContextLifetimeSeconds: 46,
   },
-  trellis: {
-    command: {
-      cmd: serverBinary(),
-      args: ["--config", "{config}", "all"],
-    },
-  },
+  trellis: { source: repoTrellisSource() },
   interruptibleNativeProxy: true,
 };
 
@@ -284,7 +275,9 @@ Deno.test(
       const system: NatsConnection = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
-          await Deno.readFile(join(runtime.workdir, "nats/creds/system.creds")),
+          await Deno.readFile(
+            join(runtime.workdir, "config/trellis/nats/creds/system.creds"),
+          ),
         ),
       });
 

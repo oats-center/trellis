@@ -5,12 +5,6 @@ import { participants as webParticipants } from "trellis-web-generated";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
 /** Built server binary whose environment this case controls. */
-function serverBinary(): string {
-  return Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
-    fromFileUrl(
-      new URL("../../target/debug/trellis-server", import.meta.url),
-    );
-}
 
 const LIVE_FAMILIES = [
   "trellis.live.sessions",
@@ -57,20 +51,15 @@ Deno.test("M01 Rust provider owner exports live families over the real OTLP wire
       await new Promise((resolve) => setTimeout(resolve, 2_500));
     }, {
       trellis: {
-        command: {
-          cmd: "env",
-          args: [
-            ...Object.keys(Deno.env.toObject()).filter((key) =>
-              key.startsWith("OTEL_")
-            ).flatMap((key) => ["-u", key]),
-            "OTEL_METRICS_EXPORTER=otlp",
-            `OTEL_EXPORTER_OTLP_ENDPOINT=${endpoint}`,
-            "OTEL_METRIC_EXPORT_INTERVAL=500",
-            serverBinary(),
-            "--config",
-            "{config}",
-            "all",
-          ],
+        environment: {
+          unset: Object.keys(Deno.env.toObject()).filter((key) =>
+            key.startsWith("OTEL_")
+          ),
+          set: {
+            OTEL_METRICS_EXPORTER: "otlp",
+            OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
+            OTEL_METRIC_EXPORT_INTERVAL: "500",
+          },
         },
       },
     });

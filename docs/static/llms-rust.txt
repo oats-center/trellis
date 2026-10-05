@@ -9,17 +9,17 @@ domain types, DI pattern, logging setup, or test framework.
 Administrative Auth callers consume the generated `trellis.auth@v1` actions.
 `Users.Update` has optional `username` for an atomic local-login rename that
 preserves the principal ID and password; collisions roll back profile changes.
-`Users.PasswordReset.Create` targets `userId` and returns a time-limited, one-use
-account-flow link. `UserIdentities.List`, `UserIdentities.Unlink`, and
-`Users.IdentityLink.Create` accept optional `userId`; omission targets the caller,
-and another user's identities require platform administration. Last-method and
-protected-account safeguards remain. `Connections.List` accepts `principalId`.
-Declare these actions in native IDL and use generated request models/facades;
-capability-group presets saved through `Grants.Set` are exact snapshots, not live
-group memberships.
-Exact snapshots can initiate resource provisioning without bypassing runtime
-readiness. Resource actions stay within the snapshot and delegation ceiling;
-read-only approval does not grant write access.
+`Users.PasswordReset.Create` targets `userId` and returns a time-limited,
+one-use account-flow link. `UserIdentities.List`, `UserIdentities.Unlink`, and
+`Users.IdentityLink.Create` accept optional `userId`; omission targets the
+caller, and another user's identities require platform administration.
+Last-method and protected-account safeguards remain. `Connections.List` accepts
+`principalId`. Declare these actions in native IDL and use generated request
+models/facades; capability-group presets saved through `Grants.Set` are exact
+snapshots, not live group memberships. Exact snapshots can initiate resource
+provisioning without bypassing runtime readiness. Resource actions stay within
+the snapshot and delegation ceiling; read-only approval does not grant write
+access.
 
 `Capabilities.List` supports participant, revision, and source-API filters
 through its generated request model. A participant and revision select an exact
@@ -33,9 +33,9 @@ authority or make exact grants track future capability changes.
 
 Author native IDL and set `[package]`, `[sources]`, and `[generate.rust].output`
 in `trellis.toml`. `trellis generate` is offline after dependencies are
-available in the global validated source-package cache.
-A durable `consumer` requires a direct `trellis` source package dependency
-containing `trellis.events@v1`; select and lock its version before generation.
+available in the global validated source-package cache. A durable `consumer`
+requires a direct `trellis` source package dependency containing
+`trellis.events@v1`; select and lock its version before generation.
 
 The output is one ordinary crate at the source package version, with
 `orders_trellis::apis::<api>` and `orders_trellis::participants::<participant>`
@@ -79,12 +79,11 @@ accepted work retains its receiving connection until it settles. No manual
 transport-refresh API, upgrade notification, or context-store parameter exists.
 Retain generated facades, still-bound resources, and job references across
 handoffs. While own revocation coverage is unavailable, fresh application IO
-either waits within its acquisition budget or reports unavailability.
-Guarded registry maintenance restores
-coverage and wakes calls without requiring a new socket. Watch migration keeps
-cached authority and existing leases, while actual revocation, reduced authority,
-and hard deadlines remain fail-closed. Raw NATS access is physical, not a logical
-generation-aware facade.
+either waits within its acquisition budget or reports unavailability. Guarded
+registry maintenance restores coverage and wakes calls without requiring a new
+socket. Watch migration keeps cached authority and existing leases, while actual
+revocation, reduced authority, and hard deadlines remain fail-closed. Raw NATS
+access is physical, not a logical generation-aware facade.
 
 Register generated providers before `service.run().await`. The service lifecycle
 supervises its request host and workers. `with_timeout_ms(...)` bounds
@@ -100,19 +99,18 @@ intent and exposing `intent_id` and `login_url`. Creating this challenge or
 rendering its portal does not start an authentication-attempt deadline. The
 portal starts an independent bounded transaction when authentication begins.
 `poll_agent_transaction_until_ready` takes the initiating `SessionAuth` as well
-as the origin and challenge. It submits a fresh `browser-auth-progress` proof
-to `/auth/intents/progress` on each poll within the caller's wait budget and
+as the origin and challenge. It submits a fresh `browser-auth-progress` proof to
+`/auth/intents/progress` on each poll within the caller's wait budget and
 returns the ID only when ready. Public intent rendering exposes no discovery.
 Only one outstanding transaction can claim the intent; a concurrent start cannot
 replace an unexpired attempt, even after approval while bind is outstanding.
-Denied, expired, and consumed attempts permit a fresh transaction.
-Completion binds that transaction with the initiating private key and verifies
-the returned intent, participant, and key bindings before context refresh.
-Exact supported replay returns the same semantic login result, not another
-session. An idle valid intent is not an expired attempt or an invalid login;
-attempt expiry permits a fresh transaction from the retained intent. Treat
-authorization denial separately from invalid login rather than starting a
-login loop.
+Denied, expired, and consumed attempts permit a fresh transaction. Completion
+binds that transaction with the initiating private key and verifies the returned
+intent, participant, and key bindings before context refresh. Exact supported
+replay returns the same semantic login result, not another session. An idle
+valid intent is not an expired attempt or an invalid login; attempt expiry
+permits a fresh transaction from the retained intent. Treat authorization denial
+separately from invalid login rather than starting a login loop.
 
 A generated device companion is established only through the parent device's
 activation flow and separate user consent. It receives an independent ordinary
@@ -130,19 +128,20 @@ from the generated API crate; it need not share the authored model's name.
 Exact method and model names come from the generated crate. Match generated
 declared-error variants directly; transport and unknown remote failures remain
 distinct. Operations expose generated invokers and typed references for start,
-wait, progress/watch, and optional cancellation/transfer.
-Native no-responder replies become `ServiceUnavailableError`, exposed through
+wait, progress/watch, and optional cancellation/transfer. Native no-responder
+replies become `ServiceUnavailableError`, exposed through
 `CallError::ServiceUnavailable` or `TrellisClientError::ServiceUnavailable`.
 They indicate that the requested service is not currently reachable, including
-during a restart; they are not malformed protocol offers or declared domain errors.
-Persist a caller-selected ULID before `start_with_invocation_id(id, &input)`;
-this is the durable operation ID, recoverable through `control(id)`.
-To cancel a reserved invocation that may not yet be admitted, use
-`start_cancelled_with_invocation_id(id, &input)` with its original input. It
-requires both Invoke and Cancel authority and atomically retains cancellation
-intent before new handler entry. The returned reference does not imply finished
-cleanup; explicitly `wait()` for the terminal result. Normal replay never clears
-that intent; an existing terminal result is returned unchanged.
+during a restart; they are not malformed protocol offers or declared domain
+errors. Persist a caller-selected ULID before
+`start_with_invocation_id(id, &input)`; this is the durable operation ID,
+recoverable through `control(id)`. To cancel a reserved invocation that may not
+yet be admitted, use `start_cancelled_with_invocation_id(id, &input)` with its
+original input. It requires both Invoke and Cancel authority and atomically
+retains cancellation intent before new handler entry. The returned reference
+does not imply finished cleanup; explicitly `wait()` for the terminal result.
+Normal replay never clears that intent; an existing terminal result is returned
+unchanged.
 
 Owned event publication uses generated publishers. Durable handlers use declared
 Consumer resources; Trellis resolves durable identity, local concurrency, retry,
@@ -150,10 +149,10 @@ authority, and scoped Events DLQ/replay. Delivery may repeat, so choose a
 side-effect strategy that handles duplicates. Subjects include the encoded
 qualified API identity and base64url parameter tokens; the signed descriptor
 binds the exact API, dotted event name, and parameter count. Success is
-acknowledged only after the handler succeeds;
-final exhaustion is durably recorded before source acknowledgement. Manual
-replay uses the same handler and a fresh retry budget without rewinding the
-original Consumer, and confirms resolution before acknowledgement.
+acknowledged only after the handler succeeds; final exhaustion is durably
+recorded before source acknowledgement. Manual replay uses the same handler and
+a fresh retry budget without rewinding the original Consumer, and confirms
+resolution before acknowledgement.
 
 Jobs are private service queues. Use generated queue handles and cloneable
 `jobs_client()` handles for submission from other handlers. Worker registration
@@ -162,26 +161,26 @@ state, retries, progress, cooperative cancellation, and live updates. Delivery
 progress acknowledgement is automatic. Waiting for keyed capacity extends the
 current delivery and does not consume an attempt before handler entry.
 `Jobs.Summary` computes all matching totals, groups, and statistics
-independently of a `Jobs.Query` page.
-Job deadlines are creation-relative. Omitted retry means five ordinary attempts with
-delays of 5s, 30s, 2m, and 10m; explicit retry requires exactly one fewer
-positive ordered backoffs than total attempts.
-Broker redelivery is unlimited. Before business work, inspect
-`job.cancellation_token().reason()`: already-cancelled job handlers must reconcile
-earlier side effects. Cleanup errors preserve redelivery; previously started work reaches
-Expired or Dead only after successful cleanup. Never-started expiration confirms
-terminal publication before releasing its recovered key slot, without running the
-handler. Publication failure retains the reservation; terminal redelivery reconciles
-remaining slots before acknowledgement. Ordinary queues use Block,
-not an authored stale policy. Coordinator fail-stale takeover preserves cleanup
-for a recovered owner with a fresh fence and `JobCancellationReason::StaleAttempt`;
-only that owner settles Stale, without mutating the replacement owner's slot.
-Ignored stale completions are nonterminal diagnostics and retain redelivery until
-cleanup settles. A never-started displaced reservation settles Pending to Stale
-without handler execution.
+independently of a `Jobs.Query` page. Job deadlines are creation-relative.
+Omitted retry means five ordinary attempts with delays of 5s, 30s, 2m, and 10m;
+explicit retry requires exactly one fewer positive ordered backoffs than total
+attempts. Broker redelivery is unlimited. Before business work, inspect
+`job.cancellation_token().reason()`: already-cancelled job handlers must
+reconcile earlier side effects. Cleanup errors preserve redelivery; previously
+started work reaches Expired or Dead only after successful cleanup.
+Never-started expiration confirms terminal publication before releasing its
+recovered key slot, without running the handler. Publication failure retains the
+reservation; terminal redelivery reconciles remaining slots before
+acknowledgement. Ordinary queues use Block, not an authored stale policy.
+Coordinator fail-stale takeover preserves cleanup for a recovered owner with a
+fresh fence and `JobCancellationReason::StaleAttempt`; only that owner settles
+Stale, without mutating the replacement owner's slot. Ignored stale completions
+are nonterminal diagnostics and retain redelivery until cleanup settles. A
+never-started displaced reservation settles Pending to Stale without handler
+execution.
 
-Native lifecycle publication awaits JetStream acknowledgement. Typed live updates
-remain transient and do not require a durable stream.
+Native lifecycle publication awaits JetStream acknowledgement. Typed live
+updates remain transient and do not require a durable stream.
 
 Execution state and attempts follow accepted lifecycle transitions in broker
 stream-sequence order. Created initializes but cannot reopen a job. Diagnostics,
@@ -195,24 +194,24 @@ Operation get, watch, signal, and cancel remain bound to the creator principal
 plus participant across reconnects rather than to one session key. A durable
 Operation's watcher is a separate live session: it reconciles the current
 authoritative snapshot once its transport is ready, then yields ordered typed
-transient updates and terminal state; not-yet-delivered nonterminal snapshots may
-be conflated, but transient updates are not silently dropped. Opening or closing
-a watcher never starts, cancels, or completes the durable work. Completed,
-failed, and cancelled records are immutable.
-Rust operation handlers can clone `control.cancellation()` and observe
-`Requested`, `OwnershipLost`, or `ServiceStopping` with `is_cancelled()`,
-`reason()`, or `cancelled().await`. They must stop and join owned child work,
-including already-running `spawn_blocking` closures, before returning from
-requested cancellation. A healthy owner renews its lease and leaves cancellation
-nonterminal while cleanup runs; the caller's `cancel()` resolves terminal
-`Cancelled` only after cleanup and the fenced write. A cleanup handler error
-leaves cancellation nonterminal for recovery. Recovered handlers enter with
-`Requested` already set and must retry cleanup without starting new business
-work; return `Ok(())` only after cleanup succeeds. External effects may still
-overlap across owner loss; use idempotency or external fencing.
+transient updates and terminal state; not-yet-delivered nonterminal snapshots
+may be conflated, but transient updates are not silently dropped. Opening or
+closing a watcher never starts, cancels, or completes the durable work.
+Completed, failed, and cancelled records are immutable. Rust operation handlers
+can clone `control.cancellation()` and observe `Requested`, `OwnershipLost`, or
+`ServiceStopping` with `is_cancelled()`, `reason()`, or `cancelled().await`.
+They must stop and join owned child work, including already-running
+`spawn_blocking` closures, before returning from requested cancellation. A
+healthy owner renews its lease and leaves cancellation nonterminal while cleanup
+runs; the caller's `cancel()` resolves terminal `Cancelled` only after cleanup
+and the fenced write. A cleanup handler error leaves cancellation nonterminal
+for recovery. Recovered handlers enter with `Requested` already set and must
+retry cleanup without starting new business work; return `Ok(())` only after
+cleanup succeeds. External effects may still overlap across owner loss; use
+idempotency or external fencing.
 
-Live observations and Operation watchers are authorized live sessions negotiated with
-bounded opening requests. The provider signs its offer and frames; control
+Live observations and Operation watchers are authorized live sessions negotiated
+with bounded opening requests. The provider signs its offer and frames; control
 responses bind the session ID, logical command sequence, and command hash, and
 continued authority is rechecked from retained context rather than per-frame
 network lookup. A session has protocol liveness and credit bounds, not a total
@@ -261,13 +260,22 @@ layouts; applications own migration of any retained older database.
 ## Test And Verify
 
 Run generation and the consuming project's own Cargo checks. A real-runtime test
-can launch a Rust service from a Deno test using `@oatscenter/trellis-testkit` and
-its `TrellisTestRuntime`. A Rust test uses the published `trellis-testkit` crate,
-which starts the released `trellis` and `trellis-server` executables out of
-process, chooses its loopback ports automatically, and returns the existing SDK
-connection options so your generated service and app facades connect normally.
-Private Trellis workspace crates are never consumer dependencies; a service
-repository depends on `trellis-rs` and `trellis-testkit` only.
+can launch a Rust service from a Deno test using `@oatscenter/trellis-testkit`
+and its `TrellisTestRuntime`, which automatically acquires exact-version
+SHA-256-pinned CLI/server release archives and delegates configuration and
+managed NATS to those production commands (no installed Trellis executables or
+nsc prerequisite). Its host is stopped gracefully first; bounded process-group
+cleanup also reclaims the managed broker if the host hangs or crashes. A Rust
+test uses the published `trellis-testkit` crate, which links and runs the real
+production runtime in-process, chooses loopback ports automatically, and returns
+the existing SDK connection options so your generated service and app facades
+connect normally. No CLI/server executable or Trellis source checkout is
+required. NATS is a real child process: the bare builder defaults to the
+verified pinned download (network on first use). Set `TRELLIS_TEST_NATS_BIN`,
+choose `NatsSource::Path`, or choose `NatsSource::PathLookup` for a prebuilt
+broker. Runtime/bootstrap crates are registry-distributed implementation
+dependencies, not supported service-author surfaces; a service repository uses
+`trellis-rs` and `trellis-testkit` APIs.
 
 Use `/api` to discover current Rustdoc and generated participant source for
 project-specific APIs. Private Trellis workspace crates are not consumer

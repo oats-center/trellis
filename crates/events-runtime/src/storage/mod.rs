@@ -10,6 +10,12 @@ use time::OffsetDateTime;
 
 use crate::dead_letters::{dead_letter_id, DeadLetterCause, DeadLetterState, DeadLetterTransition};
 
+/// Canonical SQLite migrations shared with the production runtime's migration runner.
+pub mod sqlite_migrations {
+    use refinery::embed_migrations;
+    embed_migrations!("src/storage/sqlite");
+}
+
 /// SQLite-backed Events projection store.
 #[derive(Debug, Clone)]
 pub struct EventsStore {
@@ -176,9 +182,7 @@ impl EventsStore {
             .connection
             .lock()
             .map_err(|_| EventsStoreError::Poisoned)?;
-        connection.execute_batch(include_str!(
-            "../../../runtime/src/storage/sqlite/events/V4000__events_init.sql"
-        ))?;
+        connection.execute_batch(include_str!("sqlite/V4000__events_init.sql"))?;
         let projection_id = format!("{}-{}", std::process::id(), now_timestamp_string());
         connection.execute(
             "INSERT OR IGNORE INTO events_projection_metadata (key, value) VALUES ('projection_id', ?1)",

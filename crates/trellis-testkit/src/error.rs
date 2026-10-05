@@ -19,16 +19,14 @@ pub enum TrellisTestErrorKind {
     MissingBinary,
     /// A resolved executable is not a regular executable file.
     InvalidBinary,
-    /// An executable's version does not match the testkit version.
-    VersionMismatch,
+    /// The production runtime task or managed broker failed.
+    Runtime,
     /// A builder value or generated configuration is invalid.
     InvalidConfiguration,
     /// A loopback port could not be reserved.
     PortAllocation,
     /// A selected loopback port was already bound by another process.
     PortConflict,
-    /// A child process exited before the runtime became ready.
-    ProcessExited,
     /// A stage exceeded its deadline.
     Timeout,
     /// The bootstrap bundle could not be generated or validated.
@@ -59,11 +57,10 @@ impl TrellisTestErrorKind {
             Self::UnsupportedPlatform => "unsupported_platform",
             Self::MissingBinary => "missing_binary",
             Self::InvalidBinary => "invalid_binary",
-            Self::VersionMismatch => "version_mismatch",
+            Self::Runtime => "runtime",
             Self::InvalidConfiguration => "invalid_configuration",
             Self::PortAllocation => "port_allocation",
             Self::PortConflict => "port_conflict",
-            Self::ProcessExited => "process_exited",
             Self::Timeout => "timeout",
             Self::Bootstrap => "bootstrap",
             Self::Authentication => "authentication",
@@ -90,14 +87,12 @@ impl fmt::Display for TrellisTestErrorKind {
 pub enum TrellisTestStage {
     /// Builder input and platform validation.
     Validation,
-    /// CLI/server/NATS executable version verification.
-    VersionCheck,
     /// Loopback port reservation.
     PortAllocation,
     /// Bootstrap configuration generation.
     ConfigGeneration,
-    /// Server process startup and readiness.
-    ServerStart,
+    /// Production runtime and managed broker startup and readiness.
+    RuntimeStart,
     /// First-administrator bootstrap.
     AdministratorBootstrap,
     /// Administrator login and client connection.
@@ -120,10 +115,9 @@ impl TrellisTestStage {
     pub const fn code(self) -> &'static str {
         match self {
             Self::Validation => "validation",
-            Self::VersionCheck => "version_check",
             Self::PortAllocation => "port_allocation",
             Self::ConfigGeneration => "config_generation",
-            Self::ServerStart => "server_start",
+            Self::RuntimeStart => "runtime_start",
             Self::AdministratorBootstrap => "administrator_bootstrap",
             Self::AdministratorLogin => "administrator_login",
             Self::ParticipantInstallation => "participant_installation",
@@ -148,8 +142,6 @@ pub struct TrellisTestError {
     message: String,
     workdir: Option<PathBuf>,
     server_code: Option<String>,
-    stdout_tail: String,
-    stderr_tail: String,
     source: Option<Box<dyn std::error::Error + Send + Sync>>,
     cleanup_error: Option<Box<TrellisTestError>>,
 }
@@ -167,8 +159,6 @@ impl TrellisTestError {
             message: message.into(),
             workdir: None,
             server_code: None,
-            stdout_tail: String::new(),
-            stderr_tail: String::new(),
             source: None,
             cleanup_error: None,
         }
@@ -186,18 +176,6 @@ impl TrellisTestError {
     #[allow(dead_code)]
     pub(crate) fn with_server_code(mut self, code: impl Into<String>) -> Self {
         self.server_code = Some(code.into());
-        self
-    }
-
-    /// Attaches already-redacted output tails.
-    #[must_use]
-    pub(crate) fn with_output(
-        mut self,
-        stdout_tail: impl Into<String>,
-        stderr_tail: impl Into<String>,
-    ) -> Self {
-        self.stdout_tail = stdout_tail.into();
-        self.stderr_tail = stderr_tail.into();
         self
     }
 
@@ -248,18 +226,6 @@ impl TrellisTestError {
         self.server_code.as_deref()
     }
 
-    /// Bounded, redacted stdout tail.
-    #[must_use]
-    pub fn stdout_tail(&self) -> &str {
-        &self.stdout_tail
-    }
-
-    /// Bounded, redacted stderr tail.
-    #[must_use]
-    pub fn stderr_tail(&self) -> &str {
-        &self.stderr_tail
-    }
-
     /// Secondary cleanup failure, when cleanup also failed.
     #[must_use]
     pub fn cleanup_error(&self) -> Option<&TrellisTestError> {
@@ -296,8 +262,6 @@ impl fmt::Debug for TrellisTestError {
             .field("message", &self.message)
             .field("server_code", &self.server_code)
             .field("workdir", &self.workdir)
-            .field("stdout_tail_len", &self.stdout_tail.len())
-            .field("stderr_tail_len", &self.stderr_tail.len())
             .field(
                 "cleanup_error",
                 &self.cleanup_error.as_ref().map(|e| e.kind()),
@@ -323,38 +287,5 @@ impl From<std::io::Error> for TrellisTestError {
             message,
         )
         .with_source(source)
-    }
-}
-
-/// Replaces each secret occurrence in `input` with a placeholder.
-///
-/// Used before attaching output tails or error messages so secrets captured from
-/// child output can never be surfaced.
-pub(crate) fn redact_secrets(input: &str, secrets: &[&str]) -> String {
-    let mut redacted = input.to_string();
-    for secret in secrets {
-        if secret.is_empty() {
-            continue;
-        }
-        redacted = redacted.replace(secret, "[redacted]");
-    }
-    redacted
-}
-
-#[cfg(test)]
-mod tests {
-    use super::redact_secrets;
-
-    #[test]
-    fn redaction_replaces_every_occurrence() {
-        assert_eq!(
-            redact_secrets("token=abc secret=abc tail", &["abc"]),
-            "token=[redacted] secret=[redacted] tail"
-        );
-    }
-
-    #[test]
-    fn redaction_ignores_empty_secrets() {
-        assert_eq!(redact_secrets("unchanged", &[""]), "unchanged");
     }
 }

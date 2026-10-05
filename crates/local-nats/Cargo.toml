@@ -4,8 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Managed local NATS server binary download, verification, and lifecycle for Trellis."
-publish = false
+description = "Internal managed NATS server download, verification, and lifecycle for Trellis."
+publish = ["crates-io"]
 
 [lints]
 workspace = true
