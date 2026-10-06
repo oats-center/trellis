@@ -281,7 +281,6 @@ service TransportGrowthOperationProvider {
 }
 
 app TransportGrowthCaller {
-  use runtime { rpc Download; }
   use transport_growth {
     rpc Advance;
     rpc Extend;
@@ -291,6 +290,11 @@ app TransportGrowthCaller {
     publish event Tick;
     optional capability extend;
   }
+}
+
+app DownloadGrowthCaller {
+  use runtime { rpc Download; }
+  use transport_growth { rpc Extend; optional capability extend; }
 }
 
 api permission_subset@v1 {

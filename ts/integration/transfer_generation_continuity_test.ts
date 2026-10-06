@@ -416,7 +416,7 @@ Deno.test("download endAck retires the last caller and provider generation lease
   await withTrellisRuntime(async (runtime) => {
     const providerContract = participants.Provider.participant;
     const targetContract = participants.TransportGrowthTarget.participant;
-    const callerContract = participants.TransportGrowthCaller.participant;
+    const callerContract = participants.DownloadGrowthCaller.participant;
     await runtime.contracts.install({ contract: providerContract });
     const requested = await runtime.contracts.requestApply({
       contract: providerContract,
