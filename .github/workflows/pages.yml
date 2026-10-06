@@ -89,6 +89,9 @@ jobs:
             local out_dir="$3"
 
             (
+              cd "${repo_root}"
+              deno install --frozen --config ts/deno.json
+              deno task -c web/deno.json build:embedded
               cd "${repo_root}/docs"
               deno install --allow-scripts=npm:esbuild,npm:sharp
               deno task docs:api
