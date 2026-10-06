@@ -1011,10 +1011,8 @@ impl TrellisClient {
             .ok_or_else(|| {
                 TrellisClientError::Bootstrap("authorization context unavailable".into())
             })?
-            .bundle()?;
-        let context = trellis_protocol::parse_authorization_context(&bundle.context)
-            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
-        context.unsigned.deployment_id.ok_or_else(|| {
+            .installed_signed_context()?;
+        bundle.unsigned.deployment_id.clone().ok_or_else(|| {
             TrellisClientError::Bootstrap("installed context carries no deployment identity".into())
         })
     }
@@ -1623,9 +1621,8 @@ impl TrellisClient {
         let contexts = self.authorization_contexts.as_ref().ok_or_else(|| {
             TrellisClientError::Bootstrap("authorization context unavailable".into())
         })?;
-        let context = trellis_protocol::parse_authorization_context(&contexts.bundle()?.context)
-            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
-        context.unsigned.deployment_id.ok_or_else(|| {
+        let context = contexts.installed_signed_context()?;
+        context.unsigned.deployment_id.clone().ok_or_else(|| {
             TrellisClientError::Bootstrap(
                 "authorization context omitted deployment assignment".into(),
             )
@@ -1636,18 +1633,16 @@ impl TrellisClient {
         let contexts = self.authorization_contexts.as_ref().ok_or_else(|| {
             TrellisClientError::Bootstrap("authorization context unavailable".into())
         })?;
-        let context = trellis_protocol::parse_authorization_context(&contexts.bundle()?.context)
-            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
-        Ok(context.unsigned.connection_id)
+        let context = contexts.installed_signed_context()?;
+        Ok(context.unsigned.connection_id.clone())
     }
 
     pub(crate) fn own_instance_id(&self) -> Result<String, TrellisClientError> {
         let contexts = self.authorization_contexts.as_ref().ok_or_else(|| {
             TrellisClientError::Bootstrap("authorization context unavailable".into())
         })?;
-        let context = trellis_protocol::parse_authorization_context(&contexts.bundle()?.context)
-            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
-        context.unsigned.instance_id.ok_or_else(|| {
+        let context = contexts.installed_signed_context()?;
+        context.unsigned.instance_id.clone().ok_or_else(|| {
             TrellisClientError::Bootstrap(
                 "authorization context omitted instance assignment".into(),
             )
@@ -1658,10 +1653,10 @@ impl TrellisClient {
     async fn request_json_routed(
         &self,
         subject: &str,
-        body: Value,
+        body: &Value,
         route: &'static str,
     ) -> Result<Value, TrellisClientError> {
-        let payload = Bytes::from(serde_json::to_vec(&body)?);
+        let payload = Bytes::from(serde_json::to_vec(body)?);
         let message = self.request_routed(subject, payload, route).await?;
 
         decode_json_message(message)
@@ -1675,7 +1670,7 @@ impl TrellisClient {
     ) -> Result<Value, TrellisClientError> {
         self.request_json_routed(
             subject,
-            body.clone(),
+            body,
             crate::telemetry::instruments::unknown_route(),
         )
         .await
@@ -1688,7 +1683,7 @@ impl TrellisClient {
         body: &Value,
         route: &'static str,
     ) -> Result<Value, TrellisClientError> {
-        self.request_json_routed(subject, body.clone(), route).await
+        self.request_json_routed(subject, body, route).await
     }
 
     /// Publish one descriptor-backed event.

@@ -552,6 +552,7 @@ pub(crate) struct RuntimeOperationProvider<D: OperationDescriptor, F, V> {
     repository: KvOperationRepository,
     mutation_gate: Arc<Mutex<()>>,
     next_update_sequence: Arc<AtomicU64>,
+    schemas: Arc<super::schema_validation::PreparedOperationSchemas>,
     handler: Arc<F>,
     transport: OperationTransport,
     service_session_key: String,
@@ -598,6 +599,7 @@ where
             repository: runtime.repository,
             mutation_gate: Arc::new(Mutex::new(())),
             next_update_sequence: Arc::new(AtomicU64::new(1)),
+            schemas: Arc::new(super::schema_validation::PreparedOperationSchemas::new::<D>()),
             handler: Arc::new(handler),
             transport: runtime.transport,
             service_session_key: runtime.service_session_key,
@@ -665,6 +667,7 @@ where
         publisher: Option<Arc<crate::client::TrellisClient>>,
         update_subject: String,
         next_update_sequence: Arc<AtomicU64>,
+        schemas: Arc<super::schema_validation::PreparedOperationSchemas>,
         claimed: super::RevisionedOperationRecord,
     ) -> Result<(), ServerError>
     where
@@ -674,6 +677,7 @@ where
         F: Fn(RequestContext, D::Input, OperationControl<D>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), ServerError>> + Send + 'static,
     {
+        schemas.get()?;
         let claimed = admit_operation_execution::<D>(
             &repository,
             &mutation_gate,
@@ -737,6 +741,7 @@ where
                 publisher,
                 update_subject,
                 next_update_sequence,
+                schemas,
                 cancellation: OperationCancellation {
                     receiver: cancel_receiver,
                 },
@@ -949,7 +954,9 @@ where
         let transport = self.transport.clone();
         let publisher = self.publisher.clone();
         let next_update_sequence = Arc::clone(&self.next_update_sequence);
+        let schemas = Arc::clone(&self.schemas);
         Box::pin(async move {
+            schemas.get()?;
             let mut records = repository.list_nonterminal().await?;
             tokio::spawn(async move {
                 loop {
@@ -1003,6 +1010,7 @@ where
                         let update_subject =
                             operation_update_subject::<D>(&deployment_id, &operation_id);
                         let next_update_sequence = Arc::clone(&next_update_sequence);
+                        let schemas = Arc::clone(&schemas);
                         let staging = staging.clone();
                         tokio::spawn(async move {
                             let repository = match repository.pinned(support.lease.as_ref()).await {
@@ -1091,6 +1099,7 @@ where
                                     publisher,
                                     update_subject,
                                     next_update_sequence,
+                                    schemas,
                                     claimed,
                                 )
                                 .await
@@ -1139,6 +1148,7 @@ where
         let staging = self.staging.clone();
         let validator = self.validator.clone();
         let next_update_sequence = Arc::clone(&self.next_update_sequence);
+        let schemas = Arc::clone(&self.schemas);
         let update_subject = operation_update_subject::<D>(&deployment_id, &invocation_id);
         Box::pin(async move {
             let cancellation_requested = cancelled_admission.is_some();
@@ -1396,6 +1406,7 @@ where
                         publisher.clone(),
                         update_subject.clone(),
                         Arc::clone(&next_update_sequence),
+                        Arc::clone(&schemas),
                         claimed,
                     )
                     .await?;
@@ -1596,6 +1607,7 @@ where
                                 publisher.clone(),
                                 update_subject.clone(),
                                 Arc::clone(&next_update_sequence),
+                                Arc::clone(&schemas),
                                 claimed,
                             )
                             .await;
@@ -1707,6 +1719,7 @@ where
                 publisher,
                 update_subject,
                 next_update_sequence,
+                schemas,
                 claimed,
             )
             .await?;
@@ -1773,8 +1786,10 @@ where
         let validator = self.validator.clone();
         let provider_participant_id = self.provider_participant_id.clone();
         let update_subject = operation_update_subject::<D>(&deployment_id, &operation_id);
+        let schemas = Arc::clone(&self.schemas);
         Box::pin(
             stream::once(async move {
+                let schemas = Arc::clone(schemas.get()?);
                 let support = transport.for_request(&context).await?;
                 let repository = repository.pinned(support.lease.as_ref()).await?;
                 let updates = support
@@ -1808,6 +1823,7 @@ where
                     validator,
                     provider_participant_id,
                     support.lease,
+                    schemas,
                 ))
             })
             .flat_map(|result| match result {
@@ -1821,6 +1837,7 @@ where
                     validator,
                     provider_participant_id,
                     observation_lease,
+                    schemas,
                 )) => {
                     let update_deployment_id = deployment_id.clone();
                     let (terminal_tx, terminal_rx) = tokio::sync::oneshot::channel();
@@ -1865,6 +1882,7 @@ where
                                 validator,
                                 provider_participant_id,
                                 observation_lease,
+                                schemas,
                             ),
                             move |(
                                 mut updates,
@@ -1874,6 +1892,7 @@ where
                                 validator,
                                 provider_participant_id,
                                 observation_lease,
+                                schemas,
                             )| async move {
                                 loop {
                                     let message = updates.next().await?;
@@ -1986,9 +2005,8 @@ where
                                     {
                                         continue;
                                     }
-                                    if D::UPDATE_SCHEMA_JSON.is_none_or(|schema| {
-                                        super::validate_input_schema(schema, &envelope.update)
-                                            .is_err()
+                                    if schemas.update.as_ref().is_none_or(|schema| {
+                                        schema.validate(&envelope.update).is_err()
                                     }) {
                                         continue;
                                     }
@@ -2014,6 +2032,7 @@ where
                                             validator,
                                             provider_participant_id,
                                             observation_lease,
+                                            schemas,
                                         ),
                                     ));
                                 }
@@ -2248,6 +2267,7 @@ where
     publisher: Option<Arc<crate::client::TrellisClient>>,
     update_subject: String,
     next_update_sequence: Arc<AtomicU64>,
+    schemas: Arc<super::schema_validation::PreparedOperationSchemas>,
     cancellation: OperationCancellation,
     _descriptor: PhantomData<fn() -> D>,
 }
@@ -2775,13 +2795,17 @@ where
         D::UpdateEvidence: crate::client::HasOperationUpdates,
         D::Update: Clone,
     {
+        let schemas = self.schemas.get()?;
         let update_schema =
-            D::UPDATE_SCHEMA_JSON.ok_or_else(|| ServerError::InvalidOperationControlAction {
-                subject: D::SUBJECT.to_owned(),
-                action: "update".to_owned(),
-            })?;
+            schemas
+                .update
+                .as_ref()
+                .ok_or_else(|| ServerError::InvalidOperationControlAction {
+                    subject: D::SUBJECT.to_owned(),
+                    action: "update".to_owned(),
+                })?;
         let update_value = serde_json::to_value(&update)?;
-        super::validate_input_schema(update_schema, &update_value)?;
+        update_schema.validate(&update_value)?;
         let durable = &self.durable;
         let _guard = durable.mutation_gate.lock().await;
         let current = durable
@@ -3506,6 +3530,9 @@ mod tests {
             publisher: None,
             update_subject: operation_update_subject::<D>("deployment", id),
             next_update_sequence: Arc::new(AtomicU64::new(1)),
+            schemas: Arc::new(
+                super::super::schema_validation::PreparedOperationSchemas::new::<D>(),
+            ),
             cancellation: OperationCancellation {
                 receiver: tokio::sync::watch::channel(None).1,
             },

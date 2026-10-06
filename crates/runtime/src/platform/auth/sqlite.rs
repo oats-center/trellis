@@ -29,6 +29,7 @@ use common::SqliteConnectionPool;
 #[derive(Clone, Debug)]
 pub struct SqliteAuthorizationStore {
     writer: Arc<Mutex<Connection>>,
+    writer_permit: Arc<tokio::sync::Semaphore>,
     readers: Option<Arc<SqliteConnectionPool>>,
     compiled_evidence: Arc<super::compiled_evidence::CompiledEvidenceCache>,
 }

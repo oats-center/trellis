@@ -116,6 +116,10 @@ example. TypeScript participants expose flat caller methods and generated
 `handle...`, `publish...`, and `on...` methods where the selection allows them.
 Rust participants expose typed methods through generated facades.
 
+Rust schema-validation issue paths use JSON Pointer: an empty path addresses the
+root, `/` addresses an empty-name property, and property names escape `~` as `~0`
+and `/` as `~1`, including missing required fields.
+
 ## Connect And Authorize
 
 Service/device bootstrap sends only provisioned identity and proof inputs.

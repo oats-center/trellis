@@ -36,36 +36,18 @@ impl SqliteAuthorizationStore {
                 .await?
                 .ok()?;
             start_bounded_read(poll, move || {
-                let connection = match pool.available.lock() {
-                    Ok(mut available) => match available.pop() {
-                        Some(connection) => connection,
-                        None => {
-                            return Err(AuthorizationStateError::Storage(
-                                "SQLite pool permit without connection".to_owned(),
-                            ))
-                        }
-                    },
-                    Err(_) => {
-                        return Err(AuthorizationStateError::Storage(
-                            "SQLite connection lock poisoned".to_owned(),
-                        ))
-                    }
-                };
-                let result = read_auth_telemetry(&connection, now_ms);
-                let returned = pool
-                    .available
-                    .lock()
-                    .map(|mut available| available.push(connection));
-                drop(permit);
-                returned.map_err(|_| {
-                    AuthorizationStateError::Storage("SQLite connection lock poisoned".to_owned())
-                })?;
-                result
+                let connection = SqliteCheckout::new(pool, permit)?;
+                read_auth_telemetry(&connection, now_ms)
             })
             .await
         } else {
             let writer = Arc::clone(&self.writer);
+            let permit = poll
+                .within(Arc::clone(&self.writer_permit).acquire_owned())
+                .await?
+                .ok()?;
             start_bounded_read(poll, move || {
+                let _permit = permit;
                 let connection = writer.lock().map_err(|_| {
                     AuthorizationStateError::Storage("SQLite connection lock poisoned".to_owned())
                 })?;
@@ -133,6 +115,73 @@ pub(super) struct SqliteConnectionPool {
     permits: Arc<Semaphore>,
 }
 
+/// Returns the connection before releasing admission, including during unwinding.
+struct SqliteCheckout {
+    connection: Option<Connection>,
+    pool: Arc<SqliteConnectionPool>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl SqliteCheckout {
+    fn new(
+        pool: Arc<SqliteConnectionPool>,
+        permit: tokio::sync::OwnedSemaphorePermit,
+    ) -> Result<Self, AuthorizationStateError> {
+        let connection = pool
+            .available
+            .lock()
+            .map_err(|_| {
+                AuthorizationStateError::Storage("SQLite connection lock poisoned".to_owned())
+            })?
+            .pop()
+            .ok_or_else(|| {
+                AuthorizationStateError::Storage("SQLite pool permit without connection".to_owned())
+            })?;
+        Ok(Self {
+            connection: Some(connection),
+            pool,
+            _permit: permit,
+        })
+    }
+}
+
+impl std::ops::Deref for SqliteCheckout {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        self.connection
+            .as_ref()
+            .expect("checkout owns its connection")
+    }
+}
+
+impl std::ops::DerefMut for SqliteCheckout {
+    fn deref_mut(&mut self) -> &mut Connection {
+        self.connection
+            .as_mut()
+            .expect("checkout owns its connection")
+    }
+}
+
+impl Drop for SqliteCheckout {
+    fn drop(&mut self) {
+        let Some(connection) = self.connection.take() else {
+            return;
+        };
+        // Raw SQL can leave a transaction active on either an error or unwind.
+        // Never lend that transaction to another operation.
+        if !connection.is_autocommit() && connection.execute_batch("ROLLBACK").is_err() {
+            self.pool.permits.close();
+            tracing::error!("SQLite reader rollback failed; closing the pool");
+            return;
+        }
+        match self.pool.available.lock() {
+            Ok(mut available) => available.push(connection),
+            Err(_) => self.pool.permits.close(),
+        }
+    }
+}
+
 impl SqliteAuthorizationStore {
     pub(crate) fn open(store: &SqliteStore) -> Result<Self, StoreError> {
         let connections = (0..AUTHORIZATION_CONNECTION_POOL_SIZE)
@@ -177,6 +226,7 @@ impl SqliteAuthorizationStore {
         let readers = connections.collect::<Vec<_>>();
         Self {
             writer,
+            writer_permit: Arc::new(Semaphore::new(1)),
             readers: (!readers.is_empty()).then(|| {
                 Arc::new(SqliteConnectionPool {
                     permits: Arc::new(Semaphore::new(readers.len())),
@@ -197,11 +247,14 @@ impl SqliteAuthorizationStore {
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> Result<T, AuthorizationStateError> + Send + 'static,
     {
-        // ponytail: diagnostic; captures the awaiting caller so the slow write is named.
-        let caller = std::backtrace::Backtrace::force_capture();
         let queued_at = Instant::now();
+        let permit = Arc::clone(&self.writer_permit)
+            .acquire_owned()
+            .await
+            .map_err(|_| AuthorizationStateError::Storage("SQLite writer closed".to_owned()))?;
         let writer = Arc::clone(&self.writer);
         tokio::task::spawn_blocking(move || {
+            let _permit = permit;
             let spawn_delay = queued_at.elapsed();
             let wait_started = Instant::now();
             let mut connection = writer.lock().map_err(|_| {
@@ -222,7 +275,6 @@ impl SqliteAuthorizationStore {
                 || operation_elapsed >= Duration::from_secs(1)
             {
                 tracing::warn!(
-                    caller = %caller,
                     spawn_delay_ms = spawn_delay.as_millis(),
                     wait_ms = wait_elapsed.as_millis(),
                     operation_ms = operation_elapsed.as_millis(),
@@ -296,16 +348,7 @@ where
     tokio::task::spawn_blocking(move || {
         let spawn_delay = queued_at.elapsed();
         let wait_started = Instant::now();
-        let mut connection = pool
-            .available
-            .lock()
-            .map_err(|_| {
-                AuthorizationStateError::Storage("SQLite connection lock poisoned".to_owned())
-            })?
-            .pop()
-            .ok_or_else(|| {
-                AuthorizationStateError::Storage("SQLite pool permit without connection".to_owned())
-            })?;
+        let mut connection = SqliteCheckout::new(pool, permit)?;
         let wait_elapsed = wait_started.elapsed();
         let operation_started = Instant::now();
         let result = operation(&mut connection);
@@ -316,13 +359,7 @@ where
             operation_elapsed,
             &result,
         );
-        pool.available
-            .lock()
-            .map_err(|_| {
-                AuthorizationStateError::Storage("SQLite connection lock poisoned".to_owned())
-            })?
-            .push(connection);
-        drop(permit);
+        drop(connection);
         if spawn_delay >= Duration::from_secs(1)
             || wait_elapsed >= Duration::from_secs(1)
             || operation_elapsed >= Duration::from_secs(1)
@@ -424,6 +461,122 @@ mod tests {
 
     use super::*;
     use crate::{SqliteStorageConfig, SubsystemName};
+
+    #[tokio::test]
+    async fn reader_unwind_rolls_back_and_reuses_the_connection() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE TABLE probe (value INTEGER)")
+            .unwrap();
+        let pool = Arc::new(SqliteConnectionPool {
+            available: Mutex::new(vec![connection]),
+            permits: Arc::new(Semaphore::new(1)),
+        });
+        let failed: Result<(), _> = run_on_pool(Arc::clone(&pool), |connection| {
+            connection
+                .execute_batch("BEGIN; INSERT INTO probe VALUES (1)")
+                .map_err(sql_error)?;
+            panic!("operation unwound with an open transaction")
+        })
+        .await;
+        assert!(failed.is_err());
+        let count = run_on_pool(Arc::clone(&pool), |connection| {
+            connection
+                .query_row("SELECT COUNT(*) FROM probe", [], |row| row.get::<_, i64>(0))
+                .map_err(sql_error)
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            count, 0,
+            "unwound writes must not leak into the next checkout"
+        );
+        let failed: Result<(), _> = run_on_pool(Arc::clone(&pool), |connection| {
+            connection
+                .execute_batch("BEGIN; INSERT INTO probe VALUES (2)")
+                .map_err(sql_error)?;
+            Err(AuthorizationStateError::Storage("operation failed".into()))
+        })
+        .await;
+        assert!(failed.is_err());
+        run_on_pool(pool, |connection| {
+            connection
+                .execute_batch("BEGIN; INSERT INTO probe VALUES (3); COMMIT")
+                .map_err(sql_error)?;
+            let values: i64 = connection
+                .query_row("SELECT SUM(value) FROM probe", [], |row| row.get(0))
+                .map_err(sql_error)?;
+            assert_eq!(values, 3);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn writer_cancellation_distinguishes_waiting_from_started_work() {
+        let store = SqliteAuthorizationStore::open_in_memory().unwrap();
+        store
+            .run(|connection| {
+                connection
+                    .execute_batch("CREATE TABLE probe (value INTEGER)")
+                    .map_err(sql_error)
+            })
+            .await
+            .unwrap();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let owner = store.clone();
+        let first = tokio::spawn(async move {
+            owner
+                .run(move |connection| {
+                    connection
+                        .execute_batch("BEGIN; INSERT INTO probe VALUES (1)")
+                        .map_err(sql_error)?;
+                    started.send(()).unwrap();
+                    released.blocking_recv().unwrap();
+                    connection.execute_batch("COMMIT").map_err(sql_error)
+                })
+                .await
+        });
+        ready.await.unwrap();
+        let (unwanted_write, unwanted_finished) = tokio::sync::oneshot::channel();
+        {
+            let mut waiting = Box::pin(store.run(move |connection| {
+                let result = connection
+                    .execute_batch("INSERT INTO probe VALUES (99)")
+                    .map_err(sql_error);
+                let _ = unwanted_write.send(result.is_ok());
+                result
+            }));
+            assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+            // Dropping a caller before writer admission must not enqueue a write.
+        }
+        // A started blocking operation is not cancelled by dropping its caller.
+        first.abort();
+        release.send(()).unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), unwanted_finished)
+                .await
+                .unwrap()
+                .is_err(),
+            "the dropped waiting operation must never execute"
+        );
+        let sum = tokio::time::timeout(
+            Duration::from_secs(5),
+            store.run(|connection| {
+                connection
+                    .query_row("SELECT SUM(value) FROM probe", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .map_err(sql_error)
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(sum, 1);
+    }
 
     #[tokio::test]
     async fn telemetry_uses_persisted_readers_without_waiting_for_writer() {

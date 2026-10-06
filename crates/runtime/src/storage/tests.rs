@@ -124,16 +124,79 @@ fn sqlite_migration_check_does_not_modify_configured_database(
     let path = directory.path().join("platform.sqlite");
     let store = SqliteStore::new(SubsystemName::Platform, sqlite_config(path.clone()));
     store.migrate()?;
-    let before = std::fs::read(&path)?;
-    let wal = path.with_file_name("platform.sqlite-wal");
-    let shm = path.with_file_name("platform.sqlite-shm");
-    let sidecars_before = (wal.exists(), shm.exists());
+    let connection = store.open()?;
+    connection.execute_batch("CREATE TABLE migration_probe (value TEXT); INSERT INTO migration_probe VALUES ('retained')")?;
 
     store.check_migrations()?;
 
-    assert_eq!(std::fs::read(&path)?, before);
-    assert_eq!((wal.exists(), shm.exists()), sidecars_before);
+    let value: String =
+        connection.query_row("SELECT value FROM migration_probe", [], |row| row.get(0))?;
+    assert_eq!(value, "retained");
+    connection.execute("INSERT INTO migration_probe VALUES ('still writable')", [])?;
+    let count: i64 =
+        connection.query_row("SELECT COUNT(*) FROM migration_probe", [], |row| row.get(0))?;
+    assert_eq!(count, 2);
     Ok(())
+}
+
+#[test]
+fn migration_check_reads_committed_wal_history() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let store = SqliteStore::new(
+        SubsystemName::Platform,
+        sqlite_config(directory.path().join("platform.sqlite")),
+    );
+    store.migrate()?;
+    let connection = store.open()?;
+    connection.pragma_update(None, "wal_autocheckpoint", 0)?;
+    connection.execute("UPDATE refinery_schema_history SET checksum = '0'", [])?;
+    assert!(
+        matches!(
+            store.check_migrations(),
+            Err(StoreError::MigrateSqlite { .. })
+        ),
+        "snapshot must include the committed WAL migration history, not only the main database"
+    );
+    let checksum: String = connection.query_row(
+        "SELECT checksum FROM refinery_schema_history LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(checksum, "0", "check must not repair or migrate the source");
+    Ok(())
+}
+
+#[test]
+fn migration_check_can_run_while_transactions_commit() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let store = SqliteStore::new(
+        SubsystemName::Platform,
+        sqlite_config(directory.path().join("platform.sqlite")),
+    );
+    store.migrate()?;
+    let mut connection = store.open()?;
+    connection.execute_batch("CREATE TABLE migration_probe (value INTEGER)")?;
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(move || -> rusqlite::Result<Connection> {
+            for value in 0..128 {
+                let transaction = connection.transaction()?;
+                transaction.execute("INSERT INTO migration_probe VALUES (?1)", [value])?;
+                transaction.commit()?;
+            }
+            Ok(connection)
+        });
+        for _ in 0..4 {
+            store.check_migrations()?;
+        }
+        let connection = writer.join().unwrap()?;
+        let count: i64 =
+            connection.query_row("SELECT COUNT(*) FROM migration_probe", [], |row| row.get(0))?;
+        assert_eq!(
+            count, 128,
+            "checks must not lose or duplicate source writes"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
 }
 
 #[test]

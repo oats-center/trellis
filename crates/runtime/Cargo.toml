@@ -13,7 +13,7 @@ name = "trellis_runtime"
 
 [features]
 default = ["sqlite-storage", "nats-leases"]
-sqlite-storage = ["dep:rusqlite", "dep:refinery"]
+sqlite-storage = ["dep:rusqlite", "dep:refinery", "dep:tempfile"]
 nats-leases = ["dep:async-nats", "dep:bytes"]
 
 [lints]
@@ -43,7 +43,8 @@ serde_json.workspace = true
 rustls.workspace = true
 sha2.workspace = true
 subtle.workspace = true
-rusqlite = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+rusqlite = { workspace = true, optional = true, features = ["backup"] }
 refinery = { workspace = true, optional = true }
 reqwest.workspace = true
 webpki-roots.workspace = true

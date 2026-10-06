@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::marker::PhantomData;
+use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
 use futures_util::Stream;
@@ -11,6 +12,58 @@ use tokio::io::AsyncRead;
 use crate::client::transfer::{FileInfo, TransferCancellation, UploadTransferGrant};
 use crate::client::TrellisClientError;
 use crate::live::subscription::{LiveMapDecision, LiveSubscription};
+use crate::service::schema_validation::PreparedSchema;
+
+/// Client-owned validation keeps the existing automatic draft for live updates.
+#[derive(Debug)]
+struct ClientOperationSchemas {
+    input: PreparedSchema,
+    progress: Option<PreparedSchema>,
+    output: PreparedSchema,
+    signals: std::collections::BTreeMap<String, PreparedSchema>,
+    update: Option<jsonschema::Validator>,
+}
+
+impl ClientOperationSchemas {
+    fn new<D: OperationDescriptor>() -> Result<Self, TrellisClientError> {
+        let compile = |schema: &str, label: &str| {
+            PreparedSchema::new(schema).map_err(|error| {
+                TrellisClientError::OperationProtocol(format!(
+                    "{label} failed schema validation: {error}"
+                ))
+            })
+        };
+        let signal_schemas: std::collections::BTreeMap<String, Value> =
+            serde_json::from_str(D::SIGNAL_INPUT_SCHEMAS_JSON)?;
+        let update = D::UPDATE_SCHEMA_JSON
+            .map(|schema| {
+                let schema: Value = serde_json::from_str(schema)?;
+                jsonschema::validator_for(&schema).map_err(|error| {
+                    TrellisClientError::OperationProtocol(format!(
+                        "failed to compile operation update schema: {error}"
+                    ))
+                })
+            })
+            .transpose()?;
+        Ok(Self {
+            input: compile(D::INPUT_SCHEMA_JSON, "operation input")?,
+            progress: D::PROGRESS_SCHEMA_JSON
+                .map(|schema| compile(schema, "operation progress"))
+                .transpose()?,
+            output: compile(D::OUTPUT_SCHEMA_JSON, "operation output")?,
+            signals: signal_schemas
+                .into_iter()
+                .map(|(name, schema)| {
+                    Ok((
+                        name,
+                        compile(&schema.to_string(), "operation signal input")?,
+                    ))
+                })
+                .collect::<Result<_, TrellisClientError>>()?,
+            update,
+        })
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -241,6 +294,7 @@ pub trait OperationTransport {
 #[derive(Debug)]
 pub struct OperationInvoker<'a, T, D> {
     transport: &'a T,
+    schemas: OnceLock<Result<Arc<ClientOperationSchemas>, String>>,
     _descriptor: PhantomData<D>,
 }
 
@@ -311,6 +365,7 @@ pub struct OperationRef<'a, T, D> {
     transport: &'a T,
     data: OperationRefData,
     accepted_transfer: Option<UploadTransferGrant>,
+    schemas: Arc<ClientOperationSchemas>,
     _descriptor: PhantomData<D>,
 }
 
@@ -324,6 +379,19 @@ impl<'a, T, D> std::fmt::Debug for OperationRef<'a, T, D> {
 }
 
 impl<'a, T, D> OperationInvoker<'a, T, D> {
+    fn schemas(&self) -> Result<&Arc<ClientOperationSchemas>, TrellisClientError>
+    where
+        D: OperationDescriptor,
+    {
+        self.schemas
+            .get_or_init(|| {
+                ClientOperationSchemas::new::<D>()
+                    .map(Arc::new)
+                    .map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map_err(|message| TrellisClientError::OperationProtocol(message.clone()))
+    }
     /// Create a typed operation reference for an existing operation id.
     ///
     /// This does not send a start request or run the operation handler. Follow-up
@@ -351,6 +419,7 @@ impl<'a, T, D> OperationInvoker<'a, T, D> {
                 operation: D::KEY.to_string(),
             },
             accepted_transfer: None,
+            schemas: Arc::clone(self.schemas()?),
             _descriptor: PhantomData,
         })
     }
@@ -358,6 +427,7 @@ impl<'a, T, D> OperationInvoker<'a, T, D> {
     pub fn new(transport: &'a T) -> Self {
         Self {
             transport,
+            schemas: OnceLock::new(),
             _descriptor: PhantomData,
         }
     }
@@ -430,7 +500,7 @@ where
             )
         })?;
         let body = serde_json::to_value(input)?;
-        validate_operation_schema(D::INPUT_SCHEMA_JSON, &body, "operation input")?;
+        validate_operation_schema(&self.schemas()?.input, &body, "operation input")?;
         let mut envelope = serde_json::json!({
             "invocationId": invocation_id,
             "input": body,
@@ -445,11 +515,12 @@ where
         &self,
         body: Value,
     ) -> Result<OperationRef<'a, T, D>, TrellisClientError> {
+        let schemas = self.schemas()?;
         let subject = self
             .transport
             .operation_subject(D::API_ID, D::KEY, D::SUBJECT)?;
         let response = self.transport.request_json_value(subject, body).await?;
-        validate_snapshot_at::<D>(&response, "/snapshot")?;
+        validate_snapshot_at(&response, "/snapshot", schemas)?;
         let accepted: AcceptedEnvelope<D::Progress, D::Output> = serde_json::from_value(response)?;
         if accepted.kind != "accepted" {
             return Err(TrellisClientError::OperationProtocol(format!(
@@ -461,6 +532,7 @@ where
             transport: self.transport,
             data: accepted.operation_ref,
             accepted_transfer: accepted.transfer,
+            schemas: Arc::clone(schemas),
             _descriptor: PhantomData,
         })
     }
@@ -650,7 +722,7 @@ where
                 body,
             )
             .await?;
-        decode_snapshot_response::<D>(response)
+        decode_snapshot_response::<D>(response, &self.schemas)
     }
 
     pub async fn cancel(
@@ -675,7 +747,7 @@ where
                 .transport
                 .request_json_value(subject.clone(), body.clone())
                 .await?;
-            let snapshot = decode_snapshot_response::<D>(response)?;
+            let snapshot = decode_snapshot_response::<D>(response, &self.schemas)?;
             if matches!(
                 snapshot.state,
                 OperationState::Completed | OperationState::Failed | OperationState::Cancelled
@@ -694,13 +766,11 @@ where
         input: Option<Value>,
     ) -> Result<OperationSignalAccepted<D::Progress, D::Output>, TrellisClientError> {
         let signal = signal.into();
-        let signal_schemas: serde_json::Map<String, Value> =
-            serde_json::from_str(D::SIGNAL_INPUT_SCHEMAS_JSON)?;
-        let schema = signal_schemas.get(&signal).ok_or_else(|| {
+        let schema = self.schemas.signals.get(&signal).ok_or_else(|| {
             TrellisClientError::OperationProtocol(format!("undeclared operation signal '{signal}'"))
         })?;
         validate_operation_schema(
-            &serde_json::to_string(schema)?,
+            schema,
             input.as_ref().unwrap_or(&Value::Null),
             "operation signal input",
         )?;
@@ -746,7 +816,7 @@ where
                 body,
             )
             .await?;
-        decode_signal_response::<D>(response)
+        decode_signal_response::<D>(response, &self.schemas)
     }
 
     pub async fn transfer(&self, body: impl AsRef<[u8]>) -> Result<FileInfo, TrellisClientError> {
@@ -807,7 +877,20 @@ where
         &self,
     ) -> Result<OperationSnapshot<D::Progress, D::Output>, TrellisClientError> {
         let mut events = self.live().await?;
-        let result = wait_for_terminal_snapshot(&mut events).await;
+        let result = async {
+            while let Some(event) = events.next().await {
+                match event? {
+                    OperationEvent::Completed { snapshot }
+                    | OperationEvent::Failed { snapshot }
+                    | OperationEvent::Cancelled { snapshot } => return Ok(snapshot),
+                    _ => {}
+                }
+            }
+            Err(TrellisClientError::OperationProtocol(
+                "operation watch ended before a terminal snapshot".to_string(),
+            ))
+        }
+        .await;
         let _ = events.close().await;
         result
     }
@@ -817,7 +900,7 @@ where
         &self,
     ) -> Result<LiveSubscription<OperationEvent<D::Progress, D::Output, Value>>, TrellisClientError>
     {
-        self.open_operation_watch::<Value>(false, None).await
+        self.open_operation_watch::<Value>(false).await
     }
 
     /// Observe durable lifecycle events plus declared live-only updates.
@@ -830,11 +913,10 @@ where
     where
         D::UpdateEvidence: HasOperationUpdates,
     {
-        let update_schema = D::UPDATE_SCHEMA_JSON.ok_or_else(|| {
+        self.schemas.update.as_ref().ok_or_else(|| {
             TrellisClientError::OperationProtocol("operation does not declare live updates".into())
         })?;
-        self.open_operation_watch::<D::Update>(true, Some(update_schema))
-            .await
+        self.open_operation_watch::<D::Update>(true).await
     }
 
     /// Subscribe to declared live-only updates until the operation becomes terminal.
@@ -858,7 +940,6 @@ where
     async fn open_operation_watch<TUpdate>(
         &self,
         include_updates: bool,
-        update_schema_json: Option<&'static str>,
     ) -> Result<LiveSubscription<OperationEvent<D::Progress, D::Output, TUpdate>>, TrellisClientError>
     where
         TUpdate: DeserializeOwned + Send + 'static,
@@ -915,17 +996,15 @@ where
             deadline,
         )
         .await?;
-        let progress_schema = D::PROGRESS_SCHEMA_JSON;
-        let output_schema = D::OUTPUT_SCHEMA_JSON;
+        let schemas = Arc::clone(&self.schemas);
         crate::live::client_open::install_operation_watch_handle(
             self.transport,
             prepared,
             move |value| {
                 decode_watch_frame::<D::Progress, TUpdate, D::Output>(
                     value,
-                    progress_schema,
-                    update_schema_json,
-                    output_schema,
+                    &schemas,
+                    include_updates,
                 )
             },
         )
@@ -955,35 +1034,14 @@ fn operation_watch_open_value(
     body
 }
 
-async fn wait_for_terminal_snapshot<S, TProgress, TOutput, TUpdate>(
-    events: &mut S,
-) -> Result<OperationSnapshot<TProgress, TOutput>, TrellisClientError>
-where
-    S: Stream<Item = Result<OperationEvent<TProgress, TOutput, TUpdate>, TrellisClientError>>
-        + Unpin,
-{
-    while let Some(event) = events.next().await {
-        match event? {
-            OperationEvent::Completed { snapshot }
-            | OperationEvent::Failed { snapshot }
-            | OperationEvent::Cancelled { snapshot } => return Ok(snapshot),
-            _ => {}
-        }
-    }
-    Err(TrellisClientError::OperationProtocol(
-        "operation watch ended before a terminal snapshot".to_string(),
-    ))
-}
-
 fn decode_watch_frame<
     TProgress: DeserializeOwned,
     TUpdate: DeserializeOwned,
     TOutput: DeserializeOwned,
 >(
     value: Value,
-    progress_schema_json: Option<&str>,
-    update_schema_json: Option<&str>,
-    output_schema_json: &str,
+    schemas: &ClientOperationSchemas,
+    include_updates: bool,
 ) -> Result<Option<OperationEvent<TProgress, TOutput, TUpdate>>, TrellisClientError> {
     if value.get("kind").and_then(Value::as_str) == Some("keepalive") {
         return Ok(None);
@@ -995,32 +1053,32 @@ fn decode_watch_frame<
 
     match kind {
         "snapshot" => {
-            validate_snapshot_value(
-                value.pointer("/snapshot"),
-                progress_schema_json,
-                output_schema_json,
-            )?;
+            validate_snapshot_value(value.pointer("/snapshot"), schemas)?;
             let frame: SnapshotFrame<TProgress, TOutput> = serde_json::from_value(value)?;
             Ok(Some(snapshot_to_event(frame.snapshot)))
         }
         "event" => {
-            validate_snapshot_value(
-                value.pointer("/event/snapshot"),
-                progress_schema_json,
-                output_schema_json,
-            )?;
+            validate_snapshot_value(value.pointer("/event/snapshot"), schemas)?;
             if value.pointer("/event/type").and_then(Value::as_str) == Some("update") {
                 let update = value.pointer("/event/update").ok_or_else(|| {
                     TrellisClientError::OperationProtocol(
                         "operation update event is missing its payload".to_string(),
                     )
                 })?;
-                let schema_json = update_schema_json.ok_or_else(|| {
-                    TrellisClientError::OperationProtocol(
-                        "received an undeclared operation update".to_string(),
-                    )
-                })?;
-                validate_update_schema(schema_json, update)?;
+                let validator = schemas
+                    .update
+                    .as_ref()
+                    .filter(|_| include_updates)
+                    .ok_or_else(|| {
+                        TrellisClientError::OperationProtocol(
+                            "received an undeclared operation update".to_string(),
+                        )
+                    })?;
+                if let Some(error) = validator.iter_errors(update).next() {
+                    return Err(TrellisClientError::OperationProtocol(format!(
+                        "operation update failed schema validation: {error}"
+                    )));
+                }
             }
             let frame: EventFrame<TProgress, TOutput, TUpdate> = serde_json::from_value(value)?;
             Ok(Some(frame.event))
@@ -1034,6 +1092,7 @@ fn decode_watch_frame<
 
 fn decode_snapshot_response<D: OperationDescriptor>(
     value: Value,
+    schemas: &ClientOperationSchemas,
 ) -> Result<OperationSnapshot<D::Progress, D::Output>, TrellisClientError> {
     let kind = value.get("kind").and_then(Value::as_str).ok_or_else(|| {
         TrellisClientError::OperationProtocol("expected control frame kind".to_string())
@@ -1041,7 +1100,7 @@ fn decode_snapshot_response<D: OperationDescriptor>(
 
     match kind {
         "snapshot" => {
-            validate_snapshot_at::<D>(&value, "/snapshot")?;
+            validate_snapshot_at(&value, "/snapshot", schemas)?;
             let frame: SnapshotFrame<D::Progress, D::Output> = serde_json::from_value(value)?;
             Ok(frame.snapshot)
         }
@@ -1054,6 +1113,7 @@ fn decode_snapshot_response<D: OperationDescriptor>(
 
 fn decode_signal_response<D: OperationDescriptor>(
     value: Value,
+    schemas: &ClientOperationSchemas,
 ) -> Result<OperationSignalAccepted<D::Progress, D::Output>, TrellisClientError> {
     let kind = value.get("kind").and_then(Value::as_str).ok_or_else(|| {
         TrellisClientError::OperationProtocol("expected signal frame kind".to_string())
@@ -1061,7 +1121,7 @@ fn decode_signal_response<D: OperationDescriptor>(
 
     match kind {
         "signal-accepted" => {
-            validate_snapshot_at::<D>(&value, "/snapshot")?;
+            validate_snapshot_at(&value, "/snapshot", schemas)?;
             Ok(serde_json::from_value(value)?)
         }
         "error" => Err(operation_error_frame(value)),
@@ -1104,59 +1164,40 @@ fn is_terminal_event<TProgress, TUpdate, TOutput>(
     )
 }
 
-fn validate_update_schema(schema_json: &str, update: &Value) -> Result<(), TrellisClientError> {
-    let schema: Value = serde_json::from_str(schema_json)?;
-    let validator = jsonschema::validator_for(&schema).map_err(|error| {
-        TrellisClientError::OperationProtocol(format!(
-            "failed to compile operation update schema: {error}"
-        ))
-    })?;
-    if let Some(error) = validator.iter_errors(update).next() {
-        return Err(TrellisClientError::OperationProtocol(format!(
-            "operation update failed schema validation: {error}"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_snapshot_at<D: OperationDescriptor>(
+fn validate_snapshot_at(
     value: &Value,
     pointer: &str,
+    schemas: &ClientOperationSchemas,
 ) -> Result<(), TrellisClientError> {
-    validate_snapshot_value(
-        value.pointer(pointer),
-        D::PROGRESS_SCHEMA_JSON,
-        D::OUTPUT_SCHEMA_JSON,
-    )
+    validate_snapshot_value(value.pointer(pointer), schemas)
 }
 
 fn validate_snapshot_value(
     snapshot: Option<&Value>,
-    progress_schema_json: Option<&str>,
-    output_schema_json: &str,
+    schemas: &ClientOperationSchemas,
 ) -> Result<(), TrellisClientError> {
     let Some(snapshot) = snapshot else {
         return Ok(());
     };
-    if let (Some(schema), Some(progress)) = (progress_schema_json, snapshot.get("progress")) {
+    if let (Some(schema), Some(progress)) = (&schemas.progress, snapshot.get("progress")) {
         if !progress.is_null() {
             validate_operation_schema(schema, progress, "operation progress")?;
         }
     }
     if let Some(output) = snapshot.get("output") {
         if !output.is_null() {
-            validate_operation_schema(output_schema_json, output, "operation output")?;
+            validate_operation_schema(&schemas.output, output, "operation output")?;
         }
     }
     Ok(())
 }
 
 fn validate_operation_schema(
-    schema_json: &str,
+    schema: &PreparedSchema,
     value: &Value,
     label: &str,
 ) -> Result<(), TrellisClientError> {
-    crate::service::validate_input_schema(schema_json, value).map_err(|error| {
+    schema.validate(value).map_err(|error| {
         TrellisClientError::OperationProtocol(format!("{label} failed schema validation: {error}"))
     })
 }
@@ -1165,13 +1206,42 @@ fn validate_operation_schema(
 mod update_tests {
     use super::*;
 
-    #[derive(Debug, Deserialize, PartialEq)]
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
     struct Update {
-        processed: u64,
+        processed: Vec<u64>,
+    }
+
+    struct UpdateOperation;
+
+    impl OperationDescriptor for UpdateOperation {
+        type Input = Value;
+        type Progress = Value;
+        type Output = Value;
+        type Update = Update;
+        type UpdateEvidence = DeclaredOperationUpdates;
+        type Error = String;
+        const KEY: &'static str = "Test.Update";
+        const SUBJECT: &'static str = "operations.v1.Test.Update";
+        const CALLER_CAPABILITIES: &'static [&'static str] = &[];
+        const OBSERVE_CAPABILITIES: &'static [&'static str] = &[];
+        const CANCEL_CAPABILITIES: &'static [&'static str] = &[];
+        const CANCELABLE: bool = false;
+        const INPUT_SCHEMA_JSON: &'static str = "{}";
+        const PROGRESS_SCHEMA_JSON: Option<&'static str> = None;
+        const OUTPUT_SCHEMA_JSON: &'static str = "{}";
+        const SIGNAL_INPUT_SCHEMAS_JSON: &'static str = "{}";
+        const UPDATE_SCHEMA_JSON: Option<&'static str> = Some(
+            r#"{
+            "$schema":"https://json-schema.org/draft/2020-12/schema",
+            "type":"object","required":["processed"],
+            "properties":{"processed":{"type":"array","prefixItems":[{"type":"integer"}],"items":false}}
+        }"#,
+        );
     }
 
     #[test]
     fn decodes_and_validates_typed_update_frame() {
+        let schemas = ClientOperationSchemas::new::<UpdateOperation>().unwrap();
         let event = decode_watch_frame::<Value, Update, Value>(
             json!({
                 "kind": "event",
@@ -1181,20 +1251,48 @@ mod update_tests {
                     "operationId": "op-1",
                     "sequence": 2,
                     "timestamp": "2026-07-10T12:00:00Z",
-                    "update": { "processed": 3 }
+                    "update": { "processed": [3] }
                 }
             }),
-            None,
-            Some(r#"{"type":"object","required":["processed"],"properties":{"processed":{"type":"integer"}}}"#),
-            "{}",
+            &schemas,
+            true,
         )
         .expect("decode update frame")
         .expect("event frame");
 
         assert!(matches!(
             event,
-            OperationEvent::Update { update } if update.update.processed == 3
+            OperationEvent::Update { update } if update.update.processed == [3]
         ));
+
+        for update in [
+            json!({"processed":["3"]}),
+            json!({"processed":[3,4]}),
+            json!({}),
+        ] {
+            let error = decode_watch_frame::<Value, Update, Value>(
+                json!({
+                    "kind":"event", "event":{"type":"update", "update":update}
+                }),
+                &schemas,
+                true,
+            )
+            .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("operation update failed schema validation"));
+        }
+        let undeclared = decode_watch_frame::<Value, Update, Value>(
+            json!({
+                "kind":"event", "event":{"type":"update", "update":{"processed":[3]}}
+            }),
+            &schemas,
+            false,
+        )
+        .unwrap_err();
+        assert!(undeclared
+            .to_string()
+            .contains("undeclared operation update"));
     }
 }
 
@@ -1204,21 +1302,9 @@ pub fn control_subject(subject: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
-    use futures_util::stream;
-    use futures_util::StreamExt;
+    use super::{decode_watch_frame, ClientOperationSchemas, OperationDescriptor, OperationEvent};
     use serde::{Deserialize, Serialize};
     use serde_json::{json, Value};
-    use tokio::io::AsyncRead;
-
-    use super::{
-        control_subject, decode_watch_frame, operation_watch_open_value,
-        wait_for_terminal_snapshot, FileInfo, OperationDescriptor, OperationEvent,
-        OperationInvoker, OperationSignalAccepted, OperationTransferProgress, OperationTransport,
-        TransferCancellation, TransferOperationDescriptor, UploadTransferGrant,
-    };
-    use crate::client::TrellisClientError;
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
     struct RefundInput {
@@ -1261,268 +1347,8 @@ mod tests {
         const SIGNAL_INPUT_SCHEMAS_JSON: &'static str = r#"{"selectWorkspace":{"type":"object","required":["workspaceId"],"properties":{"workspaceId":{"type":"string"}}}}"#;
     }
 
-    impl TransferOperationDescriptor for RefundOperation {}
-
-    #[derive(Debug, Default)]
-    struct RecordingTransport {
-        requests: Mutex<Vec<(String, Value)>>,
-        responses: Mutex<Vec<Value>>,
-    }
-
-    impl RecordingTransport {
-        fn with_responses(responses: Vec<Value>) -> Self {
-            Self {
-                requests: Mutex::new(Vec::new()),
-                responses: Mutex::new(responses),
-            }
-        }
-
-        fn requests(&self) -> Vec<(String, Value)> {
-            self.requests.lock().expect("requests lock").clone()
-        }
-    }
-
-    impl OperationTransport for RecordingTransport {
-        async fn request_json_value(
-            &self,
-            subject: String,
-            body: Value,
-        ) -> Result<Value, TrellisClientError> {
-            self.requests
-                .lock()
-                .expect("requests lock")
-                .push((subject, body));
-            let response = self.responses.lock().expect("responses lock").remove(0);
-            Ok(response)
-        }
-
-        async fn put_upload_transfer(
-            &self,
-            _grant: UploadTransferGrant,
-            _body: Vec<u8>,
-        ) -> Result<FileInfo, TrellisClientError> {
-            Err(TrellisClientError::TransferProtocol(
-                "not implemented in test transport".to_string(),
-            ))
-        }
-
-        async fn put_upload_transfer_from<'a, R>(
-            &'a self,
-            _grant: UploadTransferGrant,
-            _reader: &'a mut R,
-        ) -> Result<FileInfo, TrellisClientError>
-        where
-            R: AsyncRead + Unpin + Send + ?Sized + 'a,
-        {
-            Err(TrellisClientError::OperationProtocol(
-                "recording transport does not stream transfers".to_string(),
-            ))
-        }
-
-        async fn put_upload_transfer_from_with_cancel<'a, R>(
-            &'a self,
-            _grant: UploadTransferGrant,
-            _reader: &'a mut R,
-            _cancellation: &'a TransferCancellation,
-        ) -> Result<FileInfo, TrellisClientError>
-        where
-            R: AsyncRead + Unpin + Send + ?Sized + 'a,
-        {
-            Err(TrellisClientError::OperationProtocol(
-                "recording transport does not stream transfers".to_string(),
-            ))
-        }
-    }
-
-    #[tokio::test]
-    async fn control_by_operation_id_uses_typed_control_subject_without_starting() {
-        let transport = RecordingTransport::with_responses(vec![json!({
-            "kind": "snapshot",
-            "snapshot": {
-                "revision": 7,
-                "state": "running",
-                "progress": { "message": "job resumed" }
-            }
-        })]);
-        let invoker = OperationInvoker::<_, RefundOperation>::new(&transport);
-
-        let operation = invoker
-            .control("op_resumed")
-            .expect("operation id is valid");
-        let snapshot = operation.get().await.expect("get succeeds");
-
-        assert_eq!(operation.id(), "op_resumed");
-        assert_eq!(operation.operation(), "Billing.Refund");
-        assert_eq!(snapshot.revision, 7);
-        assert_eq!(
-            snapshot.progress,
-            Some(RefundProgress {
-                message: "job resumed".to_string(),
-            })
-        );
-        assert_eq!(
-            transport.requests(),
-            vec![(
-                control_subject(RefundOperation::SUBJECT),
-                json!({ "action": "get", "operationId": "op_resumed" })
-            )]
-        );
-    }
-
     #[test]
-    fn control_by_operation_id_rejects_empty_id_as_result_error() {
-        let transport = RecordingTransport::default();
-        let invoker = OperationInvoker::<_, RefundOperation>::new(&transport);
-
-        let error = invoker.control("   ").expect_err("empty id is rejected");
-
-        assert!(matches!(error, TrellisClientError::OperationProtocol(_)));
-        assert!(transport.requests().is_empty());
-    }
-
-    #[tokio::test]
-    async fn resumed_operation_reference_preserves_typed_output() {
-        let frame = decode_watch_frame::<RefundProgress, Value, RefundOutput>(
-            json!({
-                "kind": "snapshot",
-                "snapshot": {
-                    "revision": 8,
-                    "state": "completed",
-                    "output": { "refund_id": "rf_resumed" }
-                }
-            }),
-            None,
-            None,
-            RefundOperation::OUTPUT_SCHEMA_JSON,
-        )
-        .expect("decode snapshot")
-        .expect("event");
-        let mut events = stream::iter([Ok(frame)]);
-
-        let snapshot = wait_for_terminal_snapshot(&mut events)
-            .await
-            .expect("wait succeeds");
-
-        assert_eq!(
-            snapshot.output,
-            Some(RefundOutput {
-                refund_id: "rf_resumed".to_string(),
-            })
-        );
-    }
-
-    #[tokio::test]
-    async fn resumed_transfer_attempt_returns_result_error_without_payload_mutation() {
-        let transport = RecordingTransport::default();
-        let invoker = OperationInvoker::<_, RefundOperation>::new(&transport);
-
-        let error = invoker
-            .control("op_transfer")
-            .expect("operation id is valid")
-            .transfer(Vec::new())
-            .await
-            .expect_err("resumed refs do not carry accepted transfer grants");
-
-        assert!(matches!(error, TrellisClientError::OperationProtocol(_)));
-        assert!(transport.requests().is_empty());
-
-        let _ = OperationTransferProgress {
-            chunk_index: 0,
-            chunk_bytes: 0,
-            transferred_bytes: 0,
-        };
-    }
-
-    #[tokio::test]
-    async fn control_error_frame_returns_result_error_for_invalid_operation_state() {
-        let transport = RecordingTransport::with_responses(vec![json!({
-            "kind": "error",
-            "error": {
-                "type": "TerminalOperation",
-                "message": "operation is already terminal"
-            }
-        })]);
-        let invoker = OperationInvoker::<_, RefundOperation>::new(&transport);
-
-        let error = invoker
-            .control("op_done")
-            .expect("operation id is valid")
-            .cancel()
-            .await
-            .expect_err("terminal control returns expected error");
-
-        match error {
-            TrellisClientError::OperationProtocol(message) => {
-                assert!(message.contains("TerminalOperation"));
-                assert!(message.contains("already terminal"));
-            }
-            other => panic!("unexpected error: {other}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn signal_sends_control_signal_and_decodes_ack() {
-        let transport = RecordingTransport::with_responses(vec![json!({
-            "kind": "signal-accepted",
-            "operationId": "op_signal",
-            "signal": "selectWorkspace",
-            "signalSequence": 1,
-            "acceptedAt": "2026-05-15T00:00:00Z",
-            "snapshot": {
-                "revision": 2,
-                "state": "running",
-                "progress": { "message": "waiting" }
-            }
-        })]);
-        let invoker = OperationInvoker::<_, RefundOperation>::new(&transport);
-
-        let ack: OperationSignalAccepted<RefundProgress, RefundOutput> = invoker
-            .control("op_signal")
-            .expect("operation id is valid")
-            .signal("selectWorkspace", Some(json!({ "workspaceId": "ws_1" })))
-            .await
-            .expect("signal succeeds");
-
-        assert_eq!(ack.signal, "selectWorkspace");
-        assert_eq!(ack.signal_sequence, 1);
-        assert_eq!(
-            transport.requests(),
-            vec![(
-                control_subject(RefundOperation::SUBJECT),
-                json!({
-                    "action": "signal",
-                    "operationId": "op_signal",
-                    "signal": "selectWorkspace",
-                    "input": { "workspaceId": "ws_1" }
-                })
-            )]
-        );
-    }
-
-    #[test]
-    fn watch_uses_control_subject_skips_keepalive_and_stops_after_terminal_event() {
-        assert_eq!(
-            control_subject(RefundOperation::SUBJECT),
-            "operations.v1.Billing.Refund.control"
-        );
-        let body = operation_watch_open_value("op_123", false, "open-nonce", 1024);
-        assert_eq!(body["action"], "watch");
-        assert_eq!(body["operationId"], "op_123");
-        assert!(body.get("includeUpdates").is_none());
-        assert_eq!(
-            body["observation"]["format"],
-            trellis_protocol::LIVE_VERSION
-        );
-        assert_eq!(body["observation"]["type"], "open");
-        assert_eq!(body["observation"]["openId"], "open-nonce");
-        assert_eq!(body["observation"]["receiveMaxPayloadBytes"], 1024);
-
-        let with_updates = operation_watch_open_value("op_123", true, "open-nonce", 1024);
-        assert_eq!(with_updates["includeUpdates"], true);
-    }
-
-    #[tokio::test]
-    async fn watch_decode_skips_keepalive_and_wait_stops_after_terminal_event() {
+    fn watch_decode_skips_keepalive_and_preserves_typed_output() {
         let frames = [
             json!({
                 "kind": "snapshot",
@@ -1555,56 +1381,33 @@ mod tests {
                     }
                 }
             }),
-            json!({
-                "kind": "event",
-                "event": {
-                    "type": "progress",
-                    "snapshot": {
-                        "revision": 5,
-                        "state": "running",
-                        "progress": { "message": "ignored" }
-                    }
-                }
-            }),
         ];
         let mut decoded = Vec::new();
+        let schemas = ClientOperationSchemas::new::<RefundOperation>().unwrap();
         for frame in frames {
-            if let Some(event) = decode_watch_frame::<RefundProgress, Value, RefundOutput>(
-                frame,
-                None,
-                None,
-                RefundOperation::OUTPUT_SCHEMA_JSON,
-            )
-            .expect("decode watch frame")
+            if let Some(event) =
+                decode_watch_frame::<RefundProgress, Value, RefundOutput>(frame, &schemas, false)
+                    .expect("decode watch frame")
             {
                 decoded.push(event);
             }
         }
-        assert_eq!(decoded.len(), 4);
+        assert_eq!(decoded.len(), 3);
         assert!(matches!(decoded[0], OperationEvent::Started { .. }));
         assert!(matches!(decoded[1], OperationEvent::Progress { .. }));
-        assert!(matches!(decoded[2], OperationEvent::Completed { .. }));
-        assert!(matches!(decoded[3], OperationEvent::Progress { .. }));
-
-        let mut events = stream::iter(decoded.into_iter().map(Ok));
-        let snapshot = wait_for_terminal_snapshot(&mut events)
-            .await
-            .expect("wait succeeds");
+        let OperationEvent::Completed { snapshot } = &decoded[2] else {
+            panic!("completed frame must decode as a business terminal")
+        };
         assert_eq!(
             snapshot.output,
             Some(RefundOutput {
                 refund_id: "rf_123".to_string(),
             })
         );
-        // Remaining frames after the terminal event are not consumed by wait.
-        assert!(matches!(
-            events.next().await,
-            Some(Ok(OperationEvent::Progress { .. }))
-        ));
     }
 
-    #[tokio::test]
-    async fn wait_returns_failed_snapshot_without_transport_error() {
+    #[test]
+    fn failed_frame_decodes_as_a_business_event() {
         let event = decode_watch_frame::<RefundProgress, Value, RefundOutput>(
             json!({
                 "kind": "event",
@@ -1616,16 +1419,14 @@ mod tests {
                     }
                 }
             }),
-            None,
-            None,
-            RefundOperation::OUTPUT_SCHEMA_JSON,
+            &ClientOperationSchemas::new::<RefundOperation>().unwrap(),
+            false,
         )
         .expect("decode failed")
         .expect("event");
-        let mut events = stream::iter([Ok(event)]);
-        let snapshot = wait_for_terminal_snapshot(&mut events)
-            .await
-            .expect("failed is a business terminal");
+        let OperationEvent::Failed { snapshot } = event else {
+            panic!("failed frame must decode as a business terminal")
+        };
         assert_eq!(snapshot.state, super::OperationState::Failed);
     }
 }

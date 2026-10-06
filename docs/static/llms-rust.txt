@@ -147,6 +147,10 @@ does not imply finished cleanup; explicitly `wait()` for the terminal result.
 Normal replay never clears that intent; an existing terminal result is returned
 unchanged.
 
+Rust schema-validation issue paths use JSON Pointer: an empty path is the root,
+`/` is an empty-name property, and property names escape `~` as `~0` and `/` as
+`~1`, including missing required fields.
+
 Owned event publication uses generated publishers. Durable handlers use declared
 Consumer resources; Trellis resolves durable identity, local concurrency, retry,
 authority, and scoped Events DLQ/replay. Delivery may repeat, so choose a

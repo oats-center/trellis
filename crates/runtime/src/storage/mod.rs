@@ -43,11 +43,11 @@ pub enum StoreError {
         from: PathBuf,
         /// Temporary destination path.
         to: PathBuf,
-        /// Underlying filesystem error.
+        /// Snapshot creation error, including SQLite backup errors.
         #[source]
         error: std::io::Error,
     },
-    /// A configured SQLite database changed throughout snapshot retries.
+    /// A configured SQLite snapshot did not complete within its bounded budget.
     #[error("configured sqlite store changed while creating a check snapshot: {path}")]
     SqliteSnapshotChanged {
         /// Configured database path.
@@ -132,94 +132,51 @@ impl SqliteStore {
             SubsystemName::Health => sqlite_migrations::health::migrations::runner(),
             SubsystemName::Events => sqlite_migrations::events::migrations::runner(),
         };
-        let temporary_directory = std::env::temp_dir().join(format!(
-            "trellis-migration-check-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        let temporary_path = temporary_directory.join("store.sqlite");
-        let result = (|| {
-            fs::create_dir(&temporary_directory).map_err(|source| StoreError::CreateDirectory {
-                path: temporary_directory.clone(),
+        let directory = tempfile::tempdir().map_err(|error| StoreError::CopySqliteSnapshot {
+            from: self.config.path.clone(),
+            to: std::env::temp_dir(),
+            error,
+        })?;
+        let temporary_path = directory.path().join("store.sqlite");
+        let source = self.open_read_only()?;
+        let mut connection =
+            Connection::open(&temporary_path).map_err(|source| StoreError::OpenSqlite {
+                path: temporary_path.clone(),
                 source,
             })?;
-            let source_paths = ["", "-wal", "-shm"].map(|suffix| {
-                let mut path = self.config.path.as_os_str().to_owned();
-                path.push(suffix);
-                PathBuf::from(path)
-            });
-            let destination_paths = ["", "-wal", "-shm"].map(|suffix| {
-                let mut path = temporary_path.as_os_str().to_owned();
-                path.push(suffix);
-                PathBuf::from(path)
-            });
-            let fingerprint = |paths: &[PathBuf; 3]| -> std::io::Result<_> {
-                paths
-                    .iter()
-                    .map(|path| match fs::metadata(path) {
-                        Ok(metadata) => Ok(Some((metadata.len(), metadata.modified()?))),
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                        Err(error) => Err(error),
-                    })
-                    .collect::<Result<Vec<_>, _>>()
+        {
+            let snapshot_error = |error| StoreError::CopySqliteSnapshot {
+                from: self.config.path.clone(),
+                to: temporary_path.clone(),
+                error: std::io::Error::other(error),
             };
-            let mut stable = false;
-            for _ in 0..3 {
-                let before =
-                    fingerprint(&source_paths).map_err(|error| StoreError::CopySqliteSnapshot {
-                        from: self.config.path.clone(),
-                        to: temporary_path.clone(),
-                        error,
-                    })?;
-                for (from, to) in source_paths.iter().zip(&destination_paths) {
-                    if from.exists() {
-                        fs::copy(from, to).map_err(|error| StoreError::CopySqliteSnapshot {
-                            from: from.clone(),
-                            to: to.clone(),
-                            error,
-                        })?;
-                    } else {
-                        let _ = fs::remove_file(to);
+            let backup =
+                rusqlite::backup::Backup::new(&source, &mut connection).map_err(snapshot_error)?;
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                match backup.step(128).map_err(snapshot_error)? {
+                    rusqlite::backup::StepResult::Done => break,
+                    _ if std::time::Instant::now() >= deadline => {
+                        return Err(StoreError::SqliteSnapshotChanged {
+                            path: self.config.path.clone(),
+                        });
                     }
-                }
-                if before
-                    == fingerprint(&source_paths).map_err(|error| {
-                        StoreError::CopySqliteSnapshot {
-                            from: self.config.path.clone(),
-                            to: temporary_path.clone(),
-                            error,
-                        }
-                    })?
-                {
-                    stable = true;
-                    break;
+                    rusqlite::backup::StepResult::Busy | rusqlite::backup::StepResult::Locked => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    _ => {}
                 }
             }
-            if !stable {
-                return Err(StoreError::SqliteSnapshotChanged {
-                    path: self.config.path.clone(),
-                });
-            }
-            let mut connection =
-                Connection::open(&temporary_path).map_err(|source| StoreError::OpenSqlite {
-                    path: temporary_path.clone(),
-                    source,
-                })?;
-            runner
-                .set_abort_missing(false)
-                .run(&mut connection)
-                .map_err(|source| StoreError::MigrateSqlite {
-                    path: self.config.path.clone(),
-                    subsystem: self.subsystem.as_str(),
-                    source,
-                })?;
-            Ok(())
-        })();
-        let _ = fs::remove_dir_all(temporary_directory);
-        result
+        }
+        runner
+            .set_abort_missing(false)
+            .run(&mut connection)
+            .map_err(|source| StoreError::MigrateSqlite {
+                path: self.config.path.clone(),
+                subsystem: self.subsystem.as_str(),
+                source,
+            })?;
+        Ok(())
     }
 
     pub(crate) fn open(&self) -> Result<Connection, StoreError> {

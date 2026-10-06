@@ -11,104 +11,118 @@ use super::error::{SchemaValidationIssue, ServerError, ValidationIssue};
 /// Returns `ServerError::Validation` when any failure lacks annotations.
 #[doc = concat!("Trellis API operation `", stringify!(validate_input_schema), "`.")]
 pub fn validate_input_schema(schema_json: &str, value: &Value) -> Result<(), ServerError> {
-    let schema: Value = serde_json::from_str(schema_json)
-        .map_err(|e| ServerError::Nats(format!("failed to parse input schema: {e}")))?;
+    PreparedSchema::new(schema_json)?.validate(value)
+}
 
-    let validator = jsonschema::options()
-        .with_draft(Draft::Draft201909)
-        .build(&schema)
-        .map_err(|e| ServerError::Nats(format!("failed to compile input schema: {e}")))?;
+/// Parsed schema and validator owned by a prepared route or operation runtime.
+#[derive(Debug)]
+pub(crate) struct PreparedSchema {
+    schema: Value,
+    validator: jsonschema::Validator,
+}
 
-    let errors: Vec<_> = validator.iter_errors(value).collect();
-    if errors.is_empty() {
-        return Ok(());
+impl PreparedSchema {
+    pub(crate) fn new(schema_json: &str) -> Result<Self, ServerError> {
+        let schema: Value = serde_json::from_str(schema_json)
+            .map_err(|e| ServerError::Nats(format!("failed to parse input schema: {e}")))?;
+
+        let validator = jsonschema::options()
+            .with_draft(Draft::Draft201909)
+            .build(&schema)
+            .map_err(|e| ServerError::Nats(format!("failed to compile input schema: {e}")))?;
+
+        Ok(Self { schema, validator })
     }
 
-    let mut schema_validation_issues: Vec<SchemaValidationIssue> = Vec::new();
-    let mut has_unannotated = false;
+    pub(crate) fn validate(&self, value: &Value) -> Result<(), ServerError> {
+        let schema = &self.schema;
+        let errors: Vec<_> = self.validator.iter_errors(value).collect();
+        if errors.is_empty() {
+            return Ok(());
+        }
 
-    for error in &errors {
-        let keyword = error.kind().keyword();
-        let instance_path = error.instance_path().to_string();
-        let schema_path = format!("#{}", error.schema_path());
+        let mut schema_validation_issues: Vec<SchemaValidationIssue> = Vec::new();
+        let mut has_unannotated = false;
 
-        let (resolved_node, _actual_keyword) = resolve_error_node(&schema, error);
+        for error in &errors {
+            let keyword = error.kind().keyword();
+            let instance_path = error.instance_path().to_string();
+            let schema_path = format!("#{}", error.schema_path());
 
-        let extension = resolved_node
-            .and_then(|node| node.get("x-trellis-validation"))
-            .and_then(|v| v.as_object());
+            let resolved_node = resolve_error_node(schema, error);
 
-        let is_supported = ALLOWED_HINT_KEYWORDS.contains(&keyword);
+            let extension = resolved_node
+                .and_then(|node| node.get("x-trellis-validation"))
+                .and_then(|v| v.as_object());
 
-        let annotated = extension
-            .and_then(|ext| ext.get("issues"))
-            .and_then(|issues| issues.get(keyword))
-            .and_then(|hint| hint.as_object())
-            .and_then(|hint| hint.get("code"))
-            .and_then(Value::as_str)
-            .filter(|code| !code.is_empty());
+            let is_supported = ALLOWED_HINT_KEYWORDS.contains(&keyword);
 
-        if let Some(code) = annotated.filter(|_| is_supported) {
-            let hint = extension
+            let annotated = extension
                 .and_then(|ext| ext.get("issues"))
                 .and_then(|issues| issues.get(keyword))
-                .and_then(|h| h.as_object())
-                .unwrap();
+                .and_then(|hint| hint.as_object())
+                .and_then(|hint| hint.get("code"))
+                .and_then(Value::as_str)
+                .filter(|code| !code.is_empty());
 
-            let label = extension
-                .and_then(|ext| ext.get("label"))
-                .and_then(Value::as_str);
-            let note = hint.get("note").and_then(Value::as_str).or_else(|| {
-                extension
-                    .and_then(|ext| ext.get("note"))
-                    .and_then(Value::as_str)
-            });
-            let i18n_key = hint.get("i18nKey").and_then(Value::as_str);
-            let severity = hint.get("severity").and_then(Value::as_str);
+            if let Some(code) = annotated.filter(|_| is_supported) {
+                let hint = extension
+                    .and_then(|ext| ext.get("issues"))
+                    .and_then(|issues| issues.get(keyword))
+                    .and_then(|h| h.as_object())
+                    .unwrap();
 
-            schema_validation_issues.push(SchemaValidationIssue {
-                path: issue_path(error, &instance_path, keyword),
-                schema_path: Some(schema_path),
-                keyword: keyword.to_string(),
-                code: code.to_string(),
-                message: hint
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Invalid value")
-                    .to_string(),
-                label: label.map(String::from),
-                note: note.map(String::from),
-                i18n_key: i18n_key.map(String::from),
-                severity: severity.map(String::from),
-                params: params_for_keyword(error),
-            });
-        } else {
-            has_unannotated = true;
+                let label = extension
+                    .and_then(|ext| ext.get("label"))
+                    .and_then(Value::as_str);
+                let note = hint.get("note").and_then(Value::as_str).or_else(|| {
+                    extension
+                        .and_then(|ext| ext.get("note"))
+                        .and_then(Value::as_str)
+                });
+                let i18n_key = hint.get("i18nKey").and_then(Value::as_str);
+                let severity = hint.get("severity").and_then(Value::as_str);
+
+                schema_validation_issues.push(SchemaValidationIssue {
+                    path: issue_path(error, &instance_path, keyword),
+                    schema_path: Some(schema_path),
+                    keyword: keyword.to_string(),
+                    code: code.to_string(),
+                    message: hint
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Invalid value")
+                        .to_string(),
+                    label: label.map(String::from),
+                    note: note.map(String::from),
+                    i18n_key: i18n_key.map(String::from),
+                    severity: severity.map(String::from),
+                    params: params_for_keyword(error),
+                });
+            } else {
+                has_unannotated = true;
+            }
         }
-    }
 
-    if !has_unannotated && !schema_validation_issues.is_empty() {
-        Err(ServerError::SchemaValidation {
-            issues: Box::new(schema_validation_issues),
-        })
-    } else {
-        let issues: Vec<ValidationIssue> = errors
-            .iter()
-            .map(|error| {
-                let path = error.instance_path().to_string();
-                ValidationIssue {
-                    path: if path.is_empty() {
-                        "/".to_string()
-                    } else {
-                        path
-                    },
-                    message: error.to_string(),
-                }
+        if !has_unannotated && !schema_validation_issues.is_empty() {
+            Err(ServerError::SchemaValidation {
+                issues: Box::new(schema_validation_issues),
             })
-            .collect();
-        Err(ServerError::Validation {
-            issues: Box::new(issues),
-        })
+        } else {
+            let issues: Vec<ValidationIssue> = errors
+                .iter()
+                .map(|error| {
+                    let path = error.instance_path().to_string();
+                    ValidationIssue {
+                        path,
+                        message: error.to_string(),
+                    }
+                })
+                .collect();
+            Err(ServerError::Validation {
+                issues: Box::new(issues),
+            })
+        }
     }
 }
 
@@ -127,49 +141,75 @@ const ALLOWED_HINT_KEYWORDS: &[&str] = &[
     "const",
 ];
 
+/// Eager preparation with deferred error reporting for infallible registration APIs.
+#[derive(Debug)]
+pub(crate) struct PreparedOperationSchemas(Result<std::sync::Arc<OperationSchemas>, String>);
+
+#[derive(Debug)]
+pub(crate) struct OperationSchemas {
+    pub(crate) input: PreparedSchema,
+    pub(crate) progress: Option<PreparedSchema>,
+    pub(crate) output: PreparedSchema,
+    pub(crate) update: Option<PreparedSchema>,
+    pub(crate) signals: std::collections::BTreeMap<String, PreparedSchema>,
+}
+
+impl PreparedOperationSchemas {
+    pub(crate) fn new<D: super::operations::OperationDescriptor>() -> Self {
+        let prepared = (|| {
+            let signals: std::collections::BTreeMap<String, Value> =
+                serde_json::from_str(D::SIGNAL_INPUT_SCHEMAS_JSON).map_err(|error| {
+                    ServerError::Nats(format!("failed to parse signal schemas: {error}"))
+                })?;
+            Ok(std::sync::Arc::new(OperationSchemas {
+                input: PreparedSchema::new(D::INPUT_SCHEMA_JSON)?,
+                progress: D::PROGRESS_SCHEMA_JSON
+                    .map(PreparedSchema::new)
+                    .transpose()?,
+                output: PreparedSchema::new(D::OUTPUT_SCHEMA_JSON)?,
+                update: D::UPDATE_SCHEMA_JSON.map(PreparedSchema::new).transpose()?,
+                signals: signals
+                    .into_iter()
+                    .map(|(name, schema)| Ok((name, PreparedSchema::new(&schema.to_string())?)))
+                    .collect::<Result<_, ServerError>>()?,
+            }))
+        })();
+        Self(prepared.map_err(|error| match error {
+            ServerError::Nats(message) => message,
+            other => other.to_string(),
+        }))
+    }
+
+    pub(crate) fn get(&self) -> Result<&std::sync::Arc<OperationSchemas>, ServerError> {
+        self.0
+            .as_ref()
+            .map_err(|message| ServerError::Nats(message.clone()))
+    }
+}
+
 /// Resolve the schema node for a validation error.
 /// For `required` errors, resolves to the missing property's schema.
 /// For other errors, strips the last keyword segment from schema path.
 fn resolve_error_node<'a>(
     root: &'a Value,
     error: &jsonschema::ValidationError<'_>,
-) -> (Option<&'a Value>, String) {
+) -> Option<&'a Value> {
     let keyword = error.kind().keyword();
 
     if keyword == "required" {
         if let ValidationErrorKind::Required { property } = error.kind() {
             let property_str = property.as_str().unwrap_or("");
             let parent_path = strip_last_segment(error.schema_path().as_str());
-            let parent_node = resolve_json_pointer(root, &parent_path);
+            let parent_node = root.pointer(&parent_path);
             let schema = parent_node
                 .and_then(|n| n.get("properties"))
                 .and_then(|p| p.get(property_str));
-            return (schema, keyword.to_string());
+            return schema;
         }
     }
 
     let parent_path = strip_last_segment(error.schema_path().as_str());
-    let node = resolve_json_pointer(root, &parent_path);
-    (node, keyword.to_string())
-}
-
-/// Resolve a JSON Pointer path (without leading `#`) into a Value.
-fn resolve_json_pointer<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
-    let path = path.strip_prefix('#').unwrap_or(path);
-    if path.is_empty() || path == "/" {
-        return Some(root);
-    }
-    let segments: Vec<&str> = path.strip_prefix('/').unwrap_or(path).split('/').collect();
-    let mut current = root;
-    for segment in segments {
-        let decoded = segment.replace("~1", "/").replace("~0", "~");
-        current = match current {
-            Value::Object(map) => map.get(&decoded)?,
-            Value::Array(arr) => arr.get(decoded.parse::<usize>().ok()?)?,
-            _ => return None,
-        };
-    }
-    Some(current)
+    root.pointer(&parent_path)
 }
 
 /// Strip the last JSON Pointer segment.
@@ -177,12 +217,12 @@ fn strip_last_segment(path: &str) -> String {
     let path = path.strip_prefix('#').unwrap_or(path);
     if let Some(last_slash) = path.rfind('/') {
         if last_slash == 0 {
-            "#".to_string()
+            String::new()
         } else {
-            format!("#{}", &path[..last_slash])
+            path[..last_slash].to_owned()
         }
     } else {
-        "#".to_string()
+        String::new()
     }
 }
 
@@ -194,18 +234,18 @@ fn issue_path(
 ) -> String {
     if keyword == "required" {
         if let ValidationErrorKind::Required { property } = error.kind() {
-            let prop = property.as_str().unwrap_or("");
-            if instance_path.is_empty() || instance_path == "/" {
+            let prop = property
+                .as_str()
+                .unwrap_or("")
+                .replace('~', "~0")
+                .replace('/', "~1");
+            if instance_path.is_empty() {
                 return format!("/{prop}");
             }
             return format!("{instance_path}/{prop}");
         }
     }
-    if instance_path.is_empty() || instance_path == "/" {
-        "/".to_string()
-    } else {
-        instance_path.to_string()
-    }
+    instance_path.to_owned()
 }
 
 /// Extract keyword-specific params.
@@ -265,6 +305,57 @@ fn params_for_keyword(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn prepared_validation_reuses_schema_and_reports_escaped_required_paths() {
+        let schema = PreparedSchema::new(
+            &json!({
+                "type": "object",
+                "properties": {
+                    "": {
+                        "type": "object",
+                        "properties": {
+                            "a/b~": {
+                                "type": "string",
+                                "x-trellis-validation": {"issues": {"required": {
+                                    "code": "field.required", "message": "Provide the field."
+                                }}}
+                            }
+                        },
+                        "required": ["a/b~"]
+                    }
+                },
+                "required": [""]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        for _ in 0..2 {
+            schema.validate(&json!({"": {"a/b~": "valid"}})).unwrap();
+            let ServerError::SchemaValidation { issues } =
+                schema.validate(&json!({"": {}})).unwrap_err()
+            else {
+                panic!("required field must retain its annotated error")
+            };
+            assert_eq!(issues[0].path, "//a~1b~0");
+            assert_eq!(issues[0].code, "field.required");
+        }
+    }
+
+    #[test]
+    fn validation_distinguishes_root_from_empty_name_property() {
+        let root = PreparedSchema::new(r#"{"type":"string"}"#).unwrap();
+        let ServerError::Validation { issues } = root.validate(&json!(4)).unwrap_err() else {
+            panic!("expected structural error")
+        };
+        assert_eq!(issues[0].path, "");
+        let property = PreparedSchema::new(r#"{"properties":{"":{"type":"string"}}}"#).unwrap();
+        let ServerError::Validation { issues } = property.validate(&json!({"": 4})).unwrap_err()
+        else {
+            panic!("expected structural error")
+        };
+        assert_eq!(issues[0].path, "/");
+    }
 
     const SCHEMA_WITH_ANNOTATION: &str = r#"{
         "type": "object",

@@ -12,6 +12,11 @@ Acceptance is persisted before reply. The same invocation identity/input returns
 the same record; different input conflicts. Progress, signals, cancellation, and
 terminal results are durable; typed updates are live-only.
 
+Rust validates operation inputs, signals, progress, outputs, and declared updates
+against their descriptor schemas. Schema-validation issue paths use JSON Pointer:
+an empty path addresses the root, `/` addresses an empty-name property, and names
+escape `~` as `~0` and `/` as `~1`, including missing required fields.
+
 Execution is restartable and at least once. Executor leases fence writes, and a
 replica may resume after owner loss. Arbitrary business side effects are not
 exactly once. Interrupted uploads restart from byte zero; committed staged bytes

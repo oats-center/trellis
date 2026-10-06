@@ -27,6 +27,17 @@ authorization, codec, unknown remote, and domain errors remain distinguishable.
 Do not erase them with unchecked casts or thrown exceptions inside public
 library boundaries.
 
+Rust operation routes and runtimes retain compiled validators for their owned
+descriptor schemas; typed clients retain validators with their invoker and
+operation references. Every input, signal, snapshot, and update is still
+validated. Preparation failures propagate through existing fallible preparation
+or operation boundaries, not panics or a process-global cache. Preserve each
+adapter's existing schema-draft and annotated-error behavior.
+
+Rust schema-validation issue paths are JSON Pointers: `""` addresses the root,
+`"/"` addresses an empty-name property, and property tokens escape `~` as `~0`
+and `/` as `~1`, including missing required properties.
+
 Cursor pagination uses only the finite built-ins `CursorQuery` and
 `CursorPage<T>`. Cursors are opaque; absence of next cursor is the sole end
 signal. Lazy SDK iteration stops after one typed error.

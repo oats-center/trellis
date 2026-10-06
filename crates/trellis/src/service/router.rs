@@ -15,7 +15,7 @@ use trellis_protocol::{
 use super::error::ValidationIssue;
 use super::operations::ServiceOperationProvider;
 use super::request_loop::{HandlerResponse, ResponseStream};
-use super::schema_validation::validate_input_schema;
+use super::schema_validation::{OperationSchemas, PreparedOperationSchemas, PreparedSchema};
 use super::{
     control_subject, HandlerResult, LiveDescriptor, OperationControlRequest, OperationDescriptor,
     OperationLiveEvent, OperationLiveWatch, OperationSignalAccepted, OperationSnapshot,
@@ -682,9 +682,17 @@ impl Router {
         let watch = Arc::clone(&provider);
         let cancel = Arc::clone(&provider);
         let signal = Arc::clone(&provider);
-        self.operation_recoveries
-            .push(Box::new(move || provider.recover()));
-        let update_schema_json = D::UPDATE_SCHEMA_JSON;
+        let schemas = Arc::new(PreparedOperationSchemas::new::<D>());
+        let start_schemas = Arc::clone(&schemas);
+        let control_schemas = Arc::clone(&schemas);
+        self.operation_recoveries.push(Box::new(move || {
+            let provider = Arc::clone(&provider);
+            let schemas = Arc::clone(&schemas);
+            Box::pin(async move {
+                schemas.get()?;
+                provider.recover().await
+            })
+        }));
         let subject = self.descriptor_subject("operation", D::API_ID, D::KEY, D::SUBJECT);
         let handler_subject = subject.clone();
         let live_owner = Arc::clone(&self.live_owner);
@@ -717,15 +725,15 @@ impl Router {
                 handler: Box::new(
                 move |ctx, payload| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
                     let start = Arc::clone(&start);
+                    let schemas = Arc::clone(&start_schemas);
                     Box::pin(async move {
+                        let schemas = schemas.get()?;
                         let envelope: OperationStartEnvelope = serde_json::from_slice(&payload)?;
                         envelope.invocation_id.parse::<ulid::Ulid>().map_err(|_| {
                             ServerError::Nats("operation invocation id must be a ULID".to_owned())
                         })?;
-                        let input = parse_validated_input::<D::Input>(
-                            &serde_json::to_vec(&envelope.input)?,
-                            D::INPUT_SCHEMA_JSON,
-                        )?;
+                        schemas.input.validate(&envelope.input)?;
+                        let input = serde_json::from_value(envelope.input)?;
                         let output = start
                             .start_invocation(
                                 ctx,
@@ -734,7 +742,7 @@ impl Router {
                                 envelope.cancellation_requested.then_some(payload),
                             )
                             .await?;
-                        validate_operation_snapshot::<D>(&output.snapshot)?;
+                        validate_operation_snapshot::<D>(&output.snapshot, schemas)?;
                         Ok(HandlerResponse::Frames(vec![Bytes::from(
                             serde_json::to_vec(&output)?,
                         )]))
@@ -765,11 +773,13 @@ impl Router {
                     let watch = Arc::clone(&watch);
                     let cancel = Arc::clone(&cancel);
                     let signal = Arc::clone(&signal);
+                    let schemas = Arc::clone(&control_schemas);
                     let live_owner = live_owner.clone();
                     let provider_deployment_id = provider_deployment_id.clone();
                     let provider_instance_id = provider_instance_id.clone();
                     let subject = handler_subject.clone();
                     Box::pin(async move {
+                        let schemas = schemas.get()?;
                         let request = serde_json::from_slice::<OperationControlRequest>(&payload)
                             .map_err(ServerError::Json)?;
                         tracing::debug!(
@@ -781,10 +791,11 @@ impl Router {
                         match request.action.as_str() {
                             "get" => Ok(HandlerResponse::Frames(vec![snapshot_frame::<D>(
                                 get.get(ctx, request.operation_id).await?,
+                                schemas,
                             )?])),
                             "watch" => {
                                 let include_updates = request.include_updates.unwrap_or(false);
-                                if include_updates && update_schema_json.is_none() {
+                                if include_updates && schemas.update.is_none() {
                                     return Err(ServerError::InvalidOperationControlAction {
                                         subject: subject.clone(),
                                         action: "watch:updates".to_string(),
@@ -808,13 +819,14 @@ impl Router {
                                 let factory_watch = Arc::clone(&watch);
                                 let factory_ctx = ctx.clone();
                                 let factory_operation_id = opening.operation_id.clone();
+                                let schemas = Arc::clone(schemas);
                                 let source_factory = move || {
                                     crate::service::live_router::source_from_watch_frames(
                                         watch_response_stream::<D, D::Update>(
                                             factory_watch
                                                 .watch(factory_ctx, factory_operation_id),
                                             include_updates,
-                                            update_schema_json,
+                                            schemas,
                                         ),
                                     )
                                 };
@@ -844,6 +856,7 @@ impl Router {
                             "cancel" if D::CANCELABLE => {
                                 Ok(HandlerResponse::Frames(vec![snapshot_frame::<D>(
                                     cancel.cancel(ctx, request.operation_id).await?,
+                                    schemas,
                                 )?]))
                             }
                             "signal" => {
@@ -853,26 +866,18 @@ impl Router {
                                         action: "signal".to_string(),
                                     }
                                 })?;
-                                let signal_schemas: serde_json::Value =
-                                    serde_json::from_str(D::SIGNAL_INPUT_SCHEMAS_JSON)
-                                        .map_err(|e| ServerError::Nats(
-                                            format!("failed to parse signal schemas: {e}")
-                                        ))?;
-                                let signal_schema = signal_schemas
+                                let signal_schema = schemas.signals
                                     .get(&signal_name)
                                     .ok_or_else(|| ServerError::InvalidOperationControlAction {
                                         subject: subject.clone(),
                                         action: format!("signal:{signal_name}"),
                                     })?;
                                 let signal_value = request.input.as_ref().unwrap_or(&serde_json::Value::Null);
-                                let signal_schema_str = serde_json::to_string(signal_schema)
-                                    .map_err(|e| ServerError::Nats(
-                                        format!("failed to serialize signal schema: {e}")
-                                    ))?;
-                                validate_input_schema(&signal_schema_str, signal_value)?;
+                                signal_schema.validate(signal_value)?;
                                 Ok(HandlerResponse::Frames(vec![signal_frame::<D>(
                                     signal.signal(ctx, request.operation_id, signal_name, request.input)
                                         .await?,
+                                    schemas,
                                 )?]))
                             }
                             action => Err(ServerError::InvalidOperationControlAction {
@@ -1018,27 +1023,12 @@ where
     })
 }
 
-fn parse_validated_input<T>(payload: &[u8], schema_json: &str) -> Result<T, ServerError>
-where
-    T: serde::de::DeserializeOwned,
-{
-    let value: serde_json::Value =
-        serde_json::from_slice(payload).map_err(|error| ServerError::Validation {
-            issues: Box::new(vec![ValidationIssue {
-                path: String::new(),
-                message: format!("Invalid JSON: {error}"),
-            }]),
-        })?;
-    validate_input_schema(schema_json, &value)?;
-    serde_json::from_value(value).map_err(ServerError::from)
-}
-
 fn validate_provider_value(
     key: &str,
-    schema_json: &str,
+    schema: &PreparedSchema,
     value: &serde_json::Value,
 ) -> Result<(), ServerError> {
-    validate_input_schema(schema_json, value).map_err(|error| {
+    schema.validate(value).map_err(|error| {
         tracing::error!(surface = key, %error, "provider emitted an invalid contract payload");
         ServerError::Nats(format!(
             "provider output for `{key}` violated its contract schema"
@@ -1049,7 +1039,7 @@ fn validate_provider_value(
 fn watch_response_stream<D, TUpdate>(
     events: OperationLiveWatch<D::Progress, TUpdate, D::Output>,
     include_updates: bool,
-    update_schema_json: Option<&'static str>,
+    schemas: Arc<OperationSchemas>,
 ) -> ResponseStream
 where
     D: OperationDescriptor,
@@ -1062,10 +1052,10 @@ where
                 Ok(OperationLiveEvent::Snapshot(snapshot)) => {
                     let index = usize::from(sent_initial_snapshot);
                     sent_initial_snapshot = true;
-                    Some(operation_watch_frame::<D>(index, snapshot))
+                    Some(operation_watch_frame::<D>(index, snapshot, &schemas))
                 }
                 Ok(OperationLiveEvent::Update(update)) if include_updates => {
-                    Some(operation_update_frame(update, update_schema_json))
+                    Some(operation_update_frame(update, schemas.update.as_ref()))
                 }
                 Ok(OperationLiveEvent::Update(_)) => None,
                 Err(error) => Some(Err(error)),
@@ -1076,16 +1066,16 @@ where
 
 fn operation_update_frame<TUpdate>(
     update: crate::client::OperationUpdateEvent<TUpdate>,
-    update_schema_json: Option<&str>,
+    update_schema: Option<&PreparedSchema>,
 ) -> Result<Bytes, ServerError>
 where
     TUpdate: serde::Serialize,
 {
     let update_value = serde_json::to_value(update.update)?;
-    let schema_json = update_schema_json.ok_or_else(|| {
+    let schema = update_schema.ok_or_else(|| {
         ServerError::Nats("operation update stream is missing its declared schema".to_string())
     })?;
-    validate_input_schema(schema_json, &update_value)?;
+    schema.validate(&update_value)?;
     Ok(Bytes::from(serde_json::to_vec(&serde_json::json!({
         "kind": "event",
         "sequence": update.sequence,
@@ -1101,11 +1091,12 @@ where
 
 fn snapshot_frame<D>(
     snapshot: OperationSnapshot<D::Progress, D::Output>,
+    schemas: &OperationSchemas,
 ) -> Result<Bytes, ServerError>
 where
     D: OperationDescriptor,
 {
-    validate_operation_snapshot::<D>(&snapshot)?;
+    validate_operation_snapshot::<D>(&snapshot, schemas)?;
     Ok(Bytes::from(serde_json::to_vec(&OperationSnapshotFrame {
         kind: "snapshot".to_string(),
         snapshot,
@@ -1114,26 +1105,28 @@ where
 
 fn signal_frame<D>(
     accepted: OperationSignalAccepted<D::Progress, D::Output>,
+    schemas: &OperationSchemas,
 ) -> Result<Bytes, ServerError>
 where
     D: OperationDescriptor,
 {
-    validate_operation_snapshot::<D>(&accepted.snapshot)?;
+    validate_operation_snapshot::<D>(&accepted.snapshot, schemas)?;
     Ok(Bytes::from(serde_json::to_vec(&accepted)?))
 }
 
 fn operation_watch_frame<D>(
     index: usize,
     snapshot: OperationSnapshot<D::Progress, D::Output>,
+    schemas: &OperationSchemas,
 ) -> Result<Bytes, ServerError>
 where
     D: OperationDescriptor,
 {
     if index == 0 {
-        return snapshot_frame::<D>(snapshot);
+        return snapshot_frame::<D>(snapshot, schemas);
     }
 
-    validate_operation_snapshot::<D>(&snapshot)?;
+    validate_operation_snapshot::<D>(&snapshot, schemas)?;
 
     let event_type = match snapshot.state {
         super::OperationState::Pending => "accepted",
@@ -1173,19 +1166,16 @@ where
 
 fn validate_operation_snapshot<D>(
     snapshot: &OperationSnapshot<D::Progress, D::Output>,
+    schemas: &OperationSchemas,
 ) -> Result<(), ServerError>
 where
     D: OperationDescriptor,
 {
-    if let (Some(schema), Some(progress)) = (D::PROGRESS_SCHEMA_JSON, &snapshot.progress) {
+    if let (Some(schema), Some(progress)) = (&schemas.progress, &snapshot.progress) {
         validate_provider_value(D::KEY, schema, &serde_json::to_value(progress)?)?;
     }
     if let Some(output) = &snapshot.output {
-        validate_provider_value(
-            D::KEY,
-            D::OUTPUT_SCHEMA_JSON,
-            &serde_json::to_value(output)?,
-        )?;
+        validate_provider_value(D::KEY, &schemas.output, &serde_json::to_value(output)?)?;
     }
     Ok(())
 }

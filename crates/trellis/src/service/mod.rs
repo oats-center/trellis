@@ -33,7 +33,7 @@ mod router;
 mod runtime;
 mod runtime_facade;
 #[doc(hidden)]
-mod schema_validation;
+pub(crate) mod schema_validation;
 mod service_host;
 pub(crate) mod transfer;
 

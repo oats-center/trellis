@@ -266,6 +266,7 @@ impl AuthorizationContextCache {
             &self.availability.borrow(),
         );
         let current = CurrentContext {
+            signed: Arc::new(signed.clone()),
             context_digest: verified.context_digest().to_owned(),
             not_before: context.not_before,
             expires_at: context.expires_at,
@@ -650,11 +651,7 @@ impl AuthorizationContextCache {
                 "authorization context is no longer current".into(),
             ));
         }
-        let permissions = persisted_signed_context(&current.bundle)?
-            .unsigned
-            .grants
-            .permissions()
-            .to_vec();
+        let permissions = current.signed.unsigned.grants.permissions().to_vec();
         let resources = state
             .authorization
             .as_ref()
@@ -777,9 +774,7 @@ impl AuthorizationContextCache {
                 "authorization context is revoked".into(),
             ));
         }
-        let context = trellis_protocol::parse_authorization_context(&current.bundle.context)
-            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
-        Ok((context.unsigned.transport_authorization, now))
+        Ok((current.signed.unsigned.transport_authorization.clone(), now))
     }
 
     /// Renew through the credential's proof-bound native bootstrap or user refresh route.
@@ -951,10 +946,8 @@ impl AuthorizationContextCache {
                 "no installed authorization context".to_owned(),
             )
         })?;
-        let signed = trellis_protocol::parse_authorization_context(&current.bundle.context)
-            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
         Ok(crate::live::authority::PinnedPeerIdentity::from_signed(
-            &signed,
+            &current.signed,
         ))
     }
 
@@ -995,6 +988,21 @@ impl AuthorizationContextCache {
             .map_err(|_| TrellisClientError::Bootstrap("context cache lock poisoned".into()))
     }
 
+    /// Reads only the verified, promoted context; private candidates stay private.
+    pub(crate) fn installed_signed_context(
+        &self,
+    ) -> Result<Arc<trellis_protocol::SignedAuthorizationContext>, TrellisClientError> {
+        self.state
+            .read()
+            .map_err(|_| TrellisClientError::Bootstrap("context cache lock poisoned".into()))?
+            .current
+            .as_ref()
+            .map(|current| Arc::clone(&current.signed))
+            .ok_or_else(|| {
+                TrellisClientError::Bootstrap("authorization context unavailable".into())
+            })
+    }
+
     /// Read the promoted context's digest, transport policy, runtime, and route
     /// credential from one snapshot so a transport generation correlates its
     /// CONNECT credential with the policy it records as admitted.
@@ -1006,14 +1014,13 @@ impl AuthorizationContextCache {
         let current = state.current.ok_or_else(|| {
             TrellisClientError::AuthorizationUnavailable("authorization context unavailable".into())
         })?;
-        let context = trellis_protocol::parse_authorization_context(&current.bundle.context)
-            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
+        let context = &current.signed;
         let runtime = state.runtime.ok_or_else(|| {
             TrellisClientError::AuthorizationUnavailable("authorization runtime unavailable".into())
         })?;
         Ok(super::types::OwnTransportSnapshot {
             context_digest,
-            policy: context.unsigned.transport_authorization,
+            policy: context.unsigned.transport_authorization.clone(),
             runtime,
             routing_jwt,
         })
@@ -1090,9 +1097,7 @@ impl AuthorizationContextCache {
                 "authorization candidate is no longer current".into(),
             ));
         }
-        let signed =
-            trellis_protocol::parse_authorization_context(&prepared.current.bundle.context)
-                .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
+        let signed = &prepared.current.signed;
         let context = &signed.unsigned;
         if context.connection_id != self.connection_id
             || context.session_key != self.session_key

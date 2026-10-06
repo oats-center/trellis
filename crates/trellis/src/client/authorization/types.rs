@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -176,6 +178,7 @@ pub struct AuthorizationInstallation {
 #[derive(Clone, Debug)]
 pub(crate) struct CurrentContext {
     pub(crate) bundle: AuthorizationContextBundle,
+    pub(crate) signed: Arc<trellis_protocol::SignedAuthorizationContext>,
     pub(crate) context_digest: String,
     pub(crate) not_before: i64,
     pub(crate) expires_at: i64,
