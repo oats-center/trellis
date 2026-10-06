@@ -75,7 +75,7 @@ try {
   const sessionId = (await client.sessionsMe({}).orThrow()).session?.sessionId;
   if (!sessionId) throw new Error("Browser login session missing");
   sessionStorage.setItem(`session-${config.index}`, sessionId);
-  if (config.resume) await client.sessionsLogout({}).orThrow();
+  if (config.resume) await client.logout();
 } catch (error) {
   sample.durationMs = performance.now() - started;
   sample.error = error instanceof BaseError

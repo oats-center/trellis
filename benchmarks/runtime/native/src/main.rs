@@ -21,7 +21,7 @@ use std::{
 use tokio::io::AsyncReadExt;
 use trellis_rs::{
     client::{OperationState, UserConnectOptions, UserSessionCredentials},
-    service::{FileTransferInfo, ServerError, ServiceConnectOptions},
+    service::{generate_transfer_id, FileTransferInfo, ServerError, ServiceConnectOptions},
 };
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -107,7 +107,8 @@ async fn main() -> Result<(), Error> {
                         .map_err(|e| ServerError::Nats(e.to_string()))?;
                         let plan = context.plan_download_transfer(
                             "files",
-                            &ulid::Ulid::new().to_string(),
+                            &generate_transfer_id()
+                                .map_err(|error| ServerError::Nats(error.to_string()))?,
                             &expires,
                             FileTransferInfo {
                                 key: input.value.clone(),

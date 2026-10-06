@@ -1,9 +1,9 @@
 import type {
   CallerParticipant,
-  CallerRuntime,
   ClientAuthContinuation,
   ClientAuthOptions,
   ClientAuthRequiredContext,
+  ConnectedTrellisClient,
 } from "@oatscenter/trellis";
 
 /** Directory or HTTP(S) proxy used by a production web surface. */
@@ -161,4 +161,4 @@ export type TrellisTestClientParticipant = CallerParticipant;
 
 /** Connected app/client type returned by `TrellisTestRuntime.connectClient`. */
 export type TrellisTestConnectedClient<TContract extends CallerParticipant> =
-  CallerRuntime<TContract>;
+  ConnectedTrellisClient<TContract>;

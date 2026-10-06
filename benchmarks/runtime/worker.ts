@@ -212,6 +212,24 @@ if (options.role === "provider") {
     return ok(undefined);
   }).orThrow();
   const serving = service.wait();
+  let reconnects = 0;
+  const unsubscribe = options.workload === "lifecycle"
+    ? service.connection.subscribe((status) => {
+      if (
+        status.phase === "connected" && status.transport?.event === "reconnect"
+      ) reconnects++;
+      const path =
+        `${options.output}/provider-${options.providerIndex}-connection.json`;
+      Deno.writeTextFileSync(
+        `${path}.pending`,
+        JSON.stringify({
+          connected: status.phase === "connected",
+          reconnects,
+        }),
+      );
+      Deno.renameSync(`${path}.pending`, path);
+    })
+    : () => {};
   await Deno.writeTextFile(
     `${options.output}/provider-${options.providerIndex}.json`,
     JSON.stringify({
@@ -225,6 +243,7 @@ if (options.role === "provider") {
   try {
     await stopped.promise;
   } finally {
+    unsubscribe();
     await service.stop();
     await serving;
     await telemetry.shutdown();
@@ -412,7 +431,7 @@ if (options.role === "provider") {
             };
           });
           await measure("logout", "trellis", async () => {
-            await cycle.client!.sessionsLogout({}).orThrow();
+            await cycle.client!.logout();
           });
           await cycle.client.connection.close();
           held.pop();

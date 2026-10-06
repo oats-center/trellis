@@ -245,8 +245,11 @@ tabs from overwriting or clearing newer state.
 
 Trellis HTTP endpoints serve bootstrap, browser/account flows, recovery, and
 browser assets. Connected Trellis control uses generated APIs over NATS. Use the
-browser client's `logout()` for normal sign-out so local installation and
-connection state are updated together.
+connected client's `logout()` for normal sign-out so local installation and
+connection state are updated together. Self-revocation can close the transport
+before the generated `Sessions.Logout` RPC reply arrives; `logout()` confirms
+that the session is revoked through signed HTTP recovery when the reply is lost.
+Unrelated authorization failures do not count as successful logout.
 
 For multiple local managed-NATS servers, give each its own bundle and HTTP port,
 and pass `--local-nats-ports=4223,8223,8081` with `trellis-server --dev` for a

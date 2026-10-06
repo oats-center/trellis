@@ -357,6 +357,10 @@ Browser apps use
 "browser" })` or the
 [Svelte integration](llms-svelte.txt). Let the Trellis client own its auth
 installation, proactive refresh, transport maintenance, and normal `logout()`.
+Use the connected client's `logout()` for sign-out, not the generated
+`sessionsLogout()` alone: session revocation can close the connection before its
+RPC reply arrives. The helper confirms `session_revoked` through signed HTTP
+recovery if needed; other authorization failures remain failures.
 
 Browser sign-in transports a reusable signed intent (`intentId`, opaque
 `intent`, and `loginUrl`), not an already-running authentication attempt. The

@@ -48,14 +48,22 @@ Deno.test("one principal can log out two distinct login sessions", async () => {
       assert(firstSession && secondSession);
       assertEquals(firstSession.principalId, secondSession.principalId);
       assert(firstSession.sessionId !== secondSession.sessionId);
+      await first.logout();
       assertEquals(
-        (await first.sessionsLogout({}).orThrow()).session.state,
-        "revoked",
+        (await second.sessionsMe({}).orThrow()).session?.state,
+        "active",
       );
-      assertEquals(
-        (await second.sessionsLogout({}).orThrow()).session.state,
-        "revoked",
-      );
+      await second.logout();
+      const sessions = await runtime.callAdminRpc("authSessionsList", {
+        participantId: webParticipants.Console.participant.id,
+      });
+      for (const session of [firstSession, secondSession]) {
+        assertEquals(
+          sessions.items.find((entry) => entry.sessionId === session.sessionId)
+            ?.state,
+          "revoked",
+        );
+      }
     } finally {
       await Promise.all([first.connection.close(), second.connection.close()]);
     }

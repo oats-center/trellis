@@ -80,6 +80,13 @@ Password changes atomically update the Argon2 credential and revoke sibling
 logins. Logout, password changes, and user-login revocation require a real
 login. Native credentials cannot invoke login-only operations.
 
+Self-logout revokes the caller's session and may close its transport before the
+RPC reply arrives. Losing that reply is not proof of either success or failure:
+the client lifecycle owner confirms `session_revoked` through signed HTTP
+recovery when necessary. Unrelated terminal authorization failures, including
+session expiry, are not evidence of a committed logout. Revocation and transport
+kicks are not delayed to preserve the reply.
+
 ## Authorization Contexts
 
 The online issuer signs `trellis.authorization-context.v1` snapshots. Issuance

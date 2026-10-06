@@ -1113,6 +1113,12 @@ async function updateState<TOutcome>(
       if (!isCasConflict(error)) {
         throw error;
       }
+      if (attempt + 1 < MAX_CAS_ATTEMPTS) {
+        // Spread competing writers rather than exhausting retries in lockstep.
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.random() * Math.min(100, 5 * 2 ** attempt))
+        );
+      }
     }
   }
   throw new Error(`Could not update keyed job state '${derived.kvKey}'`);

@@ -81,6 +81,11 @@ Key paths compile to typed scalar accessors. Optional or nonscalar leaves are
 compile errors. Existing collision-safe key encoding and reject/coalesce/
 replace-oldest queue behavior remain.
 
+TypeScript key-state CAS conflicts use bounded randomized exponential backoff
+within the existing eight-attempt limit, so competing writers do not immediately
+exhaust their attempts in synchronized retry rounds. Non-conflict broker errors
+still propagate without retry.
+
 Operator Query returns finite cursor pages. Summary applies the same filters to
 the full matching set and returns page-independent count, state statistics, and
 optional groups; Metrics remains windowed time series. Cursor pagination

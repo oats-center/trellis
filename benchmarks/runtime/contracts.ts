@@ -124,7 +124,7 @@ if (options.role === "provider") {
         row.firstRpcMs = performance.now() - connected;
         sessionId = (await client.sessionsMe({}).orThrow()).session?.sessionId;
         if (!sessionId) throw new Error("Contract-scale session missing");
-        if (resume) await client.sessionsLogout({}).orThrow();
+        if (resume) await client.logout();
       } catch (error) { row.durationMs = performance.now() - started; row.error = String(error); }
       finally { if (client) await client.connection.close(); }
       samples.push(row);

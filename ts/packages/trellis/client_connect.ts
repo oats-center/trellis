@@ -138,10 +138,13 @@ type InstalledClientResources = Readonly<{
 
 type ClientResourceState = { current: InstalledClientResources };
 
-/** Browser caller runtime whose lifecycle owner can revoke and end its session. */
+/** Connected caller whose logout confirms session revocation even if the RPC reply loses a race with transport closure. */
 export type ConnectedTrellisClient<TContract extends ClientContract> =
   & CallerRuntime<TContract>
-  & { logout(): Promise<void> };
+  & {
+    /** Revoke this login session, confirm revocation, and clear its local credential. */
+    logout(): Promise<void>;
+  };
 
 function createConnectedClient(args: {
   name: string;
@@ -1832,7 +1835,7 @@ export async function connectClientWithDeps<
           throw new Error("Auth.Sessions.Logout returned an invalid result");
         }
         const operationCompleted = await Promise.race([
-          result.orThrow().then(() => true),
+          result.orThrow().then(() => true, () => false),
           manager.closed().then(() => false),
         ]);
         if (!operationCompleted) {
@@ -1845,13 +1848,13 @@ export async function connectClientWithDeps<
               },
               runtime: { auth: identity.runtimeAuth },
               cache: authorizationContexts,
-              requiredTransport: "websocket",
+              prepareOnly: true,
             });
             throw new Error("logout did not revoke the current session");
           } catch (error) {
             if (
               !(error instanceof AuthorizationContextRefreshError) ||
-              !error.terminal
+              error.code !== "session_revoked"
             ) {
               throw error;
             }

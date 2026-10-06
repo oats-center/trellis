@@ -18,7 +18,7 @@ export const WorkerOptions = z.object({
   arrivalRate: z.number().nonnegative(),
   maxOutstanding: z.number().int().positive(),
   providerIndex: z.number().int().nonnegative().default(0),
-  workload: z.enum(["all", "transfer"]).default("all"),
+  workload: z.enum(["all", "transfer", "lifecycle"]).default("all"),
   warmups: z.number().int().nonnegative().default(0),
 });
 

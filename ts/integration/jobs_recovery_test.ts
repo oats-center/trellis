@@ -18,6 +18,7 @@ import {
 } from "../packages/trellis/service/runtime/internal_jobs/runtime-worker.ts";
 import {
   createNatsJobKeyCoordinator,
+  deriveJobKey,
   normalizeJobKeyPolicy,
 } from "../packages/trellis/service/runtime/internal_jobs/key-coordinator.ts";
 import type { JobKeyState } from "../packages/trellis/service/runtime/internal_jobs/key-coordinator.ts";
@@ -26,6 +27,65 @@ import { adminParticipant } from "../packages/trellis-testkit/src/admin/methods.
 import type { StartNatsWorkerHostOptions } from "../packages/trellis/service/runtime/internal_jobs/runtime-worker.ts";
 import { TcpProxy } from "../packages/trellis-testkit/src/runtime.ts";
 import { NativeTransportGate } from "../packages/trellis-testkit/src/native_gate.ts";
+
+Deno.test("concurrent keyed admissions retain every accepted job across coordinators", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const nc = await connect({
+      servers: runtime.natsUrl,
+      authenticator: credsAuthenticator(
+        await Deno.readFile(
+          join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
+        ),
+      ),
+    });
+    try {
+      const kv = await new Kvm(nc).create("JOBS_KEYS_contention");
+      const coordinators = Array.from(
+        { length: 4 },
+        () => createNatsJobKeyCoordinator(nc),
+      );
+      const policy = normalizeJobKeyPolicy({
+        keyConcurrency: { key: ["/key"] },
+        queue: { maxQueuedPerKey: 32, whenFull: "reject" },
+      });
+      const payload = { key: "shared" };
+      const ids = Array.from({ length: 32 }, () => crypto.randomUUID());
+      const outcomes = await Promise.allSettled(
+        ids.map((jobId, index) =>
+          coordinators[index % coordinators.length].admitCreate({
+            service: "contention",
+            jobType: "work",
+            jobId,
+            payload,
+            context: {
+              requestId: jobId,
+              traceId: "0123456789abcdef0123456789abcdef",
+              traceparent:
+                "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+            },
+            createdAt: new Date().toISOString(),
+            policy,
+            strictCreate: true,
+          })
+        ),
+      );
+      for (const outcome of outcomes) {
+        assert(outcome.status === "fulfilled", Deno.inspect(outcome));
+        assertEquals(outcome.value.kind, "accepted");
+      }
+      const derived = await deriveJobKey({
+        service: "contention",
+        jobType: "work",
+        payload,
+        template: policy.key,
+      });
+      const queued = (await kv.get(derived.kvKey))!.json<JobKeyState>().queued;
+      assertEquals(queued.map((job) => job.jobId).sort(), ids.sort());
+    } finally {
+      await nc.close();
+    }
+  });
+});
 
 Deno.test("native Rust worker starts on a provisioned queue and retries cleanup beyond the ordinary budget", async () => {
   await withTrellisRuntime(async (runtime) => {

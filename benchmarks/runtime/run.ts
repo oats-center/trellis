@@ -440,7 +440,7 @@ try {
       name: "benchmark-consent-setup",
       contract: participants.Caller.participant,
     });
-    await prepared.sessionsLogout({}).orThrow();
+    await prepared.logout();
     await prepared.connection.close();
   }
   const seeds: string[] = [];
@@ -472,7 +472,7 @@ try {
     sessionCounts,
     idleSeconds,
     warmups,
-    workload: lane === "transfer" ? "transfer" : "all",
+    workload: lane === "transfer" || lane === "lifecycle" ? lane : "all",
   };
   const providers: Deno.ChildProcess[] = [];
   for (let providerIndex = 0; providerIndex < providerCount; providerIndex++) {
@@ -630,7 +630,7 @@ try {
       contract: participants.Caller.participant,
     });
     const database = openDatabase({
-      url: `file:${runtime.workdir}/trellis/trellis.sqlite.platform`,
+      url: `file:${runtime.workdir}/data/trellis/platform.sqlite`,
     });
     try {
       const sessionId = (await client.sessionsMe({}).orThrow()).session
@@ -700,6 +700,17 @@ try {
           "native/outage-reconnect-first-rpc",
         );
         const before = await snapshotResources(output, cpuTicks);
+        const providerReconnects = await Promise.all(
+          providers.map((_, providerIndex) =>
+            Deno.readTextFile(
+              `${output}/provider-${providerIndex}-connection.json`,
+            )
+              .then((text) =>
+                z.object({ reconnects: z.number() }).parse(JSON.parse(text))
+                  .reconnects
+              )
+          ),
+        );
         const disconnected = Promise.withResolvers<number>();
         const reconnected = Promise.withResolvers<number>();
         let lost = false;
@@ -725,6 +736,25 @@ try {
           const disconnectedAt = await deadline(disconnected.promise);
           runtime.restoreNativeTransport();
           const connectedAt = await deadline(reconnected.promise);
+          // The proxy partitions every native peer, not just this caller.
+          // A connected caller is not evidence that the provider routes are ready.
+          await runtime.waitFor(async () =>
+            (await Promise.all(providers.map(async (_, providerIndex) => {
+              const status = z.object({
+                connected: z.boolean(),
+                reconnects: z.number(),
+              })
+                .parse(
+                  JSON.parse(
+                    await Deno.readTextFile(
+                      `${output}/provider-${providerIndex}-connection.json`,
+                    ),
+                  ),
+                );
+              return status.connected &&
+                status.reconnects > providerReconnects[providerIndex];
+            }))).every(Boolean)
+          );
           const value = `reconnected-${index}`;
           if (
             (await deadline(client.echo({ value }).orThrow())).value !== value
@@ -757,7 +787,7 @@ try {
           after: await snapshotResources(output, cpuTicks),
         });
       }
-      await client.sessionsLogout({}).orThrow();
+      await client.logout();
     } finally {
       database.close();
       await client.connection.close();
