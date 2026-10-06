@@ -2,7 +2,7 @@ const repoRoot = new URL("../../", import.meta.url);
 const tsRoot = new URL("ts/", repoRoot);
 const output = new URL("docs/static/api/typescript", repoRoot);
 const outputParent = new URL("./", output);
-const workspaceConfigUrl = new URL("deno.json", tsRoot);
+const workspaceConfigUrl = new URL("deno.json", repoRoot);
 
 type PackageExports = string | Record<string, string>;
 
@@ -75,12 +75,12 @@ const workspaceConfig: unknown = JSON.parse(
 );
 
 if (!isTsWorkspaceConfig(workspaceConfig)) {
-  throw new Error("Expected ts/deno.json to contain a string workspace list");
+  throw new Error("Expected deno.json to contain a string workspace list");
 }
 
-const packageWorkspaces = workspaceConfig.workspace.filter((workspace) =>
-  workspace.startsWith("./packages/")
-);
+const packageWorkspaces = workspaceConfig.workspace
+  .filter((workspace) => workspace.startsWith("./ts/packages/"))
+  .map((workspace) => workspace.slice("./ts/".length));
 
 const packageEntryPoints = await Promise.all(
   packageWorkspaces.map(async (workspace) => {

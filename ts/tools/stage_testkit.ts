@@ -21,7 +21,7 @@ const config = configSchema.parse(
   JSON.parse(await Deno.readTextFile(join(source, "deno.json"))),
 );
 const root = configSchema.omit({ version: true }).parse(
-  JSON.parse(await Deno.readTextFile("ts/deno.json")),
+  JSON.parse(await Deno.readTextFile("deno.json")),
 );
 const targets: Record<string, { archive: string; sha256: string }> = {};
 for (

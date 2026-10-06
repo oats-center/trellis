@@ -9,10 +9,19 @@ if (!staged) {
   );
 }
 const parent = dirname(staged);
-const root = z.object({
-  imports: z.record(z.string(), z.string()),
+const workspaceConfigUrl = new URL("../../deno.json", import.meta.url);
+const workspace = z.object({
+  importMap: z.string(),
   compilerOptions: z.record(z.string(), z.unknown()),
-}).parse(JSON.parse(await Deno.readTextFile("ts/deno.json")));
+}).parse(JSON.parse(await Deno.readTextFile(workspaceConfigUrl)));
+const importMap = z.object({
+  imports: z.record(z.string(), z.string()),
+}).parse(
+  JSON.parse(
+    await Deno.readTextFile(new URL(workspace.importMap, workspaceConfigUrl)),
+  ),
+);
+const root = { compilerOptions: workspace.compilerOptions, ...importMap };
 const tables: Record<
   string,
   { version: string; files: Record<string, string> }

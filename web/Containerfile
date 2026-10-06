@@ -2,16 +2,17 @@ FROM --platform=$BUILDPLATFORM docker.io/denoland/deno:2.9.4 AS build
 
 WORKDIR /app
 
+COPY deno.json /app/deno.json
 COPY ts /app/ts
 COPY web /app/web
 COPY art /app/art
 
 WORKDIR /app/ts
-RUN deno install
+RUN deno install --frozen
 
 WORKDIR /app/web
 
-RUN deno run -A npm:vite build
+RUN deno task build:prepared
 
 FROM docker.io/library/nginx:1.29-alpine
 
