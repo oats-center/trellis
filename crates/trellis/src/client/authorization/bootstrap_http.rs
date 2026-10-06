@@ -45,7 +45,7 @@ impl BootstrapHttp {
     pub(crate) fn new(trellis_url: &str) -> Result<Self, TrellisClientError> {
         let base = reqwest::Url::parse(&canonical_trellis_origin(trellis_url)?)
             .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
-        let client = reqwest::Client::builder()
+        let client = crate::client::http_client_builder()?
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(30))
             .build()

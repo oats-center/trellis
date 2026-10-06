@@ -4,7 +4,7 @@ import {
   InMemoryMetricExporter,
   MeterProvider,
   PeriodicExportingMetricReader,
-} from "npm:@opentelemetry/sdk-metrics@^2.7.0";
+} from "@opentelemetry/sdk-metrics";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-proto";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";

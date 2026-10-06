@@ -4,7 +4,7 @@ import {
   InMemoryMetricExporter,
   MeterProvider,
   PeriodicExportingMetricReader,
-} from "npm:@opentelemetry/sdk-metrics@^2.7.0";
+} from "@opentelemetry/sdk-metrics";
 import { assertEquals, assertExists } from "@std/assert";
 import { AsyncResult, err } from "@oatscenter/result";
 import type { NatsConnection } from "@nats-io/nats-core";

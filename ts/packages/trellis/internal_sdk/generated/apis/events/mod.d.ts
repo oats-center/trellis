@@ -8,11 +8,11 @@ export type ConflictData = SerializableErrorData & {
 export declare class Conflict extends TrellisError<ConflictData> {
 	static readonly type: "trellis.events@v1::Conflict";
 	static readonly payloadCodec: typeof Types0.EventsErrorDataCodec;
-	readonly name: "Conflict";
+	override readonly name: "Conflict";
 	readonly data: ConflictData;
 	constructor(data: ConflictData);
 	static fromSerializable(data: unknown): Conflict;
-	toSerializable(): ConflictData;
+	override toSerializable(): ConflictData;
 }
 export type ForbiddenData = SerializableErrorData & {
 	readonly type: "trellis.events@v1::Forbidden";
@@ -20,11 +20,11 @@ export type ForbiddenData = SerializableErrorData & {
 export declare class Forbidden extends TrellisError<ForbiddenData> {
 	static readonly type: "trellis.events@v1::Forbidden";
 	static readonly payloadCodec: typeof Types0.EventsErrorDataCodec;
-	readonly name: "Forbidden";
+	override readonly name: "Forbidden";
 	readonly data: ForbiddenData;
 	constructor(data: ForbiddenData);
 	static fromSerializable(data: unknown): Forbidden;
-	toSerializable(): ForbiddenData;
+	override toSerializable(): ForbiddenData;
 }
 export type NotFoundErrorData = SerializableErrorData & {
 	readonly type: "trellis.events@v1::NotFoundError";
@@ -32,11 +32,11 @@ export type NotFoundErrorData = SerializableErrorData & {
 export declare class NotFoundError extends TrellisError<NotFoundErrorData> {
 	static readonly type: "trellis.events@v1::NotFoundError";
 	static readonly payloadCodec: typeof Types0.EventsNotFoundErrorDataCodec;
-	readonly name: "NotFoundError";
+	override readonly name: "NotFoundError";
 	readonly data: NotFoundErrorData;
 	constructor(data: NotFoundErrorData);
 	static fromSerializable(data: unknown): NotFoundError;
-	toSerializable(): NotFoundErrorData;
+	override toSerializable(): NotFoundErrorData;
 }
 export type UnavailableData = SerializableErrorData & {
 	readonly type: "trellis.events@v1::Unavailable";
@@ -44,22 +44,22 @@ export type UnavailableData = SerializableErrorData & {
 export declare class Unavailable extends TrellisError<UnavailableData> {
 	static readonly type: "trellis.events@v1::Unavailable";
 	static readonly payloadCodec: typeof Types0.EventsErrorDataCodec;
-	readonly name: "Unavailable";
+	override readonly name: "Unavailable";
 	readonly data: UnavailableData;
 	constructor(data: UnavailableData);
 	static fromSerializable(data: unknown): Unavailable;
-	toSerializable(): UnavailableData;
+	override toSerializable(): UnavailableData;
 }
 export type UnexpectedErrorData = SerializableErrorData & {
 	readonly type: "trellis.events@v1::UnexpectedError";
 };
 export declare class UnexpectedError extends TrellisError<UnexpectedErrorData> {
 	static readonly type: "trellis.events@v1::UnexpectedError";
-	readonly name: "UnexpectedError";
+	override readonly name: "UnexpectedError";
 	readonly data: UnexpectedErrorData;
 	constructor(data: UnexpectedErrorData);
 	static fromSerializable(data: unknown): UnexpectedError;
-	toSerializable(): UnexpectedErrorData;
+	override toSerializable(): UnexpectedErrorData;
 }
 export type UnreplayableOriginalData = SerializableErrorData & {
 	readonly type: "trellis.events@v1::UnreplayableOriginal";
@@ -67,22 +67,22 @@ export type UnreplayableOriginalData = SerializableErrorData & {
 export declare class UnreplayableOriginal extends TrellisError<UnreplayableOriginalData> {
 	static readonly type: "trellis.events@v1::UnreplayableOriginal";
 	static readonly payloadCodec: typeof Types0.EventsErrorDataCodec;
-	readonly name: "UnreplayableOriginal";
+	override readonly name: "UnreplayableOriginal";
 	readonly data: UnreplayableOriginalData;
 	constructor(data: UnreplayableOriginalData);
 	static fromSerializable(data: unknown): UnreplayableOriginal;
-	toSerializable(): UnreplayableOriginalData;
+	override toSerializable(): UnreplayableOriginalData;
 }
 export type ValidationErrorData = SerializableErrorData & {
 	readonly type: "trellis.events@v1::ValidationError";
 };
 export declare class ValidationError extends TrellisError<ValidationErrorData> {
 	static readonly type: "trellis.events@v1::ValidationError";
-	readonly name: "ValidationError";
+	override readonly name: "ValidationError";
 	readonly data: ValidationErrorData;
 	constructor(data: ValidationErrorData);
 	static fromSerializable(data: unknown): ValidationError;
-	toSerializable(): ValidationErrorData;
+	override toSerializable(): ValidationErrorData;
 }
 export type ConsumersInspectInput = Types0.EventsConsumersInspectRequest;
 export type ConsumersInspectOutput = Types0.EventsConsumersInspectResponse;

@@ -532,7 +532,7 @@ pub(crate) async fn fetch_device_activation<C: crate::generated::ParticipantDesc
     })
     .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
     request["proof"] = serde_json::to_value(identity_auth.sign_session_proof(&input)?)?;
-    let response = reqwest::Client::builder()
+    let response = super::http_client_builder()?
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_millis(opts.timeout_ms))
         .build()

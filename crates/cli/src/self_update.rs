@@ -258,6 +258,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn updater_extracts_and_replaces_a_binary_from_the_linux_archive() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        let staging = directory.path().join("staging");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&staging).unwrap();
+        std::fs::write(source.join("trellis"), "#!/bin/sh\necho updated-trellis\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(
+                source.join("trellis"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        let archive = directory.path().join("trellis.tar.gz");
+        assert!(std::process::Command::new("tar")
+            .args(["-czf"])
+            .arg(&archive)
+            .arg("-C")
+            .arg(&source)
+            .arg("trellis")
+            .status()
+            .unwrap()
+            .success());
+        self_update::Extract::from_source(&archive)
+            .extract_file(&staging, "trellis")
+            .unwrap();
+        let installed = directory.path().join("trellis");
+        std::fs::write(&installed, "old binary").unwrap();
+        self_update::Move::from_source(&staging.join("trellis"))
+            .replace_using_temp(&directory.path().join("previous"))
+            .to_dest(&installed)
+            .unwrap();
+        let output = std::process::Command::new(installed).output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"updated-trellis\n");
+    }
+
+    #[test]
     fn stable_channel_excludes_prereleases() {
         assert!(ReleaseChannel::Stable.accepts(false));
         assert!(!ReleaseChannel::Stable.accepts(true));

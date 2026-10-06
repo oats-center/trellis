@@ -8,11 +8,11 @@ export type ConflictData = SerializableErrorData & {
 export declare class Conflict extends TrellisError<ConflictData> {
 	static readonly type: "trellis.state@v1::Conflict";
 	static readonly payloadCodec: typeof Types1.StateConflictCodec;
-	readonly name: "Conflict";
+	override readonly name: "Conflict";
 	readonly data: ConflictData;
 	constructor(data: ConflictData);
 	static fromSerializable(data: unknown): Conflict;
-	toSerializable(): ConflictData;
+	override toSerializable(): ConflictData;
 }
 export type CorruptRepresentationData = SerializableErrorData & {
 	readonly type: "trellis.state@v1::CorruptRepresentation";
@@ -20,11 +20,11 @@ export type CorruptRepresentationData = SerializableErrorData & {
 export declare class CorruptRepresentation extends TrellisError<CorruptRepresentationData> {
 	static readonly type: "trellis.state@v1::CorruptRepresentation";
 	static readonly payloadCodec: typeof Types1.StateRepresentationErrorCodec;
-	readonly name: "CorruptRepresentation";
+	override readonly name: "CorruptRepresentation";
 	readonly data: CorruptRepresentationData;
 	constructor(data: CorruptRepresentationData);
 	static fromSerializable(data: unknown): CorruptRepresentation;
-	toSerializable(): CorruptRepresentationData;
+	override toSerializable(): CorruptRepresentationData;
 }
 export type UnsupportedRepresentationData = SerializableErrorData & {
 	readonly type: "trellis.state@v1::UnsupportedRepresentation";
@@ -32,11 +32,11 @@ export type UnsupportedRepresentationData = SerializableErrorData & {
 export declare class UnsupportedRepresentation extends TrellisError<UnsupportedRepresentationData> {
 	static readonly type: "trellis.state@v1::UnsupportedRepresentation";
 	static readonly payloadCodec: typeof Types1.StateRepresentationErrorCodec;
-	readonly name: "UnsupportedRepresentation";
+	override readonly name: "UnsupportedRepresentation";
 	readonly data: UnsupportedRepresentationData;
 	constructor(data: UnsupportedRepresentationData);
 	static fromSerializable(data: unknown): UnsupportedRepresentation;
-	toSerializable(): UnsupportedRepresentationData;
+	override toSerializable(): UnsupportedRepresentationData;
 }
 export type DeleteInput = Types1.StateDeleteRequest;
 export type DeleteOutput = Types1.StateDeleteResponse;

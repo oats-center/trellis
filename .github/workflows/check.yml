@@ -358,12 +358,12 @@ jobs:
           cargo fmt --manifest-path Cargo.toml --all --check
 
       - name: Lint Rust
-        run: cargo clippy --manifest-path Cargo.toml --workspace --all-targets -- -D warnings
+        run: cargo clippy --manifest-path Cargo.toml --workspace --all-targets --features trellis-rs/event-store-sqlite,trellis-rs/event-store-postgres -- -D warnings
 
       - name: Test Rust workspace
         env:
           TRELLIS_CACHE_DIR: ${{ github.workspace }}/target/trellis-nats-cache
-        run: cargo test --manifest-path Cargo.toml --workspace
+        run: cargo test --manifest-path Cargo.toml --workspace --features trellis-rs/event-store-sqlite,trellis-rs/event-store-postgres
 
   typescript:
     name: TypeScript

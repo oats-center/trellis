@@ -1,6 +1,7 @@
 import { basename, dirname, join } from "@std/path";
 import { compile, compileModule } from "svelte/compiler";
 import ts from "typescript";
+import { runtimeDependencies } from "../../../tools/package_build/runtime_dependencies.ts";
 import {
   resolveInternalNpmDependenciesForBuild,
   resolvePackageBuildVersion,
@@ -45,11 +46,9 @@ const jsrRuntimeDependencyVersion =
   jsrRuntimeDependencyFloorVersion(version);
 const dependencies = resolveInternalNpmDependenciesForBuild(
   {
-    "@nats-io/nats-core": "^3.3.1",
+    ...runtimeDependencies(["@nats-io/nats-core", "typebox", "ulid"]),
     "@oatscenter/result": "^0.100.0",
     "@oatscenter/trellis": "^0.100.0",
-    typebox: "^1.0.15",
-    ulid: "^3.0.2",
   },
   version,
 );

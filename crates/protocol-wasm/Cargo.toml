@@ -10,7 +10,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-getrandom = { version = "0.3.4", features = ["wasm_js"] }
+getrandom = { workspace = true, features = ["wasm_js"] }
 serde.workspace = true
 serde_json.workspace = true
 trellis-protocol.workspace = true

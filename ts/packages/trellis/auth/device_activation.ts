@@ -1,5 +1,4 @@
-import type { BaseError } from "@oatscenter/result";
-import type { AsyncResult } from "@oatscenter/result";
+import type { AsyncResult, BaseError } from "@oatscenter/result";
 import type { StaticDecode } from "typebox";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -21,10 +20,6 @@ import { decodeTrellisHttpError } from "./http_error.ts";
 import { trellisCrypto } from "./crypto.ts";
 import { publicKeyBase64urlFromSeed } from "./keys.ts";
 import { createAuth } from "./session_auth.ts";
-import {
-  SESSION_PROOF_FORMAT_V1,
-  sessionProofRequestDigest,
-} from "./session_proof.ts";
 import {
   base64urlDecode,
   base64urlEncode,
@@ -597,17 +592,24 @@ export async function waitForDeviceActivation(args: {
   }
 }
 
+/** Bind device activation helpers to the caller's typed transport. */
 export function createDeviceActivationClient(
   client: DeviceActivationTransport,
 ) {
   return {
-    resolveDeviceUserAuthorities(input: AuthResolveDeviceUserAuthoritiesInput) {
+    resolveDeviceUserAuthorities(
+      input: AuthResolveDeviceUserAuthoritiesInput,
+    ): Promise<AuthResolveDeviceUserAuthoritiesOperation> {
       return client.authDeviceUserAuthoritiesResolve(input).start().orThrow();
     },
-    listDeviceActivations(input: AuthDeviceUserAuthoritiesListInput) {
+    listDeviceActivations(
+      input: AuthDeviceUserAuthoritiesListInput,
+    ): Promise<AuthDeviceUserAuthoritiesListOutput> {
       return client.authDeviceUserAuthoritiesList(input).orThrow();
     },
-    revokeDeviceActivation(input: AuthDeviceUserAuthoritiesRevokeInput) {
+    revokeDeviceActivation(
+      input: AuthDeviceUserAuthoritiesRevokeInput,
+    ): Promise<AuthDeviceUserAuthoritiesRevokeResponse> {
       return client.authDeviceUserAuthoritiesRevoke(input).orThrow();
     },
   };

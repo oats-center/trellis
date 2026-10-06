@@ -16,4 +16,4 @@ trellis-idl = { path = "../idl", version = "0.100.0" }
 
 [dev-dependencies]
 semver.workspace = true
-tempfile = "3.23.0"
+tempfile.workspace = true

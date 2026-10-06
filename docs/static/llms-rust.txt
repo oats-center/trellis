@@ -267,6 +267,16 @@ with exact persisted `transferredBytes`; do not assume one event per frame.
 Cancellation is authenticated; before commit it aborts staging, after commit it
 cannot undo the committed object.
 
+SDK HTTP connections and optional `telemetry-otlp` exporters preserve an
+application-installed Rustls provider, otherwise use ring locally without
+changing the process-wide provider, and verify certificates against platform
+trust.
+
+Enable `trellis-rs` feature `event-store-sqlite` for
+`SqliteInboxStore`/`SqliteOutboxStore` or `event-store-postgres` for
+`PostgresInboxStore`/`PostgresOutboxStore`; database-specific `EventStoreError`
+variants follow the same features. Neither SQL driver is enabled by default.
+
 Prepared events and SQL outbox stores allow event intents to participate in a
 local SQL transaction. The application owns its transaction and migration
 execution. KV outbox/inbox stores do not atomically commit unrelated database

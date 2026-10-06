@@ -23,6 +23,24 @@ resources, or transport endpoints as bootstrap assertions.
 
 ## Connect a service
 
+The default `trellis-rs` build includes prepared events, common inbox/outbox
+interfaces, and memory stores, but no SQL database drivers. Enable
+`event-store-sqlite` for `SqliteInboxStore`/`SqliteOutboxStore` or
+`event-store-postgres` for `PostgresInboxStore`/`PostgresOutboxStore`:
+
+```toml
+[dependencies]
+trellis-rs = { version = "0.100.0", features = ["event-store-sqlite"] }
+```
+
+These additive features also expose the corresponding database-specific
+`EventStoreError` variants. Services using only RPCs, Live, events, or runtime
+resources do not need either feature.
+
+SDK HTTP connections and optional `telemetry-otlp` exporters preserve an
+application-installed Rustls provider. Otherwise they use ring locally without
+changing the process-wide provider, with platform certificate verification.
+
 ```rust
 use orders_trellis::participants::acme_orders_service::{
     connect, ServiceConnectOptions,

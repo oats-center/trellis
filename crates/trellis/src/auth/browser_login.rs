@@ -3,7 +3,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use ed25519_dalek::SigningKey;
-use reqwest::Client as HttpClient;
 use serde::Deserialize;
 use serde_json::json;
 use trellis_protocol::{
@@ -61,7 +60,7 @@ async fn start_auth_request(
     })?;
     let mut request = unsigned_request;
     request["proof"] = serde_json::to_value(auth.sign_session_proof(&input)?)?;
-    let client = HttpClient::builder()
+    let client = crate::client::http_client_builder()?
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30))
         .build()?;
@@ -116,7 +115,7 @@ pub async fn poll_agent_transaction_until_ready(
 ) -> Result<String, TrellisAuthError> {
     let deadline = tokio::time::Instant::now() + timeout_after;
     let base = crate::client::canonical_trellis_origin(trellis_url)?;
-    let client = HttpClient::builder()
+    let client = crate::client::http_client_builder()?
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30))
         .build()?;
@@ -170,7 +169,7 @@ async fn bind_session(
     auth: &SessionAuth,
 ) -> Result<BoundSession, TrellisAuthError> {
     let trellis_url = crate::client::canonical_trellis_origin(trellis_url)?;
-    let client = HttpClient::builder()
+    let client = crate::client::http_client_builder()?
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30))
         .build()?;

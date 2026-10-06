@@ -26,4 +26,4 @@ miette.workspace = true
 [dev-dependencies]
 async-nats.workspace = true
 base64.workspace = true
-tempfile = "3.27.0"
+tempfile.workspace = true

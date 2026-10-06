@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry::KeyValue;
-use opentelemetry_otlp::{MetricExporter, SpanExporter, WithExportConfig as _};
+use opentelemetry_otlp::{
+    MetricExporter, SpanExporter, WithExportConfig as _, WithHttpConfig as _,
+};
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::trace::{
     BatchConfigBuilder, BatchSpanProcessor, Sampler, SdkTracerProvider, SpanLimits,
@@ -116,6 +118,27 @@ fn export_timeout() -> Option<Duration> {
     } else {
         Some(DEFAULT_EXPORT_TIMEOUT)
     }
+}
+
+/// Give both OTLP signals the SDK's local TLS policy and retain exporter timeouts.
+fn otlp_http_client(signal_timeout_var: &str) -> Result<reqwest::blocking::Client, String> {
+    let timeout = export_timeout()
+        .or_else(|| {
+            [signal_timeout_var, "OTEL_EXPORTER_OTLP_TIMEOUT"]
+                .into_iter()
+                .find_map(|name| {
+                    std::env::var(name)
+                        .ok()
+                        .and_then(|value| value.parse().ok())
+                        .map(Duration::from_millis)
+                })
+        })
+        .unwrap_or(opentelemetry_otlp::OTEL_EXPORTER_OTLP_TIMEOUT_DEFAULT);
+    let builder = crate::client::http_client_builder().map_err(|error| error.to_string())?;
+    reqwest::blocking::ClientBuilder::from(builder)
+        .timeout(timeout)
+        .build()
+        .map_err(|error| error.to_string())
 }
 
 /// Resolves the trace sampler from the environment with a 0.10 default.
@@ -294,7 +317,18 @@ pub(crate) fn build_owned(identity: &TelemetryIdentity) -> OwnedProviders {
         if let Some(timeout) = export_timeout() {
             builder = builder.with_timeout(timeout);
         }
-        match builder.build() {
+        // Build and drop rejected blocking clients outside the caller's Tokio runtime.
+        let exporter = std::thread::spawn(move || {
+            otlp_http_client("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT").and_then(|client| {
+                builder
+                    .with_http_client(client)
+                    .build()
+                    .map_err(|error| error.to_string())
+            })
+        })
+        .join()
+        .unwrap_or_else(|_| Err("OTLP trace exporter worker panicked".to_owned()));
+        match exporter {
             Ok(exporter) => {
                 let batch = batch_config();
                 let provider = SdkTracerProvider::builder()
@@ -323,7 +357,17 @@ pub(crate) fn build_owned(identity: &TelemetryIdentity) -> OwnedProviders {
         if let Some(timeout) = export_timeout() {
             builder = builder.with_timeout(timeout);
         }
-        match builder.build() {
+        let exporter = std::thread::spawn(move || {
+            otlp_http_client("OTEL_EXPORTER_OTLP_METRICS_TIMEOUT").and_then(|client| {
+                builder
+                    .with_http_client(client)
+                    .build()
+                    .map_err(|error| error.to_string())
+            })
+        })
+        .join()
+        .unwrap_or_else(|_| Err("OTLP metric exporter worker panicked".to_owned()));
+        match exporter {
             Ok(exporter) => {
                 let reader = PeriodicReader::builder(exporter)
                     .with_interval(metrics_interval())

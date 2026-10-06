@@ -411,7 +411,15 @@ transaction. When that atomicity is needed, the SQL outbox integration can write
 event/job intents in the same transaction. Trellis provides helper-table
 migrations; the application owns its database, transaction adapter, and
 migration execution. NATS KV outbox/inbox helpers are not atomic with unrelated
-SQL transactions. See the language guides for the supported adapters.
+database writes. Rust SQL adapters require the opt-in `trellis-rs` features
+`event-store-sqlite` or `event-store-postgres`; prepared events, memory stores,
+and common store interfaces do not require a SQL driver. See the language guides
+for the supported adapters.
+
+Rust SDK HTTP connections and optional `telemetry-otlp` exporters preserve an
+application-installed Rustls provider, otherwise use ring locally without
+changing the process-wide provider, and verify certificates against platform
+trust.
 
 Outbox claims expire after 30 seconds and are recoverable; only the current
 claim can complete. Publication can repeat after a crash, so this is not

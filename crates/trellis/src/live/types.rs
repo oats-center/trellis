@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 pub use trellis_protocol::{LiveEndReason, LiveErrorCode};
 
@@ -193,8 +193,7 @@ impl LiveCloseReceipt {
 /// cancellation, never grant or mutate authority.
 #[derive(Clone, Debug)]
 pub struct LiveCancellation {
-    sender: Arc<watch::Sender<bool>>,
-    receiver: watch::Receiver<bool>,
+    token: CancellationToken,
 }
 
 impl Default for LiveCancellation {
@@ -207,49 +206,31 @@ impl LiveCancellation {
     /// Create one new, uncancelled token.
     #[must_use]
     pub fn new() -> Self {
-        let (sender, receiver) = watch::channel(false);
         Self {
-            sender: Arc::new(sender),
-            receiver,
+            token: CancellationToken::new(),
         }
     }
 
     /// Signal cancellation to every clone.
     pub fn cancel(&self) {
-        let _ = self.sender.send(true);
+        self.token.cancel();
     }
 
     /// Return whether cancellation was signalled.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        *self.receiver.borrow()
+        self.token.is_cancelled()
     }
 
     /// Await cancellation without missing a wakeup.
     pub async fn cancelled(&self) {
-        let mut receiver = self.receiver.clone();
-        if *receiver.borrow() {
-            return;
-        }
-        while receiver.changed().await.is_ok() {
-            if *receiver.borrow() {
-                return;
-            }
-        }
+        self.token.cancelled().await;
     }
 
     /// Borrow this token for a session without transferring ownership.
     #[must_use]
     pub(crate) fn borrowed(&self) -> Self {
-        Self {
-            sender: self.sender.clone(),
-            receiver: self.receiver.clone(),
-        }
-    }
-
-    /// Return a future resolving when cancellation is signalled.
-    pub(crate) fn watcher(&self) -> watch::Receiver<bool> {
-        self.receiver.clone()
+        self.clone()
     }
 }
 
@@ -287,5 +268,32 @@ pub(crate) fn end_reason_for_code(code: LiveErrorCode) -> LiveEndReason {
         LiveErrorCode::Cancelled => LiveEndReason::Cancelled,
         LiveErrorCode::LocalShutdown => LiveEndReason::LocalShutdown,
         LiveErrorCode::CleanupIncomplete => LiveEndReason::ProtocolError,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LiveCancellation;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn cancellation_wakes_clones_and_late_waiters() {
+        let token = LiveCancellation::new();
+        let clone = token.borrowed();
+        let independent = LiveCancellation::new();
+        let mut waiting = Box::pin(clone.cancelled());
+        assert!(matches!(
+            futures_util::poll!(&mut waiting),
+            std::task::Poll::Pending
+        ));
+        token.cancel();
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), token.clone().cancelled())
+            .await
+            .unwrap();
+        assert!(clone.is_cancelled());
+        assert!(!independent.is_cancelled());
     }
 }

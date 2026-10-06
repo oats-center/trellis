@@ -2001,13 +2001,13 @@ fn write_generated_file(path: &Path, contents: &str) -> Result<(), CodegenTsErro
 fn validate_typescript(path: &Path, contents: &str) -> Result<(), CodegenTsError> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, contents, SourceType::ts()).parse();
-    if parsed.errors.is_empty() {
+    if parsed.diagnostics.is_empty() {
         return Ok(());
     }
     Err(CodegenTsError::InvalidTypeScript {
         path: path.to_path_buf(),
         message: parsed
-            .errors
+            .diagnostics
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
@@ -2019,7 +2019,7 @@ fn emit_typescript(source: &GeneratedTsSource) -> Result<[GeneratedTsSource; 2],
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, &source.contents, SourceType::ts()).parse();
     let mut program = parsed.program;
-    let mut errors = parsed.errors;
+    let mut errors = parsed.diagnostics;
     if errors.is_empty() {
         let mut executable_source = source.contents.clone();
         for literal in program
@@ -2042,20 +2042,20 @@ fn emit_typescript(source: &GeneratedTsSource) -> Result<[GeneratedTsSource; 2],
         }
         let executable_source = allocator.alloc_str(&executable_source);
         let executable = Parser::new(&allocator, executable_source, SourceType::ts()).parse();
-        errors.extend(executable.errors);
+        errors.extend(executable.diagnostics);
         program = executable.program;
         let declarations =
             IsolatedDeclarations::new(&allocator, IsolatedDeclarationsOptions::default())
                 .build(&program);
-        errors.extend(declarations.errors);
+        errors.extend(declarations.diagnostics);
         let declaration_source = Codegen::new().build(&declarations.program).code;
         let semantic = SemanticBuilder::new().build(&program);
-        errors.extend(semantic.errors);
+        errors.extend(semantic.diagnostics);
         if errors.is_empty() {
             let transformed =
                 Transformer::new(&allocator, &source.path, &TransformOptions::default())
                     .build_with_scoping(semantic.semantic.into_scoping(), &mut program);
-            errors.extend(transformed.errors);
+            errors.extend(transformed.diagnostics);
             if errors.is_empty() {
                 return Ok([
                     GeneratedTsSource {

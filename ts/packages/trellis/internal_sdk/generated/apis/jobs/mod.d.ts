@@ -8,33 +8,33 @@ export type NotFoundErrorData = SerializableErrorData & {
 export declare class NotFoundError extends TrellisError<NotFoundErrorData> {
 	static readonly type: "trellis.jobs@v1::NotFoundError";
 	static readonly payloadCodec: typeof Types0.JobsNotFoundErrorDataCodec;
-	readonly name: "NotFoundError";
+	override readonly name: "NotFoundError";
 	readonly data: NotFoundErrorData;
 	constructor(data: NotFoundErrorData);
 	static fromSerializable(data: unknown): NotFoundError;
-	toSerializable(): NotFoundErrorData;
+	override toSerializable(): NotFoundErrorData;
 }
 export type UnexpectedErrorData = SerializableErrorData & {
 	readonly type: "trellis.jobs@v1::UnexpectedError";
 };
 export declare class UnexpectedError extends TrellisError<UnexpectedErrorData> {
 	static readonly type: "trellis.jobs@v1::UnexpectedError";
-	readonly name: "UnexpectedError";
+	override readonly name: "UnexpectedError";
 	readonly data: UnexpectedErrorData;
 	constructor(data: UnexpectedErrorData);
 	static fromSerializable(data: unknown): UnexpectedError;
-	toSerializable(): UnexpectedErrorData;
+	override toSerializable(): UnexpectedErrorData;
 }
 export type ValidationErrorData = SerializableErrorData & {
 	readonly type: "trellis.jobs@v1::ValidationError";
 };
 export declare class ValidationError extends TrellisError<ValidationErrorData> {
 	static readonly type: "trellis.jobs@v1::ValidationError";
-	readonly name: "ValidationError";
+	override readonly name: "ValidationError";
 	readonly data: ValidationErrorData;
 	constructor(data: ValidationErrorData);
 	static fromSerializable(data: unknown): ValidationError;
-	toSerializable(): ValidationErrorData;
+	override toSerializable(): ValidationErrorData;
 }
 export type CancelInput = Types0.JobsCancelRequest;
 export type CancelOutput = Types0.JobsCancelResponse;

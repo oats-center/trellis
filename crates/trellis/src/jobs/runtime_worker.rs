@@ -86,7 +86,7 @@ enum ProjectedWorkDecision {
 #[derive(Debug, Clone, Default)]
 pub struct JobCancellationToken {
     cancelled: Arc<AtomicU8>,
-    notify: Arc<tokio::sync::Notify>,
+    signal: tokio_util::sync::CancellationToken,
 }
 
 impl JobCancellationToken {
@@ -109,7 +109,7 @@ impl JobCancellationToken {
                 )
                 .then_some(CANCELLATION_JOB)
             });
-        self.notify.notify_waiters();
+        self.signal.cancel();
     }
 
     /// Mark the token as cancelled because the worker host is shutting down.
@@ -119,13 +119,13 @@ impl JobCancellationToken {
             .try_update(Ordering::SeqCst, Ordering::SeqCst, |reason| {
                 (reason != CANCELLATION_LEASE_LOST).then_some(CANCELLATION_HOST_SHUTDOWN)
             });
-        self.notify.notify_waiters();
+        self.signal.cancel();
     }
 
     fn cancel_for_lease_loss(&self) {
         self.cancelled
             .store(CANCELLATION_LEASE_LOST, Ordering::SeqCst);
-        self.notify.notify_waiters();
+        self.signal.cancel();
     }
 
     pub(crate) fn cancel_for_deadline(&self) {
@@ -135,7 +135,7 @@ impl JobCancellationToken {
             Ordering::SeqCst,
             Ordering::SeqCst,
         );
-        self.notify.notify_waiters();
+        self.signal.cancel();
     }
 
     pub(crate) fn cancel_for_retry_exhaustion(&self) {
@@ -145,7 +145,7 @@ impl JobCancellationToken {
             Ordering::SeqCst,
             Ordering::SeqCst,
         );
-        self.notify.notify_waiters();
+        self.signal.cancel();
     }
 
     /// Request reconciliation of a displaced attempt under a recovered fence.
@@ -156,7 +156,7 @@ impl JobCancellationToken {
             Ordering::SeqCst,
             Ordering::SeqCst,
         );
-        self.notify.notify_waiters();
+        self.signal.cancel();
     }
 
     /// Return the explicit cancellation reason, or None while execution is allowed.
@@ -196,16 +196,7 @@ impl JobCancellationToken {
     }
 
     async fn cancelled(&self) {
-        loop {
-            let notified = self.notify.notified();
-            if self.is_cancelled() {
-                return;
-            }
-            notified.await;
-            if self.is_cancelled() {
-                return;
-            }
-        }
+        self.signal.cancelled().await;
     }
 }
 
@@ -3352,6 +3343,40 @@ mod tests {
             result.is_ok(),
             "cancelled should complete after prior cancel"
         );
+    }
+
+    #[tokio::test]
+    async fn job_cancellation_wakes_waiters_and_preserves_reason_precedence() {
+        use super::JobCancellationReason;
+
+        let token = JobCancellationToken::new();
+        let clone = token.clone();
+        let mut waiting = Box::pin(clone.cancelled());
+        assert!(matches!(
+            futures_util::poll!(&mut waiting),
+            std::task::Poll::Pending
+        ));
+        token.cancel_for_deadline();
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .unwrap();
+        assert_eq!(
+            clone.reason(),
+            Some(JobCancellationReason::DeadlineExceeded)
+        );
+        token.cancel();
+        assert_eq!(clone.reason(), Some(JobCancellationReason::Requested));
+        token.cancel_for_shutdown();
+        assert_eq!(clone.reason(), Some(JobCancellationReason::HostShutdown));
+        token.cancel_for_lease_loss();
+        token.cancel_for_shutdown();
+        token.cancel_for_retry_exhaustion();
+        token.cancel_for_stale_attempt();
+        token.cancel();
+        assert_eq!(clone.reason(), Some(JobCancellationReason::LeaseLost));
+        tokio::time::timeout(Duration::from_secs(1), clone.cancelled())
+            .await
+            .unwrap();
     }
 
     #[test]

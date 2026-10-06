@@ -9,7 +9,7 @@ import {
   InMemoryMetricExporter,
   MeterProvider,
   PeriodicExportingMetricReader,
-} from "npm:@opentelemetry/sdk-metrics@^2.7.0";
+} from "@opentelemetry/sdk-metrics";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import {

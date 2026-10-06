@@ -24,6 +24,58 @@ use trellis_protocol::ParticipantResourceKind;
 
 const DIGEST: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
+#[tokio::test]
+async fn oidc_http_adapter_preserves_wire_data_refuses_redirects_and_reports_disconnect() {
+    use oauth2::AsyncHttpClient as _;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = axum::Router::new()
+        .route(
+            "/exchange",
+            axum::routing::post(|headers: HeaderMap, body: axum::body::Bytes| async move {
+                assert_eq!(headers["authorization"], "Basic credential");
+                assert_eq!(headers["content-type"], "application/octet-stream");
+                (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    [("x-provider-error", "invalid_grant")],
+                    body,
+                )
+            }),
+        )
+        .route(
+            "/redirect",
+            axum::routing::get(|| async { axum::response::Redirect::temporary("/forbidden") }),
+        );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = super::OidcHttpClient::new().unwrap();
+    let payload = vec![0, 1, 255, 128];
+    let request = oauth2::http::Request::builder()
+        .method("POST")
+        .uri(format!("http://{address}/exchange"))
+        .header("authorization", "Basic credential")
+        .header("content-type", "application/octet-stream")
+        .body(payload.clone())
+        .unwrap();
+    let response = client.call(request).await.unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(response.headers()["x-provider-error"], "invalid_grant");
+    assert_eq!(response.body(), &payload);
+    let request = oauth2::http::Request::builder()
+        .uri(format!("http://{address}/redirect"))
+        .body(Vec::new())
+        .unwrap();
+    let response = client.call(request.clone()).await.unwrap();
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::TEMPORARY_REDIRECT
+    );
+    assert_eq!(response.headers()["location"], "/forbidden");
+    server.abort();
+    let _ = server.await;
+    assert!(client.call(request).await.is_err());
+}
+
 #[test]
 fn session_public_key_derives_the_same_nats_user_key() {
     let key = KeyPair::new_user();

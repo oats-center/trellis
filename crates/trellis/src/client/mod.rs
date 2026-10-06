@@ -52,9 +52,13 @@ pub use error::{
 pub use events::{
     dispatch_outbox_once, prepare_event, prepare_event_value, EventStoreError, InboxReceipt,
     InboxStore, MemoryInboxStore, MemoryOutboxStore, OutboxDispatchResult, OutboxEventRecord,
-    OutboxStore, PostgresInboxStore, PostgresOutboxStore, PreparedTrellisEvent, SqliteInboxStore,
-    SqliteOutboxStore,
+    OutboxStore, PreparedTrellisEvent,
 };
+#[cfg(feature = "event-store-postgres")]
+pub use events::{PostgresInboxStore, PostgresOutboxStore};
+#[cfg(feature = "event-store-sqlite")]
+pub use events::{SqliteInboxStore, SqliteOutboxStore};
+pub(crate) use http_error::http_client_builder;
 pub(crate) use http_error::read_bounded_http_body;
 pub use http_error::{decode_trellis_http_error, TrellisHttpError};
 pub use operations::{

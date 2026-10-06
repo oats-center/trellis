@@ -10,8 +10,6 @@ Pick the archive that matches your platform:
 | --- | --- |
 | Linux x86_64 | `trellis-<version>-x86_64-unknown-linux-gnu.tar.gz` |
 | Linux aarch64 | `trellis-<version>-aarch64-unknown-linux-gnu.tar.gz` |
-| macOS Intel | `trellis-<version>-x86_64-apple-darwin.tar.gz` |
-| macOS Apple Silicon | `trellis-<version>-aarch64-apple-darwin.tar.gz` |
 
 Download and extract:
 

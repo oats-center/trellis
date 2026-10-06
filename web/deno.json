@@ -1,5 +1,4 @@
 {
-  "importMap": "../ts/deno.json",
   "tasks": {
     "dev": "deno task -c ../ts/deno.json install && deno task -c ../ts/deno.json protocol:wasm && deno run -A vite dev",
     "build": "deno task -c ../ts/deno.json install && deno task -c ../ts/deno.json protocol:wasm && deno task build:prepared",
@@ -15,7 +14,6 @@
     "verbatimModuleSyntax": true,
     "types": ["npm:vite/client"]
   },
-  "nodeModulesDir": "auto",
   "lint": {
     "rules": {
       "exclude": ["import-map-remap"]

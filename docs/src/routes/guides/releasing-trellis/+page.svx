@@ -195,6 +195,23 @@ add new ordered migrations instead of editing a shipped one.
 
 ## 1. Pick the release
 
+The core TypeScript workspace and embedded browser application share
+`ts/deno.lock` under the native workspace in root `deno.json`. Docs, demos, and external
+consumer fixtures keep independent locks because they exercise separate
+application/consumer boundaries. Run repository TypeScript commands with their
+explicit config rather than creating a root lockfile. Published npm runtime
+dependency ranges are selected from `ts/deno.json`, not copied into packaging
+scripts; build-only imports are not published as runtime dependencies.
+
+The workspace freezes that shared lock during normal builds and tests,
+so concurrent commands cannot replace each other's resolution snapshots. For a
+deliberate dependency update, refresh from the TypeScript root with
+`deno install --frozen=false -c ts/deno.json`, cache the affected entrypoints with
+`deno cache --frozen=false`, and then verify using the normal frozen commands.
+OpenTelemetry uses the matched 2.7/0.215 release family; advancing the family also
+requires verifying the Rust OTLP collector interoperability tests, which consume
+the installed exporter's protobuf decoder.
+
 Identify the previous release tag and choose the next version. For the first
 OATS Center release (`0.100.0-rc.1`), there is no prior tag in the new
 repository: use the upstream Qlever `main` merge-base commit as `--since`

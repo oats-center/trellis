@@ -14,7 +14,10 @@
 //! `PreparedTrellisEvent`, `prepare_event::<Descriptor>(...)`,
 //! `publish_prepared`, `dispatch_outbox_once`, `OutboxStore`, `InboxStore`,
 //! `SqliteOutboxStore`, `SqliteInboxStore`, `PostgresOutboxStore`, and
-//! `PostgresInboxStore`.
+//! `PostgresInboxStore`. SQL adapters and their database-specific errors require
+//! the opt-in `event-store-sqlite` or `event-store-postgres` feature. Default
+//! builds retain prepared events, memory stores, and common store interfaces
+//! without compiling either database driver.
 //!
 //! # Authoring model
 //!

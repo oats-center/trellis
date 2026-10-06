@@ -5,11 +5,11 @@ edition = "2021"
 publish = false
 
 [dependencies]
-clap = { version = "4.6.0", features = ["derive"] }
-miette = { version = "7.6.0", features = ["fancy"] }
-serde_json = "1.0.149"
+clap.workspace = true
+miette.workspace = true
+serde_json.workspace = true
 toml_edit = { workspace = true }
-tokio = { version = "1.51.1", features = ["rt-multi-thread"] }
+tokio.workspace = true
 trellis-cli = { path = "../crates/cli", default-features = false }
 trellis-codegen-ts = { path = "../crates/codegen-ts" }
 trellis-codegen-rust = { path = "../crates/codegen-rust" }
@@ -18,4 +18,4 @@ trellis-protocol = { path = "../crates/protocol" }
 wasm-bindgen-cli-support = "=0.2.125"
 
 [dev-dependencies]
-tempfile = "3.23.0"
+tempfile.workspace = true

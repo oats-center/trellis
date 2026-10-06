@@ -62,7 +62,7 @@ struct FlowWire {
 }
 
 fn http_client() -> Result<HttpClient, TrellisAuthError> {
-    Ok(HttpClient::builder()
+    Ok(crate::client::http_client_builder()?
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30))
         .build()?)

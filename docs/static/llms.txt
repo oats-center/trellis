@@ -24,7 +24,7 @@ installed release.
 - [TypeScript](llms-typescript.txt): service connection, generated handlers,
   events, operations, and transactional outbox integration.
 - [Rust](llms-rust.txt): generated Cargo crates, connection options, typed
-  callers, providers, resources, and lifecycle.
+  callers, providers, resources, lifecycle, and opt-in SQL event stores.
 - [Svelte](llms-svelte.txt): browser authentication and the Svelte integration.
 - Human service walkthrough: `/guides/write-a-service`.
 - Human IDL authoring guide: `/guides/authoring-contracts`.

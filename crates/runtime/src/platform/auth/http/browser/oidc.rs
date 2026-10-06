@@ -537,9 +537,7 @@ where
         provider.client_secret.clone(),
     )
     .set_redirect_uri(provider.redirect_uri.clone());
-    let http_client = openidconnect::reqwest::ClientBuilder::new()
-        .redirect(openidconnect::reqwest::redirect::Policy::none())
-        .build()
+    let http_client = super::super::OidcHttpClient::new()
         .map_err(|_| HttpError::internal("oauth_http_client"))?;
     let token = match client
         .exchange_code(AuthorizationCode::new(code))

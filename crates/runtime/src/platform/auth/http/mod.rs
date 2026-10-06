@@ -87,6 +87,60 @@ pub(crate) struct OidcProvider {
     role_claims: Vec<String>,
 }
 
+struct OidcHttpClient(reqwest::Client);
+
+impl OidcHttpClient {
+    fn new() -> Result<Self, AuthorizationStateError> {
+        let provider = rustls::crypto::CryptoProvider::get_default()
+            .cloned()
+            .unwrap_or_else(|| Arc::new(rustls::crypto::ring::default_provider()));
+        let tls = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|error| AuthorizationStateError::Storage(format!("OIDC TLS client: {error}")))?
+            .with_root_certificates(rustls::RootCertStore::from_iter(
+                webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
+            ))
+            .with_no_client_auth();
+        reqwest::Client::builder()
+            .tls_backend_preconfigured(tls)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map(Self)
+            .map_err(|error| AuthorizationStateError::Storage(format!("OIDC HTTP client: {error}")))
+    }
+}
+
+impl<'c> oauth2::AsyncHttpClient<'c> for OidcHttpClient {
+    type Error = oauth2::HttpClientError<reqwest::Error>;
+    type Future = std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<oauth2::HttpResponse, Self::Error>>
+                + Send
+                + Sync
+                + 'c,
+        >,
+    >;
+
+    fn call(&'c self, request: oauth2::HttpRequest) -> Self::Future {
+        Box::pin(async move {
+            let response = self
+                .0
+                .execute(request.try_into().map_err(Box::new)?)
+                .await
+                .map_err(Box::new)?;
+            let mut builder = oauth2::http::Response::builder()
+                .status(response.status())
+                .version(response.version());
+            for (name, value) in response.headers() {
+                builder = builder.header(name, value);
+            }
+            builder
+                .body(response.bytes().await.map_err(Box::new)?.to_vec())
+                .map_err(oauth2::HttpClientError::Http)
+        })
+    }
+}
+
 pub(crate) async fn discover_oidc_providers(
     config: Option<&crate::config::OAuthConfig>,
     public_origin: &str,
@@ -95,12 +149,7 @@ pub(crate) async fn discover_oidc_providers(
         return Ok(BTreeMap::new());
     };
     let redirect_base = config.redirect_base.as_deref().unwrap_or(public_origin);
-    let http_client = openidconnect::reqwest::ClientBuilder::new()
-        .redirect(openidconnect::reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|error| {
-            AuthorizationStateError::Storage(format!("failed to build OIDC HTTP client: {error}"))
-        })?;
+    let http_client = OidcHttpClient::new()?;
     let mut providers = BTreeMap::new();
     for (provider_id, provider) in &config.providers {
         if provider.provider_type != "oidc" {

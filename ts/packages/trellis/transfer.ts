@@ -118,7 +118,14 @@ async function* frames(
       })()
       : body;
   const iterator: AsyncIterator<Uint8Array> = reader
-    ? { next: () => reader.read() }
+    ? {
+      next: async (): Promise<IteratorResult<Uint8Array>> => {
+        const result = await reader.read();
+        return result.done
+          ? { done: true, value: undefined }
+          : { done: false, value: result.value };
+      },
+    }
     : source[Symbol.asyncIterator]();
   const cancelReader = () => {
     void reader?.cancel(signal.reason).catch(() => {});

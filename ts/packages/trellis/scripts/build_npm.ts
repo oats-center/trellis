@@ -1,6 +1,8 @@
 import { copy } from "@std/fs";
 
 import { buildTypeScriptPackage } from "../../../tools/package_build/build_typescript_package.ts";
+import { runtimeDependencies } from "../../../tools/package_build/runtime_dependencies.ts";
+import resultConfig from "../../result/deno.json" with { type: "json" };
 import config from "../deno.json" with { type: "json" };
 
 await buildTypeScriptPackage({
@@ -28,32 +30,31 @@ await buildTypeScriptPackage({
     },
   },
   dependencies: {
-    "@opentelemetry/api": "^1.9.1",
-    "@opentelemetry/context-async-hooks": "^2.7.0",
-    "@opentelemetry/core": "^2.7.0",
-    "@opentelemetry/exporter-metrics-otlp-proto": "^0.215.0",
-    "@opentelemetry/exporter-trace-otlp-proto": "^0.215.0",
-    "@opentelemetry/resources": "^2.7.0",
-    "@opentelemetry/sdk-metrics": "^2.7.0",
-    "@opentelemetry/sdk-trace-base": "^2.7.0",
-    "@opentelemetry/sdk-trace-node": "^2.7.0",
-    "@opentelemetry/sdk-trace-web": "^2.7.0",
-    "@opentelemetry/semantic-conventions": "^1.40.0",
-    "@nats-io/jetstream": "^3.3.1",
-    "@nats-io/kv": "^3.3.1",
-    "@nats-io/obj": "^3.3.1",
-    "@nats-io/nats-core": "^3.3.1",
-    "@nats-io/nkeys": "^2.0.3",
-    "@nats-io/transport-node": "^3.3.1",
-    "@noble/curves": "^2.0.1",
-    "@noble/hashes": "1.8.0",
-    "@oatscenter/result": "^0.100.0",
-    "js-sha256": "^0.11.1",
-    pino: "^10.3.1",
-    tweetnacl: "^1.0.3",
-    "ts-deepmerge": "^7.0.3",
-    typebox: "^1.1.33",
-    ulid: "^3.0.2",
+    ...runtimeDependencies([
+      "@opentelemetry/api",
+      "@opentelemetry/context-async-hooks",
+      "@opentelemetry/core",
+      "@opentelemetry/exporter-metrics-otlp-proto",
+      "@opentelemetry/exporter-trace-otlp-proto",
+      "@opentelemetry/resources",
+      "@opentelemetry/sdk-metrics",
+      "@opentelemetry/sdk-trace-base",
+      "@opentelemetry/sdk-trace-node",
+      "@opentelemetry/sdk-trace-web",
+      "@opentelemetry/semantic-conventions",
+      "@nats-io/jetstream",
+      "@nats-io/kv",
+      "@nats-io/obj",
+      "@nats-io/nats-core",
+      "@nats-io/nkeys",
+      "@nats-io/transport-node",
+      "@noble/hashes/hkdf",
+      "pino",
+      "tweetnacl",
+      "typebox",
+      "ulid",
+    ]),
+    [resultConfig.name]: `^${resultConfig.version}`,
   },
 }, config.version);
 

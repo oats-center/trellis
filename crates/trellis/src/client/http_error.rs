@@ -53,6 +53,22 @@ pub(crate) async fn read_bounded_http_body(
     Ok(body)
 }
 
+/// Use the application's provider when installed, otherwise choose ring locally.
+/// Platform certificate verification remains identical to Reqwest's default.
+pub(crate) fn http_client_builder() -> Result<reqwest::ClientBuilder, super::TrellisClientError> {
+    use rustls_platform_verifier::BuilderVerifierExt as _;
+
+    let provider = rustls::crypto::CryptoProvider::get_default()
+        .cloned()
+        .unwrap_or_else(|| std::sync::Arc::new(rustls::crypto::ring::default_provider()));
+    let config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .and_then(|builder| builder.with_platform_verifier())
+        .map_err(|error| super::TrellisClientError::Bootstrap(error.to_string()))?
+        .with_no_client_auth();
+    Ok(reqwest::Client::builder().tls_backend_preconfigured(config))
+}
+
 #[cfg(test)]
 mod tests {
     use super::ErrorEnvelope;

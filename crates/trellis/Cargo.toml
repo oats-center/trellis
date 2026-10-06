@@ -9,10 +9,13 @@ description = "Curated public Rust facade for Trellis clients and services."
 readme = "../../README.md"
 
 [features]
+event-store-sqlite = ["dep:rusqlite"]
+event-store-postgres = ["dep:postgres"]
 live-integration = []
 runtime-internals = []
 telemetry-otlp = [
   "dep:opentelemetry-otlp",
+  "reqwest/blocking",
 ]
 
 [[test]]
@@ -29,13 +32,15 @@ hkdf = "0.13.0"
 hmac = "0.13.0"
 nkeys = "0.4"
 opentelemetry.workspace = true
-opentelemetry_sdk = { workspace = true, features = ["testing"] }
+opentelemetry_sdk.workspace = true
 opentelemetry-otlp = { workspace = true, optional = true }
 tracing-opentelemetry.workspace = true
-postgres = "0.19.12"
-rand = "0.10.0"
-reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls"] }
-rusqlite.workspace = true
+postgres = { version = "0.19.12", optional = true }
+rand.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+rusqlite = { workspace = true, optional = true }
+rustls.workspace = true
+rustls-platform-verifier.workspace = true
 ryu-js.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
@@ -46,11 +51,13 @@ time.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "sync"] }
 trellis-protocol = { path = "../protocol", version = "0.100.0" }
 tracing.workspace = true
-ulid = "1.2.1"
-url = "2.5.8"
+tokio-util.workspace = true
+ulid.workspace = true
+url.workspace = true
 
 [dev-dependencies]
-tempfile = "3.27.0"
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 trellis-local-nats = { path = "../local-nats" }
 trellis-bootstrap = { path = "../bootstrap" }

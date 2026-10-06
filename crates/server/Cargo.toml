@@ -27,7 +27,7 @@ trellis-runtime = { path = "../runtime", version = "0.100.0" }
 trellis-rs = { path = "../trellis", version = "0.100.0", features = ["telemetry-otlp"] }
 
 [dev-dependencies]
-tempfile = "3.27.0"
+tempfile.workspace = true
 
 [[bin]]
 name = "trellis-server"

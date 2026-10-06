@@ -1,6 +1,8 @@
 use async_nats::header::HeaderMap;
 use bytes::Bytes;
+#[cfg(feature = "event-store-postgres")]
 use postgres::Client as PostgresClient;
+#[cfg(feature = "event-store-sqlite")]
 use rusqlite::{params, types::Type as SqliteType, Connection, OptionalExtension};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -59,6 +61,7 @@ impl PreparedTrellisEvent {
         }
     }
 
+    #[cfg(any(feature = "event-store-sqlite", feature = "event-store-postgres"))]
     fn from_parts(
         subject: String,
         payload: Bytes,
@@ -174,6 +177,7 @@ where
     ))
 }
 
+#[cfg(feature = "event-store-sqlite")]
 fn sqlite_header_decode_error(error: serde_json::Error) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(3, SqliteType::Text, Box::new(error))
 }
@@ -188,9 +192,11 @@ pub enum EventStoreError {
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
     /// SQLite storage failed.
+    #[cfg(feature = "event-store-sqlite")]
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
     /// Postgres storage failed.
+    #[cfg(feature = "event-store-postgres")]
     #[error("postgres error: {0}")]
     Postgres(#[from] postgres::Error),
     /// Runtime KV storage failed.
@@ -421,11 +427,13 @@ impl InboxStore for MemoryInboxStore {
 }
 
 /// SQLite-backed outbox adapter. Callers own schema migrations.
+#[cfg(feature = "event-store-sqlite")]
 #[derive(Debug)]
 pub struct SqliteOutboxStore<'a> {
     connection: &'a Connection,
 }
 
+#[cfg(feature = "event-store-sqlite")]
 impl<'a> SqliteOutboxStore<'a> {
     /// Wrap an existing SQLite connection.
     pub fn new(connection: &'a Connection) -> Self {
@@ -452,6 +460,7 @@ impl<'a> SqliteOutboxStore<'a> {
     }
 }
 
+#[cfg(feature = "event-store-sqlite")]
 impl OutboxStore for SqliteOutboxStore<'_> {
     async fn enqueue(
         &mut self,
@@ -533,11 +542,13 @@ impl OutboxStore for SqliteOutboxStore<'_> {
 }
 
 /// SQLite-backed inbox adapter. Callers own schema migrations.
+#[cfg(feature = "event-store-sqlite")]
 #[derive(Debug)]
 pub struct SqliteInboxStore<'a> {
     connection: &'a Connection,
 }
 
+#[cfg(feature = "event-store-sqlite")]
 impl<'a> SqliteInboxStore<'a> {
     /// Wrap an existing SQLite connection.
     pub fn new(connection: &'a Connection) -> Self {
@@ -555,6 +566,7 @@ impl<'a> SqliteInboxStore<'a> {
     }
 }
 
+#[cfg(feature = "event-store-sqlite")]
 impl InboxStore for SqliteInboxStore<'_> {
     async fn record_received(&mut self, event_id: &str) -> Result<InboxReceipt, EventStoreError> {
         let inserted = self.connection.execute(
@@ -570,10 +582,12 @@ impl InboxStore for SqliteInboxStore<'_> {
 }
 
 /// Postgres-backed outbox adapter. Callers own schema migrations.
+#[cfg(feature = "event-store-postgres")]
 pub struct PostgresOutboxStore<'a> {
     client: &'a mut PostgresClient,
 }
 
+#[cfg(feature = "event-store-postgres")]
 impl std::fmt::Debug for PostgresOutboxStore<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -582,6 +596,7 @@ impl std::fmt::Debug for PostgresOutboxStore<'_> {
     }
 }
 
+#[cfg(feature = "event-store-postgres")]
 impl<'a> PostgresOutboxStore<'a> {
     /// Wrap an existing Postgres client.
     pub fn new(client: &'a mut PostgresClient) -> Self {
@@ -608,6 +623,7 @@ impl<'a> PostgresOutboxStore<'a> {
     }
 }
 
+#[cfg(feature = "event-store-postgres")]
 impl OutboxStore for PostgresOutboxStore<'_> {
     async fn enqueue(
         &mut self,
@@ -691,10 +707,12 @@ impl OutboxStore for PostgresOutboxStore<'_> {
 }
 
 /// Postgres-backed inbox adapter. Callers own schema migrations.
+#[cfg(feature = "event-store-postgres")]
 pub struct PostgresInboxStore<'a> {
     client: &'a mut PostgresClient,
 }
 
+#[cfg(feature = "event-store-postgres")]
 impl std::fmt::Debug for PostgresInboxStore<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -703,6 +721,7 @@ impl std::fmt::Debug for PostgresInboxStore<'_> {
     }
 }
 
+#[cfg(feature = "event-store-postgres")]
 impl<'a> PostgresInboxStore<'a> {
     /// Wrap an existing Postgres client.
     pub fn new(client: &'a mut PostgresClient) -> Self {
@@ -720,6 +739,7 @@ impl<'a> PostgresInboxStore<'a> {
     }
 }
 
+#[cfg(feature = "event-store-postgres")]
 impl InboxStore for PostgresInboxStore<'_> {
     async fn record_received(&mut self, event_id: &str) -> Result<InboxReceipt, EventStoreError> {
         let inserted = self.client.execute(
@@ -741,6 +761,7 @@ mod tests {
     use serde_json::Value;
 
     #[tokio::test]
+    #[cfg(feature = "event-store-sqlite")]
     async fn sqlite_outbox_claims_recover_and_fence_concurrent_workers() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("outbox.db");
@@ -956,6 +977,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "event-store-sqlite")]
     async fn sqlite_outbox_persists_dispatch_and_retry_state() {
         let connection = Connection::open_in_memory().expect("sqlite opens");
         SqliteOutboxStore::create_schema(&connection).expect("schema creates");
@@ -999,6 +1021,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "event-store-sqlite")]
     async fn sqlite_inbox_suppresses_duplicates() {
         let connection = Connection::open_in_memory().expect("sqlite opens");
         SqliteInboxStore::create_schema(&connection).expect("schema creates");

@@ -118,12 +118,12 @@ export type WaitForObjectResource = ResourceDescriptors["waitForObject"];
 export type WaitForObjectHandle<Handle> = Handle;
 export type WorkResource = ResourceDescriptors["work"];
 export type WorkHandle<Handle> = Handle;
-export type ResourceHandles<Handles extends { readonly [Name in keyof ResourceDescriptors] : unknown }> = { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "required" ? Name : never] : Handles[Name] } & { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "optional" ? Name : never] : Handles[Name] | undefined };
+export type ResourceHandles<Handles extends { readonly [Name in keyof ResourceDescriptors]: unknown }> = { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "required" ? Name : never]: Handles[Name] } & { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "optional" ? Name : never]: Handles[Name] | undefined };
 export type Availability = Readonly<{
 	resources: Readonly<{}>;
 	capabilities: Readonly<{}>;
 }>;
-export type ParticipantFacade<Handles extends { readonly [Name in keyof ResourceDescriptors] : unknown }> = Readonly<{
+export type ParticipantFacade<Handles extends { readonly [Name in keyof ResourceDescriptors]: unknown }> = Readonly<{
 	participant: Participant;
 	resources: ResourceHandles<Handles>;
 	availability(): Availability;

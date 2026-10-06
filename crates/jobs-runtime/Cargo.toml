@@ -23,4 +23,4 @@ trellis-protocol.workspace = true
 trellis-runtime-apis = { path = "../runtime-apis", version = "0.100.0" }
 
 [dev-dependencies]
-tempfile = "3.27.0"
+tempfile.workspace = true

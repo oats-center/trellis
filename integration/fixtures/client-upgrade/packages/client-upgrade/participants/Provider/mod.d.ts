@@ -57,12 +57,12 @@ export declare const participant: {
 export declare const PARTICIPANT_DIGEST: "dvHR82SHVd78ZYl0bJarMpnOAi2rlK-WmveY0bWY594";
 export type Participant = typeof participant;
 export type ResourceDescriptors = typeof participant.resources;
-export type ResourceHandles<Handles extends { readonly [Name in keyof ResourceDescriptors] : unknown }> = { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "required" ? Name : never] : Handles[Name] } & { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "optional" ? Name : never] : Handles[Name] | undefined };
+export type ResourceHandles<Handles extends { readonly [Name in keyof ResourceDescriptors]: unknown }> = { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "required" ? Name : never]: Handles[Name] } & { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "optional" ? Name : never]: Handles[Name] | undefined };
 export type Availability = Readonly<{
 	resources: Readonly<{}>;
 	capabilities: Readonly<{}>;
 }>;
-export type ParticipantFacade<Handles extends { readonly [Name in keyof ResourceDescriptors] : unknown }> = Readonly<{
+export type ParticipantFacade<Handles extends { readonly [Name in keyof ResourceDescriptors]: unknown }> = Readonly<{
 	participant: Participant;
 	resources: ResourceHandles<Handles>;
 	availability(): Availability;

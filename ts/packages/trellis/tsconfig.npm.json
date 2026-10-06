@@ -10,7 +10,7 @@
     "rewriteRelativeImportExtensions": true,
     "verbatimModuleSyntax": true,
     "allowJs": true,
-    "stripInternal": true,
+    "stripInternal": false,
     "rootDir": ".",
     "outDir": "npm",
     "paths": {

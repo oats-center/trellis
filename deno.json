@@ -1,0 +1,20 @@
+{
+  "importMap": "./ts/deno.json",
+  "lock": { "path": "ts/deno.lock", "frozen": true },
+  "workspace": [
+    "./ts",
+    "./ts/browser",
+    "./ts/integration",
+    "./ts/packages/result",
+    "./ts/packages/trellis-svelte",
+    "./ts/packages/trellis-testkit",
+    "./ts/packages/trellis",
+    "./web"
+  ],
+  "nodeModulesDir": "auto",
+  "compilerOptions": {
+    "strict": true,
+    "lib": ["dom", "dom.iterable", "dom.asynciterable", "deno.ns"],
+    "verbatimModuleSyntax": true
+  }
+}

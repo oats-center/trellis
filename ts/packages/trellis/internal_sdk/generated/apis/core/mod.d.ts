@@ -7,22 +7,22 @@ export type UnexpectedErrorData = SerializableErrorData & {
 };
 export declare class UnexpectedError extends TrellisError<UnexpectedErrorData> {
 	static readonly type: "trellis.core@v1::UnexpectedError";
-	readonly name: "UnexpectedError";
+	override readonly name: "UnexpectedError";
 	readonly data: UnexpectedErrorData;
 	constructor(data: UnexpectedErrorData);
 	static fromSerializable(data: unknown): UnexpectedError;
-	toSerializable(): UnexpectedErrorData;
+	override toSerializable(): UnexpectedErrorData;
 }
 export type ValidationErrorData = SerializableErrorData & {
 	readonly type: "trellis.core@v1::ValidationError";
 };
 export declare class ValidationError extends TrellisError<ValidationErrorData> {
 	static readonly type: "trellis.core@v1::ValidationError";
-	readonly name: "ValidationError";
+	override readonly name: "ValidationError";
 	readonly data: ValidationErrorData;
 	constructor(data: ValidationErrorData);
 	static fromSerializable(data: unknown): ValidationError;
-	toSerializable(): ValidationErrorData;
+	override toSerializable(): ValidationErrorData;
 }
 export type ResourcesDestroyInput = Types0.ResourcesDestroyRequest;
 export type ResourcesDestroyOutput = Types0.ResourcesDestroyResponse;

@@ -8,11 +8,11 @@ export type AuthErrorData = SerializableErrorData & {
 export declare class AuthError extends TrellisError<AuthErrorData> {
 	static readonly type: "trellis.auth@v1::AuthError";
 	static readonly payloadCodec: typeof Types1.AuthErrorDetailsCodec;
-	readonly name: "AuthError";
+	override readonly name: "AuthError";
 	readonly data: AuthErrorData;
 	constructor(data: AuthErrorData);
 	static fromSerializable(data: unknown): AuthError;
-	toSerializable(): AuthErrorData;
+	override toSerializable(): AuthErrorData;
 }
 export type UnexpectedErrorData = SerializableErrorData & {
 	readonly type: "trellis.auth@v1::UnexpectedError";
@@ -20,11 +20,11 @@ export type UnexpectedErrorData = SerializableErrorData & {
 export declare class UnexpectedError extends TrellisError<UnexpectedErrorData> {
 	static readonly type: "trellis.auth@v1::UnexpectedError";
 	static readonly payloadCodec: typeof Types1.AuthErrorDetailsCodec;
-	readonly name: "UnexpectedError";
+	override readonly name: "UnexpectedError";
 	readonly data: UnexpectedErrorData;
 	constructor(data: UnexpectedErrorData);
 	static fromSerializable(data: unknown): UnexpectedError;
-	toSerializable(): UnexpectedErrorData;
+	override toSerializable(): UnexpectedErrorData;
 }
 export type ValidationErrorData = SerializableErrorData & {
 	readonly type: "trellis.auth@v1::ValidationError";
@@ -32,11 +32,11 @@ export type ValidationErrorData = SerializableErrorData & {
 export declare class ValidationError extends TrellisError<ValidationErrorData> {
 	static readonly type: "trellis.auth@v1::ValidationError";
 	static readonly payloadCodec: typeof Types1.AuthErrorDetailsCodec;
-	readonly name: "ValidationError";
+	override readonly name: "ValidationError";
 	readonly data: ValidationErrorData;
 	constructor(data: ValidationErrorData);
 	static fromSerializable(data: unknown): ValidationError;
-	toSerializable(): ValidationErrorData;
+	override toSerializable(): ValidationErrorData;
 }
 export type CapabilitiesListInput = Types1.AuthCapabilitiesListRequest;
 export type CapabilitiesListOutput = Types1.AuthCapabilitiesListResponse;

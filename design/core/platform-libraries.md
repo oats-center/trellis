@@ -80,6 +80,18 @@ The supported author-facing Rust crates are `trellis-rs` (the curated facade for
 clients and services), `trellis-protocol` (canonical protocol objects), and
 `trellis-testkit` (the external live-test harness).
 
+The default `trellis-rs` dependency boundary excludes SQL database drivers.
+Prepared events, memory stores, and common inbox/outbox interfaces remain in the
+core facade; SQLite and PostgreSQL adapters and database-specific error variants
+are opt-in through `event-store-sqlite` and `event-store-postgres`.
+Runtime-owned database storage remains an implementation dependency, not an SDK
+default.
+
+SDK HTTP clients, including optional OTLP exporters, use an application's
+installed Rustls provider when present and otherwise select ring locally. They
+do not install a process-wide provider. Certificate verification uses platform
+trust, and OTLP retains its configured per-signal timeouts.
+
 `trellis-testkit` links the real production `trellis-runtime` and runs it as an
 owned task, using production bootstrap, direct administrator seeding, and the
 generated `trellis-runtime-apis` administration client. NATS remains a real
