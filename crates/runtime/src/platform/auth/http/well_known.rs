@@ -44,6 +44,7 @@ pub(super) struct ContextRefreshRequest {
     #[serde(rename = "issuedAt")]
     _issued_at: i64,
     name: Option<String>,
+    participant_digest: Option<String>,
     proof: Value,
 }
 
@@ -127,6 +128,23 @@ where
             }
         }
         let now = now_ms()?;
+        if let Some(requested_digest) = request.participant_digest.as_deref() {
+            if session.state == crate::platform::auth::SessionState::Active
+                && session.expires_at.is_none_or(|expiry| expiry > now)
+            {
+                let (latest_revision, latest) = state
+                    .service
+                    .repository()
+                    .get_installed_participant_record(session.participant_id.clone(), None)
+                    .await?
+                    .ok_or_else(|| HttpError::not_found("participant_not_found"))?;
+                if latest.participant_digest == requested_digest
+                    && latest_revision != session.installed_revision
+                {
+                    return Err(HttpError::forbidden("consent_required"));
+                }
+            }
+        }
         Ok(Json(
             bootstrap::issue_bootstrap(
                 &state,

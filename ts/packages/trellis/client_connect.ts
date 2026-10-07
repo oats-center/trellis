@@ -847,6 +847,7 @@ async function recoverClientBootstrapWithRetry(args: {
   deps: ClientConnectDeps;
   offsetState: ClockOffsetState;
   onTerminalSession?: () => Promise<void>;
+  participantDigest?: string;
   bootstrapTimeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<ClientBootstrapResponse> {
@@ -883,6 +884,7 @@ async function recoverClientBootstrapWithRetry(args: {
         runtime: { auth: args.identity.runtimeAuth },
         cache: args.cache,
         requiredTransport: "websocket",
+        participantDigest: args.participantDigest,
       });
       const responseReceivedAtMs = args.deps.now();
       const serverClockOffsetMs = estimateMidpointClockOffsetMs({
@@ -938,6 +940,9 @@ async function recoverClientBootstrapWithRetry(args: {
         error instanceof AuthorizationContextRefreshError &&
         error.terminal
       ) {
+        if (error.code === "consent_required") {
+          return { status: "auth_required", serverNow: args.deps.now() / 1_000 };
+        }
         if (!error.loginInvalid) throw error;
         await args.onTerminalSession?.();
         return {
@@ -1220,6 +1225,7 @@ export async function connectClientWithDeps<
       identity.sessionId = bound.sessionId;
       offsetState.serverClockOffsetMs = bound.serverClockOffsetMs;
       callbackBootstrap = await recoverClientBootstrapWithRetry({
+        participantDigest: args.participant.digest,
         trellisUrl,
         identity,
         cache: authorizationContexts,
@@ -1240,6 +1246,7 @@ export async function connectClientWithDeps<
   const initialBootstrapStartedAt = performance.now();
   const initialBootstrap = deps.initialBootstrap ?? callbackBootstrap ??
     await recoverClientBootstrapWithRetry({
+      participantDigest: args.participant.digest,
       trellisUrl,
       identity,
       cache: authorizationContexts,
@@ -1277,22 +1284,6 @@ export async function connectClientWithDeps<
       authorizationContexts,
     )
   ) {
-    if (
-      initialBootstrap.status === "ready" &&
-      !bootstrapTargetsRequestedContract(
-        initialBootstrap,
-        args,
-        authorizationContexts,
-      )
-    ) {
-      if (
-        browserInstallation &&
-        !await clearBrowserLogin(browserInstallation, identity)
-      ) {
-        globalThis.location?.reload();
-        throw new Error("browser installation changed in another tab");
-      }
-    }
     if (browserInstallation) {
       identity = await resolveClientIdentity(args.auth, browserInstallation);
     }

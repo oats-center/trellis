@@ -144,6 +144,11 @@ where
 pub(crate) struct TransactionStartRequest {
     intent: String,
     portal_binding_digest: String,
+    login_session_id: Option<String>,
+    request_id: Option<String>,
+    issued_at: Option<i64>,
+    session_public_key: Option<String>,
+    proof: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -222,7 +227,7 @@ where
         "intentId": intent.intent_id,
         "status": "choose_provider",
         "providers": providers,
-        "app": { "displayName": participant.projection.display_name },
+        "app": { "displayName": participant.projection.display_name, "contractId": intent.participant_id },
         "registration": {
             "localIdentity": { "available": portal.local_registration_enabled && settings.local_login_enabled },
             "federatedIdentity": { "available": settings.federated_registration_enabled, "providers": providers.iter().filter(|provider| provider["id"] != "local").collect::<Vec<_>>() },
@@ -327,7 +332,7 @@ where
 pub(crate) async fn start_transaction<R, E>(
     State(state): State<AuthHttpState<R, E>>,
     headers: HeaderMap,
-    Json(request): Json<TransactionStartRequest>,
+    Json(raw): Json<Value>,
 ) -> Result<Json<super::local::BrowserTransactionResponse>, HttpError>
 where
     R: AccountRepository
@@ -345,6 +350,8 @@ where
         + 'static,
     E: AuthEphemeralRepository + Clone,
 {
+    let request: TransactionStartRequest = serde_json::from_value(raw.clone())
+        .map_err(|_| HttpError::bad_request("invalid_transaction_start"))?;
     let now = now_ms()?;
     let intent = state
         .authorization_contexts
@@ -407,6 +414,7 @@ where
         principal_id: None,
         authenticated_provider_id: None,
         authenticated_roles: Vec::new(),
+        resumed_login_session_id: request.login_session_id.clone(),
         portal_binding_digest: Some(request.portal_binding_digest),
         claim_owner: None,
         claimed_at: None,
@@ -417,6 +425,69 @@ where
         version: 1,
     };
     require_portal_binding(&flow, &headers)?;
+    let continuation = if let Some(login_id) = request.login_session_id.as_deref() {
+        if request.request_id.is_none()
+            || request.issued_at.is_none()
+            || request.session_public_key.as_deref() != Some(flow.session_public_key.as_str())
+        {
+            return Err(HttpError::unauthorized("invalid_resume_proof"));
+        }
+        let session = super::consent::resumed_login(&state, &flow, now).await?;
+        if session.session_id != login_id {
+            return Err(HttpError::unauthorized("login_owner_mismatch"));
+        }
+        let mut unsigned_request = raw;
+        unsigned_request.as_object_mut().unwrap().remove("proof");
+        let input = SessionProofInput::user_auth_resume(UserAuthRequestSessionProofInput {
+            origin: state.public_origin.clone(),
+            unsigned_request,
+        })
+        .map_err(|_| HttpError::unauthorized("invalid_resume_proof"))?;
+        verify_session_proof(
+            &input,
+            &parse_session_proof(
+                request
+                    .proof
+                    .as_ref()
+                    .ok_or_else(|| HttpError::unauthorized("invalid_resume_proof"))?,
+            )
+            .map_err(|_| HttpError::unauthorized("invalid_resume_proof"))?,
+            &session.session_public_key,
+            now,
+            state.proof_policy,
+        )
+        .map_err(|_| HttpError::unauthorized("invalid_resume_proof"))?;
+        let current = state
+            .service
+            .repository()
+            .get_grant_binding(
+                GrantOwnerKind::User,
+                session.principal_id.clone(),
+                flow.participant_id.clone(),
+            )
+            .await?
+            .ok_or_else(|| HttpError::forbidden("not_authorized"))?;
+        let attributes = ProviderLoginAttributes {
+            provider_id: current
+                .provenance
+                .as_ref()
+                .map_or_else(|| "login-session".to_owned(), |p| p.provider_id.clone()),
+            roles: current
+                .provenance
+                .as_ref()
+                .map_or_else(Vec::new, |p| p.roles.clone()),
+        };
+        Some((session.principal_id, attributes))
+    } else {
+        if request.proof.is_some()
+            || request.request_id.is_some()
+            || request.issued_at.is_some()
+            || request.session_public_key.is_some()
+        {
+            return Err(HttpError::bad_request("invalid_transaction_start"));
+        }
+        None
+    };
     let flow = state
         .ephemeral
         .create_browser_transaction(flow)
@@ -428,6 +499,21 @@ where
                 error.into()
             }
         })?;
+    let flow = if let Some((principal_id, attributes)) = continuation {
+        let digest = flow.portal_binding_digest.clone().unwrap();
+        super::consent::complete_authenticated_flow(
+            &state,
+            flow,
+            principal_id,
+            attributes,
+            digest,
+            true,
+            now,
+        )
+        .await?
+    } else {
+        flow
+    };
     Ok(Json(flow_response(flow)))
 }
 

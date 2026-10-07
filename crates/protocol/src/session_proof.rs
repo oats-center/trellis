@@ -24,6 +24,8 @@ pub enum SessionProofPurpose {
     UserAuthRequest,
     /// Discover intent progress using its initiating key, without claiming a login.
     UserAuthProgress,
+    /// Authenticate renewed consent using an existing login key.
+    UserAuthResume,
     /// Claim an approved browser-auth flow with its enrolled session key.
     UserAuthBind,
     /// Bootstrap a provisioned service instance.
@@ -41,6 +43,7 @@ impl SessionProofPurpose {
         match self {
             Self::UserAuthRequest => "userAuthRequest",
             Self::UserAuthProgress => "userAuthProgress",
+            Self::UserAuthResume => "userAuthResume",
             Self::UserAuthBind => "userAuthBind",
             Self::ServiceBootstrap => "serviceBootstrap",
             Self::DeviceBootstrap => "deviceBootstrap",
@@ -138,6 +141,20 @@ impl SessionProofInput {
             input,
             SessionProofPurpose::UserAuthProgress,
             "/auth/intents/progress",
+        )
+    }
+
+    /// Bind resumed authentication to the intent, portal binding, origin, and freshness.
+    ///
+    /// # Errors
+    /// Returns [`ProtocolError::SessionProof`] for malformed proof input.
+    pub fn user_auth_resume(
+        input: UserAuthRequestSessionProofInput,
+    ) -> Result<Self, ProtocolError> {
+        Self::user_auth_request_at(
+            input,
+            SessionProofPurpose::UserAuthResume,
+            "/auth/transactions",
         )
     }
 

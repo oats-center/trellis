@@ -48,6 +48,7 @@ pub(crate) fn browser_flow() -> AuthBrowserTransaction {
         principal_id: None,
         authenticated_provider_id: None,
         authenticated_roles: Vec::new(),
+        resumed_login_session_id: None,
         portal_binding_digest: None,
         claim_owner: None,
         claimed_at: None,

@@ -17,6 +17,7 @@ export {
   portalProviderLoginUrl,
   portalRedirectLocation,
   portalTransactionIdFromUrl,
+  readPortalLogin,
   startPortalTransaction,
   submitPortalApproval,
 } from "./browser/portal.ts";

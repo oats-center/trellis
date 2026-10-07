@@ -3,6 +3,7 @@ import { Type } from "typebox";
 
 const OpenObjectSchema = Type.Object({}, { additionalProperties: true });
 const AppSchema = Type.Object({
+  contractId: Type.Optional(Type.String({ minLength: 1 })),
   displayName: Type.String({ minLength: 1 }),
 }, { additionalProperties: true });
 const ApprovalSchema = Type.Object({

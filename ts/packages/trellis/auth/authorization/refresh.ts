@@ -27,6 +27,7 @@ export class AuthorizationContextRefreshError extends TrellisHttpError {
     this.name = "AuthorizationContextRefreshError";
     this.terminal = [
       "session_not_found",
+      "consent_required",
       "session_expired",
       "session_revoked",
       "identity_not_found",
@@ -81,6 +82,7 @@ export async function refreshAuthorizationContextWithMetadata(args: {
   fetch?: typeof globalThis.fetch;
   shouldInstall?: () => boolean;
   requiredTransport?: "native" | "websocket";
+  participantDigest?: string;
   prepareInstall?: (
     response: AuthorizationContextRefreshResponse,
   ) => Promise<(verified: VerifiedAuthorizationContext) => void>;
@@ -108,6 +110,7 @@ export async function refreshAuthorizationContextWithMetadata(args: {
     connectionId: runtime?.connectionId ?? ulid(),
     sessionKey: args.runtime.auth.sessionKey,
     currentContextDigest: currentDigest ?? null,
+    ...(args.participantDigest ? { participantDigest: args.participantDigest } : {}),
   };
   const proof = await args.credential.proofAuth.signSessionProof({
     purpose: "authorizationContextRefresh",

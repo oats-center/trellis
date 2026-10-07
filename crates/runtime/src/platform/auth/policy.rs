@@ -138,7 +138,15 @@ pub(crate) fn consent_request(
                 consequence: capability.consequence.clone(),
                 consent_digest: capability.consent_digest.clone(),
                 required: !resolved.optional_capability_definitions.contains_key(id),
-                eligible: capability.public || ceiling_capabilities.contains(&fingerprint),
+                eligible: (capability.public || ceiling_capabilities.contains(&fingerprint))
+                    && ceiling
+                        .exact_restrictions
+                        .as_ref()
+                        .is_none_or(|restrictions| {
+                            selected_permissions(resolved)
+                                .filter(|permission| capability.allows.contains(permission))
+                                .all(|permission| restrictions.permissions().contains(permission))
+                        }),
                 already_approved: approved_capabilities.contains(&fingerprint),
             }
         })
@@ -1413,6 +1421,40 @@ mod tests {
             consent_authority(ConsentAuthoritySource::Explicit { target: &expired }, 1),
             Err(AuthorizationStateError::NotAuthorized)
         ));
+    }
+
+    #[test]
+    fn resumed_exact_authority_keeps_permission_limits_on_new_consent() {
+        let participant = participant();
+        for permissions in [vec![atom("Read")], Vec::new()] {
+            let retained = consent_binding(
+                ApprovalMode::Exact,
+                DelegationCeiling {
+                    capabilities: Vec::new(),
+                    exact_restrictions: Some(GrantSet::new(permissions.clone())),
+                    platform_privileges: Vec::new(),
+                },
+                Some(1_000),
+                None,
+            );
+            let mut authority =
+                consent_authority(ConsentAuthoritySource::Explicit { target: &retained }, 1)
+                    .unwrap();
+            authority.ceiling.capabilities = participant_delegation_ceiling(&participant)
+                .unwrap()
+                .capabilities;
+            assert_eq!(
+                authority.ceiling.exact_restrictions,
+                Some(GrantSet::new(permissions.clone()))
+            );
+            assert_eq!(authority.expires_at, Some(1_000));
+            let request =
+                consent_request(&participant, 1, None, &authority.ceiling, &[], None).unwrap();
+            assert!(request
+                .capabilities
+                .iter()
+                .all(|capability| capability.eligible == !permissions.is_empty()));
+        }
     }
 
     #[test]

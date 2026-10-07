@@ -7,6 +7,7 @@ import {
   portalIntentFromUrl,
   portalProviderLoginUrl,
   portalTransactionIdFromUrl,
+  readPortalLogin,
   startPortalTransaction,
   submitPortalApproval,
   TrellisHttpError,
@@ -93,6 +94,19 @@ export class PortalFlowController {
         state = await fetchPortalIntentState(this.#config, this.#intent);
       }
       this.state = state;
+      if (state.status === "choose_provider" && !this.transactionId && state.app.contractId) {
+        const login = await readPortalLogin(this.#config, state.app.contractId);
+        if (login?.loginSessionId) {
+          try {
+            await this.beginAuthentication(login);
+            state = await fetchPortalFlowState(this.#config, this.transactionId!, this.binding);
+            this.state = state;
+          } catch (error) {
+            if (!(error instanceof TrellisHttpError) || error.status !== 401) throw error;
+            // Expired/revoked/mismatched login: retain the normal provider form.
+          }
+        }
+      }
       return state;
     } catch (error) {
       if (
@@ -126,7 +140,7 @@ export class PortalFlowController {
   }
 
   /** Start or recover an attempt with a binding persisted before the first request. */
-  async beginAuthentication(): Promise<string> {
+  async beginAuthentication(login?: Awaited<ReturnType<typeof readPortalLogin>>): Promise<string> {
     if (this.transactionId) return this.transactionId;
     if (!this.#intent || this.state?.status !== "choose_provider") {
       throw new Error("Sign-in intent has not loaded.");
@@ -140,6 +154,7 @@ export class PortalFlowController {
       this.#config,
       this.#intent,
       binding,
+      login,
     );
     this.#sessionStorage.setItem(
       `trellis.portal-binding.v1:${transactionId}`,

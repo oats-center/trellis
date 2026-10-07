@@ -289,6 +289,9 @@ pub(crate) struct AuthBrowserTransaction {
     pub principal_id: Option<String>,
     pub authenticated_provider_id: Option<String>,
     pub authenticated_roles: Vec<String>,
+    /// Existing login whose key authenticated this consent-only continuation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumed_login_session_id: Option<String>,
     pub portal_binding_digest: Option<String>,
     pub claim_owner: Option<String>,
     pub claimed_at: Option<i64>,

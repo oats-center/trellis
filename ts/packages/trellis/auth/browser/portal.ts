@@ -4,6 +4,10 @@ import { type PortalFlowState, PortalFlowStateSchema } from "./flow_types.ts";
 import type { StaticDecode } from "typebox";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { ulid } from "ulid";
+import { createAuth } from "../session_auth.ts";
+import { base64urlEncode } from "../utils.ts";
+import { BrowserSessionStore, browserInstallationScope, type BrowserSessionCredential } from "./storage.ts";
 
 export type { PortalFlowState } from "./flow_types.ts";
 export type ApprovalDecision = "approved" | "denied";
@@ -322,7 +326,25 @@ export async function startPortalTransaction(
   config: AuthConfig,
   intent: string,
   binding: PortalBinding,
+  login?: BrowserSessionCredential,
 ): Promise<string> {
+  let request: Record<string, unknown> = { intent, portalBindingDigest: binding.digest };
+  if (login?.loginSessionId) {
+    const unsignedRequest = {
+      ...request,
+      loginSessionId: login.loginSessionId,
+      sessionPublicKey: login.sessionKey,
+      requestId: ulid(),
+      issuedAt: Date.now(),
+    };
+    const auth = await createAuth({ sessionKeySeed: base64urlEncode(login.seed) });
+    request = {
+      ...unsignedRequest,
+      proof: await auth.signSessionProof({
+        purpose: "userAuthResume", origin: new URL(config.authUrl).origin, unsignedRequest,
+      }),
+    };
+  }
   const response = await fetch(`${authBaseUrl(config)}/auth/transactions`, {
     method: "POST",
     headers: {
@@ -330,11 +352,17 @@ export async function startPortalTransaction(
       [PORTAL_BINDING_HEADER]: binding.secret,
       ...(config.portalOrigin ? { origin: config.portalOrigin } : {}),
     },
-    body: JSON.stringify({ intent, portalBindingDigest: binding.digest }),
+    body: JSON.stringify(request),
   });
   if (!response.ok) throw await decodeTrellisHttpError(response);
   return Value.Parse(BrowserTransactionWireSchema, await response.json())
     .transactionId;
+}
+
+/** Same-origin portals can prove an existing login without URL credentials. */
+export async function readPortalLogin(config: AuthConfig, participantId: string): Promise<BrowserSessionCredential | undefined> {
+  if (typeof indexedDB === "undefined") return undefined;
+  return await new BrowserSessionStore(browserInstallationScope(config.authUrl, participantId)).readLogin();
 }
 
 export async function fetchPortalFlowState(

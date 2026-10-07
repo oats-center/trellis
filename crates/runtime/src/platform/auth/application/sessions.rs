@@ -18,6 +18,8 @@ pub struct CreateSessionInput {
     pub session_public_key: String,
     /// Interactive authentication time in Unix milliseconds.
     pub created_at: i64,
+    /// Original login expiry when authenticating renewed consent.
+    pub expires_at_ceiling: Option<i64>,
     /// Durable proof claim, committed with the selected login ID.
     pub idempotency: IdempotencyResultRecord,
     /// Deterministic post-commit actions.
@@ -31,13 +33,11 @@ impl<R: SessionRepository + Clone> AuthService<R> {
         input: CreateSessionInput,
     ) -> Result<IdempotentOutcome<SessionRecord>, AuthorizationStateError> {
         super::super::domain::require_protocol_timestamp("createdAt", input.created_at)?;
-        let expires_at = u64::try_from(input.created_at)
-            .ok()
-            .and_then(|created| created.checked_add(self.config.session_ttl_ms))
-            .filter(|expires| *expires <= super::super::MAX_PROTOCOL_INTEGER)
-            .ok_or_else(|| {
-                AuthorizationStateError::InvalidRecord("session expiry overflow".to_owned())
-            })? as i64;
+        let expires_at = session_expiry(
+            input.created_at,
+            self.config.session_ttl_ms,
+            input.expires_at_ceiling,
+        )?;
         let session = SessionRecord::from_new(NewSession {
             session_id: Ulid::new().to_string(),
             principal_id: input.principal_id,
@@ -81,5 +81,42 @@ impl<R: SessionRepository + Clone> AuthService<R> {
                 actions,
             })
             .await
+    }
+}
+
+fn session_expiry(
+    created_at: i64,
+    ttl_ms: u64,
+    ceiling: Option<i64>,
+) -> Result<i64, AuthorizationStateError> {
+    let expires_at = u64::try_from(created_at)
+        .ok()
+        .and_then(|created| created.checked_add(ttl_ms))
+        .filter(|expires| *expires <= super::super::MAX_PROTOCOL_INTEGER)
+        .ok_or_else(|| {
+            AuthorizationStateError::InvalidRecord("session expiry overflow".to_owned())
+        })? as i64;
+    if let Some(ceiling) = ceiling {
+        super::super::domain::require_protocol_timestamp("expiresAt", ceiling)?;
+        return Ok(expires_at.min(ceiling));
+    }
+    Ok(expires_at)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::session_expiry;
+
+    #[test]
+    fn renewed_consent_cannot_extend_the_original_login_when_the_ttl_increases() {
+        let original = session_expiry(1_000, 60_000, None).unwrap();
+        assert_eq!(
+            session_expiry(1_000, 120_000, Some(original)).unwrap(),
+            original
+        );
+        assert_eq!(
+            session_expiry(1_000, 30_000, Some(original)).unwrap(),
+            31_000
+        );
     }
 }

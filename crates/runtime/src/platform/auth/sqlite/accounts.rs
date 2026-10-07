@@ -2161,6 +2161,7 @@ mod password_reset_action_tests {
                 session_public_key: session_key.clone(),
                 created_at: NOW,
                 idempotency: proof("admin.login", "auth.session.create", "admin-login", NOW),
+                expires_at_ceiling: None,
                 actions: Vec::new(),
             })
             .await

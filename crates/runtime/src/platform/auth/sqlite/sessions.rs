@@ -57,7 +57,7 @@ impl SessionRepository for SqliteAuthorizationStore {
                     return Err(AuthorizationStateError::SessionRevoked);
                 }
                 if previous.state == SessionState::Expired
-                    || previous.expires_at.is_some_and(|expires| expires <= command.session.last_authenticated_at) {
+                    || previous.expires_at.is_some_and(|expires| expires <= command.idempotency.created_at) {
                     return Err(AuthorizationStateError::SessionExpired);
                 }
                 previous.last_authenticated_at = previous.last_authenticated_at.max(command.session.last_authenticated_at);

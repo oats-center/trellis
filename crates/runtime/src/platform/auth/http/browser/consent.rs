@@ -7,6 +7,48 @@ use crate::platform::auth::{
     ApprovalMode, ApprovedCapability, ApprovedResource, GrantBinding, PortalGrantProvenance,
 };
 
+/// Recheck the login at every consent boundary, not just when the portal opens.
+pub(super) async fn resumed_login<R, E>(
+    state: &AuthHttpState<R, E>,
+    flow: &AuthBrowserTransaction,
+    now: i64,
+) -> Result<crate::platform::auth::SessionRecord, HttpError>
+where
+    R: AccountRepository + SessionRepository + Clone,
+{
+    let session = state
+        .service
+        .repository()
+        .get_session(
+            flow.resumed_login_session_id
+                .as_deref()
+                .ok_or_else(|| HttpError::unauthorized("login_not_found"))?,
+        )
+        .await?
+        .ok_or_else(|| HttpError::unauthorized("login_not_found"))?;
+    if session.state != crate::platform::auth::SessionState::Active
+        || session.expires_at.is_some_and(|expiry| expiry <= now)
+        || session.session_public_key != flow.session_public_key
+        || session.participant_id != flow.participant_id
+        || flow
+            .principal_id
+            .as_ref()
+            .is_some_and(|id| id != &session.principal_id)
+    {
+        return Err(HttpError::unauthorized("login_inactive"));
+    }
+    let principal = state
+        .service
+        .repository()
+        .get_principal(&session.principal_id)
+        .await?
+        .ok_or_else(|| HttpError::unauthorized("login_inactive"))?;
+    if principal.state != crate::platform::auth::PrincipalState::Active {
+        return Err(HttpError::unauthorized("login_inactive"));
+    }
+    Ok(session)
+}
+
 async fn consent_ceiling<R, E>(
     state: &AuthHttpState<R, E>,
     flow: &AuthBrowserTransaction,
@@ -16,7 +58,7 @@ async fn consent_ceiling<R, E>(
     now: i64,
 ) -> Result<super::super::super::policy::ConsentAuthority, HttpError>
 where
-    R: PortalRepository + Clone,
+    R: PortalRepository + AccountRepository + SessionRepository + Clone,
 {
     let (portal, settings) = state
         .service
@@ -26,6 +68,36 @@ where
         .ok_or_else(|| HttpError::gone("portal_unavailable"))?;
     if portal.removed {
         return Err(HttpError::gone("portal_unavailable"));
+    }
+    if flow.resumed_login_session_id.is_some() {
+        resumed_login(state, flow, now).await?;
+        if portal.disabled {
+            return Err(HttpError::forbidden("portal_disabled"));
+        }
+        let target =
+            consent_source(current, now).ok_or_else(|| HttpError::forbidden("not_authorized"))?;
+        if target.provenance.is_none() {
+            let mut authority = super::super::super::policy::consent_authority(
+                super::super::super::policy::ConsentAuthoritySource::Explicit { target },
+                now,
+            )?;
+            if target.approval_mode == ApprovalMode::Exact {
+                // Present the current capability vocabulary for explicit
+                // permission grants. Eligibility and final authority remain
+                // bounded by their retained exact permission restrictions.
+                authority.ceiling.capabilities =
+                    super::super::super::policy::participant_delegation_ceiling(participant)?
+                        .capabilities;
+            }
+            return Ok(authority);
+        }
+        if target
+            .provenance
+            .as_ref()
+            .is_some_and(|p| p.portal_id != flow.portal_id)
+        {
+            return Err(HttpError::forbidden("login_portal_changed"));
+        }
     }
     if !portal_allows_authenticated_provider(&portal, &settings, &attributes.provider_id) {
         return Err(HttpError::forbidden(if portal.disabled {
@@ -79,7 +151,7 @@ where
                     effective_policy_digest,
                 },
                 source,
-                retained_target: None,
+                retained_target: flow.resumed_login_session_id.as_ref().and(source),
             },
         )),
         now,
@@ -305,7 +377,11 @@ where
         &platform_privileges,
         &authority.ceiling,
         (&[], approval.companion_approved),
-    )?;
+    )
+    .map_err(|error| {
+        tracing::warn!(%error, "portal consent authority resolution failed");
+        HttpError::from(error)
+    })?;
     let signer_id = super::super::super::domain::validate_ed25519_public_key(
         "sessionPublicKey",
         &flow.session_public_key,
@@ -337,20 +413,37 @@ where
         &request_digest,
         now,
     )?;
-    let durable = state
-        .service
-        .repository()
-        .set_consent_grant_binding(replacement, authority.preconditions, idempotency)
-        .await
-        .map_err(|error| match error {
-            AuthorizationStateError::StorageConflict => HttpError::conflict("authority_changed"),
-            AuthorizationStateError::InvalidRecord(message)
-                if message == "grant binding does not match resolved authority" =>
-            {
-                HttpError::conflict("authority_changed")
-            }
-            error => error.into(),
-        })?;
+    // Re-consent renews the browser login, not an administrator's exact grant.
+    // Keep that authority intact rather than converting its permission limits
+    // into capability-based authority. Bootstrap rechecks the current grant.
+    let retained_exact = current.as_ref().filter(|binding| {
+        flow.resumed_login_session_id.is_some()
+            && binding.approval_mode == ApprovalMode::Exact
+            && binding.provenance.is_none()
+    });
+    let durable = if let Some(binding) = retained_exact {
+        serde_json::json!({ "binding": binding })
+    } else {
+        state
+            .service
+            .repository()
+            .set_consent_grant_binding(replacement, authority.preconditions, idempotency)
+            .await
+            .map_err(|error| match error {
+                AuthorizationStateError::StorageConflict => {
+                    HttpError::conflict("authority_changed")
+                }
+                AuthorizationStateError::InvalidRecord(message)
+                    if message == "grant binding does not match resolved authority" =>
+                {
+                    HttpError::conflict("authority_changed")
+                }
+                error => {
+                    tracing::warn!(%error, "portal consent grant replacement failed");
+                    error.into()
+                }
+            })?
+    };
     let durable_result_digest = trellis_protocol::digest_json(&durable)
         .map_err(|_| HttpError::internal("authority_digest"))?;
     let expected = flow.version;
@@ -899,6 +992,13 @@ where
             .iter()
             .any(|capability| capability.required && !capability.eligible)
     {
+        tracing::warn!(
+            participant_id = %flow.participant_id,
+            ineligible_capabilities = ?flow.consent.capabilities.iter()
+                .filter(|capability| capability.required && !capability.eligible)
+                .map(|capability| &capability.id).collect::<Vec<_>>(),
+            "portal consent rejected by the current authority ceiling"
+        );
         return Err(HttpError::forbidden("authority_rejected"));
     }
     let mut completed = if let Some(binding) = existing_binding {
@@ -1464,6 +1564,12 @@ where
         &flow.session_public_key,
     )?;
     let digest = digest_parts(&["browser.session.complete", &flow.transaction_id]);
+    let (authenticated_at, expires_at_ceiling) = if flow.resumed_login_session_id.is_some() {
+        let source = resumed_login(state, &flow, now).await?;
+        (source.last_authenticated_at, source.expires_at)
+    } else {
+        (now, None)
+    };
     let outcome = state
         .service
         .create_session(CreateSessionInput {
@@ -1472,7 +1578,8 @@ where
             participant_kind: binding.participant_kind,
             installed_revision: flow.installed_revision,
             session_public_key: flow.session_public_key.clone(),
-            created_at: now,
+            created_at: authenticated_at,
+            expires_at_ceiling,
             idempotency: idempotency(
                 &flow.transaction_id,
                 "browser.session.complete",

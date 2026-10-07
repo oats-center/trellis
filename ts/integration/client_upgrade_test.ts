@@ -1,6 +1,7 @@
 import { assert, assertEquals } from "@std/assert";
 import { Result, TrellisClient } from "@oatscenter/trellis";
 import {
+  base64urlDecode,
   createPortalBinding,
   fetchPortalFlowState,
   startPortalTransaction,
@@ -29,6 +30,12 @@ Deno.test("expanded browser authority renews consent once; compatible sign-in re
     await service.handleExtra(({ input }) => Result.ok(input));
     let passwords = 0;
     let consents = 0;
+    let rememberedLogin: {
+      generation: number;
+      seed: Uint8Array;
+      sessionKey: string;
+      loginSessionId: string;
+    } | undefined;
     const login = async (loginUrl: string) => {
       const intent = new URL(loginUrl).searchParams.get("intent");
       assert(intent);
@@ -41,23 +48,31 @@ Deno.test("expanded browser authority renews consent once; compatible sign-in re
         config,
         intent,
         binding,
+        rememberedLogin,
       );
-      passwords += 1;
-      const response = await fetch(`${runtime.trellisUrl}/auth/login/local`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          origin: runtime.trellisUrl,
-          "trellis-portal-binding": binding.secret,
-        },
-        body: JSON.stringify({
-          transactionId,
-          username: ADMIN_USERNAME,
-          password: runtime.adminPassword,
-          portalBindingDigest: binding.digest,
-        }),
-      });
-      assertEquals(response.status, 200, await response.text());
+      const pending = await fetchPortalFlowState(
+        config,
+        transactionId,
+        binding,
+      );
+      if (pending.status === "choose_provider") {
+        passwords += 1;
+        const response = await fetch(`${runtime.trellisUrl}/auth/login/local`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: runtime.trellisUrl,
+            "trellis-portal-binding": binding.secret,
+          },
+          body: JSON.stringify({
+            transactionId,
+            username: ADMIN_USERNAME,
+            password: runtime.adminPassword,
+            portalBindingDigest: binding.digest,
+          }),
+        });
+        assertEquals(response.status, 200, await response.text());
+      }
       const state = await fetchPortalFlowState(config, transactionId, binding);
       assertEquals(state.status, "approval_required");
       consents += 1;
@@ -92,6 +107,12 @@ Deno.test("expanded browser authority renews consent once; compatible sign-in re
       });
       const oldAuth = runtime.clientAuth(oldKey).auth;
       assert(oldAuth.mode === "session_key");
+      rememberedLogin = {
+        generation: 0,
+        seed: base64urlDecode(oldAuth.sessionKeySeed),
+        sessionKey: oldSession.sessionPublicKey,
+        loginSessionId: oldSession.sessionId,
+      };
       const expanded = await TrellisClient.connect({
         trellisUrl: runtime.trellisUrl,
         participant: participants.Caller.participant,
@@ -108,8 +129,18 @@ Deno.test("expanded browser authority renews consent once; compatible sign-in re
       const session = (await expanded.sessionsMe({}).orThrow()).session;
       assert(session !== null);
       assertEquals(session.sessionId, oldSession.sessionId);
+      assertEquals(
+        session.lastAuthenticatedAt,
+        oldSession.lastAuthenticatedAt,
+        "renewing consent is not a fresh password/provider authentication",
+      );
+      assertEquals(session.expiresAt, oldSession.expiresAt);
       await expanded.connection.close();
-      assertEquals(passwords, 2);
+      assertEquals(
+        passwords,
+        1,
+        "a valid login must authenticate renewed consent",
+      );
       assertEquals(consents, 2);
 
       const oldAgain = await TrellisClient.connect({
@@ -129,6 +160,42 @@ Deno.test("expanded browser authority renews consent once; compatible sign-in re
         name: "revised-consent",
         contract: revisedConsent.Caller.participant,
       });
+      await runtime.ensurePortalConsentPolicy(
+        participants.Caller.participant.id,
+        [
+          "capability:client-upgrade-fixture.upgrade@v1::read_documents",
+        ],
+      );
+      const ungrantedUpgrade = await TrellisClient.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant: revisedConsent.Caller.participant,
+        auth: { ...oldAuth, sessionId: session.sessionId },
+        onAuthRequired: (ctx) => login(ctx.loginUrl),
+      });
+      assert(
+        ungrantedUpgrade.isErr(),
+        "consent cannot create missing user authority",
+      );
+      assertEquals(passwords, 1);
+      assertEquals(consents, 2);
+      const installed = await runtime.callAdminRpc("authParticipantsGet", {
+        participantId: participants.Caller.participant.id,
+      });
+      const previous = (await runtime.callAdminRpc("authGrantsList", {
+        participantId: participants.Caller.participant.id,
+      })).items[0];
+      const granted = await runtime.callAdminRpc("authGrantsSet", {
+        expectedRevision: previous.revision,
+        expiresAt: previous.expiresAt,
+        grants: installed.participant.requiredGrants,
+        idempotencyKey: crypto.randomUUID(),
+        installedRevision: installed.participant.revision,
+        ownerId: previous.ownerId,
+        ownerKind: previous.ownerKind,
+        participantId: previous.participantId,
+        platformPrivileges: previous.platformPrivileges,
+      });
+      assertEquals(granted.binding.approvalMode, "exact");
       const consentUpgrade = await TrellisClient.connect({
         trellisUrl: runtime.trellisUrl,
         participant: revisedConsent.Caller.participant,
@@ -147,6 +214,11 @@ Deno.test("expanded browser authority renews consent once; compatible sign-in re
         participantId: participants.Caller.participant.id,
       });
       let binding = grants.items[0];
+      assertEquals(
+        binding,
+        granted.binding,
+        "re-consent must preserve administrator authority exactly",
+      );
       binding = (await runtime.callAdminRpc("authGrantsSet", {
         expectedRevision: binding.revision,
         expiresAt: binding.expiresAt,
