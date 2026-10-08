@@ -128,21 +128,21 @@ where
             }
         }
         let now = now_ms()?;
-        if let Some(requested_digest) = request.participant_digest.as_deref() {
-            if session.state == crate::platform::auth::SessionState::Active
-                && session.expires_at.is_none_or(|expiry| expiry > now)
+        let mut newer_revision_available = false;
+        if session.state == crate::platform::auth::SessionState::Active
+            && session.expires_at.is_none_or(|expiry| expiry > now)
+        {
+            let (latest_revision, latest) = state
+                .service
+                .repository()
+                .get_installed_participant_record(session.participant_id.clone(), None)
+                .await?
+                .ok_or_else(|| HttpError::not_found("participant_not_found"))?;
+            newer_revision_available = latest_revision != session.installed_revision;
+            if request.participant_digest.as_deref() == Some(latest.participant_digest.as_str())
+                && newer_revision_available
             {
-                let (latest_revision, latest) = state
-                    .service
-                    .repository()
-                    .get_installed_participant_record(session.participant_id.clone(), None)
-                    .await?
-                    .ok_or_else(|| HttpError::not_found("participant_not_found"))?;
-                if latest.participant_digest == requested_digest
-                    && latest_revision != session.installed_revision
-                {
-                    return Err(HttpError::forbidden("consent_required"));
-                }
+                return Err(HttpError::forbidden("consent_required"));
             }
         }
         Ok(Json(
@@ -158,7 +158,20 @@ where
                     .map_err(|_| HttpError::bad_request("invalid_context_refresh"))?,
                 now,
             )
-            .await?,
+            .await
+            .map_err(|error| {
+                // An already-open app may still request its old digest (or omit
+                // it during scheduled refresh). If its pinned API vocabulary
+                // can no longer resolve providers, renew consent against the
+                // installed app instead of stranding the valid login on a 403.
+                // Same-revision authority failures remain deployment/account
+                // errors; consent cannot supply missing administrator grants.
+                if newer_revision_available && error.code == "not_authorized" {
+                    HttpError::forbidden("consent_required")
+                } else {
+                    error
+                }
+            })?,
         ))
     }
     .await;

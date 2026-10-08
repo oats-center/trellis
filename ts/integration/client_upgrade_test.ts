@@ -11,8 +11,160 @@ import { TrellisService } from "@oatscenter/trellis/service";
 import { participants } from "../../integration/fixtures/client-upgrade/packages/client-upgrade/index.js";
 import { participants as narrow } from "../../integration/fixtures/client-upgrade-narrow/packages/client-upgrade/index.js";
 import { participants as revisedConsent } from "../../integration/fixtures/client-upgrade-consent/packages/client-upgrade/index.js";
+import { participants as breaking } from "../../integration/fixtures/client-upgrade-breaking/packages/client-upgrade/index.js";
 import { ADMIN_USERNAME } from "../packages/trellis-testkit/src/admin/methods.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
+
+Deno.test("a retained pre-deployment browser requests consent when its old API provider is no longer compatible", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    await runtime.registerService({
+      name: "provider-before",
+      contract: participants.Provider.participant,
+    });
+    const key = await runtime.registerClient({
+      name: "browser-before",
+      contract: participants.Caller.participant,
+    });
+    const old = await TrellisClient.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.Caller.participant,
+      ...runtime.clientAuth(key),
+    }).orThrow();
+    const session = (await old.sessionsMe({}).orThrow()).session;
+    assert(session);
+    await old.connection.close();
+    const replacementIdentity = await runtime.registerService({
+      name: "provider-after",
+      contract: breaking.Provider.participant,
+    });
+    await runtime.registerClient({
+      name: "browser-after",
+      contract: breaking.Caller.participant,
+    });
+    const installed = await runtime.callAdminRpc("authParticipantsGet", {
+      participantId: participants.Caller.participant.id,
+    });
+    const previous = (await runtime.callAdminRpc("authGrantsList", {
+      participantId: participants.Caller.participant.id,
+    })).items[0];
+    await runtime.callAdminRpc("authGrantsSet", {
+      expectedRevision: previous.revision,
+      expiresAt: previous.expiresAt,
+      grants: installed.participant.requiredGrants,
+      idempotencyKey: crypto.randomUUID(),
+      installedRevision: installed.participant.revision,
+      ownerId: previous.ownerId,
+      ownerKind: previous.ownerKind,
+      participantId: previous.participantId,
+      platformPrivileges: previous.platformPrivileges,
+    });
+    const before = await runtime.callAdminRpc("authGrantsList", {
+      participantId: participants.Caller.participant.id,
+    });
+    let requests = 0;
+    const auth = runtime.clientAuth(key).auth;
+    assert(auth.mode === "session_key");
+    const retained = await TrellisClient.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.Caller.participant,
+      auth: { ...auth, sessionId: session.sessionId },
+      onAuthRequired: async (ctx) => {
+        requests += 1;
+        const intent = new URL(ctx.loginUrl).searchParams.get("intent");
+        assert(intent);
+        const binding = await createPortalBinding();
+        const config = {
+          authUrl: runtime.trellisUrl,
+          portalOrigin: runtime.trellisUrl,
+        };
+        const transactionId = await startPortalTransaction(
+          config,
+          intent,
+          binding,
+          {
+            generation: 0,
+            seed: base64urlDecode(auth.sessionKeySeed),
+            sessionKey: session.sessionPublicKey,
+            loginSessionId: session.sessionId,
+          },
+        );
+        const pending = await fetchPortalFlowState(
+          config,
+          transactionId,
+          binding,
+        );
+        assertEquals(
+          pending.status,
+          "approval_required",
+          "retained login must skip password entry",
+        );
+        const approved = await submitPortalApproval(
+          config,
+          transactionId,
+          binding,
+          "approved",
+        );
+        assertEquals(approved.status, "redirect");
+        return { status: "bound" as const, transactionId };
+      },
+    });
+    assertEquals(
+      requests,
+      1,
+      "a stale browser must reach the portal rather than not_authorized",
+    );
+    const restored = retained.orThrow();
+    try {
+      const renewed = (await restored.sessionsMe({}).orThrow()).session;
+      assert(renewed);
+      assertEquals(renewed.sessionId, session.sessionId);
+      assertEquals(renewed.lastAuthenticatedAt, session.lastAuthenticatedAt);
+      assertEquals(renewed.expiresAt, session.expiresAt);
+    } finally {
+      await restored.connection.close();
+    }
+    assertEquals(
+      await runtime.callAdminRpc("authGrantsList", {
+        participantId: participants.Caller.participant.id,
+      }),
+      before,
+    );
+    const replacement = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: breaking.Provider.participant,
+      seed: replacementIdentity.seed,
+    }).orThrow();
+    const replacementExit = replacement.wait().catch((error: unknown) => error);
+    try {
+      await replacement.handleEcho(({ input }) => Result.ok(input));
+      const updated = await TrellisClient.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant: breaking.Caller.participant,
+        auth: { ...auth, sessionId: session.sessionId },
+        onAuthRequired: () => {
+          throw new Error(
+            "renewed consent must not prompt again after the page reload",
+          );
+        },
+      }).orThrow();
+      try {
+        assertEquals(
+          await updated.echo({ value: "after-page-reload", revision: 2 })
+            .orThrow(),
+          {
+            value: "after-page-reload",
+            revision: 2,
+          },
+        );
+      } finally {
+        await updated.connection.close();
+      }
+    } finally {
+      await replacement.stop();
+      await replacementExit;
+    }
+  });
+});
 
 Deno.test("expanded browser authority renews consent once; compatible sign-in reuses it; denied authority does not reauthenticate", async () => {
   await withTrellisRuntime(async (runtime) => {

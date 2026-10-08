@@ -1,0 +1,14 @@
+import { auth } from trellis;
+model Value { value: string; revision: uint32; }
+api upgrade@v1 {
+  title "Client upgrade acceptance";
+  description "Changed wire contract for an already-open browser.";
+  rpc Echo { input Value; output Value; }
+  rpc Extra { input Value; output Value; }
+  capabilities { public { allows { rpc Echo; rpc Extra; } } }
+}
+service Provider { implements upgrade; }
+app Caller {
+  use auth { rpc Sessions.Me; }
+  use upgrade { rpc Echo; rpc Extra; }
+}

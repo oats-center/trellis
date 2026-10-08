@@ -1,0 +1,28 @@
+format = 2
+root = "client-upgrade-fixture"
+
+[[packages]]
+name = "client-upgrade-fixture"
+version = "0.100.0"
+digest = "KjsbrPwncn_ZfuidxbzSzgrTrYwC6ms4co5VsaSi32g"
+distribution-digest = "sha256:d22b1ae706547a2fe3c0d9f74290a9918bb3c23fb80cb8214b2642a1f887102a"
+
+[[packages.dependencies]]
+name = "trellis"
+version = "0.100.0"
+digest = "5opbdbI2qlmKFK_nNnO0lChCk3XR1hHFK_1FjdeUNSo"
+
+[packages.source]
+kind = "path"
+path = "."
+
+[[packages]]
+name = "trellis"
+version = "0.100.0"
+digest = "5opbdbI2qlmKFK_nNnO0lChCk3XR1hHFK_1FjdeUNSo"
+distribution-digest = "sha256:f54dfd7a16b79f6b49deaaa31814d896f2a7c7668bbf04bec386d6300c18987b"
+dependencies = []
+
+[packages.source]
+kind = "path"
+path = "../../../crates/runtime"
