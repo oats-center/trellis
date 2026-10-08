@@ -32,6 +32,22 @@ installed release.
 - Public API reference: `/api` on the docs site. Generated participant source
   defines the exact names available for a project's declared actions.
 
+## Service Concurrency And Overload
+
+RPCs execute concurrently without ordering guarantees. Each connected service
+shares count-and-incoming-byte admission limits across endpoints and transport
+generations. Verified refusals use `trellis.service.busy`: the request was not
+executed, and the SDK does not automatically retry it. Cancellation and Live
+controls have reserved bounded capacity; ongoing Operations have separate limits.
+The `trellis.service.admission.*` production metrics expose occupied slots,
+retained incoming bytes, and refusals; incoming bytes are not total process memory.
+See the language guides for local configuration.
+TypeScript services can opt into adaptive Rust/WASM request verification with
+`runtime.verificationWorkers: true`: start one ordinary and one reserved worker,
+grow on sustained verification backlog up to `runtime.maxVerificationWorkers`
+(three ordinary workers by default), and retain workers until shutdown.
+This remains a trial; worker count does not change shared admission budgets.
+
 ## Essential Workflow
 
 Console user management supports profile and local-username edits, participant

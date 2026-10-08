@@ -368,6 +368,13 @@ zero. Unsafe, revoked, or hard-expired generations are forcibly retired rather
 than kept alive by leases. Broker admission identity is historical evidence,
 never current application authority.
 
+Finite request attempts observe publish denials and authentication failures on
+their leased physical attachment, never a mutable logical default. In the
+TypeScript SDK, these attempts attach detachable callbacks to the generation's
+shared status monitor (or a shared monitor for a fixed transport). Settlement
+detaches the callback synchronously; it must not leave an async status iterator
+holding a completed request's payload until another connection event occurs.
+
 Fresh public I/O requires usable installed own authority and a final fence over
 the current signed policy, corrected clock, and physical attachment. Temporary
 revocation-coverage loss suspends bounded acquisitions; it does not itself

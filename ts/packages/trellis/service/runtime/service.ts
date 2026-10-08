@@ -109,6 +109,7 @@ import type {
   ProviderGenerationAttachment,
   RpcHandlerContext,
   RpcHandlerErrorOf,
+  TrellisOpts,
 } from "../../session.ts";
 import {
   annotateHandlerBoundaryError,
@@ -330,6 +331,7 @@ type TrellisServiceRuntimeCreateOpts<
   TOwnedApi extends RuntimeApi,
   TTrellisApi extends RuntimeApi | undefined = TOwnedApi,
 > = {
+  requestLimits?: TrellisOpts<RuntimeApi>["requestLimits"];
   log?: LoggerLike | false;
   timeout?: number;
   stream?: string;
@@ -345,6 +347,12 @@ export type TrellisServiceHealthOpts = {
 };
 
 export type TrellisServiceRuntimeOpts = {
+  /** Opt into WASM verification workers, starting with one ordinary and one reserved worker. Ordinary capacity grows on sustained backlog and is retained until shutdown. Uses `timeout` for bounded worker progress; startup failures fail connection. */
+  verificationWorkers?: boolean;
+  /** Maximum ordinary verification workers, including workers starting. Defaults to three; reserved verification uses one additional worker. Requires `verificationWorkers`. */
+  maxVerificationWorkers?: number;
+  /** Bound local provider dispatch across all endpoints and transport generations. */
+  requestLimits?: TrellisOpts<RuntimeApi>["requestLimits"];
   log?: LoggerLike | false;
   timeout?: number;
   stream?: string;
@@ -1390,6 +1398,7 @@ export function createConnectedService<
     {
       log: resolvedLog,
       timeout: args.runtime.timeout,
+      requestLimits: args.runtime.requestLimits,
       stream: args.runtime.stream,
       noResponderRetry: args.runtime.noResponderRetry,
       api: runtimeApi,
@@ -1472,6 +1481,7 @@ export function createConnectedService<
     publish: (event, data) => outbound.publish(event, data),
     publishPrepared: (event) => outbound.publishPrepared(event),
     stopEventListeners: () => outbound.stopEventListeners(),
+    stopRequestListeners: () => outbound.stopRequestListeners(),
     get kv() {
       return getHandlerResources().kv;
     },
@@ -1605,6 +1615,7 @@ export function createConnectedService<
     connection,
     serviceTransport,
     acquireTimeoutMs,
+    resolvedLog,
     trellisServiceConstructorToken,
   ]) as TrellisServiceSession<TOwnedApi, TTrellisApi, TJobs, TKv>;
   resources.handlerResources = {
@@ -3231,6 +3242,13 @@ export function connectTrellisServiceWithRuntimeDeps<
           inboxPrefix,
           authorizationContexts,
         );
+        if (args.runtime?.verificationWorkers === true) {
+          await authorizationProviderCache.enableVerificationWorkers(
+            args.runtime?.timeout ?? 30_000,
+            args.runtime?.requestLimits,
+            args.runtime?.maxVerificationWorkers,
+          );
+        }
         authorizationProviderCache.start();
         await authorizationProviderCache.waitReady();
         await authorizationProviderCache.retainOwnContext();
@@ -3613,6 +3631,7 @@ export class TrellisServiceSession<
   readonly #operationTransfer: ServiceTransfer;
   readonly #stopHealthPublishing: () => Promise<void>;
   readonly #managedJobWorkers: ManagedJobWorkers;
+  readonly #log: LoggerLike;
   readonly #contractJobs: TJobs;
   readonly #jobsBinding?: ResourceBindingJobs;
   readonly #ownedOutboxDispatchers = new Set<OutboxDispatcher>();
@@ -3636,6 +3655,7 @@ export class TrellisServiceSession<
     connection: TrellisConnection,
     transport: TrellisTransportProvider,
     acquireTimeoutMs: number,
+    log: LoggerLike,
     token: typeof trellisServiceConstructorToken,
   ) {
     if (token !== trellisServiceConstructorToken) {
@@ -3710,6 +3730,7 @@ export class TrellisServiceSession<
     >;
     this.connection = connection;
     this.#stopHealthPublishing = stopHealthPublishing;
+    this.#log = log.child({ service: name });
   }
 
   /**
@@ -4132,6 +4153,7 @@ export class TrellisServiceSession<
 
   async stop(): Promise<void> {
     this.#stopPromise ??= (async () => {
+      const requests = this.#handlerTrellis.stopRequestListeners();
       this.connection.stopObserving();
       this.#handlerTrellis.stopEventListeners();
       for (const dispatcher of this.#ownedOutboxDispatchers) {
@@ -4140,18 +4162,24 @@ export class TrellisServiceSession<
       this.#ownedOutboxDispatchers.clear();
 
       try {
+        this.#log.info({ phase: "health" }, "Stopping service");
         await this.#stopHealthPublishing();
       } finally {
         try {
+          this.#log.info({ phase: "jobs" }, "Stopping service");
           await this.#managedJobWorkers.stop().orThrow();
         } finally {
           try {
+            this.#log.info({ phase: "transfers" }, "Stopping service");
             await this.#operationTransfer.stop();
           } finally {
             try {
-              await this.#runtime.stop();
+              this.#log.info({ phase: "runtime" }, "Stopping service");
+              await this.#runtime.stop(requests);
             } finally {
+              this.#log.info({ phase: "connection" }, "Stopping service");
               await this.connection.close();
+              this.#log.info({ phase: "closed" }, "Service stopped");
             }
           }
         }

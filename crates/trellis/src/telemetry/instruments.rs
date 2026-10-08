@@ -198,6 +198,8 @@ impl DurationFamily {
 /// Counter families in the catalog.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CounterFamily {
+    /// Intake refused for count, bytes, or refusal-verification capacity.
+    ServiceAdmissionRejections,
     /// Actual RPC transport attempts.
     RpcClientAttempts,
     /// Completed connection state changes.
@@ -236,6 +238,7 @@ impl CounterFamily {
     /// Catalog metric name.
     pub fn name(self) -> &'static str {
         match self {
+            Self::ServiceAdmissionRejections => "trellis.service.admission.rejections",
             Self::RpcClientAttempts => "trellis.rpc.client.attempts",
             Self::ConnectionTransitions => "trellis.connection.transitions",
             Self::AuthRefreshAttempts => "trellis.auth.refresh.attempts",
@@ -258,6 +261,7 @@ impl CounterFamily {
     /// Catalog unit.
     fn unit(self) -> &'static str {
         match self {
+            Self::ServiceAdmissionRejections => "{request}",
             Self::DeliveryDispositions => "{delivery}",
             Self::DeadLetterTransitions => "{transition}",
             Self::ConnectionTransitions => "{transition}",
@@ -280,6 +284,10 @@ impl CounterFamily {
 /// Up/down counter families in the catalog.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UpDownFamily {
+    /// Dispatch/verification reservations held by a logical provider.
+    ServiceAdmissionInflight,
+    /// Inbound message bytes retained by dispatch/verification reservations.
+    ServiceAdmissionBytes,
     /// Unary server requests currently admitted.
     RpcServerInflight,
     /// Locally owned operation executions.
@@ -298,6 +306,8 @@ impl UpDownFamily {
     /// Catalog metric name.
     pub fn name(self) -> &'static str {
         match self {
+            Self::ServiceAdmissionInflight => "trellis.service.admission.inflight",
+            Self::ServiceAdmissionBytes => "trellis.service.admission.bytes",
             Self::RpcServerInflight => "trellis.rpc.server.inflight",
             Self::OperationActive => "trellis.operation.active",
             Self::LiveSessions => "trellis.live.sessions",
@@ -310,6 +320,8 @@ impl UpDownFamily {
     /// Catalog unit.
     fn unit(self) -> &'static str {
         match self {
+            Self::ServiceAdmissionInflight => "{request}",
+            Self::ServiceAdmissionBytes => "By",
             Self::RpcServerInflight => "{request}",
             Self::OperationActive => "{execution}",
             Self::LiveSessions => "{session}",

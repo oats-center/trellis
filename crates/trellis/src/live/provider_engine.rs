@@ -75,6 +75,8 @@ pub(crate) struct PendingCloseAck {
     pub control: LiveControl,
     /// Pins the receiving attachment until this request's signed handoff.
     pub lease: crate::client::TransportLease,
+    /// Holds service control capacity through deferred signed close acknowledgement.
+    pub _request_permit: crate::service::admission::RequestPermit,
 }
 
 /// One registered provider session with its source factory and cleanup hook.
@@ -553,6 +555,8 @@ impl ProviderSessionRecord {
         nats: &async_nats::Client,
         message: async_nats::Message,
         lease: crate::client::TransportLease,
+        permit: crate::service::admission::RequestPermit,
+        refused: bool,
     ) {
         let Some(reply) = message.reply.clone() else {
             return;
@@ -586,7 +590,12 @@ impl ProviderSessionRecord {
         let request_id = headers
             .get("request-id")
             .map_or_else(String::new, ToString::to_string);
-        match self.handle_control(&control, now).await {
+        let outcome = if refused {
+            Err(LiveErrorCode::ResourceExhausted)
+        } else {
+            self.handle_control(&control, now).await
+        };
+        match outcome {
             // A close acknowledgement waits for owned cleanup to settle and is
             // published by the close driver, never on the dispatch path.
             Ok(outcome) if outcome.defer_cleanup => {
@@ -596,6 +605,7 @@ impl ProviderSessionRecord {
                         request_id,
                         control,
                         lease,
+                        _request_permit: permit,
                     });
                 }
                 self.spawn_close_driver(nats.clone());

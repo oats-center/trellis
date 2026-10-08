@@ -582,7 +582,8 @@ export class LiveProvider {
     authenticate: (
       msg: Msg,
     ) => Promise<LiveProviderCaller | undefined>,
-  ): Promise<void> {
+    refused = false,
+  ): Promise<void | { settled: Promise<void> }> {
     let deliveryLease: TransportLease | undefined;
     try {
       deliveryLease = this.#host.lease?.();
@@ -619,6 +620,7 @@ export class LiveProvider {
       }
       const record = this.#sessions.get(control.sessionId);
       if (!record) {
+        if (refused) return;
         // A wildcard control reaches every live provider on this connection. The
         // shared manager names the single authoritative provider for a session id
         // across its active and retained terminal receipt windows, so exactly one
@@ -656,6 +658,7 @@ export class LiveProvider {
         return;
       }
       if (record.closed) {
+        if (refused) return;
         const receipt = this.#host.manager.receipt(control.sessionId);
         if (
           receipt && control.action === "close" &&
@@ -705,10 +708,12 @@ export class LiveProvider {
       record.telemetry.frame("control", "receive");
       const now = this.#clock.nowMs();
       const requestId = singletonHeader(msg.headers, "request-id") ?? "";
-      const result = await this.#withSessionLane(
-        record,
-        async () => this.#applyControl(record, control, msg.data, now),
-      );
+      const result = refused
+        ? { kind: "error" as const, code: "resource_exhausted" }
+        : await this.#withSessionLane(
+          record,
+          async () => this.#applyControl(record, control, msg.data, now),
+        );
       if (result.kind === "error") {
         const error = this.#controlErrorBody(
           record,
@@ -737,7 +742,7 @@ export class LiveProvider {
           void settlement.finally(() => lease.release());
           deliveryLease = undefined;
         }
-        return;
+        return { settled: settlement };
       }
       const ack = this.#ackBody(record, control, requestId, outcome);
       const published = await this.#withSessionLane(

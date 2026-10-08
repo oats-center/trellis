@@ -6,9 +6,11 @@ import type {
   AuthorizationVerificationErrorCode,
   VerifiedAuthorizationContextTokenProjection,
   VerifiedAuthorizationEventPublisher,
+  VerifyAuthorizationRequestResult,
 } from "../protocol_wasm.ts";
 import { canonicalizeJsonValue } from "../utils.ts";
 import { trackCoverage } from "../../telemetry/lifecycle.ts";
+import { recordCatalogDuration } from "../../telemetry/metrics.ts";
 import type {
   TransportGenerationManager,
   TransportGenerationPrepared,
@@ -17,6 +19,11 @@ import type {
   TransportPublishedLease,
 } from "../../transport/generations.ts";
 import type { AuthorizationContextCache } from "./client_context.ts";
+import type {
+  AuthorizationVerificationWorkers,
+  VerificationLane,
+} from "./verification_workers.ts";
+import type { RequestLimits } from "../../request_admission.ts";
 import type {
   AuthorizationCandidateSnapshot,
   AuthorizationRefreshAttempt,
@@ -233,6 +240,7 @@ type ContextLoadSource = CandidateLoadSource | OwnResumeLoadSource;
 
 /** Connected provider-side authorization verifier. */
 export class AuthorizationProviderCache {
+  #workers?: AuthorizationVerificationWorkers;
   #registry: AuthorizationRegistryReader;
   readonly #cache: AuthorizationContextCache;
   readonly #now: () => number;
@@ -341,6 +349,32 @@ export class AuthorizationProviderCache {
     );
   }
 
+  /** Enable bounded adaptive verification before provider intake starts. @internal */
+  async enableVerificationWorkers(
+    timeoutMs: number,
+    limits?: RequestLimits,
+    maxOrdinaryWorkers?: number,
+  ): Promise<void> {
+    if (this.#workers) {
+      throw new Error("Verification workers are already enabled");
+    }
+    const { AuthorizationVerificationWorkers } = await import(
+      "./verification_workers.ts"
+    );
+    const workers = await AuthorizationVerificationWorkers.open(
+      timeoutMs,
+      limits,
+      maxOrdinaryWorkers,
+    );
+    if (this.#stopped || this.#workers) {
+      workers.close();
+      throw new AuthorizationProviderUnavailableError(
+        "verification worker startup lost cache ownership",
+      );
+    }
+    this.#workers = workers;
+  }
+
   /** Enable provider verification. */
   start(): void {
     if (this.#started && !this.#stopped) return;
@@ -387,6 +421,7 @@ export class AuthorizationProviderCache {
 
   /** Stop verification without closing the caller-owned NATS connection. */
   stop(): void {
+    this.#workers?.close();
     clearTimeout(this.#hintTimer);
     this.#hintTimer = undefined;
     this.#hintLastTriggeredAt = undefined;
@@ -1517,8 +1552,9 @@ export class AuthorizationProviderCache {
   /** Verify a presented request proof with exact route permissions. */
   async verifyRequest(
     request: AuthorizationProviderRequest,
+    lane: VerificationLane = "ordinary",
   ): Promise<CachedRequestVerificationResult> {
-    return await this.#verifyRequest(request);
+    return await this.#verifyRequest(request, undefined, lane);
   }
 
   /** Verify a Transfer request with canonical exact session subjects. @internal */
@@ -1528,15 +1564,20 @@ export class AuthorizationProviderCache {
       providerConnectionId: string;
       consumerConnectionId: string;
     },
+    lane: VerificationLane = "ordinary",
   ): Promise<CachedRequestVerificationResult> {
-    return await this.#verifyRequest(request, request);
+    return await this.#verifyRequest(request, request, lane);
   }
 
-  async #verifyRequest(request: AuthorizationProviderRequest, transfer?: {
-    transferId: string;
-    providerConnectionId: string;
-    consumerConnectionId: string;
-  }): Promise<CachedRequestVerificationResult> {
+  async #verifyRequest(
+    request: AuthorizationProviderRequest,
+    transfer?: {
+      transferId: string;
+      providerConnectionId: string;
+      consumerConnectionId: string;
+    },
+    lane: VerificationLane = "ordinary",
+  ): Promise<CachedRequestVerificationResult> {
     try {
       const entry = await this.#lease(request.contextDigest, false);
       try {
@@ -1552,6 +1593,7 @@ export class AuthorizationProviderCache {
         const {
           verifyAuthorizationRequestWasm,
           verifyTransferAuthorizationRequestWasm,
+          assertAuthorizationRequestCurrentWasm,
         } = await import(
           "../protocol_wasm.ts"
         );
@@ -1566,16 +1608,58 @@ export class AuthorizationProviderCache {
           requiredPermissions: request.requiredPermissions,
           policy: this.#policy(this.#now()),
         };
-        const result = transfer
-          ? await verifyTransferAuthorizationRequestWasm(
-            input,
-            transfer.providerConnectionId,
-            transfer.consumerConnectionId,
-            transfer.transferId,
-          )
-          : await verifyAuthorizationRequestWasm(input);
+        let result: VerifyAuthorizationRequestResult;
+        if (this.#workers) {
+          const { contextHandle: _, policy: _policy, ...workerInput } = input;
+          try {
+            result = await this.#workers.verify({
+              entry,
+              lane,
+              input: workerInput,
+              transfer,
+              context: {
+                issuer: entry.issuer,
+                signed: entry.context,
+                digest: entry.contextDigest,
+              },
+              policy: () => this.#policy(this.#now()),
+            });
+          } catch (error) {
+            throw new AuthorizationProviderUnavailableError(
+              "authorization verification worker is unavailable",
+              error,
+            );
+          }
+        } else {
+          const started = performance.now();
+          result = transfer
+            ? await verifyTransferAuthorizationRequestWasm(
+              input,
+              transfer.providerConnectionId,
+              transfer.consumerConnectionId,
+              transfer.transferId,
+            )
+            : await verifyAuthorizationRequestWasm(input);
+          recordCatalogDuration(
+            "trellis.auth.verification.duration",
+            performance.now() - started,
+            {
+              "trellis.kind": lane,
+              "trellis.phase": "inline.verify",
+            },
+          );
+        }
+        const checkedAt = performance.now();
         this.#requireEntry(entry);
         if (!result.ok) return result;
+        if (this.#workers) {
+          const current = assertAuthorizationRequestCurrentWasm(
+            state.handle,
+            request.iat,
+            this.#policy(this.#now()),
+          );
+          if (!current.ok) return current;
+        }
         if (
           result.contextDigest !== request.contextDigest ||
           state.verified.contextDigest !== request.contextDigest ||
@@ -1583,6 +1667,16 @@ export class AuthorizationProviderCache {
         ) {
           return requestFailure("PermissionDenied", "/authorization-context");
         }
+        recordCatalogDuration(
+          "trellis.auth.verification.duration",
+          performance.now() - checkedAt,
+          {
+            "trellis.kind": lane,
+            "trellis.phase": this.#workers
+              ? "worker.postcheck"
+              : "inline.postcheck",
+          },
+        );
         return { ...result, context: state.verified.context };
       } finally {
         this.#release(entry);
@@ -2361,6 +2455,7 @@ export class AuthorizationProviderCache {
   #disposeResources(entry: ProviderContextEntry): void {
     if (entry.resourcesDisposed) return;
     entry.resourcesDisposed = true;
+    void this.#workers?.release(entry).catch(() => undefined);
     for (const pending of [entry.live, entry.historical]) {
       void pending?.then(({ handle }) => handle.free()).catch(() => {});
     }

@@ -529,6 +529,24 @@ impl VerifiedAuthorizationContextHandle {
             .assert_current(&policy)
             .map_err(|error| JsError::new(&error.to_string()))
     }
+
+    /// Recheck context and signed request time after asynchronous verification.
+    /// Does not establish proof authenticity or permission; use only on a verified request.
+    pub fn assert_request_current(&self, iat: f64, policy_json: &str) -> String {
+        if !iat.is_finite() || iat.fract() != 0.0 || iat.abs() > 9_007_199_254_740_991.0 {
+            return input_error_result("/iat");
+        }
+        let policy = match authorization_verification_policy(policy_json) {
+            Ok(policy) => policy,
+            Err(_) => return input_error_result("/policy"),
+        };
+        match self.context.assert_request_current(iat as i64, &policy) {
+            Ok(()) => {
+                json_result(json!({ "ok": true, "contextDigest": self.context.context_digest() }))
+            }
+            Err(error) => protocol_error_result(&error),
+        }
+    }
 }
 
 /// Return the canonical digest of a signed transport-authorization policy.

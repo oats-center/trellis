@@ -11,6 +11,139 @@ deno task -c ts/deno.json bench:runtime --output=/tmp/opencode/trellis-perf-base
 deno task -c ts/deno.json bench:runtime:report /tmp/opencode/trellis-perf-baseline
 ```
 
+## Fixed-arrival-rate admission exploration
+
+The `admission` lane drives either provider language with the same generated
+TypeScript client. It adds a configurable delay to Echo, offers requests at a
+fixed rate, and cancels a confirmed running Operation halfway through each
+burst. Each cancellation must return a terminal Cancelled snapshot. The lane
+uses the configured production admission limits without changing request
+timeouts.
+
+```sh
+cargo build --release --locked --manifest-path benchmarks/runtime/native/Cargo.toml --target-dir target
+deno task -c ts/deno.json bench:runtime --lane admission --provider-language rust --rust-bin target/release/trellis-performance --rpc-delay-ms 50 --rpc-value-bytes 262144 --arrival-rate 200 --calls 64 --max-outstanding 128 --samples 3 --sessions 1 --sizes 64 --idle-seconds 0.1 --output /tmp/opencode/admission-rust
+deno task -c ts/deno.json bench:runtime:report /tmp/opencode/admission-rust
+```
+
+Use `--provider-language typescript` for the other provider. Compare each
+against `--arrival-rate 10 --calls 32 --rpc-value-bytes 0`, then repeat the
+200/s run with zero appended bytes. `rpc-value-bytes` counts appended ASCII
+characters, not the entire signed wire message. The generator cap is a
+measurement safeguard, not a service limit: retain and report any generator
+drops separately from request failures. A run with request failures exits
+unsuccessfully while preserving its samples and process timeline; reporting
+those samples must not turn it green.
+
+`metrics.jsonl` retains ordinary production OTLP HTTP/protobuf exports, decoded
+with the same upstream schema used by live coverage. The lane requests a 100 ms
+export interval and disables trace export consistently for both providers. The
+existing `trellis.rpc.server.inflight` metric counts dispatched unary RPCs, not
+the client subscription backlog; sampled maxima are lower bounds. Reports also
+retain provider/client/broker/runtime process memory during load. Whole-process
+PSS is not a queue-byte estimate or a memory limit. The native provider enables
+the SDK's existing `telemetry-otlp` feature; no test-only metric hooks are used.
+
+This focused lane is opt-in rather than appended to every repeated performance
+suite. See [ADMISSION.md](ADMISSION.md) for source findings, measured evidence,
+limitations, and the proposed policy decisions.
+
+Use `--request-limit 16`, `32`, or `64` and `--request-byte-limit` to calibrate
+the ordinary shared service budget. Both limits are recorded in run metadata.
+For the approved opt-in TypeScript worker-verification trial, add
+`--verification-workers`. This starts one ordinary verifier and one reserved
+verifier, prioritizing controls over refusal work. Sustained ordinary queue age
+grows the pool to `--max-verification-workers` (three ordinary workers by
+default, plus the reserved worker), without shrinking. Use the same native
+caller (`--client-language rust --rust-bin <prebuilt executable>`) for inline
+and worker comparisons. The flag and caller language are recorded in metadata;
+it does not change defaults or imply improved throughput. See the trial results
+and proof limits in [ADMISSION.md](ADMISSION.md). For sustained rather than
+short-burst load, use `--calls 4000 --samples 1
+--arrival-rate 200`; each
+value-size case offers work for 20 seconds. Refusals remain failed attempts,
+never implicit retries or successful samples. The production
+`trellis.service.admission.*` metrics report shared occupied slots, retained
+incoming bytes, and refusals, separately from unary dispatch metrics and
+whole-process memory.
+
+With the native admission caller, `--samples 3 --arrival-rates 200,400,200`
+offers successive rates through the same service and verifier pool. `--calls`
+applies to each phase; rates must provide one value per sample. Warmups use the
+first rate. Each phase drains outstanding calls and finishes its cancellation
+probe before the next begins, so this is a stepped workload, not an
+instantaneous rate transition with pending calls crossing phases. Raw samples
+retain `phaseIndex`, windows retain offered rates and start times, and the
+report shows per-phase outcomes and cancellation latency.
+
+For client-memory diagnosis, `--inspect-client` enables Deno's standard debugger
+on `127.0.0.1:9229` for the TypeScript workload process only. For provider CPU
+or memory diagnosis, `--inspect-provider` enables the same debugger for
+TypeScript providers on `127.0.0.1:9230` plus their zero-based index. Neither
+option enables an inspector on a native Rust executable. Keep diagnostic runs
+separate from capacity measurements: debugger pauses and heap snapshots change
+scheduling. Heap snapshots may contain session credentials and request contents;
+retain them privately, not in published reports.
+
+`--cpu-profile-provider` uses Deno's native profiler and writes main-thread and
+worker-isolate `.cpuprofile` files under the run's `provider-cpu-<index>/`
+directory, not a system temporary directory. These cover the provider lifetime,
+unlike the offered-window inspector profiles. Production
+`trellis.auth.verification.duration` phase metrics and the admission report
+separate scheduler wait, dispatch copying, worker execution, complete WASM
+verification, boundary/scheduling overhead, and successful post-verification
+checks. `worker.execute` contains `worker.verify`; never sum the two.
+
+`python3 benchmarks/runtime/admission_profile.py <isolated-eta-workspace>
+<new-result-directory-name> [rates...]`
+repeats inline/worker comparisons sequentially using already-built native
+clients. The workspace must contain `source/`, `target/release/` executables,
+`tmp/`, and the existing isolated caches. The default rates are 200 and 400/s;
+the generator cap remains 1,024 requests. Use this as diagnostic tooling, not a
+production-default calibration. It retains source hashes, failures, CPU
+profiles, and ordinary production OTLP exports.
+
+Capture an offered-window CPU profile with
+`deno run -A -c ts/deno.json benchmarks/runtime/profile.ts <output> 9229 client 15`
+or `<output> 9230 provider 15` in another terminal on the same machine.
+
+For native admission callers, add `--client-language rust --rust-bin <binary>`
+to the admission lane. Provider language is independent: select
+`--provider-language rust` for Rust-to-Rust, or `typescript` to isolate the
+TypeScript provider from caller costs. Native callers retain every refused,
+timed-out, and unsent call, use the same 3-second RPC timeout as the TypeScript
+admission caller, and confirm Operation readiness before cancellation probes.
+Both generators run in one process; neither configuration alone proves that the
+generator is not the bottleneck.
+
+Compare the current production WASM SHA-256 proof-digest path with WebCrypto:
+`deno run -A -c ts/deno.json benchmarks/runtime/hash.ts <results.json>`. This
+checks identical protocol digests at 1 KiB, 256 KiB, and 1 MiB, then runs three
+alternating one-second batches per backend and size. It includes two hashes,
+framing, and backend-boundary copies, but no signature verification. Timer
+delays measure blocking during sustained batches, not single-request latency or
+a production cancellation guarantee. The WebCrypto framing in this benchmark is
+measurement-only and is not an alternative SDK verifier.
+
+Probe the existing WASM in a reusable worker with
+`deno run -A benchmarks/runtime/hash_worker_probe.mjs <results.json>` or
+`node benchmarks/runtime/hash_worker_probe.mjs <results.json>`. It verifies
+equal digests and buffer ownership, measures parent timers during worker
+batches, and compares per-request typed-array and ArrayBuffer messages.
+Copy-and-transfer preserves the original payload. This is a feasibility probe,
+not an SDK authorization worker or acceptance of revocation, expiry, packaging,
+or overload.
+
+For transport diagnosis, `--nats-diagnostics` records the isolated broker's
+ordinary `/varz` and `/connz?state=any` monitoring responses in `nats.jsonl`,
+plus owned-process TCP ports in the resource timeline. This distinguishes broker
+slow-consumer closures from SDK admission refusals and maps affected sockets to
+their process. Monitoring is loopback-only; keep these diagnostic runs separate
+from capacity comparisons because polling adds work. `--keep-workdir` preserves
+runtime state for further inspection. Service shutdown logs identify the phase
+being awaited; `cleanup.json` records any benchmark child requiring forced
+termination instead of treating that intervention as successful shutdown.
+
 ## Complete repeated suite
 
 Build producer artifacts once, before measuring. The suite executes prebuilt
@@ -183,3 +316,35 @@ infrastructure state for diagnosis. Preserved workdirs contain credentials and
 must not be published. Setup always registers contract/resource evidence and
 consent policy before timing; backend and OS caches are warm. Workload logs and
 telemetry can affect results, so keep telemetry settings matched across runs.
+
+## Verifier worker lifecycle checks
+
+`worker_lifecycle_test.ts` uses real public clients, persisted handler-entry
+markers, and Node's native debugger to hold a successfully verified request
+before returning its worker result. It terminates that actual worker, lets a
+proof become stale, or waits for the exact context's revocation to reach the
+service. No SDK fault hooks or injected authorization state are used. It also
+proves growth to configured ceilings 1/2/3, retained capacity, a brief
+small-message burst without growth, and loss during added-worker startup without
+repeated restart attempts or rejection of healthy-worker work. An idle verifier
+must finish queued requests even while another ordinary worker is paused;
+waiting work must not remain trapped in a worker-local queue.
+
+Use the producer-built server/CLI and private NATS cache settings from live
+integration. `TRELLIS_WORKER_CONSUMER_DIR` must contain a real installed npm SDK
+with its dependencies and the generated runtime fixture package under
+`generated/`; a symlink back to the uninstalled SDK output is insufficient. The
+test stages its public provider script into that consumer directory.
+
+```sh
+export TMPDIR="$PWD/.verification/tmp" TMP="$PWD/.verification/tmp" TEMP="$PWD/.verification/tmp"
+export TRELLIS_WORKER_CONSUMER_DIR="$PWD/.verification/worker-consumer"
+export TRELLIS_WORKER_NODE_BIN="$(node -p 'process.execPath')"
+deno test -A -c ts/deno.json benchmarks/runtime/worker_lifecycle_test.ts
+```
+
+These checks ran with Node 24.19.0. They depend on debugger support and
+generated script locations, not a product-facing failure-injection API;
+source-layout changes may require adjusting breakpoints. A missing or incorrect
+breakpoint fails the check rather than claiming the interleaving occurred. These
+held runs are correctness diagnostics, not performance measurements.

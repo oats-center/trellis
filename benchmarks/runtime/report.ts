@@ -1,5 +1,6 @@
 import { resolve } from "@std/path";
 import { z } from "zod";
+import { summarize } from "./model.ts";
 
 const input = resolve(z.string().min(1).parse(Deno.args[0]));
 const resource = z.object({
@@ -12,6 +13,16 @@ const resource = z.object({
   pssKiB: z.number(),
 });
 const resultsSchema = z.object({
+  samples: z.array(z.object({
+    scenario: z.string(),
+    transport: z.enum(["trellis", "http", "store", "nats"]),
+    startedUnixMs: z.number(),
+    durationMs: z.number(),
+    warmup: z.boolean().optional(),
+    phaseIndex: z.number().int().nonnegative().optional(),
+    error: z.string().optional(),
+    loadGeneratorDrop: z.boolean().optional(),
+  })),
   summary: z.array(
     z.object({
       name: z.string(),
@@ -33,6 +44,9 @@ const resultsSchema = z.object({
       bytes: z.number().optional(),
       sessions: z.number().optional(),
       durationMs: z.number(),
+      startedUnixMs: z.number().optional(),
+      phaseIndex: z.number().int().nonnegative().optional(),
+      warmup: z.boolean().optional(),
       before: z.array(resource),
       after: z.array(resource),
     }),
@@ -53,6 +67,15 @@ const metadataSchema = z.object({
   maxOutstanding: z.number(),
   lane: z.string().default("typescript"),
   providerCount: z.number().default(1),
+  providerLanguage: z.enum(["typescript", "rust"]).default("typescript"),
+  clientLanguage: z.enum(["typescript", "rust"]).optional(),
+  verificationWorkers: z.boolean().optional(),
+  arrivalRates: z.array(z.number().positive()).optional(),
+  maxVerificationWorkers: z.number().int().positive().optional(),
+  rpcDelayMs: z.number().default(0),
+  rpcValueBytes: z.number().default(0),
+  requestLimit: z.number().optional(),
+  requestByteLimit: z.number().optional(),
   passwordHashParameters: z.array(z.string()),
   cpuModel: z.string(),
   logicalCpus: z.number().nullable(),
@@ -72,7 +95,9 @@ const bencher: Record<string, Record<string, { value: number }>> = {};
 const lines = [
   `# Trellis performance — ${metadata.revision}`,
   "",
-  "**Baseline: plaintext HTTP, no TLS, no authentication, and no authorization.** This is a lower bound, not a security-equivalent comparison. Transfer storage differs: Trellis uses JetStream; HTTP uses filesystem storage.",
+  metadata.lane === "admission"
+    ? "Admission uses authenticated public Trellis clients and real NATS. No HTTP comparison is run in this lane."
+    : "**Baseline: plaintext HTTP, no TLS, no authentication, and no authorization.** This is a lower bound, not a security-equivalent comparison. Transfer storage differs: Trellis uses JetStream; HTTP uses filesystem storage.",
   `Lane: **${metadata.lane}**; provider replicas: **${metadata.providerCount}**.`,
   `Warmup rounds: **${metadata.warmups}**, retained in raw samples but excluded from percentiles.`,
   metadata.lane === "transfer"
@@ -83,16 +108,309 @@ const lines = [
     : metadata.lane === "lifecycle"
     ? "Refresh is proven by persisted contexts for the exact login session. The observation-window duration is NOT refresh issuance latency. Outages interrupt both clients and providers at the advertised TCP endpoint, not the broker/control plane."
     : metadata.lane === "rust"
-    ? "Rust uses generated SDK endpoints, Axum and reqwest. Login is prepared outside measurement; first-process timing measures Rust session resume. Only Echo and transfer handlers are hosted, unlike the broader TypeScript fixture."
+    ? "Rust uses generated SDK endpoints, Axum and reqwest. Login is prepared outside measurement; first-process timing measures Rust session resume. Echo, transfer and cancellation handlers are hosted, unlike the broader TypeScript fixture."
     : "",
   "",
-  "## Trellis vs HTTP — matched workloads",
-  "",
-  "**HTTP baseline: plaintext, no TLS, no authentication, no authorization.** Ratios compare the same application workload and byte count within this language and case, not equivalent security or durability. The complete attempts and failures remain below.",
-  "",
-  "| Workload | Trellis median ms | Plain HTTP (no auth) median ms | Trellis / HTTP | Trellis p95 ms | Plain HTTP (no auth) p95 ms |",
-  "|---|---:|---:|---:|---:|---:|",
+  ...(metadata.lane === "admission" ? [] : [
+    "## Trellis vs HTTP — matched workloads",
+    "",
+    "**HTTP baseline: plaintext, no TLS, no authentication, no authorization.** Ratios compare the same application workload and byte count within this language and case, not equivalent security or durability. The complete attempts and failures remain below.",
+    "",
+    "| Workload | Trellis median ms | Plain HTTP (no auth) median ms | Trellis / HTTP | Trellis p95 ms | Plain HTTP (no auth) p95 ms |",
+    "|---|---:|---:|---:|---:|---:|",
+  ]),
 ];
+if (metadata.lane === "admission") {
+  const attributes = z.array(
+    z.object({
+      key: z.string(),
+      value: z.object({ stringValue: z.string().optional() }),
+    }),
+  );
+  const record = z.object({
+    metrics: z.object({
+      resourceMetrics: z.array(z.object({
+        resource: z.object({ attributes }).optional(),
+        scopeMetrics: z.array(z.object({
+          metrics: z.array(z.object({
+            name: z.string(),
+            histogram: z.object({
+              aggregationTemporality: z.number(),
+              dataPoints: z.array(z.object({
+                attributes,
+                count: z.coerce.number(),
+                sum: z.number(),
+                max: z.number().optional(),
+                startTimeUnixNano: z.string(),
+                timeUnixNano: z.string(),
+              })),
+            }).optional(),
+            sum: z.object({
+              dataPoints: z.array(
+                z.object({
+                  attributes,
+                  asInt: z.coerce.number().optional(),
+                  asDouble: z.number().optional(),
+                  timeUnixNano: z.string().optional(),
+                }),
+              ),
+            }).optional(),
+          })),
+        })),
+      })),
+    }),
+  });
+  const peaks = new Map<string, number>();
+  const admission = new Map<string, number>();
+  const workerCounts = new Map<string, number>();
+  const workerChanges: {
+    service: string;
+    kind: string;
+    at: number;
+    value: number;
+  }[] = [];
+  const verification = new Map<string, {
+    service: string;
+    kind: string;
+    phase: string;
+    count: number;
+    sum: number;
+    max?: number;
+    at: bigint;
+  }>();
+  for (
+    const line of (await Deno.readTextFile(`${input}/metrics.jsonl`)).trim()
+      .split("\n")
+  ) {
+    for (
+      const resource of record.parse(JSON.parse(line)).metrics.resourceMetrics
+    ) {
+      const service = resource.resource?.attributes.find((attr) =>
+        attr.key === "service.name"
+      )?.value.stringValue ?? "unknown";
+      for (const scope of resource.scopeMetrics) {
+        for (const metric of scope.metrics) {
+          if (
+            metric.name === "trellis.auth.verification.duration" &&
+            metric.histogram?.aggregationTemporality === 2
+          ) {
+            for (const point of metric.histogram.dataPoints) {
+              const phase = point.attributes.find((a) =>
+                a.key === "trellis.phase"
+              )?.value.stringValue ?? "";
+              if (
+                !phase.startsWith("worker.") && !phase.startsWith("inline.")
+              ) {
+                continue;
+              }
+              const kind = point.attributes.find((a) =>
+                a.key === "trellis.kind"
+              )?.value.stringValue ?? "unknown";
+              const instance = resource.resource?.attributes.find((a) =>
+                a.key === "service.instance.id"
+              )?.value.stringValue ?? "unknown";
+              const key =
+                `${service}|${instance}|${point.startTimeUnixNano}|${kind}|${phase}`;
+              const at = BigInt(point.timeUnixNano);
+              if (at >= (verification.get(key)?.at ?? 0n)) {
+                verification.set(key, {
+                  service,
+                  kind,
+                  phase,
+                  count: point.count,
+                  sum: point.sum,
+                  max: point.max,
+                  at,
+                });
+              }
+            }
+          }
+          if (
+            metric.name.startsWith("trellis.service.admission.") ||
+            metric.name.startsWith("trellis.auth.worker.")
+          ) {
+            for (const point of metric.sum?.dataPoints ?? []) {
+              const dimensions = point.attributes.map((attribute) =>
+                `${attribute.key}=${attribute.value.stringValue ?? "unknown"}`
+              ).sort().join(", ");
+              const key = `${service} | ${metric.name} | ${dimensions}`;
+              if (
+                metric.name === "trellis.auth.worker.active" &&
+                point.timeUnixNano
+              ) {
+                const kind = point.attributes.find((a) =>
+                  a.key === "trellis.kind"
+                )?.value.stringValue ?? "unknown";
+                const instance = resource.resource?.attributes.find((a) =>
+                  a.key === "service.instance.id"
+                )?.value.stringValue ?? "unknown";
+                const workerKey = `${key}|${instance}`;
+                const value = point.asInt ?? point.asDouble ?? 0;
+                if (workerCounts.get(workerKey) !== value) {
+                  workerCounts.set(workerKey, value);
+                  workerChanges.push({
+                    service,
+                    kind,
+                    value,
+                    at: Number(BigInt(point.timeUnixNano) / 1_000_000n),
+                  });
+                }
+              }
+              admission.set(
+                key,
+                Math.max(
+                  admission.get(key) ?? 0,
+                  point.asInt ?? point.asDouble ?? 0,
+                ),
+              );
+            }
+          }
+          if (metric.name !== "trellis.rpc.server.inflight") {
+            continue;
+          }
+          for (const point of metric.sum?.dataPoints ?? []) {
+            const route = point.attributes.find((attr) =>
+              attr.key === "trellis.route"
+            )?.value.stringValue ?? "unknown";
+            const key = `${service} | ${route}`;
+            peaks.set(
+              key,
+              Math.max(peaks.get(key) ?? 0, point.asInt ?? point.asDouble ?? 0),
+            );
+          }
+        }
+      }
+    }
+  }
+  if (verification.size) {
+    lines.push(
+      "",
+      "### Verification phase timings",
+      "",
+      "Final exported cumulative histograms per process/lifetime; averages describe recorded samples, not all offered requests. Worker execution contains WASM verification. Boundary time includes serialization and event-loop scheduling. Queue samples exclude requests whose scheduling timed out before dispatch; postchecks describe successful verification. Do not add overlapping phases or maxima.",
+      "",
+      "| Service | Lane | Phase | Samples | Mean ms | Maximum ms |",
+      "|---|---|---|---:|---:|---:|",
+    );
+    for (
+      const [, point] of [...verification.entries()].sort(([a], [b]) =>
+        a.localeCompare(b)
+      )
+    ) {
+      if (!point.count) continue;
+      lines.push(
+        `| ${point.service} | ${point.kind} | ${point.phase} | ${point.count} | ${
+          (point.sum * 1000 / point.count).toFixed(3)
+        } | ${
+          point.max === undefined
+            ? "not exported"
+            : (point.max * 1000).toFixed(3)
+        } |`,
+      );
+    }
+  }
+  lines.push(
+    "",
+    "## Admission load and production telemetry",
+    "",
+    `Provider: ${metadata.providerLanguage}; handler delay: ${metadata.rpcDelayMs} ms; appended ASCII value: ${metadata.rpcValueBytes} bytes; offered rate: ${
+      metadata.arrivalRates?.length
+        ? metadata.arrivalRates.join(" → ")
+        : metadata.arrivalRate
+    }/s; load-generator cap: ${metadata.maxOutstanding}.`,
+    `Configured dispatch limits: ${
+      metadata.requestLimit ?? "not recorded (historical run)"
+    } requests; ${
+      metadata.requestByteLimit ?? "not recorded (historical run)"
+    } inbound bytes.`,
+    `Caller: ${
+      metadata.clientLanguage ?? "not recorded (historical run)"
+    }; worker verification: ${
+      metadata.verificationWorkers ?? "not recorded (historical run)"
+    }; maximum ordinary workers: ${
+      metadata.maxVerificationWorkers ?? "not recorded (historical run)"
+    }. Cancellation is started on a confirmed running operation halfway through the offered burst. Failures and generator drops remain in the attempt table. No HTTP security-equivalence comparison is made for this lane.`,
+    "Production OTLP exports are retained in metrics.jsonl at a requested 100 ms interval. Sampled maxima are lower bounds, not exact peaks. The existing in-flight metric counts dispatched unary RPCs, not messages waiting in the client subscription queue.",
+    "",
+    "| Service | Registered route | Sampled maximum in-flight RPCs |",
+    "|---|---|---:|",
+  );
+  for (const [key, peak] of peaks) lines.push(`| ${key} | ${peak} |`);
+  if (!peaks.size) {
+    lines.push(
+      "No in-flight points were exported; this is a measurement gap, not zero concurrency.",
+    );
+  }
+  lines.push(
+    "",
+    "### Shared service admission and verifier pool",
+    "",
+    "In-flight and byte values are sampled occupancy maxima. Rejections are cumulative counter maxima per service and dimension set; they are not RPC timeouts. Transport buffering and decoded heap are excluded from the byte limit.",
+    "",
+    "| Service | Metric | Dimensions | Maximum exported value |",
+    "|---|---|---|---:|",
+  );
+  for (const [key, maximum] of admission) lines.push(`| ${key} | ${maximum} |`);
+  const firstPhaseStart = results.windows.find((w) =>
+    w.phaseIndex === 0 && !w.warmup
+  )?.startedUnixMs;
+  if (firstPhaseStart !== undefined && workerChanges.length) {
+    lines.push(
+      "",
+      "### Observed verifier-count changes",
+      "",
+      "Times are metric export timestamps relative to the first phase, not exact worker-start instants. Zero at teardown is shutdown, not automatic shrinking.",
+      "",
+      "| Service | Kind | Milliseconds from first phase | Ready workers |",
+      "|---|---|---:|---:|",
+    );
+    for (const change of workerChanges.sort((a, b) => a.at - b.at)) {
+      lines.push(
+        `| ${change.service} | ${change.kind} | ${
+          change.at - firstPhaseStart
+        } | ${change.value} |`,
+      );
+    }
+  }
+  if (!admission.size) {
+    lines.push(
+      "No admission metrics were exported; this is a measurement gap, not zero occupancy or zero refusals.",
+    );
+  }
+  if (metadata.arrivalRates?.length) {
+    lines.push(
+      "",
+      "### Native caller phases on the same service",
+      "",
+      "Each phase drains its sent RPCs and finishes cancellation before the next begins; the provider and verifier pool remain alive. This is a stepped workload, not an instantaneous rate change with unfinished requests crossing phases.",
+      "",
+      "| Phase | Offered /s | Completed | Sent failures | Unsent | Median / p95 ms | Cancellation median ms / errors |",
+      "|---|---:|---:|---:|---:|---:|---:|",
+    );
+    for (const [phase, rate] of metadata.arrivalRates.entries()) {
+      const rows = summarize(
+        results.samples.filter((row) =>
+          row.phaseIndex === phase && !row.warmup
+        ),
+      );
+      const echo = rows.find((row) => row.name.startsWith("trellis/echo/"));
+      const cancel = rows.find((row) =>
+        row.name.startsWith("trellis/admission-cancel/")
+      );
+      lines.push(
+        `| ${phase + 1} | ${rate} | ${
+          echo ? echo.attempts - echo.errors : "not recorded"
+        } | ${echo ? echo.errors - echo.drops : "not recorded"} | ${
+          echo?.drops ?? "not recorded"
+        } | ${echo?.medianMs?.toFixed(3) ?? "—"} / ${
+          echo?.p95Ms?.toFixed(3) ?? "—"
+        } | ${cancel?.medianMs?.toFixed(3) ?? "—"} / ${
+          cancel?.errors ?? "not recorded"
+        } |`,
+      );
+    }
+  }
+}
 for (const row of results.summary) {
   if (!row.name.startsWith("trellis/")) continue;
   const reference = results.summary.find((candidate) =>
@@ -115,6 +433,8 @@ for (const row of results.summary) {
 lines.push(
   "",
   "## All workloads and failures",
+  "",
+  "Latency percentiles describe successful attempts; failed attempts and generator drops remain in the counts and raw samples.",
   "",
   "| Workload | Attempts / errors | Median ms | p95 ms | p99 ms |",
   "|---|---:|---:|---:|---:|",
@@ -292,6 +612,49 @@ const timelineRow = z.object({
 });
 const timeline = (await Deno.readTextFile(`${input}/resources.jsonl`)).trim()
   .split("\n").map((line) => timelineRow.parse(JSON.parse(line)));
+if (metadata.lane === "admission") {
+  lines.push(
+    "",
+    "## Admission process memory",
+    "",
+    "Sampled maxima during the offered-load windows, not exact allocation peaks or queue-byte measurements. Whole-process PSS includes caches, parsed requests and replies. Baseline is the last idle sample before the load starts; maxima for PSS and RSS may occur at different times.",
+    "",
+    "| Process / PID | Baseline PSS MiB | Maximum sampled PSS MiB | Maximum sampled RSS MiB |",
+    "|---|---:|---:|---:|",
+  );
+  const baseline = timeline.findLast((row) => row.phase === "baseline-idle");
+  const processes = timeline.filter((row) =>
+    row.phase === "trellis/echo-window"
+  )
+    .flatMap((row) => row.processes)
+    .filter((process) =>
+      ["provider", "load-generator", "nats", "trellis-server"].includes(
+        process.role,
+      )
+    );
+  for (
+    const [name, samples] of Map.groupBy(
+      processes,
+      (process) => `${process.role} / ${process.pid}`,
+    )
+  ) {
+    const before = baseline?.processes.find((process) =>
+      process.pid === samples[0].pid &&
+      process.startTicks === samples[0].startTicks
+    );
+    lines.push(
+      `| ${name} | ${before ? (before.PssKiB / 1024).toFixed(2) : "—"} | ${
+        (Math.max(...samples.map((process) => process.PssKiB)) / 1024).toFixed(
+          2,
+        )
+      } | ${
+        (Math.max(...samples.map((process) => process.RssKiB)) / 1024).toFixed(
+          2,
+        )
+      } |`,
+    );
+  }
+}
 lines.push(
   "",
   "## Idle session resource curve",

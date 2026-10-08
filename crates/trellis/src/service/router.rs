@@ -126,6 +126,8 @@ pub struct RequestContext {
     /// The generation that accepted this request through a provider ingress.
     /// Session-scoped work accepted on it pins that generation.
     pub(crate) transport: GenerationPin,
+    /// Intake reserved only enough capacity to authenticate a refusal, not execute.
+    pub(crate) capacity_exceeded: bool,
 }
 
 /// One exact API-surface permission required by a routed request.

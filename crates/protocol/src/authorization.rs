@@ -944,6 +944,33 @@ pub struct VerifiedAuthorizationContext {
 }
 
 impl VerifiedAuthorizationContext {
+    /// Recheck the time eligibility of a previously verified request before dispatch.
+    ///
+    /// This does not verify its signature or permissions. Callers must retain the
+    /// exact context and signed issue time from successful proof verification.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authorization error when the context or request timestamp is no
+    /// longer eligible under the current policy.
+    pub fn assert_request_current(
+        &self,
+        iat: i64,
+        policy: &AuthorizationVerificationPolicy,
+    ) -> Result<(), ProtocolError> {
+        self.assert_current(policy)?;
+        validate_safe_i64(iat, &["iat"])?;
+        let difference = i128::from(policy.now_unix_seconds) - i128::from(iat);
+        if difference.abs() > i128::from(policy.allowed_clock_skew_seconds) {
+            return Err(authorization_error(
+                AuthorizationErrorCode::ProofIatOutOfRange,
+                ["iat"],
+                "request proof issue time is outside policy skew",
+            ));
+        }
+        Ok(())
+    }
+
     /// Require a live-purpose context from an active issuer at the supplied time.
     ///
     /// # Errors
@@ -1434,14 +1461,7 @@ fn verify_request(
             ));
         }
     }
-    let difference = i128::from(policy.now_unix_seconds) - i128::from(iat);
-    if difference.abs() > i128::from(policy.allowed_clock_skew_seconds) {
-        return Err(authorization_error(
-            AuthorizationErrorCode::ProofIatOutOfRange,
-            ["iat"],
-            "request proof issue time is outside policy skew",
-        ));
-    }
+    context.assert_request_current(iat, policy)?;
     if !context.allows_all(required_permissions) {
         return Err(authorization_error(
             AuthorizationErrorCode::PermissionDenied,
@@ -1959,7 +1979,30 @@ mod tests {
             policy: &policy,
             required_permissions: &permissions,
         };
-        verify_authorization_request(request).unwrap();
+        let verified_request = verify_authorization_request(request).unwrap();
+        let mut later = policy.clone();
+        later.now_unix_seconds += i64::from(later.allowed_clock_skew_seconds) + 1;
+        verified_request.context().assert_current(&later).unwrap();
+        assert!(
+            verified_request
+                .context()
+                .assert_request_current(request.iat, &later)
+                .is_err(),
+            "a verified proof that became stale must not dispatch while its context remains valid"
+        );
+        let mut expired = policy.clone();
+        expired.now_unix_seconds = verified_request.context().expires_at()
+            + i64::from(expired.allowed_clock_skew_seconds)
+            + 1;
+        assert!(matches!(
+            verified_request
+                .context()
+                .assert_request_current(request.iat, &expired),
+            Err(ProtocolError::Authorization {
+                code: AuthorizationErrorCode::ContextExpired,
+                ..
+            })
+        ));
         for changed in [
             AuthorizationRequestVerificationInput {
                 reply_subject: Some("_INBOX.other.reply"),

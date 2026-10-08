@@ -43,6 +43,14 @@ if (options.role === "provider") {
     name: `benchmark-provider-${options.providerIndex}`,
     participant: participants.Provider.participant,
     seed: options.serviceSeed!,
+    runtime: {
+      requestLimits: {
+        requests: options.requestLimit,
+        bytes: options.requestByteLimit,
+      },
+      verificationWorkers: options.verificationWorkers,
+      maxVerificationWorkers: options.maxVerificationWorkers,
+    },
   }).orThrow();
   const connectMs = performance.now() - started;
   const store = await service.store.files.open().orThrow();
@@ -109,9 +117,17 @@ if (options.role === "provider") {
       JSON.stringify(rows, null, 2),
     );
   }
-  await service.handleEcho(({ input }) => ok(input));
+  await service.handleEcho(async ({ input }) => {
+    if (options.rpcDelayMs) {
+      await new Promise((resolve) => setTimeout(resolve, options.rpcDelayMs));
+    }
+    return ok(input);
+  });
   await service.handlePutRecord(async ({ input }) => {
     await service.kv.records.put(input.value, input).orThrow();
+    if (options.rpcDelayMs) {
+      await new Promise((resolve) => setTimeout(resolve, options.rpcDelayMs));
+    }
     return ok(input);
   });
   await service.handleReadRecord(async ({ input }) => {
@@ -295,7 +311,7 @@ if (options.role === "provider") {
     offeredAt?: number,
     warmup = false,
   ) {
-    if (scenario !== "echo") {
+    if (scenario !== "echo" && scenario !== "admission-cancel") {
       await phase(`${transport}/${scenario}/${bytes ?? 0}`);
     }
     const before = scenario === "echo" || warmup
@@ -554,19 +570,37 @@ if (options.role === "provider") {
     }
     for (let trial = -options.warmups; trial < options.samples; trial++) {
       // Alternate protocols to avoid consistently giving one the warmer host.
-      const pair = trial % 2
+      const pair = options.workload === "admission"
+        ? ["trellis"] as const
+        : trial % 2
         ? ["http", "trellis"] as const
         : ["trellis", "http"] as const;
       for (const transport of pair) {
+        const running = new Set<Promise<void>>();
+        let attempted = 0;
+        let cancellation: Promise<void> | undefined;
+        const ready = Promise.withResolvers<void>();
+        const operation = options.workload === "admission"
+          ? await client.awaitCancellation({ value: `admission-${trial}` })
+            .onEvent((event) => {
+              if (
+                "snapshot" in event &&
+                event.snapshot.progress?.value === `admission-${trial}`
+              ) ready.resolve();
+            })
+            .onProgress((event) => {
+              if (event.progress.value === `admission-${trial}`) {
+                ready.resolve();
+              }
+            }).start().orThrow()
+          : undefined;
+        if (operation) await deadline(ready.promise);
         await phase(`${transport}/echo-window`);
         const before = await snapshotResources(
           options.output,
           options.cpuTicks,
         );
         const windowStart = performance.now();
-        const running = new Set<Promise<void>>();
-        const allWork: Promise<void>[] = [];
-        let attempted = 0;
         for (let index = 0; index < options.calls; index++) {
           const offeredAt = options.arrivalRate
             ? windowStart + index * 1000 / options.arrivalRate
@@ -574,6 +608,21 @@ if (options.role === "provider") {
           if (offeredAt !== undefined && offeredAt > performance.now()) {
             await new Promise((resolve) =>
               setTimeout(resolve, offeredAt - performance.now())
+            );
+          }
+          if (operation && index === Math.floor(options.calls / 2)) {
+            cancellation = measure(
+              "admission-cancel",
+              "trellis",
+              async () => {
+                const result = await operation.cancel().orThrow();
+                if (result.state !== "cancelled") {
+                  throw new Error("Cancellation did not settle");
+                }
+              },
+              undefined,
+              undefined,
+              trial < 0,
             );
           }
           if (running.size >= options.maxOutstanding) {
@@ -597,7 +646,7 @@ if (options.role === "provider") {
             "echo",
             transport,
             async () => {
-              const value = `echo-${index}`;
+              const value = `echo-${index}${"x".repeat(options.rpcValueBytes)}`;
               const response = transport === "trellis"
                 ? await client.echo({ value }).orThrow()
                 : await (await fetch(`${options.httpUrl}/echo?value=${value}`, {
@@ -616,14 +665,15 @@ if (options.role === "provider") {
           if (!options.arrivalRate) await work;
           else {
             running.add(work);
-            allWork.push(work);
             void work.then(
               () => running.delete(work),
               () => running.delete(work),
             );
           }
         }
-        await Promise.all(allWork);
+        await Promise.all(running);
+        await cancellation;
+        if (operation) await operation.stopObserving().orThrow();
         const durationMs = performance.now() - windowStart;
         const after = await snapshotResources(options.output, options.cpuTicks);
         if (trial >= 0) {

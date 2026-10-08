@@ -209,6 +209,23 @@ pub trait RequestHandler: Send + Sync {
         })
     }
 
+    /// Authenticate an overload refusal without invoking application handlers.
+    /// Handlers without a verified refusal path fail closed and emit no reply.
+    fn handle_overload<'a>(
+        &'a self,
+        subject: &'a str,
+        _payload: Bytes,
+        context: RequestContext,
+    ) -> BoxFuture<'a, Result<HandlerResponse, ServerError>> {
+        Box::pin(async move {
+            Err(ServerError::RequestDenied {
+                subject: subject.to_owned(),
+                session_key: context.session_key.unwrap_or_default(),
+            })
+        })
+    }
+
+    /// Dispatch one accepted request and return its transport response.
     fn handle_response<'a>(
         &'a self,
         subject: &'a str,
@@ -315,6 +332,15 @@ where
         (**self).handle_frames(subject, payload, context)
     }
 
+    fn handle_overload<'a>(
+        &'a self,
+        subject: &'a str,
+        payload: Bytes,
+        context: RequestContext,
+    ) -> BoxFuture<'a, Result<HandlerResponse, ServerError>> {
+        (**self).handle_overload(subject, payload, context)
+    }
+
     fn handle_response<'a>(
         &'a self,
         subject: &'a str,
@@ -357,6 +383,19 @@ where
         context: RequestContext,
     ) -> BoxFuture<'a, Result<Vec<Bytes>, ServerError>> {
         Box::pin(async move { self.handle_request_frames(subject, payload, context).await })
+    }
+
+    fn handle_overload<'a>(
+        &'a self,
+        subject: &'a str,
+        payload: Bytes,
+        mut context: RequestContext,
+    ) -> BoxFuture<'a, Result<HandlerResponse, ServerError>> {
+        context.capacity_exceeded = true;
+        Box::pin(async move {
+            self.handle_request_response(subject, payload, context)
+                .await
+        })
     }
 
     fn handle_response<'a>(
@@ -441,6 +480,7 @@ pub fn decode_nats_request(message: &async_nats::Message) -> InboundRequest {
         payload: message.payload.clone(),
         reply_to: reply_to.clone(),
         context: RequestContext {
+            capacity_exceeded: false,
             resuming: false,
             operation_progress: None,
             subject,
@@ -483,6 +523,29 @@ pub fn encode_error_reply_with_context(
     annotations: &ErrorAnnotationContext,
 ) -> OutboundReply {
     match error {
+        ServerError::ServiceBusy => {
+            let context = annotations.context_map();
+            let mut payload = Map::new();
+            payload.insert("id".into(), Value::String(error_id()));
+            payload.insert("type".into(), Value::String("TransportError".into()));
+            payload.insert("code".into(), Value::String("trellis.service.busy".into()));
+            payload.insert(
+                "hint".into(),
+                Value::String(
+                    "Retry explicitly later; the SDK does not retry busy refusals.".into(),
+                ),
+            );
+            payload.insert("message".into(), Value::String(error.to_string()));
+            payload.insert("context".into(), Value::Object(context));
+            if let Some(trace_id) = annotations.trace_id() {
+                payload.insert("traceId".into(), Value::String(trace_id.into()));
+            }
+            return OutboundReply {
+                reply_to,
+                payload: Bytes::from(Value::Object(payload).to_string()),
+                is_error: true,
+            };
+        }
         ServerError::DeclaredRpc(error) => {
             let payload = serde_json::to_vec(&error.to_payload_with_context(
             error_id(),
@@ -717,7 +780,7 @@ fn server_outcome(error: &ServerError) -> &'static str {
         | ServerError::TransferDigestMismatch { .. } => "denied",
         ServerError::StoreWaitTimeout { .. } => "timeout",
         ServerError::Json(_) => "error",
-        ServerError::OperationCapacityExceeded { .. } => "rate_limited",
+        ServerError::OperationCapacityExceeded { .. } | ServerError::ServiceBusy => "rate_limited",
         ServerError::Nats(_)
         | ServerError::MissingResourceBinding { .. }
         | ServerError::ResourceUnavailable { .. }
@@ -967,13 +1030,18 @@ where
     let registered_route = handler.route_token(&request.subject);
     let route = registered_route.unwrap_or_else(instruments::unknown_route);
     let live_route = handler.is_live_route(&request.subject);
+    let capacity_exceeded = request.context.capacity_exceeded;
     let mut unary = handler
         .is_unary_rpc_route(&request.subject)
         .then(|| UnaryRequest::start(&request.context, route));
     let reply_to = request.reply_to;
     let annotations =
         ErrorAnnotationContext::from_request(&request.subject, &request.context, handler);
-    let call = handler.handle_response(&request.subject, request.payload, request.context);
+    let call = if capacity_exceeded {
+        handler.handle_overload(&request.subject, request.payload, request.context)
+    } else {
+        handler.handle_response(&request.subject, request.payload, request.context)
+    };
     let (dispatch, result) = if let Some(unary) = &unary {
         dispatch_outcome(call.instrument(unary.span.clone())).await
     } else {
@@ -984,6 +1052,9 @@ where
         // The saved typed outcome is authoritative; no reclassification.
         if let Some(unary) = &mut unary {
             unary.finish(dispatch, None);
+        }
+        if capacity_exceeded {
+            return Ok(DispatchResponse::NoReply);
         }
         return match result {
             Ok(_) => Ok(DispatchResponse::NoReply),
@@ -997,7 +1068,9 @@ where
     let (response, outcome) = match result {
         Ok(response) => (response, dispatch),
         Err(error) => {
-            if live_route && is_dropped_live_denial(&error) {
+            if (live_route && is_dropped_live_denial(&error))
+                || (capacity_exceeded && !matches!(error, ServerError::ServiceBusy))
+            {
                 // A live opening whose reply is not provably the caller's inbox
                 // must not receive a reflected denial on an unverified subject.
                 if let Some(unary) = &mut unary {
@@ -1129,6 +1202,7 @@ pub(crate) async fn run_nats_request_loop_until<H, R>(
     handler: H,
     pin: super::router::GenerationPin,
     retire: R,
+    admission: std::sync::Arc<super::admission::RequestAdmission>,
 ) -> Result<(), ServerError>
 where
     H: RequestHandler,
@@ -1147,11 +1221,33 @@ where
                     tracing::info!(retired, in_flight = in_flight.len(), connection_state = ?client.connection_state(), "service request subscriptions exhausted");
                     break;
                 };
+                let control_subject = handler.route_token(message.subject.as_str()).is_some()
+                    && !handler.is_unary_rpc_route(message.subject.as_str())
+                    && message.subject.as_str().ends_with(".control");
+                let bytes = message.length + message.subject.as_str().len()
+                    + message.reply.as_ref().map_or(0, |reply| reply.as_str().len());
+                let Some((mut permit, mut capacity_exceeded)) = admission.admit(bytes, control_subject) else {
+                    continue;
+                };
+                // Body classification itself is bounded. Signals release the
+                // temporary control reservation before verification or user code.
+                if control_subject && !capacity_exceeded {
+                    let built_in = serde_json::from_slice::<super::OperationControlRequest>(&message.payload)
+                        .is_ok_and(|request| matches!(request.action.as_str(), "get" | "cancel"));
+                    if !built_in {
+                        drop(permit);
+                        let Some((ordinary, refused)) = admission.admit(bytes, false) else { continue; };
+                        permit = ordinary;
+                        capacity_exceeded = refused;
+                    }
+                }
                 let mut request = decode_nats_request(&message);
+                request.context.capacity_exceeded = capacity_exceeded;
                 request.context.transport = pin.clone();
                 let client = &client;
                 let handler = &handler;
                 in_flight.push(async move {
+                    let _permit = permit;
                     let subject = request.subject.clone();
                     match dispatch_response(handler, request).await {
                         Ok(DispatchResponse::Reply(dispatched)) => {
@@ -1456,6 +1552,7 @@ mod tests {
 
     fn test_context(subject: &str) -> RequestContext {
         RequestContext {
+            capacity_exceeded: false,
             resuming: false,
             operation_progress: None,
             subject: subject.to_string(),

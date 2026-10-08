@@ -69,6 +69,15 @@ where
         self.handler.handle_frames(subject, payload, context)
     }
 
+    fn handle_overload<'a>(
+        &'a self,
+        subject: &'a str,
+        payload: Bytes,
+        context: RequestContext,
+    ) -> BoxFuture<'a, Result<HandlerResponse, ServerError>> {
+        self.handler.handle_overload(subject, payload, context)
+    }
+
     fn handle_response<'a>(
         &'a self,
         subject: &'a str,

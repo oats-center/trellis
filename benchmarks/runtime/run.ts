@@ -9,6 +9,10 @@ import { snapshotResources } from "./resources.ts";
 import { TrellisTestRuntime } from "../../ts/packages/trellis-testkit/index.ts";
 import { participants } from "./packages/performance-trellis/index.js";
 import { rawTransfer } from "./raw_transfer.ts";
+import { Root } from "protobufjs";
+import otlpMetricsSchema from "../../ts/integration/_support/otlp_metrics_schema.json" with {
+  type: "json",
+};
 
 const root = fromFileUrl(new URL("../../", import.meta.url));
 const args = parseArgs(Deno.args, {
@@ -30,8 +34,23 @@ const args = parseArgs(Deno.args, {
     "contract-entry",
     "contract-worker",
     "warmups",
+    "provider-language",
+    "client-language",
+    "rpc-delay-ms",
+    "rpc-value-bytes",
+    "request-limit",
+    "request-byte-limit",
+    "max-verification-workers",
+    "arrival-rates",
   ],
-  boolean: ["keep-workdir"],
+  boolean: [
+    "keep-workdir",
+    "inspect-client",
+    "inspect-provider",
+    "cpu-profile-provider",
+    "nats-diagnostics",
+    "verification-workers",
+  ],
   default: {
     samples: "21",
     calls: "1000",
@@ -43,6 +62,13 @@ const args = parseArgs(Deno.args, {
     lane: "typescript",
     providers: "1",
     warmups: "0",
+    "provider-language": "typescript",
+    "client-language": "typescript",
+    "rpc-delay-ms": "0",
+    "rpc-value-bytes": "0",
+    "request-limit": "32",
+    "request-byte-limit": "16777216",
+    "max-verification-workers": "3",
   },
 });
 const positive = z.coerce.number().int().positive();
@@ -56,18 +82,57 @@ const lane = z.enum([
   "browser",
   "rust",
   "contract",
+  "admission",
 ])
   .parse(
     args.lane,
   );
 const providerCount = positive.parse(args.providers);
+const providerLanguage = z.enum(["typescript", "rust"]).parse(
+  args["provider-language"],
+);
+const clientLanguage = z.enum(["typescript", "rust"]).parse(
+  args["client-language"],
+);
+const rpcDelayMs = z.coerce.number().int().nonnegative().max(10_000).parse(
+  args["rpc-delay-ms"],
+);
+const rpcValueBytes = z.coerce.number().int().nonnegative().max(512 * 1024)
+  .parse(args["rpc-value-bytes"]);
+const requestLimit = positive.max(1_000_000).parse(args["request-limit"]);
+const verificationWorkers = Boolean(args["verification-workers"]);
+const maxVerificationWorkers = positive.parse(args["max-verification-workers"]);
+if (verificationWorkers && providerLanguage !== "typescript") {
+  throw new Error("Verification workers are a TypeScript provider trial");
+}
+const requestByteLimit = positive.max(0xffff_ffff).parse(
+  args["request-byte-limit"],
+);
 if (lane === "transfer" && providerCount !== 1) {
   throw new Error(
     "The focused transfer audit uses one provider; replica scaling belongs to the full suite",
   );
 }
-const arrivalRate = z.coerce.number().nonnegative().parse(args["arrival-rate"]);
+const arrivalRates = args["arrival-rates"] === undefined
+  ? []
+  : z.array(z.coerce.number().positive()).length(samples).parse(
+    args["arrival-rates"].split(","),
+  );
+if (
+  arrivalRates.length && (lane !== "admission" || clientLanguage !== "rust")
+) {
+  throw new Error(
+    "Per-phase --arrival-rates requires the native admission caller",
+  );
+}
+const arrivalRate = arrivalRates[0] ??
+  z.coerce.number().nonnegative().parse(args["arrival-rate"]);
 const maxOutstanding = positive.parse(args["max-outstanding"]);
+if (lane === "admission" && (arrivalRate === 0 || calls < 4)) {
+  throw new Error(
+    "Admission measurement requires --arrival-rate > 0 and at least four calls",
+  );
+}
 const sizes = z.array(positive.max(64 * 1024 * 1024)).nonempty().parse(
   args.sizes.split(","),
 );
@@ -109,6 +174,7 @@ const logWrites: Promise<void>[] = [];
 let runtime: TrellisTestRuntime | undefined;
 let sampler: Deno.ChildProcess | undefined;
 let browserServer: Deno.HttpServer | undefined;
+let metricServer: Deno.HttpServer | undefined;
 const browserSamples: Sample[] = [];
 const browserSession = `trellis-benchmark-${Deno.pid}`;
 async function startWorker(
@@ -117,6 +183,13 @@ async function startWorker(
   provider = false,
 ) {
   const native = file.startsWith("rust");
+  const cpuDirectory = resolve(
+    output,
+    `provider-cpu-${Number(options.providerIndex ?? 0)}`,
+  );
+  if (!native && provider && args["cpu-profile-provider"]) {
+    await Deno.mkdir(cpuDirectory, { recursive: true });
+  }
   const child = new Deno.Command(
     native ? resolve(z.string().parse(args["rust-bin"])) : Deno.execPath(),
     {
@@ -128,6 +201,19 @@ async function startWorker(
           : [])
         : [
           "run",
+          ...(!native && provider && args["cpu-profile-provider"]
+            ? [`--cpu-prof-dir=${cpuDirectory}`]
+            : []),
+          ...(args["inspect-client"] && file === "worker.ts" && !provider
+            ? ["--inspect=127.0.0.1:9229"]
+            : []),
+          ...(args["inspect-provider"] && file === "worker.ts" && provider
+            ? [
+              `--inspect=127.0.0.1:${
+                9230 + Number(options.providerIndex ?? 0)
+              }`,
+            ]
+            : []),
           "--no-check",
           "-A",
           "--config",
@@ -164,6 +250,45 @@ async function startWorker(
   return child;
 }
 try {
+  if (lane === "admission") {
+    // Decode real production exports using the upstream OTLP schema already
+    // consumed by live coverage tests, not exporter internals or a wire parser.
+    const decoder = Root.fromJSON(otlpMetricsSchema).lookupType(
+      "opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceRequest",
+    );
+    metricServer = Deno.serve(
+      { hostname: "127.0.0.1", port: 0, onListen() {} },
+      async (request) => {
+        if (
+          new URL(request.url).pathname !== "/v1/metrics" ||
+          request.headers.get("content-type") !== "application/x-protobuf"
+        ) {
+          return new Response(null, { status: 400 });
+        }
+        const metrics = decoder.toObject(
+          decoder.decode(new Uint8Array(await request.arrayBuffer())),
+          { longs: String, arrays: true },
+        );
+        await Deno.writeTextFile(
+          `${output}/metrics.jsonl`,
+          JSON.stringify({ at: Date.now(), metrics }) + "\n",
+          { append: true },
+        );
+        return new Response(new Uint8Array(), {
+          headers: { "content-type": "application/x-protobuf" },
+        });
+      },
+    );
+    if (metricServer.addr.transport !== "tcp") {
+      throw new Error("Metrics collector requires TCP");
+    }
+    Deno.env.set(
+      "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+      `http://127.0.0.1:${metricServer.addr.port}/v1/metrics`,
+    );
+    Deno.env.set("OTEL_METRIC_EXPORT_INTERVAL", "100");
+    Deno.env.set("OTEL_TRACES_EXPORTER", "none");
+  }
   const git = await new Deno.Command("git", {
     args: ["rev-parse", "HEAD"],
     cwd: root,
@@ -188,6 +313,13 @@ try {
   );
   const hash = await new Deno.Command("sha256sum", { args: [server] }).output();
   const cliHash = await new Deno.Command("sha256sum", { args: [cli] }).output();
+  const nativeHash = lane === "rust" ||
+      (lane === "admission" &&
+        (providerLanguage === "rust" || clientLanguage === "rust"))
+    ? await new Deno.Command("sha256sum", {
+      args: [resolve(z.string().parse(args["rust-bin"]))],
+    }).output()
+    : undefined;
   const cpuInfo = await Deno.readTextFile("/proc/cpuinfo");
   const cgroupPath = (await Deno.readTextFile("/proc/self/cgroup")).split("\n")
     .find((line) => line.startsWith("0::"))?.slice(3);
@@ -210,6 +342,9 @@ try {
       "Supply an existing matching ordinary release CLI/server pair through --cli and --server; the benchmark does not build them",
     );
   }
+  if (nativeHash && !nativeHash.success) {
+    throw new Error("Supply an existing native provider through --rust-bin");
+  }
   await Deno.writeTextFile(
     `${output}/metadata.json`,
     JSON.stringify(
@@ -219,6 +354,9 @@ try {
         trackedDiff: "source.diff",
         serverSha256: new TextDecoder().decode(hash.stdout).split(" ")[0],
         cliSha256: new TextDecoder().decode(cliHash.stdout).split(" ")[0],
+        nativeSha256: nativeHash
+          ? new TextDecoder().decode(nativeHash.stdout).split(" ")[0]
+          : null,
         startedAt: new Date().toISOString(),
         deno: Deno.version,
         host: Deno.hostname(),
@@ -231,9 +369,18 @@ try {
         idleSeconds,
         cpuTicks,
         arrivalRate,
+        arrivalRates,
         maxOutstanding,
         lane,
         providerCount,
+        providerLanguage: lane === "rust" ? "rust" : providerLanguage,
+        clientLanguage: lane === "rust" ? "rust" : clientLanguage,
+        rpcDelayMs,
+        rpcValueBytes,
+        requestLimit,
+        requestByteLimit,
+        verificationWorkers,
+        maxVerificationWorkers,
         topology:
           "loopback; native NATS TCP; plaintext HTTP/1.1 keep-alive; no compression or HTTP caching",
         setup:
@@ -243,6 +390,9 @@ try {
         storage:
           "Trellis JetStream object storage; HTTP filesystem. Persistence acknowledgement, NOT equivalent fsync guarantees",
         telemetry: {
+          metricsCapture: lane === "admission"
+            ? "production HTTP/protobuf OTLP; requested 100 ms interval; metrics.jsonl"
+            : null,
           traces: Deno.env.get("OTEL_TRACES_SAMPLER") ?? "SDK defaults",
           endpointConfigured: Boolean(
             Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT"),
@@ -259,7 +409,12 @@ try {
     ),
   );
   sampler = new Deno.Command("python3", {
-    args: [`${root}/benchmarks/runtime/resources.py`, String(Deno.pid), output],
+    args: [
+      `${root}/benchmarks/runtime/resources.py`,
+      String(Deno.pid),
+      output,
+      ...(args["nats-diagnostics"] ? ["--nats-diagnostics"] : []),
+    ],
     stdout: "inherit",
     stderr: "inherit",
   }).spawn();
@@ -460,7 +615,14 @@ try {
   const options = {
     cpuTicks,
     arrivalRate,
+    arrivalRates,
     maxOutstanding,
+    rpcDelayMs,
+    rpcValueBytes,
+    requestLimit,
+    requestByteLimit,
+    verificationWorkers,
+    maxVerificationWorkers,
     output,
     trellisUrl: runtime.trellisUrl,
     password: runtime.adminPassword,
@@ -468,17 +630,20 @@ try {
     seeds,
     samples,
     calls,
-    sizes,
+    sizes: lane === "admission" ? [] : sizes,
     sessionCounts,
     idleSeconds,
     warmups,
-    workload: lane === "transfer" || lane === "lifecycle" ? lane : "all",
+    workload:
+      lane === "transfer" || lane === "lifecycle" || lane === "admission"
+        ? lane
+        : "all",
   };
   const providers: Deno.ChildProcess[] = [];
   for (let providerIndex = 0; providerIndex < providerCount; providerIndex++) {
     providers.push(
       await startWorker(
-        lane === "rust"
+        lane === "rust" || (lane === "admission" && providerLanguage === "rust")
           ? "rust"
           : lane === "contract"
           ? resolve(z.string().parse(args["contract-worker"]))
@@ -803,7 +968,9 @@ try {
     if (rows.some((row) => row.error)) {
       throw new Error("Lifecycle samples failed; see samples.json");
     }
-  } else if (lane === "rust") {
+  } else if (
+    lane === "rust" || (lane === "admission" && clientLanguage === "rust")
+  ) {
     const seed = seeds[0];
     const prepared = await TrellisClient.connect({
       trellisUrl: runtime.trellisUrl,
@@ -842,17 +1009,24 @@ try {
       durationMs: z.number(),
       bytes: z.number().optional(),
       error: z.string().optional(),
+      warmup: z.boolean().optional(),
+      offeredUnixMs: z.number().optional(),
+      schedulerDelayMs: z.number().optional(),
+      loadGeneratorDrop: z.boolean().optional(),
+      phaseIndex: z.number().int().nonnegative().optional(),
     })).parse(
       JSON.parse(await Deno.readTextFile(`${output}/native-samples.json`)),
     );
-    const windows = [{
-      scenario: "rust/all-workloads",
-      transport: "mixed",
-      calls: rows.length,
-      durationMs: performance.now() - started,
-      before,
-      after: await snapshotResources(output, cpuTicks, "coordinator"),
-    }];
+    const windows = lane === "admission"
+      ? JSON.parse(await Deno.readTextFile(`${output}/native-windows.json`))
+      : [{
+        scenario: "rust/all-workloads",
+        transport: "mixed",
+        calls: rows.length,
+        durationMs: performance.now() - started,
+        before,
+        after: await snapshotResources(output, cpuTicks, "coordinator"),
+      }];
     await Deno.writeTextFile(
       `${output}/samples.json`,
       JSON.stringify(
@@ -928,10 +1102,10 @@ try {
   }
   for (const provider of providers) provider.kill("SIGTERM");
   http.kill("SIGTERM");
-  await Promise.all([
+  await deadline(Promise.all([
     ...providers.map((provider) => provider.status),
     http.status,
-  ]);
+  ]));
   console.log(`Benchmark results: ${output}`);
 } finally {
   if (browserServer) await browserServer.shutdown();
@@ -952,9 +1126,26 @@ try {
       ) throw error;
     }
   }
-  await Promise.all(children.map((child) => child.status));
+  const forcedCleanup: number[] = [];
+  await Promise.all(children.map(async (child) => {
+    try {
+      await deadline(child.status);
+    } catch {
+      forcedCleanup.push(child.pid);
+      console.error(
+        `Benchmark child ${child.pid} did not stop; forcing cleanup`,
+      );
+      child.kill("SIGKILL");
+      await child.status;
+    }
+  }));
+  await Deno.writeTextFile(
+    `${output}/cleanup.json`,
+    JSON.stringify({ forcedCleanup }),
+  );
   await Promise.all(logWrites);
   if (runtime) await runtime.stop();
+  if (metricServer) await metricServer.shutdown();
   await Deno.writeTextFile(`${output}/stop-sampler`, "stopped");
   if (sampler && !(await sampler.status).success) {
     throw new Error("Resource sampler failed");

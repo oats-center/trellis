@@ -52,6 +52,7 @@ impl RequestValidation {
 
 /// Auth validator called before dispatching requests to mounted handlers.
 pub trait RequestValidator: Send + Sync {
+    /// Verify the caller, permissions and proof bound to this request and reply destination.
     fn validate<'a>(
         &'a self,
         subject: &'a str,
@@ -276,6 +277,15 @@ where
             caller: validation.caller,
             ..context
         };
+        if context.capacity_exceeded {
+            if context.caller.is_none() {
+                return Err(ServerError::RequestDenied {
+                    subject: subject.to_owned(),
+                    session_key,
+                });
+            }
+            return Err(ServerError::ServiceBusy);
+        }
         self.router
             .handle_request_response(subject, payload, context)
             .await

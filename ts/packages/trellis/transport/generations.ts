@@ -137,6 +137,8 @@ export type TransportAcquireOptions = {
 /** One held transport generation. The holder releases it when its work ends. */
 export type TransportLease = {
   readonly nc: NatsConnection;
+  /** Watch this exact physical attachment; the returned function detaches immediately. */
+  watchStatus(listener: (event: unknown) => void): () => void;
   release(): void;
 };
 
@@ -190,7 +192,26 @@ export type TrellisTransportProvider = {
 export function fixedTransportProvider(
   nc: NatsConnection,
 ): TrellisTransportProvider {
-  const lease: TransportLease = { nc, release: () => {} };
+  const listeners = new Set<(event: unknown) => void>();
+  const lease: TransportLease = {
+    nc,
+    watchStatus: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    release: () => {},
+  };
+  void (async () => {
+    try {
+      for await (const event of nc.status()) {
+        for (const listener of listeners) listener(event);
+      }
+    } finally {
+      listeners.clear();
+    }
+  })().catch(() => undefined);
   return {
     currentNats: () => nc,
     acquireCurrent: () => Promise.resolve(lease),
@@ -232,6 +253,8 @@ export class TransportGeneration {
    */
   ready = true;
   #leases = 0;
+  /** Finite request callbacks fed by the owner's single physical status monitor. @internal */
+  readonly statusListeners = new Set<(event: unknown) => void>();
   #disposalStarted = false;
   #activatedAtSeconds?: number;
   #closedAtSeconds?: number;
@@ -323,6 +346,12 @@ export class TransportGeneration {
     let released = false;
     return {
       nc: this.nc,
+      watchStatus: (listener) => {
+        this.statusListeners.add(listener);
+        return () => {
+          this.statusListeners.delete(listener);
+        };
+      },
       release: () => {
         if (released) return;
         released = true;
@@ -677,6 +706,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       const source = generation.lease();
       return {
         nc: source.nc,
+        watchStatus: source.watchStatus,
         release: source.release,
         generationId: generation.id,
       };
@@ -1277,6 +1307,9 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         while (true) {
           const next = await iterator.next();
           if (next.done) return;
+          for (const listener of generation.statusListeners) {
+            listener(next.value);
+          }
           const event = next.value as
             | { type?: unknown; isAuthError?: () => boolean }
             | null;
@@ -1296,6 +1329,8 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         }
       } catch {
         // The connection is gone; `nc.closed()` performs the recovery.
+      } finally {
+        generation.statusListeners.clear();
       }
     })();
   }
@@ -1929,6 +1964,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     handle: TransportGenerationDisposal,
   ): void {
     const task = (async () => {
+      this.#log.info({ generationId: id }, "Disposing late transport owner");
       try {
         await handle.dispose();
       } catch (error) {
@@ -1940,6 +1976,11 @@ export class TransportGenerationManager implements TrellisTransportProvider {
             generationId: id,
           },
           "transport late owner cleanup failed",
+        );
+      } finally {
+        this.#log.info(
+          { generationId: id },
+          "Late transport owner cleanup finished",
         );
       }
     })();
@@ -1958,7 +1999,18 @@ export class TransportGenerationManager implements TrellisTransportProvider {
   async #disposeAll(id: number): Promise<void> {
     const handles = this.#disposals.get(id) ?? [];
     const results = await Promise.allSettled(
-      handles.map(async (handle) => await handle.dispose()),
+      handles.map(async (handle, ownerIndex) => {
+        const context = { generationId: id, ownerIndex };
+        this.#log.info(context, "Disposing transport generation owner");
+        try {
+          await handle.dispose();
+        } finally {
+          this.#log.info(
+            context,
+            "Transport generation owner cleanup finished",
+          );
+        }
+      }),
     );
     const failure = results.find(
       (result): result is PromiseRejectedResult => result.status === "rejected",

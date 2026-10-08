@@ -120,6 +120,12 @@ pub struct SchemaValidationIssue {
 /// Errors returned by the Trellis server runtime.
 #[derive(thiserror::Error, Debug)]
 pub enum ServerError {
+    /// Dispatch capacity was exhausted; the application handler was not invoked.
+    #[error("Service is busy; the request was not executed.")]
+    ServiceBusy,
+    /// Provider dispatch limits must be nonzero and fit the local semaphore.
+    #[error("Invalid service request limits: counts and byte limits must be positive.")]
+    InvalidRequestLimits,
     /// A handler returned an error declared by its contract.
     #[error("declared RPC error {0:?}")]
     DeclaredRpc(DeclaredRpcError),

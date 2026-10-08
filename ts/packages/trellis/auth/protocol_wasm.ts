@@ -406,6 +406,20 @@ export function assertAuthorizationContextHandleCurrentWasm(
   handle.assert_current(JSON.stringify(wasmVerificationPolicy(policy)));
 }
 
+/** Recheck signed request freshness after verification; does not verify its proof. @internal */
+export function assertAuthorizationRequestCurrentWasm(
+  handle: AuthorizationContextHandle,
+  iat: number,
+  policy: AuthorizationContextVerificationPolicy,
+): VerifyAuthorizationRequestResult {
+  return JSON.parse(
+    handle.assert_request_current(
+      iat,
+      JSON.stringify(wasmVerificationPolicy(policy)),
+    ),
+  ) as VerifyAuthorizationRequestResult;
+}
+
 /**
  * Canonical digest of a signed transport-authorization policy.
  *
@@ -520,7 +534,8 @@ export async function verifyAuthorizationEventWasm(
   ) as VerifyAuthorizationEventResult;
 }
 
-function wasmVerificationPolicy(
+/** Encode only the fields accepted by the Rust verifier. @internal */
+export function wasmVerificationPolicy(
   policy: AuthorizationVerificationPolicy,
 ): AuthorizationVerificationPolicy {
   return {

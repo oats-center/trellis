@@ -12,6 +12,7 @@ import {
   type MsgHdrs,
   type NatsConnection,
 } from "@nats-io/nats-core";
+import { TransportErrorDataSchema } from "./errors/TransportError.ts";
 import type { EventDesc, InferSchemaType, LiveDesc } from "./participant.ts";
 import {
   boundApiSubject,
@@ -38,6 +39,7 @@ import type {
   AuthorizationProviderRequest,
 } from "./auth/authorization_context.ts";
 import { AuthorizationProviderUnavailableError } from "./auth/authorization/provider_cache.ts";
+import { RequestAdmission, type RequestLimits } from "./request_admission.ts";
 import {
   fixedTransportProvider,
   type TransportLease,
@@ -186,6 +188,10 @@ type LocalAuthorizationRequestMessage = Pick<
   "data" | "headers" | "reply" | "subject"
 >;
 type LocalAuthorizationEventMessage = Pick<Msg, "data" | "headers" | "subject">;
+const verificationLanes = new WeakMap<
+  object,
+  "ordinary" | "control" | "refusal"
+>();
 
 type LocalAuthorizationArgs =
   | {
@@ -290,8 +296,11 @@ export async function verifyLocalAuthorization(
             transferId: args.transferId,
             providerConnectionId: args.providerConnectionId,
             consumerConnectionId: args.consumerConnectionId,
-          })
-          : await args.cache.verifyRequest(request);
+          }, verificationLanes.get(args.message))
+          : await args.cache.verifyRequest(
+            request,
+            verificationLanes.get(args.message),
+          );
       } else {
         const eventId = args.message.headers?.get("Nats-Msg-Id");
         const eventTime = args.message.headers?.get("Trellis-Event-Time");
@@ -399,7 +408,6 @@ export function toVerifierPermission(
  * How many live openings one route may verify concurrently before it sheds
  * excess unverified requests.
  */
-const MAX_PENDING_OPENINGS = 64;
 
 /**
  * Whether one reply destination is provably inside the verified caller's inbox.
@@ -1723,6 +1731,8 @@ type NoResponderRetryOpts = {
 };
 
 export type TrellisOpts<TA extends RuntimeApi> = {
+  /** Provider dispatch limits shared across endpoints and transport generations. */
+  requestLimits?: RequestLimits;
   log?: LoggerLike;
   timeout?: number;
   stream?: string;
@@ -2162,6 +2172,8 @@ export type HandlerTrellis<
   ): AsyncResult<void, TransportError | UnexpectedError>;
   /** Stops durable event listener loops owned by this handler runtime. */
   stopEventListeners(): void;
+  /** Settle accepted provider callbacks before the service closes its transport. @internal */
+  stopRequestListeners(): Promise<void>;
 };
 
 function surfaceGroupName(key: string): string {
@@ -2692,6 +2704,11 @@ export class Trellis<
   #log: LoggerLike;
   #tasks: TrellisTasks;
   #rpcTaskSeq = 0;
+  #requestAdmission: RequestAdmission;
+  #ordinaryIntakeStopped = false;
+  #ordinaryIntakes = new Set<
+    { stop: () => void; done: Promise<void> }
+  >();
   #liveTaskSeq = 0;
   #hasExplicitApi: boolean;
   #noResponderMaxRetries: number;
@@ -2789,6 +2806,7 @@ export class Trellis<
     const api = opts?.api;
 
     this.name = name;
+    this.#requestAdmission = new RequestAdmission(opts?.requestLimits);
     this.#adaptiveTransport = opts?.transport !== undefined;
     this.#transport = opts?.transport ?? fixedTransportProvider(nats);
     const liveClosers = this.#liveClosers;
@@ -3013,6 +3031,7 @@ export class Trellis<
       publish: (event, data) => this.publish(event, data),
       publishPrepared: (event) => this.publishPrepared(event),
       stopEventListeners: () => this.stopEventListeners(),
+      stopRequestListeners: () => this.stopRequestListeners(),
     };
   }
 
@@ -3874,7 +3893,9 @@ export class Trellis<
         }),
       manager: this.connection.live,
     });
-    let controlSub: ReturnType<NatsConnection["subscribe"]> | undefined;
+    let controlIntake:
+      | { stop: () => void; done: Promise<void> }
+      | undefined;
     // Generic live-open intake. Re-creatable so a survivor reactivation can
     // reinstall the open subscription on the same provider without duplicating
     // the provider or disturbing accepted sessions/receipts.
@@ -3882,41 +3903,58 @@ export class Trellis<
       drain: () => Promise<void>;
       done: Promise<void>;
     } => {
-      const openSub = nc.subscribe(subject, {
-        queue: routeQueueGroup(subject),
-      });
-      const openDone = Promise.withResolvers<void>();
-      const openTask = AsyncResult.try(async () => {
-        // Admission bound before any verification work is spawned: an unbounded
-        // set of attacker-supplied openings must not create unbounded tasks.
-        let inFlight = 0;
-        for await (const msg of openSub) {
-          if (inFlight >= MAX_PENDING_OPENINGS) continue;
-          inFlight += 1;
-          void this.#acceptLiveOpen(
+      const intake = this.createRequestIntake(
+        { nc, lease },
+        subject,
+        false,
+        async (msg, refused) =>
+          await this.#acceptLiveOpen(
             live,
             descriptor,
             msg,
             handler,
             provider,
-          ).finally(() => {
-            inFlight -= 1;
-          });
-        }
-      });
+            refused,
+          ),
+      );
+      const openTask = AsyncResult.try(async () => await intake.done);
       this.#tasks.add(
         `live:${id}:${live}:open:${this.#liveTaskSeq++}`,
         openTask,
       );
-      openTask.then(() => openDone.resolve(), () => openDone.resolve());
-      return {
-        drain: () => openSub.drain().catch(() => undefined),
-        done: openDone.promise,
-      };
+      return intake;
     };
     let open: { drain: () => Promise<void>; done: Promise<void> } | undefined;
     try {
-      controlSub = nc.subscribe(provider.wildcardSubject(subject));
+      controlIntake = this.createRequestIntake(
+        { nc, lease },
+        provider.wildcardSubject(subject),
+        true,
+        async (msg, refused) =>
+          await provider.handleControl(msg, async (controlMsg) => {
+            const caller = await this.#authenticateLiveRequest({
+              msg: controlMsg,
+              permission: descriptor.permission,
+              requiredCapabilities: descriptor.subscribeCapabilities,
+            });
+            const value = caller.take();
+            if (
+              isErr(value) || value.type !== "verified" ||
+              !callerOwnsReply(controlMsg.reply, value.inboxPrefix)
+            ) return undefined;
+            return {
+              connectionId: value.connectionId,
+              sessionKey: value.sessionKey,
+              principalId: value.principalId,
+              participantId: value.participantId,
+              deploymentId: value.deploymentId ?? undefined,
+              instanceId: value.instanceId ?? undefined,
+              contextDigest: value.contextDigest,
+            };
+          }, refused),
+        true,
+        false,
+      );
       // Registered once this generation can actually receive control on the
       // route, so takeover reaches a generation that has not yet served a
       // session; `dispose()` unregisters it transactionally on failure.
@@ -3944,35 +3982,12 @@ export class Trellis<
       ownGuard.release();
       throw error;
     }
-    const controlTask = AsyncResult.try(async () => {
-      for await (const msg of controlSub) {
-        await provider.handleControl(msg, async (controlMsg) => {
-          const caller = await this.#authenticateLiveRequest({
-            msg: controlMsg,
-            permission: descriptor.permission,
-            requiredCapabilities: descriptor.subscribeCapabilities,
-          });
-          const callerValue = caller.take();
-          if (isErr(callerValue) || callerValue.type !== "verified") {
-            return undefined;
-          }
-          return {
-            connectionId: callerValue.connectionId,
-            sessionKey: callerValue.sessionKey,
-            principalId: callerValue.principalId,
-            participantId: callerValue.participantId,
-            deploymentId: callerValue.deploymentId ?? undefined,
-            instanceId: callerValue.instanceId ?? undefined,
-            contextDigest: callerValue.contextDigest,
-          };
-        });
-      }
-    });
+    const controlTask = AsyncResult.try(async () => await controlIntake!.done);
     this.#tasks.add(
       `live:${id}:${live}:control:${this.#liveTaskSeq++}`,
       controlTask,
     );
-    const controlling = controlSub;
+    const controlling = controlIntake;
     return {
       drain: () => open!.drain(),
       done: open!.done,
@@ -3986,8 +4001,9 @@ export class Trellis<
         return (open = openIntake());
       },
       dispose: async () => {
-        void controlling.drain().catch(() => undefined);
+        controlling!.stop();
         await provider.dispose();
+        await controlling!.done;
         ownGuard.release();
       },
     };
@@ -4001,6 +4017,7 @@ export class Trellis<
       context: LiveHandlerContext<TInput, TEvent>,
     ) => unknown | Promise<unknown>,
     provider: LiveProvider,
+    refused = false,
   ): Promise<void> {
     let replyOwned = false;
     try {
@@ -4021,6 +4038,17 @@ export class Trellis<
         return;
       }
       replyOwned = true;
+      if (refused) {
+        this.#respondWithError(
+          msg,
+          createTransportError({
+            code: "trellis.service.busy",
+            message: "The service is busy; this request was not executed.",
+            hint: "Retry explicitly when appropriate for the application.",
+          }),
+        );
+        return;
+      }
       const opening = parseLiveOpen(msg.data);
       if (!opening) {
         this.#respondWithError(
@@ -4226,10 +4254,13 @@ export class Trellis<
       return AsyncResult.ok(undefined);
     }
 
-    const sub = this.#nats.subscribe(subject, {
-      queue: routeQueueGroup(subject),
-    });
-    return this.#runRpcIntake(sub, registration);
+    const intake = this.createRequestIntake(
+      { nc: this.#nats },
+      subject,
+      false,
+      (msg, refused) => this.#handleRpcDelivery(msg, registration, refused),
+    );
+    return AsyncResult.try(async () => await intake.done);
   }
 
   /**
@@ -4244,6 +4275,113 @@ export class Trellis<
   /** Whether this connection owns physical generations through a provider. */
   protected get adaptiveTransport(): boolean {
     return this.#adaptiveTransport;
+  }
+
+  /**
+   * Install bounded callback intake without a NATS iterator waiting queue.
+   * A receiving generation remains pinned until processing/reply completes.
+   * Refused deliveries may only verify and respond; they must never invoke a
+   * handler. `done` includes accepted callbacks, not merely subscription drain.
+   * @internal
+   */
+  protected createRequestIntake(
+    target: { nc: NatsConnection; lease?: () => TransportLease },
+    subject: string,
+    control: boolean | ((msg: Msg) => boolean),
+    process: (
+      msg: Msg,
+      refused: boolean,
+      delivery: { nc: NatsConnection; lease?: TransportLease },
+    ) => Promise<void | { settled: Promise<void> }>,
+    serial = false,
+    queue = true,
+  ): { drain: () => Promise<void>; stop: () => void; done: Promise<void> } {
+    const active = new Set<Promise<void>>();
+    let previous = Promise.resolve();
+    const sub = target.nc.subscribe(subject, {
+      queue: queue ? routeQueueGroup(subject) : undefined,
+      callback: (error, msg) => {
+        if (control === false && this.#ordinaryIntakeStopped) return;
+        if (error) {
+          this.#log.warn({ error }, "Provider intake subscription failed");
+          return;
+        }
+        const bytes = msg.data.byteLength + (msg.headers
+          ? new TextEncoder().encode(msg.headers.toString()).byteLength
+          : 0) +
+          msg.subject.length + (msg.reply?.length ?? 0);
+        // Parse a control body only after a bounded reservation owns it. Signals
+        // transfer to ordinary capacity before verification or application work.
+        let controlRequest = control !== false;
+        let permit = this.#requestAdmission.admit(bytes, controlRequest);
+        if (
+          permit && !permit.refused && typeof control === "function" &&
+          !control(msg)
+        ) {
+          permit.release();
+          controlRequest = false;
+          permit = this.#requestAdmission.admit(bytes, false);
+        }
+        if (!permit) {
+          return;
+        }
+        let lease: TransportLease | undefined;
+        try {
+          lease = target.lease?.();
+        } catch {
+          permit.release();
+          return;
+        }
+        const accepted = permit;
+        verificationLanes.set(
+          msg,
+          accepted.refused
+            ? "refusal"
+            : controlRequest
+            ? "control"
+            : "ordinary",
+        );
+        const delivery = { nc: target.nc, lease };
+        const dispatch = serial
+          ? previous.then(() =>
+            process(msg, accepted.refused, delivery)
+          )
+          : process(msg, accepted.refused, delivery);
+        previous = dispatch.then(() => undefined, () => undefined);
+        const task = (async () => {
+          try {
+            const result = await dispatch;
+            if (result) await result.settled;
+          } catch (error) {
+            this.#log.error({ error }, "Provider intake callback failed");
+          } finally {
+            delivery.lease?.release();
+            accepted.release();
+          }
+        })();
+        active.add(task);
+        void task.then(() => active.delete(task), () => active.delete(task));
+      },
+    });
+    const intake = {
+      // Planned rollover still waits for the broker's drain acknowledgment.
+      // Final disposal can instead stop locally, releasing that wait even if
+      // the broker is unreachable, while `done` still owns accepted callbacks.
+      drain: () =>
+        Promise.race([sub.drain(), sub.closed]).then(() => undefined).catch(
+          () => undefined,
+        ),
+      stop: () => sub.unsubscribe(),
+      done: sub.closed.then(async () => {
+        await Promise.allSettled(active);
+      }),
+    };
+    if (control === false) {
+      this.#ordinaryIntakes.add(intake);
+      void intake.done.then(() => this.#ordinaryIntakes.delete(intake));
+      if (this.#ordinaryIntakeStopped) intake.stop();
+    }
+    return intake;
   }
 
   protected async declareGenerationIntake(
@@ -4579,7 +4717,22 @@ export class Trellis<
         ingress.intakeLease = undefined;
       }
       await Promise.allSettled(
-        ingress.disposeFns.map(async (entry) => await entry.dispose()),
+        ingress.disposeFns.map(async (entry) => {
+          const context = {
+            generationId: id,
+            owner: entry.owner,
+            intakeId: entry.intakeId,
+          };
+          this.#log.info(context, "Disposing provider generation owner");
+          try {
+            await entry.dispose();
+          } finally {
+            this.#log.info(
+              context,
+              "Provider generation owner cleanup finished",
+            );
+          }
+        }),
       );
       ingress.disposeFns.length = 0;
       this.#providerIngress.delete(id);
@@ -4627,28 +4780,25 @@ export class Trellis<
       handlerTrellis: HandlerTrellis<TA, TRequests>;
     },
   ): { drain: () => Promise<void>; done: Promise<void> } {
-    const sub = ingress.nc.subscribe(registration.subject, {
-      queue: routeQueueGroup(registration.subject),
-    });
-    const completion = Promise.withResolvers<void>();
-    const intake = this.#runRpcIntake(sub, registration, ingress.lease);
+    const intake = this.createRequestIntake(
+      ingress,
+      registration.subject,
+      false,
+      (msg, refused) => this.#handleRpcDelivery(msg, registration, refused),
+    );
     this.#tasks.add(
       // Unique per install so a survivor reactivation can reinstall its RPC
       // intake without colliding with the drained install's retained task.
       `rpc:${ingress.id}:${registration.method}:${this.#rpcTaskSeq++}`,
-      intake,
+      AsyncResult.try(async () => await intake.done),
     );
     // `done` resolves when the intake loop itself finishes consuming buffered
     // messages, independent of when `drain()` protocol-flushes.
-    intake.then(() => completion.resolve(), () => completion.resolve());
-    return {
-      drain: () => sub.drain().catch(() => undefined),
-      done: completion.promise,
-    };
+    return intake;
   }
 
-  #runRpcIntake(
-    sub: ReturnType<NatsConnection["subscribe"]>,
+  async #handleRpcDelivery(
+    msg: Msg,
     registration: {
       method: MethodsOf<TA>;
       ctx: RpcDescriptorOf<TA, MethodsOf<TA>>;
@@ -4656,89 +4806,91 @@ export class Trellis<
       fn: HandlerFn<TA, MethodsOf<TA>, TA, HandlerTrellis<TA, TRequests>>;
       handlerTrellis: HandlerTrellis<TA, TRequests>;
     },
-    /** Pin the generation that accepted this callback through its reply. */
-    leaseFactory?: () => TransportLease,
-  ): AsyncResult<void, ValidationError | UnexpectedError> {
+    refused: boolean,
+  ): Promise<void> {
     const { method, ctx, fn, handlerTrellis } = registration;
-    return AsyncResult.try(async () => {
-      for await (const msg of sub) {
-        let lease: TransportLease | undefined;
-        if (leaseFactory) {
-          try {
-            lease = leaseFactory();
-          } catch {
-            // The generation is no longer admitted; never execute unpinned.
-            continue;
-          }
-        }
+    if (refused) {
+      const authorized = await verifyLocalAuthorization({
+        kind: "request",
+        cache: this.#auth.authorizationProviderCache,
+        message: msg,
+        permission: ctx.permission,
+        requiredCapabilities: ctx.callerCapabilities,
+      });
+      if (authorized.isErr()) return;
+      this.#respondWithError(
+        msg,
+        new TransportError({
+          code: "trellis.service.busy",
+          message: "Service is busy; the request was not executed.",
+          hint: "Retry explicitly later; the SDK does not retry busy refusals.",
+        }),
+        { method: String(method) },
+      );
+      return;
+    }
+    const resultPromise = await this.#processRPCMessage(
+      method,
+      ctx,
+      msg,
+      fn,
+      handlerTrellis,
+    );
+    const result = resultPromise.take();
+
+    if (isErr(result)) {
+      this.#respondWithError(msg, result.error, {
+        method: String(method),
+      });
+      return;
+    }
+
+    const sent = this.#respondWithPayload(
+      msg,
+      result.payload,
+      undefined,
+      {
+        method: String(method),
+        responseKind: "success",
+      },
+    );
+    if (sent.isErr()) {
+      const responseBytes = payloadByteLength(result.payload);
+      const message = causeMessage(sent.error.cause);
+      this.#respondWithError(
+        msg,
+        new TransportError({
+          code: "trellis.rpc.response_send_failed",
+          message: message.includes("max_payload")
+            ? "Trellis RPC response exceeded NATS max_payload."
+            : "Trellis could not send the RPC response.",
+          hint:
+            "Reduce the requested page size or use a narrower RPC that does not include large detail payloads.",
+          cause: sent.error.cause,
+          context: {
+            method: String(method),
+            subject: msg.subject,
+            responseBytes,
+            causeMessage: message,
+          },
+        }),
+        { method: String(method), responseBytes },
+      );
+      return;
+    }
+
+    if (result.afterReply.length > 0) {
+      for (const task of result.afterReply) {
         try {
-          const resultPromise = await this.#processRPCMessage(
-            method,
-            ctx,
-            msg,
-            fn,
-            handlerTrellis,
+          await task();
+        } catch (error) {
+          this.#log.error(
+            { method: String(method), error },
+            "RPC after-reply task failed",
           );
-          const result = resultPromise.take();
-
-          if (isErr(result)) {
-            this.#respondWithError(msg, result.error, {
-              method: String(method),
-            });
-            continue;
-          }
-
-          const sent = this.#respondWithPayload(
-            msg,
-            result.payload,
-            undefined,
-            {
-              method: String(method),
-              responseKind: "success",
-            },
-          );
-          if (sent.isErr()) {
-            const responseBytes = payloadByteLength(result.payload);
-            const message = causeMessage(sent.error.cause);
-            this.#respondWithError(
-              msg,
-              new TransportError({
-                code: "trellis.rpc.response_send_failed",
-                message: message.includes("max_payload")
-                  ? "Trellis RPC response exceeded NATS max_payload."
-                  : "Trellis could not send the RPC response.",
-                hint:
-                  "Reduce the requested page size or use a narrower RPC that does not include large detail payloads.",
-                cause: sent.error.cause,
-                context: {
-                  method: String(method),
-                  subject: msg.subject,
-                  responseBytes,
-                  causeMessage: message,
-                },
-              }),
-              { method: String(method), responseBytes },
-            );
-            continue;
-          }
-
-          if (result.afterReply.length > 0) {
-            for (const task of result.afterReply) {
-              try {
-                await task();
-              } catch (error) {
-                this.#log.error(
-                  { method: String(method), error },
-                  "RPC after-reply task failed",
-                );
-              }
-            }
-          }
-        } finally {
-          lease?.release();
         }
       }
-    });
+    }
   }
 
   async #processRPCMessage(
@@ -6288,6 +6440,14 @@ export class Trellis<
     }
   }
 
+  /** Stop ordinary intake and settle accepted callbacks before transport close. @internal */
+  async stopRequestListeners(): Promise<void> {
+    this.#ordinaryIntakeStopped = true;
+    const intakes = [...this.#ordinaryIntakes];
+    for (const intake of intakes) intake.stop();
+    await Promise.allSettled(intakes.map((intake) => intake.done));
+  }
+
   // FIXME: If are validating things twice in most cases...
   template(
     subject: string,
@@ -6433,7 +6593,7 @@ export class Trellis<
     deadlineMs: number;
     signal?: AbortSignal;
     callerCapabilities?: readonly string[];
-  }): Promise<Result<{ nc: NatsConnection; release(): void }, TransportError>> {
+  }): Promise<Result<TransportLease, TransportError>> {
     if (!this.#adaptiveTransport) {
       if (this.#nats.isClosed()) {
         return err(requestFailedTransportError({
@@ -6444,7 +6604,7 @@ export class Trellis<
           subject: args.subject,
         }));
       }
-      return ok({ nc: this.#nats, release: () => {} });
+      return ok(await this.#transport.acquireCurrent());
     }
     let lease: TransportLease;
     try {
@@ -6466,7 +6626,7 @@ export class Trellis<
         cause,
       }));
     }
-    return ok({ nc: lease.nc, release: () => lease.release() });
+    return ok(lease);
   }
 
   async #requestMessageWithRetry(args: {
@@ -6515,7 +6675,7 @@ export class Trellis<
         );
         return err(acquiredTransport.error);
       }
-      const { nc, release } = acquiredTransport;
+      const { nc, release, watchStatus } = acquiredTransport;
       try {
         // Create the exact reply inbox before signing so the proof binds the
         // reply subject the response arrives on.
@@ -6563,22 +6723,17 @@ export class Trellis<
           // Publish denials arrive on this generation's own status stream, not
           // the reply inbox. Watch the leased connection, never a mutable
           // logical default.
-          const statusIterator = nc.status()[Symbol.asyncIterator]();
-          const stopWatching = (async () => {
-            while (true) {
-              const next = await statusIterator.next();
-              if (next.done) return;
-              const error = (next.value as { error?: unknown } | null)?.error;
-              if (
-                error instanceof Error &&
-                ((error.name === "PermissionViolationError" &&
-                  Reflect.get(error, "operation") === "publish" &&
-                  Reflect.get(error, "subject") === args.subject) ||
-                  error.name === "AuthorizationError" ||
-                  error.name === "UserAuthenticationExpiredError")
-              ) response.reject(error);
-            }
-          })().catch(() => undefined);
+          const stopWatching = watchStatus((event) => {
+            const error = (event as { error?: unknown } | null)?.error;
+            if (
+              error instanceof Error &&
+              ((error.name === "PermissionViolationError" &&
+                Reflect.get(error, "operation") === "publish" &&
+                Reflect.get(error, "subject") === args.subject) ||
+                error.name === "AuthorizationError" ||
+                error.name === "UserAuthenticationExpiredError")
+            ) response.reject(error);
+          });
           try {
             if (args.signal?.aborted) {
               abort();
@@ -6588,8 +6743,7 @@ export class Trellis<
             return await response.promise;
           } finally {
             args.signal?.removeEventListener("abort", abort);
-            void statusIterator.return?.();
-            void stopWatching;
+            stopWatching();
             subscription.unsubscribe();
           }
         });
@@ -6723,6 +6877,21 @@ export class Trellis<
                   "Trellis returned an invalid operation error response.",
                 hint: "Inspect the provider's operation error response.",
                 cause: errorData.error,
+                context: { subject },
+              }));
+            }
+            if (errorData.type === "TransportError") {
+              const transportError = parse(TransportErrorDataSchema, json)
+                .take();
+              if (!isErr(transportError)) {
+                return err(createTransportError(transportError));
+              }
+              return err(createTransportError({
+                code: "trellis.request.invalid_response",
+                message:
+                  "Trellis returned an invalid transport error response.",
+                hint: "Inspect the provider's operation error response.",
+                cause: transportError.error,
                 context: { subject },
               }));
             }

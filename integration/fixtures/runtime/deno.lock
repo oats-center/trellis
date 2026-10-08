@@ -34,7 +34,8 @@
     "npm:pino@^10.3.1": "10.3.1",
     "npm:tweetnacl@^1.0.3": "1.0.3",
     "npm:typebox@^1.1.33": "1.3.34",
-    "npm:ulid@^3.0.2": "3.0.2"
+    "npm:ulid@^3.0.2": "3.0.2",
+    "npm:zod@^4.3.6": "4.6.5"
   },
   "npm": {
     "@nats-io/jetstream@3.4.0": {
@@ -402,6 +403,9 @@
     "ulid@3.0.2": {
       "integrity": "sha512-yu26mwteFYzBAot7KVMqFGCVpsF6g8wXfJzQUHvu1no3+rRRSFcSV2nKeYvNPLD2J4b08jYBDhHUjeH0ygIl9w==",
       "bin": true
+    },
+    "zod@4.6.5": {
+      "integrity": "sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q=="
     }
   },
   "workspace": {
@@ -419,10 +423,10 @@
           "jsr:@std/assert@^1.0.19",
           "jsr:@std/path@^1.1.4",
           "npm:@libsql/client@~0.15.15",
-          "npm:@nats-io/jetstream@^3.3.1",
-          "npm:@nats-io/kv@^3.3.1",
-          "npm:@nats-io/nats-core@^3.3.1",
-          "npm:@nats-io/transport-node@^3.3.1",
+          "npm:@nats-io/jetstream@^3.4.0",
+          "npm:@nats-io/kv@^3.4.0",
+          "npm:@nats-io/nats-core@^3.4.0",
+          "npm:@nats-io/transport-node@^3.4.0",
           "npm:fflate@~0.8.2",
           "npm:tar@^7.5.22",
           "npm:ulid@^3.0.2",

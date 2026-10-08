@@ -18,7 +18,17 @@ export const WorkerOptions = z.object({
   arrivalRate: z.number().nonnegative(),
   maxOutstanding: z.number().int().positive(),
   providerIndex: z.number().int().nonnegative().default(0),
-  workload: z.enum(["all", "transfer", "lifecycle"]).default("all"),
+  workload: z.enum(["all", "transfer", "lifecycle", "admission"]).default(
+    "all",
+  ),
+  rpcDelayMs: z.number().int().nonnegative().max(10_000).default(0),
+  rpcValueBytes: z.number().int().nonnegative().max(512 * 1024).default(0),
+  requestLimit: z.number().int().positive().max(1_000_000).default(32),
+  verificationWorkers: z.boolean().default(false),
+  maxVerificationWorkers: z.number().int().positive().default(3),
+  requestByteLimit: z.number().int().positive().max(0xffff_ffff).default(
+    16 * 1024 * 1024,
+  ),
   warmups: z.number().int().nonnegative().default(0),
 });
 
@@ -43,6 +53,7 @@ export type Sample = {
   offeredUnixMs?: number;
   schedulerDelayMs?: number;
   loadGeneratorDrop?: boolean;
+  phaseIndex?: number;
   documentTtfbMs?: number;
   navigationReadyMs?: number;
   transferredBytes?: number;

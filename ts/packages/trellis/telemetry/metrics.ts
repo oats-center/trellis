@@ -530,6 +530,7 @@ export type TrellisCatalogDuration = typeof TRELLIS_CATALOG_DURATIONS[number];
 
 /** Counter families in the production observability catalog. */
 export const TRELLIS_CATALOG_COUNTERS = [
+  "trellis.service.admission.rejections",
   "trellis.errors",
   "trellis.rpc.client.attempts",
   "trellis.connection.transitions",
@@ -548,6 +549,7 @@ export const TRELLIS_CATALOG_COUNTERS = [
   "trellis.snapshot.errors",
   "trellis.telemetry.route_overflow",
   "trellis.browser.errors",
+  "trellis.auth.worker.failures",
 ] as const;
 
 /** Counter metric names accepted by {@link recordCatalogCounter}. */
@@ -555,6 +557,11 @@ export type TrellisCatalogCounter = typeof TRELLIS_CATALOG_COUNTERS[number];
 
 /** Up/down counter families in the production observability catalog. */
 export const TRELLIS_CATALOG_UPDOWNS = [
+  "trellis.auth.worker.active",
+  "trellis.auth.worker.pending",
+  "trellis.auth.worker.payload_bytes",
+  "trellis.service.admission.inflight",
+  "trellis.service.admission.bytes",
   "trellis.rpc.server.inflight",
   "trellis.operation.active",
   "trellis.live.sessions",
@@ -756,7 +763,12 @@ export function recordCatalogUpDown(
   bindInstrumentProvider();
   let updown = CATALOG_UPDOWN_CACHE.get(name);
   if (!updown) {
-    updown = getTrellisMeter().createUpDownCounter(name);
+    updown = getTrellisMeter().createUpDownCounter(name, {
+      unit: name === "trellis.service.admission.bytes" ||
+          name === "trellis.auth.worker.payload_bytes"
+        ? "By"
+        : undefined,
+    });
     CATALOG_UPDOWN_CACHE.set(name, updown);
   }
   updown.add(delta, catalogAttributes(attributes));

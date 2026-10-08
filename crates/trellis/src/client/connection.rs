@@ -440,6 +440,7 @@ struct HealthHeartbeatConfig {
 }
 
 struct NativeConnectOptions<'a> {
+    request_limits: crate::service::RequestLimits,
     trellis_url: &'a str,
     participant_id: &'a str,
     participant_path: &'static str,
@@ -859,6 +860,7 @@ impl<'a> UserConnectOptions<'a> {
 
 /// Internal authenticated Trellis transport.
 pub struct TrellisClient {
+    pub(crate) request_admission: Arc<crate::service::admission::RequestAdmission>,
     nats: async_nats::Client,
     inbox_prefix: String,
     authorization_provider: AuthorizationProviderCache,
@@ -1050,7 +1052,15 @@ impl TrellisClient {
     pub async fn connect_service_with_contract(
         opts: ServiceConnectWithContractOptions<'_>,
     ) -> Result<Self, TrellisClientError> {
+        Self::connect_service_with_limits(opts, crate::service::RequestLimits::default()).await
+    }
+
+    pub(crate) async fn connect_service_with_limits(
+        opts: ServiceConnectWithContractOptions<'_>,
+        limits: crate::service::RequestLimits,
+    ) -> Result<Self, TrellisClientError> {
         Self::connect_native(NativeConnectOptions {
+            request_limits: limits,
             trellis_url: opts.trellis_url,
             participant_id: opts.participant_id,
             participant_path: opts.participant_path,
@@ -1093,6 +1103,7 @@ impl TrellisClient {
         opts: NativeConnectOptions<'_>,
     ) -> Result<Self, TrellisClientError> {
         let NativeConnectOptions {
+            request_limits,
             trellis_url,
             participant_id,
             participant_path,
@@ -1173,9 +1184,14 @@ impl TrellisClient {
             started_at: now_rfc3339(),
             publish_interval_ms: HEALTH_HEARTBEAT_INTERVAL_MS,
         };
-        let mut connected =
-            Self::connect_context(auth, contexts, timeout_ms, participant_kind_label(&kind))
-                .await?;
+        let mut connected = Self::connect_context(
+            auth,
+            contexts,
+            timeout_ms,
+            participant_kind_label(&kind),
+            request_limits,
+        )
+        .await?;
         connected.service_bootstrap_binding = Some(CoreBootstrapBinding::new(
             BootstrapBinding {
                 contract_id: authorization.participant_id,
@@ -1254,6 +1270,7 @@ impl TrellisClient {
         opts: DeviceConnectOptions<'_, C>,
     ) -> Result<Self, TrellisClientError> {
         Self::connect_native(NativeConnectOptions {
+            request_limits: crate::service::RequestLimits::default(),
             trellis_url: opts.trellis_url,
             participant_id: opts.participant_id,
             participant_path: C::PATH,
@@ -1308,7 +1325,14 @@ impl TrellisClient {
         )?;
         let authorization_contexts = Arc::new(authorization_contexts);
         refresh_until_materialized(&authorization_contexts, &auth, opts.timeout_ms).await?;
-        Self::connect_context(auth, authorization_contexts, opts.timeout_ms, "user").await
+        Self::connect_context(
+            auth,
+            authorization_contexts,
+            opts.timeout_ms,
+            "user",
+            crate::service::RequestLimits::default(),
+        )
+        .await
     }
 
     async fn connect_context(
@@ -1316,6 +1340,7 @@ impl TrellisClient {
         authorization_contexts: Arc<AuthorizationContextCache>,
         timeout_ms: u64,
         kind: &'static str,
+        request_limits: crate::service::RequestLimits,
     ) -> Result<Self, TrellisClientError> {
         let inbox_prefix = authorization_contexts.runtime_binding()?.inbox_prefix;
         let applied_native_authorization =
@@ -1333,6 +1358,7 @@ impl TrellisClient {
             authorization_contexts.clone(),
             timeout_ms,
             live_slot.clone(),
+            if kind == "service" { 512 } else { 64 * 1024 },
         )
         .await?;
         let nats = baseline_lease.nats().clone();
@@ -1346,6 +1372,9 @@ impl TrellisClient {
         let baseline_generation = baseline_lease.weak_generation();
         drop(baseline_lease);
 
+        let request_admission = Arc::new(crate::service::admission::RequestAdmission::new(
+            request_limits,
+        ));
         let live = crate::live::manager::LiveSessionManager::new(
             nats.clone(),
             baseline_generation_id,
@@ -1353,6 +1382,7 @@ impl TrellisClient {
             auth.clone(),
             authorization_contexts.clone(),
             authorization_contexts.runtime_binding()?.connection_id,
+            Arc::clone(&request_admission),
         );
         if let Ok(mut slot) = live_slot.lock() {
             *slot = Some(std::sync::Arc::downgrade(&live));
@@ -1378,6 +1408,7 @@ impl TrellisClient {
             ),
         );
         Ok(Self {
+            request_admission,
             nats,
             inbox_prefix,
             authorization_provider: provider.provider,

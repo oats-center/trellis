@@ -31,6 +31,11 @@ Expand capability selections and group presets against the exact participant
 revision before saving `Grants.Set` permissions. Discovery does not grant
 authority or make exact grants track future capability changes.
 
+The opt-in verification-worker trial belongs to TypeScript service runtimes;
+Rust services continue to verify proofs natively. Both use the Rust protocol's
+context and request-proof freshness rules, including checks after asynchronous
+worker verification in TypeScript. No Rust worker option or default changed.
+
 Author native IDL and set `[package]`, `[sources]`, and `[generate.rust].output`
 in `trellis.toml`. `trellis generate` is offline after dependencies are
 available in the global validated source-package cache. A durable `consumer`
@@ -54,6 +59,26 @@ An API SDK contains types and descriptors. The participant facade supplies the
 connection boundary and only the declared caller/provider surfaces. Its
 constants carry source-package/participant evidence; applications do not supply
 digests to service bootstrap.
+
+## Service Concurrency And Overload
+
+RPCs execute concurrently without ordering guarantees. Use transactions, revision
+checks, or application sequencing when order matters. Set local dispatch limits
+with `ServiceConnectOptions::with_request_limits` and
+`trellis_rs::service::RequestLimits` (`requests`, `bytes`, `controls`,
+`control_bytes`). The connected service shares the count-and-incoming-byte budget
+across endpoints and transport generations; NATS buffers and decoded heap are
+separate. Built-in Operation get/cancel and Live controls have reserved bounded
+capacity; application signals use ordinary capacity. Live control order remains
+unchanged. Operation start slots end at the start response, with ongoing
+Operations limited separately. Accepted work follows the receiving generation's
+existing drain rules.
+
+Verified refusal code `trellis.service.busy` means the request was not executed.
+There is no automatic SDK retry. Refusal verification is separately bounded, and
+traffic that cannot safely be verified and answered is dropped. Production
+`trellis.service.admission.inflight`, `.bytes`, and `.rejections` use shared
+TypeScript/Rust meanings and distinguish request, control, and verification pools.
 
 ## Connection
 

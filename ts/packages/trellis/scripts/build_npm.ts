@@ -61,6 +61,11 @@ await buildTypeScriptPackage({
 await copy("internal_sdk/generated", "npm/internal_sdk/generated");
 
 await Deno.mkdir("npm/auth/protocol_wasm", { recursive: true });
+await Deno.mkdir("npm/auth/authorization", { recursive: true });
+await Deno.copyFile(
+  "auth/authorization/verification_worker.mjs",
+  "npm/auth/authorization/verification_worker.mjs",
+);
 for (
   const file of [
     "trellis_protocol_wasm.js",

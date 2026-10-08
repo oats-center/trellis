@@ -196,6 +196,7 @@ pub struct ServiceConnectOptions<'a> {
     provisioned_identity_seed_base64url: &'a str,
     /// Request/connect timeout in milliseconds.
     timeout_ms: u64,
+    request_limits: super::RequestLimits,
 }
 
 impl<'a> ServiceConnectOptions<'a> {
@@ -206,6 +207,7 @@ impl<'a> ServiceConnectOptions<'a> {
             name: None,
             provisioned_identity_seed_base64url,
             timeout_ms: DEFAULT_TIMEOUT_MS,
+            request_limits: super::RequestLimits::default(),
         }
     }
 
@@ -218,6 +220,13 @@ impl<'a> ServiceConnectOptions<'a> {
     /// Set the request/connect timeout in milliseconds.
     pub const fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
         self.timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Bound provider dispatch across endpoints and transport generations.
+    /// Zero counts/bytes fail before connecting; busy refusals are not retried.
+    pub const fn with_request_limits(mut self, limits: super::RequestLimits) -> Self {
+        self.request_limits = limits;
         self
     }
 }
@@ -1390,6 +1399,7 @@ impl<C> ConnectedServiceRuntime<C> {
             .into();
         let job_hosts = self.job_hosts;
         let manager = self.client.transport_generations();
+        let admission = Arc::clone(&self.client.request_admission);
         let host = std::sync::Arc::new(bootstrap_service_host(
             &self.service_name,
             self.binding.bootstrap_binding(),
@@ -1397,7 +1407,7 @@ impl<C> ConnectedServiceRuntime<C> {
             self.auth,
         ));
         let serve = async move {
-            super::provider_ingress::run_provider_intake(manager, subjects, host).await
+            super::provider_ingress::run_provider_intake(manager, subjects, host, admission).await
         };
         let run = async {
             if job_hosts.is_empty() {
@@ -1443,8 +1453,9 @@ impl<C> ConnectedServiceRuntime<C> {
 impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
     /// Connect with generated participant evidence and parse the returned bootstrap binding.
     pub async fn connect(options: ServiceConnectOptions<'_>) -> Result<Self, ServiceRuntimeError> {
-        let client =
-            TrellisClient::connect_service_with_contract(ServiceConnectWithContractOptions {
+        let request_limits = options.request_limits.validate()?;
+        let client = TrellisClient::connect_service_with_limits(
+            ServiceConnectWithContractOptions {
                 trellis_url: options.trellis_url,
                 participant_id: C::ID,
                 participant_path: C::PATH,
@@ -1452,8 +1463,10 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
                 name: options.name,
                 provisioned_identity_seed_base64url: options.provisioned_identity_seed_base64url,
                 timeout_ms: options.timeout_ms,
-            })
-            .await?;
+            },
+            request_limits,
+        )
+        .await?;
         let binding = parse_bootstrap_binding(&client)?;
         let api_id = C::IMPLEMENTED_API_IDS.first().copied().ok_or_else(|| {
             TrellisClientError::Bootstrap(format!(

@@ -64,6 +64,7 @@ Deno.test(
         contract: providerContract,
       });
       let service = await TrellisService.connect({
+        runtime: { verificationWorkers: true },
         trellisUrl: runtime.trellisUrl,
         participant: providerContract,
         name: "transfer-generation-provider",
@@ -299,6 +300,7 @@ Deno.test(
           releaseInterrupted = true;
           assert(isErr(await interrupted));
           service = await TrellisService.connect({
+            runtime: { verificationWorkers: true },
             trellisUrl: runtime.trellisUrl,
             participant: providerContract,
             name: "transfer-generation-provider",
@@ -433,6 +435,7 @@ Deno.test("download endAck retires the last caller and provider generation lease
       contract: providerContract,
     });
     const provider = await TrellisService.connect({
+      runtime: { verificationWorkers: true },
       trellisUrl: runtime.trellisUrl,
       participant: providerContract,
       name: "download-ack-provider",
@@ -448,6 +451,7 @@ Deno.test("download endAck retires the last caller and provider generation lease
         contract: targetContract,
       });
       const growthTarget = await TrellisService.connect({
+        runtime: { verificationWorkers: true },
         trellisUrl: runtime.trellisUrl,
         participant: targetContract,
         name: "download-ack-growth-target",

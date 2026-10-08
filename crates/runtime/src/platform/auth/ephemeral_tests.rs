@@ -446,6 +446,7 @@ async fn nats_kv_repository_conforms() {
     .unwrap();
     drop(listeners);
     let mut servers = Vec::new();
+    let route_pool_size = 3;
     for index in 0..3 {
         let name = format!("ephemeral-{index}");
         let routes = (0..3)
@@ -455,7 +456,7 @@ async fn nats_kv_repository_conforms() {
             .join(",");
         let config = directory.path().join(format!("{name}.conf"));
         std::fs::write(&config, format!(
-            "server_name: {name}\nlisten: 127.0.0.1:{}\nhttp: 127.0.0.1:{}\njetstream {{ store_dir: '{}' }}\ncluster {{ name: ephemeral, listen: 127.0.0.1:{}, routes: [{routes}] }}\n",
+            "server_name: {name}\nlisten: 127.0.0.1:{}\nhttp: 127.0.0.1:{}\njetstream {{ store_dir: '{}' }}\ncluster {{ name: ephemeral, listen: 127.0.0.1:{}, pool_size: {route_pool_size}, routes: [{routes}] }}\n",
             ports[index * 3], ports[index * 3 + 2], directory.path().join(&name).display(), ports[index * 3 + 1],
         )).unwrap();
         let server = Server {
@@ -478,24 +479,46 @@ async fn nats_kv_repository_conforms() {
             for index in 0..3 {
                 let status = async {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                    let mut connection =
-                        tokio::net::TcpStream::connect(("127.0.0.1", ports[index * 3 + 2]))
+                    let mut status = serde_json::json!({});
+                    for path in ["jsz", "routez"] {
+                        let mut connection =
+                            tokio::net::TcpStream::connect(("127.0.0.1", ports[index * 3 + 2]))
+                                .await
+                                .ok()?;
+                        connection
+                            .write_all(
+                                format!("GET /{path} HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n").as_bytes(),
+                            )
                             .await
                             .ok()?;
-                    connection
-                        .write_all(
-                            b"GET /jsz HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n",
-                        )
-                        .await
-                        .ok()?;
-                    let mut response = Vec::new();
-                    connection.read_to_end(&mut response).await.ok()?;
-                    let start = response.windows(4).position(|bytes| bytes == b"\r\n\r\n")? + 4;
-                    serde_json::from_slice::<serde_json::Value>(&response[start..]).ok()
+                        let mut response = Vec::new();
+                        connection.read_to_end(&mut response).await.ok()?;
+                        let start = response.windows(4).position(|bytes| bytes == b"\r\n\r\n")? + 4;
+                        status[path] = serde_json::from_slice::<serde_json::Value>(&response[start..]).ok()?;
+                    }
+                    Some(status)
                 }
                 .await;
                 last_status = status.unwrap_or(serde_json::Value::Null);
-                let cluster = &last_status["meta_cluster"];
+                let cluster = &last_status["jsz"]["meta_cluster"];
+                // A metadata quorum is not a full mesh. A stream may be assigned
+                // to a peer missing this node's system-account reply subscription
+                // or application-account interest; wait for both route types.
+                ready &= last_status["routez"]["routes"]
+                    .as_array()
+                    .is_some_and(|routes| {
+                        servers.iter().enumerate()
+                            .filter(|(peer, _)| *peer != index)
+                            .all(|(_, (name, _))| {
+                                let peer_routes: Vec<_> = routes.iter()
+                                    .filter(|route| route["remote_name"].as_str() == Some(name.as_str()))
+                                    .collect();
+                                peer_routes.iter()
+                                    .filter(|route| route["account"].as_str().unwrap_or_default().is_empty())
+                                    .count() >= route_pool_size
+                                    && peer_routes.iter().any(|route| route["account"].as_str() == Some("$SYS"))
+                            })
+                    });
                 let current_leader = cluster["leader"].as_str().unwrap_or_default();
                 ready &= !current_leader.is_empty()
                     && cluster["cluster_size"].as_u64() == Some(3)
@@ -536,10 +559,47 @@ async fn nats_kv_repository_conforms() {
         }
     }
     let client = client.expect("NATS did not start");
+    let jetstream = async_nats::jetstream::new(client.clone());
+    // Route and Raft readiness do not mean the metadata leader has received
+    // every server's placement statistics. Establish usable three-replica
+    // storage before exercising repository initialization and promotion below.
+    let probe = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            match jetstream.create_stream(async_nats::jetstream::stream::Config {
+                name: "CLUSTER_READINESS".into(),
+                subjects: vec!["CLUSTER_READINESS".into()],
+                num_replicas: 3,
+                max_messages: 1,
+                max_bytes: 1024,
+                ..Default::default()
+            }).await {
+                Ok(stream) => break stream,
+                Err(error) if matches!(error.kind(),
+                    async_nats::jetstream::context::CreateStreamErrorKind::JetStream(error)
+                        if error.error_code() == async_nats::jetstream::ErrorCode::CLUSTER_NO_PEERS
+                ) => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+                Err(error) => panic!("replicated NATS readiness failed: {error}"),
+            }
+        }
+    }).await.expect("NATS did not become ready for three-replica placement");
+    jetstream
+        .publish("CLUSTER_READINESS", bytes::Bytes::from_static(b"ready"))
+        .await
+        .unwrap()
+        .await
+        .unwrap();
+    assert_eq!(
+        probe
+            .get_last_raw_message_by_subject("CLUSTER_READINESS")
+            .await
+            .unwrap()
+            .payload,
+        bytes::Bytes::from_static(b"ready")
+    );
+    jetstream.delete_stream("CLUSTER_READINESS").await.unwrap();
     let repository = NatsAuthEphemeralRepository::ensure(client.clone())
         .await
         .unwrap();
-    let jetstream = async_nats::jetstream::new(client.clone());
     let mut transactions = jetstream
         .get_key_value("trellis_auth_browser_transactions")
         .await
@@ -625,17 +685,33 @@ async fn nats_kv_repository_conforms() {
         .iter()
         .position(|(name, _)| name == &leader)
         .unwrap();
+    // A readiness request sent during an election may never get a response.
+    // Bound each poll, not just the entire wait; repository operations below
+    // continue using their unchanged production JetStream timeout.
+    let mut readiness = async_nats::jetstream::new(client.clone());
+    readiness.set_timeout(std::time::Duration::from_millis(250));
+    let readiness_stream = readiness
+        .get_stream_no_info("KV_trellis_auth_browser_transactions")
+        .await
+        .unwrap();
     let (_, server) = servers.remove(leader_index);
     drop(server);
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
         loop {
-            if let Ok(info) = transactions.stream.info().await {
+            if let Ok(info) = readiness_stream.get_info().await {
                 if info.cluster.as_ref().is_some_and(|cluster| {
                     cluster
                         .leader
                         .as_ref()
                         .is_some_and(|current| !current.is_empty() && current != &leader)
-                }) {
+                }) && readiness_stream
+                    .get_last_raw_message_by_subject(&format!(
+                        "{}{}",
+                        transactions.prefix, active.transaction_id
+                    ))
+                    .await
+                    .is_ok()
+                {
                     break;
                 }
             }
@@ -643,7 +719,7 @@ async fn nats_kv_repository_conforms() {
         }
     })
     .await
-    .expect("transaction stream did not elect a surviving leader");
+    .expect("transaction stream did not serve leader reads after failover");
     let mut retry = active.clone();
     retry.transaction_id = "replicated-retry".to_owned();
     retry.created_at += 100;

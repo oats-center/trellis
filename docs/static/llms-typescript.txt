@@ -11,6 +11,28 @@ JavaScript and TypeScript declarations. Use `import`. CommonJS output and
 fallback. The shared ESM `/service` entrypoint supports Node-compatible native
 runtimes, including Deno; JSR publication remains supported.
 
+## Service Concurrency And Overload
+
+RPC handlers run concurrently without execution/completion ordering guarantees.
+Use transactions, revision checks, or explicit application sequencing for ordering.
+`TrellisService.connect({ ..., runtime: { requestLimits: { requests: 32,
+bytes: 16 * 1024 * 1024 } } })` configures the connected service's local dispatch
+budget, shared across endpoints and transport generations. The optional
+`controls`/`controlBytes` fields reserve built-in Operation get/cancel and Live
+control capacity; application signals use ordinary slots. Incoming bytes exclude
+decoded objects and NATS buffers. Live controls retain protocol order.
+
+A verified refusal carries `trellis.service.busy`: the request was not executed,
+and the SDK does not automatically retry. RPCs expose it as the remote error's
+code; Operation start/control calls preserve structured transport-error codes.
+Refusal verification is itself bounded; traffic that cannot safely be verified
+and answered is dropped. Operation starts release their dispatch slots when the
+start response finishes, not when the Operation terminates. Accepted requests
+retain their receiving connection for the existing drain lifecycle.
+`trellis.service.admission.inflight`, `.bytes`, and `.rejections` are production
+metrics with `trellis.kind` distinguishing request, control, and verification
+pools.
+
 ## Generate And Connect
 
 Administrative Auth callers use generated actions, not handwritten account
@@ -93,6 +115,43 @@ await service.handleOrdersCreate(({ input }) =>
 The UUID is just this example's application identifier. Trellis does not choose
 the service's identifier scheme. Register providers, then await
 `service.wait()`; stop the service with `service.stop()` during shutdown.
+With logging enabled, service shutdown reports phase transitions and
+generation-owner cleanup start/finish records. Use the generation ID and owner
+or intake ID to locate unfinished cleanup. Process exit alone does not prove
+that `service.stop()` completed.
+Terminal shutdown stops local subscriptions and waits for accepted callbacks;
+it does not require a broker drain acknowledgment. Planned transport rollover
+still drains intake with acknowledgment while retaining accepted work.
+TypeScript services may opt into the experimental verifier with
+`runtime: { verificationWorkers: true }` in `TrellisService.connect(...)`. This
+uses the same Rust/WASM security implementation, starting one ordinary worker
+and one reserved worker, with controls ahead of busy-refusal verification.
+When all ordinary workers are busy and oldest queue age exceeds 20 ms for
+100 ms, the trial starts one more ordinary worker. `runtime.maxVerificationWorkers`
+is a positive-integer maximum, defaulting to three ordinary workers;
+starting workers count toward it. The reserved worker is additional.
+An ordinary worker failure stops further growth, without inline fallback.
+Workers are retained until shutdown, without shrinking or cooldown. Admission
+limits remain shared; only never-attempted queued proofs can be redistributed.
+Request and
+Transfer proof verification move off the receiving thread; event and Live-frame
+verification are unchanged. Exact payload bytes are copied only for executing
+verification. The main cache rechecks revocation coverage, context identity, and
+Rust-owned context/proof freshness before dispatch. Worker failure fails closed,
+without inline fallback or automatic retry. Worker loading supports Deno, Node,
+and browser bundles, including insecure HTTP without WebCrypto. This is an
+opt-in trial, not a throughput guarantee or a change to request-limit defaults.
+
+With telemetry enabled, `trellis.auth.worker.pending` and
+`trellis.auth.worker.payload_bytes` expose pending verification and copied
+executing payloads, not total memory. `trellis.auth.verification.duration` phase
+labels separate worker queue wait, dispatch/copy, execution, complete WASM
+verification, boundary/scheduling delay, and successful final checks. Execution
+contains verification; do not add those overlapping durations. Boundary time
+includes event-loop scheduling, not just message transport.
+`trellis.auth.worker.active` reports ready healthy workers, `worker.start` phase
+reports startup latency, and `trellis.auth.worker.failures` reports failures,
+excluding intentional shutdown.
 
 A caller that selects this action calls:
 

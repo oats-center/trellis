@@ -81,6 +81,7 @@ impl ProviderIngress {
         subjects: Arc<[String]>,
         handler: Arc<H>,
         owner_stop: tokio::sync::watch::Receiver<bool>,
+        admission: Arc<super::admission::RequestAdmission>,
     ) -> Result<Self, ServerError>
     where
         H: RequestHandler + 'static,
@@ -148,7 +149,8 @@ impl ProviderIngress {
                 }
             };
             if let Err(error) =
-                run_nats_request_loop_until(nats, subscribers, handler, pin, retire).await
+                run_nats_request_loop_until(nats, subscribers, handler, pin, retire, admission)
+                    .await
             {
                 tracing::warn!(%error, "service provider ingress loop ended");
             }
@@ -208,6 +210,7 @@ impl Drop for ProviderIngress {
 
 /// The logical service core's provider intake owner.
 struct ProviderIntake<H> {
+    admission: Arc<super::admission::RequestAdmission>,
     subjects: Arc<[String]>,
     handler: Arc<H>,
     /// Owner-scoped stop, latched once this logical provider's registration
@@ -258,6 +261,7 @@ where
                 self.subjects.clone(),
                 self.handler.clone(),
                 stop.clone(),
+                self.admission.clone(),
             );
             tokio::pin!(start);
             let result = tokio::select! {
@@ -326,6 +330,7 @@ pub(crate) async fn run_provider_intake<H>(
     manager: TransportGenerationManager,
     subjects: Arc<[String]>,
     handler: Arc<H>,
+    admission: Arc<super::admission::RequestAdmission>,
 ) -> Result<(), ServiceRuntimeError>
 where
     H: RequestHandler + 'static,
@@ -336,6 +341,7 @@ where
     }
     let (stop, _) = tokio::sync::watch::channel(false);
     let owner = Arc::new(ProviderIntake {
+        admission,
         subjects,
         handler,
         stop,

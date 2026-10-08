@@ -17,6 +17,65 @@ The requirements below apply when using Trellis surfaces. For example, a Trellis
 event's proof and subject are runtime-owned; that does not prohibit an
 application from using a separate message system for unrelated work.
 
+## Service Concurrency And Overload
+
+RPCs execute concurrently without ordering guarantees. Application transactions,
+revision checks, or explicit sequencing provide any needed ordering. Each
+connected service shares non-waiting count-and-incoming-byte dispatch budgets
+across endpoints and physical transport generations. NATS buffers and decoded
+heap are separate from byte accounting. Verified overload uses
+`trellis.service.busy`: the request was not executed, and the SDK does not
+automatically retry. Verification is separately bounded; traffic that cannot
+safely be verified and answered is dropped.
+
+Built-in Operation get/cancel and Live connection controls have reserved bounded
+capacity; application signals use ordinary capacity. Live protocol order stays
+unchanged. An Operation start releases its slot at the start response; ongoing
+Operations have independent limits. Accepted work keeps its receiving generation
+through the existing retirement/drain lifecycle. TypeScript uses
+`runtime.requestLimits` on service connection; Rust uses
+`ServiceConnectOptions::with_request_limits` and `RequestLimits`. Production
+`trellis.service.admission.inflight`, `.bytes`, and `.rejections` expose occupied
+slots, retained incoming bytes, and refusals with the same meanings in both SDKs.
+
+With logging enabled, TypeScript service shutdown reports phase transitions and
+generation-owner cleanup start/finish records. Use the generation ID and owner
+or intake ID to locate unfinished cleanup. Process exit alone does not prove
+that `service.stop()` completed.
+Terminal shutdown stops local subscriptions and waits for accepted callbacks;
+it does not require a broker drain acknowledgment. Planned transport rollover
+still drains intake with acknowledgment while retaining accepted work.
+TypeScript services may opt into the experimental verifier with
+`runtime: { verificationWorkers: true }` in `TrellisService.connect(...)`. This
+uses the same Rust/WASM security implementation, starting one ordinary worker
+and one reserved worker, with controls ahead of busy-refusal verification.
+When all ordinary workers are busy and oldest queue age exceeds 20 ms for
+100 ms, the trial starts one more ordinary worker. `runtime.maxVerificationWorkers`
+is a positive-integer maximum, defaulting to three ordinary workers;
+starting workers count toward it. The reserved worker is additional.
+An ordinary worker failure stops further growth, without inline fallback.
+Workers are retained until shutdown, without shrinking or cooldown. Admission
+limits remain shared; only never-attempted queued proofs can be redistributed.
+Request and
+Transfer proof verification move off the receiving thread; event and Live-frame
+verification are unchanged. Exact payload bytes are copied only for executing
+verification. The main cache rechecks revocation coverage, context identity, and
+Rust-owned context/proof freshness before dispatch. Worker failure fails closed,
+without inline fallback or automatic retry. Worker loading supports Deno, Node,
+and browser bundles, including insecure HTTP without WebCrypto. This is an
+opt-in trial, not a throughput guarantee or a change to request-limit defaults.
+
+With telemetry enabled, `trellis.auth.worker.pending` and
+`trellis.auth.worker.payload_bytes` expose pending verification and copied
+executing payloads, not total memory. `trellis.auth.verification.duration` phase
+labels separate worker queue wait, dispatch/copy, execution, complete WASM
+verification, boundary/scheduling delay, and successful final checks. Execution
+contains verification; do not add those overlapping durations. Boundary time
+includes event-loop scheduling, not just message transport.
+`trellis.auth.worker.active` reports ready healthy workers, `worker.start` phase
+reports startup latency, and `trellis.auth.worker.failures` reports failures,
+excluding intentional shutdown.
+
 ## Project And Generation
 
 A minimal `trellis.toml` is:

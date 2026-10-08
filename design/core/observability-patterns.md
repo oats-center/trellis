@@ -34,6 +34,49 @@ application logging and tracing outside that runtime remain application-owned. A
 service can declare its own health or statistics RPCs if useful, but those
 domain surfaces are not automatically added to its API or required by Trellis.
 
+Provider admission has three production metric families:
+
+| Metric                                 | Meaning                                                                                                                                            |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `trellis.service.admission.inflight`   | Occupied dispatch slots, labeled by `trellis.kind`: `request`, `control`, or `verification`.                                                       |
+| `trellis.service.admission.bytes`      | Retained inbound message bytes for those pools; excludes decoded heap and NATS buffers.                                                            |
+| `trellis.service.admission.rejections` | Refusals/drop decisions, labeled by original pool kind and limiting reason: `requests`, `bytes`, `verification_requests`, or `verification_bytes`. |
+
+These meanings are shared by TypeScript and Rust. A refusal count does not imply
+a busy reply was sent: reply proof and authorization still have to pass. The
+existing `trellis.rpc.server.inflight` follows unary dispatch instrumentation,
+which may include refusal validation; it is not an application-only concurrency
+count, all shared reservations, or transport queue occupancy.
+
+The opt-in TypeScript worker trial additionally exposes
+`trellis.auth.worker.pending` (queued plus executing verification attempts) and
+`trellis.auth.worker.payload_bytes` (copied payload bytes held for executing
+worker attempts), labeled by `trellis.kind`: `ordinary`, `control`, or
+`refusal`. These do not replace admission metrics or measure total heap, WASM
+memory, or broker buffers. Only executing work has an additional payload copy.
+
+`trellis.auth.worker.active` counts ready, healthy workers by `trellis.kind`
+(`ordinary` or `reserved`). `trellis.auth.worker.failures` counts worker
+failures by that kind and startup/execution phase; intentional shutdown is not a
+failure. `worker.start` in the verification duration family records successful
+worker startup latency. Adaptive growth retains these production metrics rather
+than adding test-only counters.
+
+Request verification also records phase durations in
+`trellis.auth.verification.duration`, labeled by the same `trellis.kind` and
+`trellis.phase`. `worker.queue` measures admitted scheduler wait; `worker.copy`
+measures dispatch preparation and the exact payload copy; `worker.execute`
+measures worker-local processing and contains `worker.verify` (the complete WASM
+proof-verification call). `worker.boundary` is the main-thread send-to-result
+duration minus worker-local processing: it includes serialization, delivery, and
+event-loop scheduling, not just an IPC syscall. Durations use monotonic clocks
+within each thread; no absolute cross-thread clocks are compared.
+`worker.postcheck` measures successful main-cache and Rust freshness checks
+after the result; `inline.verify` and `inline.postcheck` measure the
+corresponding inline path. Execution and verification overlap and must not be
+added together. Postcheck samples currently describe successful dispatch
+verification only.
+
 Activated devices publish through the same private health transport. Heartbeat
 publishing is a runtime protocol grant, not a contract dependency or event
 surface, so contract authors do not declare it.
@@ -76,8 +119,8 @@ Heartbeat behavior:
 
 ### Live Observation Telemetry
 
-The live-observation contract requires Live observations and Operation watchers to be
-observed as live sessions through bounded instruments in both languages:
+The live-observation contract requires Live observations and Operation watchers
+to be observed as live sessions through bounded instruments in both languages:
 `trellis.live.sessions` (phase
 `prepared`/`activating`/`active`/`draining`/`closing`), `trellis.live.ends`,
 `trellis.live.handshake.duration`, `trellis.live.buffered.bytes`,

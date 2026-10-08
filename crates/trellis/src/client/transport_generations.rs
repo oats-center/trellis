@@ -975,6 +975,7 @@ struct ManagerInner {
     auth: Arc<SessionAuth>,
     contexts: Arc<AuthorizationContextCache>,
     timeout_ms: u64,
+    subscription_capacity: usize,
     live_slot: Arc<Mutex<Option<Weak<LiveSessionManager>>>>,
     closed: AtomicBool,
     state: Mutex<ManagerState>,
@@ -1284,6 +1285,7 @@ impl TransportGenerationManager {
         contexts: Arc<AuthorizationContextCache>,
         timeout_ms: u64,
         live_slot: Arc<Mutex<Option<Weak<LiveSessionManager>>>>,
+        subscription_capacity: usize,
     ) -> Result<(Self, TransportLease), TrellisClientError> {
         let (state_version, _) = watch::channel(0u64);
         let (published, _) = watch::channel(None);
@@ -1294,6 +1296,7 @@ impl TransportGenerationManager {
             auth,
             contexts,
             timeout_ms,
+            subscription_capacity,
             live_slot,
             closed: AtomicBool::new(false),
             state: Mutex::new(ManagerState::default()),
@@ -2717,6 +2720,9 @@ async fn open_generation(
         }
     })
     .connection_timeout(Duration::from_millis(inner.timeout_ms))
+    // Bound each transport subscription's staging queue independently of the
+    // logical provider byte/count budget. Live has its own credit/frame bounds.
+    .subscription_capacity(inner.subscription_capacity)
     // Bound in-place reconnects: a lost generation is replaced by the manager,
     // not repaired inside itself.
     .max_reconnects(1)

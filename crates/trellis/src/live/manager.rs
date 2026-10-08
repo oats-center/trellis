@@ -122,6 +122,7 @@ impl ManagerUnavailable {
 
 /// One live session manager for an actual authenticated connection owner.
 pub struct LiveSessionManager {
+    request_admission: Arc<crate::service::admission::RequestAdmission>,
     /// The current attachment socket and its generation identity. It follows the
     /// generation manager's current generation (swapped by [`Self::rebind`])
     /// instead of pinning the initial connection, so a superseded baseline does
@@ -166,8 +167,10 @@ impl LiveSessionManager {
         auth: Arc<SessionAuth>,
         contexts: Arc<crate::client::AuthorizationContextCache>,
         provider_connection_id: String,
+        request_admission: Arc<crate::service::admission::RequestAdmission>,
     ) -> Arc<Self> {
         Arc::new(Self {
+            request_admission,
             attachment: std::sync::Mutex::new(LiveAttachment {
                 nats,
                 generation_id,
@@ -340,6 +343,15 @@ impl LiveSessionManager {
                 if manager.stopped.load(Ordering::Acquire) {
                     return;
                 }
+                let bytes = message.length
+                    + message.subject.as_str().len()
+                    + message
+                        .reply
+                        .as_ref()
+                        .map_or(0, |reply| reply.as_str().len());
+                let Some((permit, refused)) = manager.request_admission.admit(bytes, true) else {
+                    continue;
+                };
                 // Admit already-received work on this exact attachment before
                 // proof verification can yield. The weak source does not pin
                 // idle controls; lease admission races disposal under its fence.
@@ -353,8 +365,13 @@ impl LiveSessionManager {
                     continue;
                 };
                 if let Some(record) = manager.provider_session(&session_id) {
-                    record.dispatch_control(&receiving, message, lease).await;
+                    record
+                        .dispatch_control(&receiving, message, lease, permit, refused)
+                        .await;
                 } else {
+                    if refused {
+                        continue;
+                    }
                     manager.dispatch_closed_receipt(&receiving, &message).await;
                     drop(lease);
                 }

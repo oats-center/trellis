@@ -114,3 +114,8 @@ export type {
   TerminalJob,
   WorkerInfo,
 } from "../jobs.ts";
+/** Provider dispatch limits and their configuration parser. */
+export {
+  type RequestLimits,
+  RequestLimitsSchema,
+} from "../request_admission.ts";

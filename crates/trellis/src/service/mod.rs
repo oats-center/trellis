@@ -10,7 +10,9 @@
 //! signals.
 
 #[doc(hidden)]
+pub(crate) mod admission;
 mod authenticated_router;
+pub use admission::RequestLimits;
 mod bindings;
 #[doc(hidden)]
 mod bootstrap_ports;
@@ -229,6 +231,7 @@ pub mod internal {
             owner.client().transport_generations(),
             bound.into(),
             router,
+            std::sync::Arc::clone(&owner.client().request_admission),
         )
         .await
         .map_err(|error| super::ServerError::Nats(error.to_string()))
