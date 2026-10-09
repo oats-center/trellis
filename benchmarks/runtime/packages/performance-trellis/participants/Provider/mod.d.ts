@@ -72,7 +72,15 @@ declare const __participant: {
 	readonly identity: "performance-trellis.Provider";
 	readonly path: "Provider";
 	readonly implements: readonly [typeof Api0.API];
-	readonly uses: readonly [];
+	readonly uses: readonly [{
+		readonly api: typeof Api0.API;
+		readonly actions: readonly [{
+			readonly descriptorName: "event:Changed";
+			readonly direction: "subscribe";
+			readonly optionalCapabilities: readonly [];
+		}];
+		readonly optionalCapabilities: readonly [];
+	}];
 	readonly optionalGrants: Readonly<Record<string, readonly Readonly<{
 		action: string;
 		target: Readonly<Record<string, unknown>>;
@@ -103,7 +111,7 @@ export declare const participant: {
 	readonly __runtimeTypes?: typeof __participant.__runtimeTypes;
 	readonly packageEvidence: unknown;
 };
-export declare const PARTICIPANT_DIGEST: "CR1dKraNurVUnws2_9uW0D9X5sGSS4GV_PQJLEw0Jeg";
+export declare const PARTICIPANT_DIGEST: "2WFZ_Kf-IHimvZ4ONdMmJoCB5KyngIZfCwt8eKl5Nm4";
 export type Participant = typeof participant;
 export type ResourceDescriptors = typeof participant.resources;
 export type ChangesResource = ResourceDescriptors["changes"];

@@ -7,20 +7,22 @@ Deno.test("latency summaries retain failures and separate session cohorts", () =
     transport: "trellis",
     startedUnixMs: 0,
     durationMs,
+    firstByteMs: durationMs / 2,
     sessions: 1,
   }));
   observed.push({ ...observed[0], durationMs: 1000, error: "timeout" });
   observed.push({
     ...observed[0],
     durationMs: 0,
-    error: "outstanding limit",
     loadGeneratorDrop: true,
+    error: "outstanding limit",
   });
   observed.push({ ...observed[0], durationMs: 200, sessions: 10 });
   const [one, ten] = summarize(observed);
   assertEquals(one.medianMs, 20);
   assertEquals(one.attempts, 4);
-  assertEquals(one.errors, 2);
+  assertEquals(one.errors, 1);
+  assertEquals(one.phases.firstByteMs, 10);
   assertEquals(one.submitted, 3);
   assertEquals(one.drops, 1);
   assertEquals(one.p95Ms, null);

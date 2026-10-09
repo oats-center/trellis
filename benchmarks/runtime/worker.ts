@@ -48,7 +48,6 @@ if (options.role === "provider") {
         requests: options.requestLimit,
         bytes: options.requestByteLimit,
       },
-      verificationWorkers: options.verificationWorkers,
       maxVerificationWorkers: options.maxVerificationWorkers,
     },
   }).orThrow();
@@ -205,7 +204,11 @@ if (options.role === "provider") {
     return await op.complete(result.result).orThrow();
   });
   await service.handleWatch(async ({ input, emit }) => {
-    await emit(input).orThrow();
+    if (options.workload === "frames") {
+      for (let index = 0; index < options.calls; index++) {
+        await emit({ value: `${index}:${input.value}` }).orThrow();
+      }
+    } else await emit(input).orThrow();
   });
   service.jobs.work.handle(({ job }) => Promise.resolve(ok(job.payload)));
   service.jobs.keyedWork.handle(({ job }) => Promise.resolve(ok(job.payload)), {
@@ -223,10 +226,15 @@ if (options.role === "provider") {
     }
     return ok({ value: await digest(await object.bytes().orThrow()) });
   });
-  await service.onChanged(async ({ event }) => {
-    await service.publishDelivered(event).orThrow();
-    return ok(undefined);
-  }).orThrow();
+  await service.onChanged(
+    async ({ event }) => {
+      await service.publishDelivered(event).orThrow();
+      return ok(undefined);
+    },
+    undefined,
+    { mode: options.workload === "frames" ? "ephemeral" : "durable" },
+  )
+    .orThrow();
   const serving = service.wait();
   let reconnects = 0;
   const unsubscribe = options.workload === "lifecycle"
@@ -456,6 +464,199 @@ if (options.role === "provider") {
     }
     const client = await connect();
     held.push(client);
+    if (options.workload === "frames") {
+      const value = "x".repeat(options.rpcValueBytes);
+      const pending = new Map<
+        string,
+        ReturnType<typeof Promise.withResolvers<void>>
+      >();
+      await client.onDelivered((event) => {
+        const actual = types.ValueCodec.decode(event).value;
+        const waiter = pending.get(actual);
+        if (!waiter) {
+          console.error(
+            "FRAME_BENCHMARK_EVENT_UNEXPECTED",
+            JSON.stringify({
+              received: actual.slice(0, 80),
+              expected: [...pending.keys()].map((value) => value.slice(0, 40)),
+            }),
+          );
+          throw new Error(
+            "Event payload corrupted or delivered more than once",
+          );
+        }
+        pending.delete(actual);
+        waiter.resolve();
+        return ok(undefined);
+      }, { mode: "ephemeral" }).orThrow();
+      for (let sample = 0; sample < options.samples; sample++) {
+        for (const sessions of options.sessionCounts) {
+          await measure(
+            options.liveRpcProbes
+              ? "live-frame-throughput-with-rpc"
+              : "live-frame-throughput",
+            "trellis",
+            async () => {
+              const cancellation = await client.awaitCancellation({
+                value: "frame-load-control",
+              }).start().orThrow();
+              let probe: Promise<number> | undefined;
+              let firstByteMs: number | undefined;
+              let total = 0;
+              const started = performance.now();
+              const startedUnixMs = Date.now();
+              let rpc: Promise<void> | undefined;
+              let rpcFailure: unknown;
+              let offered = 0;
+              const rpcTimer = options.liveRpcProbes
+                ? setInterval(() => {
+                  const now = performance.now();
+                  const due = Math.floor((now - started) / 20);
+                  while (offered < due) {
+                    const scheduled = ++offered * 20;
+                    const schedulerDelayMs = now - started - scheduled;
+                    const row = {
+                      scenario: "live-competing-rpc",
+                      transport: "trellis" as const,
+                      sessions,
+                      startedUnixMs: startedUnixMs + scheduled,
+                      schedulerDelayMs,
+                    };
+                    if (schedulerDelayMs >= 20 || rpc) {
+                      samples.push({
+                        ...row,
+                        durationMs: 0,
+                        loadGeneratorDrop: true,
+                      });
+                      continue;
+                    }
+                    const rpcStarted = performance.now();
+                    rpc = (async () => {
+                      try {
+                        const result = await client.echo({
+                          value: "live-foreground-probe",
+                        }).orThrow();
+                        if (
+                          result.value !== "live-foreground-probe"
+                        ) {
+                          throw new Error("Foreground RPC payload corrupted");
+                        }
+                        samples.push({
+                          ...row,
+                          durationMs: performance.now() - rpcStarted,
+                        });
+                      } catch (cause) {
+                        rpcFailure ??= cause;
+                        samples.push({
+                          ...row,
+                          durationMs: performance.now() - rpcStarted,
+                          error: String(cause),
+                        });
+                      } finally {
+                        rpc = undefined;
+                      }
+                    })();
+                  }
+                }, 20)
+                : undefined;
+              try {
+                await deadline(
+                  Promise.all(Array.from({ length: sessions }, async () => {
+                    const feed = await client.watch({ value }).orThrow();
+                    let received = 0;
+                    try {
+                      for await (const frame of feed) {
+                        if (frame.value !== `${received}:${value}`) {
+                          throw new Error("Live payload or order corrupted");
+                        }
+                        received++;
+                        total++;
+                        firstByteMs ??= performance.now() - started;
+                        if (
+                          !probe && received >= Math.ceil(options.calls / 2)
+                        ) {
+                          const requested = performance.now();
+                          probe = cancellation.cancel().orThrow().then(() =>
+                            performance.now() - requested
+                          );
+                          void probe.catch(() => {});
+                        }
+                      }
+                      if (received !== options.calls) {
+                        throw new Error(
+                          `Lost Live frames: ${received}/${options.calls}`,
+                        );
+                      }
+                    } finally {
+                      await feed.close();
+                    }
+                  })),
+                );
+              } finally {
+                clearInterval(rpcTimer);
+                await rpc;
+              }
+              if (rpcFailure) throw rpcFailure;
+              if (!probe) throw new Error("Cancellation probe was not sent");
+              const cancellationMs = await probe;
+              const terminal = await cancellation.wait().orThrow();
+              if (terminal.state !== "cancelled") {
+                throw new Error("Operation did not cancel under frame load");
+              }
+              return {
+                dataFrames: total,
+                operations: total,
+                sessions,
+                firstByteMs,
+                cancellationMs,
+              };
+            },
+            options.rpcValueBytes,
+          );
+        }
+        await measure("event-verified-roundtrip", "trellis", async () => {
+          try {
+            // Bounded batches avoid retaining all completed request promises and
+            // do not silently hide failures as generator drops.
+            for (
+              let first = 0;
+              first < options.calls;
+              first += options.maxOutstanding
+            ) {
+              await deadline(
+                Promise.all(
+                  Array.from({
+                    length: Math.min(
+                      options.maxOutstanding,
+                      options.calls - first,
+                    ),
+                  }, async (_, offset) => {
+                    const eventValue = `${sample}:${first + offset}:${value}`;
+                    const waiter = Promise.withResolvers<void>();
+                    pending.set(eventValue, waiter);
+                    await client.publishChanged({ value: eventValue })
+                      .orThrow();
+                    await waiter.promise;
+                  }),
+                ),
+              );
+            }
+            return { operations: options.calls };
+          } catch (cause) {
+            throw new Error(
+              `Event round trip incomplete; ${pending.size} waiting: ${
+                [...pending.keys()].map((value) => value.slice(0, 40)).join(
+                  ", ",
+                )
+              }`,
+              { cause },
+            );
+          } finally {
+            pending.clear();
+          }
+        }, options.rpcValueBytes);
+      }
+    }
     const ephemeral = new Map<string, () => void>();
     const durable = new Map<string, () => void>();
     if (options.workload === "all") {
@@ -568,7 +769,11 @@ if (options.role === "provider") {
         durable.delete(durableValue);
       }
     }
-    for (let trial = -options.warmups; trial < options.samples; trial++) {
+    for (
+      let trial = -options.warmups;
+      options.workload !== "frames" && trial < options.samples;
+      trial++
+    ) {
       // Alternate protocols to avoid consistently giving one the warmer host.
       const pair = options.workload === "admission"
         ? ["trellis"] as const

@@ -42,11 +42,15 @@ controls have reserved bounded capacity; ongoing Operations have separate limits
 The `trellis.service.admission.*` production metrics expose occupied slots,
 retained incoming bytes, and refusals; incoming bytes are not total process memory.
 See the language guides for local configuration.
-TypeScript services can opt into adaptive Rust/WASM request verification with
-`runtime.verificationWorkers: true`: start one ordinary and one reserved worker,
+TypeScript services use adaptive Rust/WASM request/Transfer verification:
+start one ordinary and one reserved worker,
 grow on sustained verification backlog up to `runtime.maxVerificationWorkers`
 (three ordinary workers by default), and retain workers until shutdown.
 This remains a trial; worker count does not change shared admission budgets.
+The development trial also offloads Live/Transfer frame proofs and historical
+event verification. Services share their pool; logical clients lazily start one
+shared ordinary worker. Private keys stay with the signer. Matched benchmarks
+show throughput regressions; this is not a performance recommendation.
 
 ## Essential Workflow
 

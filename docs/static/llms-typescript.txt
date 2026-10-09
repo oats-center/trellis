@@ -122,25 +122,35 @@ that `service.stop()` completed.
 Terminal shutdown stops local subscriptions and waits for accepted callbacks;
 it does not require a broker drain acknowledgment. Planned transport rollover
 still drains intake with acknowledgment while retaining accepted work.
-TypeScript services may opt into the experimental verifier with
-`runtime: { verificationWorkers: true }` in `TrellisService.connect(...)`. This
+TypeScript services use worker request/Transfer verification automatically in
+`TrellisService.connect(...)`, without an opt-out or inline service fallback. This
 uses the same Rust/WASM security implementation, starting one ordinary worker
 and one reserved worker, with controls ahead of busy-refusal verification.
 When all ordinary workers are busy and oldest queue age exceeds 20 ms for
-100 ms, the trial starts one more ordinary worker. `runtime.maxVerificationWorkers`
+100 ms, the pool starts one more ordinary worker. Optional
+`runtime.verificationWorkerQueueAgeMs` (default 20) and
+`runtime.verificationWorkerBacklogDurationMs` (default 100) configure these
+nonnegative millisecond thresholds; zero removes that delay.
+`runtime.maxVerificationWorkers`
 is a positive-integer maximum, defaulting to three ordinary workers;
 starting workers count toward it. The reserved worker is additional.
 An ordinary worker failure stops further growth, without inline fallback.
 Workers are retained until shutdown, without shrinking or cooldown. Admission
 limits remain shared; only never-attempted queued proofs can be redistributed.
-Request and
-Transfer proof verification move off the receiving thread; event and Live-frame
-verification are unchanged. Exact payload bytes are copied only for executing
+Request and Transfer proof verification move off the receiving thread. The
+development trial also offloads Live/Transfer frame digests and proofs and
+historical event verification. Services reuse ordinary workers; logical clients
+lazily start one shared ordinary worker, without a worker per stream or reserved
+client worker. Private keys remain with the existing signer. Protocol ordering,
+credit, current authority checks, and historical event authorization semantics
+remain unchanged. Matched Eta measurements show throughput regressions; this
+trial is not a performance recommendation. Exact payload bytes are copied only
+for executing
 verification. The main cache rechecks revocation coverage, context identity, and
 Rust-owned context/proof freshness before dispatch. Worker failure fails closed,
 without inline fallback or automatic retry. Worker loading supports Deno, Node,
-and browser bundles, including insecure HTTP without WebCrypto. This is an
-opt-in trial, not a throughput guarantee or a change to request-limit defaults.
+and browser bundles, including insecure HTTP without WebCrypto. This is a
+worker policy, not a throughput guarantee or a change to request-limit defaults.
 
 With telemetry enabled, `trellis.auth.worker.pending` and
 `trellis.auth.worker.payload_bytes` expose pending verification and copied

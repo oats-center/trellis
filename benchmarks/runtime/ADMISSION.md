@@ -14,7 +14,17 @@ rate-limited actionable warning logs identifying the budget, outcome, and
 configuration control; that logging is still outstanding. Passing functional
 tests does not approve the numeric defaults.
 
-## Grow-only verifier trial
+## Grow-only verifier policy
+
+Current development changes make worker verification the only TypeScript service
+request/Transfer path. The opt-in service switch is removed. Optional
+`runtime.verificationWorkerQueueAgeMs` and
+`runtime.verificationWorkerBacklogDurationMs` configure the thresholds below,
+defaulting to 20 and 100 milliseconds. Both accept nonnegative values; zero
+removes the corresponding delay. Admission defaults remain unchanged. Full
+acceptance is deferred until the Live/event work is complete; this is not a
+release or publication claim. Measurements below describe the preceding opt-in
+trial, not a new verification of these development changes.
 
 The approved adaptive trial starts **one ordinary verifier plus one reserved
 verifier**. All ordinary workers must be occupied, and the oldest queued
@@ -113,6 +123,121 @@ retained phase/count reporting after execution. These are two large repeats and
 one small/burst case each on a shared host, not deployment sizing guarantees.
 The trial remains opt-in; full framework acceptance and shipping enablement are
 not claimed by these measurements. Admission defaults are unchanged.
+
+## Live, Transfer frame, and event offloading trial
+
+The development trial moves frame digests, complete frame-proof verification,
+and historical event verification into the existing Rust/WASM workers. Service
+data uses ordinary pool capacity; clients lazily start one shared ordinary
+worker per logical connection. Private keys and digest signing remain with the
+existing signer. Wire bytes, ordering, credit, current authority checks, and
+publication-time event authorization are preserved. Whole-object integrity
+hashing, serialization, and small digest signing still run on their existing
+paths: this does not remove every synchronous operation.
+
+### Matched Eta comparison, October 8
+
+Both SDK snapshots used the same generated benchmark contracts, WASM assets,
+optimized prebuilt server/CLI, Deno runtime, and workloads. The preserved SDK
+baseline already included mandatory adaptive service request verification; this
+comparison isolates the subsequent frame/event routing. Worker thresholds and
+admission limits were not retuned. Each workload used fresh services,
+alternating variant order, and three measured samples. Event delivery used
+ephemeral listeners in both versions, with explicit authored subscription needs.
+Early durable-listener diagnostics are retained as failures, not capacity
+results.
+
+Without foreground RPC probes:
+
+| Workload                                          | Baseline median | Offloaded median |
+| ------------------------------------------------- | --------------: | ---------------: |
+| Live, 2,000 1 KiB frames, one stream              |          758 ms |         2,058 ms |
+| Live, 500 256 KiB frames per stream, four streams |         10.86 s |          12.72 s |
+| 500 verified 256 KiB event round trips            |          3.55 s |           7.31 s |
+| 8 MiB verified download                           |          303 ms |           622 ms |
+| 8 MiB verified upload, persisted object read back |          633 ms |           762 ms |
+
+Cancellation during these Live cohorts completed in both versions, roughly
+270–313 ms. These are elapsed workload medians, not bare cryptographic speed.
+
+### Independent foreground RPC schedule
+
+Earlier frame-paced probes were not a fair comparison: slower frame delivery
+also reduced their offered RPC rate. Those diagnostics remain retained, but the
+decision comparison uses an independent 50 RPC/s schedule during each Live
+cohort. At most one probe is outstanding per client. Missed scheduler slots and
+offers while a probe is outstanding are counted as not sent. Neither errors nor
+unsent probes contribute to successful latency quantiles. Both versions
+completed every RPC actually sent in the following comparisons.
+
+| Frame workload        | Baseline stream median | Offloaded stream median | RPC median baseline → offloaded | RPC p95 baseline → offloaded | Unsent / offered baseline → offloaded |
+| --------------------- | ---------------------: | ----------------------: | ------------------------------: | ---------------------------: | ------------------------------------: |
+| 1 KiB, one stream     |                0.702 s |                 2.400 s |                  5.30 → 5.16 ms |              14.01 → 9.86 ms |                        6/118 → 12/377 |
+| 1 KiB, four streams   |                1.821 s |                 2.778 s |                 28.90 → 3.42 ms |              43.89 → 8.53 ms |                       141/267 → 8/398 |
+| 256 KiB, one stream   |               11.205 s |                11.681 s |                  4.68 → 5.13 ms |             23.78 → 13.55 ms |                  253/1,684 → 98/1,763 |
+| 256 KiB, four streams |               10.541 s |                13.043 s |                  8.03 → 9.26 ms |             13.98 → 16.45 ms |                 124/1,579 → 128/1,946 |
+
+Offered totals differ because streaming durations differ; the schedule remains
+50/s, and both sent and unsent counts are reported. Cancellation completed in
+all twelve streaming samples per variant, with cohort medians of 271–348 ms. The
+small four-stream case demonstrates better foreground responsiveness at lower
+streaming throughput. The large four-stream case does not demonstrate a
+foreground latency benefit. This does not establish a universal reason to move
+all frame traffic into workers.
+
+Sampled whole-process peak PSS across each fixed-rate comparison was:
+
+| Cohort  | Provider baseline → offloaded | Caller baseline → offloaded |
+| ------- | ----------------------------: | --------------------------: |
+| 1 KiB   |             232.1 → 259.2 MiB |           247.5 → 251.6 MiB |
+| 256 KiB |             492.9 → 509.9 MiB |           433.1 → 491.8 MiB |
+
+These include the complete cohort, event traffic, allocator retention, and
+runtime work. They are sampled process peaks, not isolated worker allocations or
+total-memory estimates from admission counters. Service startup policy is the
+same in both snapshots; lazy client startup is included in first-use frame
+timing, not independently isolated as a startup-cost benchmark.
+
+### Verification and limits
+
+Final focused verification passed seven real-NATS Live flow/credit,
+authorization-reduction, and Transfer generation/revocation tests, plus five
+real-WASM/native-proof and reporting transformation tests. Earlier admission and
+broker-offline teardown checks also passed. Public SDK/service entrypoints and
+benchmark consumers type-check; artifact regeneration, Rust formatting, and
+patch whitespace checks passed. The normal source formatter was run; its broad
+pre-existing generated-JavaScript layout churn was discarded by regeneration,
+retaining only the authored contract and package-evidence changes.
+
+Packaged proof checks authenticate native Live frames, reject tampering, and
+preserve historical event authorization in Node, Deno, and insecure-HTTP
+Chromium without browser WebCrypto. These packaged checks exercise the verifier
+boundary, not a complete packaged browser Live app. The added npm dependency
+declaration includes the already-used Zod runtime.
+
+The frame/event path adds payload copies, worker scheduling, and reply waits on
+sending and receiving paths. These are known additional steps, not a measured
+attribution of the slowdown. Moving crypto off the NATS-processing thread may
+improve foreground responsiveness, but slower frame delivery also reduces
+competing work. The independent RPC schedule does not remove that confound:
+equal-frame-rate comparisons and frame-specific phase profiling are still needed
+to separate those effects.
+
+The trial is **not accepted as a performance improvement**. The measurements do
+not isolate the cause of the regressions, establish production capacity, or
+prove UI responsiveness on target devices. Full framework acceptance remains
+deferred until the combined work is settled.
+
+Evidence is retained locally under `.verification/results/` and on Eta under
+`/home/abalmos/trellis-admission.2lnzFPry/results/`: successful unprobed
+comparisons are `frame-{baseline,offloaded}-{small,large,transfer}-2`, and the
+fixed-50/s comparisons are `frame-{baseline,offloaded}-{small,large}-rpc-4`.
+Each fixed-rate comparison also has a matching `.source.tar.gz` containing its
+exact SDK, benchmark, generated-contract, and WASM sources. Raw samples,
+metadata, resource timelines, production metrics, cleanup outcomes, and earlier
+failed diagnostic cohorts are retained. Reports recompute quantiles from raw
+sent successes; the summary transformation regression first failed against the
+old inclusion of unsent probes.
 
 ## Implemented policy
 

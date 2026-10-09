@@ -21,6 +21,8 @@ import type {
 import type { AuthorizationContextCache } from "./client_context.ts";
 import type {
   AuthorizationVerificationWorkers,
+  FrameDigestJob,
+  FrameVerifyJob,
   VerificationLane,
 } from "./verification_workers.ts";
 import type { RequestLimits } from "../../request_admission.ts";
@@ -241,6 +243,7 @@ type ContextLoadSource = CandidateLoadSource | OwnResumeLoadSource;
 /** Connected provider-side authorization verifier. */
 export class AuthorizationProviderCache {
   #workers?: AuthorizationVerificationWorkers;
+  #dataWorkerStart?: Promise<AuthorizationVerificationWorkers>;
   #registry: AuthorizationRegistryReader;
   readonly #cache: AuthorizationContextCache;
   readonly #now: () => number;
@@ -354,6 +357,8 @@ export class AuthorizationProviderCache {
     timeoutMs: number,
     limits?: RequestLimits,
     maxOrdinaryWorkers?: number,
+    queueAgeMs?: number,
+    backlogDurationMs?: number,
   ): Promise<void> {
     if (this.#workers) {
       throw new Error("Verification workers are already enabled");
@@ -365,6 +370,8 @@ export class AuthorizationProviderCache {
       timeoutMs,
       limits,
       maxOrdinaryWorkers,
+      queueAgeMs,
+      backlogDurationMs,
     );
     if (this.#stopped || this.#workers) {
       workers.close();
@@ -1700,19 +1707,24 @@ export class AuthorizationProviderCache {
         if (event.sessionKey !== state.verified.context.sessionKey) {
           return eventFailure("InvalidInput", "/session-key");
         }
-        const { verifyAuthorizationEventWasm } = await import(
-          "../protocol_wasm.ts"
-        );
-        const result = await verifyAuthorizationEventWasm({
-          contextHandle: state.handle,
-          descriptorIdentity: event.descriptorIdentity,
-          subject: event.subject,
-          payload: event.payload,
-          eventId: event.eventId,
-          eventTime: event.eventTime,
-          proof: event.proof,
-          policy: this.#policy(this.#now()),
-          revokedAt: entry.revokedAt ?? null,
+        const workers = await this.#dataWorkers();
+        const result = await workers.verifyEvent({
+          entry,
+          context: {
+            issuer: entry.issuer,
+            signed: entry.context,
+            digest: entry.contextDigest,
+          },
+          policy: () => this.#policy(this.#now()),
+          input: {
+            descriptorIdentity: event.descriptorIdentity,
+            subject: event.subject,
+            payload: event.payload,
+            eventId: event.eventId,
+            eventTime: event.eventTime,
+            proof: event.proof,
+            revokedAt: entry.revokedAt ?? null,
+          },
         });
         this.#requireEntry(entry);
         if (!result.ok) return result;
@@ -1731,6 +1743,47 @@ export class AuthorizationProviderCache {
       if (error instanceof AuthorizationProviderUnavailableError) throw error;
       return eventFailure("InvalidInput", "/authorization-context");
     }
+  }
+
+  /** Offload exact-byte frame hashing; private keys remain with the session signer. @internal */
+  async frameDigest(job: FrameDigestJob): Promise<Uint8Array> {
+    return await (await this.#dataWorkers()).digest(job);
+  }
+
+  /** Offload provider proof verification; protocol owners still fence authority afterward. @internal */
+  async verifyFrame(job: FrameVerifyJob): Promise<void> {
+    await (await this.#dataWorkers()).verifyFrame(job);
+  }
+
+  async #dataWorkers(): Promise<AuthorizationVerificationWorkers> {
+    this.#requireRunning();
+    if (this.#workers) return this.#workers;
+    if (!this.#dataWorkerStart) {
+      this.#dataWorkerStart = (async () => {
+        const { AuthorizationVerificationWorkers } = await import(
+          "./verification_workers.ts"
+        );
+        // Non-service clients need no request/refusal verifier or reserved thread.
+        // Share one lazily initialized ordinary worker across their streams.
+        const workers = await AuthorizationVerificationWorkers.open(
+          30_000,
+          undefined,
+          1,
+          20,
+          100,
+          false,
+        );
+        if (this.#stopped) {
+          workers.close();
+          throw new AuthorizationProviderUnavailableError(
+            "Authorization verifier stopped during worker startup",
+          );
+        }
+        this.#workers = workers;
+        return workers;
+      })();
+    }
+    return await this.#dataWorkerStart;
   }
 
   async #entry(

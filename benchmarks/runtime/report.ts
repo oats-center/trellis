@@ -22,6 +22,17 @@ const resultsSchema = z.object({
     phaseIndex: z.number().int().nonnegative().optional(),
     error: z.string().optional(),
     loadGeneratorDrop: z.boolean().optional(),
+    bytes: z.number().optional(),
+    sessions: z.number().optional(),
+    connectMs: z.number().optional(),
+    firstRpcMs: z.number().optional(),
+    setupMs: z.number().optional(),
+    firstByteMs: z.number().optional(),
+    cancellationMs: z.number().optional(),
+    schedulerDelayMs: z.number().optional(),
+    documentTtfbMs: z.number().optional(),
+    navigationReadyMs: z.number().optional(),
+    transferredBytes: z.number().optional(),
   })),
   summary: z.array(
     z.object({
@@ -74,6 +85,8 @@ const metadataSchema = z.object({
   maxVerificationWorkers: z.number().int().positive().optional(),
   rpcDelayMs: z.number().default(0),
   rpcValueBytes: z.number().default(0),
+  liveRpcProbes: z.boolean().default(false),
+  liveRpcProbeRate: z.number().nonnegative().optional(),
   requestLimit: z.number().optional(),
   requestByteLimit: z.number().optional(),
   passwordHashParameters: z.array(z.string()),
@@ -88,6 +101,7 @@ const metadataSchema = z.object({
 const results = resultsSchema.parse(
   JSON.parse(await Deno.readTextFile(`${input}/samples.json`)),
 );
+results.summary = summarize(results.samples);
 const metadata = metadataSchema.parse(
   JSON.parse(await Deno.readTextFile(`${input}/metadata.json`)),
 );
@@ -436,12 +450,12 @@ lines.push(
   "",
   "Latency percentiles describe successful attempts; failed attempts and generator drops remain in the counts and raw samples.",
   "",
-  "| Workload | Attempts / errors | Median ms | p95 ms | p99 ms |",
-  "|---|---:|---:|---:|---:|",
+  "| Workload | Offered / errors | Sent / not sent | Median ms | p95 ms | p99 ms |",
+  "|---|---:|---:|---:|---:|---:|",
 );
 for (const row of results.summary) {
   lines.push(
-    `| ${row.name} | ${row.attempts} / ${row.errors} | ${
+    `| ${row.name} | ${row.attempts} / ${row.errors} | ${row.submitted} / ${row.drops} | ${
       row.medianMs?.toFixed(3) ?? "—"
     } | ${row.p95Ms?.toFixed(3) ?? "—"} | ${row.p99Ms?.toFixed(3) ?? "—"} |`,
   );
@@ -728,6 +742,10 @@ if (Deno.args[1]) {
       "cpuTicks",
       "arrivalRate",
       "maxOutstanding",
+      "rpcDelayMs",
+      "rpcValueBytes",
+      "liveRpcProbes",
+      "liveRpcProbeRate",
       "passwordHashParameters",
       "cpuModel",
       "logicalCpus",
@@ -747,6 +765,7 @@ if (Deno.args[1]) {
   const oldResults = resultsSchema.parse(
     JSON.parse(await Deno.readTextFile(`${baseline}/samples.json`)),
   );
+  oldResults.summary = summarize(oldResults.samples);
   lines.push(
     "",
     `## Compared with ${oldMetadata.revision}`,

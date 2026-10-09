@@ -49,7 +49,7 @@ const args = parseArgs(Deno.args, {
     "inspect-provider",
     "cpu-profile-provider",
     "nats-diagnostics",
-    "verification-workers",
+    "live-rpc-probes",
   ],
   default: {
     samples: "21",
@@ -83,6 +83,7 @@ const lane = z.enum([
   "rust",
   "contract",
   "admission",
+  "frames",
 ])
   .parse(
     args.lane,
@@ -100,11 +101,9 @@ const rpcDelayMs = z.coerce.number().int().nonnegative().max(10_000).parse(
 const rpcValueBytes = z.coerce.number().int().nonnegative().max(512 * 1024)
   .parse(args["rpc-value-bytes"]);
 const requestLimit = positive.max(1_000_000).parse(args["request-limit"]);
-const verificationWorkers = Boolean(args["verification-workers"]);
+const verificationWorkers = providerLanguage === "typescript";
 const maxVerificationWorkers = positive.parse(args["max-verification-workers"]);
-if (verificationWorkers && providerLanguage !== "typescript") {
-  throw new Error("Verification workers are a TypeScript provider trial");
-}
+const liveRpcProbes = args["live-rpc-probes"];
 const requestByteLimit = positive.max(0xffff_ffff).parse(
   args["request-byte-limit"],
 );
@@ -250,7 +249,7 @@ async function startWorker(
   return child;
 }
 try {
-  if (lane === "admission") {
+  if (lane === "admission" || lane === "frames") {
     // Decode real production exports using the upstream OTLP schema already
     // consumed by live coverage tests, not exporter internals or a wire parser.
     const decoder = Root.fromJSON(otlpMetricsSchema).lookupType(
@@ -379,8 +378,9 @@ try {
         rpcValueBytes,
         requestLimit,
         requestByteLimit,
-        verificationWorkers,
         maxVerificationWorkers,
+        liveRpcProbes,
+        liveRpcProbeRate: liveRpcProbes ? 50 : 0,
         topology:
           "loopback; native NATS TCP; plaintext HTTP/1.1 keep-alive; no compression or HTTP caching",
         setup:
@@ -390,7 +390,7 @@ try {
         storage:
           "Trellis JetStream object storage; HTTP filesystem. Persistence acknowledgement, NOT equivalent fsync guarantees",
         telemetry: {
-          metricsCapture: lane === "admission"
+          metricsCapture: lane === "admission" || lane === "frames"
             ? "production HTTP/protobuf OTLP; requested 100 ms interval; metrics.jsonl"
             : null,
           traces: Deno.env.get("OTEL_TRACES_SAMPLER") ?? "SDK defaults",
@@ -623,6 +623,7 @@ try {
     requestByteLimit,
     verificationWorkers,
     maxVerificationWorkers,
+    liveRpcProbes,
     output,
     trellisUrl: runtime.trellisUrl,
     password: runtime.adminPassword,
@@ -630,12 +631,13 @@ try {
     seeds,
     samples,
     calls,
-    sizes: lane === "admission" ? [] : sizes,
+    sizes: lane === "admission" || lane === "frames" ? [] : sizes,
     sessionCounts,
     idleSeconds,
     warmups,
     workload:
-      lane === "transfer" || lane === "lifecycle" || lane === "admission"
+      lane === "transfer" || lane === "lifecycle" || lane === "admission" ||
+        lane === "frames"
         ? lane
         : "all",
   };

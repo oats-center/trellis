@@ -22,8 +22,8 @@ env.update({"TMPDIR": str(root / "tmp"), "TMP": str(root / "tmp"), "TEMP": str(r
             "DENO_DIR": str(root / "deno-cache"), "TRELLIS_CACHE_DIR": str(root / "cache")})
 executions = []
 for rate in [int(value) for value in sys.argv[3:]] or [200, 400]:
-    for workers in [False, True]:
-        label = f"{'workers' if workers else 'inline'}-{rate}"
+    for max_workers in [1, 3]:
+        label = f"workers-max-{max_workers}-{rate}"
         output = results / label
         command = ["deno", "run", "-A", "-c", "ts/deno.json", "benchmarks/runtime/run.ts",
                    "--lane", "admission", "--client-language", "rust", "--provider-language", "typescript",
@@ -33,8 +33,7 @@ for rate in [int(value) for value in sys.argv[3:]] or [200, 400]:
                    "--arrival-rate", str(rate), "--calls", str(rate * 20), "--max-outstanding", "1024", "--samples", "1",
                    "--warmups", "0", "--sessions", "1", "--sizes", "64", "--idle-seconds", "0.1",
                    "--output", str(output), "--nats-diagnostics", "--inspect-provider", "--cpu-profile-provider"]
-        if workers:
-            command.append("--verification-workers")
+        command.extend(["--max-verification-workers", str(max_workers)])
         print("START", label, flush=True)
         with (results / f"{label}.cpu.log").open("w") as cpu_log, (results / f"{label}.runner.log").open("w") as log:
             cpu = subprocess.Popen(["deno", "run", "-A", "-c", "ts/deno.json", "benchmarks/runtime/profile.ts",

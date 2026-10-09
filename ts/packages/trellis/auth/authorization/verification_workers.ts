@@ -12,35 +12,97 @@ import {
 } from "../../telemetry/metrics.ts";
 import {
   type AuthorizationIssuerKey,
+  type TransferFrameDescriptor,
+  type VerifyAuthorizationEventArgs,
+  type VerifyAuthorizationEventResult,
   type VerifyAuthorizationRequestArgs,
   type VerifyAuthorizationRequestResult,
   wasmVerificationPolicy,
 } from "../protocol_wasm.ts";
+import { base64urlDecode } from "../utils.ts";
 
 /** Trusted local scheduling class; never selected by a proof header. @internal */
 export type VerificationLane = "ordinary" | "control" | "refusal";
-type Reply = {
-  ready?: boolean;
-  id?: number;
-  error?: string;
-  result?: VerifyAuthorizationRequestResult;
-  timing?: { totalMs: number; verifyMs: number };
-};
-type Task = {
-  id: number;
-  lane: VerificationLane;
+type SchedulingLane = VerificationLane | "data";
+type ContextJob = {
   entry: object;
-  contextId: string;
-  input: Omit<VerifyAuthorizationRequestArgs, "contextHandle" | "policy">;
   context: { issuer: AuthorizationIssuerKey; signed: unknown; digest: string };
   policy: () => VerifyAuthorizationRequestArgs["policy"];
+};
+type RequestJob = ContextJob & {
+  kind: "verify";
+  input: Omit<VerifyAuthorizationRequestArgs, "contextHandle" | "policy">;
+  payload: Uint8Array;
   transfer?: {
     transferId: string;
     providerConnectionId: string;
     consumerConnectionId: string;
   };
+};
+type EventJob = ContextJob & {
+  kind: "event";
+  input: Omit<VerifyAuthorizationEventArgs, "contextHandle" | "policy">;
+  payload: Uint8Array;
+};
+/** Exact-byte proof work; coordinates are supplied by the owning protocol session. @internal */
+export type FrameDigestJob =
+  | {
+    kind: "live-digest";
+    contextDigest: string;
+    subject: string;
+    payload: Uint8Array;
+  }
+  | {
+    kind: "transfer-digest";
+    contextDigest: string;
+    subject: string;
+    payload: Uint8Array;
+    descriptor: TransferFrameDescriptor;
+  }
+  | {
+    kind: "transfer-frame-digest";
+    payload: Uint8Array;
+    descriptor: TransferFrameDescriptor;
+  };
+/** Provider-proof verification; never chooses a reserved lane from untrusted headers. @internal */
+export type FrameVerifyJob =
+  | {
+    kind: "live-verify";
+    contextDigest: string;
+    subject: string;
+    payload: Uint8Array;
+    proof: string;
+    providerKey: string;
+  }
+  | {
+    kind: "transfer-verify";
+    contextDigest: string;
+    subject: string;
+    payload: Uint8Array;
+    proof: string;
+    providerKey: string;
+    descriptor: TransferFrameDescriptor;
+  };
+type Job = RequestJob | EventJob | FrameDigestJob | FrameVerifyJob;
+type JobResult =
+  | { kind: "verify"; value: VerifyAuthorizationRequestResult }
+  | { kind: "event"; value: VerifyAuthorizationEventResult }
+  | { kind: "digest"; value: string }
+  | { kind: "verified" };
+type Reply = {
+  ready?: boolean;
+  id?: number;
+  error?: string;
+  result?: JobResult;
+  timing?: { totalMs: number; verifyMs: number };
+};
+type Task = {
+  id: number;
+  lane: SchedulingLane;
+  job: Job;
+  contextId?: string;
   settled: ReturnType<
-    typeof Promise.withResolvers<VerifyAuthorizationRequestResult>
+    typeof Promise.withResolvers<JobResult>
   >;
   timer: ReturnType<typeof setTimeout>;
   queuedAt: number;
@@ -69,12 +131,14 @@ type Slot = {
 export class AuthorizationVerificationWorkers {
   readonly #slots: Slot[] = [];
   readonly #contextIds = new WeakMap<object, string>();
-  readonly #counts: Record<VerificationLane, number> = {
+  readonly #counts: Record<SchedulingLane, number> = {
     ordinary: 0,
     control: 0,
     refusal: 0,
+    data: 0,
   };
-  readonly #limits: Record<VerificationLane, number>;
+  readonly #limits: Record<SchedulingLane, number>;
+  #dataCapacity = Promise.withResolvers<void>();
   #sequence = 0;
   #closed = false;
   #growthTimer?: ReturnType<typeof setTimeout>;
@@ -86,12 +150,15 @@ export class AuthorizationVerificationWorkers {
     readonly timeoutMs: number,
     limits?: RequestLimits,
     readonly maxOrdinaryWorkers = 3,
+    readonly queueAgeMs = 20,
+    readonly backlogDurationMs = 100,
   ) {
     const parsed = RequestLimitsSchema.parse(limits ?? {});
     this.#limits = {
       ordinary: parsed.requests,
       control: parsed.controls,
       refusal: REFUSAL_REQUEST_LIMIT,
+      data: parsed.requests,
     };
   }
 
@@ -100,6 +167,9 @@ export class AuthorizationVerificationWorkers {
     timeoutMs: number,
     limits?: RequestLimits,
     maxOrdinaryWorkers = 3,
+    queueAgeMs = 20,
+    backlogDurationMs = 100,
+    reserved = true,
   ): Promise<AuthorizationVerificationWorkers> {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
       throw new Error("Verification worker timeout must be positive");
@@ -107,14 +177,18 @@ export class AuthorizationVerificationWorkers {
     z.number().int().positive().max(Number.MAX_SAFE_INTEGER).parse(
       maxOrdinaryWorkers,
     );
+    z.number().finite().nonnegative().parse(queueAgeMs);
+    z.number().finite().nonnegative().parse(backlogDurationMs);
     const pool = new AuthorizationVerificationWorkers(
       timeoutMs,
       limits,
       maxOrdinaryWorkers,
+      queueAgeMs,
+      backlogDurationMs,
     );
     try {
       await pool.#start("ordinary");
-      await pool.#start("reserved");
+      if (reserved) await pool.#start("reserved");
       return pool;
     } catch (error) {
       pool.close();
@@ -220,13 +294,77 @@ export class AuthorizationVerificationWorkers {
   async verify(args: {
     entry: object;
     lane: VerificationLane;
-    context: Task["context"];
-    input: Task["input"];
-    policy: Task["policy"];
-    transfer?: Task["transfer"];
+    context: ContextJob["context"];
+    input: RequestJob["input"];
+    policy: ContextJob["policy"];
+    transfer?: RequestJob["transfer"];
   }): Promise<VerifyAuthorizationRequestResult> {
+    const result = await this.#schedule({
+      ...args,
+      kind: "verify",
+      payload: args.input.payload,
+    }, args.lane);
+    if (result.kind !== "verify") {
+      throw new Error("Unexpected request verification result");
+    }
+    return result.value;
+  }
+
+  /** Verify events on the same bounded ordinary workers, with historical contexts. */
+  async verifyEvent(
+    args: ContextJob & { input: EventJob["input"] },
+  ): Promise<VerifyAuthorizationEventResult> {
+    const result = await this.#schedule({
+      ...args,
+      kind: "event",
+      payload: args.input.payload,
+    }, "data");
+    if (result.kind !== "event") {
+      throw new Error("Unexpected event verification result");
+    }
+    return result.value;
+  }
+
+  /** Compute the existing Rust protocol digest without transferring private keys. */
+  async digest(job: FrameDigestJob): Promise<Uint8Array> {
+    const result = await this.#schedule(job, "data");
+    if (result.kind !== "digest") {
+      throw new Error("Unexpected frame digest result");
+    }
+    return base64urlDecode(result.value);
+  }
+
+  /** Verify a provider signature over its exact subject, coordinates, and bytes. */
+  async verifyFrame(job: FrameVerifyJob): Promise<void> {
+    const result = await this.#schedule(job, "data");
+    if (result.kind !== "verified") {
+      throw new Error("Unexpected frame verification result");
+    }
+  }
+
+  async #schedule(job: Job, lane: SchedulingLane): Promise<JobResult> {
+    // Data sources already await each frame/event inside their existing bounded
+    // protocol lifecycle. Backpressure those sources, never steal RPC admission
+    // or reserved capacity, and do not copy a waiting payload into the worker.
+    if (lane === "data") {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("Data verification scheduling timed out")),
+          this.timeoutMs,
+        );
+      });
+      try {
+        while (!this.#closed && this.#counts.data >= this.#limits.data) {
+          await Promise.race([this.#dataCapacity.promise, deadline]);
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    }
     if (this.#closed) throw new Error("Verification workers closed");
-    const slot = args.lane === "ordinary"
+    const slot = lane === "ordinary" || lane === "data" ||
+        !this.#slots.some((slot) => slot.lane === "reserved")
       ? this.#slots.filter((slot) => slot.lane === "ordinary" && slot.started)
         .reduce<Slot | undefined>(
           (selected, candidate) =>
@@ -241,22 +379,26 @@ export class AuthorizationVerificationWorkers {
     if (!slot || slot.failed) {
       throw slot?.failed ?? new Error("No available verification worker");
     }
-    if (this.#counts[args.lane] >= this.#limits[args.lane]) {
+    if (this.#counts[lane] >= this.#limits[lane]) {
       throw new Error("Verification scheduling capacity exhausted");
     }
-    let contextId = this.#contextIds.get(args.entry);
-    if (!contextId) {
-      contextId = String(++this.#sequence);
-      this.#contextIds.set(args.entry, contextId);
+    let contextId: string | undefined;
+    if ("entry" in job) {
+      contextId = this.#contextIds.get(job.entry);
+      if (!contextId) {
+        contextId = String(++this.#sequence);
+        this.#contextIds.set(job.entry, contextId);
+      }
     }
     const id = ++this.#sequence;
     const task: Task = {
-      ...args,
+      job,
+      lane,
       contextId,
       id,
       queuedAt: performance.now(),
       sentAt: 0,
-      settled: Promise.withResolvers<VerifyAuthorizationRequestResult>(),
+      settled: Promise.withResolvers<JobResult>(),
       timer: setTimeout(() => {
         const owner = this.#slots.find((candidate) =>
           candidate.active?.id === id ||
@@ -278,9 +420,9 @@ export class AuthorizationVerificationWorkers {
         }
       }, this.timeoutMs),
     };
-    this.#counts[args.lane]++;
+    this.#counts[lane]++;
     recordCatalogUpDown("trellis.auth.worker.pending", 1, {
-      "trellis.kind": args.lane,
+      "trellis.kind": lane,
     });
     slot.queue.push(task);
     this.#dispatch(slot);
@@ -289,9 +431,13 @@ export class AuthorizationVerificationWorkers {
       return await task.settled.promise;
     } finally {
       clearTimeout(task.timer);
-      this.#counts[args.lane]--;
+      this.#counts[lane]--;
+      if (lane === "data") {
+        this.#dataCapacity.resolve();
+        this.#dataCapacity = Promise.withResolvers<void>();
+      }
       recordCatalogUpDown("trellis.auth.worker.pending", -1, {
-        "trellis.kind": args.lane,
+        "trellis.kind": lane,
       });
     }
   }
@@ -327,6 +473,7 @@ export class AuthorizationVerificationWorkers {
   /** Fail unfinished verification closed and terminate all local workers. */
   close(): void {
     this.#closed = true;
+    this.#dataCapacity.resolve();
     clearTimeout(this.#growthTimer);
     for (const slot of this.#slots) {
       this.#fail(slot, new Error("Verification workers closed"));
@@ -370,7 +517,7 @@ export class AuthorizationVerificationWorkers {
       },
     );
     try {
-      const payload = new Uint8Array(task.input.payload).buffer;
+      const payload = new Uint8Array(task.job.payload).buffer;
       recordCatalogDuration(
         "trellis.auth.verification.duration",
         performance.now() - dispatchedAt,
@@ -379,24 +526,38 @@ export class AuthorizationVerificationWorkers {
           "trellis.phase": "worker.copy",
         },
       );
-      const { payload: _, ...request } = task.input;
-      slot.copiedBytes = task.input.payload.byteLength;
+      let job;
+      if (task.job.kind === "verify" || task.job.kind === "event") {
+        const { payload: _, ...input } = task.job.input;
+        job = {
+          kind: task.job.kind,
+          input,
+          transfer: task.job.kind === "verify" ? task.job.transfer : undefined,
+        };
+      } else {
+        const { payload: _, ...coordinates } = task.job;
+        job = coordinates;
+      }
+      slot.copiedBytes = task.job.payload.byteLength;
       recordCatalogUpDown(
         "trellis.auth.worker.payload_bytes",
-        task.input.payload.byteLength,
+        task.job.payload.byteLength,
         { "trellis.kind": task.lane },
       );
       task.sentAt = performance.now();
       slot.worker.postMessage({
-        kind: "verify",
+        ...job,
         id: task.id,
         contextId: task.contextId,
-        context: slot.installed.has(task.contextId) ? undefined : task.context,
-        policy: wasmVerificationPolicy(task.policy()),
+        context: "context" in task.job && task.contextId &&
+            !slot.installed.has(task.contextId)
+          ? task.job.context
+          : undefined,
+        policy: "policy" in task.job
+          ? wasmVerificationPolicy(task.job.policy())
+          : undefined,
         sentAt: Date.now(),
-        request,
         payload,
-        transfer: task.transfer,
       }, [payload]);
     } catch (error) {
       this.#fail(
@@ -459,7 +620,7 @@ export class AuthorizationVerificationWorkers {
     slot.copiedBytes = 0;
     if (reply.error) task.settled.reject(new Error(reply.error));
     else if (reply.result) {
-      slot.installed.add(task.contextId);
+      if (task.contextId) slot.installed.add(task.contextId);
       task.settled.resolve(reply.result);
     } else {task.settled.reject(
         new Error("Verification worker response has no result"),
@@ -489,19 +650,19 @@ export class AuthorizationVerificationWorkers {
       this.#behindSince = undefined;
       return;
     }
-    if (now - oldest < 20) {
+    if (now - oldest < this.queueAgeMs) {
       this.#behindSince = undefined;
       this.#growthTimer = setTimeout(
         () => this.#considerGrowth(),
-        20 - (now - oldest),
+        this.queueAgeMs - (now - oldest),
       );
       return;
     }
     this.#behindSince ??= now;
-    if (now - this.#behindSince < 100) {
+    if (now - this.#behindSince < this.backlogDurationMs) {
       this.#growthTimer = setTimeout(
         () => this.#considerGrowth(),
-        100 - (now - this.#behindSince),
+        this.backlogDurationMs - (now - this.#behindSince),
       );
       return;
     }

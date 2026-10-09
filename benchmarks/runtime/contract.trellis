@@ -27,6 +27,7 @@ api performance@v1 {
 
 service Provider {
   implements performance;
+  use performance { subscribe event Changed; }
   job work { title "Work"; description "Measured private job execution."; payload Value; result Value; }
   job waitForObject { title "Wait for object"; description "Retry while a required object is genuinely absent."; payload Value; result Value; retry { attempts 3; backoff [250ms, 500ms]; } }
   job keyedWork { title "Keyed work"; description "Measure same-key queue contention."; payload KeyedValue; result KeyedValue; key_concurrency { path key; policy queue; } }

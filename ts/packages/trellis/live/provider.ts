@@ -21,7 +21,6 @@ import {
   liveObserveWildcardSubject,
   type LiveOfferWire,
   liveParseControl,
-  liveServerProofDigest,
 } from "./protocol.ts";
 import { LIVE_VERSION, type LiveSessionKind } from "./client_open.ts";
 import {
@@ -102,6 +101,12 @@ export type LiveProviderHost = {
   nats: NatsConnection;
   identity: LiveProviderIdentity;
   sign: (digest: Uint8Array) => Promise<Uint8Array>;
+  /** Compute the shared Rust proof digest off the owning connection's receiving thread. */
+  proofDigest: (
+    contextDigest: string,
+    subject: string,
+    body: Uint8Array,
+  ) => Promise<Uint8Array>;
   /** Retained own-provider authority; its digest is the current context. */
   ownGuard: ProviderAuthorityPort;
   /**
@@ -1232,8 +1237,16 @@ export class LiveProvider {
       );
     }
     const proof = base64urlEncode(
-      await this.#host.sign(liveServerProofDigest(digest, subject, body)),
+      await this.#host.sign(
+        await this.#host.proofDigest(digest, subject, body),
+      ),
     );
+    if (this.#host.ownGuard.checkNow()) {
+      throw new LiveStreamError(
+        "authorization_unavailable",
+        "provider authority lost while signing frame",
+      );
+    }
     const headers = natsHeaders();
     headers.set("authorization-context", digest);
     headers.set("session-key", this.#host.identity.sessionKey);

@@ -11,6 +11,40 @@ deno task -c ts/deno.json bench:runtime --output=/tmp/opencode/trellis-perf-base
 deno task -c ts/deno.json bench:runtime:report /tmp/opencode/trellis-perf-baseline
 ```
 
+## Matched Live frame and event comparisons
+
+The `frames` lane uses generated TypeScript clients and a real TypeScript
+provider. It verifies every Live value and sequence across one or more streams,
+cancels a running Operation halfway through delivery, and checks signed event
+round trips in bounded batches. Event listeners use the supported ephemeral mode
+in both versions; the provider contract explicitly needs `Changed` subscription
+permission. This does not measure durable consumer replay.
+
+```sh
+deno run -A -c ts/deno.json benchmarks/runtime/run.ts --lane frames --samples 3 --calls 500 --sessions 1,4 --rpc-value-bytes 262144 --max-outstanding 32 --server target/release/trellis-server --cli target/release/trellis --output .verification/frame-candidate
+deno run -A -c ts/deno.json benchmarks/runtime/report.ts .verification/frame-candidate .verification/frame-baseline
+```
+
+Repeat with 1 KiB values and 2,000 frames per stream. Baseline and candidate
+must use byte-identical benchmark/contract/WASM assets and the same prebuilt
+server/CLI; only the SDK path under comparison changes. Retain source snapshots,
+raw samples, production telemetry, and process resource timelines. Alternate
+case order and use fresh services; small repeated cohorts are observations, not
+universal performance guarantees. Use workspace-local temp directories and a
+private NATS cache when required by the environment.
+
+Add `--live-rpc-probes` for an independent 50 RPC/s foreground schedule during
+streaming. At most one foreground RPC is outstanding per client. Missed timer
+slots and offers while that RPC is outstanding count as **not sent**, not
+zero-latency successes. Reports recompute quantiles from actual sent, successful
+samples and retain errors and not-sent counts. `liveRpcProbeRate` in metadata
+distinguishes this from earlier diagnostic probes paced by frame delivery.
+
+Use the existing `transfer` lane with `--sizes 1048576,8388608` to compare
+verified downloads and uploads whose persisted object is read back. See
+`ADMISSION.md` for the measured trial costs and proof limits; worker offloading
+is not assumed to improve throughput.
+
 ## Fixed-arrival-rate admission exploration
 
 The `admission` lane drives either provider language with the same generated
@@ -50,15 +84,15 @@ limitations, and the proposed policy decisions.
 
 Use `--request-limit 16`, `32`, or `64` and `--request-byte-limit` to calibrate
 the ordinary shared service budget. Both limits are recorded in run metadata.
-For the approved opt-in TypeScript worker-verification trial, add
-`--verification-workers`. This starts one ordinary verifier and one reserved
-verifier, prioritizing controls over refusal work. Sustained ordinary queue age
-grows the pool to `--max-verification-workers` (three ordinary workers by
-default, plus the reserved worker), without shrinking. Use the same native
-caller (`--client-language rust --rust-bin <prebuilt executable>`) for inline
-and worker comparisons. The flag and caller language are recorded in metadata;
-it does not change defaults or imply improved throughput. See the trial results
-and proof limits in [ADMISSION.md](ADMISSION.md). For sustained rather than
+TypeScript providers always use worker verification. This starts one ordinary
+verifier and one reserved verifier, prioritizing controls over refusal work.
+Sustained ordinary queue age grows the pool to `--max-verification-workers`
+(three ordinary workers by default, plus the reserved worker), without
+shrinking. Use the same native caller
+(`--client-language rust --rust-bin <prebuilt executable>`) for worker-ceiling
+comparisons. Worker use and caller language are recorded in metadata; these
+settings do not imply improved throughput. See the retained trial results and
+proof limits in [ADMISSION.md](ADMISSION.md). For sustained rather than
 short-burst load, use `--calls 4000 --samples 1
 --arrival-rate 200`; each
 value-size case offers work for 20 seconds. Refusals remain failed attempts,

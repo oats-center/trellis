@@ -17,7 +17,6 @@ import {
   liveParseControlResponse,
   liveParseFrame,
   liveParseOffer,
-  liveVerifyServerProof,
 } from "./protocol.ts";
 import type { PermissionAtom } from "../auth/protocol_wasm.ts";
 import type { AuthorizationProviderCache } from "../auth/authorization/provider_cache.ts";
@@ -459,13 +458,14 @@ async function verifyOffer(
       "offer omitted or duplicated proof headers",
     );
   }
-  liveVerifyServerProof(
+  await host.authority.cache.verifyFrame({
+    kind: "live-verify",
     proof,
     contextDigest,
-    response.subject,
-    response.data,
-    sessionKey,
-  );
+    subject: response.subject,
+    payload: response.data,
+    providerKey: sessionKey,
+  });
   if (
     encodeEventSubjectParameterToken(sessionKey) !== offer.provider.sessionKey
   ) {
@@ -967,7 +967,13 @@ async function runPump<T>(
         continue;
       }
       if (
-        !(await verifyProviderFrame(offer, msg, frame.sessionId, providerGuard))
+        !(await verifyProviderFrame(
+          offer,
+          msg,
+          frame.sessionId,
+          providerGuard,
+          host.authority.cache,
+        ))
       ) {
         core.telemetry.rejection("invalid_signature");
         continue;
@@ -1163,6 +1169,7 @@ async function verifyProviderFrame(
   msg: Msg,
   sessionId: string,
   providerGuard: LiveAuthorityGuard,
+  cache: AuthorizationProviderCache,
 ): Promise<boolean> {
   const contextDigest = singletonHeader(msg.headers, "authorization-context");
   const sessionKey = singletonHeader(msg.headers, "session-key");
@@ -1171,13 +1178,14 @@ async function verifyProviderFrame(
   if (sessionKey !== providerGuard.identity.sessionKey) return false;
   if (sessionId !== offer.sessionId) return false;
   try {
-    liveVerifyServerProof(
+    await cache.verifyFrame({
+      kind: "live-verify",
       proof,
       contextDigest,
-      msg.subject,
-      msg.data,
-      sessionKey,
-    );
+      subject: msg.subject,
+      payload: msg.data,
+      providerKey: sessionKey,
+    });
   } catch {
     return false;
   }
@@ -1256,13 +1264,14 @@ async function controlAttempt(
       return failed("reply_provider_identity_mismatch");
     }
     try {
-      liveVerifyServerProof(
-        proofHeader,
+      await host.authority.cache.verifyFrame({
+        kind: "live-verify",
+        proof: proofHeader,
         contextDigest,
-        received.subject,
-        received.data,
-        sessionKey,
-      );
+        subject: received.subject,
+        payload: received.data,
+        providerKey: sessionKey,
+      });
     } catch {
       return failed("reply_proof_rejected");
     }

@@ -19,10 +19,7 @@ import { recordCatalogCounter } from "../telemetry/mod.ts";
 import {
   transferConstants,
   type TransferFrameDescriptor,
-  transferFrameDigest,
-  transferServerProofDigest,
   type TransferTerminalWire,
-  transferVerifyServerProof,
 } from "../auth/protocol_wasm.ts";
 
 /** Owned transport/authority lifetime for a single pinned transfer. @internal */
@@ -177,14 +174,20 @@ export class TransferSession {
     control: TransferFrameDescriptor["kind"] = "data",
   ): Promise<MsgHdrs> {
     const contextDigest = await this.contextDigest();
-    const proofPayload = seq === undefined ? payload : transferFrameDigest(
-      {
-        transferId: this.grant.transferId,
-        direction: this.grant.direction,
-        sequence: seq.toString(),
-        kind: control,
-      },
-      payload,
+    const cache = this.auth.authorizationProviderCache;
+    if (!cache) throw new Error("transfer authorization cache unavailable");
+    const proofPayload = seq === undefined ? payload : await transferWait(
+      cache.frameDigest({
+        kind: "transfer-frame-digest",
+        descriptor: {
+          transferId: this.grant.transferId,
+          direction: this.grant.direction,
+          sequence: seq.toString(),
+          kind: control,
+        },
+        payload,
+      }),
+      this.abort.signal,
     );
     const iat = this.auth.currentIat?.() ?? Math.floor(Date.now() / 1000);
     const requestId = ulid();
@@ -198,6 +201,10 @@ export class TransferSession {
         requestId,
       )),
     );
+    this.throwIfAborted();
+    if (this.guards[0]?.checkNow()) {
+      throw new Error("transfer authority lost while signing request");
+    }
     const result = headers();
     result.set("authorization-context", contextDigest);
     result.set("session-key", this.auth.sessionKey);
@@ -227,18 +234,27 @@ export class TransferSession {
     const contextDigest = allowAfterAbort && local
       ? local.contextDigest
       : await this.contextDigest();
-    const proof = await this.auth.sign(transferServerProofDigest(
-      contextDigest,
-      subject,
-      {
-        transferId: this.grant.transferId,
-        direction: this.grant.direction,
-        sequence: seq,
-        kind: control,
-        ...(terminal ? { terminal } : {}),
-      },
-      payload,
-    ));
+    const cache = this.auth.authorizationProviderCache;
+    if (!cache) throw new Error("transfer authorization cache unavailable");
+    const proof = await this.auth.sign(
+      await cache.frameDigest({
+        kind: "transfer-digest",
+        contextDigest,
+        subject,
+        descriptor: {
+          transferId: this.grant.transferId,
+          direction: this.grant.direction,
+          sequence: seq,
+          kind: control,
+          ...(terminal ? { terminal } : {}),
+        },
+        payload,
+      }),
+    );
+    if (!allowAfterAbort) this.throwIfAborted();
+    if (!local || local.checkNow()) {
+      throw new Error("transfer authority lost while signing provider frame");
+    }
     const result = headers();
     result.set("authorization-context", contextDigest);
     result.set("session-key", this.auth.sessionKey);
@@ -274,22 +290,27 @@ export class TransferSession {
       single(C.sequenceHeader) !== seq || single(C.controlHeader) !== control ||
       (!terminal && msg.headers?.values(C.terminalHeader)?.length)
     ) throw new Error("transfer provider frame descriptor mismatch");
-    transferVerifyServerProof(
-      single(C.proofHeader),
-      contextDigest,
-      msg.subject,
-      {
-        transferId: this.grant.transferId,
-        direction: this.grant.direction,
-        sequence: seq,
-        kind: control,
-        ...(terminal ? { terminal } : {}),
-      },
-      msg.data,
-      sessionKey,
-    );
     const cache = this.auth.authorizationProviderCache;
     if (!cache) throw new Error("transfer authorization cache unavailable");
+    await transferWait(
+      cache.verifyFrame({
+        kind: "transfer-verify",
+        proof: single(C.proofHeader),
+        contextDigest,
+        subject: msg.subject,
+        descriptor: {
+          transferId: this.grant.transferId,
+          direction: this.grant.direction,
+          sequence: seq,
+          kind: control,
+          ...(terminal ? { terminal } : {}),
+        },
+        payload: msg.data,
+        providerKey: sessionKey,
+      }),
+      this.abort.signal,
+    );
+    this.throwIfAborted();
     if (this.peerGuard?.contextDigest === contextDigest) {
       if (this.peerGuard.checkNow()) {
         throw new Error("transfer provider authority lost");

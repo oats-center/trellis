@@ -53,6 +53,7 @@ await buildTypeScriptPackage({
       "tweetnacl",
       "typebox",
       "ulid",
+      "zod",
     ]),
     [resultConfig.name]: `^${resultConfig.version}`,
   },

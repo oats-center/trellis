@@ -7,7 +7,6 @@ const provider = await TrellisService.connect({
   participant: participants.Provider.participant,
   seed: process.env.TRELLIS_IDENTITY_SEED,
   runtime: {
-    verificationWorkers: true,
     timeout: 60_000,
     maxVerificationWorkers: Number(
       process.env.TRELLIS_MAX_VERIFICATION_WORKERS ?? 3,

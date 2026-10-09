@@ -16,7 +16,6 @@ Deno.test("service stops its Operation providers when the broker cannot acknowle
       trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
-      runtime: { verificationWorkers: true },
     }).orThrow();
     await provider.handleWork(async () => {});
     const brokerPid = Number(
@@ -87,7 +86,6 @@ for (const language of ["typescript", "rust"] as const) {
             participant: participants.Provider.participant,
             seed: identity.seed,
             runtime: {
-              verificationWorkers: true,
               requestLimits: { requests: 2, bytes: 16 * 1024 },
             },
           }).orThrow();

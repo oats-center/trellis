@@ -65,12 +65,14 @@ response; ongoing Operations retain independent lifecycle and limits. Accepted
 requests retain their receiving generation through reply handoff and participate
 in its existing retirement/drain lifecycle.
 
-TypeScript services can opt into the experimental worker verifier with
-`runtime.verificationWorkers: true`. One ordinary worker and one reserved worker
-start with the same Rust/WASM request and Transfer proof verification. Ordinary
-capacity grows one worker at a time when every ordinary worker is busy and the
-oldest waiting proof has waited at least 20 ms continuously for 100 ms. These
-are trial thresholds, not universal latency targets.
+TypeScript services use worker verification for request and Transfer proofs. One
+ordinary worker and one reserved worker start with the same Rust/WASM request
+and Transfer proof verification. Ordinary capacity grows one worker at a time
+when every ordinary worker is busy and the oldest waiting proof has reached
+`runtime.verificationWorkerQueueAgeMs` (default 20 ms), with that condition
+persisting for `runtime.verificationWorkerBacklogDurationMs` (default 100 ms).
+Both are optional nonnegative millisecond values; zero removes the corresponding
+delay. These are safety-policy settings, not universal latency targets.
 `runtime.maxVerificationWorkers` bounds ordinary workers (including workers
 starting), defaulting to three; the reserved worker is additional. Starting
 workers count toward this ceiling. Added workers retain capacity until shutdown;
@@ -83,7 +85,8 @@ ordering is unchanged. Pending verification remains inside admitted work, with
 independently bounded scheduler occupancy. Exact payload bytes are copied and
 transferred only when a worker becomes available; the incoming message remains
 owned by its dispatch callback. This is not a throughput guarantee or a change
-to defaults.
+to request-admission defaults. Service startup fails if workers cannot
+initialize; there is no service opt-out or inline fallback.
 
 The authoritative main-thread cache retains revocation coverage and context
 identity. Before dispatching a worker result, it rechecks the exact entry and
@@ -91,7 +94,17 @@ uses Rust/WASM to check context and proof freshness at the current time. Worker
 failure fails verification closed, without fallback or automatic retry. Workers
 retain their own context handles, release them when the cache releases the
 corresponding entry, and terminate when the service releases its authorization
-cache. Event and Live-frame proof verification remain on their existing paths.
+cache.
+
+The development frame/event trial also routes Live and Transfer frame digests
+and proof verification, plus historical event verification, through ordinary
+workers. Services reuse their pool; logical clients start one shared ordinary
+worker lazily, without a reserved client worker or a worker per stream. Private
+keys remain with the existing main-thread signer, which signs the returned
+digest. Frame ordering, protocol credit, exact provider identity, and current
+authority checks still gate delivery. Historical events retain their
+publication-time authorization semantics. This trial is not accepted as a
+performance improvement: matched Eta benchmarks show throughput regressions.
 
 Terminal service shutdown and generation disposal stop local request/control
 subscriptions without waiting for a broker flush, then settle accepted callbacks

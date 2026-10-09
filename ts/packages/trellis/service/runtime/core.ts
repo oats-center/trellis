@@ -2661,6 +2661,13 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           instanceId: own.context.instanceId ?? "",
         },
         sign: async (bytes) => await this.auth.sign(bytes),
+        proofDigest: (contextDigest, subject, payload) =>
+          cache.frameDigest({
+            kind: "live-digest",
+            contextDigest,
+            subject,
+            payload,
+          }),
         ownGuard,
         refreshOwnAuthority: async () => {
           const current = typeof this.auth.contextDigest === "function"

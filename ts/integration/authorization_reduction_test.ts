@@ -159,7 +159,6 @@ Deno.test("F3 a reduction closes the wider generation and keeps the original", a
     });
 
     const service = await TrellisService.connect({
-      runtime: { verificationWorkers: true },
       trellisUrl: runtime.trellisUrl,
       participant: contract,
       name: "reduction-provider",
@@ -379,7 +378,6 @@ Deno.test("F4 revocation removes an uncooperative raw user attachment", async ()
       contract,
     });
     const service = await TrellisService.connect({
-      runtime: { verificationWorkers: true },
       trellisUrl: runtime.trellisUrl,
       participant: contract,
       name: "reduction-raw-provider",
@@ -515,7 +513,6 @@ Deno.test("F4 revocation removes a native service attachment", async () => {
       contract,
     });
     const service = await TrellisService.connect({
-      runtime: { verificationWorkers: true },
       trellisUrl: runtime.trellisUrl,
       participant: contract,
       name: "reduction-native-provider",

@@ -18,14 +18,15 @@ export const WorkerOptions = z.object({
   arrivalRate: z.number().nonnegative(),
   maxOutstanding: z.number().int().positive(),
   providerIndex: z.number().int().nonnegative().default(0),
-  workload: z.enum(["all", "transfer", "lifecycle", "admission"]).default(
-    "all",
-  ),
+  workload: z.enum(["all", "transfer", "lifecycle", "admission", "frames"])
+    .default(
+      "all",
+    ),
   rpcDelayMs: z.number().int().nonnegative().max(10_000).default(0),
   rpcValueBytes: z.number().int().nonnegative().max(512 * 1024).default(0),
   requestLimit: z.number().int().positive().max(1_000_000).default(32),
-  verificationWorkers: z.boolean().default(false),
   maxVerificationWorkers: z.number().int().positive().default(3),
+  liveRpcProbes: z.boolean().default(false),
   requestByteLimit: z.number().int().positive().max(0xffff_ffff).default(
     16 * 1024 * 1024,
   ),
@@ -104,7 +105,8 @@ export function summarize(samples: Sample[]) {
       }`,
   );
   return Array.from(groups, ([name, rows]) => {
-    const values = rows.filter((row) => !row.error).map((row) => row.durationMs)
+    const values = rows.filter((row) => !row.error && !row.loadGeneratorDrop)
+      .map((row) => row.durationMs)
       .sort((a, b) => a - b);
     const percentile = (fraction: number) =>
       values.length
@@ -113,7 +115,7 @@ export function summarize(samples: Sample[]) {
     return {
       name,
       attempts: rows.length,
-      errors: rows.filter((row) => row.error).length,
+      errors: rows.filter((row) => row.error && !row.loadGeneratorDrop).length,
       submitted: rows.filter((row) => !row.loadGeneratorDrop).length,
       drops: rows.filter((row) => row.loadGeneratorDrop).length,
       phases: Object.fromEntries(
@@ -129,7 +131,7 @@ export function summarize(samples: Sample[]) {
           "transferredBytes",
         ] as const).map((key) => {
           const values = rows.filter((row) =>
-            !row.error && row[key] !== undefined
+            !row.error && !row.loadGeneratorDrop && row[key] !== undefined
           ).map((row) => row[key]!).sort((a, b) => a - b);
           return [
             key,

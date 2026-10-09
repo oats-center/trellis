@@ -5,6 +5,7 @@ import {
   type Result as ResultType,
 } from "@oatscenter/result";
 import type { Msg } from "@nats-io/nats-core";
+import type { TransferFrameDescriptor } from "../../auth/protocol_wasm.ts";
 import type { LoggerLike } from "../../globals.ts";
 import { sha256 } from "@noble/hashes/sha256";
 import { base64urlEncode } from "../../auth/utils.ts";
@@ -28,7 +29,6 @@ import type {
 } from "../../transfer.ts";
 import {
   transferConstants,
-  transferFrameDigest,
   transferGenerateId,
   transferParseComplete,
   transferParseControl,
@@ -709,9 +709,22 @@ export class ServiceTransfer {
   async #verify(
     session: ProviderSession,
     msg: Msg,
-    proofPayload?: Uint8Array,
+    frame?: TransferFrameDescriptor,
   ): Promise<void> {
     const wire = session.wire;
+    wire.throwIfAborted();
+    const cache = this.opts.auth.authorizationProviderCache;
+    if (!cache) throw new Error("transfer authorization cache unavailable");
+    const proofPayload = frame
+      ? await transferWait(
+        cache.frameDigest({
+          kind: "transfer-frame-digest",
+          descriptor: frame,
+          payload: msg.data,
+        }),
+        wire.abort.signal,
+      )
+      : undefined;
     wire.throwIfAborted();
     if (msg.reply !== wire.grant.signalSubject) {
       throw new Error("transfer signal reply mismatch");
@@ -840,12 +853,12 @@ export class ServiceTransfer {
     await this.#verify(
       session,
       msg,
-      transferFrameDigest({
+      {
         transferId: session.wire.grant.transferId,
         direction: session.wire.grant.direction,
         sequence: control.controlSeq,
         kind: "control",
-      }, msg.data),
+      },
     );
     const seq = BigInt(control.controlSeq);
     const body = JSON.stringify(control);
@@ -1049,12 +1062,12 @@ export class ServiceTransfer {
     await this.#verify(
       session,
       msg,
-      transferFrameDigest({
+      {
         transferId: session.wire.grant.transferId,
         direction: "send",
         sequence: seq.toString(),
         kind: control,
-      }, msg.data),
+      },
     );
     if (control === "complete") {
       const complete = transferParseComplete(msg.data);

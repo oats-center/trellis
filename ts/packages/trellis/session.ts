@@ -3883,6 +3883,13 @@ export class Trellis<
         instanceId: own.context.instanceId ?? "",
       },
       sign: async (digest) => await this.#auth.sign(digest),
+      proofDigest: (contextDigest, subject, payload) =>
+        cache.frameDigest({
+          kind: "live-digest",
+          contextDigest,
+          subject,
+          payload,
+        }),
       ownGuard,
       refreshOwnAuthority,
       permission: toVerifierPermission(descriptor.permission),

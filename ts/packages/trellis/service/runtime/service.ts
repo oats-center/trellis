@@ -347,10 +347,12 @@ export type TrellisServiceHealthOpts = {
 };
 
 export type TrellisServiceRuntimeOpts = {
-  /** Opt into WASM verification workers, starting with one ordinary and one reserved worker. Ordinary capacity grows on sustained backlog and is retained until shutdown. Uses `timeout` for bounded worker progress; startup failures fail connection. */
-  verificationWorkers?: boolean;
-  /** Maximum ordinary verification workers, including workers starting. Defaults to three; reserved verification uses one additional worker. Requires `verificationWorkers`. */
+  /** Maximum ordinary verification workers, including workers starting. Defaults to three; reserved verification uses one additional worker. Starts with one ordinary worker and retains added capacity until shutdown. */
   maxVerificationWorkers?: number;
+  /** Minimum age of the oldest queued ordinary proof before sustained-backlog timing begins. Defaults to 20 milliseconds; zero permits immediate backlog timing. */
+  verificationWorkerQueueAgeMs?: number;
+  /** How long all ordinary workers must remain occupied with an eligible queued proof before growing. Defaults to 100 milliseconds; zero permits growth as soon as the queue-age threshold is met. */
+  verificationWorkerBacklogDurationMs?: number;
   /** Bound local provider dispatch across all endpoints and transport generations. */
   requestLimits?: TrellisOpts<RuntimeApi>["requestLimits"];
   log?: LoggerLike | false;
@@ -3242,13 +3244,13 @@ export function connectTrellisServiceWithRuntimeDeps<
           inboxPrefix,
           authorizationContexts,
         );
-        if (args.runtime?.verificationWorkers === true) {
-          await authorizationProviderCache.enableVerificationWorkers(
-            args.runtime?.timeout ?? 30_000,
-            args.runtime?.requestLimits,
-            args.runtime?.maxVerificationWorkers,
-          );
-        }
+        await authorizationProviderCache.enableVerificationWorkers(
+          args.runtime?.timeout ?? 30_000,
+          args.runtime?.requestLimits,
+          args.runtime?.maxVerificationWorkers,
+          args.runtime?.verificationWorkerQueueAgeMs,
+          args.runtime?.verificationWorkerBacklogDurationMs,
+        );
         authorizationProviderCache.start();
         await authorizationProviderCache.waitReady();
         await authorizationProviderCache.retainOwnContext();
