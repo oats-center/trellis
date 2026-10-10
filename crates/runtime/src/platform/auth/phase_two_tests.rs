@@ -194,6 +194,7 @@ fn grant_request(principal: &str, login: &str, read: &str, write: &str, now: i64
             optional: vec![write.into()],
         },
         approved: vec![read.into(), write.into()],
+        reused_remembered: vec![],
         declined: vec![],
         privileges: vec![],
         remember: true,
@@ -274,6 +275,496 @@ fn fixture() -> Fixture {
         grant,
         admission,
     }
+}
+
+#[test]
+fn shortened_deadline_retires_outstanding_context_unless_another_path_preserves_it() {
+    for alternative in [false, true] {
+        let f = fixture();
+        if alternative {
+            let role_id = id();
+            policy(
+                &f.store,
+                &f.admin,
+                PolicyMutation::RolePut {
+                    role_id: role_id.clone(),
+                    expected_revision: 0,
+                    title: "Readers".into(),
+                    description: "Independent read entitlement".into(),
+                    capabilities: vec![f.read.clone()],
+                },
+                NOW,
+            );
+            policy(
+                &f.store,
+                &f.admin,
+                PolicyMutation::RoleAssign {
+                    principal_id: f.principal.clone(),
+                    role_id,
+                    expected_revision: 0,
+                    expires_at: None,
+                },
+                NOW,
+            );
+        }
+        while f.store.enforce_next_page(NOW).unwrap().is_some() {}
+        let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+        let session = &issued.authority.unsigned.authorization_session_id;
+        policy(
+            &f.store,
+            &f.admin,
+            PolicyMutation::CapabilityGrant {
+                principal_id: f.principal.clone(),
+                capability_id: f.read.clone(),
+                expected_revision: 1,
+                expires_at: Some(NOW + 10),
+            },
+            NOW + 1,
+        );
+        while f.store.enforce_next_page(NOW + 1).unwrap().is_some() {}
+        if alternative {
+            assert!(f.store.resolve_revocation(session).unwrap().is_none());
+            let renewed = f
+                .store
+                .issue_authority(&f.admission, Some(session), NOW + 2)
+                .unwrap();
+            assert_eq!(
+                renewed.authority.unsigned.authorization_session_id,
+                *session
+            );
+            assert!(renewed.authority.unsigned.expires_at > NOW + 10);
+        } else {
+            let cutoff = f.store.resolve_revocation(session).unwrap().unwrap();
+            assert_eq!(cutoff.effective_cutoff, NOW + 1);
+            assert!(matches!(
+                f.store
+                    .issue_authority(&f.admission, Some(session), NOW + 2),
+                Err(AuthError::Retired)
+            ));
+            let replacement = f
+                .store
+                .issue_authority(&f.admission, None, NOW + 2)
+                .unwrap();
+            assert_ne!(
+                replacement.authority.unsigned.authorization_session_id,
+                *session
+            );
+            assert_eq!(replacement.authority.unsigned.expires_at, NOW + 10);
+        }
+    }
+}
+
+#[test]
+fn remembered_decline_enforces_existing_sessions_without_a_renewal() {
+    let f = fixture();
+    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+    while f.store.enforce_next_page(NOW).unwrap().is_some() {}
+    let login = f
+        .store
+        .record_verified_login(
+            &VerifiedLogin {
+                principal_id: f.principal.clone(),
+                provider_id: None,
+                upstream_issuer: None,
+                upstream_subject: None,
+                verified_claims: None,
+                expires_at: NOW + 3600,
+            },
+            NOW + 1,
+        )
+        .unwrap();
+    let mut approval = grant_request(&f.principal, &login, &f.read, &f.write, NOW + 1);
+    approval.approved = vec![f.read.clone()];
+    approval.declined = vec![f.write.clone()];
+    f.store
+        .approve_grant(&mutation(&f.principal, &approval), &approval, NOW + 1)
+        .unwrap();
+    while f.store.enforce_next_page(NOW + 1).unwrap().is_some() {}
+    let session = &issued.authority.unsigned.authorization_session_id;
+    assert!(f.store.resolve_revocation(session).unwrap().is_some());
+    assert!(matches!(
+        f.store
+            .issue_authority(&f.admission, Some(session), NOW + 1),
+        Err(AuthError::Retired)
+    ));
+    let replacement = f
+        .store
+        .issue_authority(&f.admission, None, NOW + 1)
+        .unwrap();
+    assert!(!replacement
+        .authority
+        .unsigned
+        .capabilities
+        .iter()
+        .any(|cap| cap.capability_id == f.write));
+}
+
+#[test]
+fn replaced_platform_delegation_enforces_existing_sessions_without_a_renewal() {
+    use trellis_protocol::PlatformPrivilege::{ApisAccept, ApisForceReplace};
+    let f = fixture();
+    let registration = ClientRegistration {
+        client_id: "native-client".into(),
+        kind: "native".into(),
+        display_name: "Native client".into(),
+        redirect_uris: vec!["http://127.0.0.1:9123/callback".into()],
+        development: false,
+        implied_capabilities: vec![],
+        eligible_privileges: vec![ApisAccept, ApisForceReplace],
+        metadata: serde_json::json!({}),
+        expected_revision: 1,
+    };
+    f.store
+        .register_client(&mutation(&f.admin, &registration), &registration, NOW)
+        .unwrap();
+    for privilege in [ApisAccept, ApisForceReplace] {
+        policy(
+            &f.store,
+            &f.admin,
+            PolicyMutation::PrivilegeAssign {
+                principal_id: f.principal.clone(),
+                privilege,
+                expected_revision: 0,
+            },
+            NOW,
+        );
+    }
+    let login = f
+        .store
+        .record_verified_login(
+            &VerifiedLogin {
+                principal_id: f.principal.clone(),
+                provider_id: None,
+                upstream_issuer: None,
+                upstream_subject: None,
+                verified_claims: None,
+                expires_at: NOW + 3600,
+            },
+            NOW,
+        )
+        .unwrap();
+    let mut approval = grant_request(&f.principal, &login, &f.read, &f.write, NOW);
+    approval.privileges = vec![ApisAccept, ApisForceReplace];
+    let grant = f
+        .store
+        .approve_grant(&mutation(&f.principal, &approval), &approval, NOW)
+        .unwrap();
+    let mut admission = f.admission.clone();
+    admission.credential = Credential::OAuthGrant(grant);
+    let issued = f.store.issue_authority(&admission, None, NOW).unwrap();
+    assert!(issued
+        .authority
+        .unsigned
+        .platform_privileges
+        .contains(&ApisForceReplace));
+    while f.store.enforce_next_page(NOW).unwrap().is_some() {}
+    approval.privileges = vec![ApisAccept];
+    f.store
+        .approve_grant(&mutation(&f.principal, &approval), &approval, NOW + 1)
+        .unwrap();
+    while f.store.enforce_next_page(NOW + 1).unwrap().is_some() {}
+    let session = &issued.authority.unsigned.authorization_session_id;
+    assert!(f.store.resolve_revocation(session).unwrap().is_some());
+    let replacement = f.store.issue_authority(&admission, None, NOW + 1).unwrap();
+    assert!(replacement
+        .authority
+        .unsigned
+        .platform_privileges
+        .contains(&ApisAccept));
+    assert!(!replacement
+        .authority
+        .unsigned
+        .platform_privileges
+        .contains(&ApisForceReplace));
+}
+
+#[test]
+fn explicit_one_off_approval_overrides_old_choices_but_honors_later_withdrawal() {
+    for expired in [false, true] {
+        let f = fixture();
+        let login = f
+            .store
+            .record_verified_login(
+                &VerifiedLogin {
+                    principal_id: f.principal.clone(),
+                    provider_id: None,
+                    upstream_issuer: None,
+                    upstream_subject: None,
+                    verified_claims: None,
+                    expires_at: NOW + 3600,
+                },
+                NOW,
+            )
+            .unwrap();
+        let mut remembered = grant_request(&f.principal, &login, &f.read, &f.write, NOW);
+        if expired {
+            remembered.remember_until = Some(NOW + 2);
+        } else {
+            remembered.approved = vec![f.read.clone()];
+            remembered.declined = vec![f.write.clone()];
+        }
+        f.store
+            .approve_grant(&mutation(&f.principal, &remembered), &remembered, NOW + 1)
+            .unwrap();
+        // The decline case shares a timestamp with the fresh approval: consent
+        // provenance must not depend on wall-clock ordering within a second.
+        let now = if expired { NOW + 3 } else { NOW + 1 };
+        let mut explicit = grant_request(&f.principal, &login, &f.read, &f.write, now);
+        explicit.selection.required.push(f.write.clone());
+        explicit.selection.optional.clear();
+        explicit.remember = false;
+        let mut invalid_reuse = explicit.clone();
+        invalid_reuse.reused_remembered = vec![f.write.clone()];
+        assert!(matches!(
+            f.store
+                .approve_grant(&mutation(&f.principal, &invalid_reuse), &invalid_reuse, now),
+            Err(AuthError::Denied)
+        ));
+        let grant = f
+            .store
+            .approve_grant(&mutation(&f.principal, &explicit), &explicit, now)
+            .unwrap();
+        let mut admission = f.admission.clone();
+        admission.credential = Credential::OAuthGrant(grant);
+        let issued = f.store.issue_authority(&admission, None, now).unwrap();
+        assert!(issued
+            .authority
+            .unsigned
+            .capabilities
+            .iter()
+            .any(|cap| cap.capability_id == f.write));
+        let mut previous = f.admission.clone();
+        previous.runtime_id = URL_SAFE_NO_PAD.encode([8; 16]);
+        if expired {
+            assert!(matches!(
+                f.store.issue_authority(&previous, None, now),
+                Err(AuthError::RequiredMissing)
+            ));
+        } else {
+            let previous = f.store.issue_authority(&previous, None, now).unwrap();
+            assert!(!previous
+                .authority
+                .unsigned
+                .capabilities
+                .iter()
+                .any(|cap| cap.capability_id == f.write));
+        }
+        while f.store.enforce_next_page(now).unwrap().is_some() {}
+        assert!(f
+            .store
+            .resolve_revocation(&issued.authority.unsigned.authorization_session_id)
+            .unwrap()
+            .is_none());
+        remembered.approved = vec![f.read.clone()];
+        remembered.declined = vec![f.write.clone()];
+        remembered.remember_until = None;
+        f.store
+            .approve_grant(&mutation(&f.principal, &remembered), &remembered, now)
+            .unwrap();
+        while f.store.enforce_next_page(now).unwrap().is_some() {}
+        assert!(f
+            .store
+            .resolve_revocation(&issued.authority.unsigned.authorization_session_id)
+            .unwrap()
+            .is_some());
+        let fresh_grant = f
+            .store
+            .approve_grant(&mutation(&f.principal, &explicit), &explicit, now)
+            .unwrap();
+        admission.credential = Credential::OAuthGrant(fresh_grant);
+        let fresh = f.store.issue_authority(&admission, None, now).unwrap();
+        policy(
+            &f.store,
+            &f.admin,
+            PolicyMutation::ConsentRevoke {
+                principal_id: f.principal.clone(),
+                client_id: explicit.client_id,
+                binding_kind: explicit.binding_kind,
+                binding_value: explicit.binding_value,
+                capability_id: Some(f.write.clone()),
+            },
+            now,
+        );
+        while f.store.enforce_next_page(now).unwrap().is_some() {}
+        assert!(f
+            .store
+            .resolve_revocation(&fresh.authority.unsigned.authorization_session_id)
+            .unwrap()
+            .is_some());
+    }
+}
+
+#[test]
+fn reused_remembered_approval_keeps_its_deadline_and_cannot_be_renewed_after_expiry() {
+    let f = fixture();
+    let login = f
+        .store
+        .record_verified_login(
+            &VerifiedLogin {
+                principal_id: f.principal.clone(),
+                provider_id: None,
+                upstream_issuer: None,
+                upstream_subject: None,
+                verified_claims: None,
+                expires_at: NOW + 3600,
+            },
+            NOW,
+        )
+        .unwrap();
+    let mut approval = grant_request(&f.principal, &login, &f.read, &f.write, NOW);
+    approval.remember_until = Some(NOW + 10);
+    f.store
+        .approve_grant(&mutation(&f.principal, &approval), &approval, NOW)
+        .unwrap();
+    approval.remember = false;
+    approval.remember_until = None;
+    approval.reused_remembered = vec![f.write.clone()];
+    let grant = f
+        .store
+        .approve_grant(&mutation(&f.principal, &approval), &approval, NOW)
+        .unwrap();
+    let mut admission = f.admission.clone();
+    admission.credential = Credential::OAuthGrant(grant);
+    let issued = f.store.issue_authority(&admission, None, NOW).unwrap();
+    assert_eq!(issued.authority.unsigned.expires_at, NOW + 10);
+    while f.store.enforce_next_page(NOW + 1).unwrap().is_some() {}
+    assert!(f
+        .store
+        .resolve_revocation(&issued.authority.unsigned.authorization_session_id)
+        .unwrap()
+        .is_none());
+    assert!(matches!(
+        f.store.issue_authority(
+            &admission,
+            Some(&issued.authority.unsigned.authorization_session_id),
+            NOW + 11
+        ),
+        Err(AuthError::Retired)
+    ));
+}
+
+#[test]
+fn trusted_native_device_provisioning_issues_authority_and_replays_its_identity() {
+    let f = fixture();
+    let proposed = evidence(&SOURCE.replace("service Reader", "device Reader"));
+    let graph = trellis_idl::compile_evidence(proposed.clone()).unwrap();
+    let participant = graph
+        .root_package()
+        .participants()
+        .keys()
+        .next()
+        .unwrap()
+        .to_string();
+    let provisioning = DeploymentProvisioning {
+        evidence: proposed,
+        participant_id: participant.clone(),
+        expected_api_generations: BTreeMap::new(),
+        identity_public_key: URL_SAFE_NO_PAD
+            .encode(SigningKey::from_bytes(&[11; 32]).verifying_key().as_bytes()),
+        resource_commitments: serde_json::json!({}),
+        expires_at: None,
+    };
+    let command = mutation(&f.admin, &provisioning);
+    let provisioned = f
+        .store
+        .provision_deployment(&command, &provisioning, NOW)
+        .unwrap();
+    let replayed = f
+        .store
+        .provision_deployment(&command, &provisioning, NOW)
+        .unwrap();
+    assert_eq!(replayed.identity_key_id, provisioned.identity_key_id);
+    let mut admission = f.admission.clone();
+    admission.credential = Credential::ProvisionedIdentity(provisioned.identity_key_id.clone());
+    let issued = f.store.issue_authority(&admission, None, NOW).unwrap();
+    assert_eq!(
+        issued.authority.unsigned.principal_kind,
+        trellis_protocol::PrincipalKind::Device
+    );
+    assert_eq!(
+        issued.authority.unsigned.principal_id,
+        provisioned.principal_id
+    );
+    assert_eq!(
+        issued.authority.unsigned.binding,
+        trellis_protocol::SessionBinding::Device {
+            deployment_id: provisioned.deployment_id,
+            instance_id: provisioned.instance_id,
+            participant_id: participant,
+        }
+    );
+    let scope = EnforcementScope::Identity(provisioned.identity_key_id);
+    f.store
+        .revoke_root(&mutation(&f.admin, &scope), &scope, NOW + 1)
+        .unwrap();
+    assert!(matches!(
+        f.store.issue_authority(&admission, None, NOW + 1),
+        Err(AuthError::Denied)
+    ));
+}
+
+#[test]
+fn issuer_revocation_uses_only_issuer_privilege_and_preserves_other_scope_gates() {
+    let f = fixture();
+    let delegate = f
+        .store
+        .create_principal(&mutation(&f.admin, &"user"), "user", NOW)
+        .unwrap();
+    policy(
+        &f.store,
+        &f.admin,
+        PolicyMutation::PrivilegeAssign {
+            principal_id: delegate.clone(),
+            privilege: trellis_protocol::PlatformPrivilege::PrivilegesManage,
+            expected_revision: 0,
+        },
+        NOW,
+    );
+    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+    let previous = f.store.issuer();
+    let next = SigningKey::from_bytes(&[99; 32]);
+    let public = URL_SAFE_NO_PAD.encode(next.verifying_key().as_bytes());
+    f.store
+        .rotate_issuer(&mutation(&delegate, &public.as_str()), &public, NOW + 1)
+        .unwrap();
+    drop(f.store);
+    let store = open(&f.directory, next);
+    let grant_scope = EnforcementScope::Grant(f.grant);
+    assert!(matches!(
+        store.revoke_root(&mutation(&delegate, &grant_scope), &grant_scope, NOW + 2),
+        Err(AuthError::Denied)
+    ));
+    let current_scope = EnforcementScope::Issuer(store.issuer().key_id);
+    assert!(matches!(
+        store.revoke_root(
+            &mutation(&delegate, &current_scope),
+            &current_scope,
+            NOW + 2
+        ),
+        Err(AuthError::Conflict)
+    ));
+    let scope = EnforcementScope::Issuer(previous.key_id.clone());
+    store
+        .revoke_root(&mutation(&delegate, &scope), &scope, NOW + 2)
+        .unwrap();
+    assert_eq!(
+        store.resolve_issuer(&previous.key_id).unwrap().state,
+        trellis_protocol::AuthorityIssuerState::Revoked
+    );
+    while store.enforce_next_page(NOW + 2).unwrap().is_some() {}
+    assert!(store
+        .resolve_revocation(&issued.authority.unsigned.authorization_session_id)
+        .unwrap()
+        .is_some());
+    assert!(matches!(
+        store.issue_authority(
+            &f.admission,
+            Some(&issued.authority.unsigned.authorization_session_id),
+            NOW + 2
+        ),
+        Err(AuthError::Retired)
+    ));
+    assert!(store.issue_authority(&f.admission, None, NOW + 2).is_ok());
 }
 
 #[test]

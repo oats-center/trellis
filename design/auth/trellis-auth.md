@@ -36,6 +36,17 @@ Approval never adds an unknown or declined optional capability at renewal.
 Compatible API expansion is available to a renewed context only while the
 capability remains approved at the same consent revision.
 
+Fresh explicit approval records grant-local consent provenance. Older remembered
+declines or expired approvals cannot veto "approve once," and that one-off
+choice does not rewrite remembered policy. Reused remembered choices must still
+be approved and inherit their optional expiry. Later shared decisions and
+explicit withdrawals still constrain existing grants. Approval commits scoped
+enforcement work atomically when it changes remembered consent or platform
+delegation.
+
+Trusted native device provisioning commits the device record with its principal,
+deployment, instance, identity key, and entitlements before authority issuance.
+
 ## Catalog Acceptance
 
 One accepted definition exists per API major. Review authenticates
@@ -120,6 +131,9 @@ be installed as the configured runtime signer before further issuance. A
 previous signer cannot continue issuing after that commitment. Rotation itself
 does not retire sessions. Explicit key compromise revokes affected sessions and
 makes that key unusable; restart must not reinstall it as an active signer.
+Issuer rotation/revocation requires `privileges.manage`, not an additional
+`principals.manage` privilege. Other hard-root revocation retains its own
+`principals.manage` gate.
 
 The remaining runtime wiring loads the fresh store, accepts built-ins and
 provisions Runtime resources/identity, issues Runtime authority through this

@@ -375,7 +375,7 @@ impl SqliteAuthorizationStore {
         now: i64,
     ) -> Result<String, AuthError> {
         self.mutate(identity,"root.revoke",scope,now,|connection| {
-            Self::require_privilege(connection,&identity.actor,"principals.manage")?;
+            Self::require_privilege(connection,&identity.actor,if matches!(scope, EnforcementScope::Issuer(_)) {"privileges.manage"} else {"principals.manage"})?;
             let changed=match scope {
                 EnforcementScope::Grant(grant)=> {
                     connection.execute("UPDATE auth_oauth_families SET revoked_at=coalesce(revoked_at,?1),revision=revision+1 WHERE oauth_grant_id=?2 AND revoked_at IS NULL",params![now,grant])?;
@@ -389,7 +389,6 @@ impl SqliteAuthorizationStore {
                 EnforcementScope::Identity(identity)=>connection.execute("UPDATE auth_provisioned_identities SET state='revoked',revoked_at=?1 WHERE identity_key_id=?2 AND state='active'",params![now,identity])?,
                 EnforcementScope::Session(session)=> {if retire_session(self,connection,session,"session_revoked",true,None,now)? {1} else {0}},
                 EnforcementScope::Issuer(issuer)=> {
-                    Self::require_privilege(connection,&identity.actor,"privileges.manage")?;
                     let current:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_authorization_issuers WHERE key_id=?1 AND is_current=1)",[issuer],|row|row.get(0))?;
                     if current {return Err(AuthError::Conflict);}
                     connection.execute("UPDATE auth_authorization_issuers SET state='compromised',revoked_at=?1 WHERE key_id=?2 AND revoked_at IS NULL",params![now,issuer])?

@@ -630,6 +630,7 @@ CREATE TABLE auth_oauth_grants (
     optional_capabilities_json TEXT NOT NULL CHECK (json_valid(optional_capabilities_json)),
     approved_capabilities_json TEXT NOT NULL CHECK (json_valid(approved_capabilities_json)),
     approved_privileges_json TEXT NOT NULL CHECK (json_valid(approved_privileges_json)),
+    consent_basis_json TEXT NOT NULL CHECK (json_valid(consent_basis_json)),
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
     revoked_at INTEGER,

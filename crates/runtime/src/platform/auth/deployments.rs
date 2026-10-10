@@ -123,6 +123,9 @@ impl SqliteAuthorizationStore {
             let result = ProvisionedDeployment {principal_id:id(),deployment_id:id(),instance_id:id(),identity_key_id:URL_SAFE_NO_PAD.encode(Sha256::digest(raw))};
             connection.execute("INSERT INTO auth_principals(principal_id,kind,state,created_at,updated_at,version) VALUES(?1,?2,'active',?3,?3,1)",params![result.principal_id,kind,now])?;
             connection.execute("INSERT INTO auth_deployments VALUES(?1,?2,?3,'active',?4)",params![result.deployment_id,input.participant_id,kind,input.expires_at])?;
+            if participant.kind() == ParticipantKind::Device {
+                connection.execute("INSERT INTO auth_devices(principal_id,deployment_id,state,created_at,updated_at,version) VALUES(?1,?2,'active',?3,?3,1)",params![result.principal_id,result.deployment_id,now])?;
+            }
             connection.execute("INSERT INTO auth_instances VALUES(?1,?2,?3,?4,'active',?5,?5,1)",params![result.instance_id,result.deployment_id,result.principal_id,revision,now])?;
             connection.execute("INSERT INTO auth_deployment_bindings(deployment_id,installed_revision,implementation_digest,provided_apis_json,required_capabilities_json,optional_capabilities_json,resource_commitments_json,revision) VALUES(?1,?2,?3,?4,?5,?6,?7,1)",params![result.deployment_id,revision,participant_digest,json(&provided)?,json(&required)?,json(&optional)?,json(&input.resource_commitments)?])?;
             connection.execute("INSERT INTO auth_provisioned_identities(identity_key_id,principal_id,deployment_id,instance_id,participant_id,kind,identity_public_key,state,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,'active',?8)",params![result.identity_key_id,result.principal_id,result.deployment_id,result.instance_id,input.participant_id,kind,input.identity_public_key,now])?;

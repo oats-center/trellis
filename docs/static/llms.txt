@@ -14,6 +14,11 @@ and SDK/provider migration are still in progress; do not adapt applications to
 the former browser-bind or GrantBinding protocols. Use a released matching
 version until the complete cutover is available.
 
+Explicit one-off consent overrides older remembered choices without changing
+them. Reused choices retain their expiry; later shared withdrawals still retire
+affected sessions. A shortened effective authorization deadline is a reduction
+unless another entitlement path preserves the outstanding authority.
+
 This guidance covers Trellis interfaces, not application engineering policy.
 Services choose their configuration and validation libraries, databases, domain
 models, dependency injection, project layout, and development tools. Examples

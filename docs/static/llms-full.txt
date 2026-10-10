@@ -16,6 +16,11 @@ reconnect or missing entries until context acceptance deadlines expire. The
 OAuth/Callout and client/provider cutover is unfinished on this unreleased branch;
 the old GrantBinding/browser-bind model is not a compatibility option.
 
+Explicit one-off consent overrides older remembered choices without changing
+them. Reused choices retain their expiry; later shared withdrawals still retire
+affected sessions. A shortened effective authorization deadline is a reduction
+unless another entitlement path preserves the outstanding authority.
+
 Trellis owns native contract compilation, generated APIs, authenticated
 communication, connection lifecycle, and declared runtime resources. It does not
 choose an application's configuration format, environment parser, database, ORM,

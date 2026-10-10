@@ -21,6 +21,11 @@ watchers, infer trust from missing mirror entries, or implement the retired
 GrantBinding/browser-bind protocol as a fallback. Released matching libraries
 remain the supported application integration until cutover completes.
 
+Explicit one-off consent overrides older remembered choices without changing
+them. Reused choices retain their expiry; later shared withdrawals still retire
+affected sessions. A shortened effective authorization deadline is a reduction
+unless another entitlement path preserves the outstanding authority.
+
 Declare whole capabilities in native IDL, not individual RPC/event grants:
 `required capability read;` is required and `capability export;` is optional.
 Generated callers expose the selected actions. Check capability availability

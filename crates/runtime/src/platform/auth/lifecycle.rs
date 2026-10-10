@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -8,6 +8,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use trellis_protocol::{CapabilityAuthority, PlatformPrivilege};
 
+use super::authorization_sessions::GrantConsentBasis;
 use super::policy::{capability, entitlements, CapabilitySelection};
 use super::revocation::{enqueue_scope, EnforcementScope};
 use super::sqlite::{decode, id, json, AuthError, Mutation, SqliteAuthorizationStore};
@@ -61,6 +62,9 @@ pub(crate) struct GrantApproval {
     pub(crate) public_jwk: Value,
     pub(crate) selection: CapabilitySelection,
     pub(crate) approved: Vec<String>,
+    /// Approved choices reused without a fresh user decision must still have
+    /// valid remembered consent and inherit its optional deadline.
+    pub(crate) reused_remembered: Vec<String>,
     pub(crate) declined: Vec<String>,
     pub(crate) privileges: Vec<PlatformPrivilege>,
     pub(crate) remember: bool,
@@ -262,8 +266,10 @@ impl SqliteAuthorizationStore {
             let selected:BTreeSet<_>=approval.selection.required.iter().chain(&approval.selection.optional).cloned().collect();
             let declined:BTreeSet<_>=approval.declined.iter().cloned().collect();
             let choices:BTreeSet<_>=approval.approved.iter().cloned().collect();
-            if !choices.is_subset(&selected) || !declined.is_subset(&selected) || !choices.is_disjoint(&declined) {return Err(AuthError::Denied);}
+            let reused:BTreeSet<_>=approval.reused_remembered.iter().cloned().collect();
+            if !choices.is_subset(&selected) || !declined.is_subset(&selected) || !choices.is_disjoint(&declined) || !reused.is_subset(&choices) {return Err(AuthError::Denied);}
             let mut approved:Vec<CapabilityAuthority>=Vec::new();
+            let mut consent_basis = BTreeMap::new();
             for name in &selected {
                 // Implied choices are still explicit members of this request;
                 // original declines always win and are retained in the grant.
@@ -274,9 +280,20 @@ impl SqliteAuthorizationStore {
                     Err(AuthError::NotFound) if !approval.selection.required.contains(name)=>continue,
                     Err(error)=>return Err(error),
                 };
-                if accepted {approved.push(cap.clone());}
-                if approval.remember {
+                if approval.remember && !reused.contains(name) {
                     connection.execute("INSERT INTO auth_remembered_consent VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10) ON CONFLICT(principal_id,client_id,binding_kind,binding_value,capability_id,capability_generation,consent_revision) DO UPDATE SET decision=excluded.decision,expires_at=excluded.expires_at,revision=revision+1,updated_at=excluded.updated_at",params![approval.principal_id,approval.client_id,approval.binding_kind,approval.binding_value,name,cap.identity_generation.get(),cap.consent_revision.get(),if accepted{"approved"}else{"declined"},approval.remember_until,now])?;
+                }
+                if accepted {
+                    let consent:Option<(String,Option<i64>,u64)>=connection.query_row("SELECT decision,expires_at,revision FROM auth_remembered_consent WHERE principal_id=?1 AND client_id=?2 AND binding_kind=?3 AND binding_value=?4 AND capability_id=?5 AND capability_generation=?6 AND consent_revision=?7",params![approval.principal_id,approval.client_id,approval.binding_kind,approval.binding_value,name,cap.identity_generation.get(),cap.consent_revision.get()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+                    let (revision,expires_at) = if reused.contains(name) {
+                        let (decision,expires,revision) = consent.ok_or(AuthError::Denied)?;
+                        if decision != "approved" || expires.is_some_and(|expiry|expiry <= now) {return Err(AuthError::Denied);}
+                        (revision,expires)
+                    } else {
+                        (consent.map_or(0, |(_, _, revision)|revision), if approval.remember {approval.remember_until} else {None})
+                    };
+                    consent_basis.insert(name.clone(), GrantConsentBasis {revision,expires_at});
+                    approved.push(cap);
                 }
             }
             for privilege in &approval.privileges {
@@ -287,7 +304,10 @@ impl SqliteAuthorizationStore {
                 connection.execute("INSERT INTO auth_platform_delegations VALUES(?1,?2,?3,?4,?5,?6,1) ON CONFLICT(principal_id,client_id,binding_kind,binding_value) DO UPDATE SET approved_privileges_json=excluded.approved_privileges_json,expires_at=excluded.expires_at,revision=revision+1",params![approval.principal_id,approval.client_id,approval.binding_kind,approval.binding_value,json(&approval.privileges)?,approval.remember_until])?;
             }
             let grant=id();
-            connection.execute("INSERT INTO auth_oauth_grants VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL,1)",params![grant,approval.principal_id,approval.login_session_id,approval.client_id,approval.binding_kind,approval.binding_value,approval.durable_dpop_jkt,json(&approval.public_jwk)?,json(&approval.selection.required)?,json(&approval.selection.optional)?,json(&approved)?,json(&approval.privileges)?,now,approval.expires_at.min(login_expiry)])?;
+            connection.execute("INSERT INTO auth_oauth_grants(oauth_grant_id,principal_id,login_session_id,client_id,binding_kind,binding_value,durable_dpop_jkt,public_jwk_json,required_capabilities_json,optional_capabilities_json,approved_capabilities_json,approved_privileges_json,consent_basis_json,created_at,expires_at,revoked_at,revision) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,NULL,1)",params![grant,approval.principal_id,approval.login_session_id,approval.client_id,approval.binding_kind,approval.binding_value,approval.durable_dpop_jkt,json(&approval.public_jwk)?,json(&approval.selection.required)?,json(&approval.selection.optional)?,json(&approved)?,json(&approval.privileges)?,json(&consent_basis)?,now,approval.expires_at.min(login_expiry)])?;
+            if approval.remember || !approval.privileges.is_empty() {
+                enqueue_scope(connection, &EnforcementScope::Principal(approval.principal_id.clone()), now)?;
+            }
             Ok(grant)
         })
     }

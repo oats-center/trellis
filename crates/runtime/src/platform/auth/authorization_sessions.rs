@@ -63,6 +63,15 @@ pub(super) struct CredentialSnapshot {
     pub(super) not_after: i64,
 }
 
+/// Grant-local approval supersedes remembered choices observed at creation.
+/// Only later shared decisions constrain it; its own optional lifetime remains.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct GrantConsentBasis {
+    pub(super) revision: u64,
+    pub(super) expires_at: Option<i64>,
+}
+
 pub(super) fn credential_snapshot(
     connection: &Connection,
     credential: &Credential,
@@ -106,25 +115,31 @@ pub(super) fn credential_snapshot(
                 return Err(AuthError::Denied);
             }
             let mut approved: Vec<CapabilityAuthority> = decode(&approved)?;
+            let (requested,basis):(String,String)=connection.query_row("SELECT approved_privileges_json,consent_basis_json FROM auth_oauth_grants WHERE oauth_grant_id=?1",[grant],|row|Ok((row.get(0)?,row.get(1)?)))?;
+            let basis: BTreeMap<String, GrantConsentBasis> = decode(&basis)?;
             let mut consent_deadlines = BTreeMap::new();
             let mut retained = Vec::new();
             for cap in approved.drain(..) {
-                let consent:Option<(String,Option<i64>)>=connection.query_row("SELECT decision,expires_at FROM auth_remembered_consent WHERE principal_id=?1 AND client_id=?2 AND binding_kind=?3 AND binding_value=?4 AND capability_id=?5 AND capability_generation=?6 AND consent_revision=?7",params![principal,client,kind,value,cap.capability_id,cap.identity_generation.get(),cap.consent_revision.get()],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
-                if let Some((decision, expires)) = consent {
-                    if decision != "approved" || expires.is_some_and(|expiry| expiry <= now) {
+                let approval = basis.get(&cap.capability_id).ok_or(AuthError::Denied)?;
+                let consent:Option<(String,Option<i64>,u64)>=connection.query_row("SELECT decision,expires_at,revision FROM auth_remembered_consent WHERE principal_id=?1 AND client_id=?2 AND binding_kind=?3 AND binding_value=?4 AND capability_id=?5 AND capability_generation=?6 AND consent_revision=?7",params![principal,client,kind,value,cap.capability_id,cap.identity_generation.get(),cap.consent_revision.get()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+                let expires = if let Some((decision, expires, _)) =
+                    consent.filter(|(_, _, revision)| *revision > approval.revision)
+                {
+                    if decision != "approved" {
                         continue;
                     }
-                    if let Some(expires) = expires {
-                        consent_deadlines.insert(cap.capability_id.clone(), expires);
-                    }
+                    expires
+                } else {
+                    approval.expires_at
+                };
+                if expires.is_some_and(|expiry| expiry <= now) {
+                    continue;
+                }
+                if let Some(expires) = expires {
+                    consent_deadlines.insert(cap.capability_id.clone(), expires);
                 }
                 retained.push(cap);
             }
-            let requested: String = connection.query_row(
-                "SELECT approved_privileges_json FROM auth_oauth_grants WHERE oauth_grant_id=?1",
-                [grant],
-                |row| row.get(0),
-            )?;
             let requested: Vec<PlatformPrivilege> = decode(&requested)?;
             let mut privileges = Vec::new();
             let eligibility:Option<String>=connection.query_row("SELECT requested_privileges_json FROM auth_oauth_clients WHERE client_id=?1 AND state='active'",[&client],|row|row.get(0)).optional()?;
@@ -277,10 +292,11 @@ pub(super) fn loses_authority(
     for row in statement.query_map(params![session, now], |row| row.get::<_, Vec<u8>>(0))? {
         let old = trellis_protocol::parse_session_authority(&row?, 1_048_576)?;
         let old = &old.unsigned;
-        if old
-            .capabilities
-            .iter()
-            .any(|capability| !current.capabilities.contains(capability))
+        if old.expires_at > current.not_after
+            || old
+                .capabilities
+                .iter()
+                .any(|capability| !current.capabilities.contains(capability))
             || old
                 .platform_privileges
                 .iter()
