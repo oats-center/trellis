@@ -2,6 +2,7 @@
 export { TrellisError } from "./errors/TrellisError.ts";
 export {
   apiDescriptor,
+  type AppRequestDescriptor,
   type Codec,
   codecs,
   participantDescriptor,

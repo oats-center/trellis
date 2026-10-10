@@ -1,6 +1,6 @@
 //! Generated API `trellis.state@v1`.
 pub const API_ID: &str = "trellis.state@v1";
-pub const API_DIGEST: &str = "bqIK645jHWh6xBk0V8kejZI_2AWodtWsDwG0rawTvo8";
+pub const API_DIGEST: &str = "u--S9rcV2G0Q3mmGO-xwN_8BFq1w76pMXc3sGeQJo_Y";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;
@@ -176,7 +176,7 @@ pub mod rpc {
         pub const KEY: &'static str = "state.Delete";
         pub const SUBJECT: &'static str = "rpc.v1.state.Delete";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.state@v1::public",
+            "trellis.state@v1::delete",
         ];
         pub const ERRORS: &'static [&'static str] = &["trellis.state@v1::Conflict"];
         pub const DOWNLOAD: bool = false;
@@ -227,7 +227,7 @@ pub mod rpc {
         pub const KEY: &'static str = "state.Get";
         pub const SUBJECT: &'static str = "rpc.v1.state.Get";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.state@v1::public",
+            "trellis.state@v1::read",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.state@v1::CorruptRepresentation",
@@ -288,7 +288,7 @@ pub mod rpc {
         pub const KEY: &'static str = "state.Put";
         pub const SUBJECT: &'static str = "rpc.v1.state.Put";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.state@v1::public",
+            "trellis.state@v1::write",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.state@v1::Conflict",
@@ -357,7 +357,7 @@ pub mod rpc {
         pub const KEY: &'static str = "state.Resources.Inspect";
         pub const SUBJECT: &'static str = "rpc.v1.state.Resources.Inspect";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.state@v1::resources_read",
+            "trellis.state@v1::resourcesInspect",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.state@v1::CorruptRepresentation",
@@ -418,7 +418,7 @@ pub mod rpc {
         pub const KEY: &'static str = "state.Resources.Query";
         pub const SUBJECT: &'static str = "rpc.v1.state.Resources.Query";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.state@v1::resources_read",
+            "trellis.state@v1::resourcesInspect",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.state@v1::CorruptRepresentation",

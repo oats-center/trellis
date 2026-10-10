@@ -315,18 +315,45 @@ type PackageEvidenceInput = Readonly<{
   }>[];
 }>;
 
+type ApiSelection = Readonly<{
+  api: ApiDescriptorInput;
+  actions: readonly Readonly<{
+    descriptorName: string;
+    direction: "call" | "invoke" | "publish" | "subscribe";
+    optionalCapabilities: readonly string[];
+  }>[];
+  optionalCapabilities: readonly string[];
+}>;
+
+/** Source-owned public-client selections and local codecs, never principal installation evidence. */
+export type AppRequestDescriptor = Readonly<{
+  /** Source-local identity, not the registered OAuth client ID. */
+  id: string;
+  /** Browser origin binding or native durable-key binding. */
+  kind: "browser" | "native";
+  /** Whole capabilities necessary for this workflow. */
+  requiredCapabilities: readonly string[];
+  /** Whole capabilities requested only when authorized and approved. */
+  optionalCapabilities: readonly string[];
+  /** Compiler-derived callable surfaces; these do not confer authority. */
+  uses: readonly ApiSelection[];
+  /** Local State encoding metadata, not provisioned resource declarations. */
+  states: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
+}>;
+
 type ParticipantDescriptorInput = Readonly<{
-  kind: "service" | "device" | "app" | "agent";
+  kind: "service" | "device";
   id: string;
   identity: string;
   path: string;
   implements: readonly ApiDescriptorInput[];
-  uses: readonly Readonly<Record<string, unknown>>[];
-  optionalGrants: Readonly<Record<string, readonly unknown[]>>;
+  uses: readonly ApiSelection[];
+  requiredCapabilities: readonly string[];
+  optionalCapabilities: readonly string[];
   actionNames: Readonly<Record<string, string>>;
   resources: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
   companion?: Readonly<{
-    participant: ParticipantDescriptorInput;
+    request: AppRequestDescriptor;
     availability: "required" | "optional";
   }>;
   packageEvidence: PackageEvidenceInput;
@@ -493,7 +520,7 @@ export function participantDescriptor<
 ): T {
   if (
     !descriptor || typeof descriptor !== "object" ||
-    !["service", "device", "app", "agent"].includes(descriptor.kind) ||
+    !["service", "device"].includes(descriptor.kind) ||
     descriptor.id !== descriptor.identity ||
     typeof descriptor.identity !== "string" ||
     descriptor.identity.length === 0 ||
@@ -503,20 +530,22 @@ export function participantDescriptor<
     descriptor.identity !==
       `${descriptor.packageEvidence.rootPackage}.${descriptor.path}` ||
     !Array.isArray(descriptor.implements) || !Array.isArray(descriptor.uses) ||
-    !isRecord(descriptor.optionalGrants) ||
+    !Array.isArray(descriptor.requiredCapabilities) ||
+    !Array.isArray(descriptor.optionalCapabilities) ||
     !isRecord(descriptor.actionNames) ||
     !isRecord(descriptor.resources)
   ) {
     fail("participant descriptor");
   }
   for (const api of descriptor.implements) validateApiDescriptor(api);
-  for (const selection of descriptor.uses) {
+  const selections: readonly ApiSelection[] = descriptor.uses;
+  for (const selection of selections) {
     if (
       !isRecord(selection) || !isRecord(selection.api) ||
       !Array.isArray(selection.actions) ||
       !Array.isArray(selection.optionalCapabilities)
     ) fail("generated action selection");
-    const api = selection.api as unknown as ApiDescriptorInput;
+    const api = selection.api;
     validateApiDescriptor(api);
     for (const selected of selection.actions) {
       if (
@@ -547,17 +576,15 @@ export function participantDescriptor<
   if (descriptor.companion) {
     if (
       descriptor.kind !== "device" ||
-      !isRecord(descriptor.companion.participant) ||
+      !isRecord(descriptor.companion.request) ||
       !["required", "optional"].includes(descriptor.companion.availability) ||
-      !["app", "agent"].includes(descriptor.companion.participant.kind) ||
-      descriptor.companion.participant.identity.split(".").slice(0, -1).join(
+      !["browser", "native"].includes(descriptor.companion.request.kind) ||
+      descriptor.companion.request.id.split(".").slice(0, -1).join(
           ".",
-        ) !== descriptor.identity ||
-      descriptor.companion.participant.companion !== undefined
+        ) !== descriptor.identity
     ) {
       fail("companion descriptor");
     }
-    participantDescriptor(descriptor.companion.participant);
     Object.freeze(descriptor.companion);
   }
   validatePackageEvidence(descriptor.packageEvidence);

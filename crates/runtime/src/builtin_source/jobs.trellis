@@ -1,317 +1,6 @@
 import {
   JobsSummaryRequest,
   JobsSummaryResponse,
-  AuthApiSurfaceTarget,
-  AuthApiSurfaceTargetKind,
-  AuthApiSurfaceTargetSurface,
-  AuthPackageEvidence,
-  AuthPackageSourceEvidence,
-  AuthCapabilitiesListRequest,
-  AuthCapabilitiesListResponse,
-  AuthCapabilitiesListResponseentriesItem,
-  AuthCapabilitiesListResponseentriesItemallowsItem,
-  AuthCapabilitiesListResponseentriesItemallowsItemAction,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget1,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget1Kind,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget1Surface,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget2,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget2Kind,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget3,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget3Kind,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget3Resource,
-  AuthCapabilityGroupsDeleteRequest,
-  AuthCapabilityGroupsDeleteResponse,
-  AuthCapabilityGroupsGetRequest,
-  AuthCapabilityGroupsGetResponse,
-  AuthCapabilityGroupsGetResponsegroup,
-  AuthCapabilityGroupsListRequest,
-  AuthCapabilityGroupsListResponse,
-  AuthCapabilityGroupsListResponseentriesItem,
-  AuthCapabilityGroupsPutRequest,
-  AuthCapabilityGroupsPutResponse,
-  AuthCapabilityGroupsPutResponsegroup,
-  AuthConnectionsClosedEvent,
-  AuthConnectionsKickRequest,
-  AuthConnectionsKickResponse,
-  AuthConnectionsKickedEvent,
-  AuthConnectionsListRequest,
-  AuthConnectionsListResponse,
-  AuthConnectionsListResponseentriesItem,
-  AuthConnectionsOpenedEvent,
-  AuthDeploymentsApplyRequest,
-  AuthDeploymentsApplyResponse,
-  AuthDeploymentsCreateRequest,
-  AuthDeploymentsCreateRequestKind,
-  AuthDeploymentsCreateResponse,
-  AuthDeploymentsCreateResponsedeployment,
-  AuthDeploymentsCreateResponsedeploymentKind,
-  AuthDeploymentsCreateResponsedeploymentState,
-  AuthDeploymentsDisableRequest,
-  AuthDeploymentsDisableResponse,
-  AuthDeploymentsDisableResponsedeployment,
-  AuthDeploymentsDisableResponsedeploymentKind,
-  AuthDeploymentsDisableResponsedeploymentState,
-  AuthDeploymentsDisableResponsemutation,
-  AuthDeploymentsEnableRequest,
-  AuthDeploymentsEnableResponse,
-  AuthDeploymentsEnableResponsedeployment,
-  AuthDeploymentsEnableResponsedeploymentKind,
-  AuthDeploymentsEnableResponsedeploymentState,
-  AuthDeploymentsEnableResponsemutation,
-  AuthDeploymentsGetRequest,
-  AuthDeploymentsGetResponse,
-  AuthDeploymentsListRequest,
-  AuthDeploymentsListRequestKind,
-  AuthDeploymentsListRequestState,
-  AuthDeploymentsListResponse,
-  AuthDeploymentsListResponseentriesItem,
-  AuthDeploymentsListResponseentriesItemKind,
-  AuthDeploymentsListResponseentriesItemState,
-  AuthDeploymentsRemoveRequest,
-  AuthDeploymentsRemoveResponse,
-  AuthDeploymentsRemoveResponsedeployment,
-  AuthDeploymentsRemoveResponsedeploymentKind,
-  AuthDeploymentsRemoveResponsedeploymentState,
-  AuthDeploymentsRemoveResponsemutation,
-  AuthDeviceUserAuthoritiesApprovedEvent,
-  AuthDeviceUserAuthoritiesListRequest,
-  AuthDeviceUserAuthoritiesListResponse,
-  AuthDeviceUserAuthoritiesListResponseentriesItem,
-  AuthDeviceUserAuthoritiesListResponseentriesItemdevice,
-  AuthDeviceUserAuthoritiesListResponseentriesItemdeviceAdministrativeApproval,
-  AuthDeviceUserAuthoritiesListResponseentriesItemdeviceDelegationState,
-  AuthDeviceUserAuthoritiesListResponseentriesItemdeviceState,
-  AuthDeviceUserAuthoritiesRequestedEvent,
-  AuthDeviceUserAuthoritiesResolveProgress,
-  AuthDeviceUserAuthoritiesResolveProgressState,
-  AuthDeviceUserAuthoritiesResolveRequest,
-  AuthDeviceUserAuthoritiesResolveResponse,
-  AuthDeviceUserAuthoritiesResolveResponsedevice,
-  AuthDeviceUserAuthoritiesResolveResponsedeviceAdministrativeApproval,
-  AuthDeviceUserAuthoritiesResolveResponsedeviceDelegationState,
-  AuthDeviceUserAuthoritiesResolveResponsedeviceState,
-  AuthDeviceUserAuthoritiesResolveResponsereview,
-  AuthDeviceUserAuthoritiesResolveResponsereviewState,
-  AuthDeviceUserAuthoritiesResolvedEvent,
-  AuthDeviceUserAuthoritiesReviewRequestedEvent,
-  AuthDeviceUserAuthoritiesReviewsDecideRequest,
-  AuthDeviceUserAuthoritiesReviewsDecideRequestDecision,
-  AuthDeviceUserAuthoritiesReviewsDecideResponse,
-  AuthDeviceUserAuthoritiesReviewsDecideResponsereview,
-  AuthDeviceUserAuthoritiesReviewsDecideResponsereviewState,
-  AuthDeviceUserAuthoritiesReviewsListRequest,
-  AuthDeviceUserAuthoritiesReviewsListRequestState,
-  AuthDeviceUserAuthoritiesReviewsListResponse,
-  AuthDeviceUserAuthoritiesReviewsListResponseentriesItem,
-  AuthDeviceUserAuthoritiesReviewsListResponseentriesItemState,
-  AuthDeviceUserAuthoritiesRevokeRequest,
-  AuthDeviceUserAuthoritiesRevokeResponse,
-  AuthDeviceUserAuthoritiesRevokeResponsedevice,
-  AuthDeviceUserAuthoritiesRevokeResponsedeviceAdministrativeApproval,
-  AuthDeviceUserAuthoritiesRevokeResponsedeviceDelegationState,
-  AuthDeviceUserAuthoritiesRevokeResponsedeviceState,
-  AuthDevicesDisableRequest,
-  AuthDevicesDisableResponse,
-  AuthDevicesDisableResponsedevice,
-  AuthDevicesDisableResponsedeviceAdministrativeApproval,
-  AuthDevicesDisableResponsedeviceDelegationState,
-  AuthDevicesDisableResponsedeviceState,
-  AuthDevicesDisableResponsemutation,
-  AuthDevicesEnableRequest,
-  AuthDevicesEnableResponse,
-  AuthDevicesEnableResponsedevice,
-  AuthDevicesEnableResponsedeviceAdministrativeApproval,
-  AuthDevicesEnableResponsedeviceDelegationState,
-  AuthDevicesEnableResponsedeviceState,
-  AuthDevicesEnableResponsemutation,
-  AuthDevicesListRequest,
-  AuthDevicesListRequestState,
-  AuthDevicesListResponse,
-  AuthDevicesListResponseentriesItem,
-  AuthDevicesListResponseentriesItemAdministrativeApproval,
-  AuthDevicesListResponseentriesItemDelegationState,
-  AuthDevicesListResponseentriesItemState,
-  AuthDevicesProvisionRequest,
-  AuthDevicesProvisionResponse,
-  AuthDevicesProvisionResponsedevice,
-  AuthDevicesProvisionResponsedeviceAdministrativeApproval,
-  AuthDevicesProvisionResponsedeviceDelegationState,
-  AuthDevicesProvisionResponsedeviceState,
-  AuthDevicesRemoveRequest,
-  AuthDevicesRemoveResponse,
-  AuthDevicesRemoveResponsedevice,
-  AuthDevicesRemoveResponsedeviceAdministrativeApproval,
-  AuthDevicesRemoveResponsedeviceDelegationState,
-  AuthDevicesRemoveResponsedeviceState,
-  AuthDevicesRemoveResponsemutation,
-  AuthErrorDetails,
-  AuthGrantBinding,
-  AuthGrantBindingOwnerKind,
-  AuthGrantBindingState,
-  AuthGrantSet,
-  AuthGrantsChangedEvent,
-  AuthGrantsGetRequest,
-  AuthGrantsGetRequestOwnerKind,
-  AuthGrantsGetResponse,
-  AuthGrantsListRequest,
-  AuthGrantsListRequestOwnerKind,
-  AuthGrantsListRequestState,
-  AuthGrantsListResponse,
-  AuthGrantsMutationResponse,
-  AuthGrantsRevokeRequest,
-  AuthGrantsRevokeRequestOwnerKind,
-  AuthGrantsSetRequest,
-  AuthGrantsSetRequestOwnerKind,
-  AuthIssuersRevokeRequest,
-  AuthIssuersRevokeResponse,
-  AuthIssuersRevokeResponseState,
-  AuthIssuersRevokedEvent,
-  AuthLoginSession,
-  AuthLoginSessionParticipantKind,
-  AuthLoginSessionState,
-  AuthOperationSignalTarget,
-  AuthOperationSignalTargetKind,
-  AuthOptionalBundle,
-  AuthParticipantResourceTarget,
-  AuthParticipantResourceTargetKind,
-  AuthParticipantResourceTargetResource,
-  AuthParticipantsGetRequest,
-  AuthParticipantsGetResponse,
-  AuthParticipantsInstallRequest,
-  AuthParticipantsInstallResponse,
-  AuthPermissionAtom,
-  AuthPermissionAtomAction,
-  AuthPortalsGetRequest,
-  AuthPortalsGetResponse,
-  AuthPortalsGetResponseportal,
-  AuthPortalsGetResponseportalloginSettings,
-  AuthPortalsGetResponseroutesItem,
-  AuthPortalsGrantOverridesListRequest,
-  AuthPortalsGrantOverridesListResponse,
-  AuthPortalsGrantOverridesListResponseentriesItem,
-  AuthPortalsGrantOverridesListResponseentriesItemroleMappingsItem,
-  AuthPortalsGrantOverridesPutRequest,
-  AuthPortalsGrantOverridesPutRequestroleMappingsItem,
-  AuthPortalsGrantOverridesPutResponse,
-  AuthPortalsGrantOverridesPutResponsepolicy,
-  AuthPortalsGrantOverridesPutResponsepolicyroleMappingsItem,
-  AuthPortalsGrantOverridesRemoveRequest,
-  AuthPortalsGrantOverridesRemoveResponse,
-  AuthPortalsGrantOverridesRemoveResponseremoved,
-  AuthPortalsGrantOverridesRemoveResponseremovedroleMappingsItem,
-  AuthPortalsListRequest,
-  AuthPortalsListResponse,
-  AuthPortalsListResponseentriesItem,
-  AuthPortalsListResponseentriesItemloginSettings,
-  AuthPortalsLoginSettingsGetRequest,
-  AuthPortalsLoginSettingsGetResponse,
-  AuthPortalsLoginSettingsGetResponsesettings,
-  AuthPortalsLoginSettingsUpdateRequest,
-  AuthPortalsLoginSettingsUpdateRequestsettings,
-  AuthPortalsLoginSettingsUpdateResponse,
-  AuthPortalsLoginSettingsUpdateResponsesettings,
-  AuthPortalsPutRequest,
-  AuthPortalsPutRequestloginSettings,
-  AuthPortalsPutResponse,
-  AuthPortalsPutResponseportal,
-  AuthPortalsPutResponseportalloginSettings,
-  AuthPortalsRemoveRequest,
-  AuthPortalsRemoveResponse,
-  AuthPortalsRoutesPutRequest,
-  AuthPortalsRoutesPutResponse,
-  AuthPortalsRoutesPutResponseroute,
-  AuthPortalsRoutesRemoveRequest,
-  AuthPortalsRoutesRemoveResponse,
-  AuthResourceBinding,
-  AuthResourceBindingState,
-  AuthResourceEventConsumerProvider,
-  AuthResourceEventConsumerProviderKind,
-  AuthResourceJobQueueProvider,
-  AuthResourceJobQueueProviderKind,
-  AuthResourceKvProvider,
-  AuthResourceKvProviderKind,
-  AuthResourceStateProvider,
-  AuthResourceStateProviderKind,
-  AuthResourceStoreProvider,
-  AuthResourceStoreProviderKind,
-  AuthRuntimeConnection,
-  AuthRuntimeConnectionParticipantKind,
-  AuthRuntimeConnectionPrincipalKind,
-  AuthServiceInstancesDisableRequest,
-  AuthServiceInstancesDisableResponse,
-  AuthServiceInstancesDisableResponseinstance,
-  AuthServiceInstancesDisableResponseinstanceState,
-  AuthServiceInstancesDisableResponsemutation,
-  AuthServiceInstancesEnableRequest,
-  AuthServiceInstancesEnableResponse,
-  AuthServiceInstancesEnableResponseinstance,
-  AuthServiceInstancesEnableResponseinstanceState,
-  AuthServiceInstancesEnableResponsemutation,
-  AuthServiceInstancesListRequest,
-  AuthServiceInstancesListRequestState,
-  AuthServiceInstancesListResponse,
-  AuthServiceInstancesListResponseentriesItem,
-  AuthServiceInstancesListResponseentriesItemState,
-  AuthServiceInstancesProvisionRequest,
-  AuthServiceInstancesProvisionResponse,
-  AuthServiceInstancesProvisionResponseinstance,
-  AuthServiceInstancesProvisionResponseinstanceState,
-  AuthServiceInstancesRemoveRequest,
-  AuthServiceInstancesRemoveResponse,
-  AuthServiceInstancesRemoveResponseinstance,
-  AuthServiceInstancesRemoveResponseinstanceState,
-  AuthServiceInstancesRemoveResponsemutation,
-  AuthSessionsListRequest,
-  AuthSessionsListRequestState,
-  AuthSessionsListResponse,
-  AuthSessionsLogoutRequest,
-  AuthSessionsLogoutResponse,
-  AuthSessionsMeRequest,
-  AuthSessionsMeResponse,
-  AuthSessionsRevokeRequest,
-  AuthSessionsRevokeResponse,
-  AuthSessionsRevokedEvent,
-  AuthUserIdentitiesListRequest,
-  AuthUserIdentitiesListResponse,
-  AuthUserIdentitiesListResponseentriesItem,
-  AuthUserIdentitiesUnlinkRequest,
-  AuthUserIdentitiesUnlinkResponse,
-  AuthUsersCreateRequest,
-  AuthUsersCreateResponse,
-  AuthUsersCreateResponseuser,
-  AuthUsersCreateResponseuserState,
-  AuthUsersGetRequest,
-  AuthUsersGetResponse,
-  AuthUsersGetResponseuser,
-  AuthUsersGetResponseuserState,
-  AuthUsersIdentityLinkCreateRequest,
-  AuthUsersIdentityLinkCreateResponse,
-  AuthUsersIdentityLinkCreateResponseflow,
-  AuthUsersIdentityLinkCreateResponseflowKind,
-  AuthUsersListRequest,
-  AuthUsersListRequestState,
-  AuthUsersListResponse,
-  AuthUsersListResponseentriesItem,
-  AuthUsersListResponseentriesItemState,
-  AuthUsersPasswordChangeRequest,
-  AuthUsersPasswordChangeResponse,
-  AuthUsersPasswordResetCreateRequest,
-  AuthUsersPasswordResetCreateResponse,
-  AuthUsersPasswordResetCreateResponseflow,
-  AuthUsersPasswordResetCreateResponseflowKind,
-  AuthUsersResolveRequest,
-  AuthUsersResolveRequestselector1,
-  AuthUsersResolveRequestselector1Kind,
-  AuthUsersResolveRequestselector2,
-  AuthUsersResolveRequestselector2Kind,
-  AuthUsersResolveResponse,
-  AuthUsersResolveResponseuser1,
-  AuthUsersResolveResponseuser1State,
-  AuthUsersUpdateRequest,
-  AuthUsersUpdateRequestState,
-  AuthUsersUpdateResponse,
-  AuthUsersUpdateResponseuser,
-  AuthUsersUpdateResponseuserState,
   Empty,
   EventConsumerStatusRow,
   EventConsumerStatusRowManagedBy,
@@ -420,10 +109,6 @@ import {
   HealthWatchFrameValue2changesItemParticipantKind,
   HealthWatchRequest,
   HealthWatchRequestParticipantKinds,
-  InstalledParticipantDetail,
-  InstalledParticipantDetailParticipantKind,
-  InstalledParticipantSummary,
-  InstalledParticipantSummaryParticipantKind,
   Job,
   JobConcurrencyMetadata,
   JobContext,
@@ -703,7 +388,6 @@ import {
   JobwaitingOnItem,
   JobwaitingOnItemtarget,
   JobwaitingOnItemtargetKind,
-  PortalGrantProvenance,
   TrellisSurfaceStatusRequest,
   TrellisSurfaceStatusRequestAction,
   TrellisSurfaceStatusRequestKind,
@@ -792,23 +476,88 @@ api jobs@v1 {
     event JobsWatchFrame;
   }
   capabilities {
-    public {}
-    capability mutate {
-      title "Mutate";
-      description "Allows mutate.";
-      consequence "The caller can use mutate.";
-      allows { rpc Cancel; rpc DismissDLQ; rpc ReplayDLQ; rpc Retry; }
+    capability query {
+      title "Query jobs";
+      description "Find jobs matching query filters.";
+      consequence "Matching job summaries are visible to the caller.";
+      consent_revision 1;
+      allows { rpc Query; }
     }
-    capability read {
-      title "Read";
-      description "Allows read.";
-      consequence "The caller can use read.";
-      allows { rpc GetKey; rpc Inspect; rpc ListDLQ; rpc ListServices; rpc Metrics; rpc Query; rpc Summary; }
+    capability inspect {
+      title "Inspect jobs";
+      description "Read a job's details and execution history.";
+      consequence "Job inputs, results, and execution details may be disclosed.";
+      consent_revision 1;
+      allows { rpc Inspect; }
     }
-    capability stream {
-      title "Stream";
-      description "Allows stream.";
-      consequence "The caller can use stream.";
+    capability keyLookup {
+      title "Look up job keys";
+      description "Find the job associated with a queue key.";
+      consequence "The caller can discover keyed job identities.";
+      consent_revision 1;
+      allows { rpc GetKey; }
+    }
+    capability listServices {
+      title "List job services";
+      description "Discover services with managed job queues.";
+      consequence "Service and queue identities are visible to the caller.";
+      consent_revision 1;
+      allows { rpc ListServices; }
+    }
+    capability summary {
+      title "Read job summaries";
+      description "Read aggregate job lifecycle counts.";
+      consequence "The caller can see aggregate workload status.";
+      consent_revision 1;
+      allows { rpc Summary; }
+    }
+    capability metrics {
+      title "Read job metrics";
+      description "Read operational job metrics.";
+      consequence "The caller can see queue throughput and execution measurements.";
+      consent_revision 1;
+      allows { rpc Metrics; }
+    }
+    capability cancel {
+      title "Cancel jobs";
+      description "Request cancellation of an active job.";
+      consequence "The caller can stop pending or running work.";
+      consent_revision 1;
+      allows { rpc Cancel; }
+    }
+    capability retry {
+      title "Retry jobs";
+      description "Request another execution of a retryable job.";
+      consequence "The caller can cause job work to execute again.";
+      consent_revision 1;
+      allows { rpc Retry; }
+    }
+    capability dlqRead {
+      title "Read dead-letter jobs";
+      description "List jobs retained in the dead-letter queue.";
+      consequence "The caller can see failed job records.";
+      consent_revision 1;
+      allows { rpc ListDLQ; }
+    }
+    capability dlqReplay {
+      title "Replay dead-letter jobs";
+      description "Return a dead-letter job to execution.";
+      consequence "Failed work can execute again and repeat business effects.";
+      consent_revision 1;
+      allows { rpc ReplayDLQ; }
+    }
+    capability dlqDismiss {
+      title "Dismiss dead-letter jobs";
+      description "Dismiss a job from the dead-letter queue.";
+      consequence "The caller can remove failed work from operational follow-up.";
+      consent_revision 1;
+      allows { rpc DismissDLQ; }
+    }
+    capability observe {
+      title "Observe jobs";
+      description "Follow live job lifecycle updates.";
+      consequence "The caller can continuously observe matching job activity.";
+      consent_revision 1;
       allows { live Watch; }
     }
   }

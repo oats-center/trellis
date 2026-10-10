@@ -35,6 +35,7 @@ identifier!(PackageId);
 identifier!(TypeId);
 identifier!(ApiId);
 identifier!(ParticipantId);
+identifier!(AppRequestId);
 identifier!(CapabilityId);
 identifier!(ResourceName);
 
@@ -243,6 +244,7 @@ pub struct SemanticPackage {
     pub(crate) types: BTreeMap<TypeId, TypeDefinition>,
     pub(crate) apis: BTreeMap<ApiId, ApiDefinition>,
     pub(crate) participants: BTreeMap<ParticipantId, ParticipantDefinition>,
+    pub(crate) app_requests: BTreeMap<AppRequestId, AppRequestDefinition>,
     pub(crate) sources: SourceMap,
 }
 
@@ -270,6 +272,10 @@ impl SemanticPackage {
     /// Return package participants.
     pub fn participants(&self) -> &BTreeMap<ParticipantId, ParticipantDefinition> {
         &self.participants
+    }
+    /// Return application authoring metadata, which does not define installable principals.
+    pub fn app_requests(&self) -> &BTreeMap<AppRequestId, AppRequestDefinition> {
+        &self.app_requests
     }
     /// Return source locations, excluded from semantic identity.
     pub fn source_map(&self) -> &SourceMap {
@@ -561,6 +567,8 @@ pub enum Pagination {
 /// Capability policy and consent text.
 #[derive(Clone, Debug)]
 pub struct CapabilityDefinition {
+    /// Explicit revision of the delegated meaning shown for consent.
+    pub consent_revision: u64,
     /// Presentation title.
     pub title: String,
     /// Consent description.
@@ -645,10 +653,48 @@ pub enum ParticipantKind {
     Service,
     /// Native device process.
     Device,
-    /// User application.
-    App,
-    /// User agent.
-    Agent,
+}
+
+/// Application credential flow described by source-owned request metadata.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AppKind {
+    /// Browser application.
+    Browser,
+    /// Native application or headless companion.
+    Native,
+}
+
+/// Developer request and local encoding metadata, never a deployed participant.
+#[derive(Clone, Debug)]
+pub struct AppRequestDefinition {
+    pub(crate) identity: AppRequestId,
+    pub(crate) name: String,
+    pub(crate) kind: AppKind,
+    pub(crate) uses: BTreeMap<ApiId, InteractionSelection>,
+    pub(crate) states: BTreeMap<ResourceName, ResourceDefinition>,
+}
+
+impl AppRequestDefinition {
+    /// Return the source-local request identity, not an OAuth client identifier.
+    pub fn identity(&self) -> &AppRequestId {
+        &self.identity
+    }
+    /// Return the lexical request name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// Return the application flow kind.
+    pub fn kind(&self) -> AppKind {
+        self.kind
+    }
+    /// Return the selected whole capabilities and their generated callable surfaces.
+    pub fn uses(&self) -> &BTreeMap<ApiId, InteractionSelection> {
+        &self.uses
+    }
+    /// Return local State codecs; these are not provisioned resources.
+    pub fn states(&self) -> &BTreeMap<ResourceName, ResourceDefinition> {
+        &self.states
+    }
 }
 
 /// Exact interaction selections for one API.
@@ -658,17 +704,18 @@ pub struct InteractionSelection {
     pub api: ApiId,
     /// Selected API actions.
     pub actions: BTreeSet<ActionSelection>,
-    /// Implicated capabilities explicitly allowed to be unavailable.
+    /// Whole capabilities required for readiness.
+    pub required_capabilities: BTreeSet<CapabilityId>,
+    /// Whole capabilities requested only when available and approved.
     pub optional_capabilities: BTreeSet<CapabilityId>,
 }
 
-/// Exact participant authority needs derived from selected interactions and resources.
+/// Whole capability requests and the digest of source-owned deployment requirements.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParticipantNeeds {
     pub(crate) digest: String,
-    pub(crate) required_grants: trellis_protocol::GrantSet,
-    pub(crate) optional_grants: BTreeMap<String, trellis_protocol::GrantSet>,
     pub(crate) required_capabilities: BTreeSet<CapabilityId>,
+    pub(crate) optional_capabilities: BTreeSet<CapabilityId>,
     /// Optional capability alternatives per selected action.
     ///
     /// An action that any non-optional path covers has no entry, because it is
@@ -684,17 +731,13 @@ impl ParticipantNeeds {
     pub fn digest(&self) -> &str {
         &self.digest
     }
-    /// Return exact grants required for participant readiness.
-    pub fn required_grants(&self) -> &trellis_protocol::GrantSet {
-        &self.required_grants
-    }
-    /// Return exact optional grant bundles keyed by capability or resource identity.
-    pub fn optional_grants(&self) -> &BTreeMap<String, trellis_protocol::GrantSet> {
-        &self.optional_grants
-    }
-    /// Return implicated named capabilities required for readiness.
+    /// Return whole capabilities required for readiness.
     pub fn required_capabilities(&self) -> &BTreeSet<CapabilityId> {
         &self.required_capabilities
+    }
+    /// Return whole capabilities requested only when available and approved.
+    pub fn optional_capabilities(&self) -> &BTreeSet<CapabilityId> {
+        &self.optional_capabilities
     }
 
     /// Return optional capability alternatives keyed by selected action.
@@ -707,11 +750,11 @@ impl ParticipantNeeds {
     }
 }
 
-/// A device's single nested app or agent.
+/// A device's single nested application request.
 #[derive(Clone, Debug)]
 pub struct CompanionDefinition {
-    /// Nested participant identity.
-    pub participant: ParticipantId,
+    /// Nested request metadata identity, never a provisioned principal.
+    pub request: AppRequestId,
     /// Whether the companion may be unavailable.
     pub optional: bool,
 }

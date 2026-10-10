@@ -34,17 +34,22 @@ installed release.
 
 ## Essential Workflow
 
-Console user management supports profile and local-username edits, participant
-access grants, target-user password-reset and identity-link flows, sign-in
-methods, sessions, and connections. Exact grants apply capability groups as
-one-time presets, not live memberships. See the authentication-and-authorization
-guide for administrative scope and protected-account safeguards. Exact snapshots
-may initiate resource provisioning; readiness still gates access, and read-only
-resource approval does not grant write access.
+Services and devices are deployable principals. Apps and agents author application
+request descriptors, not installable principals. Select whole capabilities in
+native IDL: `required capability read;` is required and `capability export;` is
+optional. Generated callers expose the selected actions; inspect capability
+availability before using an optional capability. API authors supply positive
+`consent_revision` values; Auth owns acceptance and introduction counters.
 
-Capability discovery includes installed application APIs. Access editors use the
-selected participant revision; global discovery distinguishes API definitions by
-digest rather than choosing one definition for a shared API ID.
+Administrative Auth RPCs require ordinary capability/action authorization plus
+the applicable finite platform privilege. Selecting an administrative capability
+does not confer that privilege. Own-authority/session maintenance uses fixed
+session rights rather than ordinary capability requests.
+
+Historical event verification uses the signed event time and trusted original
+JetStream publication time/stream sequence, never the consumer's read time.
+Original publication must precede ordinary session revocation and authority
+expiry; current permission to read is a separate authorization check.
 
 1. Author the `.trellis` files explicitly listed by `[sources]`.
 2. Set `[package]`, `[dependencies]`, and language outputs in `trellis.toml`;
@@ -54,7 +59,7 @@ digest rather than choosing one definition for a shared API ID.
 3. Run `trellis install` to reproduce locked dependencies and `trellis generate`
    after IDL edits. `trellis generate --watch` supports the edit loop.
 4. Depend on the one ordinary generated package for your language. Import its
-   `apis` and `participants` namespaces, not separate API or participant
+    `apis`, `participants`, and `apps` namespaces, not separate API or participant
    packages.
 5. Connect through that participant's supported runtime API. Use generated calls
    and resolved resource handles; do not reconstruct Trellis transport metadata.

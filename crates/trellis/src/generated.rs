@@ -1165,26 +1165,43 @@ pub trait ApiDescriptor {
     }
 }
 
-/// Kind of generated application participant.
+/// Kind of deployable principal descriptor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ParticipantKind {
     /// Long-running service participant.
     Service,
     /// Provisioned physical or embedded device participant.
     Device,
-    /// User-facing application participant.
-    App,
-    /// User-authorized agent participant.
-    Agent,
 }
 
-/// Exact lexical child installed alongside a device participant.
+/// Public-client authorization flow requested by an application.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AppKind {
+    /// Browser application using an origin-bound client.
+    Browser,
+    /// Native application using a durable DPoP key.
+    Native,
+}
+
+/// Generated application selection metadata, never installation evidence.
+pub trait AppRequestDescriptor {
+    /// Source-local request identity, not an OAuth client identifier.
+    const ID: &'static str;
+    /// Public-client flow kind.
+    const KIND: AppKind;
+    /// Whole capabilities necessary for the application workflow.
+    const REQUIRED_CAPABILITIES: &'static [&'static str];
+    /// Whole capabilities requested only when authorized and approved.
+    const OPTIONAL_CAPABILITIES: &'static [&'static str];
+}
+
+/// Lexical application request associated with a device, not another principal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CompanionDescriptor {
-    /// Fully qualified child participant identity.
-    pub id: &'static str,
-    /// Child participant kind, restricted to app or agent.
-    pub kind: ParticipantKind,
+    /// Fully qualified source-local application request identity.
+    pub request_id: &'static str,
+    /// Public-client flow kind.
+    pub kind: AppKind,
     /// Whether device readiness requires the child connection.
     pub required: bool,
 }
@@ -1198,7 +1215,7 @@ pub trait ParticipantDescriptor {
     /// Participant kind.
     const KIND: ParticipantKind;
 
-    /// Exact lexical app or agent companion, when declared by this device.
+    /// Lexical application request, when declared by this device.
     const COMPANION: Option<CompanionDescriptor> = None;
 
     /// APIs completely implemented by this participant.
@@ -1224,11 +1241,11 @@ pub trait ParticipantDescriptor {
         }
         if let Some(companion) = Self::COMPANION {
             if Self::KIND != ParticipantKind::Device
-                || !matches!(
-                    companion.kind,
-                    ParticipantKind::App | ParticipantKind::Agent
-                )
-                || companion.id.rsplit_once('.').map(|(parent, _)| parent) != Some(Self::ID)
+                || companion
+                    .request_id
+                    .rsplit_once('.')
+                    .map(|(parent, _)| parent)
+                    != Some(Self::ID)
             {
                 return Err(DescriptorError::ParticipantPath);
             }

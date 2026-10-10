@@ -15,7 +15,7 @@ import {
 
 api state@v1 {
   title "Trellis State";
-  description "Trellis-managed single-value state for authenticated app, device, and agent participants.";
+  description "Trellis-managed single-value State for user bindings and service/device principals.";
   version "1.0.0";
 
   error Conflict(StateConflict);
@@ -55,13 +55,32 @@ api state@v1 {
   }
 
   capabilities {
-    public {
-      allows { rpc Delete; rpc Get; rpc Put; }
+    capability read {
+      title "Read State";
+      description "Read saved State values in the caller's authorized namespace.";
+      consequence "The caller can see saved values.";
+      consent_revision 1;
+      allows { rpc Get; }
     }
-    capability resources_read {
+    capability write {
+      title "Write State";
+      description "Create or replace State values in the caller's authorized namespace.";
+      consequence "The caller can change saved values.";
+      consent_revision 1;
+      allows { rpc Put; }
+    }
+    capability delete {
+      title "Delete State";
+      description "Delete State values in the caller's authorized namespace.";
+      consequence "The caller can remove saved values.";
+      consent_revision 1;
+      allows { rpc Delete; }
+    }
+    capability resourcesInspect {
       title "State Resources Read";
       description "Inspect State resource identities, representations, and readiness.";
       consequence "The caller can inspect State resources across explicit administrative scope.";
+      consent_revision 1;
       allows { rpc Resources.Inspect; rpc Resources.Query; }
     }
   }

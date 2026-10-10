@@ -12,317 +12,6 @@ import {
   EventsDiagnosticsRequest,
   EventsDiagnosticsResponse,
   EventsErrorData,
-  AuthApiSurfaceTarget,
-  AuthApiSurfaceTargetKind,
-  AuthApiSurfaceTargetSurface,
-  AuthPackageEvidence,
-  AuthPackageSourceEvidence,
-  AuthCapabilitiesListRequest,
-  AuthCapabilitiesListResponse,
-  AuthCapabilitiesListResponseentriesItem,
-  AuthCapabilitiesListResponseentriesItemallowsItem,
-  AuthCapabilitiesListResponseentriesItemallowsItemAction,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget1,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget1Kind,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget1Surface,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget2,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget2Kind,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget3,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget3Kind,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget3Resource,
-  AuthCapabilityGroupsDeleteRequest,
-  AuthCapabilityGroupsDeleteResponse,
-  AuthCapabilityGroupsGetRequest,
-  AuthCapabilityGroupsGetResponse,
-  AuthCapabilityGroupsGetResponsegroup,
-  AuthCapabilityGroupsListRequest,
-  AuthCapabilityGroupsListResponse,
-  AuthCapabilityGroupsListResponseentriesItem,
-  AuthCapabilityGroupsPutRequest,
-  AuthCapabilityGroupsPutResponse,
-  AuthCapabilityGroupsPutResponsegroup,
-  AuthConnectionsClosedEvent,
-  AuthConnectionsKickRequest,
-  AuthConnectionsKickResponse,
-  AuthConnectionsKickedEvent,
-  AuthConnectionsListRequest,
-  AuthConnectionsListResponse,
-  AuthConnectionsListResponseentriesItem,
-  AuthConnectionsOpenedEvent,
-  AuthDeploymentsApplyRequest,
-  AuthDeploymentsApplyResponse,
-  AuthDeploymentsCreateRequest,
-  AuthDeploymentsCreateRequestKind,
-  AuthDeploymentsCreateResponse,
-  AuthDeploymentsCreateResponsedeployment,
-  AuthDeploymentsCreateResponsedeploymentKind,
-  AuthDeploymentsCreateResponsedeploymentState,
-  AuthDeploymentsDisableRequest,
-  AuthDeploymentsDisableResponse,
-  AuthDeploymentsDisableResponsedeployment,
-  AuthDeploymentsDisableResponsedeploymentKind,
-  AuthDeploymentsDisableResponsedeploymentState,
-  AuthDeploymentsDisableResponsemutation,
-  AuthDeploymentsEnableRequest,
-  AuthDeploymentsEnableResponse,
-  AuthDeploymentsEnableResponsedeployment,
-  AuthDeploymentsEnableResponsedeploymentKind,
-  AuthDeploymentsEnableResponsedeploymentState,
-  AuthDeploymentsEnableResponsemutation,
-  AuthDeploymentsGetRequest,
-  AuthDeploymentsGetResponse,
-  AuthDeploymentsListRequest,
-  AuthDeploymentsListRequestKind,
-  AuthDeploymentsListRequestState,
-  AuthDeploymentsListResponse,
-  AuthDeploymentsListResponseentriesItem,
-  AuthDeploymentsListResponseentriesItemKind,
-  AuthDeploymentsListResponseentriesItemState,
-  AuthDeploymentsRemoveRequest,
-  AuthDeploymentsRemoveResponse,
-  AuthDeploymentsRemoveResponsedeployment,
-  AuthDeploymentsRemoveResponsedeploymentKind,
-  AuthDeploymentsRemoveResponsedeploymentState,
-  AuthDeploymentsRemoveResponsemutation,
-  AuthDeviceUserAuthoritiesApprovedEvent,
-  AuthDeviceUserAuthoritiesListRequest,
-  AuthDeviceUserAuthoritiesListResponse,
-  AuthDeviceUserAuthoritiesListResponseentriesItem,
-  AuthDeviceUserAuthoritiesListResponseentriesItemdevice,
-  AuthDeviceUserAuthoritiesListResponseentriesItemdeviceAdministrativeApproval,
-  AuthDeviceUserAuthoritiesListResponseentriesItemdeviceDelegationState,
-  AuthDeviceUserAuthoritiesListResponseentriesItemdeviceState,
-  AuthDeviceUserAuthoritiesRequestedEvent,
-  AuthDeviceUserAuthoritiesResolveProgress,
-  AuthDeviceUserAuthoritiesResolveProgressState,
-  AuthDeviceUserAuthoritiesResolveRequest,
-  AuthDeviceUserAuthoritiesResolveResponse,
-  AuthDeviceUserAuthoritiesResolveResponsedevice,
-  AuthDeviceUserAuthoritiesResolveResponsedeviceAdministrativeApproval,
-  AuthDeviceUserAuthoritiesResolveResponsedeviceDelegationState,
-  AuthDeviceUserAuthoritiesResolveResponsedeviceState,
-  AuthDeviceUserAuthoritiesResolveResponsereview,
-  AuthDeviceUserAuthoritiesResolveResponsereviewState,
-  AuthDeviceUserAuthoritiesResolvedEvent,
-  AuthDeviceUserAuthoritiesReviewRequestedEvent,
-  AuthDeviceUserAuthoritiesReviewsDecideRequest,
-  AuthDeviceUserAuthoritiesReviewsDecideRequestDecision,
-  AuthDeviceUserAuthoritiesReviewsDecideResponse,
-  AuthDeviceUserAuthoritiesReviewsDecideResponsereview,
-  AuthDeviceUserAuthoritiesReviewsDecideResponsereviewState,
-  AuthDeviceUserAuthoritiesReviewsListRequest,
-  AuthDeviceUserAuthoritiesReviewsListRequestState,
-  AuthDeviceUserAuthoritiesReviewsListResponse,
-  AuthDeviceUserAuthoritiesReviewsListResponseentriesItem,
-  AuthDeviceUserAuthoritiesReviewsListResponseentriesItemState,
-  AuthDeviceUserAuthoritiesRevokeRequest,
-  AuthDeviceUserAuthoritiesRevokeResponse,
-  AuthDeviceUserAuthoritiesRevokeResponsedevice,
-  AuthDeviceUserAuthoritiesRevokeResponsedeviceAdministrativeApproval,
-  AuthDeviceUserAuthoritiesRevokeResponsedeviceDelegationState,
-  AuthDeviceUserAuthoritiesRevokeResponsedeviceState,
-  AuthDevicesDisableRequest,
-  AuthDevicesDisableResponse,
-  AuthDevicesDisableResponsedevice,
-  AuthDevicesDisableResponsedeviceAdministrativeApproval,
-  AuthDevicesDisableResponsedeviceDelegationState,
-  AuthDevicesDisableResponsedeviceState,
-  AuthDevicesDisableResponsemutation,
-  AuthDevicesEnableRequest,
-  AuthDevicesEnableResponse,
-  AuthDevicesEnableResponsedevice,
-  AuthDevicesEnableResponsedeviceAdministrativeApproval,
-  AuthDevicesEnableResponsedeviceDelegationState,
-  AuthDevicesEnableResponsedeviceState,
-  AuthDevicesEnableResponsemutation,
-  AuthDevicesListRequest,
-  AuthDevicesListRequestState,
-  AuthDevicesListResponse,
-  AuthDevicesListResponseentriesItem,
-  AuthDevicesListResponseentriesItemAdministrativeApproval,
-  AuthDevicesListResponseentriesItemDelegationState,
-  AuthDevicesListResponseentriesItemState,
-  AuthDevicesProvisionRequest,
-  AuthDevicesProvisionResponse,
-  AuthDevicesProvisionResponsedevice,
-  AuthDevicesProvisionResponsedeviceAdministrativeApproval,
-  AuthDevicesProvisionResponsedeviceDelegationState,
-  AuthDevicesProvisionResponsedeviceState,
-  AuthDevicesRemoveRequest,
-  AuthDevicesRemoveResponse,
-  AuthDevicesRemoveResponsedevice,
-  AuthDevicesRemoveResponsedeviceAdministrativeApproval,
-  AuthDevicesRemoveResponsedeviceDelegationState,
-  AuthDevicesRemoveResponsedeviceState,
-  AuthDevicesRemoveResponsemutation,
-  AuthErrorDetails,
-  AuthGrantBinding,
-  AuthGrantBindingOwnerKind,
-  AuthGrantBindingState,
-  AuthGrantSet,
-  AuthGrantsChangedEvent,
-  AuthGrantsGetRequest,
-  AuthGrantsGetRequestOwnerKind,
-  AuthGrantsGetResponse,
-  AuthGrantsListRequest,
-  AuthGrantsListRequestOwnerKind,
-  AuthGrantsListRequestState,
-  AuthGrantsListResponse,
-  AuthGrantsMutationResponse,
-  AuthGrantsRevokeRequest,
-  AuthGrantsRevokeRequestOwnerKind,
-  AuthGrantsSetRequest,
-  AuthGrantsSetRequestOwnerKind,
-  AuthIssuersRevokeRequest,
-  AuthIssuersRevokeResponse,
-  AuthIssuersRevokeResponseState,
-  AuthIssuersRevokedEvent,
-  AuthLoginSession,
-  AuthLoginSessionParticipantKind,
-  AuthLoginSessionState,
-  AuthOperationSignalTarget,
-  AuthOperationSignalTargetKind,
-  AuthOptionalBundle,
-  AuthParticipantResourceTarget,
-  AuthParticipantResourceTargetKind,
-  AuthParticipantResourceTargetResource,
-  AuthParticipantsGetRequest,
-  AuthParticipantsGetResponse,
-  AuthParticipantsInstallRequest,
-  AuthParticipantsInstallResponse,
-  AuthPermissionAtom,
-  AuthPermissionAtomAction,
-  AuthPortalsGetRequest,
-  AuthPortalsGetResponse,
-  AuthPortalsGetResponseportal,
-  AuthPortalsGetResponseportalloginSettings,
-  AuthPortalsGetResponseroutesItem,
-  AuthPortalsGrantOverridesListRequest,
-  AuthPortalsGrantOverridesListResponse,
-  AuthPortalsGrantOverridesListResponseentriesItem,
-  AuthPortalsGrantOverridesListResponseentriesItemroleMappingsItem,
-  AuthPortalsGrantOverridesPutRequest,
-  AuthPortalsGrantOverridesPutRequestroleMappingsItem,
-  AuthPortalsGrantOverridesPutResponse,
-  AuthPortalsGrantOverridesPutResponsepolicy,
-  AuthPortalsGrantOverridesPutResponsepolicyroleMappingsItem,
-  AuthPortalsGrantOverridesRemoveRequest,
-  AuthPortalsGrantOverridesRemoveResponse,
-  AuthPortalsGrantOverridesRemoveResponseremoved,
-  AuthPortalsGrantOverridesRemoveResponseremovedroleMappingsItem,
-  AuthPortalsListRequest,
-  AuthPortalsListResponse,
-  AuthPortalsListResponseentriesItem,
-  AuthPortalsListResponseentriesItemloginSettings,
-  AuthPortalsLoginSettingsGetRequest,
-  AuthPortalsLoginSettingsGetResponse,
-  AuthPortalsLoginSettingsGetResponsesettings,
-  AuthPortalsLoginSettingsUpdateRequest,
-  AuthPortalsLoginSettingsUpdateRequestsettings,
-  AuthPortalsLoginSettingsUpdateResponse,
-  AuthPortalsLoginSettingsUpdateResponsesettings,
-  AuthPortalsPutRequest,
-  AuthPortalsPutRequestloginSettings,
-  AuthPortalsPutResponse,
-  AuthPortalsPutResponseportal,
-  AuthPortalsPutResponseportalloginSettings,
-  AuthPortalsRemoveRequest,
-  AuthPortalsRemoveResponse,
-  AuthPortalsRoutesPutRequest,
-  AuthPortalsRoutesPutResponse,
-  AuthPortalsRoutesPutResponseroute,
-  AuthPortalsRoutesRemoveRequest,
-  AuthPortalsRoutesRemoveResponse,
-  AuthResourceBinding,
-  AuthResourceBindingState,
-  AuthResourceEventConsumerProvider,
-  AuthResourceEventConsumerProviderKind,
-  AuthResourceJobQueueProvider,
-  AuthResourceJobQueueProviderKind,
-  AuthResourceKvProvider,
-  AuthResourceKvProviderKind,
-  AuthResourceStateProvider,
-  AuthResourceStateProviderKind,
-  AuthResourceStoreProvider,
-  AuthResourceStoreProviderKind,
-  AuthRuntimeConnection,
-  AuthRuntimeConnectionParticipantKind,
-  AuthRuntimeConnectionPrincipalKind,
-  AuthServiceInstancesDisableRequest,
-  AuthServiceInstancesDisableResponse,
-  AuthServiceInstancesDisableResponseinstance,
-  AuthServiceInstancesDisableResponseinstanceState,
-  AuthServiceInstancesDisableResponsemutation,
-  AuthServiceInstancesEnableRequest,
-  AuthServiceInstancesEnableResponse,
-  AuthServiceInstancesEnableResponseinstance,
-  AuthServiceInstancesEnableResponseinstanceState,
-  AuthServiceInstancesEnableResponsemutation,
-  AuthServiceInstancesListRequest,
-  AuthServiceInstancesListRequestState,
-  AuthServiceInstancesListResponse,
-  AuthServiceInstancesListResponseentriesItem,
-  AuthServiceInstancesListResponseentriesItemState,
-  AuthServiceInstancesProvisionRequest,
-  AuthServiceInstancesProvisionResponse,
-  AuthServiceInstancesProvisionResponseinstance,
-  AuthServiceInstancesProvisionResponseinstanceState,
-  AuthServiceInstancesRemoveRequest,
-  AuthServiceInstancesRemoveResponse,
-  AuthServiceInstancesRemoveResponseinstance,
-  AuthServiceInstancesRemoveResponseinstanceState,
-  AuthServiceInstancesRemoveResponsemutation,
-  AuthSessionsListRequest,
-  AuthSessionsListRequestState,
-  AuthSessionsListResponse,
-  AuthSessionsLogoutRequest,
-  AuthSessionsLogoutResponse,
-  AuthSessionsMeRequest,
-  AuthSessionsMeResponse,
-  AuthSessionsRevokeRequest,
-  AuthSessionsRevokeResponse,
-  AuthSessionsRevokedEvent,
-  AuthUserIdentitiesListRequest,
-  AuthUserIdentitiesListResponse,
-  AuthUserIdentitiesListResponseentriesItem,
-  AuthUserIdentitiesUnlinkRequest,
-  AuthUserIdentitiesUnlinkResponse,
-  AuthUsersCreateRequest,
-  AuthUsersCreateResponse,
-  AuthUsersCreateResponseuser,
-  AuthUsersCreateResponseuserState,
-  AuthUsersGetRequest,
-  AuthUsersGetResponse,
-  AuthUsersGetResponseuser,
-  AuthUsersGetResponseuserState,
-  AuthUsersIdentityLinkCreateRequest,
-  AuthUsersIdentityLinkCreateResponse,
-  AuthUsersIdentityLinkCreateResponseflow,
-  AuthUsersIdentityLinkCreateResponseflowKind,
-  AuthUsersListRequest,
-  AuthUsersListRequestState,
-  AuthUsersListResponse,
-  AuthUsersListResponseentriesItem,
-  AuthUsersListResponseentriesItemState,
-  AuthUsersPasswordChangeRequest,
-  AuthUsersPasswordChangeResponse,
-  AuthUsersPasswordResetCreateRequest,
-  AuthUsersPasswordResetCreateResponse,
-  AuthUsersPasswordResetCreateResponseflow,
-  AuthUsersPasswordResetCreateResponseflowKind,
-  AuthUsersResolveRequest,
-  AuthUsersResolveRequestselector1,
-  AuthUsersResolveRequestselector1Kind,
-  AuthUsersResolveRequestselector2,
-  AuthUsersResolveRequestselector2Kind,
-  AuthUsersResolveResponse,
-  AuthUsersResolveResponseuser1,
-  AuthUsersResolveResponseuser1State,
-  AuthUsersUpdateRequest,
-  AuthUsersUpdateRequestState,
-  AuthUsersUpdateResponse,
-  AuthUsersUpdateResponseuser,
-  AuthUsersUpdateResponseuserState,
   Empty,
   EventConsumerStatusRow,
   EventConsumerStatusRowManagedBy,
@@ -431,10 +120,6 @@ import {
   HealthWatchFrameValue2changesItemParticipantKind,
   HealthWatchRequest,
   HealthWatchRequestParticipantKinds,
-  InstalledParticipantDetail,
-  InstalledParticipantDetailParticipantKind,
-  InstalledParticipantSummary,
-  InstalledParticipantSummaryParticipantKind,
   Job,
   JobConcurrencyMetadata,
   JobContext,
@@ -714,7 +399,6 @@ import {
   JobwaitingOnItem,
   JobwaitingOnItemtarget,
   JobwaitingOnItemtargetKind,
-  PortalGrantProvenance,
   TrellisSurfaceStatusRequest,
   TrellisSurfaceStatusRequestAction,
   TrellisSurfaceStatusRequestKind,
@@ -807,26 +491,68 @@ api events@v1 {
     event EventsWatchFrame;
   }
   capabilities {
-    public {
-      allows { rpc Consumers.Inspect; rpc Consumers.Query; rpc Consumers.ReportDelivery; rpc DeadLetters.Dismiss; rpc DeadLetters.Inspect; rpc DeadLetters.Query; rpc DeadLetters.Replay; }
+    capability query {
+      title "Query events";
+      description "Find retained events matching query filters.";
+      consequence "Matching event summaries are visible to the caller.";
+      consent_revision 1;
+      allows { rpc Query; }
     }
-    capability read {
-      title "Read Events";
-      description "Inspect event history, metrics, and projection diagnostics.";
-      consequence "The caller can read retained event data and operational diagnostics.";
-      allows { rpc Diagnostics; rpc Inspect; rpc Metrics; rpc Query; }
+    capability inspect {
+      title "Inspect events";
+      description "Read an individual retained event and its delivery details.";
+      consequence "The caller can see event payloads and publication metadata.";
+      consent_revision 1;
+      allows { rpc Inspect; }
     }
-    capability manage_consumers {
-      title "Manage Consumers";
-      description "Inspect and control managed Consumers across owners.";
-      consequence "The caller can view, replay, and dismiss another owner's Consumer dead letters when also authorized as an administrator.";
-      allows { rpc Consumers.Inspect; rpc Consumers.Query; rpc DeadLetters.Dismiss; rpc DeadLetters.Inspect; rpc DeadLetters.Query; rpc DeadLetters.Replay; }
+    capability metrics {
+      title "Read event metrics";
+      description "Read event ingestion and delivery measurements.";
+      consequence "The caller can see operational event metrics.";
+      consent_revision 1;
+      allows { rpc Metrics; }
     }
-    capability stream {
-      title "Stream";
-      description "Allows stream.";
-      consequence "The caller can use stream.";
+    capability observe {
+      title "Observe events";
+      description "Follow live event-log updates.";
+      consequence "The caller can continuously observe matching event activity.";
+      consent_revision 1;
       allows { live Watch; }
+    }
+    capability consumersInspect {
+      title "Inspect Consumers";
+      description "Query managed Consumers and inspect their delivery state.";
+      consequence "The caller can see Consumer identities and delivery diagnostics.";
+      consent_revision 1;
+      allows { rpc Consumers.Query; rpc Consumers.Inspect; }
+    }
+    capability deadLettersInspect {
+      title "Inspect dead letters";
+      description "Query and inspect failed Consumer deliveries.";
+      consequence "The caller can see failed event payloads and delivery errors.";
+      consent_revision 1;
+      allows { rpc DeadLetters.Query; rpc DeadLetters.Inspect; }
+    }
+    capability deadLettersReplay {
+      title "Replay dead letters";
+      description "Request another Consumer delivery of a dead-letter event.";
+      consequence "Consumer processing may run again and repeat business effects.";
+      consent_revision 1;
+      allows { rpc DeadLetters.Replay; }
+    }
+    capability deadLettersDismiss {
+      title "Dismiss dead letters";
+      description "Dismiss a failed Consumer delivery.";
+      consequence "The caller can remove failed deliveries from operational follow-up.";
+      consent_revision 1;
+      allows { rpc DeadLetters.Dismiss; }
+    }
+    capability diagnostics {
+      title "Read event diagnostics";
+      description "Inspect event projection and ingestion diagnostics.";
+      consequence "The caller can see event infrastructure failures and progress.";
+      consent_revision 1;
+      allows { rpc Diagnostics; }
     }
   }
 }

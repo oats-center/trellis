@@ -12,24 +12,14 @@ type __ActionNames = {
 type __Resources = {};
 declare const __participant: {
 	readonly digest: string;
-	readonly requiredCapabilities: readonly Readonly<{
-		id: string;
-		consentDigest: string;
-	}>[];
-	readonly requiredGrants: readonly Readonly<{
-		action: string;
-		target: Readonly<Record<string, unknown>>;
-	}>[];
+	readonly requiredCapabilities: readonly string[];
+	readonly optionalCapabilities: readonly string[];
 	readonly kind: "service";
 	readonly id: "runtime-trellis.EventService";
 	readonly identity: "runtime-trellis.EventService";
 	readonly path: "EventService";
 	readonly implements: readonly [typeof Api0.API];
 	readonly uses: readonly [];
-	readonly optionalGrants: Readonly<Record<string, readonly Readonly<{
-		action: string;
-		target: Readonly<Record<string, unknown>>;
-	}>[]>>;
 	readonly actionNames: __ActionNames;
 	readonly resources: __Resources;
 	readonly __runtimeTypes?: {
@@ -46,17 +36,16 @@ export declare const participant: {
 	readonly identity: typeof __participant.identity;
 	readonly path: typeof __participant.path;
 	readonly digest: typeof __participant.digest;
-	readonly requiredGrants: typeof __participant.requiredGrants;
 	readonly requiredCapabilities: typeof __participant.requiredCapabilities;
 	readonly implements: typeof __participant.implements;
 	readonly uses: typeof __participant.uses;
-	readonly optionalGrants: typeof __participant.optionalGrants;
+	readonly optionalCapabilities: typeof __participant.optionalCapabilities;
 	readonly actionNames: typeof __participant.actionNames;
 	readonly resources: typeof __participant.resources;
 	readonly __runtimeTypes?: typeof __participant.__runtimeTypes;
 	readonly packageEvidence: unknown;
 };
-export declare const PARTICIPANT_DIGEST: "j3jBufyAmyOJAD2H-781574cN9k6zii5NbGTyjVmvn0";
+export declare const PARTICIPANT_DIGEST: "EjKrBcsqb0oiywP2tMUOuvYCZRjMEBUxigik01v5O9A";
 export type Participant = typeof participant;
 export type ResourceDescriptors = typeof participant.resources;
 export type ResourceHandles<Handles extends { readonly [Name in keyof ResourceDescriptors]: unknown }> = { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "required" ? Name : never]: Handles[Name] } & { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "optional" ? Name : never]: Handles[Name] | undefined };

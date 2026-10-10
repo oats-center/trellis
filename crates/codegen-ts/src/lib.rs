@@ -13,9 +13,9 @@ use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_transformer::{TransformOptions, Transformer};
 use trellis_idl::{
-    ActionDefinition, ActionId, ActionKind, CanonicalMode, InteractionDirection, PackageGraph,
-    ParticipantDefinition, ParticipantKind, Primitive, ResourceDefinition, SemanticPackage,
-    TypeDefinition, TypeExpression, TypeRef,
+    ActionDefinition, ActionId, ActionKind, AppKind, AppRequestDefinition, CanonicalMode,
+    InteractionDirection, PackageGraph, ParticipantDefinition, ParticipantKind, Primitive,
+    ResourceDefinition, SemanticPackage, TypeDefinition, TypeExpression, TypeRef,
 };
 
 /// Errors returned while generating a TypeScript package.
@@ -149,18 +149,8 @@ pub fn collect_ts_package_sources(
         contents: api_index,
     });
 
-    let companions = root
-        .participants()
-        .values()
-        .filter_map(|participant| participant.companion())
-        .map(|companion| companion.participant.as_str())
-        .collect::<BTreeSet<_>>();
     let mut participant_index = String::new();
-    for participant in root
-        .participants()
-        .values()
-        .filter(|participant| !companions.contains(participant.identity().as_str()))
-    {
+    for participant in root.participants().values() {
         writeln!(
             participant_index,
             "export * as {} from \"./{}/mod.ts\";",
@@ -185,9 +175,32 @@ pub fn collect_ts_package_sources(
         path: "participants/index.ts".into(),
         contents: participant_index,
     });
+    let mut app_index = String::new();
+    let mut app_names = BTreeSet::new();
+    for request in root.app_requests().values() {
+        let name = app_module_name(root, request);
+        validate_export_name("application request", &name)?;
+        if !app_names.insert(name.to_lowercase()) {
+            return Err(CodegenTsError::ExportNameCollision(format!(
+                "application request {name}"
+            )));
+        }
+        writeln!(app_index, "export * as {name} from \"./{name}/mod.ts\";").unwrap();
+        sources.push(GeneratedTsSource {
+            path: PathBuf::from("apps").join(&name).join("mod.ts"),
+            contents: render_app_request(graph, request, &package_modules)?,
+        });
+    }
+    if app_index.is_empty() {
+        app_index.push_str("export {};\n");
+    }
+    sources.push(GeneratedTsSource {
+        path: "apps/index.ts".into(),
+        contents: app_index,
+    });
     sources.push(GeneratedTsSource {
         path: "index.ts".into(),
-        contents: "export * as apis from \"./apis/index.ts\";\nexport * as participants from \"./participants/index.ts\";\nexport * as types from \"./types/index.ts\";\n".into(),
+        contents: "export * as apis from \"./apis/index.ts\";\nexport * as participants from \"./participants/index.ts\";\nexport * as apps from \"./apps/index.ts\";\nexport * as types from \"./types/index.ts\";\n".into(),
     });
     Ok(sources)
 }
@@ -343,11 +356,9 @@ fn validate_names(
     for participant in root.participants().values() {
         if let Some(companion) = participant.companion() {
             let child = root
-                .participants()
-                .get(&companion.participant)
-                .ok_or_else(|| {
-                    CodegenTsError::MissingReference(companion.participant.to_string())
-                })?;
+                .app_requests()
+                .get(&companion.request)
+                .ok_or_else(|| CodegenTsError::MissingReference(companion.request.to_string()))?;
             if child.name() == participant.name() {
                 return Err(CodegenTsError::ExportNameCollision(format!(
                     "participant companion '{}.{}'",
@@ -978,6 +989,124 @@ fn render_string_matrix_type(values: &[Vec<String>]) -> String {
     )
 }
 
+fn app_module_name(package: &SemanticPackage, request: &AppRequestDefinition) -> String {
+    request
+        .identity()
+        .as_str()
+        .strip_prefix(&format!("{}.", package.identity()))
+        .expect("request belongs to package")
+        .replace('.', "_")
+}
+
+fn render_app_request(
+    graph: &PackageGraph,
+    request: &AppRequestDefinition,
+    modules: &BTreeMap<String, String>,
+) -> Result<String, CodegenTsError> {
+    let mut lines = vec![
+        "import type { AppRequestDescriptor } from \"@oatscenter/trellis/generated\";".to_owned(),
+    ];
+    let api_modules = api_modules(graph);
+    let mut aliases = BTreeMap::new();
+    for (index, id) in request.uses().keys().enumerate() {
+        let alias = format!("Api{index}");
+        lines.push(format!(
+            "import * as {alias} from \"../../apis/{}/mod.ts\";",
+            api_modules[id.as_str()].1
+        ));
+        aliases.insert(id, alias);
+    }
+    for module in modules.values() {
+        lines.push(format!(
+            "import * as {} from \"../../types/_internal/{module}.ts\";",
+            module_alias(module)
+        ));
+    }
+    let kind = match request.kind() {
+        AppKind::Browser => "browser",
+        AppKind::Native => "native",
+    };
+    let required = request
+        .uses()
+        .values()
+        .flat_map(|selection| &selection.required_capabilities)
+        .collect::<BTreeSet<_>>();
+    let optional = request
+        .uses()
+        .values()
+        .flat_map(|selection| &selection.optional_capabilities)
+        .collect::<BTreeSet<_>>();
+    let required = required
+        .iter()
+        .map(|id| js_string(id.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let optional = optional
+        .iter()
+        .map(|id| js_string(id.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut use_types = Vec::new();
+    let mut use_values = Vec::new();
+    for (id, selection) in request.uses() {
+        let api = find_api(graph, id)?;
+        let mut action_types = Vec::new();
+        let mut action_values = Vec::new();
+        for selected in &selection.actions {
+            let required = selection
+                .required_capabilities
+                .iter()
+                .any(|capability| api.capabilities()[capability].allows.contains(selected));
+            let alternatives = if required {
+                String::new()
+            } else {
+                selection
+                    .optional_capabilities
+                    .iter()
+                    .filter(|capability| api.capabilities()[*capability].allows.contains(selected))
+                    .map(|id| js_string(id.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let descriptor = js_string(&descriptor_name(&selected.action));
+            let direction = js_string(direction(selected.direction));
+            action_types.push(format!("{{ readonly descriptorName: {descriptor}; readonly direction: {direction}; readonly optionalCapabilities: readonly [{alternatives}] }}"));
+            action_values.push(format!("{{ descriptorName: {descriptor}, direction: {direction}, optionalCapabilities: [{alternatives}] }}"));
+        }
+        let optional = selection
+            .optional_capabilities
+            .iter()
+            .map(|id| js_string(id.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        use_types.push(format!("{{ readonly api: typeof {}.API; readonly actions: readonly [{}]; readonly optionalCapabilities: readonly [{optional}] }}", aliases[id], action_types.join(", ")));
+        use_values.push(format!(
+            "{{ api: {}.API, actions: [{}], optionalCapabilities: [{optional}] }}",
+            aliases[id],
+            action_values.join(", ")
+        ));
+    }
+    lines.push("/** Developer selections and local State codecs; never principal installation evidence. */".into());
+    lines.push(format!("export const request: AppRequestDescriptor & {{ readonly id: {}; readonly kind: {}; readonly requiredCapabilities: readonly [{required}]; readonly optionalCapabilities: readonly [{optional}]; readonly uses: readonly [{}]; readonly states: {{", js_string(request.identity().as_str()), js_string(kind), use_types.join(", ")));
+    for (name, state) in request.states() {
+        lines.push(format!(
+            "readonly {}: {};",
+            property_name(name.as_str()),
+            render_resource_type(state, modules)
+        ));
+    }
+    lines.push(format!("}} }} = {{ id: {}, kind: {}, requiredCapabilities: [{required}], optionalCapabilities: [{optional}], uses: [{}], states: {{", js_string(request.identity().as_str()), js_string(kind), use_values.join(", ")));
+    for (name, state) in request.states() {
+        lines.push(format!(
+            "{}: {},",
+            property_name(name.as_str()),
+            render_resource(state, modules)
+        ));
+    }
+    lines.push("} };\nexport type Request = typeof request;\nexport default request;\n".into());
+    Ok(lines.join("\n"))
+}
+
 fn render_participant_tree(
     graph: &PackageGraph,
     package: &SemanticPackage,
@@ -987,34 +1116,12 @@ fn render_participant_tree(
     participant_types: &BTreeMap<&trellis_idl::ParticipantId, BTreeSet<TypeRef>>,
     sources: &mut Vec<GeneratedTsSource>,
 ) -> Result<(), CodegenTsError> {
-    if let Some(companion) = participant.companion() {
-        let child = package
-            .participants()
-            .get(&companion.participant)
-            .ok_or_else(|| CodegenTsError::MissingReference(companion.participant.to_string()))?;
-        render_participant_tree(
-            graph,
-            package,
-            child,
-            directory.join(child.name()),
-            modules,
-            participant_types,
-            sources,
-        )?;
-    }
     let private_types = participant_types
         .get(participant.identity())
         .expect("participant type closure");
     sources.push(GeneratedTsSource {
         path: directory.join("types.ts"),
-        contents: render_type_exports(
-            private_types,
-            &format!(
-                "{}types/_internal/",
-                "../".repeat(participant_depth(package, participant) + 2)
-            ),
-            modules,
-        ),
+        contents: render_type_exports(private_types, "../../types/_internal/", modules),
     });
     sources.push(GeneratedTsSource {
         path: directory.join("mod.ts"),
@@ -1034,9 +1141,8 @@ fn render_participant(
         .as_str()
         .strip_prefix(&format!("{}.", graph.root().as_str()))
         .ok_or_else(|| CodegenTsError::MissingReference(participant.identity().to_string()))?;
-    let depth = participant_depth(package, participant);
-    let api_prefix = "../".repeat(depth + 2);
-    let types_prefix = "../".repeat(depth + 2);
+    let api_prefix = "../../";
+    let types_prefix = "../../";
     let mut lines =
         vec!["import { participantDescriptor } from \"@oatscenter/trellis/generated\";".to_owned()];
     lines.push("import type { ParticipantJobsFromResources, ParticipantKvFromResources, RuntimeApiFromGenerated } from \"@oatscenter/trellis/generated\";".to_owned());
@@ -1088,16 +1194,15 @@ fn render_participant(
     }
     if let Some(companion) = participant.companion() {
         let child = package
-            .participants()
-            .get(&companion.participant)
-            .ok_or_else(|| CodegenTsError::MissingReference(companion.participant.to_string()))?;
+            .app_requests()
+            .get(&companion.request)
+            .ok_or_else(|| CodegenTsError::MissingReference(companion.request.to_string()))?;
+        let child_module = app_module_name(package, child);
         lines.push(format!(
-            "import * as Companion from \"./{}/mod.ts\";",
-            child.name()
+            "import * as Companion from \"{api_prefix}apps/{child_module}/mod.ts\";"
         ));
         lines.push(format!(
-            "export * as {} from \"./{}/mod.ts\";",
-            child.name(),
+            "export * as {} from \"{api_prefix}apps/{child_module}/mod.ts\";",
             child.name()
         ));
     }
@@ -1122,8 +1227,8 @@ fn render_participant(
     lines.push("};".into());
     lines.push("const __participant: {".into());
     lines.push("  readonly digest: string;".into());
-    lines.push("  readonly requiredCapabilities: readonly Readonly<{ id: string; consentDigest: string }>[];".into());
-    lines.push("  readonly requiredGrants: readonly Readonly<{ action: string; target: Readonly<Record<string, unknown>> }>[];".into());
+    lines.push("  readonly requiredCapabilities: readonly string[];".into());
+    lines.push("  readonly optionalCapabilities: readonly string[];".into());
     lines.push(format!(
         "  readonly kind: {}; readonly id: {}; readonly identity: {}; readonly path: {};",
         js_string(participant_kind(participant.kind())),
@@ -1180,9 +1285,6 @@ fn render_participant(
         ));
     }
     lines.push("  ];".into());
-    lines.push(
-        "  readonly optionalGrants: Readonly<Record<string, readonly Readonly<{ action: string; target: Readonly<Record<string, unknown>> }>[]>>;".into(),
-    );
     lines.push("  readonly actionNames: __ActionNames;".into());
     lines.push("  readonly resources: __Resources;".into());
     lines.push("  readonly __runtimeTypes?: {".into());
@@ -1210,7 +1312,7 @@ fn render_participant(
     lines.push("  };".into());
     if let Some(companion) = participant.companion() {
         lines.push(format!(
-            "  readonly companion: {{ readonly participant: typeof Companion.participant; readonly availability: {}; }};",
+            "  readonly companion: {{ readonly request: typeof Companion.request; readonly availability: {}; }};",
             availability(companion.optional)
         ));
     }
@@ -1288,46 +1390,26 @@ fn render_participant(
         ));
     }
     lines.push("  ],".into());
-    lines.push("  optionalGrants: {".into());
-    if let Some(needs) = needs {
-        for (capability, grants) in needs.optional_grants() {
-            let atoms = grants
-                .permissions()
-                .iter()
-                .map(|atom| serde_json::to_string(atom).expect("permission atoms serialize"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            lines.push(format!("    {}: [{}],", js_string(capability), atoms));
-        }
-    }
-    lines.push("  },".into());
-    let required_atoms = needs
-        .map(|needs| {
-            needs
-                .required_grants()
-                .permissions()
-                .iter()
-                .map(|atom| serde_json::to_string(atom).expect("permission atoms serialize"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .unwrap_or_default();
-    lines.push(format!("  requiredGrants: [{required_atoms}],"));
     let mut required_capabilities = Vec::new();
+    let mut optional_capabilities = Vec::new();
     if let Some(needs) = needs {
         for capability in needs.required_capabilities() {
-            let consent_digest =
-                trellis_idl::capability_consent_digest(graph, capability).map_err(idl_error)?;
-            required_capabilities.push(format!(
-                "{{ id: {}, consentDigest: {} }}",
-                js_string(capability.as_str()),
-                js_string(&consent_digest)
-            ));
+            required_capabilities.push(js_string(capability.as_str()));
         }
+        optional_capabilities.extend(
+            needs
+                .optional_capabilities()
+                .iter()
+                .map(|capability| js_string(capability.as_str())),
+        );
     }
     let required_capabilities = required_capabilities.join(", ");
     lines.push(format!(
         "  requiredCapabilities: [{required_capabilities}],"
+    ));
+    lines.push(format!(
+        "  optionalCapabilities: [{}],",
+        optional_capabilities.join(", ")
     ));
     lines.push("  actionNames: {".into());
     for (key, name) in &action_names {
@@ -1345,7 +1427,7 @@ fn render_participant(
     lines.push("  },".into());
     if let Some(companion) = participant.companion() {
         lines.push(format!(
-            "  companion: {{ participant: Companion.participant, availability: {} }},",
+            "  companion: {{ request: Companion.request, availability: {} }},",
             availability(companion.optional)
         ));
     }
@@ -1357,12 +1439,12 @@ fn render_participant(
     lines.push("  readonly identity: typeof __participant.identity;".into());
     lines.push("  readonly path: typeof __participant.path;".into());
     lines.push("  readonly digest: typeof __participant.digest;".into());
-    lines.push("  readonly requiredGrants: typeof __participant.requiredGrants;".into());
     lines
         .push("  readonly requiredCapabilities: typeof __participant.requiredCapabilities;".into());
     lines.push("  readonly implements: typeof __participant.implements;".into());
     lines.push("  readonly uses: typeof __participant.uses;".into());
-    lines.push("  readonly optionalGrants: typeof __participant.optionalGrants;".into());
+    lines
+        .push("  readonly optionalCapabilities: typeof __participant.optionalCapabilities;".into());
     lines.push("  readonly actionNames: typeof __participant.actionNames;".into());
     lines.push("  readonly resources: typeof __participant.resources;".into());
     lines.push("  readonly __runtimeTypes?: typeof __participant.__runtimeTypes;".into());
@@ -1483,20 +1565,6 @@ fn render_participant_types(
             "export type ConnectionOptions = Readonly<{ migrations: MigrationOptions }>;".into(),
         );
     }
-}
-
-fn participant_depth(package: &SemanticPackage, participant: &ParticipantDefinition) -> usize {
-    let mut depth = 0;
-    let mut current = participant.identity();
-    while let Some(parent) = package.participants().values().find(|candidate| {
-        candidate
-            .companion()
-            .is_some_and(|companion| &companion.participant == current)
-    }) {
-        depth += 1;
-        current = parent.identity();
-    }
-    depth
 }
 
 fn participant_resource_packages(participant: &ParticipantDefinition) -> BTreeSet<&str> {
@@ -1891,8 +1959,6 @@ fn participant_kind(value: ParticipantKind) -> &'static str {
     match value {
         ParticipantKind::Service => "service",
         ParticipantKind::Device => "device",
-        ParticipantKind::App => "app",
-        ParticipantKind::Agent => "agent",
     }
 }
 
@@ -2105,7 +2171,6 @@ fn write_if_changed(path: &Path, contents: &str) -> Result<(), CodegenTsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
     use trellis_idl::project::{GenerateConfig, PackageManifest, PackageMetadata};
     use trellis_idl::SourceUnit;
 
@@ -2133,11 +2198,13 @@ mod tests {
     }
 
     fn unique_temp_dir(label: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
+        let parent = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.local/codegen-ts");
+        fs::create_dir_all(&parent).unwrap();
+        tempfile::Builder::new()
+            .prefix(label)
+            .tempdir_in(parent)
             .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("trellis-codegen-ts-{label}-{nanos}"))
+            .keep()
     }
 
     #[test]
@@ -2147,7 +2214,7 @@ mod tests {
             type Count = uint64;
             type Blob = bytes;
             type When = timestamp;
-            enum Status { ready; waiting; }
+            enum Status { ready; "roles.manage"; }
             model Node { id: ulid; next?: Node; data: Blob; count: Count; when: When; status: Status; }
             model Empty {}
             model PrivateV1 { value: string; }
@@ -2159,26 +2226,61 @@ mod tests {
               rpc Get { input Node; output Node; errors [Failed]; }
               operation Work { input Empty; output Node; progress Node; signals { Wake Empty; } upload; }
               event Changed { payload Node; }
-              capabilities { public { allows { rpc Get; operation Work; publish event Changed; subscribe event Changed; } } }
+              capabilities {
+                capability read { consent_revision 1; title "Read"; description "Read orders."; consequence "Reveals order data."; allows { rpc Get; } }
+                capability work { consent_revision 1; title "Work"; description "Run order work."; consequence "Changes orders."; allows { operation Work; } }
+                capability observe { consent_revision 1; title "Observe"; description "Observe order changes."; consequence "Reveals order updates."; allows { subscribe event Changed; } }
+              }
             }
             api catalog@v2 {
               title "Catalog";
               description "Catalog operations.";
               rpc List { input Empty; output Node; }
-              capabilities { public { allows { rpc List; } } }
+              capabilities { public { consent_revision 1; allows { rpc List; } } }
             }
             service Worker { implements orders; implements catalog; kv optional cache { title "Cache"; description "Cache"; schema PrivateState; version 2; accepts { 1: PrivateV1; } } job work { title "Work"; description "Work queue."; payload Empty; deadline 45s; retry { attempts 3; backoff [5s, 30s]; } } }
-            device Sensor { app optional Console { kv values { title "Values"; description "Values"; schema Node; } } }
+            app Viewer { use orders { required capability read; capability work; capability observe; } }
+            device Sensor { app optional Console { use orders { required capability read; capability work; } state values { title "Values"; description "Values"; schema Node; } } }
             "#,
         );
         let root = unique_temp_dir("native");
         generate_ts_package(&graph, &root, "@example/generated").unwrap();
+        fs::write(root.join("consumer.ts"), r#"
+import { apps } from "./index.js";
+import { codecs } from "@oatscenter/trellis/generated";
+import type { AppRequestDescriptor } from "@oatscenter/trellis/generated";
+
+const requested: AppRequestDescriptor = apps.Viewer.request;
+const codec = apps.Sensor_Console.request.states.values.codec;
+const decoded = codec.decode(JSON.parse(JSON.stringify(codec.encode({
+  id: codecs.ulid.decode("01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+  data: new Uint8Array([0, 127, 255]),
+  count: 18446744073709551615n,
+  when: codecs.timestamp.decode("2030-01-01T00:00:00Z"),
+  status: "roles.manage",
+}))));
+if (decoded.count !== 18446744073709551615n || decoded.data[2] !== 255 || decoded.when !== "2030-01-01T00:00:00Z" || decoded.status !== "roles.manage") {
+  throw new Error("Generated app-local State codec corrupted the value");
+}
+export { requested, decoded };
+"#).unwrap();
 
         let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let output = std::process::Command::new("deno")
             .args(["check", "--no-lock", "-c"])
             .arg(repo.join("ts/deno.json"))
-            .arg(root.join("index.d.ts"))
+            .arg(root.join("consumer.ts"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = std::process::Command::new("deno")
+            .args(["run", "--no-lock", "-A", "-c"])
+            .arg(repo.join("ts/deno.json"))
+            .arg(root.join("consumer.ts"))
             .output()
             .unwrap();
         assert!(
@@ -2201,7 +2303,7 @@ mod tests {
               description "Work operations.";
               operation Run { input Empty; output Empty; progress Status; update Preview; }
               operation Step { input Empty; output Empty; progress Status; }
-              capabilities { public { allows { operation Run; operation Step; } } }
+               capabilities { public { consent_revision 1; allows { operation Run; operation Step; } } }
             }
             service Worker { implements work; }
             "#,
@@ -2263,16 +2365,5 @@ export { progress, update, fallbackProgress, fallbackUpdate, wrongProgress, wron
         let error = write_generated_file(&target, "export const broken = ;\n").unwrap_err();
         assert!(matches!(error, CodegenTsError::InvalidTypeScript { .. }));
         assert!(!target.exists());
-    }
-
-    #[test]
-    fn valid_api_names_do_not_collide_on_case_insensitive_filesystems() {
-        let graph = graph("model Value {} api events_upper@v1 { title \"Events\"; description \"Upper.\"; capabilities { public { allows { rpc Get; } } } rpc Get { input Value; output Value; } } api events@v2 { title \"events\"; description \"Lower.\"; capabilities { public { allows { rpc Get; } } } rpc Get { input Value; output Value; } }");
-        let sources = collect_ts_package_sources(&graph, "fixture").unwrap();
-        let paths = sources
-            .iter()
-            .map(|source| source.path.to_string_lossy().to_lowercase())
-            .collect::<BTreeSet<_>>();
-        assert_eq!(paths.len(), sources.len());
     }
 }

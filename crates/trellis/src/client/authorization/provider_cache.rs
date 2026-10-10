@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use trellis_protocol::{
-    parse_authorization_context, verify_authorization_context, AuthorizationContextPurpose,
-    AuthorizationIssuerKey, AuthorizationIssuerState, AuthorizationVerificationPolicy,
+    parse_authorization_context, verify_authorization_context, AuthorityIssuerKey,
+    AuthorityIssuerState, AuthorizationContextPurpose, AuthorizationVerificationPolicy,
     SignedAuthorizationContext, VerifiedAuthorizationContext,
 };
 
@@ -27,7 +27,7 @@ pub struct RuntimeAuthorizationTrust {
     /// Configured origin for public issuer-key resolution.
     pub trellis_origin: String,
     /// Locally owned issuer, if this runtime issues contexts itself.
-    pub issuer: Option<AuthorizationIssuerKey>,
+    pub issuer: Option<AuthorityIssuerKey>,
     /// Bounds applied to every resolved context.
     pub policy: AuthorizationVerificationPolicy,
 }
@@ -54,7 +54,7 @@ struct CachedVerifications {
 
 pub(crate) struct CachedContext {
     signed: SignedAuthorizationContext,
-    issuer: AuthorizationIssuerKey,
+    issuer: AuthorityIssuerKey,
     verified: Mutex<CachedVerifications>,
     covered: Arc<AtomicBool>,
     watch: tokio::task::AbortHandle,
@@ -165,7 +165,7 @@ impl Drop for OwnCandidateRetention {
 #[derive(Default)]
 struct ProviderState {
     contexts: HashMap<String, Arc<CachedContext>>,
-    issuers: HashMap<String, AuthorizationIssuerKey>,
+    issuers: HashMap<String, AuthorityIssuerKey>,
     // Negative evidence is retained no longer than a possible live context lease.
     revocations: HashMap<String, (i64, i64)>,
 }
@@ -362,7 +362,7 @@ impl AuthorizationProviderCache {
         nats: async_nats::Client,
         binding: &AuthorizationRegistryBinding,
         http: BootstrapHttp,
-        issuer: Option<AuthorizationIssuerKey>,
+        issuer: Option<AuthorityIssuerKey>,
         verification_policy: AuthorizationVerificationPolicy,
         own: Option<Arc<AuthorizationContextCache>>,
         manager: Option<crate::client::TransportGenerationManager>,
@@ -1230,7 +1230,7 @@ impl AuthorizationProviderCache {
                 .div_euclid(1000),
             None => self.now_seconds()?,
         };
-        let live = issuer.state == AuthorizationIssuerState::Active
+        let live = issuer.state == AuthorityIssuerState::Active
             && signed.unsigned.not_before <= now
             && signed.unsigned.expires_at > now;
         let candidate_owned = matches!(&attachment, RegistryAttachment::PinnedOwnCandidate(_));
@@ -2152,7 +2152,7 @@ impl CoverageProbe {
     fn peer_is_live(&self, entry: &CachedContext, now: i64, revoked: bool) -> bool {
         !revoked
             && entry.covered.load(Ordering::Acquire)
-            && entry.issuer.state == AuthorizationIssuerState::Active
+            && entry.issuer.state == AuthorityIssuerState::Active
             && entry.signed.unsigned.not_before <= now
             && entry.signed.unsigned.expires_at > now
             && !self.closed.load(Ordering::Acquire)

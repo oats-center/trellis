@@ -43,12 +43,11 @@ api core@v1 {
   }
 
   capabilities {
-    public {}
-
     capability authority_read {
       title "Authority Read";
       description "Inspect Trellis runtime surfaces.";
       consequence "The caller can inspect runtime surface readiness.";
+      consent_revision 1;
       allows { rpc Surface.Status; }
     }
 
@@ -56,6 +55,7 @@ api core@v1 {
       title "Resources Read";
       description "Inspect Trellis-managed resources.";
       consequence "The caller can read resource configuration, status, and history.";
+      consent_revision 1;
       allows { rpc Resources.Inspect; rpc Resources.Query; }
     }
 
@@ -63,6 +63,7 @@ api core@v1 {
       title "Resources Destroy";
       description "Destroy Trellis-managed resources.";
       consequence "The caller can permanently delete managed resource data.";
+      consent_revision 1;
       allows { rpc Resources.Destroy; }
     }
   }

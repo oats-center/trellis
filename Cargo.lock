@@ -2709,6 +2709,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "oauth-as"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e3bf4c869f5d66f1a4254dd1bd2ddad2de1746bd0649186945fd17b391ee95e"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "bytes",
+ "getrandom 0.3.4",
+ "http",
+ "http-body",
+ "p256",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+]
+
+[[package]]
 name = "oauth2"
 version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5487,6 +5506,7 @@ dependencies = [
  "oxc_span",
  "oxc_transformer",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "trellis-idl",
 ]
@@ -5594,12 +5614,14 @@ dependencies = [
  "thiserror 2.0.18",
  "time",
  "ulid",
+ "url",
 ]
 
 [[package]]
 name = "trellis-protocol-wasm"
 version = "0.100.0"
 dependencies = [
+ "base64 0.22.1",
  "getrandom 0.3.4",
  "serde",
  "serde_json",
@@ -5669,6 +5691,7 @@ dependencies = [
  "jsonschema",
  "nats-jwt-rs",
  "nkeys",
+ "oauth-as",
  "oauth2",
  "openidconnect",
  "opentelemetry",

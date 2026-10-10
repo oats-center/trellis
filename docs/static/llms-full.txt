@@ -32,8 +32,14 @@ orders = "contract.trellis"
 
 Author APIs and participants in the `.trellis` files explicitly listed under
 `[sources]`. An API defines models and public RPC, event, live, and operation
-surfaces. A participant identifies a service, app, agent, or device, the API it
-implements, its selected dependencies, and its runtime resources. Participant
+surfaces. A deployable participant identifies a service or device, the API it
+implements, its selected dependencies, and its runtime resources. Apps and agents
+instead author application request descriptors. A use body selects whole
+capabilities: `required capability read;` is required and `capability export;`
+is optional. Required wins when a capability is repeated; `use Api;` selects
+nothing. Check capability availability before using an optional capability.
+API authors declare positive `consent_revision` values; acceptance and
+introduction counters are Auth-owned. Participant
 identity, API identity, API release version, and surface transport version are
 separate concepts.
 
@@ -62,7 +68,8 @@ dependencies first.
 Configure `[generate.rust].output` and/or `[generate.typescript].output`.
 
 Each language gets one ordinary package at the source package version. APIs and
-participants are separate `apis` and `participants` module namespaces, not
+participants and app requests have separate `apis`, `participants`, and `apps`
+module namespaces, not
 independent packages or flattened root exports. TypeScript output contains
 executable ESM `.js`, `.d.ts`, and `package.json`, with no consumer
 transpilation step. Rust output is an ordinary path-dependency crate. Both
@@ -76,8 +83,11 @@ descriptors. Published packages contain native source and frozen resolution
 metadata, not canonical API/participant JSON. Generated descriptors are support
 ABI, not a contract-as-code authoring surface.
 
-Capability approvals are policy decisions; exact signed grants are derived from
-selected actions and current ceilings. Resource commitments approve hard
+Capability approvals are policy decisions over whole capabilities, not saved
+exact-action grant snapshots. Administrative Auth actions also require the
+applicable finite platform privilege; an ordinary capability never implies that
+privilege. Own-authority/session maintenance is a fixed session right, not an
+ordinary capability request. Resource commitments approve hard
 semantics, while desired capacities are sizing hints and do not allocate larger
 resources by themselves. Approval views distinguish requested commitments from
 observed provider limits; runtime handles use the observed binding limits.
@@ -257,13 +267,20 @@ second NATS client, monitor, and WebSocket port set. The default set is
 4222/8222/8080; generated local configs use a 30-second owner lease renewed
 every 5 seconds.
 
-Requests/events carry context digest, matching redundant `session-key`, and the
-message proof; complete contexts and GrantSets are not message metadata. Proofs
-are verified before application handlers run. Ordinary context expiry allows
-eligible historical events to be verified; explicit context revocation
-invalidates all proofs from that context. Applications do not implement their
-own verifier or inspect Trellis's internal authorization KV registry. See the
-auth design documentation for protocol details.
+Message proofs bind the authority digest, exact API/action identity, API
+generation/revision, actual subject, message identity, and exact payload bytes.
+The signed authority supplies the originating session public key; message
+headers do not establish another identity or carry permission lists.
+
+Historical event verification requires both the signed event timestamp and
+trusted original JetStream publication metadata (`published` and
+`stream_sequence`). Both timestamps must fall within the publisher authority's
+validity window, and original publication must precede any ordinary session
+revocation cutoff. A consumer's read time is not publication evidence; a
+backdated signature cannot authenticate a new publication after expiry or
+revocation. Current permission to read remains separate from past publisher
+authenticity. Applications do not implement their own verifier or inspect
+Trellis's internal authorization KV registry.
 
 ## Choose A Surface
 

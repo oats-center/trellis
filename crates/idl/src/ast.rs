@@ -114,6 +114,7 @@ pub(crate) struct Capability {
     pub title: String,
     pub description: String,
     pub consequence: String,
+    pub consent_revision: Option<u64>,
     pub allows: Vec<Selection>,
     pub span: Range<usize>,
 }
@@ -140,7 +141,7 @@ pub(crate) struct Participant {
 #[derive(Clone, Debug)]
 pub(crate) struct ApiUse {
     pub api: String,
-    pub selections: Vec<Selection>,
+    pub required_capabilities: Vec<String>,
     pub optional_capabilities: Vec<String>,
 }
 

@@ -40,7 +40,7 @@ impl AuthorizationContextPolicy {
 
 pub(crate) enum AuthorizationCredential {
     Native {
-        kind: trellis_protocol::AuthorizationPrincipalKind,
+        kind: trellis_protocol::PrincipalKind,
         identity: std::sync::Arc<super::super::SessionAuth>,
         package_evidence: crate::generated::PackageEvidence,
         participant_path: &'static str,
@@ -78,7 +78,7 @@ pub struct AuthorizationContextBundle {
     /// Complete signed authorization context.
     pub context: Value,
     /// Current issuer entry received from the configured origin.
-    pub issuer: trellis_protocol::AuthorizationIssuerKey,
+    pub issuer: trellis_protocol::AuthorityIssuerKey,
     /// NATS-backed authorization evidence registry binding.
     pub(crate) authorization_registry: AuthorizationRegistryBinding,
     /// Verification and refresh policy for this runtime.
@@ -91,7 +91,7 @@ impl AuthorizationContextBundle {
     #[doc(hidden)]
     pub fn from_runtime_parts(
         context: Value,
-        issuer: trellis_protocol::AuthorizationIssuerKey,
+        issuer: trellis_protocol::AuthorityIssuerKey,
         authorization_registry: AuthorizationRegistryBinding,
         policy: AuthorizationContextPolicy,
     ) -> Self {

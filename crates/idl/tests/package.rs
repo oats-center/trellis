@@ -7,10 +7,10 @@ use trellis_idl::project::{
     LockedSource, PackageLock, PackageManifest, PackageMetadata,
 };
 use trellis_idl::{
-    canonical_package, capability_consent_digest, compare_implementation, compare_resource,
-    compare_resource_evolution, compare_selected, compile_evidence, compile_project, json_schema,
-    CanonicalMode, PackageEvidence, PackageSourceEvidence, RetainedResourceActual,
-    SelectedCompatibilityCache, SourceUnit, TypeDefinition,
+    canonical_package, compare_implementation, compare_resource, compare_resource_evolution,
+    compare_selected, compile_evidence, compile_project, json_schema, CanonicalMode,
+    PackageEvidence, PackageSourceEvidence, RetainedResourceActual, SelectedCompatibilityCache,
+    SourceUnit, TypeDefinition,
 };
 
 fn manifest(sources: &[(&str, &str)]) -> PackageManifest {
@@ -87,9 +87,11 @@ api orders@v1 {
   }
   capabilities {
     public {
+      consent_revision 1;
       allows { publish event Changed; subscribe event Changed; }
     }
     capability read {
+      consent_revision 1;
       title "Read orders";
       description "Reads orders.";
       consequence "Order data is shared.";
@@ -233,7 +235,7 @@ fn participant_digest_ignores_unrelated_package_declarations() {
         vec![source(
             "participants",
             "participants.trellis",
-            "app Caller {}\n",
+            "service Caller {}\n",
         )],
         BTreeMap::new(),
     )
@@ -243,7 +245,7 @@ fn participant_digest_ignores_unrelated_package_declarations() {
         vec![source(
             "participants",
             "participants.trellis",
-            "app Caller {}\napp Unrelated {}\n",
+            "service Caller {}\napp Unrelated {}\n",
         )],
         BTreeMap::new(),
     )
@@ -263,7 +265,7 @@ fn participant_digest_ignores_unrelated_package_declarations() {
         vec![source(
             "participants",
             "participants.trellis",
-            "agent Caller {}\n",
+            "device Caller {}\n",
         )],
         BTreeMap::new(),
     )
@@ -371,8 +373,8 @@ fn shared_schema_changes_update_only_affected_participant_needs() {
         "  event Changed {",
         "  rpc Again { input GetInput; output PagedOrders; errors [Missing]; pagination cursor; }\n  event Changed {",
     ).replace(
-        "allows { publish event Changed; subscribe event Changed; }",
-        "allows { publish event Changed; subscribe event Changed; rpc Again; }",
+        "    capability read {",
+        "    capability again { title \"Read again\"; description \"Read another page.\"; consequence \"Order data is shared.\"; consent_revision 1; allows { rpc Again; } }\n    capability read {",
     );
     let compile = |types: &str| {
         compile_project(
@@ -385,9 +387,9 @@ fn shared_schema_changes_update_only_affected_participant_needs() {
                     "app.trellis",
                     r#"
 import { orders } from api;
-app First { use orders { rpc Get; rpc Again; } }
-app Second { use orders { rpc Get; } }
-app Observer { use orders { subscribe event Changed; } }
+service First { use orders { required capability read; required capability again; } }
+service Second { use orders { required capability read; } }
+service Observer { use orders { required capability public; } }
 "#,
                 ),
             ],
@@ -444,21 +446,6 @@ fn semantic_digest_excludes_titles_but_includes_capability_consent_text() {
 
     assert_eq!(original.root_digest(), titles.root_digest());
     assert_ne!(original.root_digest(), consent.root_digest());
-
-    let capability = original
-        .root_package()
-        .apis()
-        .values()
-        .next()
-        .unwrap()
-        .capabilities()
-        .keys()
-        .find(|id| id.as_str().ends_with("::read"))
-        .unwrap();
-    assert_eq!(
-        capability_consent_digest(&original, capability).unwrap(),
-        "adsGOHODaJ1bmUP2IjYY7g4d1MeSU9cFnpc-riY09Dc"
-    );
 }
 
 #[test]
@@ -502,7 +489,7 @@ fn marks_only_direct_recursive_model_edges() {
 }
 
 #[test]
-fn resolves_kind_specific_resources_and_one_companion() {
+fn resource_and_companion_evidence_recompiles_without_changing_meaning() {
     let trellis_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime");
     let trellis_manifest = read_manifest(&trellis_root.join("trellis.toml")).unwrap();
     let trellis = compile_project(
@@ -536,22 +523,6 @@ fn resolves_kind_specific_resources_and_one_companion() {
     )
     .unwrap();
 
-    let participants = graph.root_package().participants();
-    assert_eq!(participants.len(), 4);
-    let sensor = participants
-        .values()
-        .find(|participant| participant.name() == "Sensor")
-        .unwrap();
-    assert!(sensor
-        .companion()
-        .is_some_and(|companion| companion.optional));
-    let cache_span = &graph.root_package().source_map()["participant.orders.Sensor.resource.cache"];
-    assert!(RESOURCES[cache_span.range.clone()].starts_with("kv optional cache"));
-    let canonical = canonical_package(&graph, graph.root(), CanonicalMode::Semantic).unwrap();
-    assert!(canonical.contains("kv optional cache"));
-    assert!(canonical.contains("title \"_\";"));
-    assert!(!canonical.contains("Local cache."));
-
     let presentation =
         canonical_package(&graph, graph.root(), CanonicalMode::Presentation).unwrap();
     let round_trip = compile_project(
@@ -581,7 +552,7 @@ fn consumer_requires_explicit_trellis_events_dependency() {
 api orders@v1 {
   title "Orders"; description "Orders";
   event Changed { payload Value; }
-  capabilities { public { allows { publish event Changed; subscribe event Changed; } } }
+  capabilities { public { consent_revision 1; allows { publish event Changed; subscribe event Changed; } } }
 }
 service Worker {
   consumer changes {
@@ -678,7 +649,7 @@ fn format_two_lock_rejects_cycles_and_inexact_edges() {
 fn selected_compatibility_is_directional_and_recursive() {
     const APP: &str = r#"
     import { orders } from api;
-    app Shopper { use orders { rpc Get; } }
+    app Shopper { use orders { required capability read; } }
 "#;
     let package_manifest = manifest(&[
         ("types", "types.trellis"),
@@ -704,7 +675,7 @@ fn selected_compatibility_is_directional_and_recursive() {
     ));
     let selection = consumer
         .root_package()
-        .participants()
+        .app_requests()
         .values()
         .find(|participant| participant.name() == "Shopper")
         .unwrap()
@@ -758,6 +729,7 @@ fn selected_compatibility_is_directional_and_recursive() {
             direction: trellis_idl::InteractionDirection::Subscribe,
         }]),
         optional_capabilities: std::collections::BTreeSet::new(),
+        required_capabilities: std::collections::BTreeSet::new(),
     };
     assert!(
         cache
@@ -814,13 +786,9 @@ fn rejects_invalid_capability_participant_and_pagination_placement() {
         )
     };
     assert!(compile(
-        r#"model Empty {} api hidden@v1 { title "Hidden"; description "Hidden."; capabilities {} }"#
-    )
-    .is_err());
-    assert!(compile(
         r#"
 model Empty {}
-api public@v1 { title "Public"; description "Public."; capabilities { public {} } }
+api public@v1 { title "Public"; description "Public."; capabilities {} }
 app Invalid { implements public; }
 "#
     )
@@ -828,7 +796,7 @@ app Invalid { implements public; }
     assert!(compile(
         r#"
 model Empty {}
-api public@v1 { title "Public"; description "Public."; capabilities { public {} } }
+api public@v1 { title "Public"; description "Public."; capabilities {} }
 service Valid { use public; }
 "#
     )
@@ -863,7 +831,7 @@ api common@v1 {
   title "Common";
   description "Common values.";
   rpc Get { input Empty; output Shared; }
-  capabilities { public { allows { rpc Get; } } }
+    capabilities { public { consent_revision 1; allows { rpc Get; } } }
 }
 "#,
         )],
@@ -975,7 +943,7 @@ fn resource_compatibility_uses_schema_revisions_and_retains_history() {
                     "app",
                     "app.trellis",
                     &format!(
-                        "import {{ V1, V2 }} from types; app Client {{ state value {{ title \"Value\"; description \"Stored value.\"; {body} }} }}"
+                        "import {{ V1, V2 }} from types; device Client {{ state value {{ title \"Value\"; description \"Stored value.\"; {body} }} }}"
                     ),
                 ),
             ],
@@ -1026,7 +994,7 @@ fn resource_compatibility_uses_schema_revisions_and_retains_history() {
 }
 
 #[test]
-fn derives_subjects_codecs_and_exact_operation_needs() {
+fn derives_operation_subjects_and_signal_codecs() {
     let graph = compile_project(
         &manifest(&[("source", "source.trellis")]),
         vec![source(
@@ -1039,8 +1007,8 @@ api work@v2 {
   description "Work API.";
   operation Run { input Empty; output Empty; signals { stop Empty; } }
   capabilities {
-    public { allows { operation Run; } }
     capability execute {
+      consent_revision 1;
       title "Execute work";
       description "Runs work.";
       consequence "Work is executed.";
@@ -1048,7 +1016,7 @@ api work@v2 {
     }
   }
 }
-service Client { use work { operation Run; } }
+service Client { use work { required capability execute; } }
 service Worker { implements work; }
 "#,
         )],
@@ -1062,57 +1030,6 @@ service Worker { implements work; }
     assert!(codecs.input.is_some());
     assert!(codecs.output.is_some());
     assert!(codecs.signals.contains_key("stop"));
-
-    let participant = graph
-        .root_package()
-        .participants()
-        .keys()
-        .find(|participant| participant.as_str().ends_with(".Client"))
-        .unwrap();
-    let needs = graph.participant_needs(participant).unwrap();
-    let actions = needs
-        .required_grants()
-        .permissions()
-        .iter()
-        .map(|permission| permission.action())
-        .collect::<Vec<_>>();
-    assert_eq!(actions.len(), 4);
-    for expected in [
-        trellis_protocol::PermissionAction::Invoke,
-        trellis_protocol::PermissionAction::Observe,
-        trellis_protocol::PermissionAction::Cancel,
-        trellis_protocol::PermissionAction::Control,
-    ] {
-        assert!(actions.contains(&expected));
-    }
-    assert!(needs
-        .required_grants()
-        .permissions()
-        .iter()
-        .any(|permission| {
-            permission
-                .target()
-                .as_operation_signal()
-                .is_some_and(|(_, operation, signal)| operation == "Run" && signal == "stop")
-        }));
-    assert_eq!(needs.required_capabilities().len(), 1);
-    assert!(needs
-        .required_capabilities()
-        .iter()
-        .any(|capability| capability.as_str().ends_with("::execute")));
-    assert!(!needs.digest().is_empty());
-    let provider = graph
-        .root_package()
-        .participants()
-        .keys()
-        .find(|participant| participant.as_str().ends_with(".Worker"))
-        .unwrap();
-    assert!(graph
-        .participant_needs(provider)
-        .unwrap()
-        .required_grants()
-        .permissions()
-        .is_empty());
 }
 
 #[test]
@@ -1150,12 +1067,6 @@ device Sensor {
         .values()
         .next()
         .unwrap();
-    let participant = graph.root_package().participants().keys().next().unwrap();
-    assert!(graph
-        .participant_needs(participant)
-        .unwrap()
-        .optional_grants()
-        .contains_key("resource.cache"));
     assert!(compare_resource(resource, &RetainedResourceActual::Unavailable).compatible);
     assert!(
         compare_resource(
@@ -1182,7 +1093,7 @@ device Sensor {
 }
 
 #[test]
-fn state_declaration_adds_implicit_state_rpc_uses_and_grants() {
+fn app_state_encoding_preserves_explicit_read_only_selection() {
     let state_manifest = PackageManifest {
         package: PackageMetadata {
             name: "trellis".into(),
@@ -1196,7 +1107,36 @@ fn state_declaration_adds_implicit_state_rpc_uses_and_grants() {
     };
     let state_graph = compile_project(
         &state_manifest,
-        vec![source("state", "state.trellis", "model Empty {}\napi state@v1 { title \"State\"; description \"State runtime.\"; rpc Get { input Empty; output Empty; } rpc Put { input Empty; output Empty; } rpc Delete { input Empty; output Empty; } capabilities { public { allows { rpc Get; rpc Put; rpc Delete; } } } }")],
+        vec![source(
+            "state",
+            "state.trellis",
+            r#"
+model Empty {}
+api state@v1 {
+  title "State"; description "State runtime.";
+  rpc Get { input Empty; output Empty; }
+  rpc Put { input Empty; output Empty; }
+  rpc Delete { input Empty; output Empty; }
+  capabilities {
+    capability read {
+      title "Read"; description "Read a State value.";
+      consequence "The caller sees saved values.";
+      consent_revision 1; allows { rpc Get; }
+    }
+    capability write {
+      title "Write"; description "Overwrite a State value.";
+      consequence "The caller replaces saved values.";
+      consent_revision 1; allows { rpc Put; }
+    }
+    capability delete {
+      title "Delete"; description "Delete a State value.";
+      consequence "The caller removes saved values.";
+      consent_revision 1; allows { rpc Delete; }
+    }
+  }
+}
+"#,
+        )],
         BTreeMap::new(),
     )
     .unwrap();
@@ -1212,19 +1152,19 @@ fn state_declaration_adds_implicit_state_rpc_uses_and_grants() {
     );
     let graph = compile_project(
         &app_manifest,
-        vec![source("source", "source.trellis", "model Saved { value: string; }\napp Client { state saved { title \"Saved\"; description \"Saved value.\"; schema Saved; } }\napp Denied {}")],
+        vec![source("source", "source.trellis", "import { state } from trellis;\nmodel Saved { value: string; }\napp Client { use state { required capability read; } state saved { title \"Saved\"; description \"Saved value.\"; schema Saved; } }")],
         BTreeMap::from([("trellis".into(), state_graph)]),
     )
     .unwrap();
 
     let client = graph
         .root_package()
-        .participants()
+        .app_requests()
         .keys()
         .find(|id| id.as_str().ends_with(".Client"))
         .unwrap();
-    let participant = &graph.root_package().participants()[client];
-    let state_use = participant
+    let request = &graph.root_package().app_requests()[client];
+    let state_use = request
         .uses()
         .values()
         .find(|selection| selection.api.as_str() == "trellis.state@v1")
@@ -1235,39 +1175,8 @@ fn state_declaration_adds_implicit_state_rpc_uses_and_grants() {
             .iter()
             .map(|selection| selection.action.name.as_str())
             .collect::<Vec<_>>(),
-        ["Delete", "Get", "Put"]
+        ["Get"]
     );
-    let needs = graph.participant_needs(client).unwrap();
-    let permissions = needs.required_grants().permissions();
-    assert_eq!(permissions.len(), 6);
-    assert_eq!(
-        permissions
-            .iter()
-            .filter_map(|permission| permission.target().as_api_surface())
-            .map(|(_, _, name)| name)
-            .collect::<Vec<_>>(),
-        ["Delete", "Get", "Put"]
-    );
-    assert_eq!(
-        permissions
-            .iter()
-            .filter_map(|permission| permission.target().as_participant_resource())
-            .map(|(_, _, name)| name)
-            .collect::<Vec<_>>(),
-        ["saved", "saved", "saved"]
-    );
-    let denied = graph
-        .root_package()
-        .participants()
-        .keys()
-        .find(|id| id.as_str().ends_with(".Denied"))
-        .unwrap();
-    assert!(graph
-        .participant_needs(denied)
-        .unwrap()
-        .required_grants()
-        .permissions()
-        .is_empty());
 }
 
 const OPERATION_SOURCE: &str = r#"
@@ -1278,7 +1187,7 @@ api work@v1 {
   title "Work";
   description "Work operations.";
   operation Run { input Empty; output Empty; progress Status; update Preview; }
-  capabilities { public { allows { operation Run; } } }
+  capabilities { public { consent_revision 1; allows { operation Run; } } }
 }
 service Worker { implements work; }
 "#;

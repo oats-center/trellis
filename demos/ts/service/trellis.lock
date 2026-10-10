@@ -4,8 +4,8 @@ root = "demo-service"
 [[packages]]
 name = "demo-service"
 version = "1.0.0"
-digest = "h93pFM7dgvvyY8coVUsB-eTJ5AT7kPtpE75h7pfU1s8"
-distribution-digest = "sha256:dd7863ff119c53efe0b5029873649c1914802bc047bc4d74b11a15aa86535d38"
+digest = "k6mk7C_UspJ7NNfPrU5BLeGpFhA7SvO19Akhkr7Y1bU"
+distribution-digest = "sha256:ac782ab573994d9e97557856dc998f80dac0ef71bbcb06594743a57774f2bb51"
 dependencies = []
 
 [packages.source]

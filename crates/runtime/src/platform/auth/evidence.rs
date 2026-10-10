@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use trellis_idl::{
-    api_digest, capability_consent_digest, compile_evidence, participant_digest,
-    selected_permission_atoms, ActionDefinition, ActionKind, PackageEvidence, ResourceDefinition,
+    api_digest, compile_evidence, participant_digest, ActionDefinition, ActionKind,
+    PackageEvidence, ResourceDefinition,
 };
 use trellis_protocol::{
     ApiSurfaceKind, GrantSet, ParticipantKind, ParticipantResourceKind, PermissionAction,
@@ -96,32 +96,14 @@ pub(crate) struct ParticipantRuntimeProjection {
     pub implemented_apis: BTreeMap<String, ApiRuntimeProjection>,
     pub referenced_apis: BTreeMap<String, ApiRuntimeProjection>,
     pub resources: BTreeMap<String, ResourceRuntimeProjection>,
-    pub required_grants: GrantSet,
-    pub optional_grant_bundles: BTreeMap<String, GrantSet>,
     pub required_capabilities: Vec<String>,
-    pub optional_capability_definitions: BTreeMap<String, GrantSet>,
-    pub companion_participant_id: Option<String>,
-    pub companion_participant_kind: Option<ParticipantKind>,
+    pub optional_capabilities: Vec<String>,
+    pub companion_request_id: Option<String>,
+    pub companion_kind: Option<RuntimeAppKind>,
     pub companion_required: bool,
 }
 
 impl ParticipantRuntimeProjection {
-    pub(crate) fn select_grants(
-        &self,
-        optional_capabilities: &[String],
-    ) -> Result<GrantSet, AuthorizationStateError> {
-        let mut permissions = self.required_grants.permissions().to_vec();
-        for capability in optional_capabilities {
-            let grant = self.optional_grant_bundles.get(capability).ok_or_else(|| {
-                AuthorizationStateError::InvalidRecord(format!(
-                    "unknown optional capability {capability}"
-                ))
-            })?;
-            permissions.extend_from_slice(grant.permissions());
-        }
-        Ok(GrantSet::new(permissions))
-    }
-
     /// Event-publish grants Trellis derives from a provider's implemented APIs.
     ///
     /// Services publish the events their implemented APIs declare without those
@@ -275,9 +257,31 @@ pub(crate) struct CapabilityRuntimeProjection {
     pub display_name: String,
     pub description: String,
     pub consequence: String,
-    pub consent_digest: String,
-    pub public: bool,
-    pub allows: Vec<PermissionAtom>,
+    pub consent_revision: u64,
+    pub allows: Vec<CapabilityActionProjection>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CapabilityActionProjection {
+    pub descriptor_name: String,
+    pub direction: RuntimeInteractionDirection,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum RuntimeInteractionDirection {
+    Call,
+    Invoke,
+    Publish,
+    Subscribe,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum RuntimeAppKind {
+    Browser,
+    Native,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -414,18 +418,11 @@ pub(crate) fn project_package_evidence(
         .ok_or_else(|| {
             AuthorizationStateError::InvalidRecord("participant needs are absent".into())
         })?;
-    let optional_capabilities = participant
-        .uses()
-        .values()
-        .flat_map(|selection| selection.optional_capabilities.iter())
-        .map(|capability| capability.as_str())
-        .collect::<BTreeSet<_>>();
     let mut resources = BTreeMap::new();
     for (name, resource) in participant.resources() {
         let (projection, _) = project_resource(graph, resource)?;
         resources.insert(name.as_str().to_owned(), projection);
     }
-    let optional_grant_bundles = needs.optional_grants().clone();
     let participant_digest = participant_digest(graph, participant.identity())
         .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
     let companion = participant
@@ -434,16 +431,19 @@ pub(crate) fn project_package_evidence(
             let nested = graph
                 .packages()
                 .values()
-                .find_map(|package| package.participants().get(&companion.participant))
+                .find_map(|package| package.app_requests().get(&companion.request))
                 .ok_or_else(|| {
                     AuthorizationStateError::InvalidRecord(format!(
-                        "companion participant '{}' is absent from package evidence",
-                        companion.participant
+                        "companion request '{}' is absent from package evidence",
+                        companion.request
                     ))
                 })?;
             Ok::<_, AuthorizationStateError>((
-                companion.participant.as_str().to_owned(),
-                project_participant_kind(nested.kind()),
+                companion.request.as_str().to_owned(),
+                match nested.kind() {
+                    trellis_idl::AppKind::Browser => RuntimeAppKind::Browser,
+                    trellis_idl::AppKind::Native => RuntimeAppKind::Native,
+                },
                 !companion.optional,
             ))
         })
@@ -458,20 +458,18 @@ pub(crate) fn project_package_evidence(
             implemented_apis,
             referenced_apis,
             resources,
-            required_grants: needs.required_grants().clone(),
-            optional_capability_definitions: optional_grant_bundles
-                .iter()
-                .filter(|(name, _)| optional_capabilities.contains(name.as_str()))
-                .map(|(name, grants)| (name.clone(), grants.clone()))
-                .collect(),
-            optional_grant_bundles,
             required_capabilities: needs
                 .required_capabilities()
                 .iter()
                 .map(|capability| capability.as_str().to_owned())
                 .collect(),
-            companion_participant_id: companion.as_ref().map(|value| value.0.clone()),
-            companion_participant_kind: companion.as_ref().map(|value| value.1),
+            optional_capabilities: needs
+                .optional_capabilities()
+                .iter()
+                .map(|capability| capability.as_str().to_owned())
+                .collect(),
+            companion_request_id: companion.as_ref().map(|value| value.0.clone()),
+            companion_kind: companion.as_ref().map(|value| value.1),
             companion_required: companion.is_some_and(|value| value.2),
         },
     ))
@@ -533,32 +531,42 @@ fn project_api(
             .capabilities()
             .iter()
             .map(|(id, capability)| {
-                Ok((
+                (
                     id.as_str().to_owned(),
                     CapabilityRuntimeProjection {
                         display_name: capability.title.clone(),
                         description: capability.description.clone(),
                         consequence: capability.consequence.clone(),
-                        consent_digest: capability_consent_digest(graph, id).map_err(|error| {
-                            AuthorizationStateError::InvalidRecord(error.to_string())
-                        })?,
-                        public: capability.public,
+                        consent_revision: capability.consent_revision,
                         allows: capability
                             .allows
                             .iter()
-                            .map(|selection| {
-                                selected_permission_atoms(api_id, selection, api).map_err(|error| {
-                                    AuthorizationStateError::InvalidRecord(error.to_string())
-                                })
+                            .map(|selection| CapabilityActionProjection {
+                                descriptor_name: format!(
+                                    "{}:{}",
+                                    action_kind(selection.action.kind),
+                                    selection.action.name
+                                ),
+                                direction: match selection.direction {
+                                    trellis_idl::InteractionDirection::Call => {
+                                        RuntimeInteractionDirection::Call
+                                    }
+                                    trellis_idl::InteractionDirection::Invoke => {
+                                        RuntimeInteractionDirection::Invoke
+                                    }
+                                    trellis_idl::InteractionDirection::Publish => {
+                                        RuntimeInteractionDirection::Publish
+                                    }
+                                    trellis_idl::InteractionDirection::Subscribe => {
+                                        RuntimeInteractionDirection::Subscribe
+                                    }
+                                },
                             })
-                            .collect::<Result<Vec<_>, _>>()?
-                            .into_iter()
-                            .flatten()
                             .collect(),
                     },
-                ))
+                )
             })
-            .collect::<Result<_, AuthorizationStateError>>()?,
+            .collect(),
     })
 }
 
@@ -759,8 +767,6 @@ fn project_participant_kind(kind: trellis_idl::ParticipantKind) -> ParticipantKi
     match kind {
         trellis_idl::ParticipantKind::Service => ParticipantKind::Service,
         trellis_idl::ParticipantKind::Device => ParticipantKind::Device,
-        trellis_idl::ParticipantKind::App => ParticipantKind::App,
-        trellis_idl::ParticipantKind::Agent => ParticipantKind::Agent,
     }
 }
 

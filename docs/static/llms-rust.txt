@@ -6,30 +6,27 @@ domain types, DI pattern, logging setup, or test framework.
 
 ## Generated Package
 
-Administrative Auth callers consume the generated `trellis.auth@v1` actions.
-`Users.Update` has optional `username` for an atomic local-login rename that
-preserves the principal ID and password; collisions roll back profile changes.
-`Users.PasswordReset.Create` targets `userId` and returns a time-limited,
-one-use account-flow link. `UserIdentities.List`, `UserIdentities.Unlink`, and
-`Users.IdentityLink.Create` accept optional `userId`; omission targets the
-caller, and another user's identities require platform administration.
-Last-method and protected-account safeguards remain. `Connections.List` accepts
-`principalId`. Declare these actions in native IDL and use generated request
-models/facades; capability-group presets saved through `Grants.Set` are exact
-snapshots, not live group memberships. Exact snapshots can initiate resource
-provisioning without bypassing runtime readiness. Resource actions stay within
-the snapshot and delegation ceiling; read-only approval does not grant write
-access.
+Declare whole capabilities in native IDL, not individual RPC/event grants:
+`required capability read;` is required and `capability export;` is optional.
+Generated callers expose the selected actions. Check capability availability
+before invoking an optional capability; selecting it does not mean it was approved.
+Services/devices are deployable participants; apps/agents are application request
+descriptors exported through the generated `apps` namespace.
 
-`Capabilities.List` supports participant, revision, and source-API filters
-through its generated request model. A participant and revision select an exact
-retained snapshot; omitting revision selects its current installation. Revision
-requires a participant. Unscoped discovery uses all current installations.
-Entries include `sourceApi` and `apiDigest`: identical definitions deduplicate,
-while differing definitions with the same capability identity remain distinct.
-Expand capability selections and group presets against the exact participant
-revision before saving `Grants.Set` permissions. Discovery does not grant
-authority or make exact grants track future capability changes.
+Administrative Auth callers consume generated `trellis.auth@v1` actions and
+request their narrow ordinary capabilities. Runtime authorization additionally
+requires the applicable finite platform privilege; capability selection never
+confers it. Own-authority/session maintenance uses fixed session rights.
+Capability discovery does not grant authority, and capability groups are not
+presets expanded into saved exact-action grants. API authors set positive
+`consent_revision` values; Auth owns acceptance and action/membership introduction
+counters.
+
+Retained events require trusted original JetStream publication metadata as well
+as a signed publisher timestamp. Both times must lie within the authority lease,
+and original publication must precede an ordinary revocation cutoff. Read time
+is not publication evidence. Current consumer read authority is separate from
+historical publisher authenticity; service code does not supply its own verifier.
 
 Author native IDL and set `[package]`, `[sources]`, and `[generate.rust].output`
 in `trellis.toml`. `trellis generate` is offline after dependencies are
@@ -38,7 +35,8 @@ requires a direct `trellis` source package dependency containing
 `trellis.events@v1`; select and lock its version before generation.
 
 The output is one ordinary crate at the source package version, with
-`orders_trellis::apis::<api>` and `orders_trellis::participants::<participant>`
+`orders_trellis::apis::<api>`, `orders_trellis::participants::<participant>`, and
+`orders_trellis::apps::<request>`
 modules, not independent SDK or participant crates. Add an ordinary Cargo path
 dependency, for example `orders-trellis = { path = "trellis" }`. The generated
 crate declares the published runtime dependency matching the CLI. It has no

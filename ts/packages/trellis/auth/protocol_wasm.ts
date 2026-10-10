@@ -1,7 +1,7 @@
 import init, {
   initSync,
   type SyncInitInput,
-  type VerifiedAuthorizationContextHandle as WasmAuthorizationContextHandle,
+  type VerifiedSessionAuthorityHandle as WasmSessionAuthorityHandle,
 } from "./protocol_wasm/trellis_protocol_wasm.js";
 import * as protocolWasmModule from "./protocol_wasm/trellis_protocol_wasm.js";
 import { PROTOCOL_WASM_BASE64 } from "./protocol_wasm/trellis_protocol_wasm_bytes.ts";
@@ -11,104 +11,53 @@ type JsonObject = { [key: string]: JsonValue };
 
 const protocolWasm = protocolWasmModule;
 
-/** Verification policy accepted by the Rust authorization protocol. */
-export type AuthorizationVerificationPolicy = {
+/** Bounds and explicit clock accepted by the shared session-authority verifier. */
+export type SessionAuthorityVerificationPolicy = {
   nowUnixSeconds: number;
   allowedClockSkewSeconds: number;
-  maximumContextLifetimeSeconds: number;
-  maximumContextBytes: number;
-  maximumPermissions: number;
+  maximumAuthorityLifetimeSeconds: number;
+  maximumAuthorityBytes: number;
+  maximumEntries: number;
 };
 
-/** Context verification policy fields used to schedule refresh. */
-export type AuthorizationContextVerificationPolicy =
-  & AuthorizationVerificationPolicy
-  & {
-    refreshLeadSeconds: number;
-    refreshJitterSeconds: number;
-  };
-
-/** Online issuer entry and signed context supplied to a local verifier. */
-export type AuthorizationContextVerificationInput = {
-  issuer: AuthorizationIssuerKey;
-  context: unknown;
-};
-
-/** Public issuer entry authenticated by the configured Trellis origin. */
-export type AuthorizationIssuerKey = {
+/** Caller-supplied pinned key or key authenticated by a pinned rotation chain. */
+export type AuthorityIssuerKey = {
   keyId: string;
   publicKey: string;
   state: "active" | "retired" | "revoked";
 };
 
-/** Meta-authority not represented by ordinary permission atoms. */
-export type PlatformPrivilege = "trellis.auth::admin";
+/** Finite administrative privileges, separate from ordinary capabilities. */
+export type PlatformPrivilege =
+  | "principals.manage"
+  | "roles.manage"
+  | "apis.accept"
+  | "apis.forceReplace"
+  | "clients.manage"
+  | "privileges.manage";
 
-/** One exact API or participant-resource permission target. */
-export type PermissionTarget =
-  | {
-    kind: "apiSurface";
-    api: string;
-    surface: "rpc" | "operation" | "event" | "live" | "state";
-    name: string;
-  }
-  | {
-    kind: "participantResource";
-    participant: string;
-    resource: "kv" | "store" | "jobQueue" | "eventConsumer" | "state";
-    name: string;
-  }
-  | {
-    kind: "operationSignal";
-    api: string;
-    operation: string;
-    signal: string;
-  };
-
-/** One exact machine-enforceable permission atom. */
-export type PermissionAtom = {
-  target: PermissionTarget;
-  action:
-    | "call"
-    | "invoke"
-    | "observe"
-    | "cancel"
-    | "control"
-    | "publish"
-    | "subscribe"
-    | "read"
-    | "write"
-    | "delete"
-    | "submit"
-    | "process"
-    | "consume";
+/** Explicit trust scope and logical-session state for authority verification. */
+export type SessionAuthorityVerificationInput = {
+  issuer: AuthorityIssuerKey;
+  trellisInstanceId: string;
+  audienceNatsAccount: string;
+  policy: SessionAuthorityVerificationPolicy;
+  purpose: "live" | "historicalEvent";
+  revocationCutoff: number | null;
 };
 
-/** Grant set projection returned by local authorization verification. */
-export type GrantSet = {
-  format: "trellis.grant-set.v1";
-  permissions: PermissionAtom[];
+/** Exact route identity bound by the Rust-owned request transcript. */
+export type SessionRequest = {
+  authorityDigest: string;
+  apiId: string;
+  apiGeneration: string;
+  acceptedRevision: string;
+  action: string;
+  subject: string;
+  replySubject: string | null;
+  requestId: string;
+  issuedAt: number;
 };
-
-/** Verified request caller projection. */
-export type VerifiedAuthorizationRequestProjection = { contextDigest: string };
-
-/** Verified event publisher projection. */
-export type VerifiedAuthorizationEventPublisher = {
-  kind: "user" | "service" | "device";
-  deploymentId: string | null;
-  instanceId: string | null;
-  participantId: string;
-  connectionId: string;
-  loginSessionId: string | null;
-};
-
-/** Verified event publisher projection. */
-export type VerifiedAuthorizationEventProjection =
-  & VerifiedAuthorizationRequestProjection
-  & {
-    publisher: VerifiedAuthorizationEventPublisher;
-  };
 
 /** Stable error categories returned by local authorization verification. */
 export type AuthorizationVerificationErrorCode =
@@ -131,6 +80,8 @@ export type AuthorizationVerificationErrorCode =
   | "ContextLifetimeExceeded"
   | "InvalidSessionKey"
   | "PermissionDenied"
+  | "ScopeMismatch"
+  | "SessionRevoked"
   | "ContextTooLarge"
   | "ProofIatOutOfRange"
   | "InvalidRequestProof"
@@ -145,40 +96,67 @@ export type AuthorizationVerificationError = {
   path: string;
 };
 
-/** Result envelope returned by a local request authorization verifier. */
-export type VerifyAuthorizationRequestResult =
-  | ({ ok: true } & VerifiedAuthorizationRequestProjection)
-  | { ok: false; error: AuthorizationVerificationError };
+/** Auth-verified client or provisioned deployment binding. */
+export type SessionBinding =
+  | { kind: "browser"; clientId: string; origin: string }
+  | { kind: "native"; clientId: string; durableDpopJkt: string }
+  | {
+    kind: "service" | "device";
+    deploymentId: string;
+    instanceId: string;
+    participantId: string;
+  };
 
-/** Result envelope returned by a local event authorization verifier. */
-export type VerifyAuthorizationEventResult =
-  | ({ ok: true } & VerifiedAuthorizationEventProjection)
-  | { ok: false; error: AuthorizationVerificationError };
-
-/** Arguments for local context-bound request authorization. */
-export type VerifyAuthorizationRequestArgs = {
-  contextHandle: AuthorizationContextHandle;
-  subject: string;
-  reply: string | null;
-  payload: Uint8Array;
-  iat: number;
-  requestId: string;
-  proof: string;
-  requiredPermissions: PermissionAtom[];
-  policy: AuthorizationVerificationPolicy;
+/** Approved whole-capability identity, with canonical decimal counters. */
+export type CapabilityAuthority = {
+  capabilityId: string;
+  identityGeneration: string;
+  consentRevision: string;
 };
 
-/** Arguments for local context-bound event authorization. */
-export type VerifyAuthorizationEventArgs = {
-  contextHandle: AuthorizationContextHandle;
-  descriptorIdentity: string;
-  subject: string;
+/** Accepted API stamp captured by the signed authority. */
+export type AuthorityApi = {
+  apiId: string;
+  generation: string;
+  acceptedRevision: string;
+  catalogSnapshotDigest: string;
+};
+
+/** Rust-owned authenticated identity projection; action authorization is separate. */
+export type AuthenticatedCaller = {
+  authorityDigest: string;
+  principalId: string;
+  principalKind: "user" | "service" | "device";
+  binding: SessionBinding;
+  authorizationSessionId: string;
+  runtimeId: string;
+  sessionPublicKey: string;
+  inboxPrefix: string;
+  loginSessionId?: string;
+  oauthGrantId?: string;
+  capabilities: CapabilityAuthority[];
+  apis: AuthorityApi[];
+  platformPrivileges: PlatformPrivilege[];
+};
+
+/** Cryptographically authenticated request binding, before dispatch authorization. */
+export type VerifySessionRequestResult =
+  | {
+    ok: true;
+    authorityDigest: string;
+    requestProofDigest: string;
+    caller: AuthenticatedCaller;
+  }
+  | { ok: false; error: AuthorizationVerificationError };
+
+/** Received bytes and actual route metadata, not a payload-supplied hash. */
+export type VerifySessionRequestArgs = {
+  authorityHandle: SessionAuthorityHandle;
+  request: SessionRequest;
   payload: Uint8Array;
-  eventId: string;
-  eventTime: string;
   proof: string;
-  policy: AuthorizationVerificationPolicy;
-  revokedAt?: number | null;
+  policy: SessionAuthorityVerificationPolicy;
+  knownRevoked: boolean;
 };
 
 /**
@@ -212,37 +190,14 @@ export type TransportPolicyClass =
   | "upgrade_available"
   | "reduction_required";
 
-/** Projection returned after verifying an online-issued context. */
-export type VerifiedAuthorizationContextTokenProjection = {
-  issuer: AuthorizationIssuerKey;
-  contextDigest: string;
-  refreshAt: number;
-  context: Record<string, unknown> & {
-    ownerKind: "deployment" | "user";
-    ownerId: string;
-    grantRevision: number;
-    principalId: string;
-    principalKind: "user" | "service" | "device";
-    participantId: string;
-    identityKeyId: string | null;
-    loginSessionId: string | null;
-    deploymentId: string | null;
-    instanceId: string | null;
-    issuerKeyId: string;
-    connectionId: string;
-    sessionKey: string;
-    inboxPrefix: string;
-    issuedAt: number;
-    notBefore: number;
-    expiresAt: number;
-    grants: GrantSet;
-    platformPrivileges: PlatformPrivilege[];
-    transportAuthorization: TransportAuthorizationV1;
-  };
+/** Immutable signed material authenticated by the Rust-owned parser/verifier. */
+export type VerifiedSessionAuthorityProjection = {
+  authorityDigest: string;
+  authority: JsonObject;
 };
 
-/** Opaque Rust/WASM verification state for one authorization context. */
-export type AuthorizationContextHandle = WasmAuthorizationContextHandle;
+/** Opaque shared verification state for one immutable session authority. */
+export type SessionAuthorityHandle = WasmSessionAuthorityHandle;
 
 let initialized: Promise<void> | undefined;
 let initializedSync = false;
@@ -348,62 +303,37 @@ export async function decodePaginationCursor<T>(
   ) as T;
 }
 
-/** Verify a complete signed authorization context through Rust/WASM. */
-export async function verifyAuthorizationContextWasm(args: {
-  issuer: AuthorizationIssuerKey;
-  context: unknown;
-  policy: AuthorizationContextVerificationPolicy;
-}): Promise<VerifiedAuthorizationContextTokenProjection> {
-  const { handle, verified } = await createAuthorizationContextHandleWasm(args);
-  handle.free();
-  return verified;
-}
-
-/** Verify and retain one authorization context for repeated proof checks. */
-export async function createAuthorizationContextHandleWasm(args: {
-  issuer: AuthorizationIssuerKey;
-  context: unknown;
-  policy: AuthorizationContextVerificationPolicy;
-  historical?: boolean;
+/** Verify bounded target authority under the configured pinned trust scope. */
+export async function createSessionAuthorityHandleWasm(args: {
+  verification: SessionAuthorityVerificationInput;
+  authorityBytes: Uint8Array;
 }): Promise<{
-  handle: AuthorizationContextHandle;
-  verified: VerifiedAuthorizationContextTokenProjection;
+  handle: SessionAuthorityHandle;
+  verified: VerifiedSessionAuthorityProjection;
 }> {
   await initializeProtocolWasm();
-  const handle = protocolWasm.create_authorization_context_handle(
-    JSON.stringify(args.issuer),
-    JSON.stringify(args.context),
-    JSON.stringify(wasmVerificationPolicy(args.policy)),
-    args.historical ?? false,
+  const handle = protocolWasm.create_session_authority_handle(
+    JSON.stringify(args.verification),
+    args.authorityBytes,
   );
   try {
-    const result = JSON.parse(
+    const verified = JSON.parse(
       handle.projection(),
-    ) as VerifiedAuthorizationContextTokenProjection;
-    const jitter = contextJitter(
-      result.contextDigest,
-      args.policy.refreshJitterSeconds,
-    );
-    return {
-      handle,
-      verified: {
-        ...result,
-        refreshAt: result.context.expiresAt - args.policy.refreshLeadSeconds -
-          jitter,
-      },
-    };
+    ) as VerifiedSessionAuthorityProjection;
+    return { handle, verified };
   } catch (error) {
     handle.free();
     throw error;
   }
 }
 
-/** Require an opaque verified context to be currently eligible. */
-export function assertAuthorizationContextHandleCurrentWasm(
-  handle: AuthorizationContextHandle,
-  policy: AuthorizationContextVerificationPolicy,
+/** Recheck time and sticky session revocation after any asynchronous resolution. */
+export function assertSessionAuthorityHandleCurrentWasm(
+  handle: SessionAuthorityHandle,
+  policy: SessionAuthorityVerificationPolicy,
+  knownRevoked: boolean,
 ): void {
-  handle.assert_current(JSON.stringify(wasmVerificationPolicy(policy)));
+  handle.assert_current(JSON.stringify(policy), knownRevoked);
 }
 
 /**
@@ -440,104 +370,21 @@ export async function classifyTransportAuthorizationWasm(
   ) as TransportPolicyClass;
 }
 
-/**
- * Encode a permission target as the canonical bytes an `AuthPermissionAtom`
- * carries.
- *
- * The protocol crate owns validation and the canonical (RFC 8785) encoding, so
- * TypeScript authors the logical target and never reconstructs the byte form.
- */
-export async function encodePermissionTargetWasm(
-  target: PermissionTarget,
-): Promise<Uint8Array> {
+/** Authenticate exact request bytes and captured API identity through Rust/WASM. */
+export async function verifySessionRequestWasm(
+  args: VerifySessionRequestArgs,
+): Promise<VerifySessionRequestResult> {
   await initializeProtocolWasm();
-  return protocolWasm.encode_permission_target(JSON.stringify(target));
-}
-
-/** Build a participant-resource permission target. */
-export function participantResourceTarget(args: {
-  participant: string;
-  resource: "kv" | "store" | "jobQueue" | "eventConsumer" | "state";
-  name: string;
-}): PermissionTarget {
-  return { kind: "participantResource", ...args };
-}
-
-/** Verify one context-bound request proof using actual received request bytes. */
-export async function verifyAuthorizationRequestWasm(
-  args: VerifyAuthorizationRequestArgs,
-): Promise<VerifyAuthorizationRequestResult> {
-  await initializeProtocolWasm();
-  const { contextHandle, payload, ...input } = args;
+  const { authorityHandle, payload, ...input } = args;
   return JSON.parse(
-    protocolWasm.verify_authorization_request(
-      contextHandle,
-      JSON.stringify({
-        ...input,
-        policy: wasmVerificationPolicy(args.policy),
-      }),
+    protocolWasm.verify_session_request(
+      authorityHandle,
+      JSON.stringify(input),
       payload,
     ),
-  ) as VerifyAuthorizationRequestResult;
+  ) as VerifySessionRequestResult;
 }
 
-/** Verify a compact Transfer proof against exact pinned session coordinates. */
-export async function verifyTransferAuthorizationRequestWasm(
-  args: VerifyAuthorizationRequestArgs,
-  providerId: string,
-  expectedConsumerConnection: string,
-  transferId: string,
-): Promise<VerifyAuthorizationRequestResult> {
-  await initializeProtocolWasm();
-  const { contextHandle, payload, ...input } = args;
-  return JSON.parse(
-    protocolWasm.verify_transfer_authorization_request(
-      contextHandle,
-      JSON.stringify({ ...input, policy: wasmVerificationPolicy(args.policy) }),
-      payload,
-      providerId,
-      expectedConsumerConnection,
-      transferId,
-    ),
-  ) as VerifyAuthorizationRequestResult;
-}
-
-/** Verify one context-bound event proof, including historical time/revocation checks. */
-export async function verifyAuthorizationEventWasm(
-  args: VerifyAuthorizationEventArgs,
-): Promise<VerifyAuthorizationEventResult> {
-  await initializeProtocolWasm();
-  const { contextHandle, payload, ...input } = args;
-  return JSON.parse(
-    protocolWasm.verify_authorization_event(
-      contextHandle,
-      JSON.stringify({
-        ...input,
-        policy: wasmVerificationPolicy(args.policy),
-      }),
-      payload,
-    ),
-  ) as VerifyAuthorizationEventResult;
-}
-
-function wasmVerificationPolicy(
-  policy: AuthorizationVerificationPolicy,
-): AuthorizationVerificationPolicy {
-  return {
-    nowUnixSeconds: policy.nowUnixSeconds,
-    allowedClockSkewSeconds: policy.allowedClockSkewSeconds,
-    maximumContextLifetimeSeconds: policy.maximumContextLifetimeSeconds,
-    maximumContextBytes: policy.maximumContextBytes,
-    maximumPermissions: policy.maximumPermissions,
-  };
-}
-
-function contextJitter(contextDigest: string, maximum: number): number {
-  const bytes = base64urlDecode(contextDigest);
-  let value = 0n;
-  for (const byte of bytes.slice(0, 8)) value = (value << 8n) | BigInt(byte);
-  return Number(value % BigInt(maximum + 1));
-}
 /** Wire reason a live observation ended. */
 export type LiveEndReasonWire =
   | "complete"

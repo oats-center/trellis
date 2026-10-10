@@ -1950,8 +1950,8 @@ where
                                     };
                                     if !matches!(
                                         caller.principal_kind,
-                                        trellis_protocol::AuthorizationPrincipalKind::Service
-                                            | trellis_protocol::AuthorizationPrincipalKind::Device
+                                        trellis_protocol::PrincipalKind::Service
+                                            | trellis_protocol::PrincipalKind::Device
                                     ) || caller.participant_id != provider_participant_id
                                         || caller.deployment_id.as_deref()
                                             != Some(&update_deployment_id)

@@ -13,30 +13,26 @@ runtimes, including Deno; JSR publication remains supported.
 
 ## Generate And Connect
 
-Administrative Auth callers use generated actions, not handwritten account
-endpoints. `Users.Update` accepts optional `username` for an atomic local-login
-rename, preserving the user ID and password and rejecting username collisions
-without partial profile changes. `Users.PasswordReset.Create` accepts target
-`userId` and returns a time-limited, one-use flow link. `UserIdentities.List`,
-`UserIdentities.Unlink`, and `Users.IdentityLink.Create` accept optional
-`userId`; cross-user actions require platform administration. Identity removal
-retains last-method and protected-account safeguards. `Connections.List`
-supports `principalId`. Declare the required actions in native IDL and use the
-generated participant's exact method names. Capability groups applied to
-`Grants.Set` are one-time presets; the saved grant is an exact permission
-snapshot. Saving that snapshot can initiate resource provisioning; access still
-requires runtime readiness, and read-only resource approval does not grant write
-access.
+Declare whole capabilities in native IDL, not individual RPC/event grants:
+`required capability read;` is required and `capability export;` is optional.
+Generated callers expose the selected actions. Check capability availability
+before invoking an optional capability; selecting it does not mean it was approved.
+Services/devices are deployable participants; apps/agents are application request
+descriptors exported through the generated `apps` namespace.
 
-`Capabilities.List` supports `participantId`, `revision`, and `sourceApi`
-filters. Scope access-editor discovery to the exact participant revision being
-edited; omitting revision selects its current installation, and revision
-requires a participant. Unscoped discovery uses all current installations.
-Entries identify definitions by `sourceApi` and `apiDigest`: identical
-definitions deduplicate, while differing definitions with the same capability
-identity remain distinct. Retained revisions remain queryable explicitly. Expand
-selected capabilities or group presets using the scoped definition before saving
-exact `Grants.Set` permissions; discovery itself confers no authority.
+Administrative Auth callers use generated actions and request their narrow
+ordinary capabilities. Runtime authorization additionally requires the
+applicable finite platform privilege; capability selection never confers it.
+Own-authority/session maintenance uses fixed session rights. Capability discovery
+does not grant authority, and capability groups are not presets expanded into
+saved exact-action grants. API authors set positive `consent_revision` values;
+Auth owns acceptance and action/membership introduction counters.
+
+Retained events require trusted original JetStream publication metadata as well
+as a signed publisher timestamp. Both times must lie within the authority lease,
+and original publication must precede an ordinary revocation cutoff. Read time
+is not publication evidence. Current consumer read authority is separate from
+historical publisher authenticity; service code does not supply its own verifier.
 
 Author native IDL, run `trellis update` after dependency changes, and run
 `trellis generate` after IDL changes. Set `[package]`, `[sources]`, and

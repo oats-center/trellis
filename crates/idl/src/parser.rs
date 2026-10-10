@@ -155,7 +155,11 @@ impl<'a> Parser<'a> {
         self.token(TokenKind::LBrace)?;
         let mut symbols = Vec::new();
         while !self.at(TokenKind::RBrace) {
-            let symbol = self.ident()?;
+            let symbol = if self.at(TokenKind::String) {
+                self.string()?
+            } else {
+                self.ident()?
+            };
             if symbols.contains(&symbol) {
                 return Err(self.error_previous(format!("duplicate enum symbol '{symbol}'")));
             }
@@ -370,6 +374,7 @@ impl<'a> Parser<'a> {
                 title: String::new(),
                 description: String::new(),
                 consequence: String::new(),
+                consent_revision: None,
                 allows: Vec::new(),
                 span: start..start,
             };
@@ -385,6 +390,14 @@ impl<'a> Parser<'a> {
                     "title" => capability.title = self.string_statement()?,
                     "description" => capability.description = self.string_statement()?,
                     "consequence" => capability.consequence = self.string_statement()?,
+                    "consent_revision" => {
+                        let revision = self.integer()?;
+                        if revision == 0 {
+                            return Err(self.error_previous("consent_revision must be positive"));
+                        }
+                        self.token(TokenKind::Semi)?;
+                        capability.consent_revision = Some(revision);
+                    }
                     "allows" => capability.allows = self.selection_block(false)?,
                     other => {
                         return Err(
@@ -421,25 +434,26 @@ impl<'a> Parser<'a> {
                 "implements" => value.implements.push(self.name_statement()?),
                 "use" => {
                     let api = self.name()?;
-                    let mut selections = Vec::new();
+                    let mut required_capabilities = Vec::new();
                     let mut optional_capabilities = Vec::new();
                     if self.eat(TokenKind::Semi) {
                     } else {
                         self.token(TokenKind::LBrace)?;
                         while !self.at(TokenKind::RBrace) {
-                            if self.at_word("optional") {
-                                self.word("optional")?;
-                                self.word("capability")?;
-                                optional_capabilities.push(self.name_statement()?);
+                            let required = self.eat_word("required");
+                            self.word("capability")?;
+                            let name = self.name_statement()?;
+                            if required {
+                                required_capabilities.push(name);
                             } else {
-                                selections.push(self.selection()?);
+                                optional_capabilities.push(name);
                             }
                         }
                         self.token(TokenKind::RBrace)?;
                     }
                     value.uses.push(ApiUse {
                         api,
-                        selections,
+                        required_capabilities,
                         optional_capabilities,
                     });
                 }

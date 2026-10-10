@@ -1,6 +1,6 @@
 //! Generated API `trellis.auth@v1`.
 pub const API_ID: &str = "trellis.auth@v1";
-pub const API_DIGEST: &str = "I0YAEZwVPNZ3iF5qgO6sH3c2d-DpN_TihGTzSBX5npc";
+pub const API_DIGEST: &str = "CF6mJ1tZZXKP6VWFqfKo3ey8wHhhcyNPEFybZ53NFPk";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;
@@ -161,6 +161,757 @@ pub mod errors {
     }
 }
 pub mod rpc {
+    pub type AdmissionRenewInput = crate::__types::trellis::AuthAdmissionRenewRequest;
+    pub type AdmissionRenewOutput = crate::__types::trellis::AuthAdmissionRenewResponse;
+    pub struct AdmissionRenew;
+    impl AdmissionRenew {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Admission.Renew";
+        pub const KEY: &'static str = "auth.Admission.Renew";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Admission.Renew";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum AdmissionRenewError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl AdmissionRenewError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for AdmissionRenew {
+        type Input = AdmissionRenewInput;
+        type Output = AdmissionRenewOutput;
+        type Error = AdmissionRenewError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            AdmissionRenewError::decode(value)
+        }
+    }
+    pub type ApisAcceptInput = crate::__types::trellis::AuthApiAcceptRequest;
+    pub type ApisAcceptOutput = crate::__types::trellis::AuthApiAcceptResponse;
+    pub struct ApisAccept;
+    impl ApisAccept {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Apis.Accept";
+        pub const KEY: &'static str = "auth.Apis.Accept";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Apis.Accept";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::apisAccept",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum ApisAcceptError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl ApisAcceptError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for ApisAccept {
+        type Input = ApisAcceptInput;
+        type Output = ApisAcceptOutput;
+        type Error = ApisAcceptError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            ApisAcceptError::decode(value)
+        }
+    }
+    pub type ApisForceReplaceInput = crate::__types::trellis::AuthApiForceReplaceRequest;
+    pub type ApisForceReplaceOutput = crate::__types::trellis::AuthApiAcceptResponse;
+    pub struct ApisForceReplace;
+    impl ApisForceReplace {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Apis.ForceReplace";
+        pub const KEY: &'static str = "auth.Apis.ForceReplace";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Apis.ForceReplace";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::apisForceReplace",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum ApisForceReplaceError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl ApisForceReplaceError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for ApisForceReplace {
+        type Input = ApisForceReplaceInput;
+        type Output = ApisForceReplaceOutput;
+        type Error = ApisForceReplaceError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            ApisForceReplaceError::decode(value)
+        }
+    }
+    pub type ApisGetInput = crate::__types::trellis::AuthApiGetRequest;
+    pub type ApisGetOutput = crate::__types::trellis::AuthApiGetResponse;
+    pub struct ApisGet;
+    impl ApisGet {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Apis.Get";
+        pub const KEY: &'static str = "auth.Apis.Get";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Apis.Get";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::apisRead",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum ApisGetError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl ApisGetError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for ApisGet {
+        type Input = ApisGetInput;
+        type Output = ApisGetOutput;
+        type Error = ApisGetError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            ApisGetError::decode(value)
+        }
+    }
+    pub type ApisListInput = crate::__types::trellis::AuthPageRequest;
+    pub type ApisListOutput = crate::__types::trellis::AuthApisListResponse;
+    pub struct ApisList;
+    impl ApisList {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Apis.List";
+        pub const KEY: &'static str = "auth.Apis.List";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Apis.List";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::apisRead",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = true;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum ApisListError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl ApisListError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for ApisList {
+        type Input = ApisListInput;
+        type Output = ApisListOutput;
+        type Error = ApisListError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            ApisListError::decode(value)
+        }
+    }
+    pub type ApisReviewInput = crate::__types::trellis::AuthApiReviewRequest;
+    pub type ApisReviewOutput = crate::__types::trellis::AuthApiReviewResponse;
+    pub struct ApisReview;
+    impl ApisReview {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Apis.Review";
+        pub const KEY: &'static str = "auth.Apis.Review";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Apis.Review";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::apisReview",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum ApisReviewError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl ApisReviewError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for ApisReview {
+        type Input = ApisReviewInput;
+        type Output = ApisReviewOutput;
+        type Error = ApisReviewError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            ApisReviewError::decode(value)
+        }
+    }
+    pub type AuthorityRenewInput = crate::__types::trellis::AuthAuthorityRenewRequest;
+    pub type AuthorityRenewOutput = crate::__types::trellis::AuthAuthorityRenewResponse;
+    pub struct AuthorityRenew;
+    impl AuthorityRenew {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Authority.Renew";
+        pub const KEY: &'static str = "auth.Authority.Renew";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Authority.Renew";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum AuthorityRenewError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl AuthorityRenewError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for AuthorityRenew {
+        type Input = AuthorityRenewInput;
+        type Output = AuthorityRenewOutput;
+        type Error = AuthorityRenewError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            AuthorityRenewError::decode(value)
+        }
+    }
+    pub type AuthorityResolveInput = crate::__types::trellis::AuthAuthorityResolveRequest;
+    pub type AuthorityResolveOutput = crate::__types::trellis::AuthAuthorityResolveResponse;
+    pub struct AuthorityResolve;
+    impl AuthorityResolve {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Authority.Resolve";
+        pub const KEY: &'static str = "auth.Authority.Resolve";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Authority.Resolve";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum AuthorityResolveError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl AuthorityResolveError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for AuthorityResolve {
+        type Input = AuthorityResolveInput;
+        type Output = AuthorityResolveOutput;
+        type Error = AuthorityResolveError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            AuthorityResolveError::decode(value)
+        }
+    }
+    pub type AuthorityStatusInput = crate::__types::trellis::AuthAuthorityStatusRequest;
+    pub type AuthorityStatusOutput = crate::__types::trellis::AuthAuthorityStatusResponse;
+    pub struct AuthorityStatus;
+    impl AuthorityStatus {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Authority.Status";
+        pub const KEY: &'static str = "auth.Authority.Status";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Authority.Status";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum AuthorityStatusError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl AuthorityStatusError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for AuthorityStatus {
+        type Input = AuthorityStatusInput;
+        type Output = AuthorityStatusOutput;
+        type Error = AuthorityStatusError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            AuthorityStatusError::decode(value)
+        }
+    }
+    pub type AuthorizationSessionsListInput = crate::__types::trellis::AuthAuthorizationSessionsListRequest;
+    pub type AuthorizationSessionsListOutput = crate::__types::trellis::AuthAuthorizationSessionsListResponse;
+    pub struct AuthorizationSessionsList;
+    impl AuthorizationSessionsList {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.AuthorizationSessions.List";
+        pub const KEY: &'static str = "auth.AuthorizationSessions.List";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.AuthorizationSessions.List";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::authorizationSessionsRead",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = true;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum AuthorizationSessionsListError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl AuthorizationSessionsListError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for AuthorizationSessionsList {
+        type Input = AuthorizationSessionsListInput;
+        type Output = AuthorizationSessionsListOutput;
+        type Error = AuthorizationSessionsListError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            AuthorizationSessionsListError::decode(value)
+        }
+    }
+    pub type AuthorizationSessionsRevokeInput = crate::__types::trellis::AuthAuthorizationSessionRevokeRequest;
+    pub type AuthorizationSessionsRevokeOutput = crate::__types::trellis::AuthAuthorizationSessionRevokeResponse;
+    pub struct AuthorizationSessionsRevoke;
+    impl AuthorizationSessionsRevoke {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.AuthorizationSessions.Revoke";
+        pub const KEY: &'static str = "auth.AuthorizationSessions.Revoke";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.AuthorizationSessions.Revoke";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::authorizationSessionsRevoke",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum AuthorizationSessionsRevokeError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl AuthorizationSessionsRevokeError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for AuthorizationSessionsRevoke {
+        type Input = AuthorizationSessionsRevokeInput;
+        type Output = AuthorizationSessionsRevokeOutput;
+        type Error = AuthorizationSessionsRevokeError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            AuthorizationSessionsRevokeError::decode(value)
+        }
+    }
     pub type CapabilitiesListInput = crate::__types::trellis::AuthCapabilitiesListRequest;
     pub type CapabilitiesListOutput = crate::__types::trellis::AuthCapabilitiesListResponse;
     pub struct CapabilitiesList;
@@ -170,7 +921,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Capabilities.List";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Capabilities.List";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::capabilities_read",
+            "trellis.auth@v1::capabilitiesRead",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -230,16 +981,16 @@ pub mod rpc {
             CapabilitiesListError::decode(value)
         }
     }
-    pub type CapabilityGroupsDeleteInput = crate::__types::trellis::AuthCapabilityGroupsDeleteRequest;
-    pub type CapabilityGroupsDeleteOutput = crate::__types::trellis::AuthCapabilityGroupsDeleteResponse;
-    pub struct CapabilityGroupsDelete;
-    impl CapabilityGroupsDelete {
+    pub type CapabilityGrantsGrantInput = crate::__types::trellis::AuthCapabilityGrantRequest;
+    pub type CapabilityGrantsGrantOutput = crate::__types::trellis::AuthCapabilityGrantResponse;
+    pub struct CapabilityGrantsGrant;
+    impl CapabilityGrantsGrant {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.CapabilityGroups.Delete";
-        pub const KEY: &'static str = "auth.CapabilityGroups.Delete";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.CapabilityGroups.Delete";
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.CapabilityGrants.Grant";
+        pub const KEY: &'static str = "auth.CapabilityGrants.Grant";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.CapabilityGrants.Grant";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::authorities_mutate",
+            "trellis.auth@v1::capabilityGrantsGrant",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -250,12 +1001,12 @@ pub mod rpc {
         pub const CURSOR_PAGINATION: bool = false;
     }
     #[derive(Clone, Debug, PartialEq)]
-    pub enum CapabilityGroupsDeleteError {
+    pub enum CapabilityGrantsGrantError {
         AuthError(super::errors::AuthError),
         UnexpectedError(super::errors::UnexpectedError),
         ValidationError(super::errors::ValidationError),
     }
-    impl CapabilityGroupsDeleteError {
+    impl CapabilityGrantsGrantError {
         pub fn decode(
             value: serde_json::Value,
         ) -> Result<Option<Self>, serde_json::Error> {
@@ -283,10 +1034,10 @@ pub mod rpc {
             }
         }
     }
-    impl trellis_rs::generated::RpcDescriptor for CapabilityGroupsDelete {
-        type Input = CapabilityGroupsDeleteInput;
-        type Output = CapabilityGroupsDeleteOutput;
-        type Error = CapabilityGroupsDeleteError;
+    impl trellis_rs::generated::RpcDescriptor for CapabilityGrantsGrant {
+        type Input = CapabilityGrantsGrantInput;
+        type Output = CapabilityGrantsGrantOutput;
+        type Error = CapabilityGrantsGrantError;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
@@ -296,88 +1047,19 @@ pub mod rpc {
         fn decode_error(
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
-            CapabilityGroupsDeleteError::decode(value)
+            CapabilityGrantsGrantError::decode(value)
         }
     }
-    pub type CapabilityGroupsGetInput = crate::__types::trellis::AuthCapabilityGroupsGetRequest;
-    pub type CapabilityGroupsGetOutput = crate::__types::trellis::AuthCapabilityGroupsGetResponse;
-    pub struct CapabilityGroupsGet;
-    impl CapabilityGroupsGet {
+    pub type CapabilityGrantsListInput = crate::__types::trellis::AuthCapabilityGrantsListRequest;
+    pub type CapabilityGrantsListOutput = crate::__types::trellis::AuthCapabilityGrantsListResponse;
+    pub struct CapabilityGrantsList;
+    impl CapabilityGrantsList {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.CapabilityGroups.Get";
-        pub const KEY: &'static str = "auth.CapabilityGroups.Get";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.CapabilityGroups.Get";
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.CapabilityGrants.List";
+        pub const KEY: &'static str = "auth.CapabilityGrants.List";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.CapabilityGrants.List";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::capabilities_read",
-        ];
-        pub const ERRORS: &'static [&'static str] = &[
-            "trellis.auth@v1::AuthError",
-            "trellis.auth@v1::UnexpectedError",
-            "trellis.auth@v1::ValidationError",
-        ];
-        pub const DOWNLOAD: bool = false;
-        pub const CURSOR_PAGINATION: bool = false;
-    }
-    #[derive(Clone, Debug, PartialEq)]
-    pub enum CapabilityGroupsGetError {
-        AuthError(super::errors::AuthError),
-        UnexpectedError(super::errors::UnexpectedError),
-        ValidationError(super::errors::ValidationError),
-    }
-    impl CapabilityGroupsGetError {
-        pub fn decode(
-            value: serde_json::Value,
-        ) -> Result<Option<Self>, serde_json::Error> {
-            let error_type = value.get("type").and_then(serde_json::Value::as_str);
-            match error_type {
-                Some("trellis.auth@v1::AuthError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::AuthError,
-                    >(value)
-                        .map(|value| value.map(Self::AuthError))
-                }
-                Some("trellis.auth@v1::UnexpectedError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::UnexpectedError,
-                    >(value)
-                        .map(|value| value.map(Self::UnexpectedError))
-                }
-                Some("trellis.auth@v1::ValidationError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::ValidationError,
-                    >(value)
-                        .map(|value| value.map(Self::ValidationError))
-                }
-                _ => Ok(None),
-            }
-        }
-    }
-    impl trellis_rs::generated::RpcDescriptor for CapabilityGroupsGet {
-        type Input = CapabilityGroupsGetInput;
-        type Output = CapabilityGroupsGetOutput;
-        type Error = CapabilityGroupsGetError;
-        const API_ID: &'static str = super::API_ID;
-        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
-        const SUBJECT: &'static str = Self::SUBJECT;
-        const KEY: &'static str = Self::KEY;
-        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
-        const DOWNLOAD: bool = Self::DOWNLOAD;
-        fn decode_error(
-            value: serde_json::Value,
-        ) -> Result<Option<Self::Error>, serde_json::Error> {
-            CapabilityGroupsGetError::decode(value)
-        }
-    }
-    pub type CapabilityGroupsListInput = crate::__types::trellis::AuthCapabilityGroupsListRequest;
-    pub type CapabilityGroupsListOutput = crate::__types::trellis::AuthCapabilityGroupsListResponse;
-    pub struct CapabilityGroupsList;
-    impl CapabilityGroupsList {
-        pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.CapabilityGroups.List";
-        pub const KEY: &'static str = "auth.CapabilityGroups.List";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.CapabilityGroups.List";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::capabilities_read",
+            "trellis.auth@v1::capabilityGrantsRead",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -388,12 +1070,12 @@ pub mod rpc {
         pub const CURSOR_PAGINATION: bool = true;
     }
     #[derive(Clone, Debug, PartialEq)]
-    pub enum CapabilityGroupsListError {
+    pub enum CapabilityGrantsListError {
         AuthError(super::errors::AuthError),
         UnexpectedError(super::errors::UnexpectedError),
         ValidationError(super::errors::ValidationError),
     }
-    impl CapabilityGroupsListError {
+    impl CapabilityGrantsListError {
         pub fn decode(
             value: serde_json::Value,
         ) -> Result<Option<Self>, serde_json::Error> {
@@ -421,10 +1103,10 @@ pub mod rpc {
             }
         }
     }
-    impl trellis_rs::generated::RpcDescriptor for CapabilityGroupsList {
-        type Input = CapabilityGroupsListInput;
-        type Output = CapabilityGroupsListOutput;
-        type Error = CapabilityGroupsListError;
+    impl trellis_rs::generated::RpcDescriptor for CapabilityGrantsList {
+        type Input = CapabilityGrantsListInput;
+        type Output = CapabilityGrantsListOutput;
+        type Error = CapabilityGrantsListError;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
@@ -434,19 +1116,19 @@ pub mod rpc {
         fn decode_error(
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
-            CapabilityGroupsListError::decode(value)
+            CapabilityGrantsListError::decode(value)
         }
     }
-    pub type CapabilityGroupsPutInput = crate::__types::trellis::AuthCapabilityGroupsPutRequest;
-    pub type CapabilityGroupsPutOutput = crate::__types::trellis::AuthCapabilityGroupsPutResponse;
-    pub struct CapabilityGroupsPut;
-    impl CapabilityGroupsPut {
+    pub type CapabilityGrantsRevokeInput = crate::__types::trellis::AuthCapabilityRevokeRequest;
+    pub type CapabilityGrantsRevokeOutput = crate::__types::trellis::AuthMutationResult;
+    pub struct CapabilityGrantsRevoke;
+    impl CapabilityGrantsRevoke {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.CapabilityGroups.Put";
-        pub const KEY: &'static str = "auth.CapabilityGroups.Put";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.CapabilityGroups.Put";
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.CapabilityGrants.Revoke";
+        pub const KEY: &'static str = "auth.CapabilityGrants.Revoke";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.CapabilityGrants.Revoke";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::authorities_mutate",
+            "trellis.auth@v1::capabilityGrantsRevoke",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -457,12 +1139,12 @@ pub mod rpc {
         pub const CURSOR_PAGINATION: bool = false;
     }
     #[derive(Clone, Debug, PartialEq)]
-    pub enum CapabilityGroupsPutError {
+    pub enum CapabilityGrantsRevokeError {
         AuthError(super::errors::AuthError),
         UnexpectedError(super::errors::UnexpectedError),
         ValidationError(super::errors::ValidationError),
     }
-    impl CapabilityGroupsPutError {
+    impl CapabilityGrantsRevokeError {
         pub fn decode(
             value: serde_json::Value,
         ) -> Result<Option<Self>, serde_json::Error> {
@@ -490,10 +1172,10 @@ pub mod rpc {
             }
         }
     }
-    impl trellis_rs::generated::RpcDescriptor for CapabilityGroupsPut {
-        type Input = CapabilityGroupsPutInput;
-        type Output = CapabilityGroupsPutOutput;
-        type Error = CapabilityGroupsPutError;
+    impl trellis_rs::generated::RpcDescriptor for CapabilityGrantsRevoke {
+        type Input = CapabilityGrantsRevokeInput;
+        type Output = CapabilityGrantsRevokeOutput;
+        type Error = CapabilityGrantsRevokeError;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
@@ -503,7 +1185,7 @@ pub mod rpc {
         fn decode_error(
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
-            CapabilityGroupsPutError::decode(value)
+            CapabilityGrantsRevokeError::decode(value)
         }
     }
     pub type ConnectionsKickInput = crate::__types::trellis::AuthConnectionsKickRequest;
@@ -515,7 +1197,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Connections.Kick";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Connections.Kick";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::connections_kick",
+            "trellis.auth@v1::connectionsKick",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -584,7 +1266,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Connections.List";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Connections.List";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::connections_read",
+            "trellis.auth@v1::connectionsRead",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -644,8 +1326,215 @@ pub mod rpc {
             ConnectionsListError::decode(value)
         }
     }
-    pub type DeploymentsApplyInput = crate::__types::trellis::AuthDeploymentsApplyRequest;
-    pub type DeploymentsApplyOutput = crate::__types::trellis::AuthDeploymentsApplyResponse;
+    pub type DelegationsListInput = crate::__types::trellis::AuthDelegationsListRequest;
+    pub type DelegationsListOutput = crate::__types::trellis::AuthDelegationsListResponse;
+    pub struct DelegationsList;
+    impl DelegationsList {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Delegations.List";
+        pub const KEY: &'static str = "auth.Delegations.List";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Delegations.List";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::delegationsRead",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = true;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum DelegationsListError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl DelegationsListError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for DelegationsList {
+        type Input = DelegationsListInput;
+        type Output = DelegationsListOutput;
+        type Error = DelegationsListError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            DelegationsListError::decode(value)
+        }
+    }
+    pub type DelegationsReviewInput = crate::__types::trellis::AuthDelegationReviewRequest;
+    pub type DelegationsReviewOutput = crate::__types::trellis::AuthDelegationReviewResponse;
+    pub struct DelegationsReview;
+    impl DelegationsReview {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Delegations.Review";
+        pub const KEY: &'static str = "auth.Delegations.Review";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Delegations.Review";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::delegationsRead",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum DelegationsReviewError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl DelegationsReviewError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for DelegationsReview {
+        type Input = DelegationsReviewInput;
+        type Output = DelegationsReviewOutput;
+        type Error = DelegationsReviewError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            DelegationsReviewError::decode(value)
+        }
+    }
+    pub type DelegationsRevokeInput = crate::__types::trellis::AuthDelegationRevokeRequest;
+    pub type DelegationsRevokeOutput = crate::__types::trellis::AuthMutationResult;
+    pub struct DelegationsRevoke;
+    impl DelegationsRevoke {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Delegations.Revoke";
+        pub const KEY: &'static str = "auth.Delegations.Revoke";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Delegations.Revoke";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::delegationsRevoke",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum DelegationsRevokeError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl DelegationsRevokeError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for DelegationsRevoke {
+        type Input = DelegationsRevokeInput;
+        type Output = DelegationsRevokeOutput;
+        type Error = DelegationsRevokeError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            DelegationsRevokeError::decode(value)
+        }
+    }
+    pub type DeploymentsApplyInput = crate::__types::trellis::AuthDeploymentApplyRequest;
+    pub type DeploymentsApplyOutput = crate::__types::trellis::AuthDeploymentMutationResponse;
     pub struct DeploymentsApply;
     impl DeploymentsApply {
         pub const API_ID: &'static str = super::API_ID;
@@ -653,7 +1542,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Deployments.Apply";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Deployments.Apply";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::authorities_mutate",
+            "trellis.auth@v1::deploymentsApply",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -713,8 +1602,8 @@ pub mod rpc {
             DeploymentsApplyError::decode(value)
         }
     }
-    pub type DeploymentsCreateInput = crate::__types::trellis::AuthDeploymentsCreateRequest;
-    pub type DeploymentsCreateOutput = crate::__types::trellis::AuthDeploymentsCreateResponse;
+    pub type DeploymentsCreateInput = crate::__types::trellis::AuthDeploymentCreateRequest;
+    pub type DeploymentsCreateOutput = crate::__types::trellis::AuthDeploymentMutationResponse;
     pub struct DeploymentsCreate;
     impl DeploymentsCreate {
         pub const API_ID: &'static str = super::API_ID;
@@ -722,7 +1611,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Deployments.Create";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Deployments.Create";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::deployments_mutate",
+            "trellis.auth@v1::deploymentsCreate",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -782,8 +1671,8 @@ pub mod rpc {
             DeploymentsCreateError::decode(value)
         }
     }
-    pub type DeploymentsDisableInput = crate::__types::trellis::AuthDeploymentsDisableRequest;
-    pub type DeploymentsDisableOutput = crate::__types::trellis::AuthDeploymentsDisableResponse;
+    pub type DeploymentsDisableInput = crate::__types::trellis::AuthDeploymentMutationRequest;
+    pub type DeploymentsDisableOutput = crate::__types::trellis::AuthDeploymentMutationResponse;
     pub struct DeploymentsDisable;
     impl DeploymentsDisable {
         pub const API_ID: &'static str = super::API_ID;
@@ -791,7 +1680,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Deployments.Disable";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Deployments.Disable";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::deployments_mutate",
+            "trellis.auth@v1::deploymentsDisable",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -851,8 +1740,8 @@ pub mod rpc {
             DeploymentsDisableError::decode(value)
         }
     }
-    pub type DeploymentsEnableInput = crate::__types::trellis::AuthDeploymentsEnableRequest;
-    pub type DeploymentsEnableOutput = crate::__types::trellis::AuthDeploymentsEnableResponse;
+    pub type DeploymentsEnableInput = crate::__types::trellis::AuthDeploymentMutationRequest;
+    pub type DeploymentsEnableOutput = crate::__types::trellis::AuthDeploymentMutationResponse;
     pub struct DeploymentsEnable;
     impl DeploymentsEnable {
         pub const API_ID: &'static str = super::API_ID;
@@ -860,7 +1749,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Deployments.Enable";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Deployments.Enable";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::deployments_mutate",
+            "trellis.auth@v1::deploymentsEnable",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -920,8 +1809,8 @@ pub mod rpc {
             DeploymentsEnableError::decode(value)
         }
     }
-    pub type DeploymentsGetInput = crate::__types::trellis::AuthDeploymentsGetRequest;
-    pub type DeploymentsGetOutput = crate::__types::trellis::AuthDeploymentsGetResponse;
+    pub type DeploymentsGetInput = crate::__types::trellis::AuthDeploymentGetRequest;
+    pub type DeploymentsGetOutput = crate::__types::trellis::AuthDeploymentGetResponse;
     pub struct DeploymentsGet;
     impl DeploymentsGet {
         pub const API_ID: &'static str = super::API_ID;
@@ -929,7 +1818,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Deployments.Get";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Deployments.Get";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::deployments_read",
+            "trellis.auth@v1::deploymentsRead",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -989,7 +1878,7 @@ pub mod rpc {
             DeploymentsGetError::decode(value)
         }
     }
-    pub type DeploymentsListInput = crate::__types::trellis::AuthDeploymentsListRequest;
+    pub type DeploymentsListInput = crate::__types::trellis::AuthPageRequest;
     pub type DeploymentsListOutput = crate::__types::trellis::AuthDeploymentsListResponse;
     pub struct DeploymentsList;
     impl DeploymentsList {
@@ -998,7 +1887,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Deployments.List";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Deployments.List";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::deployments_read",
+            "trellis.auth@v1::deploymentsRead",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -1058,8 +1947,8 @@ pub mod rpc {
             DeploymentsListError::decode(value)
         }
     }
-    pub type DeploymentsRemoveInput = crate::__types::trellis::AuthDeploymentsRemoveRequest;
-    pub type DeploymentsRemoveOutput = crate::__types::trellis::AuthDeploymentsRemoveResponse;
+    pub type DeploymentsRemoveInput = crate::__types::trellis::AuthDeploymentMutationRequest;
+    pub type DeploymentsRemoveOutput = crate::__types::trellis::AuthDeploymentMutationResponse;
     pub struct DeploymentsRemove;
     impl DeploymentsRemove {
         pub const API_ID: &'static str = super::API_ID;
@@ -1067,7 +1956,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Deployments.Remove";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Deployments.Remove";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::deployments_mutate",
+            "trellis.auth@v1::deploymentsRemove",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -1127,284 +2016,8 @@ pub mod rpc {
             DeploymentsRemoveError::decode(value)
         }
     }
-    pub type DeviceUserAuthoritiesListInput = crate::__types::trellis::AuthDeviceUserAuthoritiesListRequest;
-    pub type DeviceUserAuthoritiesListOutput = crate::__types::trellis::AuthDeviceUserAuthoritiesListResponse;
-    pub struct DeviceUserAuthoritiesList;
-    impl DeviceUserAuthoritiesList {
-        pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.DeviceUserAuthorities.List";
-        pub const KEY: &'static str = "auth.DeviceUserAuthorities.List";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.DeviceUserAuthorities.List";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::devices_read",
-        ];
-        pub const ERRORS: &'static [&'static str] = &[
-            "trellis.auth@v1::AuthError",
-            "trellis.auth@v1::UnexpectedError",
-            "trellis.auth@v1::ValidationError",
-        ];
-        pub const DOWNLOAD: bool = false;
-        pub const CURSOR_PAGINATION: bool = true;
-    }
-    #[derive(Clone, Debug, PartialEq)]
-    pub enum DeviceUserAuthoritiesListError {
-        AuthError(super::errors::AuthError),
-        UnexpectedError(super::errors::UnexpectedError),
-        ValidationError(super::errors::ValidationError),
-    }
-    impl DeviceUserAuthoritiesListError {
-        pub fn decode(
-            value: serde_json::Value,
-        ) -> Result<Option<Self>, serde_json::Error> {
-            let error_type = value.get("type").and_then(serde_json::Value::as_str);
-            match error_type {
-                Some("trellis.auth@v1::AuthError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::AuthError,
-                    >(value)
-                        .map(|value| value.map(Self::AuthError))
-                }
-                Some("trellis.auth@v1::UnexpectedError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::UnexpectedError,
-                    >(value)
-                        .map(|value| value.map(Self::UnexpectedError))
-                }
-                Some("trellis.auth@v1::ValidationError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::ValidationError,
-                    >(value)
-                        .map(|value| value.map(Self::ValidationError))
-                }
-                _ => Ok(None),
-            }
-        }
-    }
-    impl trellis_rs::generated::RpcDescriptor for DeviceUserAuthoritiesList {
-        type Input = DeviceUserAuthoritiesListInput;
-        type Output = DeviceUserAuthoritiesListOutput;
-        type Error = DeviceUserAuthoritiesListError;
-        const API_ID: &'static str = super::API_ID;
-        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
-        const SUBJECT: &'static str = Self::SUBJECT;
-        const KEY: &'static str = Self::KEY;
-        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
-        const DOWNLOAD: bool = Self::DOWNLOAD;
-        fn decode_error(
-            value: serde_json::Value,
-        ) -> Result<Option<Self::Error>, serde_json::Error> {
-            DeviceUserAuthoritiesListError::decode(value)
-        }
-    }
-    pub type DeviceUserAuthoritiesReviewsDecideInput = crate::__types::trellis::AuthDeviceUserAuthoritiesReviewsDecideRequest;
-    pub type DeviceUserAuthoritiesReviewsDecideOutput = crate::__types::trellis::AuthDeviceUserAuthoritiesReviewsDecideResponse;
-    pub struct DeviceUserAuthoritiesReviewsDecide;
-    impl DeviceUserAuthoritiesReviewsDecide {
-        pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.DeviceUserAuthorities.Reviews.Decide";
-        pub const KEY: &'static str = "auth.DeviceUserAuthorities.Reviews.Decide";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.DeviceUserAuthorities.Reviews.Decide";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::devices_review",
-        ];
-        pub const ERRORS: &'static [&'static str] = &[
-            "trellis.auth@v1::AuthError",
-            "trellis.auth@v1::UnexpectedError",
-            "trellis.auth@v1::ValidationError",
-        ];
-        pub const DOWNLOAD: bool = false;
-        pub const CURSOR_PAGINATION: bool = false;
-    }
-    #[derive(Clone, Debug, PartialEq)]
-    pub enum DeviceUserAuthoritiesReviewsDecideError {
-        AuthError(super::errors::AuthError),
-        UnexpectedError(super::errors::UnexpectedError),
-        ValidationError(super::errors::ValidationError),
-    }
-    impl DeviceUserAuthoritiesReviewsDecideError {
-        pub fn decode(
-            value: serde_json::Value,
-        ) -> Result<Option<Self>, serde_json::Error> {
-            let error_type = value.get("type").and_then(serde_json::Value::as_str);
-            match error_type {
-                Some("trellis.auth@v1::AuthError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::AuthError,
-                    >(value)
-                        .map(|value| value.map(Self::AuthError))
-                }
-                Some("trellis.auth@v1::UnexpectedError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::UnexpectedError,
-                    >(value)
-                        .map(|value| value.map(Self::UnexpectedError))
-                }
-                Some("trellis.auth@v1::ValidationError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::ValidationError,
-                    >(value)
-                        .map(|value| value.map(Self::ValidationError))
-                }
-                _ => Ok(None),
-            }
-        }
-    }
-    impl trellis_rs::generated::RpcDescriptor for DeviceUserAuthoritiesReviewsDecide {
-        type Input = DeviceUserAuthoritiesReviewsDecideInput;
-        type Output = DeviceUserAuthoritiesReviewsDecideOutput;
-        type Error = DeviceUserAuthoritiesReviewsDecideError;
-        const API_ID: &'static str = super::API_ID;
-        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
-        const SUBJECT: &'static str = Self::SUBJECT;
-        const KEY: &'static str = Self::KEY;
-        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
-        const DOWNLOAD: bool = Self::DOWNLOAD;
-        fn decode_error(
-            value: serde_json::Value,
-        ) -> Result<Option<Self::Error>, serde_json::Error> {
-            DeviceUserAuthoritiesReviewsDecideError::decode(value)
-        }
-    }
-    pub type DeviceUserAuthoritiesReviewsListInput = crate::__types::trellis::AuthDeviceUserAuthoritiesReviewsListRequest;
-    pub type DeviceUserAuthoritiesReviewsListOutput = crate::__types::trellis::AuthDeviceUserAuthoritiesReviewsListResponse;
-    pub struct DeviceUserAuthoritiesReviewsList;
-    impl DeviceUserAuthoritiesReviewsList {
-        pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.DeviceUserAuthorities.Reviews.List";
-        pub const KEY: &'static str = "auth.DeviceUserAuthorities.Reviews.List";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.DeviceUserAuthorities.Reviews.List";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::devices_review",
-        ];
-        pub const ERRORS: &'static [&'static str] = &[
-            "trellis.auth@v1::AuthError",
-            "trellis.auth@v1::UnexpectedError",
-            "trellis.auth@v1::ValidationError",
-        ];
-        pub const DOWNLOAD: bool = false;
-        pub const CURSOR_PAGINATION: bool = true;
-    }
-    #[derive(Clone, Debug, PartialEq)]
-    pub enum DeviceUserAuthoritiesReviewsListError {
-        AuthError(super::errors::AuthError),
-        UnexpectedError(super::errors::UnexpectedError),
-        ValidationError(super::errors::ValidationError),
-    }
-    impl DeviceUserAuthoritiesReviewsListError {
-        pub fn decode(
-            value: serde_json::Value,
-        ) -> Result<Option<Self>, serde_json::Error> {
-            let error_type = value.get("type").and_then(serde_json::Value::as_str);
-            match error_type {
-                Some("trellis.auth@v1::AuthError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::AuthError,
-                    >(value)
-                        .map(|value| value.map(Self::AuthError))
-                }
-                Some("trellis.auth@v1::UnexpectedError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::UnexpectedError,
-                    >(value)
-                        .map(|value| value.map(Self::UnexpectedError))
-                }
-                Some("trellis.auth@v1::ValidationError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::ValidationError,
-                    >(value)
-                        .map(|value| value.map(Self::ValidationError))
-                }
-                _ => Ok(None),
-            }
-        }
-    }
-    impl trellis_rs::generated::RpcDescriptor for DeviceUserAuthoritiesReviewsList {
-        type Input = DeviceUserAuthoritiesReviewsListInput;
-        type Output = DeviceUserAuthoritiesReviewsListOutput;
-        type Error = DeviceUserAuthoritiesReviewsListError;
-        const API_ID: &'static str = super::API_ID;
-        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
-        const SUBJECT: &'static str = Self::SUBJECT;
-        const KEY: &'static str = Self::KEY;
-        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
-        const DOWNLOAD: bool = Self::DOWNLOAD;
-        fn decode_error(
-            value: serde_json::Value,
-        ) -> Result<Option<Self::Error>, serde_json::Error> {
-            DeviceUserAuthoritiesReviewsListError::decode(value)
-        }
-    }
-    pub type DeviceUserAuthoritiesRevokeInput = crate::__types::trellis::AuthDeviceUserAuthoritiesRevokeRequest;
-    pub type DeviceUserAuthoritiesRevokeOutput = crate::__types::trellis::AuthDeviceUserAuthoritiesRevokeResponse;
-    pub struct DeviceUserAuthoritiesRevoke;
-    impl DeviceUserAuthoritiesRevoke {
-        pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.DeviceUserAuthorities.Revoke";
-        pub const KEY: &'static str = "auth.DeviceUserAuthorities.Revoke";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.DeviceUserAuthorities.Revoke";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::devices_mutate",
-        ];
-        pub const ERRORS: &'static [&'static str] = &[
-            "trellis.auth@v1::AuthError",
-            "trellis.auth@v1::UnexpectedError",
-            "trellis.auth@v1::ValidationError",
-        ];
-        pub const DOWNLOAD: bool = false;
-        pub const CURSOR_PAGINATION: bool = false;
-    }
-    #[derive(Clone, Debug, PartialEq)]
-    pub enum DeviceUserAuthoritiesRevokeError {
-        AuthError(super::errors::AuthError),
-        UnexpectedError(super::errors::UnexpectedError),
-        ValidationError(super::errors::ValidationError),
-    }
-    impl DeviceUserAuthoritiesRevokeError {
-        pub fn decode(
-            value: serde_json::Value,
-        ) -> Result<Option<Self>, serde_json::Error> {
-            let error_type = value.get("type").and_then(serde_json::Value::as_str);
-            match error_type {
-                Some("trellis.auth@v1::AuthError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::AuthError,
-                    >(value)
-                        .map(|value| value.map(Self::AuthError))
-                }
-                Some("trellis.auth@v1::UnexpectedError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::UnexpectedError,
-                    >(value)
-                        .map(|value| value.map(Self::UnexpectedError))
-                }
-                Some("trellis.auth@v1::ValidationError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::ValidationError,
-                    >(value)
-                        .map(|value| value.map(Self::ValidationError))
-                }
-                _ => Ok(None),
-            }
-        }
-    }
-    impl trellis_rs::generated::RpcDescriptor for DeviceUserAuthoritiesRevoke {
-        type Input = DeviceUserAuthoritiesRevokeInput;
-        type Output = DeviceUserAuthoritiesRevokeOutput;
-        type Error = DeviceUserAuthoritiesRevokeError;
-        const API_ID: &'static str = super::API_ID;
-        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
-        const SUBJECT: &'static str = Self::SUBJECT;
-        const KEY: &'static str = Self::KEY;
-        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
-        const DOWNLOAD: bool = Self::DOWNLOAD;
-        fn decode_error(
-            value: serde_json::Value,
-        ) -> Result<Option<Self::Error>, serde_json::Error> {
-            DeviceUserAuthoritiesRevokeError::decode(value)
-        }
-    }
-    pub type DevicesDisableInput = crate::__types::trellis::AuthDevicesDisableRequest;
-    pub type DevicesDisableOutput = crate::__types::trellis::AuthDevicesDisableResponse;
+    pub type DevicesDisableInput = crate::__types::trellis::AuthInstanceMutationRequest;
+    pub type DevicesDisableOutput = crate::__types::trellis::AuthInstanceMutationResponse;
     pub struct DevicesDisable;
     impl DevicesDisable {
         pub const API_ID: &'static str = super::API_ID;
@@ -1412,7 +2025,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Devices.Disable";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Devices.Disable";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::devices_mutate",
+            "trellis.auth@v1::devicesDisable",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -1472,8 +2085,8 @@ pub mod rpc {
             DevicesDisableError::decode(value)
         }
     }
-    pub type DevicesEnableInput = crate::__types::trellis::AuthDevicesEnableRequest;
-    pub type DevicesEnableOutput = crate::__types::trellis::AuthDevicesEnableResponse;
+    pub type DevicesEnableInput = crate::__types::trellis::AuthInstanceMutationRequest;
+    pub type DevicesEnableOutput = crate::__types::trellis::AuthInstanceMutationResponse;
     pub struct DevicesEnable;
     impl DevicesEnable {
         pub const API_ID: &'static str = super::API_ID;
@@ -1481,7 +2094,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Devices.Enable";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Devices.Enable";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::devices_mutate",
+            "trellis.auth@v1::devicesEnable",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -1541,8 +2154,8 @@ pub mod rpc {
             DevicesEnableError::decode(value)
         }
     }
-    pub type DevicesListInput = crate::__types::trellis::AuthDevicesListRequest;
-    pub type DevicesListOutput = crate::__types::trellis::AuthDevicesListResponse;
+    pub type DevicesListInput = crate::__types::trellis::AuthInstancesListRequest;
+    pub type DevicesListOutput = crate::__types::trellis::AuthInstancesListResponse;
     pub struct DevicesList;
     impl DevicesList {
         pub const API_ID: &'static str = super::API_ID;
@@ -1550,7 +2163,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Devices.List";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Devices.List";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::devices_read",
+            "trellis.auth@v1::devicesRead",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -1610,8 +2223,8 @@ pub mod rpc {
             DevicesListError::decode(value)
         }
     }
-    pub type DevicesProvisionInput = crate::__types::trellis::AuthDevicesProvisionRequest;
-    pub type DevicesProvisionOutput = crate::__types::trellis::AuthDevicesProvisionResponse;
+    pub type DevicesProvisionInput = crate::__types::trellis::AuthInstanceProvisionRequest;
+    pub type DevicesProvisionOutput = crate::__types::trellis::AuthInstanceProvisionResponse;
     pub struct DevicesProvision;
     impl DevicesProvision {
         pub const API_ID: &'static str = super::API_ID;
@@ -1619,7 +2232,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Devices.Provision";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Devices.Provision";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::devices_mutate",
+            "trellis.auth@v1::devicesProvision",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -1679,8 +2292,8 @@ pub mod rpc {
             DevicesProvisionError::decode(value)
         }
     }
-    pub type DevicesRemoveInput = crate::__types::trellis::AuthDevicesRemoveRequest;
-    pub type DevicesRemoveOutput = crate::__types::trellis::AuthDevicesRemoveResponse;
+    pub type DevicesRemoveInput = crate::__types::trellis::AuthInstanceMutationRequest;
+    pub type DevicesRemoveOutput = crate::__types::trellis::AuthInstanceMutationResponse;
     pub struct DevicesRemove;
     impl DevicesRemove {
         pub const API_ID: &'static str = super::API_ID;
@@ -1688,7 +2301,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Devices.Remove";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Devices.Remove";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::devices_mutate",
+            "trellis.auth@v1::devicesRemove",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -1748,17 +2361,15 @@ pub mod rpc {
             DevicesRemoveError::decode(value)
         }
     }
-    pub type GrantsGetInput = crate::__types::trellis::AuthGrantsGetRequest;
-    pub type GrantsGetOutput = crate::__types::trellis::AuthGrantsGetResponse;
-    pub struct GrantsGet;
-    impl GrantsGet {
+    pub type IssuersResolveChainInput = crate::__types::trellis::AuthIssuerChainRequest;
+    pub type IssuersResolveChainOutput = crate::__types::trellis::AuthIssuerChainResponse;
+    pub struct IssuersResolveChain;
+    impl IssuersResolveChain {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.Grants.Get";
-        pub const KEY: &'static str = "auth.Grants.Get";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.Grants.Get";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::authorities_read",
-        ];
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Issuers.ResolveChain";
+        pub const KEY: &'static str = "auth.Issuers.ResolveChain";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Issuers.ResolveChain";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
             "trellis.auth@v1::UnexpectedError",
@@ -1768,12 +2379,12 @@ pub mod rpc {
         pub const CURSOR_PAGINATION: bool = false;
     }
     #[derive(Clone, Debug, PartialEq)]
-    pub enum GrantsGetError {
+    pub enum IssuersResolveChainError {
         AuthError(super::errors::AuthError),
         UnexpectedError(super::errors::UnexpectedError),
         ValidationError(super::errors::ValidationError),
     }
-    impl GrantsGetError {
+    impl IssuersResolveChainError {
         pub fn decode(
             value: serde_json::Value,
         ) -> Result<Option<Self>, serde_json::Error> {
@@ -1801,10 +2412,10 @@ pub mod rpc {
             }
         }
     }
-    impl trellis_rs::generated::RpcDescriptor for GrantsGet {
-        type Input = GrantsGetInput;
-        type Output = GrantsGetOutput;
-        type Error = GrantsGetError;
+    impl trellis_rs::generated::RpcDescriptor for IssuersResolveChain {
+        type Input = IssuersResolveChainInput;
+        type Output = IssuersResolveChainOutput;
+        type Error = IssuersResolveChainError;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
@@ -1814,218 +2425,11 @@ pub mod rpc {
         fn decode_error(
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
-            GrantsGetError::decode(value)
+            IssuersResolveChainError::decode(value)
         }
     }
-    pub type GrantsListInput = crate::__types::trellis::AuthGrantsListRequest;
-    pub type GrantsListOutput = crate::__types::trellis::AuthGrantsListResponse;
-    pub struct GrantsList;
-    impl GrantsList {
-        pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.Grants.List";
-        pub const KEY: &'static str = "auth.Grants.List";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.Grants.List";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::authorities_read",
-        ];
-        pub const ERRORS: &'static [&'static str] = &[
-            "trellis.auth@v1::AuthError",
-            "trellis.auth@v1::UnexpectedError",
-            "trellis.auth@v1::ValidationError",
-        ];
-        pub const DOWNLOAD: bool = false;
-        pub const CURSOR_PAGINATION: bool = true;
-    }
-    #[derive(Clone, Debug, PartialEq)]
-    pub enum GrantsListError {
-        AuthError(super::errors::AuthError),
-        UnexpectedError(super::errors::UnexpectedError),
-        ValidationError(super::errors::ValidationError),
-    }
-    impl GrantsListError {
-        pub fn decode(
-            value: serde_json::Value,
-        ) -> Result<Option<Self>, serde_json::Error> {
-            let error_type = value.get("type").and_then(serde_json::Value::as_str);
-            match error_type {
-                Some("trellis.auth@v1::AuthError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::AuthError,
-                    >(value)
-                        .map(|value| value.map(Self::AuthError))
-                }
-                Some("trellis.auth@v1::UnexpectedError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::UnexpectedError,
-                    >(value)
-                        .map(|value| value.map(Self::UnexpectedError))
-                }
-                Some("trellis.auth@v1::ValidationError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::ValidationError,
-                    >(value)
-                        .map(|value| value.map(Self::ValidationError))
-                }
-                _ => Ok(None),
-            }
-        }
-    }
-    impl trellis_rs::generated::RpcDescriptor for GrantsList {
-        type Input = GrantsListInput;
-        type Output = GrantsListOutput;
-        type Error = GrantsListError;
-        const API_ID: &'static str = super::API_ID;
-        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
-        const SUBJECT: &'static str = Self::SUBJECT;
-        const KEY: &'static str = Self::KEY;
-        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
-        const DOWNLOAD: bool = Self::DOWNLOAD;
-        fn decode_error(
-            value: serde_json::Value,
-        ) -> Result<Option<Self::Error>, serde_json::Error> {
-            GrantsListError::decode(value)
-        }
-    }
-    pub type GrantsRevokeInput = crate::__types::trellis::AuthGrantsRevokeRequest;
-    pub type GrantsRevokeOutput = crate::__types::trellis::AuthGrantsMutationResponse;
-    pub struct GrantsRevoke;
-    impl GrantsRevoke {
-        pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.Grants.Revoke";
-        pub const KEY: &'static str = "auth.Grants.Revoke";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.Grants.Revoke";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::authorities_mutate",
-        ];
-        pub const ERRORS: &'static [&'static str] = &[
-            "trellis.auth@v1::AuthError",
-            "trellis.auth@v1::UnexpectedError",
-            "trellis.auth@v1::ValidationError",
-        ];
-        pub const DOWNLOAD: bool = false;
-        pub const CURSOR_PAGINATION: bool = false;
-    }
-    #[derive(Clone, Debug, PartialEq)]
-    pub enum GrantsRevokeError {
-        AuthError(super::errors::AuthError),
-        UnexpectedError(super::errors::UnexpectedError),
-        ValidationError(super::errors::ValidationError),
-    }
-    impl GrantsRevokeError {
-        pub fn decode(
-            value: serde_json::Value,
-        ) -> Result<Option<Self>, serde_json::Error> {
-            let error_type = value.get("type").and_then(serde_json::Value::as_str);
-            match error_type {
-                Some("trellis.auth@v1::AuthError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::AuthError,
-                    >(value)
-                        .map(|value| value.map(Self::AuthError))
-                }
-                Some("trellis.auth@v1::UnexpectedError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::UnexpectedError,
-                    >(value)
-                        .map(|value| value.map(Self::UnexpectedError))
-                }
-                Some("trellis.auth@v1::ValidationError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::ValidationError,
-                    >(value)
-                        .map(|value| value.map(Self::ValidationError))
-                }
-                _ => Ok(None),
-            }
-        }
-    }
-    impl trellis_rs::generated::RpcDescriptor for GrantsRevoke {
-        type Input = GrantsRevokeInput;
-        type Output = GrantsRevokeOutput;
-        type Error = GrantsRevokeError;
-        const API_ID: &'static str = super::API_ID;
-        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
-        const SUBJECT: &'static str = Self::SUBJECT;
-        const KEY: &'static str = Self::KEY;
-        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
-        const DOWNLOAD: bool = Self::DOWNLOAD;
-        fn decode_error(
-            value: serde_json::Value,
-        ) -> Result<Option<Self::Error>, serde_json::Error> {
-            GrantsRevokeError::decode(value)
-        }
-    }
-    pub type GrantsSetInput = crate::__types::trellis::AuthGrantsSetRequest;
-    pub type GrantsSetOutput = crate::__types::trellis::AuthGrantsMutationResponse;
-    pub struct GrantsSet;
-    impl GrantsSet {
-        pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.Grants.Set";
-        pub const KEY: &'static str = "auth.Grants.Set";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.Grants.Set";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::authorities_mutate",
-        ];
-        pub const ERRORS: &'static [&'static str] = &[
-            "trellis.auth@v1::AuthError",
-            "trellis.auth@v1::UnexpectedError",
-            "trellis.auth@v1::ValidationError",
-        ];
-        pub const DOWNLOAD: bool = false;
-        pub const CURSOR_PAGINATION: bool = false;
-    }
-    #[derive(Clone, Debug, PartialEq)]
-    pub enum GrantsSetError {
-        AuthError(super::errors::AuthError),
-        UnexpectedError(super::errors::UnexpectedError),
-        ValidationError(super::errors::ValidationError),
-    }
-    impl GrantsSetError {
-        pub fn decode(
-            value: serde_json::Value,
-        ) -> Result<Option<Self>, serde_json::Error> {
-            let error_type = value.get("type").and_then(serde_json::Value::as_str);
-            match error_type {
-                Some("trellis.auth@v1::AuthError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::AuthError,
-                    >(value)
-                        .map(|value| value.map(Self::AuthError))
-                }
-                Some("trellis.auth@v1::UnexpectedError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::UnexpectedError,
-                    >(value)
-                        .map(|value| value.map(Self::UnexpectedError))
-                }
-                Some("trellis.auth@v1::ValidationError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::ValidationError,
-                    >(value)
-                        .map(|value| value.map(Self::ValidationError))
-                }
-                _ => Ok(None),
-            }
-        }
-    }
-    impl trellis_rs::generated::RpcDescriptor for GrantsSet {
-        type Input = GrantsSetInput;
-        type Output = GrantsSetOutput;
-        type Error = GrantsSetError;
-        const API_ID: &'static str = super::API_ID;
-        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
-        const SUBJECT: &'static str = Self::SUBJECT;
-        const KEY: &'static str = Self::KEY;
-        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
-        const DOWNLOAD: bool = Self::DOWNLOAD;
-        fn decode_error(
-            value: serde_json::Value,
-        ) -> Result<Option<Self::Error>, serde_json::Error> {
-            GrantsSetError::decode(value)
-        }
-    }
-    pub type IssuersRevokeInput = crate::__types::trellis::AuthIssuersRevokeRequest;
-    pub type IssuersRevokeOutput = crate::__types::trellis::AuthIssuersRevokeResponse;
+    pub type IssuersRevokeInput = crate::__types::trellis::AuthIssuerRevokeRequest;
+    pub type IssuersRevokeOutput = crate::__types::trellis::AuthIssuerRevokeResponse;
     pub struct IssuersRevoke;
     impl IssuersRevoke {
         pub const API_ID: &'static str = super::API_ID;
@@ -2033,7 +2437,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Issuers.Revoke";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Issuers.Revoke";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::authorities_mutate",
+            "trellis.auth@v1::issuersRevoke",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -2093,16 +2497,16 @@ pub mod rpc {
             IssuersRevokeError::decode(value)
         }
     }
-    pub type ParticipantsGetInput = crate::__types::trellis::AuthParticipantsGetRequest;
-    pub type ParticipantsGetOutput = crate::__types::trellis::AuthParticipantsGetResponse;
-    pub struct ParticipantsGet;
-    impl ParticipantsGet {
+    pub type IssuersRotateInput = crate::__types::trellis::AuthIssuerRotateRequest;
+    pub type IssuersRotateOutput = crate::__types::trellis::AuthIssuerRotateResponse;
+    pub struct IssuersRotate;
+    impl IssuersRotate {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.Participants.Get";
-        pub const KEY: &'static str = "auth.Participants.Get";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.Participants.Get";
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Issuers.Rotate";
+        pub const KEY: &'static str = "auth.Issuers.Rotate";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Issuers.Rotate";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::authorities_read",
+            "trellis.auth@v1::issuersRotate",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -2113,12 +2517,12 @@ pub mod rpc {
         pub const CURSOR_PAGINATION: bool = false;
     }
     #[derive(Clone, Debug, PartialEq)]
-    pub enum ParticipantsGetError {
+    pub enum IssuersRotateError {
         AuthError(super::errors::AuthError),
         UnexpectedError(super::errors::UnexpectedError),
         ValidationError(super::errors::ValidationError),
     }
-    impl ParticipantsGetError {
+    impl IssuersRotateError {
         pub fn decode(
             value: serde_json::Value,
         ) -> Result<Option<Self>, serde_json::Error> {
@@ -2146,10 +2550,10 @@ pub mod rpc {
             }
         }
     }
-    impl trellis_rs::generated::RpcDescriptor for ParticipantsGet {
-        type Input = ParticipantsGetInput;
-        type Output = ParticipantsGetOutput;
-        type Error = ParticipantsGetError;
+    impl trellis_rs::generated::RpcDescriptor for IssuersRotate {
+        type Input = IssuersRotateInput;
+        type Output = IssuersRotateOutput;
+        type Error = IssuersRotateError;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
@@ -2159,19 +2563,19 @@ pub mod rpc {
         fn decode_error(
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
-            ParticipantsGetError::decode(value)
+            IssuersRotateError::decode(value)
         }
     }
-    pub type ParticipantsInstallInput = crate::__types::trellis::AuthParticipantsInstallRequest;
-    pub type ParticipantsInstallOutput = crate::__types::trellis::AuthParticipantsInstallResponse;
-    pub struct ParticipantsInstall;
-    impl ParticipantsInstall {
+    pub type OAuthClientsDeleteInput = crate::__types::trellis::AuthOAuthClientMutationRequest;
+    pub type OAuthClientsDeleteOutput = crate::__types::trellis::AuthMutationResult;
+    pub struct OAuthClientsDelete;
+    impl OAuthClientsDelete {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.Participants.Install";
-        pub const KEY: &'static str = "auth.Participants.Install";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.Participants.Install";
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.OAuthClients.Delete";
+        pub const KEY: &'static str = "auth.OAuthClients.Delete";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.OAuthClients.Delete";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::authorities_mutate",
+            "trellis.auth@v1::oauthClientsDelete",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -2182,12 +2586,12 @@ pub mod rpc {
         pub const CURSOR_PAGINATION: bool = false;
     }
     #[derive(Clone, Debug, PartialEq)]
-    pub enum ParticipantsInstallError {
+    pub enum OAuthClientsDeleteError {
         AuthError(super::errors::AuthError),
         UnexpectedError(super::errors::UnexpectedError),
         ValidationError(super::errors::ValidationError),
     }
-    impl ParticipantsInstallError {
+    impl OAuthClientsDeleteError {
         pub fn decode(
             value: serde_json::Value,
         ) -> Result<Option<Self>, serde_json::Error> {
@@ -2215,10 +2619,10 @@ pub mod rpc {
             }
         }
     }
-    impl trellis_rs::generated::RpcDescriptor for ParticipantsInstall {
-        type Input = ParticipantsInstallInput;
-        type Output = ParticipantsInstallOutput;
-        type Error = ParticipantsInstallError;
+    impl trellis_rs::generated::RpcDescriptor for OAuthClientsDelete {
+        type Input = OAuthClientsDeleteInput;
+        type Output = OAuthClientsDeleteOutput;
+        type Error = OAuthClientsDeleteError;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
@@ -2228,19 +2632,157 @@ pub mod rpc {
         fn decode_error(
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
-            ParticipantsInstallError::decode(value)
+            OAuthClientsDeleteError::decode(value)
         }
     }
-    pub type ParticipantsListInput = crate::__types::trellis::AuthParticipantsListRequest;
-    pub type ParticipantsListOutput = crate::__types::trellis::AuthParticipantsListResponse;
-    pub struct ParticipantsList;
-    impl ParticipantsList {
+    pub type OAuthClientsDisableInput = crate::__types::trellis::AuthOAuthClientMutationRequest;
+    pub type OAuthClientsDisableOutput = crate::__types::trellis::AuthMutationResult;
+    pub struct OAuthClientsDisable;
+    impl OAuthClientsDisable {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.Participants.List";
-        pub const KEY: &'static str = "auth.Participants.List";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.Participants.List";
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.OAuthClients.Disable";
+        pub const KEY: &'static str = "auth.OAuthClients.Disable";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.OAuthClients.Disable";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::authorities_read",
+            "trellis.auth@v1::oauthClientsDisable",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum OAuthClientsDisableError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl OAuthClientsDisableError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for OAuthClientsDisable {
+        type Input = OAuthClientsDisableInput;
+        type Output = OAuthClientsDisableOutput;
+        type Error = OAuthClientsDisableError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            OAuthClientsDisableError::decode(value)
+        }
+    }
+    pub type OAuthClientsGetInput = crate::__types::trellis::AuthOAuthClientGetRequest;
+    pub type OAuthClientsGetOutput = crate::__types::trellis::AuthOAuthClientGetResponse;
+    pub struct OAuthClientsGet;
+    impl OAuthClientsGet {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.OAuthClients.Get";
+        pub const KEY: &'static str = "auth.OAuthClients.Get";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.OAuthClients.Get";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::oauthClientsRead",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum OAuthClientsGetError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl OAuthClientsGetError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for OAuthClientsGet {
+        type Input = OAuthClientsGetInput;
+        type Output = OAuthClientsGetOutput;
+        type Error = OAuthClientsGetError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            OAuthClientsGetError::decode(value)
+        }
+    }
+    pub type OAuthClientsListInput = crate::__types::trellis::AuthPageRequest;
+    pub type OAuthClientsListOutput = crate::__types::trellis::AuthOAuthClientsListResponse;
+    pub struct OAuthClientsList;
+    impl OAuthClientsList {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.OAuthClients.List";
+        pub const KEY: &'static str = "auth.OAuthClients.List";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.OAuthClients.List";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::oauthClientsRead",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -2251,12 +2793,12 @@ pub mod rpc {
         pub const CURSOR_PAGINATION: bool = true;
     }
     #[derive(Clone, Debug, PartialEq)]
-    pub enum ParticipantsListError {
+    pub enum OAuthClientsListError {
         AuthError(super::errors::AuthError),
         UnexpectedError(super::errors::UnexpectedError),
         ValidationError(super::errors::ValidationError),
     }
-    impl ParticipantsListError {
+    impl OAuthClientsListError {
         pub fn decode(
             value: serde_json::Value,
         ) -> Result<Option<Self>, serde_json::Error> {
@@ -2284,10 +2826,10 @@ pub mod rpc {
             }
         }
     }
-    impl trellis_rs::generated::RpcDescriptor for ParticipantsList {
-        type Input = ParticipantsListInput;
-        type Output = ParticipantsListOutput;
-        type Error = ParticipantsListError;
+    impl trellis_rs::generated::RpcDescriptor for OAuthClientsList {
+        type Input = OAuthClientsListInput;
+        type Output = OAuthClientsListOutput;
+        type Error = OAuthClientsListError;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
@@ -2297,19 +2839,19 @@ pub mod rpc {
         fn decode_error(
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
-            ParticipantsListError::decode(value)
+            OAuthClientsListError::decode(value)
         }
     }
-    pub type PortalsGetInput = crate::__types::trellis::AuthPortalsGetRequest;
-    pub type PortalsGetOutput = crate::__types::trellis::AuthPortalsGetResponse;
-    pub struct PortalsGet;
-    impl PortalsGet {
+    pub type OAuthClientsPutInput = crate::__types::trellis::AuthOAuthClientPutRequest;
+    pub type OAuthClientsPutOutput = crate::__types::trellis::AuthOAuthClientGetResponse;
+    pub struct OAuthClientsPut;
+    impl OAuthClientsPut {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.Portals.Get";
-        pub const KEY: &'static str = "auth.Portals.Get";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.Portals.Get";
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.OAuthClients.Put";
+        pub const KEY: &'static str = "auth.OAuthClients.Put";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.OAuthClients.Put";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::portals_read",
+            "trellis.auth@v1::oauthClientsPut",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -2320,12 +2862,12 @@ pub mod rpc {
         pub const CURSOR_PAGINATION: bool = false;
     }
     #[derive(Clone, Debug, PartialEq)]
-    pub enum PortalsGetError {
+    pub enum OAuthClientsPutError {
         AuthError(super::errors::AuthError),
         UnexpectedError(super::errors::UnexpectedError),
         ValidationError(super::errors::ValidationError),
     }
-    impl PortalsGetError {
+    impl OAuthClientsPutError {
         pub fn decode(
             value: serde_json::Value,
         ) -> Result<Option<Self>, serde_json::Error> {
@@ -2353,10 +2895,10 @@ pub mod rpc {
             }
         }
     }
-    impl trellis_rs::generated::RpcDescriptor for PortalsGet {
-        type Input = PortalsGetInput;
-        type Output = PortalsGetOutput;
-        type Error = PortalsGetError;
+    impl trellis_rs::generated::RpcDescriptor for OAuthClientsPut {
+        type Input = OAuthClientsPutInput;
+        type Output = OAuthClientsPutOutput;
+        type Error = OAuthClientsPutError;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
@@ -2366,19 +2908,226 @@ pub mod rpc {
         fn decode_error(
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
-            PortalsGetError::decode(value)
+            OAuthClientsPutError::decode(value)
         }
     }
-    pub type PortalsGrantOverridesListInput = crate::__types::trellis::AuthPortalsGrantOverridesListRequest;
-    pub type PortalsGrantOverridesListOutput = crate::__types::trellis::AuthPortalsGrantOverridesListResponse;
-    pub struct PortalsGrantOverridesList;
-    impl PortalsGrantOverridesList {
+    pub type OIDCProvidersDeleteInput = crate::__types::trellis::AuthOIDCProviderMutationRequest;
+    pub type OIDCProvidersDeleteOutput = crate::__types::trellis::AuthMutationResult;
+    pub struct OIDCProvidersDelete;
+    impl OIDCProvidersDelete {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.Portals.GrantOverrides.List";
-        pub const KEY: &'static str = "auth.Portals.GrantOverrides.List";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.Portals.GrantOverrides.List";
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.OIDCProviders.Delete";
+        pub const KEY: &'static str = "auth.OIDCProviders.Delete";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.OIDCProviders.Delete";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::portals_read",
+            "trellis.auth@v1::oidcProvidersDelete",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum OIDCProvidersDeleteError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl OIDCProvidersDeleteError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for OIDCProvidersDelete {
+        type Input = OIDCProvidersDeleteInput;
+        type Output = OIDCProvidersDeleteOutput;
+        type Error = OIDCProvidersDeleteError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            OIDCProvidersDeleteError::decode(value)
+        }
+    }
+    pub type OIDCProvidersDisableInput = crate::__types::trellis::AuthOIDCProviderMutationRequest;
+    pub type OIDCProvidersDisableOutput = crate::__types::trellis::AuthMutationResult;
+    pub struct OIDCProvidersDisable;
+    impl OIDCProvidersDisable {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.OIDCProviders.Disable";
+        pub const KEY: &'static str = "auth.OIDCProviders.Disable";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.OIDCProviders.Disable";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::oidcProvidersDisable",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum OIDCProvidersDisableError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl OIDCProvidersDisableError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for OIDCProvidersDisable {
+        type Input = OIDCProvidersDisableInput;
+        type Output = OIDCProvidersDisableOutput;
+        type Error = OIDCProvidersDisableError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            OIDCProvidersDisableError::decode(value)
+        }
+    }
+    pub type OIDCProvidersGetInput = crate::__types::trellis::AuthOIDCProviderGetRequest;
+    pub type OIDCProvidersGetOutput = crate::__types::trellis::AuthOIDCProviderGetResponse;
+    pub struct OIDCProvidersGet;
+    impl OIDCProvidersGet {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.OIDCProviders.Get";
+        pub const KEY: &'static str = "auth.OIDCProviders.Get";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.OIDCProviders.Get";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::oidcProvidersRead",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum OIDCProvidersGetError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl OIDCProvidersGetError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for OIDCProvidersGet {
+        type Input = OIDCProvidersGetInput;
+        type Output = OIDCProvidersGetOutput;
+        type Error = OIDCProvidersGetError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            OIDCProvidersGetError::decode(value)
+        }
+    }
+    pub type OIDCProvidersListInput = crate::__types::trellis::AuthPageRequest;
+    pub type OIDCProvidersListOutput = crate::__types::trellis::AuthOIDCProvidersListResponse;
+    pub struct OIDCProvidersList;
+    impl OIDCProvidersList {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.OIDCProviders.List";
+        pub const KEY: &'static str = "auth.OIDCProviders.List";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.OIDCProviders.List";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::oidcProvidersRead",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -2389,12 +3138,12 @@ pub mod rpc {
         pub const CURSOR_PAGINATION: bool = true;
     }
     #[derive(Clone, Debug, PartialEq)]
-    pub enum PortalsGrantOverridesListError {
+    pub enum OIDCProvidersListError {
         AuthError(super::errors::AuthError),
         UnexpectedError(super::errors::UnexpectedError),
         ValidationError(super::errors::ValidationError),
     }
-    impl PortalsGrantOverridesListError {
+    impl OIDCProvidersListError {
         pub fn decode(
             value: serde_json::Value,
         ) -> Result<Option<Self>, serde_json::Error> {
@@ -2422,10 +3171,10 @@ pub mod rpc {
             }
         }
     }
-    impl trellis_rs::generated::RpcDescriptor for PortalsGrantOverridesList {
-        type Input = PortalsGrantOverridesListInput;
-        type Output = PortalsGrantOverridesListOutput;
-        type Error = PortalsGrantOverridesListError;
+    impl trellis_rs::generated::RpcDescriptor for OIDCProvidersList {
+        type Input = OIDCProvidersListInput;
+        type Output = OIDCProvidersListOutput;
+        type Error = OIDCProvidersListError;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
@@ -2435,19 +3184,19 @@ pub mod rpc {
         fn decode_error(
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
-            PortalsGrantOverridesListError::decode(value)
+            OIDCProvidersListError::decode(value)
         }
     }
-    pub type PortalsGrantOverridesPutInput = crate::__types::trellis::AuthPortalsGrantOverridesPutRequest;
-    pub type PortalsGrantOverridesPutOutput = crate::__types::trellis::AuthPortalsGrantOverridesPutResponse;
-    pub struct PortalsGrantOverridesPut;
-    impl PortalsGrantOverridesPut {
+    pub type OIDCProvidersPutInput = crate::__types::trellis::AuthOIDCProviderPutRequest;
+    pub type OIDCProvidersPutOutput = crate::__types::trellis::AuthOIDCProviderGetResponse;
+    pub struct OIDCProvidersPut;
+    impl OIDCProvidersPut {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.Portals.GrantOverrides.Put";
-        pub const KEY: &'static str = "auth.Portals.GrantOverrides.Put";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.Portals.GrantOverrides.Put";
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.OIDCProviders.Put";
+        pub const KEY: &'static str = "auth.OIDCProviders.Put";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.OIDCProviders.Put";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::portals_mutate",
+            "trellis.auth@v1::oidcProvidersPut",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -2458,12 +3207,12 @@ pub mod rpc {
         pub const CURSOR_PAGINATION: bool = false;
     }
     #[derive(Clone, Debug, PartialEq)]
-    pub enum PortalsGrantOverridesPutError {
+    pub enum OIDCProvidersPutError {
         AuthError(super::errors::AuthError),
         UnexpectedError(super::errors::UnexpectedError),
         ValidationError(super::errors::ValidationError),
     }
-    impl PortalsGrantOverridesPutError {
+    impl OIDCProvidersPutError {
         pub fn decode(
             value: serde_json::Value,
         ) -> Result<Option<Self>, serde_json::Error> {
@@ -2491,10 +3240,10 @@ pub mod rpc {
             }
         }
     }
-    impl trellis_rs::generated::RpcDescriptor for PortalsGrantOverridesPut {
-        type Input = PortalsGrantOverridesPutInput;
-        type Output = PortalsGrantOverridesPutOutput;
-        type Error = PortalsGrantOverridesPutError;
+    impl trellis_rs::generated::RpcDescriptor for OIDCProvidersPut {
+        type Input = OIDCProvidersPutInput;
+        type Output = OIDCProvidersPutOutput;
+        type Error = OIDCProvidersPutError;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
@@ -2504,19 +3253,19 @@ pub mod rpc {
         fn decode_error(
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
-            PortalsGrantOverridesPutError::decode(value)
+            OIDCProvidersPutError::decode(value)
         }
     }
-    pub type PortalsGrantOverridesRemoveInput = crate::__types::trellis::AuthPortalsGrantOverridesRemoveRequest;
-    pub type PortalsGrantOverridesRemoveOutput = crate::__types::trellis::AuthPortalsGrantOverridesRemoveResponse;
-    pub struct PortalsGrantOverridesRemove;
-    impl PortalsGrantOverridesRemove {
+    pub type OIDCRoleMappingsDeleteInput = crate::__types::trellis::AuthOIDCRoleMappingDeleteRequest;
+    pub type OIDCRoleMappingsDeleteOutput = crate::__types::trellis::AuthMutationResult;
+    pub struct OIDCRoleMappingsDelete;
+    impl OIDCRoleMappingsDelete {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.Portals.GrantOverrides.Remove";
-        pub const KEY: &'static str = "auth.Portals.GrantOverrides.Remove";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.Portals.GrantOverrides.Remove";
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.OIDCRoleMappings.Delete";
+        pub const KEY: &'static str = "auth.OIDCRoleMappings.Delete";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.OIDCRoleMappings.Delete";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::portals_mutate",
+            "trellis.auth@v1::oidcRoleMappingsDelete",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -2527,12 +3276,12 @@ pub mod rpc {
         pub const CURSOR_PAGINATION: bool = false;
     }
     #[derive(Clone, Debug, PartialEq)]
-    pub enum PortalsGrantOverridesRemoveError {
+    pub enum OIDCRoleMappingsDeleteError {
         AuthError(super::errors::AuthError),
         UnexpectedError(super::errors::UnexpectedError),
         ValidationError(super::errors::ValidationError),
     }
-    impl PortalsGrantOverridesRemoveError {
+    impl OIDCRoleMappingsDeleteError {
         pub fn decode(
             value: serde_json::Value,
         ) -> Result<Option<Self>, serde_json::Error> {
@@ -2560,10 +3309,10 @@ pub mod rpc {
             }
         }
     }
-    impl trellis_rs::generated::RpcDescriptor for PortalsGrantOverridesRemove {
-        type Input = PortalsGrantOverridesRemoveInput;
-        type Output = PortalsGrantOverridesRemoveOutput;
-        type Error = PortalsGrantOverridesRemoveError;
+    impl trellis_rs::generated::RpcDescriptor for OIDCRoleMappingsDelete {
+        type Input = OIDCRoleMappingsDeleteInput;
+        type Output = OIDCRoleMappingsDeleteOutput;
+        type Error = OIDCRoleMappingsDeleteError;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
@@ -2573,19 +3322,19 @@ pub mod rpc {
         fn decode_error(
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
-            PortalsGrantOverridesRemoveError::decode(value)
+            OIDCRoleMappingsDeleteError::decode(value)
         }
     }
-    pub type PortalsListInput = crate::__types::trellis::AuthPortalsListRequest;
-    pub type PortalsListOutput = crate::__types::trellis::AuthPortalsListResponse;
-    pub struct PortalsList;
-    impl PortalsList {
+    pub type OIDCRoleMappingsListInput = crate::__types::trellis::AuthOIDCRoleMappingsListRequest;
+    pub type OIDCRoleMappingsListOutput = crate::__types::trellis::AuthOIDCRoleMappingsListResponse;
+    pub struct OIDCRoleMappingsList;
+    impl OIDCRoleMappingsList {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.Portals.List";
-        pub const KEY: &'static str = "auth.Portals.List";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.Portals.List";
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.OIDCRoleMappings.List";
+        pub const KEY: &'static str = "auth.OIDCRoleMappings.List";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.OIDCRoleMappings.List";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::portals_read",
+            "trellis.auth@v1::oidcRoleMappingsRead",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -2596,12 +3345,12 @@ pub mod rpc {
         pub const CURSOR_PAGINATION: bool = true;
     }
     #[derive(Clone, Debug, PartialEq)]
-    pub enum PortalsListError {
+    pub enum OIDCRoleMappingsListError {
         AuthError(super::errors::AuthError),
         UnexpectedError(super::errors::UnexpectedError),
         ValidationError(super::errors::ValidationError),
     }
-    impl PortalsListError {
+    impl OIDCRoleMappingsListError {
         pub fn decode(
             value: serde_json::Value,
         ) -> Result<Option<Self>, serde_json::Error> {
@@ -2629,10 +3378,10 @@ pub mod rpc {
             }
         }
     }
-    impl trellis_rs::generated::RpcDescriptor for PortalsList {
-        type Input = PortalsListInput;
-        type Output = PortalsListOutput;
-        type Error = PortalsListError;
+    impl trellis_rs::generated::RpcDescriptor for OIDCRoleMappingsList {
+        type Input = OIDCRoleMappingsListInput;
+        type Output = OIDCRoleMappingsListOutput;
+        type Error = OIDCRoleMappingsListError;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
@@ -2642,19 +3391,19 @@ pub mod rpc {
         fn decode_error(
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
-            PortalsListError::decode(value)
+            OIDCRoleMappingsListError::decode(value)
         }
     }
-    pub type PortalsLoginSettingsGetInput = crate::__types::trellis::AuthPortalsLoginSettingsGetRequest;
-    pub type PortalsLoginSettingsGetOutput = crate::__types::trellis::AuthPortalsLoginSettingsGetResponse;
-    pub struct PortalsLoginSettingsGet;
-    impl PortalsLoginSettingsGet {
+    pub type OIDCRoleMappingsPutInput = crate::__types::trellis::AuthOIDCRoleMappingPutRequest;
+    pub type OIDCRoleMappingsPutOutput = crate::__types::trellis::AuthOIDCRoleMappingPutResponse;
+    pub struct OIDCRoleMappingsPut;
+    impl OIDCRoleMappingsPut {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.Portals.LoginSettings.Get";
-        pub const KEY: &'static str = "auth.Portals.LoginSettings.Get";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.Portals.LoginSettings.Get";
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.OIDCRoleMappings.Put";
+        pub const KEY: &'static str = "auth.OIDCRoleMappings.Put";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.OIDCRoleMappings.Put";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::portals_read",
+            "trellis.auth@v1::oidcRoleMappingsPut",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -2665,12 +3414,12 @@ pub mod rpc {
         pub const CURSOR_PAGINATION: bool = false;
     }
     #[derive(Clone, Debug, PartialEq)]
-    pub enum PortalsLoginSettingsGetError {
+    pub enum OIDCRoleMappingsPutError {
         AuthError(super::errors::AuthError),
         UnexpectedError(super::errors::UnexpectedError),
         ValidationError(super::errors::ValidationError),
     }
-    impl PortalsLoginSettingsGetError {
+    impl OIDCRoleMappingsPutError {
         pub fn decode(
             value: serde_json::Value,
         ) -> Result<Option<Self>, serde_json::Error> {
@@ -2698,10 +3447,10 @@ pub mod rpc {
             }
         }
     }
-    impl trellis_rs::generated::RpcDescriptor for PortalsLoginSettingsGet {
-        type Input = PortalsLoginSettingsGetInput;
-        type Output = PortalsLoginSettingsGetOutput;
-        type Error = PortalsLoginSettingsGetError;
+    impl trellis_rs::generated::RpcDescriptor for OIDCRoleMappingsPut {
+        type Input = OIDCRoleMappingsPutInput;
+        type Output = OIDCRoleMappingsPutOutput;
+        type Error = OIDCRoleMappingsPutError;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
@@ -2711,19 +3460,88 @@ pub mod rpc {
         fn decode_error(
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
-            PortalsLoginSettingsGetError::decode(value)
+            OIDCRoleMappingsPutError::decode(value)
         }
     }
-    pub type PortalsLoginSettingsUpdateInput = crate::__types::trellis::AuthPortalsLoginSettingsUpdateRequest;
-    pub type PortalsLoginSettingsUpdateOutput = crate::__types::trellis::AuthPortalsLoginSettingsUpdateResponse;
-    pub struct PortalsLoginSettingsUpdate;
-    impl PortalsLoginSettingsUpdate {
+    pub type PlatformDelegationsListInput = crate::__types::trellis::AuthPageRequest;
+    pub type PlatformDelegationsListOutput = crate::__types::trellis::AuthPlatformDelegationsListResponse;
+    pub struct PlatformDelegationsList;
+    impl PlatformDelegationsList {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.Portals.LoginSettings.Update";
-        pub const KEY: &'static str = "auth.Portals.LoginSettings.Update";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.Portals.LoginSettings.Update";
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.PlatformDelegations.List";
+        pub const KEY: &'static str = "auth.PlatformDelegations.List";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.PlatformDelegations.List";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::portals_mutate",
+            "trellis.auth@v1::platformDelegationsRead",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = true;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum PlatformDelegationsListError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl PlatformDelegationsListError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for PlatformDelegationsList {
+        type Input = PlatformDelegationsListInput;
+        type Output = PlatformDelegationsListOutput;
+        type Error = PlatformDelegationsListError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            PlatformDelegationsListError::decode(value)
+        }
+    }
+    pub type PlatformDelegationsPutInput = crate::__types::trellis::AuthPlatformDelegationPutRequest;
+    pub type PlatformDelegationsPutOutput = crate::__types::trellis::AuthPlatformDelegationPutResponse;
+    pub struct PlatformDelegationsPut;
+    impl PlatformDelegationsPut {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.PlatformDelegations.Put";
+        pub const KEY: &'static str = "auth.PlatformDelegations.Put";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.PlatformDelegations.Put";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::platformDelegationsPut",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -2734,12 +3552,12 @@ pub mod rpc {
         pub const CURSOR_PAGINATION: bool = false;
     }
     #[derive(Clone, Debug, PartialEq)]
-    pub enum PortalsLoginSettingsUpdateError {
+    pub enum PlatformDelegationsPutError {
         AuthError(super::errors::AuthError),
         UnexpectedError(super::errors::UnexpectedError),
         ValidationError(super::errors::ValidationError),
     }
-    impl PortalsLoginSettingsUpdateError {
+    impl PlatformDelegationsPutError {
         pub fn decode(
             value: serde_json::Value,
         ) -> Result<Option<Self>, serde_json::Error> {
@@ -2767,10 +3585,10 @@ pub mod rpc {
             }
         }
     }
-    impl trellis_rs::generated::RpcDescriptor for PortalsLoginSettingsUpdate {
-        type Input = PortalsLoginSettingsUpdateInput;
-        type Output = PortalsLoginSettingsUpdateOutput;
-        type Error = PortalsLoginSettingsUpdateError;
+    impl trellis_rs::generated::RpcDescriptor for PlatformDelegationsPut {
+        type Input = PlatformDelegationsPutInput;
+        type Output = PlatformDelegationsPutOutput;
+        type Error = PlatformDelegationsPutError;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
@@ -2780,19 +3598,19 @@ pub mod rpc {
         fn decode_error(
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
-            PortalsLoginSettingsUpdateError::decode(value)
+            PlatformDelegationsPutError::decode(value)
         }
     }
-    pub type PortalsPutInput = crate::__types::trellis::AuthPortalsPutRequest;
-    pub type PortalsPutOutput = crate::__types::trellis::AuthPortalsPutResponse;
-    pub struct PortalsPut;
-    impl PortalsPut {
+    pub type PlatformDelegationsRevokeInput = crate::__types::trellis::AuthPlatformDelegationRevokeRequest;
+    pub type PlatformDelegationsRevokeOutput = crate::__types::trellis::AuthMutationResult;
+    pub struct PlatformDelegationsRevoke;
+    impl PlatformDelegationsRevoke {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.Portals.Put";
-        pub const KEY: &'static str = "auth.Portals.Put";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.Portals.Put";
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.PlatformDelegations.Revoke";
+        pub const KEY: &'static str = "auth.PlatformDelegations.Revoke";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.PlatformDelegations.Revoke";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::portals_mutate",
+            "trellis.auth@v1::platformDelegationsRevoke",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -2803,12 +3621,12 @@ pub mod rpc {
         pub const CURSOR_PAGINATION: bool = false;
     }
     #[derive(Clone, Debug, PartialEq)]
-    pub enum PortalsPutError {
+    pub enum PlatformDelegationsRevokeError {
         AuthError(super::errors::AuthError),
         UnexpectedError(super::errors::UnexpectedError),
         ValidationError(super::errors::ValidationError),
     }
-    impl PortalsPutError {
+    impl PlatformDelegationsRevokeError {
         pub fn decode(
             value: serde_json::Value,
         ) -> Result<Option<Self>, serde_json::Error> {
@@ -2836,10 +3654,10 @@ pub mod rpc {
             }
         }
     }
-    impl trellis_rs::generated::RpcDescriptor for PortalsPut {
-        type Input = PortalsPutInput;
-        type Output = PortalsPutOutput;
-        type Error = PortalsPutError;
+    impl trellis_rs::generated::RpcDescriptor for PlatformDelegationsRevoke {
+        type Input = PlatformDelegationsRevokeInput;
+        type Output = PlatformDelegationsRevokeOutput;
+        type Error = PlatformDelegationsRevokeError;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
@@ -2849,19 +3667,19 @@ pub mod rpc {
         fn decode_error(
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
-            PortalsPutError::decode(value)
+            PlatformDelegationsRevokeError::decode(value)
         }
     }
-    pub type PortalsRemoveInput = crate::__types::trellis::AuthPortalsRemoveRequest;
-    pub type PortalsRemoveOutput = crate::__types::trellis::AuthPortalsRemoveResponse;
-    pub struct PortalsRemove;
-    impl PortalsRemove {
+    pub type PlatformPrivilegesAssignInput = crate::__types::trellis::AuthPlatformAssignRequest;
+    pub type PlatformPrivilegesAssignOutput = crate::__types::trellis::AuthPlatformAssignResponse;
+    pub struct PlatformPrivilegesAssign;
+    impl PlatformPrivilegesAssign {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.Portals.Remove";
-        pub const KEY: &'static str = "auth.Portals.Remove";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.Portals.Remove";
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.PlatformPrivileges.Assign";
+        pub const KEY: &'static str = "auth.PlatformPrivileges.Assign";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.PlatformPrivileges.Assign";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::portals_mutate",
+            "trellis.auth@v1::platformPrivilegesAssign",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -2872,12 +3690,12 @@ pub mod rpc {
         pub const CURSOR_PAGINATION: bool = false;
     }
     #[derive(Clone, Debug, PartialEq)]
-    pub enum PortalsRemoveError {
+    pub enum PlatformPrivilegesAssignError {
         AuthError(super::errors::AuthError),
         UnexpectedError(super::errors::UnexpectedError),
         ValidationError(super::errors::ValidationError),
     }
-    impl PortalsRemoveError {
+    impl PlatformPrivilegesAssignError {
         pub fn decode(
             value: serde_json::Value,
         ) -> Result<Option<Self>, serde_json::Error> {
@@ -2905,10 +3723,10 @@ pub mod rpc {
             }
         }
     }
-    impl trellis_rs::generated::RpcDescriptor for PortalsRemove {
-        type Input = PortalsRemoveInput;
-        type Output = PortalsRemoveOutput;
-        type Error = PortalsRemoveError;
+    impl trellis_rs::generated::RpcDescriptor for PlatformPrivilegesAssign {
+        type Input = PlatformPrivilegesAssignInput;
+        type Output = PlatformPrivilegesAssignOutput;
+        type Error = PlatformPrivilegesAssignError;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
@@ -2918,19 +3736,88 @@ pub mod rpc {
         fn decode_error(
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
-            PortalsRemoveError::decode(value)
+            PlatformPrivilegesAssignError::decode(value)
         }
     }
-    pub type PortalsRoutesPutInput = crate::__types::trellis::AuthPortalsRoutesPutRequest;
-    pub type PortalsRoutesPutOutput = crate::__types::trellis::AuthPortalsRoutesPutResponse;
-    pub struct PortalsRoutesPut;
-    impl PortalsRoutesPut {
+    pub type PlatformPrivilegesListInput = crate::__types::trellis::AuthPageRequest;
+    pub type PlatformPrivilegesListOutput = crate::__types::trellis::AuthPlatformAssignmentsListResponse;
+    pub struct PlatformPrivilegesList;
+    impl PlatformPrivilegesList {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.Portals.Routes.Put";
-        pub const KEY: &'static str = "auth.Portals.Routes.Put";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.Portals.Routes.Put";
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.PlatformPrivileges.List";
+        pub const KEY: &'static str = "auth.PlatformPrivileges.List";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.PlatformPrivileges.List";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::portals_mutate",
+            "trellis.auth@v1::platformPrivilegesRead",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = true;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum PlatformPrivilegesListError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl PlatformPrivilegesListError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for PlatformPrivilegesList {
+        type Input = PlatformPrivilegesListInput;
+        type Output = PlatformPrivilegesListOutput;
+        type Error = PlatformPrivilegesListError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            PlatformPrivilegesListError::decode(value)
+        }
+    }
+    pub type PlatformPrivilegesRevokeInput = crate::__types::trellis::AuthPlatformRevokeRequest;
+    pub type PlatformPrivilegesRevokeOutput = crate::__types::trellis::AuthMutationResult;
+    pub struct PlatformPrivilegesRevoke;
+    impl PlatformPrivilegesRevoke {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.PlatformPrivileges.Revoke";
+        pub const KEY: &'static str = "auth.PlatformPrivileges.Revoke";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.PlatformPrivileges.Revoke";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::platformPrivilegesRevoke",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -2941,12 +3828,12 @@ pub mod rpc {
         pub const CURSOR_PAGINATION: bool = false;
     }
     #[derive(Clone, Debug, PartialEq)]
-    pub enum PortalsRoutesPutError {
+    pub enum PlatformPrivilegesRevokeError {
         AuthError(super::errors::AuthError),
         UnexpectedError(super::errors::UnexpectedError),
         ValidationError(super::errors::ValidationError),
     }
-    impl PortalsRoutesPutError {
+    impl PlatformPrivilegesRevokeError {
         pub fn decode(
             value: serde_json::Value,
         ) -> Result<Option<Self>, serde_json::Error> {
@@ -2974,10 +3861,10 @@ pub mod rpc {
             }
         }
     }
-    impl trellis_rs::generated::RpcDescriptor for PortalsRoutesPut {
-        type Input = PortalsRoutesPutInput;
-        type Output = PortalsRoutesPutOutput;
-        type Error = PortalsRoutesPutError;
+    impl trellis_rs::generated::RpcDescriptor for PlatformPrivilegesRevoke {
+        type Input = PlatformPrivilegesRevokeInput;
+        type Output = PlatformPrivilegesRevokeOutput;
+        type Error = PlatformPrivilegesRevokeError;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
@@ -2987,19 +3874,19 @@ pub mod rpc {
         fn decode_error(
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
-            PortalsRoutesPutError::decode(value)
+            PlatformPrivilegesRevokeError::decode(value)
         }
     }
-    pub type PortalsRoutesRemoveInput = crate::__types::trellis::AuthPortalsRoutesRemoveRequest;
-    pub type PortalsRoutesRemoveOutput = crate::__types::trellis::AuthPortalsRoutesRemoveResponse;
-    pub struct PortalsRoutesRemove;
-    impl PortalsRoutesRemove {
+    pub type PrincipalsEffectiveAccessInput = crate::__types::trellis::AuthPrincipalRequest;
+    pub type PrincipalsEffectiveAccessOutput = crate::__types::trellis::AuthEffectiveAccessResponse;
+    pub struct PrincipalsEffectiveAccess;
+    impl PrincipalsEffectiveAccess {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.Portals.Routes.Remove";
-        pub const KEY: &'static str = "auth.Portals.Routes.Remove";
-        pub const SUBJECT: &'static str = "rpc.v1.auth.Portals.Routes.Remove";
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Principals.EffectiveAccess";
+        pub const KEY: &'static str = "auth.Principals.EffectiveAccess";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Principals.EffectiveAccess";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::portals_mutate",
+            "trellis.auth@v1::principalsEffectiveAccess",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -3010,12 +3897,12 @@ pub mod rpc {
         pub const CURSOR_PAGINATION: bool = false;
     }
     #[derive(Clone, Debug, PartialEq)]
-    pub enum PortalsRoutesRemoveError {
+    pub enum PrincipalsEffectiveAccessError {
         AuthError(super::errors::AuthError),
         UnexpectedError(super::errors::UnexpectedError),
         ValidationError(super::errors::ValidationError),
     }
-    impl PortalsRoutesRemoveError {
+    impl PrincipalsEffectiveAccessError {
         pub fn decode(
             value: serde_json::Value,
         ) -> Result<Option<Self>, serde_json::Error> {
@@ -3043,10 +3930,10 @@ pub mod rpc {
             }
         }
     }
-    impl trellis_rs::generated::RpcDescriptor for PortalsRoutesRemove {
-        type Input = PortalsRoutesRemoveInput;
-        type Output = PortalsRoutesRemoveOutput;
-        type Error = PortalsRoutesRemoveError;
+    impl trellis_rs::generated::RpcDescriptor for PrincipalsEffectiveAccess {
+        type Input = PrincipalsEffectiveAccessInput;
+        type Output = PrincipalsEffectiveAccessOutput;
+        type Error = PrincipalsEffectiveAccessError;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
@@ -3056,11 +3943,701 @@ pub mod rpc {
         fn decode_error(
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
-            PortalsRoutesRemoveError::decode(value)
+            PrincipalsEffectiveAccessError::decode(value)
         }
     }
-    pub type ServiceInstancesDisableInput = crate::__types::trellis::AuthServiceInstancesDisableRequest;
-    pub type ServiceInstancesDisableOutput = crate::__types::trellis::AuthServiceInstancesDisableResponse;
+    pub type ResourcesGetInput = crate::__types::trellis::AuthResourceGetRequest;
+    pub type ResourcesGetOutput = crate::__types::trellis::AuthResourceGetResponse;
+    pub struct ResourcesGet;
+    impl ResourcesGet {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Resources.Get";
+        pub const KEY: &'static str = "auth.Resources.Get";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Resources.Get";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::resourcesRead",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum ResourcesGetError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl ResourcesGetError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for ResourcesGet {
+        type Input = ResourcesGetInput;
+        type Output = ResourcesGetOutput;
+        type Error = ResourcesGetError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            ResourcesGetError::decode(value)
+        }
+    }
+    pub type ResourcesListInput = crate::__types::trellis::AuthResourcesListRequest;
+    pub type ResourcesListOutput = crate::__types::trellis::AuthResourcesListResponse;
+    pub struct ResourcesList;
+    impl ResourcesList {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Resources.List";
+        pub const KEY: &'static str = "auth.Resources.List";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Resources.List";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::resourcesRead",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = true;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum ResourcesListError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl ResourcesListError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for ResourcesList {
+        type Input = ResourcesListInput;
+        type Output = ResourcesListOutput;
+        type Error = ResourcesListError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            ResourcesListError::decode(value)
+        }
+    }
+    pub type ResourcesRemoveInput = crate::__types::trellis::AuthResourceRemoveRequest;
+    pub type ResourcesRemoveOutput = crate::__types::trellis::AuthMutationResult;
+    pub struct ResourcesRemove;
+    impl ResourcesRemove {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Resources.Remove";
+        pub const KEY: &'static str = "auth.Resources.Remove";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Resources.Remove";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::resourcesRemove",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum ResourcesRemoveError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl ResourcesRemoveError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for ResourcesRemove {
+        type Input = ResourcesRemoveInput;
+        type Output = ResourcesRemoveOutput;
+        type Error = ResourcesRemoveError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            ResourcesRemoveError::decode(value)
+        }
+    }
+    pub type RoleAssignmentsAssignInput = crate::__types::trellis::AuthRoleAssignRequest;
+    pub type RoleAssignmentsAssignOutput = crate::__types::trellis::AuthRoleAssignResponse;
+    pub struct RoleAssignmentsAssign;
+    impl RoleAssignmentsAssign {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.RoleAssignments.Assign";
+        pub const KEY: &'static str = "auth.RoleAssignments.Assign";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.RoleAssignments.Assign";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::roleAssignmentsAssign",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum RoleAssignmentsAssignError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl RoleAssignmentsAssignError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for RoleAssignmentsAssign {
+        type Input = RoleAssignmentsAssignInput;
+        type Output = RoleAssignmentsAssignOutput;
+        type Error = RoleAssignmentsAssignError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            RoleAssignmentsAssignError::decode(value)
+        }
+    }
+    pub type RoleAssignmentsListInput = crate::__types::trellis::AuthRoleAssignmentsListRequest;
+    pub type RoleAssignmentsListOutput = crate::__types::trellis::AuthRoleAssignmentsListResponse;
+    pub struct RoleAssignmentsList;
+    impl RoleAssignmentsList {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.RoleAssignments.List";
+        pub const KEY: &'static str = "auth.RoleAssignments.List";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.RoleAssignments.List";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::roleAssignmentsRead",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = true;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum RoleAssignmentsListError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl RoleAssignmentsListError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for RoleAssignmentsList {
+        type Input = RoleAssignmentsListInput;
+        type Output = RoleAssignmentsListOutput;
+        type Error = RoleAssignmentsListError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            RoleAssignmentsListError::decode(value)
+        }
+    }
+    pub type RoleAssignmentsRevokeInput = crate::__types::trellis::AuthRoleRevokeRequest;
+    pub type RoleAssignmentsRevokeOutput = crate::__types::trellis::AuthMutationResult;
+    pub struct RoleAssignmentsRevoke;
+    impl RoleAssignmentsRevoke {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.RoleAssignments.Revoke";
+        pub const KEY: &'static str = "auth.RoleAssignments.Revoke";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.RoleAssignments.Revoke";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::roleAssignmentsRevoke",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum RoleAssignmentsRevokeError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl RoleAssignmentsRevokeError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for RoleAssignmentsRevoke {
+        type Input = RoleAssignmentsRevokeInput;
+        type Output = RoleAssignmentsRevokeOutput;
+        type Error = RoleAssignmentsRevokeError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            RoleAssignmentsRevokeError::decode(value)
+        }
+    }
+    pub type RolesDeleteInput = crate::__types::trellis::AuthRoleDeleteRequest;
+    pub type RolesDeleteOutput = crate::__types::trellis::AuthMutationResult;
+    pub struct RolesDelete;
+    impl RolesDelete {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Roles.Delete";
+        pub const KEY: &'static str = "auth.Roles.Delete";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Roles.Delete";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::rolesDelete",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum RolesDeleteError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl RolesDeleteError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for RolesDelete {
+        type Input = RolesDeleteInput;
+        type Output = RolesDeleteOutput;
+        type Error = RolesDeleteError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            RolesDeleteError::decode(value)
+        }
+    }
+    pub type RolesGetInput = crate::__types::trellis::AuthRoleGetRequest;
+    pub type RolesGetOutput = crate::__types::trellis::AuthRoleGetResponse;
+    pub struct RolesGet;
+    impl RolesGet {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Roles.Get";
+        pub const KEY: &'static str = "auth.Roles.Get";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Roles.Get";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::rolesRead",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum RolesGetError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl RolesGetError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for RolesGet {
+        type Input = RolesGetInput;
+        type Output = RolesGetOutput;
+        type Error = RolesGetError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            RolesGetError::decode(value)
+        }
+    }
+    pub type RolesListInput = crate::__types::trellis::AuthPageRequest;
+    pub type RolesListOutput = crate::__types::trellis::AuthRolesListResponse;
+    pub struct RolesList;
+    impl RolesList {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Roles.List";
+        pub const KEY: &'static str = "auth.Roles.List";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Roles.List";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::rolesRead",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = true;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum RolesListError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl RolesListError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for RolesList {
+        type Input = RolesListInput;
+        type Output = RolesListOutput;
+        type Error = RolesListError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            RolesListError::decode(value)
+        }
+    }
+    pub type RolesPutInput = crate::__types::trellis::AuthRolePutRequest;
+    pub type RolesPutOutput = crate::__types::trellis::AuthRolePutResponse;
+    pub struct RolesPut;
+    impl RolesPut {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Roles.Put";
+        pub const KEY: &'static str = "auth.Roles.Put";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Roles.Put";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::rolesPut",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum RolesPutError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl RolesPutError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for RolesPut {
+        type Input = RolesPutInput;
+        type Output = RolesPutOutput;
+        type Error = RolesPutError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            RolesPutError::decode(value)
+        }
+    }
+    pub type ServiceInstancesDisableInput = crate::__types::trellis::AuthInstanceMutationRequest;
+    pub type ServiceInstancesDisableOutput = crate::__types::trellis::AuthInstanceMutationResponse;
     pub struct ServiceInstancesDisable;
     impl ServiceInstancesDisable {
         pub const API_ID: &'static str = super::API_ID;
@@ -3068,7 +4645,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.ServiceInstances.Disable";
         pub const SUBJECT: &'static str = "rpc.v1.auth.ServiceInstances.Disable";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::services_mutate",
+            "trellis.auth@v1::serviceInstancesDisable",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -3128,8 +4705,8 @@ pub mod rpc {
             ServiceInstancesDisableError::decode(value)
         }
     }
-    pub type ServiceInstancesEnableInput = crate::__types::trellis::AuthServiceInstancesEnableRequest;
-    pub type ServiceInstancesEnableOutput = crate::__types::trellis::AuthServiceInstancesEnableResponse;
+    pub type ServiceInstancesEnableInput = crate::__types::trellis::AuthInstanceMutationRequest;
+    pub type ServiceInstancesEnableOutput = crate::__types::trellis::AuthInstanceMutationResponse;
     pub struct ServiceInstancesEnable;
     impl ServiceInstancesEnable {
         pub const API_ID: &'static str = super::API_ID;
@@ -3137,7 +4714,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.ServiceInstances.Enable";
         pub const SUBJECT: &'static str = "rpc.v1.auth.ServiceInstances.Enable";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::services_mutate",
+            "trellis.auth@v1::serviceInstancesEnable",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -3197,8 +4774,8 @@ pub mod rpc {
             ServiceInstancesEnableError::decode(value)
         }
     }
-    pub type ServiceInstancesListInput = crate::__types::trellis::AuthServiceInstancesListRequest;
-    pub type ServiceInstancesListOutput = crate::__types::trellis::AuthServiceInstancesListResponse;
+    pub type ServiceInstancesListInput = crate::__types::trellis::AuthInstancesListRequest;
+    pub type ServiceInstancesListOutput = crate::__types::trellis::AuthInstancesListResponse;
     pub struct ServiceInstancesList;
     impl ServiceInstancesList {
         pub const API_ID: &'static str = super::API_ID;
@@ -3206,7 +4783,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.ServiceInstances.List";
         pub const SUBJECT: &'static str = "rpc.v1.auth.ServiceInstances.List";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::services_read",
+            "trellis.auth@v1::serviceInstancesRead",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -3266,8 +4843,8 @@ pub mod rpc {
             ServiceInstancesListError::decode(value)
         }
     }
-    pub type ServiceInstancesProvisionInput = crate::__types::trellis::AuthServiceInstancesProvisionRequest;
-    pub type ServiceInstancesProvisionOutput = crate::__types::trellis::AuthServiceInstancesProvisionResponse;
+    pub type ServiceInstancesProvisionInput = crate::__types::trellis::AuthInstanceProvisionRequest;
+    pub type ServiceInstancesProvisionOutput = crate::__types::trellis::AuthInstanceProvisionResponse;
     pub struct ServiceInstancesProvision;
     impl ServiceInstancesProvision {
         pub const API_ID: &'static str = super::API_ID;
@@ -3275,7 +4852,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.ServiceInstances.Provision";
         pub const SUBJECT: &'static str = "rpc.v1.auth.ServiceInstances.Provision";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::services_mutate",
+            "trellis.auth@v1::serviceInstancesProvision",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -3335,8 +4912,8 @@ pub mod rpc {
             ServiceInstancesProvisionError::decode(value)
         }
     }
-    pub type ServiceInstancesRemoveInput = crate::__types::trellis::AuthServiceInstancesRemoveRequest;
-    pub type ServiceInstancesRemoveOutput = crate::__types::trellis::AuthServiceInstancesRemoveResponse;
+    pub type ServiceInstancesRemoveInput = crate::__types::trellis::AuthInstanceMutationRequest;
+    pub type ServiceInstancesRemoveOutput = crate::__types::trellis::AuthInstanceMutationResponse;
     pub struct ServiceInstancesRemove;
     impl ServiceInstancesRemove {
         pub const API_ID: &'static str = super::API_ID;
@@ -3344,7 +4921,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.ServiceInstances.Remove";
         pub const SUBJECT: &'static str = "rpc.v1.auth.ServiceInstances.Remove";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::services_mutate",
+            "trellis.auth@v1::serviceInstancesRemove",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -3404,7 +4981,7 @@ pub mod rpc {
             ServiceInstancesRemoveError::decode(value)
         }
     }
-    pub type SessionsListInput = crate::__types::trellis::AuthSessionsListRequest;
+    pub type SessionsListInput = crate::__types::trellis::AuthPageRequest;
     pub type SessionsListOutput = crate::__types::trellis::AuthSessionsListResponse;
     pub struct SessionsList;
     impl SessionsList {
@@ -3413,7 +4990,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Sessions.List";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Sessions.List";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::sessions_read",
+            "trellis.auth@v1::sessionsRead",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -3473,7 +5050,7 @@ pub mod rpc {
             SessionsListError::decode(value)
         }
     }
-    pub type SessionsLogoutInput = crate::__types::trellis::AuthSessionsLogoutRequest;
+    pub type SessionsLogoutInput = crate::__types::trellis::AuthEmpty;
     pub type SessionsLogoutOutput = crate::__types::trellis::AuthSessionsLogoutResponse;
     pub struct SessionsLogout;
     impl SessionsLogout {
@@ -3481,9 +5058,7 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.Sessions.Logout";
         pub const KEY: &'static str = "auth.Sessions.Logout";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Sessions.Logout";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::public",
-        ];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
             "trellis.auth@v1::UnexpectedError",
@@ -3542,7 +5117,7 @@ pub mod rpc {
             SessionsLogoutError::decode(value)
         }
     }
-    pub type SessionsMeInput = crate::__types::trellis::AuthSessionsMeRequest;
+    pub type SessionsMeInput = crate::__types::trellis::AuthEmpty;
     pub type SessionsMeOutput = crate::__types::trellis::AuthSessionsMeResponse;
     pub struct SessionsMe;
     impl SessionsMe {
@@ -3550,9 +5125,7 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.Sessions.Me";
         pub const KEY: &'static str = "auth.Sessions.Me";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Sessions.Me";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::public",
-        ];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
             "trellis.auth@v1::UnexpectedError",
@@ -3611,8 +5184,8 @@ pub mod rpc {
             SessionsMeError::decode(value)
         }
     }
-    pub type SessionsRevokeInput = crate::__types::trellis::AuthSessionsRevokeRequest;
-    pub type SessionsRevokeOutput = crate::__types::trellis::AuthSessionsRevokeResponse;
+    pub type SessionsRevokeInput = crate::__types::trellis::AuthLoginRevokeRequest;
+    pub type SessionsRevokeOutput = crate::__types::trellis::AuthMutationResult;
     pub struct SessionsRevoke;
     impl SessionsRevoke {
         pub const API_ID: &'static str = super::API_ID;
@@ -3620,7 +5193,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Sessions.Revoke";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Sessions.Revoke";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::sessions_revoke",
+            "trellis.auth@v1::sessionsRevoke",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -3680,7 +5253,7 @@ pub mod rpc {
             SessionsRevokeError::decode(value)
         }
     }
-    pub type UserIdentitiesListInput = crate::__types::trellis::AuthUserIdentitiesListRequest;
+    pub type UserIdentitiesListInput = crate::__types::trellis::AuthPageRequest;
     pub type UserIdentitiesListOutput = crate::__types::trellis::AuthUserIdentitiesListResponse;
     pub struct UserIdentitiesList;
     impl UserIdentitiesList {
@@ -3689,7 +5262,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.UserIdentities.List";
         pub const SUBJECT: &'static str = "rpc.v1.auth.UserIdentities.List";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::public",
+            "trellis.auth@v1::identitiesRead",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -3749,8 +5322,8 @@ pub mod rpc {
             UserIdentitiesListError::decode(value)
         }
     }
-    pub type UserIdentitiesUnlinkInput = crate::__types::trellis::AuthUserIdentitiesUnlinkRequest;
-    pub type UserIdentitiesUnlinkOutput = crate::__types::trellis::AuthUserIdentitiesUnlinkResponse;
+    pub type UserIdentitiesUnlinkInput = crate::__types::trellis::AuthUserIdentityUnlinkRequest;
+    pub type UserIdentitiesUnlinkOutput = crate::__types::trellis::AuthMutationResult;
     pub struct UserIdentitiesUnlink;
     impl UserIdentitiesUnlink {
         pub const API_ID: &'static str = super::API_ID;
@@ -3758,7 +5331,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.UserIdentities.Unlink";
         pub const SUBJECT: &'static str = "rpc.v1.auth.UserIdentities.Unlink";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::public",
+            "trellis.auth@v1::identitiesManage",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -3818,8 +5391,8 @@ pub mod rpc {
             UserIdentitiesUnlinkError::decode(value)
         }
     }
-    pub type UsersCreateInput = crate::__types::trellis::AuthUsersCreateRequest;
-    pub type UsersCreateOutput = crate::__types::trellis::AuthUsersCreateResponse;
+    pub type UsersCreateInput = crate::__types::trellis::AuthUserCreateRequest;
+    pub type UsersCreateOutput = crate::__types::trellis::AuthUserGetResponse;
     pub struct UsersCreate;
     impl UsersCreate {
         pub const API_ID: &'static str = super::API_ID;
@@ -3827,7 +5400,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Users.Create";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Users.Create";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::users_mutate",
+            "trellis.auth@v1::usersCreate",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -3887,8 +5460,8 @@ pub mod rpc {
             UsersCreateError::decode(value)
         }
     }
-    pub type UsersGetInput = crate::__types::trellis::AuthUsersGetRequest;
-    pub type UsersGetOutput = crate::__types::trellis::AuthUsersGetResponse;
+    pub type UsersGetInput = crate::__types::trellis::AuthUserGetRequest;
+    pub type UsersGetOutput = crate::__types::trellis::AuthUserGetResponse;
     pub struct UsersGet;
     impl UsersGet {
         pub const API_ID: &'static str = super::API_ID;
@@ -3896,7 +5469,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Users.Get";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Users.Get";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::users_read",
+            "trellis.auth@v1::usersRead",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -3956,8 +5529,8 @@ pub mod rpc {
             UsersGetError::decode(value)
         }
     }
-    pub type UsersIdentityLinkCreateInput = crate::__types::trellis::AuthUsersIdentityLinkCreateRequest;
-    pub type UsersIdentityLinkCreateOutput = crate::__types::trellis::AuthUsersIdentityLinkCreateResponse;
+    pub type UsersIdentityLinkCreateInput = crate::__types::trellis::AuthIdentityLinkCreateRequest;
+    pub type UsersIdentityLinkCreateOutput = crate::__types::trellis::AuthIdentityLinkCreateResponse;
     pub struct UsersIdentityLinkCreate;
     impl UsersIdentityLinkCreate {
         pub const API_ID: &'static str = super::API_ID;
@@ -3965,7 +5538,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Users.IdentityLink.Create";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Users.IdentityLink.Create";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::public",
+            "trellis.auth@v1::identitiesManage",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -4025,7 +5598,7 @@ pub mod rpc {
             UsersIdentityLinkCreateError::decode(value)
         }
     }
-    pub type UsersListInput = crate::__types::trellis::AuthUsersListRequest;
+    pub type UsersListInput = crate::__types::trellis::AuthPageRequest;
     pub type UsersListOutput = crate::__types::trellis::AuthUsersListResponse;
     pub struct UsersList;
     impl UsersList {
@@ -4034,7 +5607,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Users.List";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Users.List";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::users_read",
+            "trellis.auth@v1::usersRead",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -4094,8 +5667,8 @@ pub mod rpc {
             UsersListError::decode(value)
         }
     }
-    pub type UsersPasswordChangeInput = crate::__types::trellis::AuthUsersPasswordChangeRequest;
-    pub type UsersPasswordChangeOutput = crate::__types::trellis::AuthUsersPasswordChangeResponse;
+    pub type UsersPasswordChangeInput = crate::__types::trellis::AuthPasswordChangeRequest;
+    pub type UsersPasswordChangeOutput = crate::__types::trellis::AuthMutationResult;
     pub struct UsersPasswordChange;
     impl UsersPasswordChange {
         pub const API_ID: &'static str = super::API_ID;
@@ -4103,7 +5676,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Users.Password.Change";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Users.Password.Change";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::public",
+            "trellis.auth@v1::passwordChange",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -4163,8 +5736,8 @@ pub mod rpc {
             UsersPasswordChangeError::decode(value)
         }
     }
-    pub type UsersPasswordResetCreateInput = crate::__types::trellis::AuthUsersPasswordResetCreateRequest;
-    pub type UsersPasswordResetCreateOutput = crate::__types::trellis::AuthUsersPasswordResetCreateResponse;
+    pub type UsersPasswordResetCreateInput = crate::__types::trellis::AuthPasswordResetCreateRequest;
+    pub type UsersPasswordResetCreateOutput = crate::__types::trellis::AuthPasswordResetCreateResponse;
     pub struct UsersPasswordResetCreate;
     impl UsersPasswordResetCreate {
         pub const API_ID: &'static str = super::API_ID;
@@ -4172,7 +5745,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Users.PasswordReset.Create";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Users.PasswordReset.Create";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::users_mutate",
+            "trellis.auth@v1::usersPasswordReset",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -4232,8 +5805,8 @@ pub mod rpc {
             UsersPasswordResetCreateError::decode(value)
         }
     }
-    pub type UsersResolveInput = crate::__types::trellis::AuthUsersResolveRequest;
-    pub type UsersResolveOutput = crate::__types::trellis::AuthUsersResolveResponse;
+    pub type UsersResolveInput = crate::__types::trellis::AuthEmpty;
+    pub type UsersResolveOutput = crate::__types::trellis::AuthUserGetResponse;
     pub struct UsersResolve;
     impl UsersResolve {
         pub const API_ID: &'static str = super::API_ID;
@@ -4241,7 +5814,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Users.Resolve";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Users.Resolve";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::users_read",
+            "trellis.auth@v1::accountRead",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -4301,8 +5874,8 @@ pub mod rpc {
             UsersResolveError::decode(value)
         }
     }
-    pub type UsersUpdateInput = crate::__types::trellis::AuthUsersUpdateRequest;
-    pub type UsersUpdateOutput = crate::__types::trellis::AuthUsersUpdateResponse;
+    pub type UsersUpdateInput = crate::__types::trellis::AuthUserUpdateRequest;
+    pub type UsersUpdateOutput = crate::__types::trellis::AuthUserGetResponse;
     pub struct UsersUpdate;
     impl UsersUpdate {
         pub const API_ID: &'static str = super::API_ID;
@@ -4310,7 +5883,7 @@ pub mod rpc {
         pub const KEY: &'static str = "auth.Users.Update";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Users.Update";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::users_mutate",
+            "trellis.auth@v1::usersUpdate",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
@@ -4371,110 +5944,34 @@ pub mod rpc {
         }
     }
 }
-pub mod operations {
-    pub type DeviceUserAuthoritiesResolveInput = crate::__types::trellis::AuthDeviceUserAuthoritiesResolveRequest;
-    pub type DeviceUserAuthoritiesResolveOutput = crate::__types::trellis::AuthDeviceUserAuthoritiesResolveResponse;
-    pub type DeviceUserAuthoritiesResolveProgress = crate::__types::trellis::AuthDeviceUserAuthoritiesResolveProgress;
-    pub struct DeviceUserAuthoritiesResolve;
-    impl DeviceUserAuthoritiesResolve {
+pub mod operations {}
+pub mod events {
+    pub type AuthorizationSessionsRetiredEvent = crate::__types::trellis::AuthSecurityEvent;
+    pub struct AuthorizationSessionsRetired;
+    impl AuthorizationSessionsRetired {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "operation.DeviceUserAuthorities.Resolve";
-        pub const KEY: &'static str = "auth.DeviceUserAuthorities.Resolve";
-        pub const SUBJECT: &'static str = "operations.v1.auth.DeviceUserAuthorities.Resolve";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::public",
+        pub const DESCRIPTOR_NAME: &'static str = "event.AuthorizationSessions.Retired";
+        pub const KEY: &'static str = "auth.AuthorizationSessions.Retired";
+        pub const SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.AuthorizationSessions.Retired";
+        pub const SUBSCRIBE_SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.AuthorizationSessions.Retired";
+        pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[];
+        pub const DELEGATED_PUBLISH: bool = false;
+        pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::securityObserve",
         ];
-        pub const ERRORS: &'static [&'static str] = &[
-            "trellis.auth@v1::AuthError",
-            "trellis.auth@v1::UnexpectedError",
-            "trellis.auth@v1::ValidationError",
-        ];
-        pub const UPLOAD: bool = false;
     }
-    #[derive(Clone, Debug, PartialEq)]
-    pub enum DeviceUserAuthoritiesResolveError {
-        AuthError(super::errors::AuthError),
-        UnexpectedError(super::errors::UnexpectedError),
-        ValidationError(super::errors::ValidationError),
-    }
-    impl DeviceUserAuthoritiesResolveError {
-        pub fn decode(
-            value: serde_json::Value,
-        ) -> Result<Option<Self>, serde_json::Error> {
-            let error_type = value.get("type").and_then(serde_json::Value::as_str);
-            match error_type {
-                Some("trellis.auth@v1::AuthError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::AuthError,
-                    >(value)
-                        .map(|value| value.map(Self::AuthError))
-                }
-                Some("trellis.auth@v1::UnexpectedError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::UnexpectedError,
-                    >(value)
-                        .map(|value| value.map(Self::UnexpectedError))
-                }
-                Some("trellis.auth@v1::ValidationError") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::ValidationError,
-                    >(value)
-                        .map(|value| value.map(Self::ValidationError))
-                }
-                _ => Ok(None),
-            }
-        }
-    }
-    impl trellis_rs::generated::OperationDeclaredError
-    for DeviceUserAuthoritiesResolveError {
-        fn data(&self) -> &trellis_rs::generated::SerializableErrorData {
-            match self {
-                Self::AuthError(value) => &value.error,
-                Self::UnexpectedError(value) => &value.error,
-                Self::ValidationError(value) => &value.error,
-            }
-        }
-    }
-    impl DeviceUserAuthoritiesResolveError {
-        pub fn into_provider_failure(
-            self,
-        ) -> trellis_rs::generated::DeclaredOperationFailure<Self> {
-            trellis_rs::generated::DeclaredOperationFailure::new(self)
-        }
-    }
-    impl trellis_rs::generated::OperationDescriptor for DeviceUserAuthoritiesResolve {
-        type Input = DeviceUserAuthoritiesResolveInput;
-        type Output = DeviceUserAuthoritiesResolveOutput;
-        type Progress = DeviceUserAuthoritiesResolveProgress;
-        type Update = DeviceUserAuthoritiesResolveProgress;
-        type UpdateEvidence = trellis_rs::client::DeclaredOperationUpdates;
-        type Error = DeviceUserAuthoritiesResolveError;
+    impl trellis_rs::generated::EventDescriptor for AuthorizationSessionsRetired {
+        type Event = AuthorizationSessionsRetiredEvent;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
         const KEY: &'static str = Self::KEY;
-        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
-        const ERRORS: &'static [&'static str] = &[
-            "trellis.auth@v1::AuthError",
-            "trellis.auth@v1::UnexpectedError",
-            "trellis.auth@v1::ValidationError",
-        ];
-        const SIGNALS: &'static [&'static str] = &[];
-        const SIGNAL_INPUT_SCHEMAS_JSON: &'static str = "{}";
-        const UPLOAD: bool = Self::UPLOAD;
-        const HAS_PROGRESS: bool = true;
-        const UPDATE_SCHEMA_JSON: Option<&'static str> = Some(
-            "{\"$defs\":{\"trellis.AuthDeviceUserAuthoritiesResolveProgress\":{\"additionalProperties\":true,\"properties\":{\"companionConsent\":{\"$ref\":\"#/$defs/trellis.ConsentRequest\"},\"retryAfterMs\":{\"pattern\":\"^(0|[1-9][0-9]*)$\",\"type\":\"string\",\"x-trellis-integer\":\"uint64\",\"x-trellis-maximum\":\"18446744073709551615\",\"x-trellis-minimum\":\"0\"},\"state\":{\"$ref\":\"#/$defs/trellis.AuthDeviceUserAuthoritiesResolveProgressState\"}},\"required\":[\"retryAfterMs\",\"state\"],\"type\":\"object\"},\"trellis.AuthDeviceUserAuthoritiesResolveProgressState\":{\"type\":\"string\",\"x-trellis-symbols\":[\"delegation_pending\",\"review_pending\",\"waiting\"]},\"trellis.ConsentCapability\":{\"additionalProperties\":true,\"properties\":{\"alreadyApproved\":{\"type\":\"boolean\"},\"consentDigest\":{\"type\":\"string\"},\"consequence\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"},\"eligible\":{\"type\":\"boolean\"},\"id\":{\"type\":\"string\"},\"required\":{\"type\":\"boolean\"},\"title\":{\"type\":\"string\"}},\"required\":[\"alreadyApproved\",\"consentDigest\",\"consequence\",\"description\",\"eligible\",\"id\",\"required\",\"title\"],\"type\":\"object\"},\"trellis.ConsentCompanion\":{\"additionalProperties\":true,\"properties\":{\"capabilities\":{\"items\":{\"$ref\":\"#/$defs/trellis.ConsentCapability\"},\"type\":\"array\"},\"kind\":{\"$ref\":\"#/$defs/trellis.ResourceOwnerKind\"},\"participantId\":{\"type\":\"string\"},\"required\":{\"type\":\"boolean\"},\"resources\":{\"items\":{\"$ref\":\"#/$defs/trellis.ConsentResource\"},\"type\":\"array\"}},\"required\":[\"capabilities\",\"kind\",\"participantId\",\"required\",\"resources\"],\"type\":\"object\"},\"trellis.ConsentRequest\":{\"additionalProperties\":true,\"properties\":{\"capabilities\":{\"items\":{\"$ref\":\"#/$defs/trellis.ConsentCapability\"},\"type\":\"array\"},\"companion\":{\"$ref\":\"#/$defs/trellis.ConsentCompanion\"},\"decisionDigest\":{\"type\":\"string\"},\"expectedGrantRevision\":{\"pattern\":\"^(0|[1-9][0-9]*)$\",\"type\":\"string\",\"x-trellis-integer\":\"uint64\",\"x-trellis-maximum\":\"18446744073709551615\",\"x-trellis-minimum\":\"0\"},\"installedRevision\":{\"pattern\":\"^(0|[1-9][0-9]*)$\",\"type\":\"string\",\"x-trellis-integer\":\"uint64\",\"x-trellis-maximum\":\"18446744073709551615\",\"x-trellis-minimum\":\"0\"},\"packageDigest\":{\"type\":\"string\"},\"participantId\":{\"type\":\"string\"},\"resources\":{\"items\":{\"$ref\":\"#/$defs/trellis.ConsentResource\"},\"type\":\"array\"}},\"required\":[\"capabilities\",\"decisionDigest\",\"expectedGrantRevision\",\"installedRevision\",\"packageDigest\",\"participantId\",\"resources\"],\"type\":\"object\"},\"trellis.ConsentResource\":{\"additionalProperties\":true,\"properties\":{\"actual\":{\"$ref\":\"#/$defs/trellis.ResourceActual\"},\"alreadyApproved\":{\"type\":\"boolean\"},\"change\":{\"$ref\":\"#/$defs/trellis.ConsentResourceChange\"},\"description\":{\"type\":\"string\"},\"eligible\":{\"type\":\"boolean\"},\"kind\":{\"$ref\":\"#/$defs/trellis.ResourceKind\"},\"name\":{\"type\":\"string\"},\"requestedCommitment\":{\"$ref\":\"#/$defs/trellis.ResourceCommitment\"},\"required\":{\"type\":\"boolean\"},\"title\":{\"type\":\"string\"}},\"required\":[\"alreadyApproved\",\"change\",\"description\",\"eligible\",\"kind\",\"name\",\"requestedCommitment\",\"required\",\"title\"],\"type\":\"object\"},\"trellis.ConsentResourceChange\":{\"type\":\"string\",\"x-trellis-symbols\":[\"detached\",\"expanded\",\"incompatible\",\"new\",\"reduced\",\"unchanged\"]},\"trellis.ResourceActual\":{\"additionalProperties\":true,\"properties\":{\"history\":{\"$ref\":\"#/$defs/trellis.ResourceHistory\"},\"maxObjectBytes\":{\"$ref\":\"#/$defs/trellis.ResourceCapacityBytes\"},\"maxTotalBytes\":{\"$ref\":\"#/$defs/trellis.ResourceCapacityBytes\"},\"maxValueBytes\":{\"$ref\":\"#/$defs/trellis.ResourceCapacityBytes\"},\"representationVersion\":{\"$ref\":\"#/$defs/trellis.StateRepresentationVersion\"},\"ttlMs\":{\"pattern\":\"^(0|[1-9][0-9]*)$\",\"type\":\"string\",\"x-trellis-integer\":\"uint64\",\"x-trellis-maximum\":\"18446744073709551615\",\"x-trellis-minimum\":\"0\"}},\"required\":[],\"type\":\"object\"},\"trellis.ResourceCapacityBytes\":{\"pattern\":\"^(0|[1-9][0-9]*)$\",\"type\":\"string\",\"x-trellis-integer\":\"uint64\",\"x-trellis-maximum\":\"9007199254740991\",\"x-trellis-minimum\":\"0\"},\"trellis.ResourceCommitment\":{\"additionalProperties\":true,\"properties\":{\"desiredMaxObjectBytes\":{\"$ref\":\"#/$defs/trellis.ResourceCapacityBytes\"},\"desiredMaxTotalBytes\":{\"$ref\":\"#/$defs/trellis.ResourceCapacityBytes\"},\"desiredMaxValueBytes\":{\"$ref\":\"#/$defs/trellis.ResourceCapacityBytes\"},\"history\":{\"$ref\":\"#/$defs/trellis.ResourceHistory\"},\"ttlMs\":{\"pattern\":\"^(0|[1-9][0-9]*)$\",\"type\":\"string\",\"x-trellis-integer\":\"uint64\",\"x-trellis-maximum\":\"18446744073709551615\",\"x-trellis-minimum\":\"0\"}},\"required\":[],\"type\":\"object\"},\"trellis.ResourceHistory\":{\"pattern\":\"^(0|[1-9][0-9]*)$\",\"type\":\"string\",\"x-trellis-integer\":\"uint64\",\"x-trellis-maximum\":\"9007199254740991\",\"x-trellis-minimum\":\"0\"},\"trellis.ResourceKind\":{\"type\":\"string\",\"x-trellis-symbols\":[\"consumer\",\"job\",\"kv\",\"state\",\"store\"]},\"trellis.ResourceOwnerKind\":{\"type\":\"string\",\"x-trellis-symbols\":[\"agent\",\"app\",\"device\",\"service\"]},\"trellis.StateRepresentationVersion\":{\"maximum\":4294967295,\"minimum\":1,\"type\":\"integer\"}},\"$ref\":\"#/$defs/trellis.AuthDeviceUserAuthoritiesResolveProgress\",\"$schema\":\"https://json-schema.org/draft/2020-12/schema\"}",
-        );
-        fn decode_error(
-            value: serde_json::Value,
-        ) -> Result<Option<Self::Error>, serde_json::Error> {
-            DeviceUserAuthoritiesResolveError::decode(value)
-        }
+        const SUBSCRIBE_SUBJECT: &'static str = Self::SUBSCRIBE_SUBJECT;
+        const PUBLISH_CAPABILITIES: &'static [&'static str] = Self::PUBLISH_CAPABILITIES;
+        const DELEGATED_PUBLISH: bool = Self::DELEGATED_PUBLISH;
+        const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = Self::SUBSCRIBE_CAPABILITIES;
     }
-}
-pub mod events {
-    pub type ConnectionsClosedEvent = crate::__types::trellis::AuthConnectionsClosedEvent;
+    pub type ConnectionsClosedEvent = crate::__types::trellis::AuthSecurityEvent;
     pub struct ConnectionsClosed;
     impl ConnectionsClosed {
         pub const API_ID: &'static str = super::API_ID;
@@ -4482,12 +5979,10 @@ pub mod events {
         pub const KEY: &'static str = "auth.Connections.Closed";
         pub const SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.Connections.Closed";
         pub const SUBSCRIBE_SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.Connections.Closed";
-        pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::public",
-        ];
-        pub const DELEGATED_PUBLISH: bool = true;
+        pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[];
+        pub const DELEGATED_PUBLISH: bool = false;
         pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::events_stream",
+            "trellis.auth@v1::securityObserve",
         ];
     }
     impl trellis_rs::generated::EventDescriptor for ConnectionsClosed {
@@ -4501,7 +5996,7 @@ pub mod events {
         const DELEGATED_PUBLISH: bool = Self::DELEGATED_PUBLISH;
         const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = Self::SUBSCRIBE_CAPABILITIES;
     }
-    pub type ConnectionsKickedEvent = crate::__types::trellis::AuthConnectionsKickedEvent;
+    pub type ConnectionsKickedEvent = crate::__types::trellis::AuthSecurityEvent;
     pub struct ConnectionsKicked;
     impl ConnectionsKicked {
         pub const API_ID: &'static str = super::API_ID;
@@ -4509,12 +6004,10 @@ pub mod events {
         pub const KEY: &'static str = "auth.Connections.Kicked";
         pub const SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.Connections.Kicked";
         pub const SUBSCRIBE_SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.Connections.Kicked";
-        pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::public",
-        ];
-        pub const DELEGATED_PUBLISH: bool = true;
+        pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[];
+        pub const DELEGATED_PUBLISH: bool = false;
         pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::events_stream",
+            "trellis.auth@v1::securityObserve",
         ];
     }
     impl trellis_rs::generated::EventDescriptor for ConnectionsKicked {
@@ -4528,7 +6021,7 @@ pub mod events {
         const DELEGATED_PUBLISH: bool = Self::DELEGATED_PUBLISH;
         const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = Self::SUBSCRIBE_CAPABILITIES;
     }
-    pub type ConnectionsOpenedEvent = crate::__types::trellis::AuthConnectionsOpenedEvent;
+    pub type ConnectionsOpenedEvent = crate::__types::trellis::AuthSecurityEvent;
     pub struct ConnectionsOpened;
     impl ConnectionsOpened {
         pub const API_ID: &'static str = super::API_ID;
@@ -4536,12 +6029,10 @@ pub mod events {
         pub const KEY: &'static str = "auth.Connections.Opened";
         pub const SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.Connections.Opened";
         pub const SUBSCRIBE_SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.Connections.Opened";
-        pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::public",
-        ];
-        pub const DELEGATED_PUBLISH: bool = true;
+        pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[];
+        pub const DELEGATED_PUBLISH: bool = false;
         pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::events_stream",
+            "trellis.auth@v1::securityObserve",
         ];
     }
     impl trellis_rs::generated::EventDescriptor for ConnectionsOpened {
@@ -4555,143 +6046,7 @@ pub mod events {
         const DELEGATED_PUBLISH: bool = Self::DELEGATED_PUBLISH;
         const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = Self::SUBSCRIBE_CAPABILITIES;
     }
-    pub type DeviceUserAuthoritiesApprovedEvent = crate::__types::trellis::AuthDeviceUserAuthoritiesApprovedEvent;
-    pub struct DeviceUserAuthoritiesApproved;
-    impl DeviceUserAuthoritiesApproved {
-        pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "event.DeviceUserAuthorities.Approved";
-        pub const KEY: &'static str = "auth.DeviceUserAuthorities.Approved";
-        pub const SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.DeviceUserAuthorities.Approved.{/deploymentId}";
-        pub const SUBSCRIBE_SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.DeviceUserAuthorities.Approved.*";
-        pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::public",
-        ];
-        pub const DELEGATED_PUBLISH: bool = true;
-        pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::events_stream",
-        ];
-    }
-    impl trellis_rs::generated::EventDescriptor for DeviceUserAuthoritiesApproved {
-        type Event = DeviceUserAuthoritiesApprovedEvent;
-        const API_ID: &'static str = super::API_ID;
-        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
-        const SUBJECT: &'static str = Self::SUBJECT;
-        const KEY: &'static str = Self::KEY;
-        const SUBSCRIBE_SUBJECT: &'static str = Self::SUBSCRIBE_SUBJECT;
-        const PUBLISH_CAPABILITIES: &'static [&'static str] = Self::PUBLISH_CAPABILITIES;
-        const DELEGATED_PUBLISH: bool = Self::DELEGATED_PUBLISH;
-        const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = Self::SUBSCRIBE_CAPABILITIES;
-    }
-    pub type DeviceUserAuthoritiesRequestedEvent = crate::__types::trellis::AuthDeviceUserAuthoritiesRequestedEvent;
-    pub struct DeviceUserAuthoritiesRequested;
-    impl DeviceUserAuthoritiesRequested {
-        pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "event.DeviceUserAuthorities.Requested";
-        pub const KEY: &'static str = "auth.DeviceUserAuthorities.Requested";
-        pub const SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.DeviceUserAuthorities.Requested.{/deploymentId}";
-        pub const SUBSCRIBE_SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.DeviceUserAuthorities.Requested.*";
-        pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::public",
-        ];
-        pub const DELEGATED_PUBLISH: bool = true;
-        pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::events_stream",
-        ];
-    }
-    impl trellis_rs::generated::EventDescriptor for DeviceUserAuthoritiesRequested {
-        type Event = DeviceUserAuthoritiesRequestedEvent;
-        const API_ID: &'static str = super::API_ID;
-        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
-        const SUBJECT: &'static str = Self::SUBJECT;
-        const KEY: &'static str = Self::KEY;
-        const SUBSCRIBE_SUBJECT: &'static str = Self::SUBSCRIBE_SUBJECT;
-        const PUBLISH_CAPABILITIES: &'static [&'static str] = Self::PUBLISH_CAPABILITIES;
-        const DELEGATED_PUBLISH: bool = Self::DELEGATED_PUBLISH;
-        const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = Self::SUBSCRIBE_CAPABILITIES;
-    }
-    pub type DeviceUserAuthoritiesResolvedEvent = crate::__types::trellis::AuthDeviceUserAuthoritiesResolvedEvent;
-    pub struct DeviceUserAuthoritiesResolved;
-    impl DeviceUserAuthoritiesResolved {
-        pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "event.DeviceUserAuthorities.Resolved";
-        pub const KEY: &'static str = "auth.DeviceUserAuthorities.Resolved";
-        pub const SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.DeviceUserAuthorities.Resolved.{/deploymentId}";
-        pub const SUBSCRIBE_SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.DeviceUserAuthorities.Resolved.*";
-        pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::public",
-        ];
-        pub const DELEGATED_PUBLISH: bool = true;
-        pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::events_stream",
-        ];
-    }
-    impl trellis_rs::generated::EventDescriptor for DeviceUserAuthoritiesResolved {
-        type Event = DeviceUserAuthoritiesResolvedEvent;
-        const API_ID: &'static str = super::API_ID;
-        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
-        const SUBJECT: &'static str = Self::SUBJECT;
-        const KEY: &'static str = Self::KEY;
-        const SUBSCRIBE_SUBJECT: &'static str = Self::SUBSCRIBE_SUBJECT;
-        const PUBLISH_CAPABILITIES: &'static [&'static str] = Self::PUBLISH_CAPABILITIES;
-        const DELEGATED_PUBLISH: bool = Self::DELEGATED_PUBLISH;
-        const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = Self::SUBSCRIBE_CAPABILITIES;
-    }
-    pub type DeviceUserAuthoritiesReviewRequestedEvent = crate::__types::trellis::AuthDeviceUserAuthoritiesReviewRequestedEvent;
-    pub struct DeviceUserAuthoritiesReviewRequested;
-    impl DeviceUserAuthoritiesReviewRequested {
-        pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "event.DeviceUserAuthorities.ReviewRequested";
-        pub const KEY: &'static str = "auth.DeviceUserAuthorities.ReviewRequested";
-        pub const SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.DeviceUserAuthorities.ReviewRequested.{/deploymentId}";
-        pub const SUBSCRIBE_SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.DeviceUserAuthorities.ReviewRequested.*";
-        pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::public",
-        ];
-        pub const DELEGATED_PUBLISH: bool = true;
-        pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::events_stream",
-        ];
-    }
-    impl trellis_rs::generated::EventDescriptor
-    for DeviceUserAuthoritiesReviewRequested {
-        type Event = DeviceUserAuthoritiesReviewRequestedEvent;
-        const API_ID: &'static str = super::API_ID;
-        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
-        const SUBJECT: &'static str = Self::SUBJECT;
-        const KEY: &'static str = Self::KEY;
-        const SUBSCRIBE_SUBJECT: &'static str = Self::SUBSCRIBE_SUBJECT;
-        const PUBLISH_CAPABILITIES: &'static [&'static str] = Self::PUBLISH_CAPABILITIES;
-        const DELEGATED_PUBLISH: bool = Self::DELEGATED_PUBLISH;
-        const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = Self::SUBSCRIBE_CAPABILITIES;
-    }
-    pub type GrantsChangedEvent = crate::__types::trellis::AuthGrantsChangedEvent;
-    pub struct GrantsChanged;
-    impl GrantsChanged {
-        pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "event.Grants.Changed";
-        pub const KEY: &'static str = "auth.Grants.Changed";
-        pub const SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.Grants.Changed";
-        pub const SUBSCRIBE_SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.Grants.Changed";
-        pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::public",
-        ];
-        pub const DELEGATED_PUBLISH: bool = true;
-        pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::public",
-        ];
-    }
-    impl trellis_rs::generated::EventDescriptor for GrantsChanged {
-        type Event = GrantsChangedEvent;
-        const API_ID: &'static str = super::API_ID;
-        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
-        const SUBJECT: &'static str = Self::SUBJECT;
-        const KEY: &'static str = Self::KEY;
-        const SUBSCRIBE_SUBJECT: &'static str = Self::SUBSCRIBE_SUBJECT;
-        const PUBLISH_CAPABILITIES: &'static [&'static str] = Self::PUBLISH_CAPABILITIES;
-        const DELEGATED_PUBLISH: bool = Self::DELEGATED_PUBLISH;
-        const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = Self::SUBSCRIBE_CAPABILITIES;
-    }
-    pub type IssuersRevokedEvent = crate::__types::trellis::AuthIssuersRevokedEvent;
+    pub type IssuersRevokedEvent = crate::__types::trellis::AuthSecurityEvent;
     pub struct IssuersRevoked;
     impl IssuersRevoked {
         pub const API_ID: &'static str = super::API_ID;
@@ -4699,12 +6054,10 @@ pub mod events {
         pub const KEY: &'static str = "auth.Issuers.Revoked";
         pub const SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.Issuers.Revoked";
         pub const SUBSCRIBE_SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.Issuers.Revoked";
-        pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::public",
-        ];
-        pub const DELEGATED_PUBLISH: bool = true;
+        pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[];
+        pub const DELEGATED_PUBLISH: bool = false;
         pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::public",
+            "trellis.auth@v1::securityObserve",
         ];
     }
     impl trellis_rs::generated::EventDescriptor for IssuersRevoked {
@@ -4718,24 +6071,22 @@ pub mod events {
         const DELEGATED_PUBLISH: bool = Self::DELEGATED_PUBLISH;
         const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = Self::SUBSCRIBE_CAPABILITIES;
     }
-    pub type SessionsRevokedEvent = crate::__types::trellis::AuthSessionsRevokedEvent;
-    pub struct SessionsRevoked;
-    impl SessionsRevoked {
+    pub type IssuersRotatedEvent = crate::__types::trellis::AuthSecurityEvent;
+    pub struct IssuersRotated;
+    impl IssuersRotated {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "event.Sessions.Revoked";
-        pub const KEY: &'static str = "auth.Sessions.Revoked";
-        pub const SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.Sessions.Revoked";
-        pub const SUBSCRIBE_SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.Sessions.Revoked";
-        pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::public",
-        ];
-        pub const DELEGATED_PUBLISH: bool = true;
+        pub const DESCRIPTOR_NAME: &'static str = "event.Issuers.Rotated";
+        pub const KEY: &'static str = "auth.Issuers.Rotated";
+        pub const SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.Issuers.Rotated";
+        pub const SUBSCRIBE_SUBJECT: &'static str = "events.v1.dHJlbGxpcy5hdXRoQHYx.Issuers.Rotated";
+        pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[];
+        pub const DELEGATED_PUBLISH: bool = false;
         pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.auth@v1::events_stream",
+            "trellis.auth@v1::securityObserve",
         ];
     }
-    impl trellis_rs::generated::EventDescriptor for SessionsRevoked {
-        type Event = SessionsRevokedEvent;
+    impl trellis_rs::generated::EventDescriptor for IssuersRotated {
+        type Event = IssuersRotatedEvent;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
@@ -4750,13 +6101,26 @@ pub mod lives {}
 /// Registers metadata for every RPC in this API.
 pub fn register_rpc_metadata(router: &mut trellis_rs::service::Router) {
     let _ = router;
+    router.register_rpc_metadata::<rpc::AdmissionRenew>();
+    router.register_rpc_metadata::<rpc::ApisAccept>();
+    router.register_rpc_metadata::<rpc::ApisForceReplace>();
+    router.register_rpc_metadata::<rpc::ApisGet>();
+    router.register_rpc_metadata::<rpc::ApisList>();
+    router.register_rpc_metadata::<rpc::ApisReview>();
+    router.register_rpc_metadata::<rpc::AuthorityRenew>();
+    router.register_rpc_metadata::<rpc::AuthorityResolve>();
+    router.register_rpc_metadata::<rpc::AuthorityStatus>();
+    router.register_rpc_metadata::<rpc::AuthorizationSessionsList>();
+    router.register_rpc_metadata::<rpc::AuthorizationSessionsRevoke>();
     router.register_rpc_metadata::<rpc::CapabilitiesList>();
-    router.register_rpc_metadata::<rpc::CapabilityGroupsDelete>();
-    router.register_rpc_metadata::<rpc::CapabilityGroupsGet>();
-    router.register_rpc_metadata::<rpc::CapabilityGroupsList>();
-    router.register_rpc_metadata::<rpc::CapabilityGroupsPut>();
+    router.register_rpc_metadata::<rpc::CapabilityGrantsGrant>();
+    router.register_rpc_metadata::<rpc::CapabilityGrantsList>();
+    router.register_rpc_metadata::<rpc::CapabilityGrantsRevoke>();
     router.register_rpc_metadata::<rpc::ConnectionsKick>();
     router.register_rpc_metadata::<rpc::ConnectionsList>();
+    router.register_rpc_metadata::<rpc::DelegationsList>();
+    router.register_rpc_metadata::<rpc::DelegationsReview>();
+    router.register_rpc_metadata::<rpc::DelegationsRevoke>();
     router.register_rpc_metadata::<rpc::DeploymentsApply>();
     router.register_rpc_metadata::<rpc::DeploymentsCreate>();
     router.register_rpc_metadata::<rpc::DeploymentsDisable>();
@@ -4764,34 +6128,44 @@ pub fn register_rpc_metadata(router: &mut trellis_rs::service::Router) {
     router.register_rpc_metadata::<rpc::DeploymentsGet>();
     router.register_rpc_metadata::<rpc::DeploymentsList>();
     router.register_rpc_metadata::<rpc::DeploymentsRemove>();
-    router.register_rpc_metadata::<rpc::DeviceUserAuthoritiesList>();
-    router.register_rpc_metadata::<rpc::DeviceUserAuthoritiesReviewsDecide>();
-    router.register_rpc_metadata::<rpc::DeviceUserAuthoritiesReviewsList>();
-    router.register_rpc_metadata::<rpc::DeviceUserAuthoritiesRevoke>();
     router.register_rpc_metadata::<rpc::DevicesDisable>();
     router.register_rpc_metadata::<rpc::DevicesEnable>();
     router.register_rpc_metadata::<rpc::DevicesList>();
     router.register_rpc_metadata::<rpc::DevicesProvision>();
     router.register_rpc_metadata::<rpc::DevicesRemove>();
-    router.register_rpc_metadata::<rpc::GrantsGet>();
-    router.register_rpc_metadata::<rpc::GrantsList>();
-    router.register_rpc_metadata::<rpc::GrantsRevoke>();
-    router.register_rpc_metadata::<rpc::GrantsSet>();
+    router.register_rpc_metadata::<rpc::IssuersResolveChain>();
     router.register_rpc_metadata::<rpc::IssuersRevoke>();
-    router.register_rpc_metadata::<rpc::ParticipantsGet>();
-    router.register_rpc_metadata::<rpc::ParticipantsInstall>();
-    router.register_rpc_metadata::<rpc::ParticipantsList>();
-    router.register_rpc_metadata::<rpc::PortalsGet>();
-    router.register_rpc_metadata::<rpc::PortalsGrantOverridesList>();
-    router.register_rpc_metadata::<rpc::PortalsGrantOverridesPut>();
-    router.register_rpc_metadata::<rpc::PortalsGrantOverridesRemove>();
-    router.register_rpc_metadata::<rpc::PortalsList>();
-    router.register_rpc_metadata::<rpc::PortalsLoginSettingsGet>();
-    router.register_rpc_metadata::<rpc::PortalsLoginSettingsUpdate>();
-    router.register_rpc_metadata::<rpc::PortalsPut>();
-    router.register_rpc_metadata::<rpc::PortalsRemove>();
-    router.register_rpc_metadata::<rpc::PortalsRoutesPut>();
-    router.register_rpc_metadata::<rpc::PortalsRoutesRemove>();
+    router.register_rpc_metadata::<rpc::IssuersRotate>();
+    router.register_rpc_metadata::<rpc::OAuthClientsDelete>();
+    router.register_rpc_metadata::<rpc::OAuthClientsDisable>();
+    router.register_rpc_metadata::<rpc::OAuthClientsGet>();
+    router.register_rpc_metadata::<rpc::OAuthClientsList>();
+    router.register_rpc_metadata::<rpc::OAuthClientsPut>();
+    router.register_rpc_metadata::<rpc::OIDCProvidersDelete>();
+    router.register_rpc_metadata::<rpc::OIDCProvidersDisable>();
+    router.register_rpc_metadata::<rpc::OIDCProvidersGet>();
+    router.register_rpc_metadata::<rpc::OIDCProvidersList>();
+    router.register_rpc_metadata::<rpc::OIDCProvidersPut>();
+    router.register_rpc_metadata::<rpc::OIDCRoleMappingsDelete>();
+    router.register_rpc_metadata::<rpc::OIDCRoleMappingsList>();
+    router.register_rpc_metadata::<rpc::OIDCRoleMappingsPut>();
+    router.register_rpc_metadata::<rpc::PlatformDelegationsList>();
+    router.register_rpc_metadata::<rpc::PlatformDelegationsPut>();
+    router.register_rpc_metadata::<rpc::PlatformDelegationsRevoke>();
+    router.register_rpc_metadata::<rpc::PlatformPrivilegesAssign>();
+    router.register_rpc_metadata::<rpc::PlatformPrivilegesList>();
+    router.register_rpc_metadata::<rpc::PlatformPrivilegesRevoke>();
+    router.register_rpc_metadata::<rpc::PrincipalsEffectiveAccess>();
+    router.register_rpc_metadata::<rpc::ResourcesGet>();
+    router.register_rpc_metadata::<rpc::ResourcesList>();
+    router.register_rpc_metadata::<rpc::ResourcesRemove>();
+    router.register_rpc_metadata::<rpc::RoleAssignmentsAssign>();
+    router.register_rpc_metadata::<rpc::RoleAssignmentsList>();
+    router.register_rpc_metadata::<rpc::RoleAssignmentsRevoke>();
+    router.register_rpc_metadata::<rpc::RolesDelete>();
+    router.register_rpc_metadata::<rpc::RolesGet>();
+    router.register_rpc_metadata::<rpc::RolesList>();
+    router.register_rpc_metadata::<rpc::RolesPut>();
     router.register_rpc_metadata::<rpc::ServiceInstancesDisable>();
     router.register_rpc_metadata::<rpc::ServiceInstancesEnable>();
     router.register_rpc_metadata::<rpc::ServiceInstancesList>();
@@ -4819,6 +6193,291 @@ pub struct Client {
 impl Client {
     pub fn from_generated(inner: trellis_rs::generated::Client) -> Self {
         Self { inner }
+    }
+    pub async fn admission_renew(
+        &self,
+        input: &rpc::AdmissionRenewInput,
+    ) -> Result<
+        rpc::AdmissionRenewOutput,
+        trellis_rs::client::CallError<rpc::AdmissionRenewError>,
+    > {
+        self.inner.call::<rpc::AdmissionRenew>(input).await
+    }
+    pub async fn apis_accept(
+        &self,
+        input: &rpc::ApisAcceptInput,
+    ) -> Result<
+        rpc::ApisAcceptOutput,
+        trellis_rs::client::CallError<rpc::ApisAcceptError>,
+    > {
+        self.inner.call::<rpc::ApisAccept>(input).await
+    }
+    pub async fn apis_force_replace(
+        &self,
+        input: &rpc::ApisForceReplaceInput,
+    ) -> Result<
+        rpc::ApisForceReplaceOutput,
+        trellis_rs::client::CallError<rpc::ApisForceReplaceError>,
+    > {
+        self.inner.call::<rpc::ApisForceReplace>(input).await
+    }
+    pub async fn apis_get(
+        &self,
+        input: &rpc::ApisGetInput,
+    ) -> Result<rpc::ApisGetOutput, trellis_rs::client::CallError<rpc::ApisGetError>> {
+        self.inner.call::<rpc::ApisGet>(input).await
+    }
+    pub async fn apis_list(
+        &self,
+        input: &rpc::ApisListInput,
+    ) -> Result<rpc::ApisListOutput, trellis_rs::client::CallError<rpc::ApisListError>> {
+        self.inner.call::<rpc::ApisList>(input).await
+    }
+    pub fn apis_list_pages(
+        &self,
+        input: rpc::ApisListInput,
+    ) -> futures_util::stream::BoxStream<
+        'static,
+        Result<rpc::ApisListOutput, crate::PaginationError<rpc::ApisListError>>,
+    > {
+        let client = self.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+            seen.insert(cursor);
+        }
+        Box::pin(
+            futures_util::stream::try_unfold(
+                (client, input, seen, false),
+                |(client, mut input, mut seen, done)| async move {
+                    if done {
+                        return Ok(None);
+                    }
+                    let page = client
+                        .apis_list(&input)
+                        .await
+                        .map_err(crate::PaginationError::Call)?;
+                    let next = page.page.next_cursor.clone();
+                    let done = next.is_none();
+                    if let Some(cursor) = next {
+                        if !seen.insert(cursor.clone()) {
+                            return Err(crate::PaginationError::RepeatedCursor(cursor));
+                        }
+                        let limit = input.page.as_ref().and_then(|page| page.limit);
+                        input.page = Some(crate::__types::CursorQuery {
+                            cursor: Some(cursor),
+                            limit,
+                        });
+                    }
+                    Ok(Some((page, (client, input, seen, done))))
+                },
+            ),
+        )
+    }
+    pub fn apis_list_items(
+        &self,
+        input: rpc::ApisListInput,
+    ) -> futures_util::stream::BoxStream<
+        'static,
+        Result<
+            crate::__types::trellis::AuthAcceptedApi,
+            crate::PaginationError<rpc::ApisListError>,
+        >,
+    > {
+        let client = self.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+            seen.insert(cursor);
+        }
+        Box::pin(
+            futures_util::stream::try_unfold(
+                (
+                    client,
+                    input,
+                    seen,
+                    false,
+                    Vec::<crate::__types::trellis::AuthAcceptedApi>::new().into_iter(),
+                ),
+                |(client, mut input, mut seen, mut done, mut items)| async move {
+                    loop {
+                        if let Some(item) = items.next() {
+                            return Ok(Some((item, (client, input, seen, done, items))));
+                        }
+                        if done {
+                            return Ok(None);
+                        }
+                        let page = client
+                            .apis_list(&input)
+                            .await
+                            .map_err(crate::PaginationError::Call)?;
+                        let next = page.page.next_cursor.clone();
+                        done = next.is_none();
+                        if let Some(cursor) = next {
+                            if !seen.insert(cursor.clone()) {
+                                return Err(crate::PaginationError::RepeatedCursor(cursor));
+                            }
+                            let limit = input.page.as_ref().and_then(|page| page.limit);
+                            input.page = Some(crate::__types::CursorQuery {
+                                cursor: Some(cursor),
+                                limit,
+                            });
+                        }
+                        items = page.items.into_iter();
+                    }
+                },
+            ),
+        )
+    }
+    pub async fn apis_review(
+        &self,
+        input: &rpc::ApisReviewInput,
+    ) -> Result<
+        rpc::ApisReviewOutput,
+        trellis_rs::client::CallError<rpc::ApisReviewError>,
+    > {
+        self.inner.call::<rpc::ApisReview>(input).await
+    }
+    pub async fn authority_renew(
+        &self,
+        input: &rpc::AuthorityRenewInput,
+    ) -> Result<
+        rpc::AuthorityRenewOutput,
+        trellis_rs::client::CallError<rpc::AuthorityRenewError>,
+    > {
+        self.inner.call::<rpc::AuthorityRenew>(input).await
+    }
+    pub async fn authority_resolve(
+        &self,
+        input: &rpc::AuthorityResolveInput,
+    ) -> Result<
+        rpc::AuthorityResolveOutput,
+        trellis_rs::client::CallError<rpc::AuthorityResolveError>,
+    > {
+        self.inner.call::<rpc::AuthorityResolve>(input).await
+    }
+    pub async fn authority_status(
+        &self,
+        input: &rpc::AuthorityStatusInput,
+    ) -> Result<
+        rpc::AuthorityStatusOutput,
+        trellis_rs::client::CallError<rpc::AuthorityStatusError>,
+    > {
+        self.inner.call::<rpc::AuthorityStatus>(input).await
+    }
+    pub async fn authorization_sessions_list(
+        &self,
+        input: &rpc::AuthorizationSessionsListInput,
+    ) -> Result<
+        rpc::AuthorizationSessionsListOutput,
+        trellis_rs::client::CallError<rpc::AuthorizationSessionsListError>,
+    > {
+        self.inner.call::<rpc::AuthorizationSessionsList>(input).await
+    }
+    pub fn authorization_sessions_list_pages(
+        &self,
+        input: rpc::AuthorizationSessionsListInput,
+    ) -> futures_util::stream::BoxStream<
+        'static,
+        Result<
+            rpc::AuthorizationSessionsListOutput,
+            crate::PaginationError<rpc::AuthorizationSessionsListError>,
+        >,
+    > {
+        let client = self.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+            seen.insert(cursor);
+        }
+        Box::pin(
+            futures_util::stream::try_unfold(
+                (client, input, seen, false),
+                |(client, mut input, mut seen, done)| async move {
+                    if done {
+                        return Ok(None);
+                    }
+                    let page = client
+                        .authorization_sessions_list(&input)
+                        .await
+                        .map_err(crate::PaginationError::Call)?;
+                    let next = page.page.next_cursor.clone();
+                    let done = next.is_none();
+                    if let Some(cursor) = next {
+                        if !seen.insert(cursor.clone()) {
+                            return Err(crate::PaginationError::RepeatedCursor(cursor));
+                        }
+                        let limit = input.page.as_ref().and_then(|page| page.limit);
+                        input.page = Some(crate::__types::CursorQuery {
+                            cursor: Some(cursor),
+                            limit,
+                        });
+                    }
+                    Ok(Some((page, (client, input, seen, done))))
+                },
+            ),
+        )
+    }
+    pub fn authorization_sessions_list_items(
+        &self,
+        input: rpc::AuthorizationSessionsListInput,
+    ) -> futures_util::stream::BoxStream<
+        'static,
+        Result<
+            crate::__types::trellis::AuthAuthorizationSession,
+            crate::PaginationError<rpc::AuthorizationSessionsListError>,
+        >,
+    > {
+        let client = self.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+            seen.insert(cursor);
+        }
+        Box::pin(
+            futures_util::stream::try_unfold(
+                (
+                    client,
+                    input,
+                    seen,
+                    false,
+                    Vec::<crate::__types::trellis::AuthAuthorizationSession>::new()
+                        .into_iter(),
+                ),
+                |(client, mut input, mut seen, mut done, mut items)| async move {
+                    loop {
+                        if let Some(item) = items.next() {
+                            return Ok(Some((item, (client, input, seen, done, items))));
+                        }
+                        if done {
+                            return Ok(None);
+                        }
+                        let page = client
+                            .authorization_sessions_list(&input)
+                            .await
+                            .map_err(crate::PaginationError::Call)?;
+                        let next = page.page.next_cursor.clone();
+                        done = next.is_none();
+                        if let Some(cursor) = next {
+                            if !seen.insert(cursor.clone()) {
+                                return Err(crate::PaginationError::RepeatedCursor(cursor));
+                            }
+                            let limit = input.page.as_ref().and_then(|page| page.limit);
+                            input.page = Some(crate::__types::CursorQuery {
+                                cursor: Some(cursor),
+                                limit,
+                            });
+                        }
+                        items = page.items.into_iter();
+                    }
+                },
+            ),
+        )
+    }
+    pub async fn authorization_sessions_revoke(
+        &self,
+        input: &rpc::AuthorizationSessionsRevokeInput,
+    ) -> Result<
+        rpc::AuthorizationSessionsRevokeOutput,
+        trellis_rs::client::CallError<rpc::AuthorizationSessionsRevokeError>,
+    > {
+        self.inner.call::<rpc::AuthorizationSessionsRevoke>(input).await
     }
     pub async fn capabilities_list(
         &self,
@@ -4878,7 +6537,7 @@ impl Client {
     ) -> futures_util::stream::BoxStream<
         'static,
         Result<
-            crate::__types::trellis::AuthCapabilitiesListResponseentriesItem,
+            crate::__types::trellis::AuthCapabilityDefinition,
             crate::PaginationError<rpc::CapabilitiesListError>,
         >,
     > {
@@ -4894,9 +6553,7 @@ impl Client {
                     input,
                     seen,
                     false,
-                    Vec::<
-                        crate::__types::trellis::AuthCapabilitiesListResponseentriesItem,
-                    >::new()
+                    Vec::<crate::__types::trellis::AuthCapabilityDefinition>::new()
                         .into_iter(),
                 ),
                 |(client, mut input, mut seen, mut done, mut items)| async move {
@@ -4929,41 +6586,32 @@ impl Client {
             ),
         )
     }
-    pub async fn capability_groups_delete(
+    pub async fn capability_grants_grant(
         &self,
-        input: &rpc::CapabilityGroupsDeleteInput,
+        input: &rpc::CapabilityGrantsGrantInput,
     ) -> Result<
-        rpc::CapabilityGroupsDeleteOutput,
-        trellis_rs::client::CallError<rpc::CapabilityGroupsDeleteError>,
+        rpc::CapabilityGrantsGrantOutput,
+        trellis_rs::client::CallError<rpc::CapabilityGrantsGrantError>,
     > {
-        self.inner.call::<rpc::CapabilityGroupsDelete>(input).await
+        self.inner.call::<rpc::CapabilityGrantsGrant>(input).await
     }
-    pub async fn capability_groups_get(
+    pub async fn capability_grants_list(
         &self,
-        input: &rpc::CapabilityGroupsGetInput,
+        input: &rpc::CapabilityGrantsListInput,
     ) -> Result<
-        rpc::CapabilityGroupsGetOutput,
-        trellis_rs::client::CallError<rpc::CapabilityGroupsGetError>,
+        rpc::CapabilityGrantsListOutput,
+        trellis_rs::client::CallError<rpc::CapabilityGrantsListError>,
     > {
-        self.inner.call::<rpc::CapabilityGroupsGet>(input).await
+        self.inner.call::<rpc::CapabilityGrantsList>(input).await
     }
-    pub async fn capability_groups_list(
+    pub fn capability_grants_list_pages(
         &self,
-        input: &rpc::CapabilityGroupsListInput,
-    ) -> Result<
-        rpc::CapabilityGroupsListOutput,
-        trellis_rs::client::CallError<rpc::CapabilityGroupsListError>,
-    > {
-        self.inner.call::<rpc::CapabilityGroupsList>(input).await
-    }
-    pub fn capability_groups_list_pages(
-        &self,
-        input: rpc::CapabilityGroupsListInput,
+        input: rpc::CapabilityGrantsListInput,
     ) -> futures_util::stream::BoxStream<
         'static,
         Result<
-            rpc::CapabilityGroupsListOutput,
-            crate::PaginationError<rpc::CapabilityGroupsListError>,
+            rpc::CapabilityGrantsListOutput,
+            crate::PaginationError<rpc::CapabilityGrantsListError>,
         >,
     > {
         let client = self.clone();
@@ -4979,7 +6627,7 @@ impl Client {
                         return Ok(None);
                     }
                     let page = client
-                        .capability_groups_list(&input)
+                        .capability_grants_list(&input)
                         .await
                         .map_err(crate::PaginationError::Call)?;
                     let next = page.page.next_cursor.clone();
@@ -4999,14 +6647,14 @@ impl Client {
             ),
         )
     }
-    pub fn capability_groups_list_items(
+    pub fn capability_grants_list_items(
         &self,
-        input: rpc::CapabilityGroupsListInput,
+        input: rpc::CapabilityGrantsListInput,
     ) -> futures_util::stream::BoxStream<
         'static,
         Result<
-            crate::__types::trellis::AuthCapabilityGroupsListResponseentriesItem,
-            crate::PaginationError<rpc::CapabilityGroupsListError>,
+            crate::__types::trellis::AuthCapabilityGrant,
+            crate::PaginationError<rpc::CapabilityGrantsListError>,
         >,
     > {
         let client = self.clone();
@@ -5021,9 +6669,7 @@ impl Client {
                     input,
                     seen,
                     false,
-                    Vec::<
-                        crate::__types::trellis::AuthCapabilityGroupsListResponseentriesItem,
-                    >::new()
+                    Vec::<crate::__types::trellis::AuthCapabilityGrant>::new()
                         .into_iter(),
                 ),
                 |(client, mut input, mut seen, mut done, mut items)| async move {
@@ -5035,7 +6681,7 @@ impl Client {
                             return Ok(None);
                         }
                         let page = client
-                            .capability_groups_list(&input)
+                            .capability_grants_list(&input)
                             .await
                             .map_err(crate::PaginationError::Call)?;
                         let next = page.page.next_cursor.clone();
@@ -5056,14 +6702,14 @@ impl Client {
             ),
         )
     }
-    pub async fn capability_groups_put(
+    pub async fn capability_grants_revoke(
         &self,
-        input: &rpc::CapabilityGroupsPutInput,
+        input: &rpc::CapabilityGrantsRevokeInput,
     ) -> Result<
-        rpc::CapabilityGroupsPutOutput,
-        trellis_rs::client::CallError<rpc::CapabilityGroupsPutError>,
+        rpc::CapabilityGrantsRevokeOutput,
+        trellis_rs::client::CallError<rpc::CapabilityGrantsRevokeError>,
     > {
-        self.inner.call::<rpc::CapabilityGroupsPut>(input).await
+        self.inner.call::<rpc::CapabilityGrantsRevoke>(input).await
     }
     pub async fn connections_kick(
         &self,
@@ -5132,7 +6778,7 @@ impl Client {
     ) -> futures_util::stream::BoxStream<
         'static,
         Result<
-            crate::__types::trellis::AuthConnectionsListResponseentriesItem,
+            crate::__types::trellis::AuthAttachment,
             crate::PaginationError<rpc::ConnectionsListError>,
         >,
     > {
@@ -5148,10 +6794,7 @@ impl Client {
                     input,
                     seen,
                     false,
-                    Vec::<
-                        crate::__types::trellis::AuthConnectionsListResponseentriesItem,
-                    >::new()
-                        .into_iter(),
+                    Vec::<crate::__types::trellis::AuthAttachment>::new().into_iter(),
                 ),
                 |(client, mut input, mut seen, mut done, mut items)| async move {
                     loop {
@@ -5182,6 +6825,130 @@ impl Client {
                 },
             ),
         )
+    }
+    pub async fn delegations_list(
+        &self,
+        input: &rpc::DelegationsListInput,
+    ) -> Result<
+        rpc::DelegationsListOutput,
+        trellis_rs::client::CallError<rpc::DelegationsListError>,
+    > {
+        self.inner.call::<rpc::DelegationsList>(input).await
+    }
+    pub fn delegations_list_pages(
+        &self,
+        input: rpc::DelegationsListInput,
+    ) -> futures_util::stream::BoxStream<
+        'static,
+        Result<
+            rpc::DelegationsListOutput,
+            crate::PaginationError<rpc::DelegationsListError>,
+        >,
+    > {
+        let client = self.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+            seen.insert(cursor);
+        }
+        Box::pin(
+            futures_util::stream::try_unfold(
+                (client, input, seen, false),
+                |(client, mut input, mut seen, done)| async move {
+                    if done {
+                        return Ok(None);
+                    }
+                    let page = client
+                        .delegations_list(&input)
+                        .await
+                        .map_err(crate::PaginationError::Call)?;
+                    let next = page.page.next_cursor.clone();
+                    let done = next.is_none();
+                    if let Some(cursor) = next {
+                        if !seen.insert(cursor.clone()) {
+                            return Err(crate::PaginationError::RepeatedCursor(cursor));
+                        }
+                        let limit = input.page.as_ref().and_then(|page| page.limit);
+                        input.page = Some(crate::__types::CursorQuery {
+                            cursor: Some(cursor),
+                            limit,
+                        });
+                    }
+                    Ok(Some((page, (client, input, seen, done))))
+                },
+            ),
+        )
+    }
+    pub fn delegations_list_items(
+        &self,
+        input: rpc::DelegationsListInput,
+    ) -> futures_util::stream::BoxStream<
+        'static,
+        Result<
+            crate::__types::trellis::AuthDelegation,
+            crate::PaginationError<rpc::DelegationsListError>,
+        >,
+    > {
+        let client = self.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+            seen.insert(cursor);
+        }
+        Box::pin(
+            futures_util::stream::try_unfold(
+                (
+                    client,
+                    input,
+                    seen,
+                    false,
+                    Vec::<crate::__types::trellis::AuthDelegation>::new().into_iter(),
+                ),
+                |(client, mut input, mut seen, mut done, mut items)| async move {
+                    loop {
+                        if let Some(item) = items.next() {
+                            return Ok(Some((item, (client, input, seen, done, items))));
+                        }
+                        if done {
+                            return Ok(None);
+                        }
+                        let page = client
+                            .delegations_list(&input)
+                            .await
+                            .map_err(crate::PaginationError::Call)?;
+                        let next = page.page.next_cursor.clone();
+                        done = next.is_none();
+                        if let Some(cursor) = next {
+                            if !seen.insert(cursor.clone()) {
+                                return Err(crate::PaginationError::RepeatedCursor(cursor));
+                            }
+                            let limit = input.page.as_ref().and_then(|page| page.limit);
+                            input.page = Some(crate::__types::CursorQuery {
+                                cursor: Some(cursor),
+                                limit,
+                            });
+                        }
+                        items = page.items.into_iter();
+                    }
+                },
+            ),
+        )
+    }
+    pub async fn delegations_review(
+        &self,
+        input: &rpc::DelegationsReviewInput,
+    ) -> Result<
+        rpc::DelegationsReviewOutput,
+        trellis_rs::client::CallError<rpc::DelegationsReviewError>,
+    > {
+        self.inner.call::<rpc::DelegationsReview>(input).await
+    }
+    pub async fn delegations_revoke(
+        &self,
+        input: &rpc::DelegationsRevokeInput,
+    ) -> Result<
+        rpc::DelegationsRevokeOutput,
+        trellis_rs::client::CallError<rpc::DelegationsRevokeError>,
+    > {
+        self.inner.call::<rpc::DelegationsRevoke>(input).await
     }
     pub async fn deployments_apply(
         &self,
@@ -5286,7 +7053,7 @@ impl Client {
     ) -> futures_util::stream::BoxStream<
         'static,
         Result<
-            crate::__types::trellis::AuthDeploymentsListResponseentriesItem,
+            crate::__types::trellis::AuthDeployment,
             crate::PaginationError<rpc::DeploymentsListError>,
         >,
     > {
@@ -5302,10 +7069,7 @@ impl Client {
                     input,
                     seen,
                     false,
-                    Vec::<
-                        crate::__types::trellis::AuthDeploymentsListResponseentriesItem,
-                    >::new()
-                        .into_iter(),
+                    Vec::<crate::__types::trellis::AuthDeployment>::new().into_iter(),
                 ),
                 |(client, mut input, mut seen, mut done, mut items)| async move {
                     loop {
@@ -5345,242 +7109,6 @@ impl Client {
         trellis_rs::client::CallError<rpc::DeploymentsRemoveError>,
     > {
         self.inner.call::<rpc::DeploymentsRemove>(input).await
-    }
-    pub async fn device_user_authorities_list(
-        &self,
-        input: &rpc::DeviceUserAuthoritiesListInput,
-    ) -> Result<
-        rpc::DeviceUserAuthoritiesListOutput,
-        trellis_rs::client::CallError<rpc::DeviceUserAuthoritiesListError>,
-    > {
-        self.inner.call::<rpc::DeviceUserAuthoritiesList>(input).await
-    }
-    pub fn device_user_authorities_list_pages(
-        &self,
-        input: rpc::DeviceUserAuthoritiesListInput,
-    ) -> futures_util::stream::BoxStream<
-        'static,
-        Result<
-            rpc::DeviceUserAuthoritiesListOutput,
-            crate::PaginationError<rpc::DeviceUserAuthoritiesListError>,
-        >,
-    > {
-        let client = self.clone();
-        let mut seen = std::collections::BTreeSet::new();
-        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
-            seen.insert(cursor);
-        }
-        Box::pin(
-            futures_util::stream::try_unfold(
-                (client, input, seen, false),
-                |(client, mut input, mut seen, done)| async move {
-                    if done {
-                        return Ok(None);
-                    }
-                    let page = client
-                        .device_user_authorities_list(&input)
-                        .await
-                        .map_err(crate::PaginationError::Call)?;
-                    let next = page.page.next_cursor.clone();
-                    let done = next.is_none();
-                    if let Some(cursor) = next {
-                        if !seen.insert(cursor.clone()) {
-                            return Err(crate::PaginationError::RepeatedCursor(cursor));
-                        }
-                        let limit = input.page.as_ref().and_then(|page| page.limit);
-                        input.page = Some(crate::__types::CursorQuery {
-                            cursor: Some(cursor),
-                            limit,
-                        });
-                    }
-                    Ok(Some((page, (client, input, seen, done))))
-                },
-            ),
-        )
-    }
-    pub fn device_user_authorities_list_items(
-        &self,
-        input: rpc::DeviceUserAuthoritiesListInput,
-    ) -> futures_util::stream::BoxStream<
-        'static,
-        Result<
-            crate::__types::trellis::AuthDeviceUserAuthoritiesListResponseentriesItem,
-            crate::PaginationError<rpc::DeviceUserAuthoritiesListError>,
-        >,
-    > {
-        let client = self.clone();
-        let mut seen = std::collections::BTreeSet::new();
-        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
-            seen.insert(cursor);
-        }
-        Box::pin(
-            futures_util::stream::try_unfold(
-                (
-                    client,
-                    input,
-                    seen,
-                    false,
-                    Vec::<
-                        crate::__types::trellis::AuthDeviceUserAuthoritiesListResponseentriesItem,
-                    >::new()
-                        .into_iter(),
-                ),
-                |(client, mut input, mut seen, mut done, mut items)| async move {
-                    loop {
-                        if let Some(item) = items.next() {
-                            return Ok(Some((item, (client, input, seen, done, items))));
-                        }
-                        if done {
-                            return Ok(None);
-                        }
-                        let page = client
-                            .device_user_authorities_list(&input)
-                            .await
-                            .map_err(crate::PaginationError::Call)?;
-                        let next = page.page.next_cursor.clone();
-                        done = next.is_none();
-                        if let Some(cursor) = next {
-                            if !seen.insert(cursor.clone()) {
-                                return Err(crate::PaginationError::RepeatedCursor(cursor));
-                            }
-                            let limit = input.page.as_ref().and_then(|page| page.limit);
-                            input.page = Some(crate::__types::CursorQuery {
-                                cursor: Some(cursor),
-                                limit,
-                            });
-                        }
-                        items = page.items.into_iter();
-                    }
-                },
-            ),
-        )
-    }
-    pub async fn device_user_authorities_reviews_decide(
-        &self,
-        input: &rpc::DeviceUserAuthoritiesReviewsDecideInput,
-    ) -> Result<
-        rpc::DeviceUserAuthoritiesReviewsDecideOutput,
-        trellis_rs::client::CallError<rpc::DeviceUserAuthoritiesReviewsDecideError>,
-    > {
-        self.inner.call::<rpc::DeviceUserAuthoritiesReviewsDecide>(input).await
-    }
-    pub async fn device_user_authorities_reviews_list(
-        &self,
-        input: &rpc::DeviceUserAuthoritiesReviewsListInput,
-    ) -> Result<
-        rpc::DeviceUserAuthoritiesReviewsListOutput,
-        trellis_rs::client::CallError<rpc::DeviceUserAuthoritiesReviewsListError>,
-    > {
-        self.inner.call::<rpc::DeviceUserAuthoritiesReviewsList>(input).await
-    }
-    pub fn device_user_authorities_reviews_list_pages(
-        &self,
-        input: rpc::DeviceUserAuthoritiesReviewsListInput,
-    ) -> futures_util::stream::BoxStream<
-        'static,
-        Result<
-            rpc::DeviceUserAuthoritiesReviewsListOutput,
-            crate::PaginationError<rpc::DeviceUserAuthoritiesReviewsListError>,
-        >,
-    > {
-        let client = self.clone();
-        let mut seen = std::collections::BTreeSet::new();
-        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
-            seen.insert(cursor);
-        }
-        Box::pin(
-            futures_util::stream::try_unfold(
-                (client, input, seen, false),
-                |(client, mut input, mut seen, done)| async move {
-                    if done {
-                        return Ok(None);
-                    }
-                    let page = client
-                        .device_user_authorities_reviews_list(&input)
-                        .await
-                        .map_err(crate::PaginationError::Call)?;
-                    let next = page.page.next_cursor.clone();
-                    let done = next.is_none();
-                    if let Some(cursor) = next {
-                        if !seen.insert(cursor.clone()) {
-                            return Err(crate::PaginationError::RepeatedCursor(cursor));
-                        }
-                        let limit = input.page.as_ref().and_then(|page| page.limit);
-                        input.page = Some(crate::__types::CursorQuery {
-                            cursor: Some(cursor),
-                            limit,
-                        });
-                    }
-                    Ok(Some((page, (client, input, seen, done))))
-                },
-            ),
-        )
-    }
-    pub fn device_user_authorities_reviews_list_items(
-        &self,
-        input: rpc::DeviceUserAuthoritiesReviewsListInput,
-    ) -> futures_util::stream::BoxStream<
-        'static,
-        Result<
-            crate::__types::trellis::AuthDeviceUserAuthoritiesReviewsListResponseentriesItem,
-            crate::PaginationError<rpc::DeviceUserAuthoritiesReviewsListError>,
-        >,
-    > {
-        let client = self.clone();
-        let mut seen = std::collections::BTreeSet::new();
-        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
-            seen.insert(cursor);
-        }
-        Box::pin(
-            futures_util::stream::try_unfold(
-                (
-                    client,
-                    input,
-                    seen,
-                    false,
-                    Vec::<
-                        crate::__types::trellis::AuthDeviceUserAuthoritiesReviewsListResponseentriesItem,
-                    >::new()
-                        .into_iter(),
-                ),
-                |(client, mut input, mut seen, mut done, mut items)| async move {
-                    loop {
-                        if let Some(item) = items.next() {
-                            return Ok(Some((item, (client, input, seen, done, items))));
-                        }
-                        if done {
-                            return Ok(None);
-                        }
-                        let page = client
-                            .device_user_authorities_reviews_list(&input)
-                            .await
-                            .map_err(crate::PaginationError::Call)?;
-                        let next = page.page.next_cursor.clone();
-                        done = next.is_none();
-                        if let Some(cursor) = next {
-                            if !seen.insert(cursor.clone()) {
-                                return Err(crate::PaginationError::RepeatedCursor(cursor));
-                            }
-                            let limit = input.page.as_ref().and_then(|page| page.limit);
-                            input.page = Some(crate::__types::CursorQuery {
-                                cursor: Some(cursor),
-                                limit,
-                            });
-                        }
-                        items = page.items.into_iter();
-                    }
-                },
-            ),
-        )
-    }
-    pub async fn device_user_authorities_revoke(
-        &self,
-        input: &rpc::DeviceUserAuthoritiesRevokeInput,
-    ) -> Result<
-        rpc::DeviceUserAuthoritiesRevokeOutput,
-        trellis_rs::client::CallError<rpc::DeviceUserAuthoritiesRevokeError>,
-    > {
-        self.inner.call::<rpc::DeviceUserAuthoritiesRevoke>(input).await
     }
     pub async fn devices_disable(
         &self,
@@ -5655,7 +7183,7 @@ impl Client {
     ) -> futures_util::stream::BoxStream<
         'static,
         Result<
-            crate::__types::trellis::AuthDevicesListResponseentriesItem,
+            crate::__types::trellis::AuthProvisionedInstance,
             crate::PaginationError<rpc::DevicesListError>,
         >,
     > {
@@ -5671,9 +7199,7 @@ impl Client {
                     input,
                     seen,
                     false,
-                    Vec::<
-                        crate::__types::trellis::AuthDevicesListResponseentriesItem,
-                    >::new()
+                    Vec::<crate::__types::trellis::AuthProvisionedInstance>::new()
                         .into_iter(),
                 ),
                 |(client, mut input, mut seen, mut done, mut items)| async move {
@@ -5724,135 +7250,14 @@ impl Client {
     > {
         self.inner.call::<rpc::DevicesRemove>(input).await
     }
-    pub async fn grants_get(
+    pub async fn issuers_resolve_chain(
         &self,
-        input: &rpc::GrantsGetInput,
+        input: &rpc::IssuersResolveChainInput,
     ) -> Result<
-        rpc::GrantsGetOutput,
-        trellis_rs::client::CallError<rpc::GrantsGetError>,
+        rpc::IssuersResolveChainOutput,
+        trellis_rs::client::CallError<rpc::IssuersResolveChainError>,
     > {
-        self.inner.call::<rpc::GrantsGet>(input).await
-    }
-    pub async fn grants_list(
-        &self,
-        input: &rpc::GrantsListInput,
-    ) -> Result<
-        rpc::GrantsListOutput,
-        trellis_rs::client::CallError<rpc::GrantsListError>,
-    > {
-        self.inner.call::<rpc::GrantsList>(input).await
-    }
-    pub fn grants_list_pages(
-        &self,
-        input: rpc::GrantsListInput,
-    ) -> futures_util::stream::BoxStream<
-        'static,
-        Result<rpc::GrantsListOutput, crate::PaginationError<rpc::GrantsListError>>,
-    > {
-        let client = self.clone();
-        let mut seen = std::collections::BTreeSet::new();
-        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
-            seen.insert(cursor);
-        }
-        Box::pin(
-            futures_util::stream::try_unfold(
-                (client, input, seen, false),
-                |(client, mut input, mut seen, done)| async move {
-                    if done {
-                        return Ok(None);
-                    }
-                    let page = client
-                        .grants_list(&input)
-                        .await
-                        .map_err(crate::PaginationError::Call)?;
-                    let next = page.page.next_cursor.clone();
-                    let done = next.is_none();
-                    if let Some(cursor) = next {
-                        if !seen.insert(cursor.clone()) {
-                            return Err(crate::PaginationError::RepeatedCursor(cursor));
-                        }
-                        let limit = input.page.as_ref().and_then(|page| page.limit);
-                        input.page = Some(crate::__types::CursorQuery {
-                            cursor: Some(cursor),
-                            limit,
-                        });
-                    }
-                    Ok(Some((page, (client, input, seen, done))))
-                },
-            ),
-        )
-    }
-    pub fn grants_list_items(
-        &self,
-        input: rpc::GrantsListInput,
-    ) -> futures_util::stream::BoxStream<
-        'static,
-        Result<
-            crate::__types::trellis::AuthGrantBinding,
-            crate::PaginationError<rpc::GrantsListError>,
-        >,
-    > {
-        let client = self.clone();
-        let mut seen = std::collections::BTreeSet::new();
-        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
-            seen.insert(cursor);
-        }
-        Box::pin(
-            futures_util::stream::try_unfold(
-                (
-                    client,
-                    input,
-                    seen,
-                    false,
-                    Vec::<crate::__types::trellis::AuthGrantBinding>::new().into_iter(),
-                ),
-                |(client, mut input, mut seen, mut done, mut items)| async move {
-                    loop {
-                        if let Some(item) = items.next() {
-                            return Ok(Some((item, (client, input, seen, done, items))));
-                        }
-                        if done {
-                            return Ok(None);
-                        }
-                        let page = client
-                            .grants_list(&input)
-                            .await
-                            .map_err(crate::PaginationError::Call)?;
-                        let next = page.page.next_cursor.clone();
-                        done = next.is_none();
-                        if let Some(cursor) = next {
-                            if !seen.insert(cursor.clone()) {
-                                return Err(crate::PaginationError::RepeatedCursor(cursor));
-                            }
-                            let limit = input.page.as_ref().and_then(|page| page.limit);
-                            input.page = Some(crate::__types::CursorQuery {
-                                cursor: Some(cursor),
-                                limit,
-                            });
-                        }
-                        items = page.items.into_iter();
-                    }
-                },
-            ),
-        )
-    }
-    pub async fn grants_revoke(
-        &self,
-        input: &rpc::GrantsRevokeInput,
-    ) -> Result<
-        rpc::GrantsRevokeOutput,
-        trellis_rs::client::CallError<rpc::GrantsRevokeError>,
-    > {
-        self.inner.call::<rpc::GrantsRevoke>(input).await
-    }
-    pub async fn grants_set(
-        &self,
-        input: &rpc::GrantsSetInput,
-    ) -> Result<
-        rpc::GrantsSetOutput,
-        trellis_rs::client::CallError<rpc::GrantsSetError>,
-    > {
-        self.inner.call::<rpc::GrantsSet>(input).await
+        self.inner.call::<rpc::IssuersResolveChain>(input).await
     }
     pub async fn issuers_revoke(
         &self,
@@ -5863,41 +7268,59 @@ impl Client {
     > {
         self.inner.call::<rpc::IssuersRevoke>(input).await
     }
-    pub async fn participants_get(
+    pub async fn issuers_rotate(
         &self,
-        input: &rpc::ParticipantsGetInput,
+        input: &rpc::IssuersRotateInput,
     ) -> Result<
-        rpc::ParticipantsGetOutput,
-        trellis_rs::client::CallError<rpc::ParticipantsGetError>,
+        rpc::IssuersRotateOutput,
+        trellis_rs::client::CallError<rpc::IssuersRotateError>,
     > {
-        self.inner.call::<rpc::ParticipantsGet>(input).await
+        self.inner.call::<rpc::IssuersRotate>(input).await
     }
-    pub async fn participants_install(
+    pub async fn o_auth_clients_delete(
         &self,
-        input: &rpc::ParticipantsInstallInput,
+        input: &rpc::OAuthClientsDeleteInput,
     ) -> Result<
-        rpc::ParticipantsInstallOutput,
-        trellis_rs::client::CallError<rpc::ParticipantsInstallError>,
+        rpc::OAuthClientsDeleteOutput,
+        trellis_rs::client::CallError<rpc::OAuthClientsDeleteError>,
     > {
-        self.inner.call::<rpc::ParticipantsInstall>(input).await
+        self.inner.call::<rpc::OAuthClientsDelete>(input).await
     }
-    pub async fn participants_list(
+    pub async fn o_auth_clients_disable(
         &self,
-        input: &rpc::ParticipantsListInput,
+        input: &rpc::OAuthClientsDisableInput,
     ) -> Result<
-        rpc::ParticipantsListOutput,
-        trellis_rs::client::CallError<rpc::ParticipantsListError>,
+        rpc::OAuthClientsDisableOutput,
+        trellis_rs::client::CallError<rpc::OAuthClientsDisableError>,
     > {
-        self.inner.call::<rpc::ParticipantsList>(input).await
+        self.inner.call::<rpc::OAuthClientsDisable>(input).await
     }
-    pub fn participants_list_pages(
+    pub async fn o_auth_clients_get(
         &self,
-        input: rpc::ParticipantsListInput,
+        input: &rpc::OAuthClientsGetInput,
+    ) -> Result<
+        rpc::OAuthClientsGetOutput,
+        trellis_rs::client::CallError<rpc::OAuthClientsGetError>,
+    > {
+        self.inner.call::<rpc::OAuthClientsGet>(input).await
+    }
+    pub async fn o_auth_clients_list(
+        &self,
+        input: &rpc::OAuthClientsListInput,
+    ) -> Result<
+        rpc::OAuthClientsListOutput,
+        trellis_rs::client::CallError<rpc::OAuthClientsListError>,
+    > {
+        self.inner.call::<rpc::OAuthClientsList>(input).await
+    }
+    pub fn o_auth_clients_list_pages(
+        &self,
+        input: rpc::OAuthClientsListInput,
     ) -> futures_util::stream::BoxStream<
         'static,
         Result<
-            rpc::ParticipantsListOutput,
-            crate::PaginationError<rpc::ParticipantsListError>,
+            rpc::OAuthClientsListOutput,
+            crate::PaginationError<rpc::OAuthClientsListError>,
         >,
     > {
         let client = self.clone();
@@ -5913,7 +7336,7 @@ impl Client {
                         return Ok(None);
                     }
                     let page = client
-                        .participants_list(&input)
+                        .o_auth_clients_list(&input)
                         .await
                         .map_err(crate::PaginationError::Call)?;
                     let next = page.page.next_cursor.clone();
@@ -5933,14 +7356,14 @@ impl Client {
             ),
         )
     }
-    pub fn participants_list_items(
+    pub fn o_auth_clients_list_items(
         &self,
-        input: rpc::ParticipantsListInput,
+        input: rpc::OAuthClientsListInput,
     ) -> futures_util::stream::BoxStream<
         'static,
         Result<
-            crate::__types::trellis::InstalledParticipantSummary,
-            crate::PaginationError<rpc::ParticipantsListError>,
+            crate::__types::trellis::AuthOAuthClient,
+            crate::PaginationError<rpc::OAuthClientsListError>,
         >,
     > {
         let client = self.clone();
@@ -5955,8 +7378,7 @@ impl Client {
                     input,
                     seen,
                     false,
-                    Vec::<crate::__types::trellis::InstalledParticipantSummary>::new()
-                        .into_iter(),
+                    Vec::<crate::__types::trellis::AuthOAuthClient>::new().into_iter(),
                 ),
                 |(client, mut input, mut seen, mut done, mut items)| async move {
                     loop {
@@ -5967,7 +7389,7 @@ impl Client {
                             return Ok(None);
                         }
                         let page = client
-                            .participants_list(&input)
+                            .o_auth_clients_list(&input)
                             .await
                             .map_err(crate::PaginationError::Call)?;
                         let next = page.page.next_cursor.clone();
@@ -5988,32 +7410,59 @@ impl Client {
             ),
         )
     }
-    pub async fn portals_get(
+    pub async fn o_auth_clients_put(
         &self,
-        input: &rpc::PortalsGetInput,
+        input: &rpc::OAuthClientsPutInput,
     ) -> Result<
-        rpc::PortalsGetOutput,
-        trellis_rs::client::CallError<rpc::PortalsGetError>,
+        rpc::OAuthClientsPutOutput,
+        trellis_rs::client::CallError<rpc::OAuthClientsPutError>,
     > {
-        self.inner.call::<rpc::PortalsGet>(input).await
+        self.inner.call::<rpc::OAuthClientsPut>(input).await
     }
-    pub async fn portals_grant_overrides_list(
+    pub async fn oidc_providers_delete(
         &self,
-        input: &rpc::PortalsGrantOverridesListInput,
+        input: &rpc::OIDCProvidersDeleteInput,
     ) -> Result<
-        rpc::PortalsGrantOverridesListOutput,
-        trellis_rs::client::CallError<rpc::PortalsGrantOverridesListError>,
+        rpc::OIDCProvidersDeleteOutput,
+        trellis_rs::client::CallError<rpc::OIDCProvidersDeleteError>,
     > {
-        self.inner.call::<rpc::PortalsGrantOverridesList>(input).await
+        self.inner.call::<rpc::OIDCProvidersDelete>(input).await
     }
-    pub fn portals_grant_overrides_list_pages(
+    pub async fn oidc_providers_disable(
         &self,
-        input: rpc::PortalsGrantOverridesListInput,
+        input: &rpc::OIDCProvidersDisableInput,
+    ) -> Result<
+        rpc::OIDCProvidersDisableOutput,
+        trellis_rs::client::CallError<rpc::OIDCProvidersDisableError>,
+    > {
+        self.inner.call::<rpc::OIDCProvidersDisable>(input).await
+    }
+    pub async fn oidc_providers_get(
+        &self,
+        input: &rpc::OIDCProvidersGetInput,
+    ) -> Result<
+        rpc::OIDCProvidersGetOutput,
+        trellis_rs::client::CallError<rpc::OIDCProvidersGetError>,
+    > {
+        self.inner.call::<rpc::OIDCProvidersGet>(input).await
+    }
+    pub async fn oidc_providers_list(
+        &self,
+        input: &rpc::OIDCProvidersListInput,
+    ) -> Result<
+        rpc::OIDCProvidersListOutput,
+        trellis_rs::client::CallError<rpc::OIDCProvidersListError>,
+    > {
+        self.inner.call::<rpc::OIDCProvidersList>(input).await
+    }
+    pub fn oidc_providers_list_pages(
+        &self,
+        input: rpc::OIDCProvidersListInput,
     ) -> futures_util::stream::BoxStream<
         'static,
         Result<
-            rpc::PortalsGrantOverridesListOutput,
-            crate::PaginationError<rpc::PortalsGrantOverridesListError>,
+            rpc::OIDCProvidersListOutput,
+            crate::PaginationError<rpc::OIDCProvidersListError>,
         >,
     > {
         let client = self.clone();
@@ -6029,7 +7478,7 @@ impl Client {
                         return Ok(None);
                     }
                     let page = client
-                        .portals_grant_overrides_list(&input)
+                        .oidc_providers_list(&input)
                         .await
                         .map_err(crate::PaginationError::Call)?;
                     let next = page.page.next_cursor.clone();
@@ -6049,14 +7498,14 @@ impl Client {
             ),
         )
     }
-    pub fn portals_grant_overrides_list_items(
+    pub fn oidc_providers_list_items(
         &self,
-        input: rpc::PortalsGrantOverridesListInput,
+        input: rpc::OIDCProvidersListInput,
     ) -> futures_util::stream::BoxStream<
         'static,
         Result<
-            crate::__types::trellis::AuthPortalsGrantOverridesListResponseentriesItem,
-            crate::PaginationError<rpc::PortalsGrantOverridesListError>,
+            crate::__types::trellis::AuthOIDCProvider,
+            crate::PaginationError<rpc::OIDCProvidersListError>,
         >,
     > {
         let client = self.clone();
@@ -6071,10 +7520,7 @@ impl Client {
                     input,
                     seen,
                     false,
-                    Vec::<
-                        crate::__types::trellis::AuthPortalsGrantOverridesListResponseentriesItem,
-                    >::new()
-                        .into_iter(),
+                    Vec::<crate::__types::trellis::AuthOIDCProvider>::new().into_iter(),
                 ),
                 |(client, mut input, mut seen, mut done, mut items)| async move {
                     loop {
@@ -6085,7 +7531,7 @@ impl Client {
                             return Ok(None);
                         }
                         let page = client
-                            .portals_grant_overrides_list(&input)
+                            .oidc_providers_list(&input)
                             .await
                             .map_err(crate::PaginationError::Call)?;
                         let next = page.page.next_cursor.clone();
@@ -6106,39 +7552,42 @@ impl Client {
             ),
         )
     }
-    pub async fn portals_grant_overrides_put(
+    pub async fn oidc_providers_put(
         &self,
-        input: &rpc::PortalsGrantOverridesPutInput,
+        input: &rpc::OIDCProvidersPutInput,
     ) -> Result<
-        rpc::PortalsGrantOverridesPutOutput,
-        trellis_rs::client::CallError<rpc::PortalsGrantOverridesPutError>,
+        rpc::OIDCProvidersPutOutput,
+        trellis_rs::client::CallError<rpc::OIDCProvidersPutError>,
     > {
-        self.inner.call::<rpc::PortalsGrantOverridesPut>(input).await
+        self.inner.call::<rpc::OIDCProvidersPut>(input).await
     }
-    pub async fn portals_grant_overrides_remove(
+    pub async fn oidc_role_mappings_delete(
         &self,
-        input: &rpc::PortalsGrantOverridesRemoveInput,
+        input: &rpc::OIDCRoleMappingsDeleteInput,
     ) -> Result<
-        rpc::PortalsGrantOverridesRemoveOutput,
-        trellis_rs::client::CallError<rpc::PortalsGrantOverridesRemoveError>,
+        rpc::OIDCRoleMappingsDeleteOutput,
+        trellis_rs::client::CallError<rpc::OIDCRoleMappingsDeleteError>,
     > {
-        self.inner.call::<rpc::PortalsGrantOverridesRemove>(input).await
+        self.inner.call::<rpc::OIDCRoleMappingsDelete>(input).await
     }
-    pub async fn portals_list(
+    pub async fn oidc_role_mappings_list(
         &self,
-        input: &rpc::PortalsListInput,
+        input: &rpc::OIDCRoleMappingsListInput,
     ) -> Result<
-        rpc::PortalsListOutput,
-        trellis_rs::client::CallError<rpc::PortalsListError>,
+        rpc::OIDCRoleMappingsListOutput,
+        trellis_rs::client::CallError<rpc::OIDCRoleMappingsListError>,
     > {
-        self.inner.call::<rpc::PortalsList>(input).await
+        self.inner.call::<rpc::OIDCRoleMappingsList>(input).await
     }
-    pub fn portals_list_pages(
+    pub fn oidc_role_mappings_list_pages(
         &self,
-        input: rpc::PortalsListInput,
+        input: rpc::OIDCRoleMappingsListInput,
     ) -> futures_util::stream::BoxStream<
         'static,
-        Result<rpc::PortalsListOutput, crate::PaginationError<rpc::PortalsListError>>,
+        Result<
+            rpc::OIDCRoleMappingsListOutput,
+            crate::PaginationError<rpc::OIDCRoleMappingsListError>,
+        >,
     > {
         let client = self.clone();
         let mut seen = std::collections::BTreeSet::new();
@@ -6153,7 +7602,7 @@ impl Client {
                         return Ok(None);
                     }
                     let page = client
-                        .portals_list(&input)
+                        .oidc_role_mappings_list(&input)
                         .await
                         .map_err(crate::PaginationError::Call)?;
                     let next = page.page.next_cursor.clone();
@@ -6173,14 +7622,14 @@ impl Client {
             ),
         )
     }
-    pub fn portals_list_items(
+    pub fn oidc_role_mappings_list_items(
         &self,
-        input: rpc::PortalsListInput,
+        input: rpc::OIDCRoleMappingsListInput,
     ) -> futures_util::stream::BoxStream<
         'static,
         Result<
-            crate::__types::trellis::AuthPortalsListResponseentriesItem,
-            crate::PaginationError<rpc::PortalsListError>,
+            crate::__types::trellis::AuthOIDCRoleMapping,
+            crate::PaginationError<rpc::OIDCRoleMappingsListError>,
         >,
     > {
         let client = self.clone();
@@ -6195,9 +7644,7 @@ impl Client {
                     input,
                     seen,
                     false,
-                    Vec::<
-                        crate::__types::trellis::AuthPortalsListResponseentriesItem,
-                    >::new()
+                    Vec::<crate::__types::trellis::AuthOIDCRoleMapping>::new()
                         .into_iter(),
                 ),
                 |(client, mut input, mut seen, mut done, mut items)| async move {
@@ -6209,7 +7656,7 @@ impl Client {
                             return Ok(None);
                         }
                         let page = client
-                            .portals_list(&input)
+                            .oidc_role_mappings_list(&input)
                             .await
                             .map_err(crate::PaginationError::Call)?;
                         let next = page.page.next_cursor.clone();
@@ -6230,59 +7677,643 @@ impl Client {
             ),
         )
     }
-    pub async fn portals_login_settings_get(
+    pub async fn oidc_role_mappings_put(
         &self,
-        input: &rpc::PortalsLoginSettingsGetInput,
+        input: &rpc::OIDCRoleMappingsPutInput,
     ) -> Result<
-        rpc::PortalsLoginSettingsGetOutput,
-        trellis_rs::client::CallError<rpc::PortalsLoginSettingsGetError>,
+        rpc::OIDCRoleMappingsPutOutput,
+        trellis_rs::client::CallError<rpc::OIDCRoleMappingsPutError>,
     > {
-        self.inner.call::<rpc::PortalsLoginSettingsGet>(input).await
+        self.inner.call::<rpc::OIDCRoleMappingsPut>(input).await
     }
-    pub async fn portals_login_settings_update(
+    pub async fn platform_delegations_list(
         &self,
-        input: &rpc::PortalsLoginSettingsUpdateInput,
+        input: &rpc::PlatformDelegationsListInput,
     ) -> Result<
-        rpc::PortalsLoginSettingsUpdateOutput,
-        trellis_rs::client::CallError<rpc::PortalsLoginSettingsUpdateError>,
+        rpc::PlatformDelegationsListOutput,
+        trellis_rs::client::CallError<rpc::PlatformDelegationsListError>,
     > {
-        self.inner.call::<rpc::PortalsLoginSettingsUpdate>(input).await
+        self.inner.call::<rpc::PlatformDelegationsList>(input).await
     }
-    pub async fn portals_put(
+    pub fn platform_delegations_list_pages(
         &self,
-        input: &rpc::PortalsPutInput,
-    ) -> Result<
-        rpc::PortalsPutOutput,
-        trellis_rs::client::CallError<rpc::PortalsPutError>,
+        input: rpc::PlatformDelegationsListInput,
+    ) -> futures_util::stream::BoxStream<
+        'static,
+        Result<
+            rpc::PlatformDelegationsListOutput,
+            crate::PaginationError<rpc::PlatformDelegationsListError>,
+        >,
     > {
-        self.inner.call::<rpc::PortalsPut>(input).await
+        let client = self.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+            seen.insert(cursor);
+        }
+        Box::pin(
+            futures_util::stream::try_unfold(
+                (client, input, seen, false),
+                |(client, mut input, mut seen, done)| async move {
+                    if done {
+                        return Ok(None);
+                    }
+                    let page = client
+                        .platform_delegations_list(&input)
+                        .await
+                        .map_err(crate::PaginationError::Call)?;
+                    let next = page.page.next_cursor.clone();
+                    let done = next.is_none();
+                    if let Some(cursor) = next {
+                        if !seen.insert(cursor.clone()) {
+                            return Err(crate::PaginationError::RepeatedCursor(cursor));
+                        }
+                        let limit = input.page.as_ref().and_then(|page| page.limit);
+                        input.page = Some(crate::__types::CursorQuery {
+                            cursor: Some(cursor),
+                            limit,
+                        });
+                    }
+                    Ok(Some((page, (client, input, seen, done))))
+                },
+            ),
+        )
     }
-    pub async fn portals_remove(
+    pub fn platform_delegations_list_items(
         &self,
-        input: &rpc::PortalsRemoveInput,
-    ) -> Result<
-        rpc::PortalsRemoveOutput,
-        trellis_rs::client::CallError<rpc::PortalsRemoveError>,
+        input: rpc::PlatformDelegationsListInput,
+    ) -> futures_util::stream::BoxStream<
+        'static,
+        Result<
+            crate::__types::trellis::AuthPlatformDelegation,
+            crate::PaginationError<rpc::PlatformDelegationsListError>,
+        >,
     > {
-        self.inner.call::<rpc::PortalsRemove>(input).await
+        let client = self.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+            seen.insert(cursor);
+        }
+        Box::pin(
+            futures_util::stream::try_unfold(
+                (
+                    client,
+                    input,
+                    seen,
+                    false,
+                    Vec::<crate::__types::trellis::AuthPlatformDelegation>::new()
+                        .into_iter(),
+                ),
+                |(client, mut input, mut seen, mut done, mut items)| async move {
+                    loop {
+                        if let Some(item) = items.next() {
+                            return Ok(Some((item, (client, input, seen, done, items))));
+                        }
+                        if done {
+                            return Ok(None);
+                        }
+                        let page = client
+                            .platform_delegations_list(&input)
+                            .await
+                            .map_err(crate::PaginationError::Call)?;
+                        let next = page.page.next_cursor.clone();
+                        done = next.is_none();
+                        if let Some(cursor) = next {
+                            if !seen.insert(cursor.clone()) {
+                                return Err(crate::PaginationError::RepeatedCursor(cursor));
+                            }
+                            let limit = input.page.as_ref().and_then(|page| page.limit);
+                            input.page = Some(crate::__types::CursorQuery {
+                                cursor: Some(cursor),
+                                limit,
+                            });
+                        }
+                        items = page.items.into_iter();
+                    }
+                },
+            ),
+        )
     }
-    pub async fn portals_routes_put(
+    pub async fn platform_delegations_put(
         &self,
-        input: &rpc::PortalsRoutesPutInput,
+        input: &rpc::PlatformDelegationsPutInput,
     ) -> Result<
-        rpc::PortalsRoutesPutOutput,
-        trellis_rs::client::CallError<rpc::PortalsRoutesPutError>,
+        rpc::PlatformDelegationsPutOutput,
+        trellis_rs::client::CallError<rpc::PlatformDelegationsPutError>,
     > {
-        self.inner.call::<rpc::PortalsRoutesPut>(input).await
+        self.inner.call::<rpc::PlatformDelegationsPut>(input).await
     }
-    pub async fn portals_routes_remove(
+    pub async fn platform_delegations_revoke(
         &self,
-        input: &rpc::PortalsRoutesRemoveInput,
+        input: &rpc::PlatformDelegationsRevokeInput,
     ) -> Result<
-        rpc::PortalsRoutesRemoveOutput,
-        trellis_rs::client::CallError<rpc::PortalsRoutesRemoveError>,
+        rpc::PlatformDelegationsRevokeOutput,
+        trellis_rs::client::CallError<rpc::PlatformDelegationsRevokeError>,
     > {
-        self.inner.call::<rpc::PortalsRoutesRemove>(input).await
+        self.inner.call::<rpc::PlatformDelegationsRevoke>(input).await
+    }
+    pub async fn platform_privileges_assign(
+        &self,
+        input: &rpc::PlatformPrivilegesAssignInput,
+    ) -> Result<
+        rpc::PlatformPrivilegesAssignOutput,
+        trellis_rs::client::CallError<rpc::PlatformPrivilegesAssignError>,
+    > {
+        self.inner.call::<rpc::PlatformPrivilegesAssign>(input).await
+    }
+    pub async fn platform_privileges_list(
+        &self,
+        input: &rpc::PlatformPrivilegesListInput,
+    ) -> Result<
+        rpc::PlatformPrivilegesListOutput,
+        trellis_rs::client::CallError<rpc::PlatformPrivilegesListError>,
+    > {
+        self.inner.call::<rpc::PlatformPrivilegesList>(input).await
+    }
+    pub fn platform_privileges_list_pages(
+        &self,
+        input: rpc::PlatformPrivilegesListInput,
+    ) -> futures_util::stream::BoxStream<
+        'static,
+        Result<
+            rpc::PlatformPrivilegesListOutput,
+            crate::PaginationError<rpc::PlatformPrivilegesListError>,
+        >,
+    > {
+        let client = self.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+            seen.insert(cursor);
+        }
+        Box::pin(
+            futures_util::stream::try_unfold(
+                (client, input, seen, false),
+                |(client, mut input, mut seen, done)| async move {
+                    if done {
+                        return Ok(None);
+                    }
+                    let page = client
+                        .platform_privileges_list(&input)
+                        .await
+                        .map_err(crate::PaginationError::Call)?;
+                    let next = page.page.next_cursor.clone();
+                    let done = next.is_none();
+                    if let Some(cursor) = next {
+                        if !seen.insert(cursor.clone()) {
+                            return Err(crate::PaginationError::RepeatedCursor(cursor));
+                        }
+                        let limit = input.page.as_ref().and_then(|page| page.limit);
+                        input.page = Some(crate::__types::CursorQuery {
+                            cursor: Some(cursor),
+                            limit,
+                        });
+                    }
+                    Ok(Some((page, (client, input, seen, done))))
+                },
+            ),
+        )
+    }
+    pub fn platform_privileges_list_items(
+        &self,
+        input: rpc::PlatformPrivilegesListInput,
+    ) -> futures_util::stream::BoxStream<
+        'static,
+        Result<
+            crate::__types::trellis::AuthPlatformAssignment,
+            crate::PaginationError<rpc::PlatformPrivilegesListError>,
+        >,
+    > {
+        let client = self.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+            seen.insert(cursor);
+        }
+        Box::pin(
+            futures_util::stream::try_unfold(
+                (
+                    client,
+                    input,
+                    seen,
+                    false,
+                    Vec::<crate::__types::trellis::AuthPlatformAssignment>::new()
+                        .into_iter(),
+                ),
+                |(client, mut input, mut seen, mut done, mut items)| async move {
+                    loop {
+                        if let Some(item) = items.next() {
+                            return Ok(Some((item, (client, input, seen, done, items))));
+                        }
+                        if done {
+                            return Ok(None);
+                        }
+                        let page = client
+                            .platform_privileges_list(&input)
+                            .await
+                            .map_err(crate::PaginationError::Call)?;
+                        let next = page.page.next_cursor.clone();
+                        done = next.is_none();
+                        if let Some(cursor) = next {
+                            if !seen.insert(cursor.clone()) {
+                                return Err(crate::PaginationError::RepeatedCursor(cursor));
+                            }
+                            let limit = input.page.as_ref().and_then(|page| page.limit);
+                            input.page = Some(crate::__types::CursorQuery {
+                                cursor: Some(cursor),
+                                limit,
+                            });
+                        }
+                        items = page.items.into_iter();
+                    }
+                },
+            ),
+        )
+    }
+    pub async fn platform_privileges_revoke(
+        &self,
+        input: &rpc::PlatformPrivilegesRevokeInput,
+    ) -> Result<
+        rpc::PlatformPrivilegesRevokeOutput,
+        trellis_rs::client::CallError<rpc::PlatformPrivilegesRevokeError>,
+    > {
+        self.inner.call::<rpc::PlatformPrivilegesRevoke>(input).await
+    }
+    pub async fn principals_effective_access(
+        &self,
+        input: &rpc::PrincipalsEffectiveAccessInput,
+    ) -> Result<
+        rpc::PrincipalsEffectiveAccessOutput,
+        trellis_rs::client::CallError<rpc::PrincipalsEffectiveAccessError>,
+    > {
+        self.inner.call::<rpc::PrincipalsEffectiveAccess>(input).await
+    }
+    pub async fn resources_get(
+        &self,
+        input: &rpc::ResourcesGetInput,
+    ) -> Result<
+        rpc::ResourcesGetOutput,
+        trellis_rs::client::CallError<rpc::ResourcesGetError>,
+    > {
+        self.inner.call::<rpc::ResourcesGet>(input).await
+    }
+    pub async fn resources_list(
+        &self,
+        input: &rpc::ResourcesListInput,
+    ) -> Result<
+        rpc::ResourcesListOutput,
+        trellis_rs::client::CallError<rpc::ResourcesListError>,
+    > {
+        self.inner.call::<rpc::ResourcesList>(input).await
+    }
+    pub fn resources_list_pages(
+        &self,
+        input: rpc::ResourcesListInput,
+    ) -> futures_util::stream::BoxStream<
+        'static,
+        Result<rpc::ResourcesListOutput, crate::PaginationError<rpc::ResourcesListError>>,
+    > {
+        let client = self.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+            seen.insert(cursor);
+        }
+        Box::pin(
+            futures_util::stream::try_unfold(
+                (client, input, seen, false),
+                |(client, mut input, mut seen, done)| async move {
+                    if done {
+                        return Ok(None);
+                    }
+                    let page = client
+                        .resources_list(&input)
+                        .await
+                        .map_err(crate::PaginationError::Call)?;
+                    let next = page.page.next_cursor.clone();
+                    let done = next.is_none();
+                    if let Some(cursor) = next {
+                        if !seen.insert(cursor.clone()) {
+                            return Err(crate::PaginationError::RepeatedCursor(cursor));
+                        }
+                        let limit = input.page.as_ref().and_then(|page| page.limit);
+                        input.page = Some(crate::__types::CursorQuery {
+                            cursor: Some(cursor),
+                            limit,
+                        });
+                    }
+                    Ok(Some((page, (client, input, seen, done))))
+                },
+            ),
+        )
+    }
+    pub fn resources_list_items(
+        &self,
+        input: rpc::ResourcesListInput,
+    ) -> futures_util::stream::BoxStream<
+        'static,
+        Result<
+            crate::__types::trellis::AuthResourceBinding,
+            crate::PaginationError<rpc::ResourcesListError>,
+        >,
+    > {
+        let client = self.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+            seen.insert(cursor);
+        }
+        Box::pin(
+            futures_util::stream::try_unfold(
+                (
+                    client,
+                    input,
+                    seen,
+                    false,
+                    Vec::<crate::__types::trellis::AuthResourceBinding>::new()
+                        .into_iter(),
+                ),
+                |(client, mut input, mut seen, mut done, mut items)| async move {
+                    loop {
+                        if let Some(item) = items.next() {
+                            return Ok(Some((item, (client, input, seen, done, items))));
+                        }
+                        if done {
+                            return Ok(None);
+                        }
+                        let page = client
+                            .resources_list(&input)
+                            .await
+                            .map_err(crate::PaginationError::Call)?;
+                        let next = page.page.next_cursor.clone();
+                        done = next.is_none();
+                        if let Some(cursor) = next {
+                            if !seen.insert(cursor.clone()) {
+                                return Err(crate::PaginationError::RepeatedCursor(cursor));
+                            }
+                            let limit = input.page.as_ref().and_then(|page| page.limit);
+                            input.page = Some(crate::__types::CursorQuery {
+                                cursor: Some(cursor),
+                                limit,
+                            });
+                        }
+                        items = page.items.into_iter();
+                    }
+                },
+            ),
+        )
+    }
+    pub async fn resources_remove(
+        &self,
+        input: &rpc::ResourcesRemoveInput,
+    ) -> Result<
+        rpc::ResourcesRemoveOutput,
+        trellis_rs::client::CallError<rpc::ResourcesRemoveError>,
+    > {
+        self.inner.call::<rpc::ResourcesRemove>(input).await
+    }
+    pub async fn role_assignments_assign(
+        &self,
+        input: &rpc::RoleAssignmentsAssignInput,
+    ) -> Result<
+        rpc::RoleAssignmentsAssignOutput,
+        trellis_rs::client::CallError<rpc::RoleAssignmentsAssignError>,
+    > {
+        self.inner.call::<rpc::RoleAssignmentsAssign>(input).await
+    }
+    pub async fn role_assignments_list(
+        &self,
+        input: &rpc::RoleAssignmentsListInput,
+    ) -> Result<
+        rpc::RoleAssignmentsListOutput,
+        trellis_rs::client::CallError<rpc::RoleAssignmentsListError>,
+    > {
+        self.inner.call::<rpc::RoleAssignmentsList>(input).await
+    }
+    pub fn role_assignments_list_pages(
+        &self,
+        input: rpc::RoleAssignmentsListInput,
+    ) -> futures_util::stream::BoxStream<
+        'static,
+        Result<
+            rpc::RoleAssignmentsListOutput,
+            crate::PaginationError<rpc::RoleAssignmentsListError>,
+        >,
+    > {
+        let client = self.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+            seen.insert(cursor);
+        }
+        Box::pin(
+            futures_util::stream::try_unfold(
+                (client, input, seen, false),
+                |(client, mut input, mut seen, done)| async move {
+                    if done {
+                        return Ok(None);
+                    }
+                    let page = client
+                        .role_assignments_list(&input)
+                        .await
+                        .map_err(crate::PaginationError::Call)?;
+                    let next = page.page.next_cursor.clone();
+                    let done = next.is_none();
+                    if let Some(cursor) = next {
+                        if !seen.insert(cursor.clone()) {
+                            return Err(crate::PaginationError::RepeatedCursor(cursor));
+                        }
+                        let limit = input.page.as_ref().and_then(|page| page.limit);
+                        input.page = Some(crate::__types::CursorQuery {
+                            cursor: Some(cursor),
+                            limit,
+                        });
+                    }
+                    Ok(Some((page, (client, input, seen, done))))
+                },
+            ),
+        )
+    }
+    pub fn role_assignments_list_items(
+        &self,
+        input: rpc::RoleAssignmentsListInput,
+    ) -> futures_util::stream::BoxStream<
+        'static,
+        Result<
+            crate::__types::trellis::AuthRoleAssignment,
+            crate::PaginationError<rpc::RoleAssignmentsListError>,
+        >,
+    > {
+        let client = self.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+            seen.insert(cursor);
+        }
+        Box::pin(
+            futures_util::stream::try_unfold(
+                (
+                    client,
+                    input,
+                    seen,
+                    false,
+                    Vec::<crate::__types::trellis::AuthRoleAssignment>::new().into_iter(),
+                ),
+                |(client, mut input, mut seen, mut done, mut items)| async move {
+                    loop {
+                        if let Some(item) = items.next() {
+                            return Ok(Some((item, (client, input, seen, done, items))));
+                        }
+                        if done {
+                            return Ok(None);
+                        }
+                        let page = client
+                            .role_assignments_list(&input)
+                            .await
+                            .map_err(crate::PaginationError::Call)?;
+                        let next = page.page.next_cursor.clone();
+                        done = next.is_none();
+                        if let Some(cursor) = next {
+                            if !seen.insert(cursor.clone()) {
+                                return Err(crate::PaginationError::RepeatedCursor(cursor));
+                            }
+                            let limit = input.page.as_ref().and_then(|page| page.limit);
+                            input.page = Some(crate::__types::CursorQuery {
+                                cursor: Some(cursor),
+                                limit,
+                            });
+                        }
+                        items = page.items.into_iter();
+                    }
+                },
+            ),
+        )
+    }
+    pub async fn role_assignments_revoke(
+        &self,
+        input: &rpc::RoleAssignmentsRevokeInput,
+    ) -> Result<
+        rpc::RoleAssignmentsRevokeOutput,
+        trellis_rs::client::CallError<rpc::RoleAssignmentsRevokeError>,
+    > {
+        self.inner.call::<rpc::RoleAssignmentsRevoke>(input).await
+    }
+    pub async fn roles_delete(
+        &self,
+        input: &rpc::RolesDeleteInput,
+    ) -> Result<
+        rpc::RolesDeleteOutput,
+        trellis_rs::client::CallError<rpc::RolesDeleteError>,
+    > {
+        self.inner.call::<rpc::RolesDelete>(input).await
+    }
+    pub async fn roles_get(
+        &self,
+        input: &rpc::RolesGetInput,
+    ) -> Result<rpc::RolesGetOutput, trellis_rs::client::CallError<rpc::RolesGetError>> {
+        self.inner.call::<rpc::RolesGet>(input).await
+    }
+    pub async fn roles_list(
+        &self,
+        input: &rpc::RolesListInput,
+    ) -> Result<
+        rpc::RolesListOutput,
+        trellis_rs::client::CallError<rpc::RolesListError>,
+    > {
+        self.inner.call::<rpc::RolesList>(input).await
+    }
+    pub fn roles_list_pages(
+        &self,
+        input: rpc::RolesListInput,
+    ) -> futures_util::stream::BoxStream<
+        'static,
+        Result<rpc::RolesListOutput, crate::PaginationError<rpc::RolesListError>>,
+    > {
+        let client = self.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+            seen.insert(cursor);
+        }
+        Box::pin(
+            futures_util::stream::try_unfold(
+                (client, input, seen, false),
+                |(client, mut input, mut seen, done)| async move {
+                    if done {
+                        return Ok(None);
+                    }
+                    let page = client
+                        .roles_list(&input)
+                        .await
+                        .map_err(crate::PaginationError::Call)?;
+                    let next = page.page.next_cursor.clone();
+                    let done = next.is_none();
+                    if let Some(cursor) = next {
+                        if !seen.insert(cursor.clone()) {
+                            return Err(crate::PaginationError::RepeatedCursor(cursor));
+                        }
+                        let limit = input.page.as_ref().and_then(|page| page.limit);
+                        input.page = Some(crate::__types::CursorQuery {
+                            cursor: Some(cursor),
+                            limit,
+                        });
+                    }
+                    Ok(Some((page, (client, input, seen, done))))
+                },
+            ),
+        )
+    }
+    pub fn roles_list_items(
+        &self,
+        input: rpc::RolesListInput,
+    ) -> futures_util::stream::BoxStream<
+        'static,
+        Result<
+            crate::__types::trellis::AuthRole,
+            crate::PaginationError<rpc::RolesListError>,
+        >,
+    > {
+        let client = self.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+            seen.insert(cursor);
+        }
+        Box::pin(
+            futures_util::stream::try_unfold(
+                (
+                    client,
+                    input,
+                    seen,
+                    false,
+                    Vec::<crate::__types::trellis::AuthRole>::new().into_iter(),
+                ),
+                |(client, mut input, mut seen, mut done, mut items)| async move {
+                    loop {
+                        if let Some(item) = items.next() {
+                            return Ok(Some((item, (client, input, seen, done, items))));
+                        }
+                        if done {
+                            return Ok(None);
+                        }
+                        let page = client
+                            .roles_list(&input)
+                            .await
+                            .map_err(crate::PaginationError::Call)?;
+                        let next = page.page.next_cursor.clone();
+                        done = next.is_none();
+                        if let Some(cursor) = next {
+                            if !seen.insert(cursor.clone()) {
+                                return Err(crate::PaginationError::RepeatedCursor(cursor));
+                            }
+                            let limit = input.page.as_ref().and_then(|page| page.limit);
+                            input.page = Some(crate::__types::CursorQuery {
+                                cursor: Some(cursor),
+                                limit,
+                            });
+                        }
+                        items = page.items.into_iter();
+                    }
+                },
+            ),
+        )
+    }
+    pub async fn roles_put(
+        &self,
+        input: &rpc::RolesPutInput,
+    ) -> Result<rpc::RolesPutOutput, trellis_rs::client::CallError<rpc::RolesPutError>> {
+        self.inner.call::<rpc::RolesPut>(input).await
     }
     pub async fn service_instances_disable(
         &self,
@@ -6360,7 +8391,7 @@ impl Client {
     ) -> futures_util::stream::BoxStream<
         'static,
         Result<
-            crate::__types::trellis::AuthServiceInstancesListResponseentriesItem,
+            crate::__types::trellis::AuthProvisionedInstance,
             crate::PaginationError<rpc::ServiceInstancesListError>,
         >,
     > {
@@ -6376,9 +8407,7 @@ impl Client {
                     input,
                     seen,
                     false,
-                    Vec::<
-                        crate::__types::trellis::AuthServiceInstancesListResponseentriesItem,
-                    >::new()
+                    Vec::<crate::__types::trellis::AuthProvisionedInstance>::new()
                         .into_iter(),
                 ),
                 |(client, mut input, mut seen, mut done, mut items)| async move {
@@ -6617,7 +8646,7 @@ impl Client {
     ) -> futures_util::stream::BoxStream<
         'static,
         Result<
-            crate::__types::trellis::AuthUserIdentitiesListResponseentriesItem,
+            crate::__types::trellis::AuthUserIdentity,
             crate::PaginationError<rpc::UserIdentitiesListError>,
         >,
     > {
@@ -6633,10 +8662,7 @@ impl Client {
                     input,
                     seen,
                     false,
-                    Vec::<
-                        crate::__types::trellis::AuthUserIdentitiesListResponseentriesItem,
-                    >::new()
-                        .into_iter(),
+                    Vec::<crate::__types::trellis::AuthUserIdentity>::new().into_iter(),
                 ),
                 |(client, mut input, mut seen, mut done, mut items)| async move {
                     loop {
@@ -6756,7 +8782,7 @@ impl Client {
     ) -> futures_util::stream::BoxStream<
         'static,
         Result<
-            crate::__types::trellis::AuthUsersListResponseentriesItem,
+            crate::__types::trellis::AuthUser,
             crate::PaginationError<rpc::UsersListError>,
         >,
     > {
@@ -6772,10 +8798,7 @@ impl Client {
                     input,
                     seen,
                     false,
-                    Vec::<
-                        crate::__types::trellis::AuthUsersListResponseentriesItem,
-                    >::new()
-                        .into_iter(),
+                    Vec::<crate::__types::trellis::AuthUser>::new().into_iter(),
                 ),
                 |(client, mut input, mut seen, mut done, mut items)| async move {
                     loop {
@@ -6843,10 +8866,26 @@ impl Client {
     > {
         self.inner.call::<rpc::UsersUpdate>(input).await
     }
-    pub fn device_user_authorities_resolve(
+    pub async fn publish_authorization_sessions_retired(
         &self,
-    ) -> trellis_rs::generated::Operation<'_, operations::DeviceUserAuthoritiesResolve> {
-        self.inner.operation::<operations::DeviceUserAuthoritiesResolve>()
+        event: &events::AuthorizationSessionsRetiredEvent,
+    ) -> Result<(), trellis_rs::client::TrellisClientError> {
+        self.inner.publish::<events::AuthorizationSessionsRetired>(event).await
+    }
+    pub async fn subscribe_authorization_sessions_retired(
+        &self,
+        options: trellis_rs::client::EventSubscribeOptions,
+    ) -> Result<
+        futures_util::stream::BoxStream<
+            'static,
+            Result<
+                events::AuthorizationSessionsRetiredEvent,
+                trellis_rs::client::TrellisClientError,
+            >,
+        >,
+        trellis_rs::client::TrellisClientError,
+    > {
+        self.inner.subscribe::<events::AuthorizationSessionsRetired>(options).await
     }
     pub async fn publish_connections_closed(
         &self,
@@ -6911,110 +8950,6 @@ impl Client {
     > {
         self.inner.subscribe::<events::ConnectionsOpened>(options).await
     }
-    pub async fn publish_device_user_authorities_approved(
-        &self,
-        event: &events::DeviceUserAuthoritiesApprovedEvent,
-    ) -> Result<(), trellis_rs::client::TrellisClientError> {
-        self.inner.publish::<events::DeviceUserAuthoritiesApproved>(event).await
-    }
-    pub async fn subscribe_device_user_authorities_approved(
-        &self,
-        options: trellis_rs::client::EventSubscribeOptions,
-    ) -> Result<
-        futures_util::stream::BoxStream<
-            'static,
-            Result<
-                events::DeviceUserAuthoritiesApprovedEvent,
-                trellis_rs::client::TrellisClientError,
-            >,
-        >,
-        trellis_rs::client::TrellisClientError,
-    > {
-        self.inner.subscribe::<events::DeviceUserAuthoritiesApproved>(options).await
-    }
-    pub async fn publish_device_user_authorities_requested(
-        &self,
-        event: &events::DeviceUserAuthoritiesRequestedEvent,
-    ) -> Result<(), trellis_rs::client::TrellisClientError> {
-        self.inner.publish::<events::DeviceUserAuthoritiesRequested>(event).await
-    }
-    pub async fn subscribe_device_user_authorities_requested(
-        &self,
-        options: trellis_rs::client::EventSubscribeOptions,
-    ) -> Result<
-        futures_util::stream::BoxStream<
-            'static,
-            Result<
-                events::DeviceUserAuthoritiesRequestedEvent,
-                trellis_rs::client::TrellisClientError,
-            >,
-        >,
-        trellis_rs::client::TrellisClientError,
-    > {
-        self.inner.subscribe::<events::DeviceUserAuthoritiesRequested>(options).await
-    }
-    pub async fn publish_device_user_authorities_resolved(
-        &self,
-        event: &events::DeviceUserAuthoritiesResolvedEvent,
-    ) -> Result<(), trellis_rs::client::TrellisClientError> {
-        self.inner.publish::<events::DeviceUserAuthoritiesResolved>(event).await
-    }
-    pub async fn subscribe_device_user_authorities_resolved(
-        &self,
-        options: trellis_rs::client::EventSubscribeOptions,
-    ) -> Result<
-        futures_util::stream::BoxStream<
-            'static,
-            Result<
-                events::DeviceUserAuthoritiesResolvedEvent,
-                trellis_rs::client::TrellisClientError,
-            >,
-        >,
-        trellis_rs::client::TrellisClientError,
-    > {
-        self.inner.subscribe::<events::DeviceUserAuthoritiesResolved>(options).await
-    }
-    pub async fn publish_device_user_authorities_review_requested(
-        &self,
-        event: &events::DeviceUserAuthoritiesReviewRequestedEvent,
-    ) -> Result<(), trellis_rs::client::TrellisClientError> {
-        self.inner.publish::<events::DeviceUserAuthoritiesReviewRequested>(event).await
-    }
-    pub async fn subscribe_device_user_authorities_review_requested(
-        &self,
-        options: trellis_rs::client::EventSubscribeOptions,
-    ) -> Result<
-        futures_util::stream::BoxStream<
-            'static,
-            Result<
-                events::DeviceUserAuthoritiesReviewRequestedEvent,
-                trellis_rs::client::TrellisClientError,
-            >,
-        >,
-        trellis_rs::client::TrellisClientError,
-    > {
-        self.inner
-            .subscribe::<events::DeviceUserAuthoritiesReviewRequested>(options)
-            .await
-    }
-    pub async fn publish_grants_changed(
-        &self,
-        event: &events::GrantsChangedEvent,
-    ) -> Result<(), trellis_rs::client::TrellisClientError> {
-        self.inner.publish::<events::GrantsChanged>(event).await
-    }
-    pub async fn subscribe_grants_changed(
-        &self,
-        options: trellis_rs::client::EventSubscribeOptions,
-    ) -> Result<
-        futures_util::stream::BoxStream<
-            'static,
-            Result<events::GrantsChangedEvent, trellis_rs::client::TrellisClientError>,
-        >,
-        trellis_rs::client::TrellisClientError,
-    > {
-        self.inner.subscribe::<events::GrantsChanged>(options).await
-    }
     pub async fn publish_issuers_revoked(
         &self,
         event: &events::IssuersRevokedEvent,
@@ -7033,23 +8968,23 @@ impl Client {
     > {
         self.inner.subscribe::<events::IssuersRevoked>(options).await
     }
-    pub async fn publish_sessions_revoked(
+    pub async fn publish_issuers_rotated(
         &self,
-        event: &events::SessionsRevokedEvent,
+        event: &events::IssuersRotatedEvent,
     ) -> Result<(), trellis_rs::client::TrellisClientError> {
-        self.inner.publish::<events::SessionsRevoked>(event).await
+        self.inner.publish::<events::IssuersRotated>(event).await
     }
-    pub async fn subscribe_sessions_revoked(
+    pub async fn subscribe_issuers_rotated(
         &self,
         options: trellis_rs::client::EventSubscribeOptions,
     ) -> Result<
         futures_util::stream::BoxStream<
             'static,
-            Result<events::SessionsRevokedEvent, trellis_rs::client::TrellisClientError>,
+            Result<events::IssuersRotatedEvent, trellis_rs::client::TrellisClientError>,
         >,
         trellis_rs::client::TrellisClientError,
     > {
-        self.inner.subscribe::<events::SessionsRevoked>(options).await
+        self.inner.subscribe::<events::IssuersRotated>(options).await
     }
 }
 pub struct Provider<'a, P> {
@@ -7060,6 +8995,134 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
         runtime: &'a mut trellis_rs::service::ConnectedServiceRuntime<P>,
     ) -> Self {
         Self { runtime }
+    }
+    pub fn register_admission_renew<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::AdmissionRenewInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::AdmissionRenewOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::AdmissionRenew, _, _>(handler);
+    }
+    pub fn register_apis_accept<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::ApisAcceptInput) -> Fut
+            + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::ApisAcceptOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::ApisAccept, _, _>(handler);
+    }
+    pub fn register_apis_force_replace<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::ApisForceReplaceInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::ApisForceReplaceOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::ApisForceReplace, _, _>(handler);
+    }
+    pub fn register_apis_get<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::ApisGetInput) -> Fut
+            + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::ApisGetOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::ApisGet, _, _>(handler);
+    }
+    pub fn register_apis_list<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::ApisListInput) -> Fut
+            + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::ApisListOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::ApisList, _, _>(handler);
+    }
+    pub fn register_apis_review<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::ApisReviewInput) -> Fut
+            + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::ApisReviewOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::ApisReview, _, _>(handler);
+    }
+    pub fn register_authority_renew<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::AuthorityRenewInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::AuthorityRenewOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::AuthorityRenew, _, _>(handler);
+    }
+    pub fn register_authority_resolve<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::AuthorityResolveInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::AuthorityResolveOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::AuthorityResolve, _, _>(handler);
+    }
+    pub fn register_authority_status<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::AuthorityStatusInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::AuthorityStatusOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::AuthorityStatus, _, _>(handler);
+    }
+    pub fn register_authorization_sessions_list<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::AuthorizationSessionsListInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<
+                    rpc::AuthorizationSessionsListOutput,
+                >,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::AuthorizationSessionsList, _, _>(handler);
+    }
+    pub fn register_authorization_sessions_revoke<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::AuthorizationSessionsRevokeInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<
+                    rpc::AuthorizationSessionsRevokeOutput,
+                >,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::AuthorizationSessionsRevoke, _, _>(handler);
     }
     pub fn register_capabilities_list<F, Fut>(&mut self, handler: F)
     where
@@ -7073,61 +9136,47 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
     {
         self.runtime.register_rpc::<rpc::CapabilitiesList, _, _>(handler);
     }
-    pub fn register_capability_groups_delete<F, Fut>(&mut self, handler: F)
+    pub fn register_capability_grants_grant<F, Fut>(&mut self, handler: F)
     where
         F: Fn(
                 trellis_rs::service::ServiceHandlerContext,
-                rpc::CapabilityGroupsDeleteInput,
+                rpc::CapabilityGrantsGrantInput,
             ) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<
                 Output = trellis_rs::service::HandlerResult<
-                    rpc::CapabilityGroupsDeleteOutput,
+                    rpc::CapabilityGrantsGrantOutput,
                 >,
             > + Send + 'static,
     {
-        self.runtime.register_rpc::<rpc::CapabilityGroupsDelete, _, _>(handler);
+        self.runtime.register_rpc::<rpc::CapabilityGrantsGrant, _, _>(handler);
     }
-    pub fn register_capability_groups_get<F, Fut>(&mut self, handler: F)
+    pub fn register_capability_grants_list<F, Fut>(&mut self, handler: F)
     where
         F: Fn(
                 trellis_rs::service::ServiceHandlerContext,
-                rpc::CapabilityGroupsGetInput,
+                rpc::CapabilityGrantsListInput,
             ) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<
                 Output = trellis_rs::service::HandlerResult<
-                    rpc::CapabilityGroupsGetOutput,
+                    rpc::CapabilityGrantsListOutput,
                 >,
             > + Send + 'static,
     {
-        self.runtime.register_rpc::<rpc::CapabilityGroupsGet, _, _>(handler);
+        self.runtime.register_rpc::<rpc::CapabilityGrantsList, _, _>(handler);
     }
-    pub fn register_capability_groups_list<F, Fut>(&mut self, handler: F)
+    pub fn register_capability_grants_revoke<F, Fut>(&mut self, handler: F)
     where
         F: Fn(
                 trellis_rs::service::ServiceHandlerContext,
-                rpc::CapabilityGroupsListInput,
+                rpc::CapabilityGrantsRevokeInput,
             ) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<
                 Output = trellis_rs::service::HandlerResult<
-                    rpc::CapabilityGroupsListOutput,
+                    rpc::CapabilityGrantsRevokeOutput,
                 >,
             > + Send + 'static,
     {
-        self.runtime.register_rpc::<rpc::CapabilityGroupsList, _, _>(handler);
-    }
-    pub fn register_capability_groups_put<F, Fut>(&mut self, handler: F)
-    where
-        F: Fn(
-                trellis_rs::service::ServiceHandlerContext,
-                rpc::CapabilityGroupsPutInput,
-            ) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<
-                    rpc::CapabilityGroupsPutOutput,
-                >,
-            > + Send + 'static,
-    {
-        self.runtime.register_rpc::<rpc::CapabilityGroupsPut, _, _>(handler);
+        self.runtime.register_rpc::<rpc::CapabilityGrantsRevoke, _, _>(handler);
     }
     pub fn register_connections_kick<F, Fut>(&mut self, handler: F)
     where
@@ -7152,6 +9201,42 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
             > + Send + 'static,
     {
         self.runtime.register_rpc::<rpc::ConnectionsList, _, _>(handler);
+    }
+    pub fn register_delegations_list<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::DelegationsListInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::DelegationsListOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::DelegationsList, _, _>(handler);
+    }
+    pub fn register_delegations_review<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::DelegationsReviewInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::DelegationsReviewOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::DelegationsReview, _, _>(handler);
+    }
+    pub fn register_delegations_revoke<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::DelegationsRevokeInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::DelegationsRevokeOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::DelegationsRevoke, _, _>(handler);
     }
     pub fn register_deployments_apply<F, Fut>(&mut self, handler: F)
     where
@@ -7239,64 +9324,6 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
     {
         self.runtime.register_rpc::<rpc::DeploymentsRemove, _, _>(handler);
     }
-    pub fn register_device_user_authorities_list<F, Fut>(&mut self, handler: F)
-    where
-        F: Fn(
-                trellis_rs::service::ServiceHandlerContext,
-                rpc::DeviceUserAuthoritiesListInput,
-            ) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<
-                    rpc::DeviceUserAuthoritiesListOutput,
-                >,
-            > + Send + 'static,
-    {
-        self.runtime.register_rpc::<rpc::DeviceUserAuthoritiesList, _, _>(handler);
-    }
-    pub fn register_device_user_authorities_reviews_decide<F, Fut>(&mut self, handler: F)
-    where
-        F: Fn(
-                trellis_rs::service::ServiceHandlerContext,
-                rpc::DeviceUserAuthoritiesReviewsDecideInput,
-            ) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<
-                    rpc::DeviceUserAuthoritiesReviewsDecideOutput,
-                >,
-            > + Send + 'static,
-    {
-        self.runtime
-            .register_rpc::<rpc::DeviceUserAuthoritiesReviewsDecide, _, _>(handler);
-    }
-    pub fn register_device_user_authorities_reviews_list<F, Fut>(&mut self, handler: F)
-    where
-        F: Fn(
-                trellis_rs::service::ServiceHandlerContext,
-                rpc::DeviceUserAuthoritiesReviewsListInput,
-            ) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<
-                    rpc::DeviceUserAuthoritiesReviewsListOutput,
-                >,
-            > + Send + 'static,
-    {
-        self.runtime
-            .register_rpc::<rpc::DeviceUserAuthoritiesReviewsList, _, _>(handler);
-    }
-    pub fn register_device_user_authorities_revoke<F, Fut>(&mut self, handler: F)
-    where
-        F: Fn(
-                trellis_rs::service::ServiceHandlerContext,
-                rpc::DeviceUserAuthoritiesRevokeInput,
-            ) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<
-                    rpc::DeviceUserAuthoritiesRevokeOutput,
-                >,
-            > + Send + 'static,
-    {
-        self.runtime.register_rpc::<rpc::DeviceUserAuthoritiesRevoke, _, _>(handler);
-    }
     pub fn register_devices_disable<F, Fut>(&mut self, handler: F)
     where
         F: Fn(
@@ -7351,45 +9378,19 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
     {
         self.runtime.register_rpc::<rpc::DevicesRemove, _, _>(handler);
     }
-    pub fn register_grants_get<F, Fut>(&mut self, handler: F)
+    pub fn register_issuers_resolve_chain<F, Fut>(&mut self, handler: F)
     where
-        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::GrantsGetInput) -> Fut
-            + Send + Sync + 'static,
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::IssuersResolveChainInput,
+            ) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<rpc::GrantsGetOutput>,
+                Output = trellis_rs::service::HandlerResult<
+                    rpc::IssuersResolveChainOutput,
+                >,
             > + Send + 'static,
     {
-        self.runtime.register_rpc::<rpc::GrantsGet, _, _>(handler);
-    }
-    pub fn register_grants_list<F, Fut>(&mut self, handler: F)
-    where
-        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::GrantsListInput) -> Fut
-            + Send + Sync + 'static,
-        Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<rpc::GrantsListOutput>,
-            > + Send + 'static,
-    {
-        self.runtime.register_rpc::<rpc::GrantsList, _, _>(handler);
-    }
-    pub fn register_grants_revoke<F, Fut>(&mut self, handler: F)
-    where
-        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::GrantsRevokeInput) -> Fut
-            + Send + Sync + 'static,
-        Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<rpc::GrantsRevokeOutput>,
-            > + Send + 'static,
-    {
-        self.runtime.register_rpc::<rpc::GrantsRevoke, _, _>(handler);
-    }
-    pub fn register_grants_set<F, Fut>(&mut self, handler: F)
-    where
-        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::GrantsSetInput) -> Fut
-            + Send + Sync + 'static,
-        Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<rpc::GrantsSetOutput>,
-            > + Send + 'static,
-    {
-        self.runtime.register_rpc::<rpc::GrantsSet, _, _>(handler);
+        self.runtime.register_rpc::<rpc::IssuersResolveChain, _, _>(handler);
     }
     pub fn register_issuers_revoke<F, Fut>(&mut self, handler: F)
     where
@@ -7401,179 +9402,397 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
     {
         self.runtime.register_rpc::<rpc::IssuersRevoke, _, _>(handler);
     }
-    pub fn register_participants_get<F, Fut>(&mut self, handler: F)
+    pub fn register_issuers_rotate<F, Fut>(&mut self, handler: F)
     where
-        F: Fn(
-                trellis_rs::service::ServiceHandlerContext,
-                rpc::ParticipantsGetInput,
-            ) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<rpc::ParticipantsGetOutput>,
-            > + Send + 'static,
-    {
-        self.runtime.register_rpc::<rpc::ParticipantsGet, _, _>(handler);
-    }
-    pub fn register_participants_install<F, Fut>(&mut self, handler: F)
-    where
-        F: Fn(
-                trellis_rs::service::ServiceHandlerContext,
-                rpc::ParticipantsInstallInput,
-            ) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<
-                    rpc::ParticipantsInstallOutput,
-                >,
-            > + Send + 'static,
-    {
-        self.runtime.register_rpc::<rpc::ParticipantsInstall, _, _>(handler);
-    }
-    pub fn register_participants_list<F, Fut>(&mut self, handler: F)
-    where
-        F: Fn(
-                trellis_rs::service::ServiceHandlerContext,
-                rpc::ParticipantsListInput,
-            ) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<rpc::ParticipantsListOutput>,
-            > + Send + 'static,
-    {
-        self.runtime.register_rpc::<rpc::ParticipantsList, _, _>(handler);
-    }
-    pub fn register_portals_get<F, Fut>(&mut self, handler: F)
-    where
-        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::PortalsGetInput) -> Fut
+        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::IssuersRotateInput) -> Fut
             + Send + Sync + 'static,
         Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<rpc::PortalsGetOutput>,
+                Output = trellis_rs::service::HandlerResult<rpc::IssuersRotateOutput>,
             > + Send + 'static,
     {
-        self.runtime.register_rpc::<rpc::PortalsGet, _, _>(handler);
+        self.runtime.register_rpc::<rpc::IssuersRotate, _, _>(handler);
     }
-    pub fn register_portals_grant_overrides_list<F, Fut>(&mut self, handler: F)
+    pub fn register_o_auth_clients_delete<F, Fut>(&mut self, handler: F)
     where
         F: Fn(
                 trellis_rs::service::ServiceHandlerContext,
-                rpc::PortalsGrantOverridesListInput,
+                rpc::OAuthClientsDeleteInput,
             ) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<
                 Output = trellis_rs::service::HandlerResult<
-                    rpc::PortalsGrantOverridesListOutput,
+                    rpc::OAuthClientsDeleteOutput,
                 >,
             > + Send + 'static,
     {
-        self.runtime.register_rpc::<rpc::PortalsGrantOverridesList, _, _>(handler);
+        self.runtime.register_rpc::<rpc::OAuthClientsDelete, _, _>(handler);
     }
-    pub fn register_portals_grant_overrides_put<F, Fut>(&mut self, handler: F)
+    pub fn register_o_auth_clients_disable<F, Fut>(&mut self, handler: F)
     where
         F: Fn(
                 trellis_rs::service::ServiceHandlerContext,
-                rpc::PortalsGrantOverridesPutInput,
+                rpc::OAuthClientsDisableInput,
             ) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<
                 Output = trellis_rs::service::HandlerResult<
-                    rpc::PortalsGrantOverridesPutOutput,
+                    rpc::OAuthClientsDisableOutput,
                 >,
             > + Send + 'static,
     {
-        self.runtime.register_rpc::<rpc::PortalsGrantOverridesPut, _, _>(handler);
+        self.runtime.register_rpc::<rpc::OAuthClientsDisable, _, _>(handler);
     }
-    pub fn register_portals_grant_overrides_remove<F, Fut>(&mut self, handler: F)
+    pub fn register_o_auth_clients_get<F, Fut>(&mut self, handler: F)
     where
         F: Fn(
                 trellis_rs::service::ServiceHandlerContext,
-                rpc::PortalsGrantOverridesRemoveInput,
+                rpc::OAuthClientsGetInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::OAuthClientsGetOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::OAuthClientsGet, _, _>(handler);
+    }
+    pub fn register_o_auth_clients_list<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::OAuthClientsListInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::OAuthClientsListOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::OAuthClientsList, _, _>(handler);
+    }
+    pub fn register_o_auth_clients_put<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::OAuthClientsPutInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::OAuthClientsPutOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::OAuthClientsPut, _, _>(handler);
+    }
+    pub fn register_oidc_providers_delete<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::OIDCProvidersDeleteInput,
             ) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<
                 Output = trellis_rs::service::HandlerResult<
-                    rpc::PortalsGrantOverridesRemoveOutput,
+                    rpc::OIDCProvidersDeleteOutput,
                 >,
             > + Send + 'static,
     {
-        self.runtime.register_rpc::<rpc::PortalsGrantOverridesRemove, _, _>(handler);
+        self.runtime.register_rpc::<rpc::OIDCProvidersDelete, _, _>(handler);
     }
-    pub fn register_portals_list<F, Fut>(&mut self, handler: F)
+    pub fn register_oidc_providers_disable<F, Fut>(&mut self, handler: F)
     where
-        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::PortalsListInput) -> Fut
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::OIDCProvidersDisableInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<
+                    rpc::OIDCProvidersDisableOutput,
+                >,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::OIDCProvidersDisable, _, _>(handler);
+    }
+    pub fn register_oidc_providers_get<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::OIDCProvidersGetInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::OIDCProvidersGetOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::OIDCProvidersGet, _, _>(handler);
+    }
+    pub fn register_oidc_providers_list<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::OIDCProvidersListInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::OIDCProvidersListOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::OIDCProvidersList, _, _>(handler);
+    }
+    pub fn register_oidc_providers_put<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::OIDCProvidersPutInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::OIDCProvidersPutOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::OIDCProvidersPut, _, _>(handler);
+    }
+    pub fn register_oidc_role_mappings_delete<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::OIDCRoleMappingsDeleteInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<
+                    rpc::OIDCRoleMappingsDeleteOutput,
+                >,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::OIDCRoleMappingsDelete, _, _>(handler);
+    }
+    pub fn register_oidc_role_mappings_list<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::OIDCRoleMappingsListInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<
+                    rpc::OIDCRoleMappingsListOutput,
+                >,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::OIDCRoleMappingsList, _, _>(handler);
+    }
+    pub fn register_oidc_role_mappings_put<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::OIDCRoleMappingsPutInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<
+                    rpc::OIDCRoleMappingsPutOutput,
+                >,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::OIDCRoleMappingsPut, _, _>(handler);
+    }
+    pub fn register_platform_delegations_list<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::PlatformDelegationsListInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<
+                    rpc::PlatformDelegationsListOutput,
+                >,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::PlatformDelegationsList, _, _>(handler);
+    }
+    pub fn register_platform_delegations_put<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::PlatformDelegationsPutInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<
+                    rpc::PlatformDelegationsPutOutput,
+                >,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::PlatformDelegationsPut, _, _>(handler);
+    }
+    pub fn register_platform_delegations_revoke<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::PlatformDelegationsRevokeInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<
+                    rpc::PlatformDelegationsRevokeOutput,
+                >,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::PlatformDelegationsRevoke, _, _>(handler);
+    }
+    pub fn register_platform_privileges_assign<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::PlatformPrivilegesAssignInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<
+                    rpc::PlatformPrivilegesAssignOutput,
+                >,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::PlatformPrivilegesAssign, _, _>(handler);
+    }
+    pub fn register_platform_privileges_list<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::PlatformPrivilegesListInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<
+                    rpc::PlatformPrivilegesListOutput,
+                >,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::PlatformPrivilegesList, _, _>(handler);
+    }
+    pub fn register_platform_privileges_revoke<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::PlatformPrivilegesRevokeInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<
+                    rpc::PlatformPrivilegesRevokeOutput,
+                >,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::PlatformPrivilegesRevoke, _, _>(handler);
+    }
+    pub fn register_principals_effective_access<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::PrincipalsEffectiveAccessInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<
+                    rpc::PrincipalsEffectiveAccessOutput,
+                >,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::PrincipalsEffectiveAccess, _, _>(handler);
+    }
+    pub fn register_resources_get<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::ResourcesGetInput) -> Fut
             + Send + Sync + 'static,
         Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<rpc::PortalsListOutput>,
+                Output = trellis_rs::service::HandlerResult<rpc::ResourcesGetOutput>,
             > + Send + 'static,
     {
-        self.runtime.register_rpc::<rpc::PortalsList, _, _>(handler);
+        self.runtime.register_rpc::<rpc::ResourcesGet, _, _>(handler);
     }
-    pub fn register_portals_login_settings_get<F, Fut>(&mut self, handler: F)
+    pub fn register_resources_list<F, Fut>(&mut self, handler: F)
     where
-        F: Fn(
-                trellis_rs::service::ServiceHandlerContext,
-                rpc::PortalsLoginSettingsGetInput,
-            ) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<
-                    rpc::PortalsLoginSettingsGetOutput,
-                >,
-            > + Send + 'static,
-    {
-        self.runtime.register_rpc::<rpc::PortalsLoginSettingsGet, _, _>(handler);
-    }
-    pub fn register_portals_login_settings_update<F, Fut>(&mut self, handler: F)
-    where
-        F: Fn(
-                trellis_rs::service::ServiceHandlerContext,
-                rpc::PortalsLoginSettingsUpdateInput,
-            ) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<
-                    rpc::PortalsLoginSettingsUpdateOutput,
-                >,
-            > + Send + 'static,
-    {
-        self.runtime.register_rpc::<rpc::PortalsLoginSettingsUpdate, _, _>(handler);
-    }
-    pub fn register_portals_put<F, Fut>(&mut self, handler: F)
-    where
-        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::PortalsPutInput) -> Fut
+        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::ResourcesListInput) -> Fut
             + Send + Sync + 'static,
         Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<rpc::PortalsPutOutput>,
+                Output = trellis_rs::service::HandlerResult<rpc::ResourcesListOutput>,
             > + Send + 'static,
     {
-        self.runtime.register_rpc::<rpc::PortalsPut, _, _>(handler);
+        self.runtime.register_rpc::<rpc::ResourcesList, _, _>(handler);
     }
-    pub fn register_portals_remove<F, Fut>(&mut self, handler: F)
-    where
-        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::PortalsRemoveInput) -> Fut
-            + Send + Sync + 'static,
-        Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<rpc::PortalsRemoveOutput>,
-            > + Send + 'static,
-    {
-        self.runtime.register_rpc::<rpc::PortalsRemove, _, _>(handler);
-    }
-    pub fn register_portals_routes_put<F, Fut>(&mut self, handler: F)
+    pub fn register_resources_remove<F, Fut>(&mut self, handler: F)
     where
         F: Fn(
                 trellis_rs::service::ServiceHandlerContext,
-                rpc::PortalsRoutesPutInput,
+                rpc::ResourcesRemoveInput,
             ) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<rpc::PortalsRoutesPutOutput>,
+                Output = trellis_rs::service::HandlerResult<rpc::ResourcesRemoveOutput>,
             > + Send + 'static,
     {
-        self.runtime.register_rpc::<rpc::PortalsRoutesPut, _, _>(handler);
+        self.runtime.register_rpc::<rpc::ResourcesRemove, _, _>(handler);
     }
-    pub fn register_portals_routes_remove<F, Fut>(&mut self, handler: F)
+    pub fn register_role_assignments_assign<F, Fut>(&mut self, handler: F)
     where
         F: Fn(
                 trellis_rs::service::ServiceHandlerContext,
-                rpc::PortalsRoutesRemoveInput,
+                rpc::RoleAssignmentsAssignInput,
             ) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<
                 Output = trellis_rs::service::HandlerResult<
-                    rpc::PortalsRoutesRemoveOutput,
+                    rpc::RoleAssignmentsAssignOutput,
                 >,
             > + Send + 'static,
     {
-        self.runtime.register_rpc::<rpc::PortalsRoutesRemove, _, _>(handler);
+        self.runtime.register_rpc::<rpc::RoleAssignmentsAssign, _, _>(handler);
+    }
+    pub fn register_role_assignments_list<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::RoleAssignmentsListInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<
+                    rpc::RoleAssignmentsListOutput,
+                >,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::RoleAssignmentsList, _, _>(handler);
+    }
+    pub fn register_role_assignments_revoke<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::RoleAssignmentsRevokeInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<
+                    rpc::RoleAssignmentsRevokeOutput,
+                >,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::RoleAssignmentsRevoke, _, _>(handler);
+    }
+    pub fn register_roles_delete<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::RolesDeleteInput) -> Fut
+            + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::RolesDeleteOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::RolesDelete, _, _>(handler);
+    }
+    pub fn register_roles_get<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::RolesGetInput) -> Fut
+            + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::RolesGetOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::RolesGet, _, _>(handler);
+    }
+    pub fn register_roles_list<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::RolesListInput) -> Fut
+            + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::RolesListOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::RolesList, _, _>(handler);
+    }
+    pub fn register_roles_put<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::RolesPutInput) -> Fut
+            + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::RolesPutOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::RolesPut, _, _>(handler);
     }
     pub fn register_service_instances_disable<F, Fut>(&mut self, handler: F)
     where
@@ -7808,28 +10027,5 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
             > + Send + 'static,
     {
         self.runtime.register_rpc::<rpc::UsersUpdate, _, _>(handler);
-    }
-    pub fn register_device_user_authorities_resolve<F, Fut>(&mut self, handler: F)
-    where
-        F: Fn(
-                trellis_rs::service::RequestContext,
-                operations::DeviceUserAuthoritiesResolveInput,
-                trellis_rs::service::OperationControl<
-                    trellis_rs::generated::OperationAdapter<
-                        operations::DeviceUserAuthoritiesResolve,
-                    >,
-                >,
-            ) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<(), trellis_rs::service::ServerError>>
-            + Send + 'static,
-    {
-        self.runtime
-            .register_operation_handler::<
-                trellis_rs::generated::OperationAdapter<
-                    operations::DeviceUserAuthoritiesResolve,
-                >,
-                F,
-                Fut,
-            >(handler);
     }
 }

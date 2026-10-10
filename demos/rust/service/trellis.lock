@@ -4,13 +4,13 @@ root = "demo-rust-service"
 [[packages]]
 name = "demo-rust-service"
 version = "1.0.0"
-digest = "qxrQW1gDAGES-oNhec6OBqCCNxr77tHxcOOLh1LZYKc"
-distribution-digest = "sha256:88d7f0fe9c5630723d37ce589a15f497485112a6f7d629507df1c3ed10517803"
+digest = "pXT6hyhXKQocO9Wj2J-RGYeWTBPk9OE7DAmTo27N0_Y"
+distribution-digest = "sha256:a5d5221bd3de603b6a62f6e3ee0dde8192c2f8ada5e0270fafd5e4f350b411e9"
 
 [[packages.dependencies]]
 name = "demo-service"
 version = "1.0.0"
-digest = "h93pFM7dgvvyY8coVUsB-eTJ5AT7kPtpE75h7pfU1s8"
+digest = "k6mk7C_UspJ7NNfPrU5BLeGpFhA7SvO19Akhkr7Y1bU"
 
 [packages.source]
 kind = "path"
@@ -19,8 +19,8 @@ path = "."
 [[packages]]
 name = "demo-service"
 version = "1.0.0"
-digest = "h93pFM7dgvvyY8coVUsB-eTJ5AT7kPtpE75h7pfU1s8"
-distribution-digest = "sha256:dd7863ff119c53efe0b5029873649c1914802bc047bc4d74b11a15aa86535d38"
+digest = "k6mk7C_UspJ7NNfPrU5BLeGpFhA7SvO19Akhkr7Y1bU"
+distribution-digest = "sha256:ac782ab573994d9e97557856dc998f80dac0ef71bbcb06594743a57774f2bb51"
 dependencies = []
 
 [packages.source]

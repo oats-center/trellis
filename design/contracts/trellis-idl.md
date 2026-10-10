@@ -70,11 +70,19 @@ api orders@v1 {
   title "Orders";
   description "Order creation.";
   rpc Create { input CreateOrderRequest; output CreateOrderResponse; }
-  capabilities { public { allows { rpc Create; } } }
+  capabilities {
+    capability create {
+      title "Create orders";
+      description "Create an order for a customer.";
+      consequence "New orders enter the customer's workflow.";
+      consent_revision 1;
+      allows { rpc Create; }
+    }
+  }
 }
 
 service OrdersService { implements orders; }
-app OrdersCaller { use orders { rpc Create; } }
+app OrdersCaller { use orders { required capability create; } }
 ```
 
 The authored API lineage token (`orders`) is lowercase alphanumeric and is used
@@ -88,10 +96,33 @@ Inputs, outputs, progress, events, and error payloads reference top-level types.
 There is no `rpc internal`, `EventClass`, per-action version, general transfer
 block, participant-local schema, or API State.
 
-Participants are `service`, `device`, `app`, or `agent`. A device may contain at
-most one named `app` or `agent`. Only service/device participants implement
-APIs. `use Api;` selects nothing; a nonempty use body selects exact
-interactions. Operation selection always includes its lifecycle and signals.
+Deployable participants are `service` and `device`. The `app` and `agent`
+declarations describe browser/native application requests, not installable
+principals. A device may contain one named `app` or `agent` companion request.
+Only service/device participants implement APIs.
+
+`use Api;` selects nothing. A use body selects whole capabilities:
+`required capability read;` is required; `capability export;` is optional.
+Duplicate requests normalize deterministically, and required wins over optional.
+Unknown authored capability references are compile errors. Generated callable
+surfaces are the union of the selected capabilities' actions; unrelated
+capabilities do not become requirements merely because they overlap those
+actions. Operation selections include the operation lifecycle and signals.
+
+Administrative Auth RPCs also have ordinary, narrowly scoped capabilities.
+Selecting one exposes its generated caller methods but does not grant platform
+privileges: the required finite administrative privilege is an additional
+runtime condition. Own-authority and own-session maintenance are fixed session
+rights, not ordinary capability requests. There is no IDL privilege-request
+syntax.
+
+Every authored capability has an explicit positive integer `consent_revision`;
+descriptor projections must expose it as `consentRevision`. Authors change this
+when delegated meaning changes; prose edits do not increment it automatically.
+Compatibility checking rejects a decrease for an existing capability identity;
+Auth must enforce the same rule when accepting a force replacement. API
+generation, accepted revision, and action/membership introduction revisions are
+Auth-owned acceptance metadata, never authored counters.
 
 Resource headers are `state`, `kv`, `store`, `job`, or `consumer`, optionally
 followed by `optional`, then a local name. Bodies require nonempty `title` and
@@ -99,6 +130,18 @@ followed by `optional`, then a local name. Bodies require nonempty `title` and
 authoring has events, concurrency, replay, and retry—never ordering, ack-wait,
 max-delivery, or DLQ switches. Job progress, logs, and dead lifecycle are always
 available rather than feature flags.
+
+Application requests may declare local typed State codecs, but cannot own KV,
+Store, Job, or Consumer resources. A State declaration grants no implicit
+Get/Put/Delete authority: the application must request the appropriate State
+capabilities explicitly. Deployable resources remain principal-owned.
+
+Built-in capability selections follow the same rule. State `read`, `write`, and
+`delete` select Get, Put, and Delete independently. A Jobs `query` selection
+exposes Query, not job inspection, cancellation, or dead-letter replay. Health
+`statusChanges` selects event consumption, not publication; provider publication
+and Consumer delivery reporting are runtime responsibilities rather than caller
+capabilities.
 
 A participant declaring a Consumer requires a direct dependency on the `trellis`
 source package containing `trellis.events@v1`. The author chooses and locks that

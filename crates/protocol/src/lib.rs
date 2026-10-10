@@ -7,6 +7,7 @@
 
 pub mod authorization;
 mod canonical;
+mod catalog;
 mod error;
 mod identifiers;
 pub mod live;
@@ -19,21 +20,26 @@ pub mod transfer;
 pub mod transport_authorization;
 
 pub use authorization::{
-    authorization_context_refresh_at, authorization_context_signing_digest,
-    build_authorization_event_proof_input, build_authorization_request_proof_input,
-    parse_authorization_context, sign_authorization_context, sign_authorization_event,
-    sign_authorization_request, verify_authorization_context, verify_authorization_event,
-    verify_authorization_request, verify_transfer_authorization_request,
-    AuthorizationContextPurpose, AuthorizationEventProof, AuthorizationEventProofInput,
-    AuthorizationEventPublisher, AuthorizationEventVerificationInput, AuthorizationIssuerKey,
-    AuthorizationIssuerState, AuthorizationPrincipalKind, AuthorizationRequestProof,
-    AuthorizationRequestProofInput, AuthorizationRequestVerificationInput,
-    AuthorizationVerificationPolicy, SignedAuthorizationContext, UnsignedAuthorizationContext,
-    VerifiedAuthorizationContext, VerifiedAuthorizationEventProof,
-    VerifiedAuthorizationRequestProof, AUTHORIZATION_CONTEXT_FORMAT_V1,
-    AUTHORIZATION_EVENT_PROOF_DOMAIN_V1, AUTHORIZATION_REQUEST_PROOF_DOMAIN_V1,
+    parse_session_authority, session_event_signing_digest, session_request_signing_digest,
+    sign_session_authority, sign_session_event, sign_session_request, verify_session_authority,
+    verify_session_event, verify_session_request, AuthenticatedCaller, AuthorityApi,
+    AuthorityIssuerKey, AuthorityIssuerState, AuthorityProvider, CapabilityAuthority,
+    CredentialKind, OriginalEventPublication, PrincipalKind, SessionAuthorityPurpose,
+    SessionAuthorityVerificationInput, SessionAuthorityVerificationPolicy, SessionBinding,
+    SessionEvent, SessionEventProof, SessionEventVerificationInput, SessionRequest,
+    SessionRequestProof, SessionRequestVerificationInput, SignedSessionAuthority,
+    UnsignedSessionAuthority, VerifiedSessionAuthority, VerifiedSessionEvent,
+    VerifiedSessionRequest, ADMISSION_GET_DOMAIN_V1, ISSUER_METADATA_DOMAIN_V1,
+    LIVE_PROOF_DOMAIN_V1, MESSAGE_EVENT_DOMAIN_V1, MESSAGE_REQUEST_DOMAIN_V1,
+    MESSAGE_RESPONSE_DOMAIN_V1, SESSION_AUTHORITY_FORMAT_V1, TRANSFER_PROOF_DOMAIN_V1,
 };
 pub use canonical::{canonicalize_json, digest_json, sha256_base64url};
+pub use catalog::{
+    CatalogAction, CatalogActionIdentity, CatalogCapability, CatalogCapabilityMembership,
+    SignedCatalogSnapshot, SignedIssuerRotation, SignedProviderCertificate,
+    SignedSessionRevocation, CATALOG_SNAPSHOT_FORMAT_V1, ISSUER_ROTATION_FORMAT_V1,
+    PROVIDER_CERTIFICATE_FORMAT_V1, SESSION_REVOCATION_FORMAT_V1,
+};
 pub use error::{AuthorizationErrorCode, ProtocolError, SessionProofErrorCode};
 pub use identifiers::validate_api_id;
 pub use live::{
@@ -63,9 +69,8 @@ pub use pagination::{
 };
 pub use participant::ParticipantKind;
 pub use permissions::{
-    ApiSurfaceKind, CapabilityDefinition, ConsentMetadata, GrantOwnerKind, GrantSet,
-    ParticipantResourceKind, PermissionAction, PermissionAtom, PermissionTarget, PlatformPrivilege,
-    GRANT_SET_FORMAT_V1,
+    ApiSurfaceKind, ParticipantResourceKind, PermissionAction, PermissionAtom, PermissionTarget,
+    PlatformPrivilege,
 };
 pub use session_proof::{
     parse_session_proof, session_proof_request_digest, session_proof_signing_digest,
