@@ -1,288 +1,138 @@
 # Design: Trellis Authentication And Authorization
 
-Status: authoritative as-built model for the WO-02 authorization cutover.
+Status: Revision 7. The authoritative Auth core is implemented through Phase 2;
+OAuth/Callout adapters, SDK ownership, provider integration, and runtime startup
+wiring are completed in the remaining phases. This is an unreleased clean break,
+not a compatibility path for GrantBinding or the former browser bind protocol.
 
-## Principles
+## Authority Ownership
 
-- Authentication establishes a principal. Authorization is always scoped to an
-  installed participant revision.
-- `GrantBinding` is the only current authority record. There is no desired or
-  materialized authority, proposal, reconciliation, trust floor, or client-held
-  authority state.
-- Server-owned inputs are never accepted back as client assertions.
-- Expected denials are modeled as typed results. Invalid signatures, malformed
-  proofs, stale revisions, and unavailable required evidence fail closed.
-- Auth owns durable identity, login, grant, issuer, resource, and signed-context
-  history. NATS KV is a rebuildable runtime mirror, not the source of truth.
+Auth's platform SQLite store owns principals, local credentials, verified login
+sessions, registered clients, OAuth grants, provisioned identities, role/direct
+entitlements, OIDC mappings, accepted APIs, deployments, issuer keys, logical
+authorization sessions, immutable signed material, and durable effects.
 
-## Participants And Grants
+Providers verify compact signed results. They do not resolve roles, reproduce
+OAuth consent, track source floors, or subscribe separately for every context.
+NATS KV is a rebuildable distribution mirror, never authoritative policy.
 
-An installed participant revision is an immutable snapshot of verified package
-semantic evidence and exact participant lexical path. Revisions are
-monotonically increasing per participant. The server selects the current
-revision; clients do not upload generated artifacts or digests during bootstrap
-or browser login.
+## One Capability Compiler
 
-`GrantBinding` is keyed by `(identityId, participantId)` and contains:
+The compiler reads one coherent SQLite transaction. It unions independently
+valid role, direct, and fresh verified-OIDC entitlement paths before
+intersecting them with the application/deployment selection and the OAuth
+grant's approved capability identities and consent revisions. Services/devices
+are bounded by their deployed native participant selection. Platform privileges
+are a separate finite set, not capabilities or arbitrary action grants.
 
-- the installed participant revision;
-- approval mode, approved current-consent capabilities, approved resource
-  commitments, delegation ceiling, and exact derived grants; and
-- a finite set of Trellis platform privileges.
+The result includes approved capabilities, required-missing and
+optional-unavailable selections, accepted API generations/revisions, provider
+certificates, ownership bindings, privileges, explanations, and the earliest
+applicable deadline. Pending backing resources do not remove an ordinary user's
+capabilities. Freshness expiry removes only the affected OIDC entitlement path;
+another valid direct or role path can preserve the capability.
 
-The only platform privilege is `PlatformPrivilege::Admin`. It authorizes
-administrative RPCs but does not grant arbitrary participant atoms. Grant writes
-use `expectedRevision`, validate every atom against the named installed
-revision, and commit through the aggregate idempotency repository. The protected
-bootstrap administrator cannot be demoted or revoked.
+Approval never adds an unknown or declined optional capability at renewal.
+Compatible API expansion is available to a renewed context only while the
+capability remains approved at the same consent revision.
 
-CLI, Console, activation Portal, and Auth runtime participants are installed at
-startup from Trellis-owned source semantics. First-admin creation and reset
-atomically write Admin bindings for CLI and Console in the same transaction as
-the account credential. The Portal receives no Admin binding.
+## Catalog Acceptance
 
-## Capability Discovery
+One accepted definition exists per API major. Review authenticates
+package/source evidence, computes normal compatibility, records
+action/capability/consent changes, and binds the accepted and affected policy
+revisions. Acceptance checks that review and all expected revisions in its
+transaction. Accompanying policy edits either commit with the definition or do
+not apply.
 
-`Auth.Capabilities.List` discovers capability definitions from verified
-installed participant snapshots, not a separate mutable catalog. With
-`participantId` and `revision`, it reads that exact retained revision. With only
-`participantId`, it reads the participant's current revision. A revision without
-a participant is invalid. Without either filter, it reads the current revision
-of every installed participant; historical definitions remain available through
-explicit revision queries, not global discovery. `sourceApi` can further
-restrict either scope.
+Normal acceptance increments the local accepted revision. New actions and
+capability memberships record introduction revisions: an older signed context
+cannot gain them merely because a newer catalog is available.
 
-Definitions are identified by API ID and `apiDigest`. Identical definitions
-referenced by multiple participants deduplicate, while differing definitions of
-the same API remain distinct. Capability identity alone is therefore
-insufficient to identify a global catalog entry; pagination also distinguishes
-API digests.
+Force replacement requires its finite privilege, reviewed-digest confirmation,
+explicit breakage acknowledgment, and declared meaning changes with increased
+consent revisions. It creates a new API generation at revision 1 and makes
+displaced providers ineligible for admission. Technical wire breakage alone does
+not imply that every delegated meaning changed. Retained signed catalogs support
+verification and audit, not runtime compatibility fallback.
 
-Console access editing discovers capabilities for the exact participant revision
-being edited. Capability selections and capability-group presets expand once to
-that revision's concrete permissions. `Auth.Grants.Set` stores an exact
-snapshot, not capability membership; later definition or group changes do not
-widen it. Discovery does not grant authority or change portal consent semantics.
+## Logical Authorization Sessions
 
-## Principals And Credentials
+Auth checks the current credential/root, runtime identity, and proof key before
+issuing `trellis.session-authority.v2`. It signs canonical bytes and commits the
+immutable context, logical-session association, and publication work together.
+Resolution by digest returns that exact committed object even after restart.
 
-Users, services, and devices are durable principals. Services and devices use
-provisioned identity keys; Trellis never stores their private key material.
-One-use provisioning secrets are high entropy, stored only as hashes, returned
-once, and consumed atomically.
+Renewal may reuse an active logical ID only while no authority has been lost
+relative to any still-usable context issued under it. A narrower newest context
+cannot hide an older broader live context. Comparison includes provider/API
+generations, privileges, ownership bindings, and deadlines. Derived comparison
+state expires when those contexts cease to be usable; immutable history remains.
 
-`auth_sessions` contains user logins only. Native service/device connections do
-not create login rows. Auth responses distinguish the logical connection from
-the nullable login session. A physical NATS connection has a server-assigned
-connection ID and operational presence record; it is not a durable login.
+Reduction irreversibly retires the ID. A surviving root can reconnect with a new
+logical ID after reevaluation. Disabled principals, revoked grants/logins or
+provisioned identities, and compromised keys cannot use this route to regain
+authority. Physical attachments bind the logical ID to an exact server/client
+association, an attachment marker, and the same ephemeral NKey as its proof key.
+Attachment admission reevaluates inside the transaction; delayed enforcement
+cannot admit an already-retired or newly-reduced session.
 
-Password changes atomically update the Argon2 credential and revoke sibling
-logins. Logout, password changes, and user-login revocation require a real
-login. Native credentials cannot invoke login-only operations.
+## Durable Enforcement And Distribution
 
-Self-logout revokes the caller's session and may close its transport before the
-RPC reply arrives. Losing that reply is not proof of either success or failure:
-the client lifecycle owner confirms `session_revoked` through signed HTTP
-recovery when necessary. Unrelated terminal authorization failures, including
-session expiry, are not evidence of a committed logout. Revocation and transport
-kicks are not delayed to preserve the reply.
+Policy mutations commit small scoped work items through aggregate idempotency.
+Bounded transactional pages resume from committed cursors after restart,
+recompute through the same compiler, and preserve sessions when an independent
+entitlement path means nothing was lost. Session/root retirement persists its
+cutoff, reason, signed revocation, and exact attachment kick effects atomically.
 
-## Authorization Contexts
+Ordinary reevaluation uses retirement commit time as the effective cutoff, not
+the earlier policy edit time. Direct logout/family/session retirement records
+the cutoff in that operation's transaction. Work progress retains policy commit
+time separately. Every still-live digest under the retired ID is affected.
 
-The online issuer signs `trellis.authorization-context.v1` snapshots. Issuance
-rereads the current credential, principal, exact `GrantBinding`, installed
-participant revision, required/optional resource evidence, and issuer state in
-the signing transaction. Required missing evidence denies issuance; optional
-missing evidence removes only affected optional grants.
+The effect publisher sends signed session-ID revocations before dependent kicks.
+Hot entries remain through the maximum context acceptance deadline, including
+skew. Durable signed cutoffs remain available for historical verification. A
+bounded positive-only verified cache retains known cutoffs through missing
+mirror entries; forged updates cannot install or erase a cutoff. A cache miss is
+not evidence that unknown authority is valid. Owners use one shared
+snapshot/update stream; stopped updates permit already-verified contexts only
+through expiry.
 
-Every issued signed context is stored durably and immutably in Auth SQL by
-digest before it is usable. SQL retains complete historical context bytes and
-the issuance snapshot needed to prove what was authorized. Ordinary expiry,
-connection closure, grant replacement, login revocation, and issuer rotation
-never delete historical records. Explicit context or issuer revocation remains
-associated evidence and invalidates affected proofs.
+Kicks use the operational system-account client and exact broker inventory. A
+reused CID with another attachment marker is never kicked. Unavailable or
+malformed inventory is retryable, not proof of absence. `CONNZ`'s filtered
+`num_connections`, not its global `total`, establishes CID absence. Effects have
+bounded claims, retry backoff, stale-claim recovery, and predecessor ordering.
 
-At startup Auth republishes every retained SQL context into an empty or partial
-`traversal_authorization_contexts` KV mirror, then publishes explicit
-revocations. Publication requires create-or-exact-confirm behavior, read-back
-byte equality, and stream configuration that cannot evict retained history.
+## Issuers And Bootstrap
 
-Clients keep verified contexts, route JWTs, transport endpoints, clock offset,
-and issuer keys in bounded process memory only. Provider-context caches have a
-256-entry lease-aware LRU boundary; active entries cannot be evicted and retired
-entries cancel their revocation watchers. There is no durable trust floor or
-authorization-context store.
+The initial administrator is created through the local production bootstrap
+boundary and remains protected against disablement or administrative demotion.
+Passwords use Argon2; password change/reset retires the affected login families
+in the same transaction. Authentication failures do not identify which
+credential check failed.
 
-Each signed context also binds the exact transport policy compiled for it, so a
-client can compare the policy actually admitted on a physical attachment with
-current allowed policy without reimplementing the server's permission compiler.
-One stable logical client owns generations with immutable admitted contexts and
-policies. Routine equal-policy authorization/routing renewal promotes in place
-without socket churn. Healthy safe growth automatically prepares and readies a
-successor before publishing it as the default, without application refresh calls
-or upgrade notifications. Accepted work retains its receiving generation; safe
-predecessors stop new intake and drain after their leases reach zero. Unsafe,
-revoked, or hard-expired generations are forcibly retired, alongside the
-server's physical-attachment enforcement. Admission identity remains historical
-evidence, not current application authority.
+Issuer rotation installs a signed, preceding-key-bound, monotonic chain record
+and retains retired public keys and immutable signed contexts. Rotation commits
+the successor's public identity; its private key remains operator-owned and must
+be installed as the configured runtime signer before further issuance. A
+previous signer cannot continue issuing after that commitment. Rotation itself
+does not retire sessions. Explicit key compromise revokes affected sessions and
+makes that key unusable; restart must not reinstall it as an active signer.
 
-Fresh public I/O requires usable installed own authority and a final
-signed-policy, clock, and physical-attachment fence. Temporary
-revocation-coverage loss suspends bounded acquisitions; a separate guarded
-registry-maintenance path can restore coverage on the exact safe published
-attachment without socket churn. Verified authority is digest-keyed; each
-replaceable coverage binding owns its watch and transport lease, not authority
-validity. Make-before-break migration preserves cached entries and borrowers.
-Own-refresh candidates remain private until exact attempt-fenced promotion. When
-no safe carrier survives, a private exact-candidate socket may warm coverage,
-but gains application intake and default publication only after promotion and
-normal readiness. See [Context Refresh](auth-protocol.md#context-refresh) and
-[Runtime Caches](rust-authorization-state.md#runtime-caches).
+The remaining runtime wiring loads the fresh store, accepts built-ins and
+provisions Runtime resources/identity, issues Runtime authority through this
+compiler, opens TLS-protected operational NATS clients, starts Callout,
+verification distribution and enforcement, then exposes normal admission/OAuth.
+There is no anonymous application-account bootstrap or permanent browser admin
+token.
 
-## Proofs And Transport
+## Source Boundaries
 
-Bootstrap and browser bind use `trellis.session-proof.v1`. Proofs bind their
-purpose, canonical origin, request ID, issue time, complete raw request digest,
-and the ephemeral session public key. The same session key authenticates NATS.
-
-Application requests and events carry:
-
-- `authorization-context`: the signed context digest;
-- `session-key`: redundant checked metadata that must equal the key inside the
-  signed context;
-- `proof`: the message-specific signature; and
-- genuinely message-specific headers such as event ID, type, subject, and time.
-
-Verifiers resolve authority by context digest, reject a mismatching
-`session-key`, check explicit revocation, verify the proof, and authorize only
-the exact action in the signed grant. Messages never carry complete contexts or
-grant sets.
-
-Transport policy is server-owned. Trellis accepts HTTPS origins and loopback
-HTTP origins normally. A non-loopback HTTP public origin is refused at startup
-unless the operator lists it in `[http] allow_insecure_origins`; browser
-applications never opt into insecure transport and use the same client code for
-both deployments.
-
-Auth Callout validates the short-lived route JWT carried in the Trellis connect
-token, reconstructs and verifies the connect proof, reloads the immutable
-context by digest, rechecks current issuable state, and installs the exact
-transport policy signed into that context. Clients CONNECT with the session NKey
-signature and no client JWT: in operator mode the broker routes a JWT-less
-CONNECT to the external Auth Callout through a server-generated, non-expiring,
-server-only Auth-account `default_sentinel` that denies every publish and
-subscribe and confers no Trellis application authority. It never infers
-authority from subject strings or trusts the redundant session key
-independently. The returned user claim is bounded only by genuine underlying
-authorization deadlines, not renewable context or route-token lifetimes, and the
-admitted identity and policy are retained until the broker confirms the
-attachment is gone.
-
-## Bootstrap
-
-Native service/device bootstrap requires an existing provisioned principal,
-proof of identity-key possession, and a valid session proof. The request
-contains only identity and proof inputs. The server returns one shared
-installation response containing:
-
-- the server-owned assignment;
-- exact installed package/participant semantic evidence;
-- effective grants and structured resource evidence;
-- the signed authorization context;
-- a short-lived route JWT; and
-- exact Core NATS and WebSocket transport options with millisecond expiries.
-
-Service/device runtimes reject unknown response fields, verify every binding,
-and create no durable login session. Device enrollment is the separate
-`/auth/device/enroll` proof operation; `/bootstrap/device` only admits an
-already approved device.
-
-## Browser Authentication
-
-`POST /auth/requests` validates a proof-bound sign-in request and returns a
-reusable opaque signed intent, its `intentId`, and a portal URL. The intent
-binds the participant, initiating public key, origin, exact return target,
-portal, issue time, and online issuer. It contains no authenticated identity,
-approved authority, or authentication secrets. Intent creation and portal
-rendering do not start an authentication-attempt deadline.
-
-The portal reads current public choices through `/auth/intents/view`. When the
-user starts authentication, `/auth/transactions` verifies the intent and current
-eligibility, selects the current participant revision, and creates an
-independent bounded transaction. Authenticated identity, provider attributes,
-consent, grant revision, decisions, and completion belong to `transactionId`,
-not to the intent. An expired attempt cannot complete; the portal retains the
-intent and allows a fresh attempt without returning to the app.
-
-One intent has at most one outstanding transaction. Repository creation claims
-its correlation index atomically; another start cannot displace an unexpired
-attempt, even after approval while bind is outstanding. A same-binding retry
-recovers that attempt without resetting its state or deadline; another binding
-conflicts. An uncertain NATS index write is exact-confirmed against the stream
-leader, and an unconfirmed candidate is retained until its normal KV deadline so
-a delayed commit remains recoverable. Denied, expired, and consumed attempts
-allow a fresh transaction. Public intent rendering does not expose transaction
-discovery. Detached clients submit fresh initiating-key proofs to
-`/auth/intents/progress`, which returns an ID only for a bindable or replayable
-result. Portal progress remains protected by the transaction's raw portal
-binding.
-
-Portal actions use a fresh 32-byte transaction binding. The portal retains the
-raw value in portal-origin `sessionStorage` before starting the transaction,
-indexed by intent until the response supplies the transaction ID. Response loss
-or reload reuses that pending binding rather than creating a competing attempt.
-Trellis persists only its SHA-256 digest and requires the raw value in
-`Trellis-Portal-Binding` for bound actions. Origin remains CSRF defense, not
-authentication. OIDC PKCE, nonce, state, HttpOnly SameSite=Lax callback cookie
-association, and CAS-backed continuation belong to the transaction. Account-flow
-continuations use `browserTransactionId`; account and device review lifetimes
-remain separate. Browser OIDC starts by POSTing JSON transaction and binding
-inputs; initial and replayed callbacks return to the portal with
-`transactionId`, never an account-flow ID.
-
-Existing grant reuse shares issuance/policy compatibility semantics: an active,
-unexpired grant alone is insufficient, and revision change alone does not force
-consent. Authority expansion eligible for approval requests fresh consent after
-authentication, not another password. Approval rejects stale participant, grant,
-capability, and resource decisions and refreshes the consent view. Policy denial
-is an explicit authorization error; pending resource evidence remains bounded
-pending rather than prompting for authentication or consent again.
-
-`POST /auth/transactions/{transactionId}/bind` verifies the initiating key's
-proof and creates a user login, returning its intent ID but no authorization
-context. Exact supported replay returns the same semantic login result;
-independent transactions from one intent do not inherit identity or consent. The
-client commits the validated login result, then calls `/auth/context/refresh`.
-Only an invalid login becomes authentication-required; terminal authorization
-denial with a valid login retains it and surfaces the machine-readable error
-without an automatic login loop.
-
-Browser persistence is IndexedDB `trellis-auth` version 3, store
-`installations`, keyed only by canonical Trellis origin plus stable participant
-ID. Generation, public-key, intent, and login compare-and-swap fences prevent
-stale tabs from overwriting or clearing newer state. Only the initiating seed,
-minimal login metadata, pending signed intent/intent ID, and generation
-tombstone are durable; runtime authorization remains in memory. This is a clean
-pre-release cutover without compatibility reads for old pending browser flows.
-
-## Events And Atomicity
-
-Grant, participant, login, principal, issuer, resource, and device changes
-commit state, idempotency result, and ordered post-commit actions in one SQLite
-transaction. State changes revoke superseded contexts and request exact active
-connection kicks after commit.
-
-Auth events use the ordinary authorization path. A relay claim atomically
-prepares immutable canonical body bytes, current preparation time, context
-digest, session key, and proof for that attempt. Retries publish those exact
-bytes and metadata. If the context is stale before preparation, the relay issues
-and distributes a current context directly, without browser refresh or a second
-user login.
-
-## Non-Goals
-
-- offline roots, certificates, manifests, rollback floors, or trust tooling;
-- desired/materialized authority or reconciliation;
-- client-authored installation assertions;
-- universal durable sessions for services and devices; and
-- compatibility readers for the unreleased retired authorization model.
+Core implementation: `crates/runtime/src/platform/auth/`. Pure signed-authority
+and verification-material cryptography: `crates/protocol/src/authorization.rs`
+and `crates/protocol/src/catalog.rs`. Native Auth contract authoring:
+`crates/runtime/trellis/src/apis/trellis_auth_v1/`. Generated clients and
+current source, not the retired HTTP/RPC documentation, define exact APIs during
+cutover.

@@ -6,6 +6,15 @@ domain types, DI pattern, logging setup, or test framework.
 
 ## Generated Package
 
+Revision 7 Auth signs and retains catalog snapshots, provider certificates,
+monotonic issuer rotations, logical-session authority, and session revocations.
+`trellis-protocol` authenticates these records against pinned instance/account
+trust. Catalog membership checks also require verified live authority and its
+retirement status; decoding a record is not trust. Rust SDK OAuth admission and
+connection-owned cache integration are unfinished on this unreleased branch.
+Do not revive the retired GrantBinding/browser-bind protocol or install a watcher
+per context as a compatibility path.
+
 Declare whole capabilities in native IDL, not individual RPC/event grants:
 `required capability read;` is required and `capability export;` is optional.
 Generated callers expose the selected actions. Check capability availability

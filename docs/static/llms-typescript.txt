@@ -13,6 +13,14 @@ runtimes, including Deno; JSR publication remains supported.
 
 ## Generate And Connect
 
+On this unreleased Revision 7 branch, the authoritative Auth core now issues
+immutable signed logical-session authority and signed retirement cutoffs.
+TypeScript OAuth admission and shared connection-owned verification/revocation
+caches are migrated in later phases. Do not build per-context or per-role
+watchers, infer trust from missing mirror entries, or implement the retired
+GrantBinding/browser-bind protocol as a fallback. Released matching libraries
+remain the supported application integration until cutover completes.
+
 Declare whole capabilities in native IDL, not individual RPC/event grants:
 `required capability read;` is required and `capability export;` is optional.
 Generated callers expose the selected actions. Check capability availability

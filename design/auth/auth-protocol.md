@@ -1,6 +1,10 @@
 # Design: Auth Protocol
 
-Status: authoritative wire protocol after the WO-02 authorization cutover.
+Status: retired WO-02 protocol reference during the unreleased Revision 7
+cutover. Do not implement these former bootstrap/bind routes. Current core
+semantics are in [trellis-auth.md](trellis-auth.md); native contracts and
+protocol source define the replacement formats. OAuth/Callout transport wiring
+follows in the remaining implementation phases.
 
 ## Cryptographic Boundary
 

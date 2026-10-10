@@ -7,6 +7,15 @@ the same release or checkout as the CLI and libraries.
 
 ## What Trellis Owns
 
+Revision 7 Auth unions valid entitlements and intersects them with declared
+selection and approved consent in one authoritative transaction. Signed logical
+session authority is immutable; reduction retires every live digest under that
+session ID. Compatible catalog expansion requires renewal, and cannot silently
+approve declined capabilities. Signed revocations remain effective through mirror
+reconnect or missing entries until context acceptance deadlines expire. The
+OAuth/Callout and client/provider cutover is unfinished on this unreleased branch;
+the old GrantBinding/browser-bind model is not a compatibility option.
+
 Trellis owns native contract compilation, generated APIs, authenticated
 communication, connection lifecycle, and declared runtime resources. It does not
 choose an application's configuration format, environment parser, database, ORM,

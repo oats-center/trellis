@@ -155,7 +155,10 @@ fn push_component(bytes: &mut Vec<u8>, value: &[u8]) -> Result<(), ProtocolError
     Ok(())
 }
 
-fn signed_json_digest(domain: &str, value: &impl Serialize) -> Result<[u8; 32], ProtocolError> {
+pub(crate) fn signed_json_digest(
+    domain: &str,
+    value: &impl Serialize,
+) -> Result<[u8; 32], ProtocolError> {
     let canonical = canonicalize_json(&serde_json::to_value(value)?)?;
     let mut bytes = Vec::with_capacity(domain.len() + canonical.len() + 8);
     push_component(&mut bytes, domain.as_bytes())?;

@@ -1,1473 +1,587 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use trellis_protocol::{
-    GrantSet, ParticipantResourceKind, PermissionAtom, PermissionTarget, PlatformPrivilege,
+    AuthorityApi, AuthorityProvider, CapabilityAuthority, PlatformPrivilege, SessionBinding, U64s,
 };
 
-use super::{
-    ephemeral::{
-        ConsentCapability, ConsentCompanion, ConsentOwnerKind, ConsentRequest, ConsentResource,
-        ConsentResourceActualEntry, ConsentResourceChange,
+use super::authorization_sessions::Credential;
+use super::revocation::EnforcementScope;
+use super::sqlite::{decode, json, AuthError, Mutation, SqliteAuthorizationStore};
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub(crate) struct CapabilitySelection {
+    pub(crate) required: Vec<String>,
+    pub(crate) optional: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Evaluation {
+    pub(crate) principal_id: String,
+    pub(crate) principal_kind: trellis_protocol::PrincipalKind,
+    pub(crate) binding: SessionBinding,
+    pub(crate) login_session_id: Option<String>,
+    pub(crate) selection: CapabilitySelection,
+    pub(crate) capabilities: Vec<CapabilityAuthority>,
+    pub(crate) required_missing: Vec<String>,
+    pub(crate) optional_unavailable: Vec<String>,
+    pub(crate) apis: Vec<AuthorityApi>,
+    pub(crate) providers: Vec<AuthorityProvider>,
+    pub(crate) resource_bindings_digest: Option<String>,
+    pub(crate) platform_privileges: Vec<PlatformPrivilege>,
+    pub(crate) not_after: i64,
+    pub(crate) explanations: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) enum PolicyMutation {
+    RolePut {
+        role_id: String,
+        expected_revision: u64,
+        title: String,
+        description: String,
+        capabilities: Vec<String>,
     },
-    ApprovalMode, ApprovedCapability, ApprovedResource, AuthorizationResourceKind,
-    AuthorizationStateError, CapabilityGroupRecord, ConsentAuthorityPreconditions,
-    ConsentBindingPrecondition, DelegationCeiling, GrantBinding, LoginPortalRecord,
-    LoginSettingsRecord, ParticipantBindingRecord, PortalGrantOverrideRecord,
-    PortalGrantProvenance, PortalPolicySnapshot, ResourceBindingEvidence, ResourceBindingState,
-    ResourceCommitment,
-};
-
-pub(crate) fn portal_allows_authenticated_provider(
-    portal: &LoginPortalRecord,
-    settings: &LoginSettingsRecord,
-    provider_id: &str,
-) -> bool {
-    !portal.disabled
-        && !portal.removed
-        && portal.provider_ids.iter().any(|id| id == provider_id)
-        && (provider_id != "local" || settings.local_login_enabled)
+    RoleDelete {
+        role_id: String,
+        expected_revision: u64,
+    },
+    RoleAssign {
+        principal_id: String,
+        role_id: String,
+        expected_revision: u64,
+        expires_at: Option<i64>,
+    },
+    RoleRevoke {
+        principal_id: String,
+        role_id: String,
+        expected_revision: u64,
+    },
+    CapabilityGrant {
+        principal_id: String,
+        capability_id: String,
+        expected_revision: u64,
+        expires_at: Option<i64>,
+    },
+    CapabilityRevoke {
+        principal_id: String,
+        capability_id: String,
+        expected_revision: u64,
+    },
+    PrivilegeAssign {
+        principal_id: String,
+        privilege: PlatformPrivilege,
+        expected_revision: u64,
+    },
+    PrivilegeRevoke {
+        principal_id: String,
+        privilege: PlatformPrivilege,
+        expected_revision: u64,
+    },
+    ClientState {
+        client_id: String,
+        expected_revision: u64,
+        state: String,
+    },
+    PrincipalState {
+        principal_id: String,
+        expected_revision: u64,
+        state: String,
+    },
+    ConsentRevoke {
+        principal_id: String,
+        client_id: String,
+        binding_kind: String,
+        binding_value: String,
+        capability_id: Option<String>,
+    },
+    OidcMappingPut {
+        mapping_id: String,
+        provider_id: String,
+        claim_name: String,
+        claim_value: String,
+        role_id: String,
+        expected_revision: u64,
+    },
+    OidcMappingDelete {
+        mapping_id: String,
+        expected_revision: u64,
+    },
 }
 
-pub(crate) fn portal_policy_snapshot(
-    portal: &LoginPortalRecord,
-    settings: &LoginSettingsRecord,
-    participant_id: &str,
-    policy: Option<&PortalGrantOverrideRecord>,
-    groups: &BTreeMap<String, CapabilityGroupRecord>,
-) -> Result<PortalPolicySnapshot, AuthorizationStateError> {
-    if settings.portal_id != portal.portal_id
-        || policy.is_some_and(|policy| {
-            policy.portal_id != portal.portal_id || policy.participant_id != participant_id
-        })
-    {
-        return Err(AuthorizationStateError::InvalidRecord(
-            "portal policy snapshot inputs disagree".to_owned(),
-        ));
-    }
-    let mut pending = policy
-        .into_iter()
-        .flat_map(|policy| {
-            policy
-                .capability_group_keys
-                .iter()
-                .chain(
-                    policy
-                        .role_mappings
-                        .iter()
-                        .flat_map(|mapping| mapping.capability_group_keys.iter()),
-                )
-                .cloned()
-        })
-        .collect::<Vec<_>>();
-    let mut versions = BTreeMap::new();
-    let mut fingerprints = BTreeMap::new();
-    while let Some(group_key) = pending.pop() {
-        if versions.contains_key(&group_key) {
-            continue;
-        }
-        let group = groups.get(&group_key).ok_or_else(|| {
-            AuthorizationStateError::InvalidRecord(format!(
-                "portal policy references missing capability group {group_key}"
-            ))
-        })?;
-        versions.insert(group_key, group.version);
-        fingerprints.insert(group.group_key.clone(), policy_record_fingerprint(group)?);
-        pending.extend(group.included_groups.iter().cloned());
-    }
-    Ok(PortalPolicySnapshot {
-        portal_id: portal.portal_id.clone(),
-        portal_version: portal.version,
-        portal_fingerprint: policy_record_fingerprint(portal)?,
-        login_settings_version: settings.version,
-        login_settings_fingerprint: policy_record_fingerprint(settings)?,
-        participant_id: participant_id.to_owned(),
-        policy_version: policy.map(|policy| policy.version),
-        policy_fingerprint: policy.map(policy_record_fingerprint).transpose()?,
-        capability_group_versions: versions.into_iter().collect(),
-        capability_group_fingerprints: fingerprints.into_iter().collect(),
+pub(super) fn capability(
+    connection: &Connection,
+    capability_id: &str,
+) -> Result<CapabilityAuthority, AuthError> {
+    let row = connection.query_row("SELECT identity_generation,consent_revision FROM auth_capability_identities WHERE capability_id=?1 AND state='active'", [capability_id], |row| Ok((row.get::<_,u64>(0)?, row.get::<_,u64>(1)?))).optional()?.ok_or(AuthError::NotFound)?;
+    Ok(CapabilityAuthority {
+        capability_id: capability_id.into(),
+        identity_generation: U64s::new(row.0),
+        consent_revision: U64s::new(row.1),
     })
 }
 
-pub(super) fn policy_record_fingerprint<T: Serialize>(
-    record: &T,
-) -> Result<String, AuthorizationStateError> {
-    let value = serde_json::to_value(record)
-        .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
-    trellis_protocol::digest_json(&value)
-        .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))
+pub(super) fn role(connection: &Connection, role_id: &str) -> Result<(u64, u64), AuthError> {
+    connection.query_row("SELECT identity_generation,revision FROM auth_roles WHERE role_id=?1 AND state='active'", [role_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?.ok_or(AuthError::NotFound)
 }
 
-pub(crate) fn consent_request(
-    binding: &ParticipantBindingRecord,
-    installed_revision: u64,
-    current: Option<&GrantBinding>,
-    ceiling: &DelegationCeiling,
-    actuals: &[ConsentResourceActualEntry],
-    companion_binding: Option<(
-        &ParticipantBindingRecord,
-        Option<&GrantBinding>,
-        &[ConsentResourceActualEntry],
-        &DelegationCeiling,
-    )>,
-) -> Result<ConsentRequest, AuthorizationStateError> {
-    let resolved = binding.resolve()?;
-    let ceiling_capabilities = ceiling.capabilities.iter().collect::<BTreeSet<_>>();
-    let approved_capabilities = current
-        .into_iter()
-        .flat_map(|current| current.approved_capabilities.iter())
-        .collect::<BTreeSet<_>>();
-    let mut capabilities = resolved
-        .referenced_apis
-        .values()
-        .flat_map(|api| api.capabilities.iter())
-        .filter(|(id, capability)| {
-            selected_permissions(resolved).any(|permission| capability.allows.contains(permission))
-                || resolved.required_capabilities.contains(id)
-                || resolved.optional_capability_definitions.contains_key(*id)
-        })
-        .map(|(id, capability)| {
-            let fingerprint = ApprovedCapability {
-                id: id.clone(),
-                consent_digest: capability.consent_digest.clone(),
-            };
-            ConsentCapability {
-                id: id.clone(),
-                title: capability.display_name.clone(),
-                description: capability.description.clone(),
-                consequence: capability.consequence.clone(),
-                consent_digest: capability.consent_digest.clone(),
-                required: !resolved.optional_capability_definitions.contains_key(id),
-                eligible: capability.public || ceiling_capabilities.contains(&fingerprint),
-                already_approved: approved_capabilities.contains(&fingerprint),
-            }
-        })
-        .collect::<Vec<_>>();
-    capabilities.sort_by(|left, right| left.id.cmp(&right.id));
-    let mut resources = resolved
-        .resources
-        .iter()
-        .map(|(name, resource)| {
-            let requested_commitment = resource_commitment(resource);
-            let approved = current.and_then(|current| {
-                current
-                    .approved_resources
-                    .iter()
-                    .find(|approved| approved.name == *name)
-            });
-            let kind = AuthorizationResourceKind::from(resource.kind);
-            let already_approved = approved.is_some_and(|approved| {
-                approved.kind == kind
-                    && hard_commitment_eq(&approved.commitment, &requested_commitment)
-            });
-            let change = classify_resource_change(approved, kind, &requested_commitment);
-            ConsentResource {
-                kind,
-                name: name.clone(),
-                title: resource.title.clone(),
-                description: resource.description.clone(),
-                required: !resource.optional,
-                requested_commitment,
-                change,
-                actual: actuals
-                    .iter()
-                    .find(|actual| actual.kind == kind && actual.name == *name)
-                    .map(|actual| actual.actual.clone()),
-                eligible: true,
-                already_approved,
-            }
-        })
-        .collect::<Vec<_>>();
-    if let Some(current) = current {
-        resources.extend(
-            current
-                .approved_resources
-                .iter()
-                .filter(|approved| !resolved.resources.contains_key(&approved.name))
-                .map(|approved| ConsentResource {
-                    kind: approved.kind,
-                    name: approved.name.clone(),
-                    title: approved.name.clone(),
-                    description: String::new(),
-                    required: false,
-                    requested_commitment: approved.commitment.clone(),
-                    actual: None,
-                    change: ConsentResourceChange::Detached,
-                    eligible: false,
-                    already_approved: true,
-                }),
-        );
-    }
-    resources.sort_by(|left, right| (left.kind, &left.name).cmp(&(right.kind, &right.name)));
-    let companion = if let Some(participant_id) = &resolved.companion_participant_id {
-        let (child, current, child_actuals, child_ceiling) =
-            companion_binding.ok_or_else(|| {
-                AuthorizationStateError::InvalidRecord(
-                    "companion participant definition is missing".to_owned(),
-                )
-            })?;
-        if child.participant_id != *participant_id {
-            return Err(AuthorizationStateError::InvalidRecord(
-                "companion participant definition does not match".to_owned(),
-            ));
-        }
-        let child_consent = consent_request(
-            child,
-            installed_revision,
-            current,
-            child_ceiling,
-            child_actuals,
-            None,
-        )?;
-        Some(ConsentCompanion {
-            participant_id: participant_id.clone(),
-            kind: resolved
-                .companion_participant_kind
-                .map(ConsentOwnerKind::from)
-                .ok_or_else(|| {
-                    AuthorizationStateError::InvalidRecord(
-                        "companion participant kind is missing".to_owned(),
-                    )
-                })?,
-            required: resolved.companion_required,
-            capabilities: child_consent.capabilities,
-            resources: child_consent.resources,
-        })
-    } else {
-        None
-    };
-    let mut consent = ConsentRequest {
-        participant_id: binding.participant_id.clone(),
-        package_digest: binding.package_digest.clone(),
-        installed_revision,
-        expected_grant_revision: current.map_or(0, |current| current.revision),
-        capabilities,
-        resources,
-        companion,
-        decision_digest: String::new(),
-    };
-    consent.decision_digest = consent.computed_decision_digest()?;
-    consent.validate()?;
-    Ok(consent)
-}
-
-fn classify_resource_change(
-    current: Option<&ApprovedResource>,
-    requested_kind: AuthorizationResourceKind,
-    requested: &ResourceCommitment,
-) -> ConsentResourceChange {
-    let Some(current) = current else {
-        return ConsentResourceChange::New;
-    };
-    if current.kind != requested_kind {
-        ConsentResourceChange::Incompatible
-    } else if hard_commitment_eq(&current.commitment, requested) {
-        ConsentResourceChange::Unchanged
-    } else if commitment_is_reduced(&current.commitment, requested) {
-        ConsentResourceChange::Reduced
-    } else {
-        ConsentResourceChange::Expanded
-    }
-}
-
-fn commitment_is_reduced(current: &ResourceCommitment, requested: &ResourceCommitment) -> bool {
-    let limit = |current: Option<u64>, requested: Option<u64>| match (current, requested) {
-        (Some(current), Some(requested)) => requested <= current,
-        (None, None) => true,
-        _ => false,
-    };
-    limit(current.history, requested.history) && limit(current.ttl_ms, requested.ttl_ms)
-}
-
-fn hard_commitment_eq(current: &ResourceCommitment, requested: &ResourceCommitment) -> bool {
-    current.history == requested.history && current.ttl_ms == requested.ttl_ms
-}
-
-fn selected_permissions(
-    participant: &super::evidence::ParticipantRuntimeProjection,
-) -> impl Iterator<Item = &PermissionAtom> {
-    participant.required_grants.permissions().iter().chain(
-        participant
-            .optional_grant_bundles
-            .values()
-            .flat_map(|grants| grants.permissions()),
-    )
-}
-
-pub(crate) fn participant_delegation_ceiling(
-    binding: &ParticipantBindingRecord,
-) -> Result<DelegationCeiling, AuthorizationStateError> {
-    let participant = binding.resolve()?;
-    let mut capabilities = participant
-        .referenced_apis
-        .values()
-        .flat_map(|api| api.capabilities.iter())
-        .filter(|(_, capability)| {
-            selected_permissions(participant)
-                .any(|permission| capability.allows.contains(permission))
-        })
-        .map(|(id, capability)| ApprovedCapability {
-            id: id.clone(),
-            consent_digest: capability.consent_digest.clone(),
-        })
-        .collect::<Vec<_>>();
-    capabilities.sort();
-    capabilities.dedup();
-    Ok(DelegationCeiling {
-        capabilities,
-        exact_restrictions: None,
-        platform_privileges: Vec::new(),
-    })
-}
-
-pub(crate) fn participant_resource_commitments(
-    participant: &ParticipantBindingRecord,
-) -> Result<Vec<ApprovedResource>, AuthorizationStateError> {
-    Ok(participant
-        .resolve()?
-        .resources
-        .iter()
-        .map(|(name, resource)| ApprovedResource {
-            kind: resource.kind.into(),
-            name: name.clone(),
-            commitment: resource_commitment(resource),
-        })
-        .collect())
-}
-
-fn resource_commitment(
-    resource: &super::evidence::ResourceRuntimeProjection,
-) -> ResourceCommitment {
-    ResourceCommitment {
-        desired_max_object_bytes: resource.desired_max_object,
-        desired_max_total_bytes: resource.desired_max_total,
-        desired_max_value_bytes: resource.desired_max_value,
-        history: resource.history,
-        ttl_ms: resource.ttl_ms,
-    }
-}
-
-/// Why an approved capability or resource is currently unavailable.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) enum AvailabilityReason {
-    NotApproved,
-    NotDelegable,
-    ProviderUnavailable,
-    ProviderIncompatible,
-    ResourceUnavailable,
-    ResourceStale,
-    CompanionUnavailable,
-    NotSelected,
-}
-
-/// Current availability of one approved surface.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct Availability {
-    pub available: bool,
-    pub reason: Option<AvailabilityReason>,
-}
-
-/// Pure result used by consent, reconciliation, and issuance.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ResolvedAuthority {
-    pub exact_grants: GrantSet,
-    pub platform_privileges: Vec<PlatformPrivilege>,
-    pub capabilities: BTreeMap<String, Availability>,
-    pub resources: BTreeMap<String, Availability>,
-    pub apis: BTreeMap<String, Availability>,
-    pub companion: Option<Availability>,
-    pub readiness: bool,
-    /// Required authority lacks approval, as distinct from approved provisioning being pending.
-    pub approval_missing: bool,
-    pub missing_required: Vec<String>,
-}
-
-/// Resolve an approved binding against the selected participant vocabulary.
-///
-/// Browser reuse and issuance share this boundary: projection can remove obsolete
-/// approvals, but can never authorize permissions outside the approved snapshot.
-pub(crate) fn resolve_binding_authority(
-    participant: &ParticipantBindingRecord,
-    participant_revision: u64,
-    binding: &GrantBinding,
-    resources: &[ResourceBindingEvidence],
-    companion_available: bool,
-) -> Result<ResolvedAuthority, AuthorizationStateError> {
-    let projected = participant_revision != binding.installed_revision;
-    let resolve = if projected {
-        resolve_projected_authority
-    } else {
-        resolve_authority
-    };
-    let mut authority = resolve(
-        participant,
-        binding.approval_mode,
-        &binding.approved_capabilities,
-        &binding.approved_resources,
-        &binding.platform_privileges,
-        &binding.delegation_ceiling,
-        (resources, companion_available && binding.companion_approved),
-    )?;
-    authority.approval_missing |=
-        participant.resolve()?.companion_required && !binding.companion_approved;
-    if authority.exact_grants != binding.grants
-        && !((binding.approval_mode == ApprovalMode::Exact
-            || projected
-            || binding
-                .grants
-                .permissions()
-                .iter()
-                .filter(|atom| !authority.exact_grants.permissions().contains(atom))
-                .all(|atom| matches!(atom.target(), PermissionTarget::ParticipantResource { .. })))
-            && authority
-                .exact_grants
-                .permissions()
-                .iter()
-                .all(|atom| binding.grants.permissions().contains(atom)))
-    {
-        return Err(AuthorizationStateError::NotAuthorized);
-    }
-    Ok(authority)
-}
-
-/// Project present deployment authority onto a pinned older participant revision.
-///
-/// A native instance is evaluated against the participant revision it actually
-/// runs. Approvals, delegation ceiling entries, and exact restrictions that the
-/// pinned revision does not define are outside its vocabulary and are dropped,
-/// so the effective authority is a reduction of the present ceiling. The strict
-/// resolver remains in force when the instance runs the current revision.
-///
-/// # Errors
-///
-/// Returns the same validation errors as [`resolve_authority`] for the projected
-/// inputs.
-pub(crate) fn resolve_projected_authority(
-    participant: &ParticipantBindingRecord,
-    approval_mode: ApprovalMode,
-    approved_capabilities: &[ApprovedCapability],
-    approved_resources: &[ApprovedResource],
-    approved_platform_privileges: &[PlatformPrivilege],
-    ceiling: &DelegationCeiling,
-    availability: (&[ResourceBindingEvidence], bool),
-) -> Result<ResolvedAuthority, AuthorizationStateError> {
-    let resolved = participant.resolve()?;
-    let capabilities = resolved
-        .referenced_apis
-        .values()
-        .flat_map(|api| api.capabilities.iter())
-        .collect::<BTreeMap<_, _>>();
-    let selected = selected_permissions(resolved).cloned().collect::<Vec<_>>();
-    let projected_capabilities = approved_capabilities
-        .iter()
-        .filter(|approved| {
-            capabilities
-                .get(&approved.id)
-                .is_some_and(|capability| capability.consent_digest == approved.consent_digest)
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let projected_resources = approved_resources
-        .iter()
-        .filter(|approved| {
-            resolved
-                .resources
-                .get(&approved.name)
-                .is_some_and(|resource| {
-                    AuthorizationResourceKind::from(resource.kind) == approved.kind
-                        && resource_commitment(resource) == approved.commitment
-                })
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut projected_ceiling = ceiling.clone();
-    projected_ceiling.capabilities.retain(|approved| {
-        capabilities
-            .get(&approved.id)
-            .is_some_and(|capability| capability.consent_digest == approved.consent_digest)
-    });
-    if let Some(restrictions) = &ceiling.exact_restrictions {
-        projected_ceiling.exact_restrictions = Some(GrantSet::new(
-            restrictions
-                .permissions()
-                .iter()
-                .filter(|atom| selected.contains(atom))
-                .cloned()
-                .collect(),
-        ));
-    }
-    resolve_authority(
-        participant,
-        approval_mode,
-        &projected_capabilities,
-        &projected_resources,
-        approved_platform_privileges,
-        &projected_ceiling,
-        availability,
-    )
-}
-
-pub(crate) fn resolve_authority(
-    participant: &ParticipantBindingRecord,
-    approval_mode: ApprovalMode,
-    approved_capabilities: &[ApprovedCapability],
-    approved_resources: &[ApprovedResource],
-    approved_platform_privileges: &[PlatformPrivilege],
-    ceiling: &DelegationCeiling,
-    availability: (&[ResourceBindingEvidence], bool),
-) -> Result<ResolvedAuthority, AuthorizationStateError> {
-    let (usable_resources, companion_available) = availability;
-    let resolved = participant.resolve()?;
-    let selected = selected_permissions(resolved).cloned().collect::<Vec<_>>();
-    let capabilities = resolved
-        .referenced_apis
-        .values()
-        .flat_map(|api| api.capabilities.iter())
-        .collect::<BTreeMap<_, _>>();
-    let implicated = capabilities
-        .iter()
-        .filter(|(_, capability)| {
-            capability
-                .allows
-                .iter()
-                .any(|permission| selected.contains(permission))
-        })
-        .collect::<BTreeMap<_, _>>();
-    let ceiling_capabilities = ceiling.capabilities.iter().collect::<BTreeSet<_>>();
-    let approved_capabilities = approved_capabilities.iter().collect::<BTreeSet<_>>();
-    let exact_restrictions = ceiling
-        .exact_restrictions
-        .as_ref()
-        .map(|grants| grants.permissions().to_vec());
-    if approved_capabilities
-        .iter()
-        .chain(&ceiling_capabilities)
-        .any(|approved| {
-            capabilities
-                .get(&approved.id)
-                .is_none_or(|capability| capability.consent_digest != approved.consent_digest)
-        })
-        || approved_resources.iter().any(|approved| {
-            resolved
-                .resources
-                .get(&approved.name)
-                .is_none_or(|resource| {
-                    AuthorizationResourceKind::from(resource.kind) != approved.kind
-                        || resource_commitment(resource) != approved.commitment
-                })
-        })
-        || exact_restrictions
-            .as_ref()
-            .is_some_and(|restrictions| restrictions.iter().any(|atom| !selected.contains(atom)))
-    {
-        return Err(AuthorizationStateError::InvalidRecord(
-            "approval or delegation ceiling is outside the installed participant definitions"
-                .to_owned(),
-        ));
-    }
-    let mut capability_availability = BTreeMap::new();
-    let mut allowed = if approval_mode == ApprovalMode::Exact {
-        exact_restrictions
-            .clone()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|permission| selected.contains(permission))
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-    let mut missing_required = Vec::new();
-    let mut approval_missing = false;
-    for (id, capability) in implicated {
-        let fingerprint = ApprovedCapability {
-            id: (*id).clone(),
-            consent_digest: capability.consent_digest.clone(),
-        };
-        let approved = capability.public || approved_capabilities.contains(&fingerprint);
-        let delegable = capability.public || ceiling_capabilities.contains(&fingerprint);
-        let available = if approval_mode == ApprovalMode::Exact {
-            capability
-                .allows
-                .iter()
-                .filter(|permission| selected.contains(*permission))
-                .all(|permission| {
-                    exact_restrictions
-                        .as_ref()
-                        .is_some_and(|restrictions| restrictions.contains(permission))
-                })
-        } else {
-            approved && delegable
-        };
-        capability_availability.insert(
-            (*id).clone(),
-            Availability {
-                available,
-                reason: (!available).then_some(if approved {
-                    AvailabilityReason::NotDelegable
-                } else {
-                    AvailabilityReason::NotApproved
-                }),
-            },
-        );
-        if available {
-            allowed.extend(
-                capability
-                    .allows
-                    .iter()
-                    .filter(|permission| selected.contains(*permission))
-                    .cloned(),
-            );
-        } else if approval_mode == ApprovalMode::Capabilities
-            && !capability.public
-            && !resolved.optional_capability_definitions.contains_key(*id)
-        {
-            missing_required.push(format!("capability:{id}"));
-            approval_missing = true;
-        }
-    }
-    if approval_mode == ApprovalMode::Capabilities {
-        for permission in &selected {
-            if !capabilities
-                .values()
-                .any(|capability| capability.allows.contains(permission))
-                && !allowed.contains(permission)
-            {
-                allowed.push(permission.clone());
-            }
-        }
-    }
-    if let Some(restrictions) = &exact_restrictions {
-        allowed.retain(|permission| restrictions.contains(permission));
-    }
-    allowed.retain(|permission| {
-        !matches!(
-            permission.target(),
-            PermissionTarget::ParticipantResource { .. }
-        )
-    });
-
-    let mut resource_availability = BTreeMap::new();
-    for (name, declaration) in &resolved.resources {
-        let commitment = resource_commitment(declaration);
-        let approval = approved_resources.iter().find(|approval| {
-            approval.name == *name
-                && approval.kind == declaration.kind.into()
-                && approval.commitment == commitment
-        });
-        let present = usable_resources.iter().find(|resource| {
-            resource.local_name == *name
-                && resource.resource_kind == resource_kind_name(declaration.kind)
-                && resource.owner_participant_id == resolved.participant_id
-        });
-        let usable = present.filter(|resource| resource.state == ResourceBindingState::Available);
-        let available = approval.is_some() && usable.is_some();
-        // A row that exists but is not yet Available is still being materialized,
-        // not permanently missing, so issuance can treat it as retriable stale.
-        let stale = approval.is_some() && present.is_some() && usable.is_none();
-        resource_availability.insert(
-            name.clone(),
-            Availability {
-                available,
-                reason: (!available).then_some(if approval.is_none() {
-                    AvailabilityReason::NotApproved
-                } else if stale {
-                    AvailabilityReason::ResourceStale
-                } else {
-                    AvailabilityReason::ResourceUnavailable
-                }),
-            },
-        );
-        if available {
-            allowed.extend(selected.iter().filter(|permission| {
-                matches!(permission.target(), PermissionTarget::ParticipantResource { participant, resource, name: resource_name } if participant == &resolved.participant_id && *resource == declaration.kind && resource_name == name)
-                    && exact_restrictions.as_ref().is_none_or(|restrictions| restrictions.contains(permission))
-            }).cloned());
-        }
-        if !available && !declaration.optional {
-            approval_missing |= approval.is_none();
-            let prefix = if stale { "stale-resource" } else { "resource" };
-            missing_required.push(format!(
-                "{prefix}:{}:{name}",
-                resource_kind_name(declaration.kind)
-            ));
-        }
-    }
-    if resolved
-        .required_grants
-        .permissions()
-        .iter()
-        .any(|permission| {
-            !matches!(
-                permission.target(),
-                PermissionTarget::ParticipantResource { .. }
-            ) && !allowed.contains(permission)
-        })
-    {
-        missing_required.push("authority".to_owned());
-        approval_missing = true;
-    }
-    let mut platform_privileges = approved_platform_privileges
-        .iter()
-        .filter(|privilege| ceiling.platform_privileges.contains(privilege))
-        .copied()
-        .collect::<Vec<_>>();
-    platform_privileges.sort_unstable();
-    platform_privileges.dedup();
-    let companion = resolved
-        .companion_participant_id
-        .as_ref()
-        .map(|_| Availability {
-            available: companion_available,
-            reason: (!companion_available).then_some(AvailabilityReason::CompanionUnavailable),
-        });
-    if resolved.companion_required && !companion_available {
-        missing_required.push("companion".to_owned());
-    }
-    missing_required.sort();
-    missing_required.dedup();
-    let apis = resolved
-        .referenced_apis
-        .keys()
-        .map(|id| {
-            let permissions = selected
-                .iter()
-                .filter(|permission| match permission.target() {
-                    PermissionTarget::ApiSurface { api, .. }
-                    | PermissionTarget::OperationSignal { api, .. } => api == id,
-                    PermissionTarget::ParticipantResource { .. } => false,
-                });
-            let (count, available) =
-                permissions.fold((0, true), |(count, available), permission| {
-                    (count + 1, available && allowed.contains(permission))
-                });
-            (
-                id.clone(),
-                Availability {
-                    available: count > 0 && available,
-                    reason: (count == 0)
-                        .then_some(AvailabilityReason::NotSelected)
-                        .or_else(|| (!available).then_some(AvailabilityReason::NotApproved)),
-                },
-            )
-        })
-        .collect();
-    Ok(ResolvedAuthority {
-        exact_grants: GrantSet::new(allowed),
-        platform_privileges,
-        capabilities: capability_availability,
-        resources: resource_availability,
-        apis,
-        companion,
-        readiness: missing_required.is_empty(),
-        missing_required,
-        approval_missing,
-    })
-}
-
-fn resource_kind_name(kind: ParticipantResourceKind) -> &'static str {
-    match kind {
-        ParticipantResourceKind::Kv => "kv",
-        ParticipantResourceKind::Store => "store",
-        ParticipantResourceKind::JobQueue => "jobQueue",
-        ParticipantResourceKind::EventConsumer => "eventConsumer",
-        ParticipantResourceKind::State => "state",
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ProviderLoginAttributes {
-    pub provider_id: String,
-    pub roles: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PortalAuthoritySelection {
-    pub ceiling: DelegationCeiling,
-    pub effective_policy_digest: String,
-}
-
-pub(crate) struct ConsentAuthority {
-    pub(crate) ceiling: DelegationCeiling,
-    pub(crate) expires_at: Option<i64>,
-    pub(crate) provenance: Option<PortalGrantProvenance>,
-    pub(crate) preconditions: ConsentAuthorityPreconditions,
-}
-
-pub(crate) struct PortalConsentAuthority<'a> {
-    pub(crate) selection: PortalAuthoritySelection,
-    pub(crate) snapshot: PortalPolicySnapshot,
-    pub(crate) provenance: PortalGrantProvenance,
-    pub(crate) source: Option<&'a GrantBinding>,
-    pub(crate) retained_target: Option<&'a GrantBinding>,
-}
-
-pub(crate) enum ConsentAuthoritySource<'a> {
-    Explicit { target: &'a GrantBinding },
-    Portal(Box<PortalConsentAuthority<'a>>),
-}
-
-pub(crate) fn consent_authority(
-    source: ConsentAuthoritySource<'_>,
+/// The one entitlement union used by display, approval, issuance and enforcement.
+/// Deadlines are unioned per capability: losing one path cannot remove another.
+pub(super) fn entitlements(
+    connection: &Connection,
+    principal: &str,
+    login: Option<&str>,
     now: i64,
-) -> Result<ConsentAuthority, AuthorizationStateError> {
-    match source {
-        ConsentAuthoritySource::Explicit { target }
-            if target.provenance.is_none()
-                && target.state == super::GrantBindingState::Active
-                && target.expires_at.is_none_or(|expiry| expiry > now) =>
-        {
-            Ok(ConsentAuthority {
-                ceiling: target.delegation_ceiling.clone(),
-                expires_at: target.expires_at,
-                provenance: None,
-                preconditions: ConsentAuthorityPreconditions {
-                    policy: None,
-                    bindings: vec![ConsentBindingPrecondition::from(target)],
-                },
-            })
-        }
-        ConsentAuthoritySource::Explicit { .. } => Err(AuthorizationStateError::NotAuthorized),
-        ConsentAuthoritySource::Portal(portal) => {
-            let PortalConsentAuthority {
-                mut selection,
-                snapshot,
-                provenance,
-                source,
-                retained_target,
-            } = *portal;
-            for binding in source.into_iter().chain(retained_target) {
-                if binding.state != super::GrantBindingState::Active
-                    || binding.expires_at.is_some_and(|expiry| expiry <= now)
-                {
-                    return Err(AuthorizationStateError::NotAuthorized);
+) -> Result<BTreeMap<String, (Option<i64>, Vec<String>)>, AuthError> {
+    let mut values: BTreeMap<String, (Option<i64>, Vec<String>)> = BTreeMap::new();
+    let mut statement = connection.prepare(
+        "SELECT c.capability_id,d.expires_at,'direct' FROM auth_direct_capabilities d JOIN auth_capability_identities c ON c.capability_id=d.capability_id AND c.identity_generation=d.capability_generation WHERE d.principal_id=?1 AND c.state='active' AND (d.expires_at IS NULL OR d.expires_at>?2)
+         UNION ALL SELECT c.capability_id,a.expires_at,'role:'||r.role_id FROM auth_role_assignments a JOIN auth_roles r ON r.role_id=a.role_id AND r.identity_generation=a.role_generation JOIN auth_role_capabilities m ON m.role_id=r.role_id AND m.role_generation=r.identity_generation JOIN auth_capability_identities c ON c.capability_id=m.capability_id AND c.identity_generation=m.capability_generation WHERE a.principal_id=?1 AND r.state='active' AND c.state='active' AND (a.expires_at IS NULL OR a.expires_at>?2)")?;
+    let mut sources = statement
+        .query_map(params![principal, now], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if let Some(login) = login {
+        // Only verified claims saved by the login boundary are consulted. No
+        // caller claim payload or dependency revision enters this calculation.
+        let claims: Option<(String,i64,String)> = connection.query_row(
+            "SELECT latest.verified_claims_json,latest.fresh_until,latest.provider_id FROM auth_login_sessions own JOIN auth_login_sessions latest ON latest.principal_id=own.principal_id AND latest.provider_id=own.provider_id JOIN auth_oidc_providers p ON p.provider_id=latest.provider_id WHERE own.login_session_id=?1 AND own.principal_id=?2 AND own.revoked_at IS NULL AND own.expires_at>?3 AND latest.observation_order=(SELECT max(observation_order) FROM auth_login_sessions observation WHERE observation.principal_id=own.principal_id AND observation.provider_id=own.provider_id) AND latest.revoked_at IS NULL AND latest.expires_at>?3 AND latest.fresh_until>?3 AND p.state='active'", params![login,principal,now], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+        if let Some((claims, fresh_until, provider)) = claims {
+            let claims: serde_json::Value = decode(&claims)?;
+            let mut mappings = connection.prepare("SELECT m.claim_name,m.claim_value,c.capability_id,m.mapping_id FROM auth_oidc_role_mappings m JOIN auth_roles r ON r.role_id=m.role_id AND r.identity_generation=m.role_generation JOIN auth_role_capabilities rc ON rc.role_id=r.role_id AND rc.role_generation=r.identity_generation JOIN auth_capability_identities c ON c.capability_id=rc.capability_id AND c.identity_generation=rc.capability_generation WHERE m.provider_id=?1 AND r.state='active' AND c.state='active'")?;
+            for row in mappings.query_map([provider], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })? {
+                let (name, value, capability, mapping) = row?;
+                let claim = claims.pointer(&name);
+                if claim.is_some_and(|claim| {
+                    claim.as_str() == Some(&value)
+                        || claim.as_array().is_some_and(|items| {
+                            items.iter().any(|item| item.as_str() == Some(&value))
+                        })
+                }) {
+                    sources.push((capability, Some(fresh_until), format!("oidc:{mapping}")));
                 }
             }
-            if let Some(target) = retained_target {
-                selection
-                    .ceiling
-                    .capabilities
-                    .retain(|candidate| target.delegation_ceiling.capabilities.contains(candidate));
-                selection.ceiling.platform_privileges.retain(|candidate| {
-                    target
-                        .delegation_ceiling
-                        .platform_privileges
-                        .contains(candidate)
-                });
-                selection.ceiling.exact_restrictions =
-                    target.delegation_ceiling.exact_restrictions.clone();
-            }
-            let expires_at = source
-                .and_then(|binding| binding.expires_at)
-                .into_iter()
-                .chain(retained_target.and_then(|binding| binding.expires_at))
-                .min();
-            let mut bindings = source
-                .into_iter()
-                .chain(retained_target)
-                .map(ConsentBindingPrecondition::from)
-                .collect::<Vec<_>>();
-            bindings.dedup_by(|left, right| {
-                left.owner_kind == right.owner_kind
-                    && left.owner_id == right.owner_id
-                    && left.participant_id == right.participant_id
-                    && left.revision == right.revision
-            });
-            Ok(ConsentAuthority {
-                ceiling: selection.ceiling,
-                expires_at,
-                provenance: Some(provenance),
-                preconditions: ConsentAuthorityPreconditions {
-                    policy: Some(snapshot),
-                    bindings,
-                },
+        }
+    }
+    for (capability, deadline, source) in sources {
+        values
+            .entry(capability)
+            .and_modify(|(current, sources)| {
+                *current = match (*current, deadline) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    _ => None,
+                };
+                sources.push(source.clone());
             })
-        }
+            .or_insert((deadline, vec![source]));
     }
+    Ok(values)
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EffectivePortalAuthority<'a> {
-    format: &'static str,
-    portal_id: &'a str,
-    participant_id: &'a str,
-    participant_digest: &'a str,
-    participant_needs_digest: &'a str,
-    capabilities: &'a [ApprovedCapability],
-    platform_privileges: &'a [PlatformPrivilege],
-}
-
-/// Format marker for the ordinary no-override portal policy selection: the
-/// participant's installed capability vocabulary is eligible, and the default
-/// selects no platform privileges. The same interpretation is used by consent
-/// presentation, the consent decision, and portal-policy reconciliation.
-const DEFAULT_PORTAL_AUTHORITY_FORMAT: &str = "trellis.portal-default-eligibility.v1";
-
-/// Resolve the effective portal authority for an ordinary participant when the
-/// portal has no override: installed-vocabulary eligibility with its own
-/// deterministic digest, so an unchanged default binding stays valid while a
-/// later explicit override still replaces it.
-pub(crate) fn default_portal_authority_selection(
-    portal_id: &str,
-    participant: &ParticipantBindingRecord,
-) -> Result<PortalAuthoritySelection, AuthorizationStateError> {
-    let ceiling = participant_delegation_ceiling(participant)?;
-    let platform_privileges: Vec<PlatformPrivilege> = Vec::new();
-    let digest_value = serde_json::to_value(EffectivePortalAuthority {
-        format: DEFAULT_PORTAL_AUTHORITY_FORMAT,
-        portal_id,
-        participant_id: &participant.participant_id,
-        participant_digest: &participant.participant_digest,
-        participant_needs_digest: &participant.needs_digest,
-        capabilities: &ceiling.capabilities,
-        platform_privileges: &platform_privileges,
-    })
-    .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
-    let effective_policy_digest = trellis_protocol::digest_json(&digest_value)
-        .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
-    Ok(PortalAuthoritySelection {
-        ceiling,
-        effective_policy_digest,
-    })
-}
-
-pub(crate) fn resolve_portal_authority_selection(
-    policy: &PortalGrantOverrideRecord,
-    groups: &BTreeMap<String, CapabilityGroupRecord>,
-    participant: &ParticipantBindingRecord,
-    attributes: &ProviderLoginAttributes,
-) -> Result<PortalAuthoritySelection, AuthorizationStateError> {
-    if policy.participant_id != participant.participant_id {
-        return Err(AuthorizationStateError::InvalidRecord(
-            "portal policy participant does not match consent proposal".to_owned(),
-        ));
-    }
-    let mut selected = policy
-        .direct_capabilities
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let roles = attributes
-        .roles
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    expand_groups(&policy.capability_group_keys, groups, &mut selected)?;
-    for mapping in &policy.role_mappings {
-        if mapping.provider_id == attributes.provider_id && roles.contains(mapping.role.as_str()) {
-            selected.extend(mapping.direct_capabilities.iter().cloned());
-            expand_groups(&mapping.capability_group_keys, groups, &mut selected)?;
-        }
-    }
-
-    let resolved = participant.resolve()?;
-    let mut capabilities = Vec::new();
-    // The admin marker is platform classification, not participant permission
-    // evidence, so it bypasses proposal bounding; only admins can write the
-    // policy that selects it.
-    let admin_marker_selected = selected.contains("trellis.auth::admin");
-    for capability in selected {
-        if let Some(definition) = resolved
-            .referenced_apis
-            .values()
-            .find_map(|api| api.capabilities.get(&capability))
-        {
-            capabilities.push(ApprovedCapability {
-                id: capability,
-                consent_digest: definition.consent_digest.clone(),
-            });
-        }
-    }
-    capabilities.sort();
-    capabilities.dedup();
-    let platform_privileges = admin_marker_selected
-        .then_some(PlatformPrivilege::Admin)
-        .into_iter()
-        .collect::<Vec<_>>();
-    let digest_value = serde_json::to_value(EffectivePortalAuthority {
-        format: "trellis.portal-effective-authority.v1",
-        portal_id: &policy.portal_id,
-        participant_id: &policy.participant_id,
-        participant_digest: &participant.participant_digest,
-        participant_needs_digest: &participant.needs_digest,
-        capabilities: &capabilities,
-        platform_privileges: &platform_privileges,
-    })
-    .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
-    let effective_policy_digest = trellis_protocol::digest_json(&digest_value)
-        .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
-
-    Ok(PortalAuthoritySelection {
-        ceiling: DelegationCeiling {
-            capabilities,
-            exact_restrictions: None,
-            platform_privileges,
-        },
-        effective_policy_digest,
-    })
-}
-
-fn expand_groups(
-    group_keys: &[String],
-    groups: &BTreeMap<String, CapabilityGroupRecord>,
-    capabilities: &mut BTreeSet<String>,
-) -> Result<(), AuthorizationStateError> {
-    let mut pending = group_keys.to_vec();
-    let mut visited = BTreeSet::new();
-    while let Some(key) = pending.pop() {
-        if !visited.insert(key.clone()) {
-            continue;
-        }
-        let group = groups.get(&key).ok_or_else(|| {
-            AuthorizationStateError::InvalidRecord(format!("capability group '{key}' is missing"))
-        })?;
-        capabilities.extend(group.capabilities.iter().cloned());
-        pending.extend(group.included_groups.iter().cloned());
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::platform::auth::evidence::{
-        ApiRuntimeProjection, CapabilityRuntimeProjection, ParticipantRuntimeProjection,
+pub(super) fn evaluate(
+    connection: &Connection,
+    credential: &Credential,
+    now: i64,
+) -> Result<Evaluation, AuthError> {
+    let root = super::authorization_sessions::credential_snapshot(connection, credential, now)?;
+    let entitled = entitlements(
+        connection,
+        &root.principal_id,
+        root.login_session_id.as_deref(),
+        now,
+    )?;
+    let mut result = Evaluation {
+        principal_id: root.principal_id,
+        principal_kind: root.principal_kind,
+        binding: root.binding,
+        login_session_id: root.login_session_id,
+        selection: root.selection,
+        capabilities: vec![],
+        required_missing: vec![],
+        optional_unavailable: vec![],
+        apis: vec![],
+        providers: vec![],
+        resource_bindings_digest: root.resource_bindings_digest,
+        platform_privileges: root.platform_privileges,
+        not_after: root.not_after,
+        explanations: BTreeMap::new(),
     };
-    use trellis_protocol::{ApiSurfaceKind, PermissionAction, PermissionAtom, PermissionTarget};
-
-    fn atom(name: &str) -> PermissionAtom {
-        PermissionAtom::new(
-            PermissionTarget::api_surface("app@v1", ApiSurfaceKind::Rpc, name).unwrap(),
-            PermissionAction::Call,
-        )
-        .unwrap()
-    }
-
-    fn participant() -> ParticipantBindingRecord {
-        let read = atom("Read");
-        ParticipantBindingRecord {
-            participant_id: "example.app".to_owned(),
-            participant_kind: trellis_protocol::ParticipantKind::App,
-            participant_digest: "A".repeat(43),
-            needs_digest: "B".repeat(43),
-            package_digest: "A".repeat(43),
-            evidence_digest: "E".repeat(43),
-            participant_path: "app".to_owned(),
-            projection: ParticipantRuntimeProjection {
-                participant_id: "example.app".to_owned(),
-                participant_kind: trellis_protocol::ParticipantKind::App,
-                display_name: "Example".to_owned(),
-                implemented_apis: BTreeMap::new(),
-                referenced_apis: BTreeMap::from([(
-                    "app@v1".to_owned(),
-                    ApiRuntimeProjection {
-                        digest: "A".repeat(43),
-                        major: 1,
-                        actions: BTreeMap::new(),
-                        capabilities: BTreeMap::from([
-                            (
-                                "app::first".to_owned(),
-                                CapabilityRuntimeProjection {
-                                    display_name: "First".to_owned(),
-                                    description: String::new(),
-                                    consequence: String::new(),
-                                    consent_digest: "A".repeat(43),
-                                    public: false,
-                                    allows: vec![read.clone()],
-                                },
-                            ),
-                            (
-                                "app::overlap".to_owned(),
-                                CapabilityRuntimeProjection {
-                                    display_name: "Overlap".to_owned(),
-                                    description: String::new(),
-                                    consequence: String::new(),
-                                    consent_digest: "A".repeat(43),
-                                    public: false,
-                                    allows: vec![read.clone()],
-                                },
-                            ),
-                        ]),
-                    },
-                )]),
-                resources: BTreeMap::new(),
-                required_grants: GrantSet::new(vec![read]),
-                optional_grant_bundles: BTreeMap::new(),
-                required_capabilities: vec!["app::first".to_owned(), "app::overlap".to_owned()],
-                optional_capability_definitions: BTreeMap::new(),
-                companion_participant_id: None,
-                companion_participant_kind: None,
-                companion_required: false,
-            },
-            resolved_at: 1,
-            state: super::super::ParticipantBindingState::Resolved,
-            error: None,
+    let required: BTreeSet<_> = result.selection.required.iter().cloned().collect();
+    let selected: BTreeSet<_> = required
+        .iter()
+        .chain(&result.selection.optional)
+        .cloned()
+        .collect();
+    let mut apis = BTreeMap::new();
+    for selected in selected {
+        let current = match capability(connection, &selected) {
+            Ok(value) => Some(value),
+            Err(AuthError::NotFound) => None,
+            Err(error) => return Err(error),
+        };
+        let consent = current.as_ref().is_some_and(|current| {
+            root.approved
+                .as_ref()
+                .is_none_or(|approved| approved.contains(current))
+        });
+        if let (Some(current), Some((deadline, sources)), true) =
+            (current, entitled.get(&selected), consent)
+        {
+            if let Some(deadline) = deadline {
+                result.not_after = result.not_after.min(*deadline);
+            }
+            // Consent has a separate optional deadline, never a compulsory timer.
+            if let Some(deadline) = root.consent_deadlines.get(&selected) {
+                result.not_after = result.not_after.min(*deadline);
+            }
+            result
+                .explanations
+                .insert(selected.clone(), sources.clone());
+            let api: AuthorityApi = connection.query_row("SELECT a.api_id,a.generation,a.accepted_revision,s.snapshot_digest FROM auth_capability_identities c JOIN auth_accepted_apis a USING(api_id) JOIN auth_api_verification_snapshots s ON s.api_id=a.api_id AND s.generation=a.generation AND s.accepted_revision=a.accepted_revision WHERE c.capability_id=?1 AND c.state='active'", [&selected], |row| Ok(AuthorityApi { api_id: row.get(0)?, generation: U64s::new(row.get(1)?), accepted_revision: U64s::new(row.get(2)?), catalog_snapshot_digest: row.get(3)? }))?;
+            apis.insert(api.api_id.clone(), api);
+            result.capabilities.push(current);
+        } else if required.contains(&selected) {
+            result.required_missing.push(selected);
+        } else {
+            result.optional_unavailable.push(selected);
         }
     }
+    // Provider rights and resource ownership are independent of caller grants.
+    for provider in root.providers {
+        let api: AuthorityApi = connection.query_row("SELECT a.api_id,a.generation,a.accepted_revision,s.snapshot_digest FROM auth_accepted_apis a JOIN auth_api_verification_snapshots s ON s.api_id=a.api_id AND s.generation=a.generation AND s.accepted_revision=a.accepted_revision WHERE a.api_id=?1 AND a.generation=?2", params![provider.api_id,provider.generation.get()], |row| Ok(AuthorityApi { api_id: row.get(0)?, generation: U64s::new(row.get(1)?), accepted_revision: U64s::new(row.get(2)?), catalog_snapshot_digest: row.get(3)? })).optional()?.ok_or(AuthError::Denied)?;
+        apis.insert(api.api_id.clone(), api);
+        result.providers.push(provider);
+    }
+    result.apis = apis.into_values().collect();
+    if result.not_after <= now {
+        return Err(AuthError::Denied);
+    }
+    Ok(result)
+}
 
-    #[test]
-    fn overlap_grants_once_but_all_required_capabilities_gate_readiness() {
-        let participant = participant();
-        let approved = ApprovedCapability {
-            id: "app::first".to_owned(),
-            consent_digest: "A".repeat(43),
-        };
-        let ceiling = DelegationCeiling {
-            capabilities: vec![approved.clone()],
-            exact_restrictions: None,
-            platform_privileges: Vec::new(),
-        };
-        let resolved = resolve_authority(
-            &participant,
-            ApprovalMode::Capabilities,
-            &[approved],
-            &[],
-            &[],
-            &ceiling,
-            (&[], true),
-        )
-        .unwrap();
-        assert_eq!(resolved.exact_grants, GrantSet::new(vec![atom("Read")]));
-        assert!(!resolved.readiness);
-        assert_eq!(resolved.missing_required, ["capability:app::overlap"]);
+impl SqliteAuthorizationStore {
+    pub(crate) fn effective_access(
+        &self,
+        principal: &str,
+        login: Option<&str>,
+        now: i64,
+    ) -> Result<BTreeMap<String, (Option<i64>, Vec<String>)>, AuthError> {
+        self.transaction(|connection| entitlements(connection, principal, login, now))
     }
 
-    #[test]
-    fn request_inventory_is_not_a_consent_ceiling() {
-        let mut participant = participant();
-        participant
-            .projection
-            .referenced_apis
-            .get_mut("app@v1")
-            .unwrap()
-            .capabilities
-            .get_mut("app::first")
-            .unwrap()
-            .public = true;
-        let ceiling = DelegationCeiling {
-            capabilities: Vec::new(),
-            exact_restrictions: None,
-            platform_privileges: Vec::new(),
-        };
-        let consent = consent_request(&participant, 1, None, &ceiling, &[], None).unwrap();
-        assert!(
-            consent
-                .capabilities
-                .iter()
-                .find(|capability| capability.id == "app::first")
-                .unwrap()
-                .eligible
-        );
-        assert!(
-            !consent
-                .capabilities
-                .iter()
-                .find(|capability| capability.id == "app::overlap")
-                .unwrap()
-                .eligible
-        );
-        let resolved = resolve_authority(
-            &participant,
-            ApprovalMode::Capabilities,
-            &[],
-            &[],
-            &[],
-            &ceiling,
-            (&[], true),
-        )
-        .unwrap();
-        assert_eq!(resolved.exact_grants, GrantSet::new(vec![atom("Read")]));
-        assert!(!resolved.readiness);
-        assert_eq!(resolved.missing_required, ["capability:app::overlap"]);
+    pub(crate) fn evaluate(
+        &self,
+        credential: &Credential,
+        now: i64,
+    ) -> Result<Evaluation, AuthError> {
+        self.transaction(|connection| evaluate(connection, credential, now))
     }
 
-    #[test]
-    fn changed_consent_semantics_require_approval_even_when_another_capability_covers_the_atoms() {
-        let mut updated = participant();
-        let approved = participant_delegation_ceiling(&updated).unwrap();
-        updated
-            .projection
-            .referenced_apis
-            .get_mut("app@v1")
-            .unwrap()
-            .capabilities
-            .get_mut("app::first")
-            .unwrap()
-            .consent_digest = "C".repeat(43);
-        let authority = resolve_projected_authority(
-            &updated,
-            ApprovalMode::Capabilities,
-            &approved.capabilities,
-            &[],
-            &[],
-            &approved,
-            (&[], true),
-        )
-        .unwrap();
-        assert_eq!(authority.exact_grants, GrantSet::new(vec![atom("Read")]));
-        assert!(!authority.readiness);
-        assert_eq!(authority.missing_required, ["capability:app::first"]);
+    pub(crate) fn apply_policy(
+        &self,
+        identity: &Mutation,
+        mutation: &PolicyMutation,
+        now: i64,
+    ) -> Result<u64, AuthError> {
+        self.mutate(identity, "policy", mutation, now, |connection| {
+            let privilege = match mutation {
+                PolicyMutation::PrivilegeAssign { .. } | PolicyMutation::PrivilegeRevoke { .. } => {
+                    "privileges.manage"
+                }
+                PolicyMutation::ClientState { .. } => "clients.manage",
+                PolicyMutation::PrincipalState { .. } => "principals.manage",
+                PolicyMutation::ConsentRevoke { principal_id, .. }
+                    if principal_id == &identity.actor =>
+                {
+                    ""
+                }
+                PolicyMutation::ConsentRevoke { .. } => "principals.manage",
+                _ => "roles.manage",
+            };
+            if !privilege.is_empty() {
+                Self::require_privilege(connection, &identity.actor, privilege)?;
+            }
+            let (scope, revision) = apply_policy(connection, mutation, now)?;
+            Self::policy_changed(connection, &scope, now)?;
+            Ok(revision)
+        })
     }
+}
 
-    #[test]
-    fn exact_mode_never_auto_expands_beyond_the_explicit_atom_set() {
-        let participant = participant();
-        let resolved = resolve_authority(
-            &participant,
-            ApprovalMode::Exact,
-            &[],
-            &[],
-            &[],
-            &DelegationCeiling {
-                capabilities: Vec::new(),
-                exact_restrictions: Some(GrantSet::new(Vec::new())),
-                platform_privileges: Vec::new(),
-            },
-            (&[], true),
-        )
-        .unwrap();
-        assert!(resolved.exact_grants.permissions().is_empty());
-        assert!(!resolved.readiness);
-    }
-
-    #[test]
-    fn consent_digest_binds_revisions_and_resource_change_classification() {
-        let participant = participant();
-        let ceiling = participant_delegation_ceiling(&participant).unwrap();
-        let first = consent_request(&participant, 1, None, &ceiling, &[], None).unwrap();
-        let second = consent_request(&participant, 2, None, &ceiling, &[], None).unwrap();
-        assert_ne!(first.decision_digest, second.decision_digest);
-        assert_eq!(
-            classify_resource_change(
-                Some(&ApprovedResource {
-                    kind: AuthorizationResourceKind::Kv,
-                    name: "cache".to_owned(),
-                    commitment: ResourceCommitment {
-                        desired_max_value_bytes: Some(100),
-                        history: Some(10),
-                        ttl_ms: Some(100),
-                        ..ResourceCommitment::default()
-                    },
-                }),
-                AuthorizationResourceKind::Kv,
-                &ResourceCommitment {
-                    desired_max_value_bytes: Some(50),
-                    history: Some(5),
-                    ttl_ms: Some(50),
-                    ..ResourceCommitment::default()
-                },
-            ),
-            ConsentResourceChange::Reduced
-        );
-        assert_eq!(
-            classify_resource_change(
-                Some(&ApprovedResource {
-                    kind: AuthorizationResourceKind::Kv,
-                    name: "cache".to_owned(),
-                    commitment: ResourceCommitment {
-                        desired_max_value_bytes: Some(100),
-                        ..ResourceCommitment::default()
-                    },
-                }),
-                AuthorizationResourceKind::Kv,
-                &ResourceCommitment {
-                    desired_max_value_bytes: Some(50),
-                    ..ResourceCommitment::default()
-                },
-            ),
-            ConsentResourceChange::Unchanged
-        );
-    }
-
-    fn consent_binding(
-        approval_mode: ApprovalMode,
-        ceiling: DelegationCeiling,
-        expires_at: Option<i64>,
-        provenance: Option<PortalGrantProvenance>,
-    ) -> GrantBinding {
-        let participant = participant();
-        GrantBinding {
-            owner_kind: super::super::GrantOwnerKind::User,
-            owner_id: "user-1".to_owned(),
-            participant_id: participant.participant_id.clone(),
-            installed_revision: 1,
-            grants: participant.projection.required_grants.clone(),
-            approval_mode,
-            approved_capabilities: Vec::new(),
-            approved_resources: Vec::new(),
-            delegation_ceiling: ceiling,
-            approval_decision_digest: "A".repeat(43),
-            approval_expected_grant_revision: 0,
-            companion_approved: false,
-            platform_privileges: Vec::new(),
-            revision: 3,
-            state: super::super::GrantBindingState::Active,
+pub(super) fn apply_policy(
+    connection: &Connection,
+    mutation: &PolicyMutation,
+    now: i64,
+) -> Result<(EnforcementScope, u64), AuthError> {
+    match mutation {
+        PolicyMutation::RolePut {
+            role_id,
+            expected_revision,
+            title,
+            description,
+            capabilities,
+        } => {
+            if ulid::Ulid::from_string(role_id).is_err()
+                || title.is_empty()
+                || title.len() > 256
+                || description.len() > 4096
+            {
+                return Err(AuthError::Invalid("invalid role".into()));
+            }
+            let current = role(connection, role_id);
+            let generation = match current {
+                Ok((generation, revision)) if revision == *expected_revision => {
+                    connection.execute("UPDATE auth_roles SET title=?1,description=?2,revision=revision+1,updated_at=?3 WHERE role_id=?4 AND identity_generation=?5",params![title,description,now,role_id,generation])?;
+                    generation
+                }
+                Err(AuthError::NotFound) if *expected_revision == 0 => {
+                    let generation:u64 = connection.query_row("SELECT coalesce(max(identity_generation),0)+1 FROM auth_roles WHERE role_id=?1",[role_id],|row|row.get(0))?;
+                    connection.execute(
+                        "INSERT INTO auth_roles VALUES(?1,?2,1,?3,?4,'active',?5,?5)",
+                        params![role_id, generation, title, description, now],
+                    )?;
+                    generation
+                }
+                Err(error) if !matches!(error, AuthError::NotFound) => return Err(error),
+                _ => return Err(AuthError::Conflict),
+            };
+            connection.execute(
+                "DELETE FROM auth_role_capabilities WHERE role_id=?1 AND role_generation=?2",
+                params![role_id, generation],
+            )?;
+            for name in capabilities.iter().collect::<BTreeSet<_>>() {
+                let cap = capability(connection, name)?;
+                connection.execute(
+                    "INSERT INTO auth_role_capabilities VALUES(?1,?2,?3,?4)",
+                    params![role_id, generation, name, cap.identity_generation.get()],
+                )?;
+            }
+            Ok((
+                EnforcementScope::Role(role_id.clone()),
+                expected_revision + 1,
+            ))
+        }
+        PolicyMutation::RoleDelete {
+            role_id,
+            expected_revision,
+        } => {
+            let (generation, revision) = role(connection, role_id)?;
+            if revision != *expected_revision {
+                return Err(AuthError::Conflict);
+            }
+            connection.execute("UPDATE auth_roles SET state='deleted',revision=revision+1,updated_at=?1 WHERE role_id=?2 AND identity_generation=?3",params![now,role_id,generation])?;
+            Ok((EnforcementScope::Role(role_id.clone()), revision + 1))
+        }
+        PolicyMutation::RoleAssign {
+            principal_id,
+            role_id,
+            expected_revision,
             expires_at,
-            provenance,
-            created_at: 1,
-            updated_at: 1,
+        } => {
+            if expires_at.is_some_and(|deadline| deadline <= now) {
+                return Err(AuthError::Invalid("expired assignment".into()));
+            }
+            let (generation, _) = role(connection, role_id)?;
+            let current:Option<u64>=connection.query_row("SELECT revision FROM auth_role_assignments WHERE principal_id=?1 AND role_id=?2 AND role_generation=?3",params![principal_id,role_id,generation],|row|row.get(0)).optional()?;
+            if current.unwrap_or(0) != *expected_revision {
+                return Err(AuthError::Conflict);
+            }
+            connection.execute("INSERT INTO auth_role_assignments VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(principal_id,role_id,role_generation) DO UPDATE SET revision=excluded.revision,expires_at=excluded.expires_at",params![principal_id,role_id,generation,expected_revision+1,expires_at,now])?;
+            Ok((
+                EnforcementScope::Principal(principal_id.clone()),
+                expected_revision + 1,
+            ))
         }
-    }
-
-    fn portal_snapshot() -> PortalPolicySnapshot {
-        PortalPolicySnapshot {
-            portal_id: "portal".to_owned(),
-            portal_version: 1,
-            portal_fingerprint: "B".repeat(43),
-            login_settings_version: 1,
-            login_settings_fingerprint: "B".repeat(43),
-            participant_id: "example.app".to_owned(),
-            policy_version: Some(1),
-            policy_fingerprint: Some("B".repeat(43)),
-            capability_group_versions: Vec::new(),
-            capability_group_fingerprints: Vec::new(),
+        PolicyMutation::RoleRevoke {
+            principal_id,
+            role_id,
+            expected_revision,
+        } => {
+            let (generation, _) = role(connection, role_id)?;
+            if connection.execute("DELETE FROM auth_role_assignments WHERE principal_id=?1 AND role_id=?2 AND role_generation=?3 AND revision=?4",params![principal_id,role_id,generation,expected_revision])?!=1 {return Err(AuthError::Conflict);}
+            Ok((
+                EnforcementScope::Principal(principal_id.clone()),
+                expected_revision + 1,
+            ))
         }
-    }
-
-    fn provenance(digest: &str) -> PortalGrantProvenance {
-        PortalGrantProvenance {
-            portal_id: "portal".to_owned(),
-            provider_id: "local".to_owned(),
-            roles: Vec::new(),
-            effective_policy_digest: digest.to_owned(),
+        PolicyMutation::CapabilityGrant {
+            principal_id,
+            capability_id,
+            expected_revision,
+            expires_at,
+        } => {
+            if expires_at.is_some_and(|deadline| deadline <= now) {
+                return Err(AuthError::Invalid("expired grant".into()));
+            }
+            let cap = capability(connection, capability_id)?;
+            let current:Option<u64>=connection.query_row("SELECT revision FROM auth_direct_capabilities WHERE principal_id=?1 AND capability_id=?2 AND capability_generation=?3",params![principal_id,capability_id,cap.identity_generation.get()],|row|row.get(0)).optional()?;
+            if current.unwrap_or(0) != *expected_revision {
+                return Err(AuthError::Conflict);
+            }
+            connection.execute("INSERT INTO auth_direct_capabilities VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(principal_id,capability_id,capability_generation) DO UPDATE SET revision=excluded.revision,expires_at=excluded.expires_at",params![principal_id,capability_id,cap.identity_generation.get(),expected_revision+1,expires_at,now])?;
+            Ok((
+                EnforcementScope::Principal(principal_id.clone()),
+                expected_revision + 1,
+            ))
         }
-    }
-
-    #[test]
-    fn explicit_target_entitlement_keeps_its_ceiling_and_finite_expiry() {
-        let ceiling = DelegationCeiling {
-            capabilities: vec![ApprovedCapability {
-                id: "app::first".to_owned(),
-                consent_digest: "A".repeat(43),
-            }],
-            exact_restrictions: Some(GrantSet::new(vec![atom("Read")])),
-            platform_privileges: Vec::new(),
-        };
-        let target = consent_binding(ApprovalMode::Exact, ceiling.clone(), Some(1_000), None);
-        let authority =
-            consent_authority(ConsentAuthoritySource::Explicit { target: &target }, 1).unwrap();
-        assert_eq!(authority.ceiling, ceiling);
-        assert_eq!(authority.expires_at, Some(1_000));
-        assert!(authority.provenance.is_none());
-        assert_eq!(authority.preconditions.bindings.len(), 1);
-        assert_eq!(authority.preconditions.bindings[0].revision, 3);
-        assert!(authority.preconditions.policy.is_none());
-
-        let expired = consent_binding(ApprovalMode::Exact, ceiling.clone(), Some(1), None);
-        assert!(matches!(
-            consent_authority(ConsentAuthoritySource::Explicit { target: &expired }, 1),
-            Err(AuthorizationStateError::NotAuthorized)
-        ));
-        let policy_managed = consent_binding(
-            ApprovalMode::Exact,
-            ceiling.clone(),
-            Some(1_000),
-            Some(provenance(&"C".repeat(43))),
-        );
-        assert!(matches!(
-            consent_authority(
-                ConsentAuthoritySource::Explicit {
-                    target: &policy_managed
-                },
-                1
-            ),
-            Err(AuthorizationStateError::NotAuthorized)
-        ));
-    }
-
-    #[test]
-    fn capabilities_mode_target_keeps_explicit_entitlement_after_first_consent() {
-        let ceiling = DelegationCeiling {
-            capabilities: vec![ApprovedCapability {
-                id: "app::first".to_owned(),
-                consent_digest: "A".repeat(43),
-            }],
-            exact_restrictions: Some(GrantSet::new(vec![atom("Read")])),
-            platform_privileges: Vec::new(),
-        };
-        let first = consent_binding(ApprovalMode::Exact, ceiling.clone(), Some(1_000), None);
-        let first_authority =
-            consent_authority(ConsentAuthoritySource::Explicit { target: &first }, 1).unwrap();
-        assert_eq!(first_authority.ceiling, ceiling);
-
-        // The first approval persists the user's selection as a capability-mode
-        // binding with the same server-owned ceiling and no portal provenance.
-        let second = consent_binding(
-            ApprovalMode::Capabilities,
-            ceiling.clone(),
-            Some(1_000),
-            None,
-        );
-        let second_authority =
-            consent_authority(ConsentAuthoritySource::Explicit { target: &second }, 1).unwrap();
-        assert_eq!(second_authority.ceiling, ceiling);
-        assert_eq!(second_authority.expires_at, Some(1_000));
-        assert!(second_authority.provenance.is_none());
-        assert_eq!(second_authority.preconditions.bindings.len(), 1);
-        assert_eq!(second_authority.preconditions.bindings[0].revision, 3);
-
-        let expired = consent_binding(ApprovalMode::Capabilities, ceiling, Some(1), None);
-        assert!(matches!(
-            consent_authority(ConsentAuthoritySource::Explicit { target: &expired }, 1),
-            Err(AuthorizationStateError::NotAuthorized)
-        ));
-    }
-
-    #[test]
-    fn portal_authority_never_widens_a_narrower_retained_child() {
-        let retained = consent_binding(
-            ApprovalMode::Capabilities,
-            DelegationCeiling {
-                capabilities: vec![ApprovedCapability {
-                    id: "app::first".to_owned(),
-                    consent_digest: "A".repeat(43),
-                }],
-                exact_restrictions: None,
-                platform_privileges: Vec::new(),
-            },
-            Some(1_000),
-            Some(provenance(&"C".repeat(43))),
-        );
-        let selection = PortalAuthoritySelection {
-            ceiling: DelegationCeiling {
-                capabilities: vec![
-                    ApprovedCapability {
-                        id: "app::first".to_owned(),
-                        consent_digest: "A".repeat(43),
-                    },
-                    ApprovedCapability {
-                        id: "app::overlap".to_owned(),
-                        consent_digest: "A".repeat(43),
-                    },
-                ],
-                exact_restrictions: None,
-                platform_privileges: Vec::new(),
-            },
-            effective_policy_digest: "D".repeat(43),
-        };
-        let authority = consent_authority(
-            ConsentAuthoritySource::Portal(Box::new(PortalConsentAuthority {
-                selection,
-                snapshot: portal_snapshot(),
-                provenance: provenance(&"D".repeat(43)),
-                source: None,
-                retained_target: Some(&retained),
-            })),
-            1,
-        )
-        .unwrap();
-        assert_eq!(
-            authority.ceiling.capabilities,
-            vec![ApprovedCapability {
-                id: "app::first".to_owned(),
-                consent_digest: "A".repeat(43),
-            }]
-        );
-        assert_eq!(authority.expires_at, Some(1_000));
-        assert!(authority.provenance.is_some());
-        assert!(authority.preconditions.policy.is_some());
-        assert_eq!(authority.preconditions.bindings.len(), 1);
+        PolicyMutation::CapabilityRevoke {
+            principal_id,
+            capability_id,
+            expected_revision,
+        } => {
+            let cap = capability(connection, capability_id)?;
+            if connection.execute("DELETE FROM auth_direct_capabilities WHERE principal_id=?1 AND capability_id=?2 AND capability_generation=?3 AND revision=?4",params![principal_id,capability_id,cap.identity_generation.get(),expected_revision])?!=1 {return Err(AuthError::Conflict);}
+            Ok((
+                EnforcementScope::Principal(principal_id.clone()),
+                expected_revision + 1,
+            ))
+        }
+        PolicyMutation::PrivilegeAssign {
+            principal_id,
+            privilege,
+            expected_revision,
+        } => {
+            if *expected_revision != 0 {
+                return Err(AuthError::Conflict);
+            }
+            connection.execute(
+                "INSERT INTO auth_platform_privileges VALUES(?1,?2,1,?3)",
+                params![principal_id, serde_json::to_value(privilege)?.as_str(), now],
+            )?;
+            Ok((EnforcementScope::Principal(principal_id.clone()), 1))
+        }
+        PolicyMutation::PrivilegeRevoke {
+            principal_id,
+            privilege,
+            expected_revision,
+        } => {
+            let protected: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator WHERE principal_id=?1)",
+                [principal_id],
+                |row| row.get(0),
+            )?;
+            if protected {
+                return Err(AuthError::Denied);
+            }
+            if connection.execute("DELETE FROM auth_platform_privileges WHERE principal_id=?1 AND privilege=?2 AND revision=?3",params![principal_id,serde_json::to_value(privilege)?.as_str(),expected_revision])?!=1 {return Err(AuthError::Conflict);}
+            Ok((
+                EnforcementScope::Principal(principal_id.clone()),
+                expected_revision + 1,
+            ))
+        }
+        PolicyMutation::ClientState {
+            client_id,
+            expected_revision,
+            state,
+        } => {
+            if !["active", "disabled", "deleted"].contains(&state.as_str()) {
+                return Err(AuthError::Invalid("invalid client state".into()));
+            }
+            if connection.execute("UPDATE auth_oauth_clients SET state=?1,revision=revision+1,updated_at=?2 WHERE client_id=?3 AND revision=?4 AND state!='deleted'",params![state,now,client_id,expected_revision])?!=1 {return Err(AuthError::Conflict);}
+            Ok((
+                EnforcementScope::Client(client_id.clone()),
+                expected_revision + 1,
+            ))
+        }
+        PolicyMutation::PrincipalState {
+            principal_id,
+            expected_revision,
+            state,
+        } => {
+            if !["active", "disabled", "revoked"].contains(&state.as_str()) {
+                return Err(AuthError::Invalid("invalid principal state".into()));
+            }
+            let protected: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator WHERE principal_id=?1)",
+                [principal_id],
+                |row| row.get(0),
+            )?;
+            if protected && state != "active" {
+                return Err(AuthError::Denied);
+            }
+            if connection.execute("UPDATE auth_principals SET state=?1,disabled_at=CASE WHEN ?1='disabled' THEN ?2 END,revoked_at=CASE WHEN ?1='revoked' THEN ?2 END,updated_at=?2,version=version+1 WHERE principal_id=?3 AND version=?4 AND state!='revoked'",params![state,now,principal_id,expected_revision])?!=1 {return Err(AuthError::Conflict);}
+            Ok((
+                EnforcementScope::Principal(principal_id.clone()),
+                expected_revision + 1,
+            ))
+        }
+        PolicyMutation::ConsentRevoke {
+            principal_id,
+            client_id,
+            binding_kind,
+            binding_value,
+            capability_id,
+        } => {
+            connection.execute("UPDATE auth_remembered_consent SET decision='declined',revision=revision+1,updated_at=?1 WHERE principal_id=?2 AND client_id=?3 AND binding_kind=?4 AND binding_value=?5 AND (?6 IS NULL OR capability_id=?6)",params![now,principal_id,client_id,binding_kind,binding_value,capability_id])?;
+            // Originally approved choices are never reintroduced at token renewal.
+            let mut statement=connection.prepare("SELECT oauth_grant_id,approved_capabilities_json FROM auth_oauth_grants WHERE principal_id=?1 AND client_id=?2 AND binding_kind=?3 AND binding_value=?4 AND revoked_at IS NULL")?;
+            let rows = statement
+                .query_map(
+                    params![principal_id, client_id, binding_kind, binding_value],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (grant, approved) in rows {
+                let mut approved: Vec<CapabilityAuthority> = decode(&approved)?;
+                approved.retain(|cap| {
+                    capability_id
+                        .as_ref()
+                        .is_some_and(|id| id != &cap.capability_id)
+                });
+                connection.execute("UPDATE auth_oauth_grants SET approved_capabilities_json=?1,revision=revision+1,revoked_at=CASE WHEN ?2 IS NULL THEN ?3 ELSE revoked_at END WHERE oauth_grant_id=?4",params![json(&approved)?,capability_id,now,grant])?;
+            }
+            Ok((EnforcementScope::Principal(principal_id.clone()), 1))
+        }
+        PolicyMutation::OidcMappingPut {
+            mapping_id,
+            provider_id,
+            claim_name,
+            claim_value,
+            role_id,
+            expected_revision,
+        } => {
+            if ulid::Ulid::from_string(mapping_id).is_err() || !claim_name.starts_with('/') {
+                return Err(AuthError::Invalid("invalid OIDC mapping".into()));
+            }
+            let (generation, _) = role(connection, role_id)?;
+            let current: Option<u64> = connection
+                .query_row(
+                    "SELECT revision FROM auth_oidc_role_mappings WHERE mapping_id=?1",
+                    [mapping_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if current.unwrap_or(0) != *expected_revision {
+                return Err(AuthError::Conflict);
+            }
+            connection.execute("INSERT INTO auth_oidc_role_mappings VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(mapping_id) DO UPDATE SET provider_id=excluded.provider_id,claim_name=excluded.claim_name,claim_value=excluded.claim_value,role_id=excluded.role_id,role_generation=excluded.role_generation,revision=excluded.revision",params![mapping_id,provider_id,claim_name,claim_value,role_id,generation,expected_revision+1])?;
+            Ok((EnforcementScope::All, expected_revision + 1))
+        }
+        PolicyMutation::OidcMappingDelete {
+            mapping_id,
+            expected_revision,
+        } => {
+            if connection.execute(
+                "DELETE FROM auth_oidc_role_mappings WHERE mapping_id=?1 AND revision=?2",
+                params![mapping_id, expected_revision],
+            )? != 1
+            {
+                return Err(AuthError::Conflict);
+            }
+            Ok((EnforcementScope::All, expected_revision + 1))
+        }
     }
 }

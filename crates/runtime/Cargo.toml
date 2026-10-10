@@ -69,5 +69,6 @@ ulid.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["process", "io-util"] }
 trellis-local-nats = { path = "../local-nats" }
 tempfile.workspace = true

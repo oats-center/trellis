@@ -4,7 +4,16 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::{ApiSurfaceKind, PermissionAction, U64s};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use ed25519_dalek::{Signature, Signer as _, SigningKey};
+use sha2::{Digest as _, Sha256};
+
+use crate::authorization::{authorization_error, signed_json_digest};
+use crate::AuthorizationErrorCode;
+use crate::{
+    canonicalize_json, ApiSurfaceKind, AuthorityIssuerKey, AuthorityIssuerState, PermissionAction,
+    ProtocolError, SignedSessionAuthority, U64s,
+};
 
 /// Accepted catalog format and signature domain.
 pub const CATALOG_SNAPSHOT_FORMAT_V1: &str = "trellis.catalog-snapshot.v1";
@@ -195,4 +204,252 @@ pub struct SignedSessionRevocation {
     pub critical: Vec<String>,
     /// Ed25519 issuer signature.
     pub signature: String,
+}
+
+fn metadata_error() -> ProtocolError {
+    authorization_error(
+        AuthorizationErrorCode::InvalidFormat,
+        [],
+        "invalid signed verification material",
+    )
+}
+
+fn metadata_digest(record: &impl Serialize, domain: &str) -> Result<[u8; 32], ProtocolError> {
+    let mut value = serde_json::to_value(record)?;
+    let fields = value.as_object_mut().ok_or_else(metadata_error)?;
+    fields.remove("signature");
+    signed_json_digest(domain, &value)
+}
+
+fn verify_metadata(
+    record: &impl Serialize,
+    domain: &str,
+    signature: &str,
+    issuer: &AuthorityIssuerKey,
+    instance: &str,
+    account: &str,
+) -> Result<(), ProtocolError> {
+    let value = serde_json::to_value(record)?;
+    // These records are bounded cold-path material, not a per-message policy graph.
+    if canonicalize_json(&value)?.len() > 1_048_576
+        || value["format"] != domain
+        || value["trellisInstanceId"] != instance
+        || value["audienceNatsAccount"] != account
+        || value["critical"]
+            .as_array()
+            .is_none_or(|items| !items.is_empty())
+        || issuer.state == AuthorityIssuerState::Revoked
+        || value
+            .get("issuerKeyId")
+            .is_some_and(|id| id != &Value::String(issuer.key_id.clone()))
+    {
+        return Err(metadata_error());
+    }
+    let bytes = URL_SAFE_NO_PAD
+        .decode(signature)
+        .map_err(|_| metadata_error())?;
+    if URL_SAFE_NO_PAD.encode(&bytes) != signature {
+        return Err(metadata_error());
+    }
+    let signature = Signature::from_slice(&bytes).map_err(|_| metadata_error())?;
+    issuer
+        .verifying_key()?
+        .verify_strict(&metadata_digest(record, domain)?, &signature)
+        .map_err(|_| metadata_error())
+}
+
+macro_rules! signed_record {
+    ($record:ty, $domain:expr) => {
+        impl $record {
+            /// Sign Auth-owned verification material with the configured issuer.
+            pub fn sign(mut self, key: &SigningKey) -> Result<Self, ProtocolError> {
+                self.signature =
+                    URL_SAFE_NO_PAD.encode(key.sign(&metadata_digest(&self, $domain)?).to_bytes());
+                Ok(self)
+            }
+            /// Content address of the immutable, complete signed record.
+            pub fn digest(&self) -> Result<String, ProtocolError> {
+                Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(
+                    canonicalize_json(&serde_json::to_value(self)?)?.as_bytes(),
+                )))
+            }
+        }
+    };
+}
+signed_record!(SignedCatalogSnapshot, CATALOG_SNAPSHOT_FORMAT_V1);
+signed_record!(SignedProviderCertificate, PROVIDER_CERTIFICATE_FORMAT_V1);
+signed_record!(SignedIssuerRotation, ISSUER_ROTATION_FORMAT_V1);
+signed_record!(SignedSessionRevocation, SESSION_REVOCATION_FORMAT_V1);
+
+impl SignedCatalogSnapshot {
+    /// Authenticate an accepted catalog against pinned instance/account trust.
+    pub fn verify(
+        &self,
+        issuer: &AuthorityIssuerKey,
+        instance: &str,
+        account: &str,
+    ) -> Result<(), ProtocolError> {
+        verify_metadata(
+            self,
+            CATALOG_SNAPSHOT_FORMAT_V1,
+            &self.signature,
+            issuer,
+            instance,
+            account,
+        )?;
+        if self.generation.get() == 0
+            || self.accepted_revision.get() == 0
+            || self.actions.iter().any(|action| {
+                action.introduced_revision.get() == 0
+                    || action.introduced_revision > self.accepted_revision
+            })
+            || self.capabilities.iter().any(|capability| {
+                capability.identity_generation.get() == 0
+                    || capability.consent_revision.get() == 0
+                    || capability.memberships.iter().any(|member| {
+                        member.member_since_revision.get() == 0
+                            || member.member_since_revision > self.accepted_revision
+                            || !self
+                                .actions
+                                .iter()
+                                .any(|action| action.identity == member.action)
+                    })
+            })
+        {
+            return Err(metadata_error());
+        }
+        Ok(())
+    }
+
+    /// Check an exact action against previously verified authority and catalog.
+    /// Both signatures, live time and logical-session revocation must be checked
+    /// by the caller before this membership check can authorize dispatch.
+    pub fn authorizes(
+        &self,
+        authority: &SignedSessionAuthority,
+        action: &CatalogActionIdentity,
+    ) -> bool {
+        let Some(api) = authority
+            .unsigned
+            .apis
+            .iter()
+            .find(|api| api.api_id == self.api_id)
+        else {
+            return false;
+        };
+        if api.generation != self.generation || api.accepted_revision > self.accepted_revision {
+            return false;
+        }
+        let Some(action_entry) = self.actions.iter().find(|entry| &entry.identity == action) else {
+            return false;
+        };
+        api.accepted_revision >= action_entry.introduced_revision
+            && self.capabilities.iter().any(|capability| {
+                authority.unsigned.capabilities.iter().any(|grant| {
+                    grant.capability_id == capability.capability_id
+                        && grant.identity_generation == capability.identity_generation
+                        && grant.consent_revision == capability.consent_revision
+                }) && capability.memberships.iter().any(|member| {
+                    &member.action == action
+                        && api.accepted_revision >= member.member_since_revision
+                })
+            })
+    }
+}
+
+impl SignedProviderCertificate {
+    /// Verify provider identity, scope, signature and live validity.
+    pub fn verify(
+        &self,
+        issuer: &AuthorityIssuerKey,
+        instance: &str,
+        account: &str,
+        now: i64,
+    ) -> Result<(), ProtocolError> {
+        verify_metadata(
+            self,
+            PROVIDER_CERTIFICATE_FORMAT_V1,
+            &self.signature,
+            issuer,
+            instance,
+            account,
+        )?;
+        if self.generation.get() == 0
+            || self.not_before > self.issued_at
+            || self.issued_at >= self.expires_at
+            || now < self.not_before
+            || now >= self.expires_at
+        {
+            return Err(metadata_error());
+        }
+        Ok(())
+    }
+}
+
+impl SignedSessionRevocation {
+    /// Verify a sticky logical-session cutoff; an unsigned mirror is never a deny.
+    pub fn verify(
+        &self,
+        issuer: &AuthorityIssuerKey,
+        instance: &str,
+        account: &str,
+    ) -> Result<(), ProtocolError> {
+        verify_metadata(
+            self,
+            SESSION_REVOCATION_FORMAT_V1,
+            &self.signature,
+            issuer,
+            instance,
+            account,
+        )?;
+        if ulid::Ulid::from_string(&self.authorization_session_id).is_err()
+            || self.effective_cutoff < 0
+            || self.issued_at < self.effective_cutoff
+            || self.latest_context_expiry < self.effective_cutoff
+        {
+            return Err(metadata_error());
+        }
+        Ok(())
+    }
+}
+
+impl SignedIssuerRotation {
+    /// Install exactly the next authenticated rotation, never an older chain head.
+    pub fn verify_successor(
+        &self,
+        previous: &AuthorityIssuerKey,
+        instance: &str,
+        account: &str,
+        installed_sequence: u64,
+        now: i64,
+    ) -> Result<AuthorityIssuerKey, ProtocolError> {
+        verify_metadata(
+            self,
+            ISSUER_ROTATION_FORMAT_V1,
+            &self.signature,
+            previous,
+            instance,
+            account,
+        )?;
+        if self.previous_key_id != previous.key_id
+            || self.sequence.get()
+                != installed_sequence
+                    .checked_add(1)
+                    .ok_or_else(metadata_error)?
+            || self.activated_at > now
+            || self.previous_retired_at < self.activated_at
+        {
+            return Err(metadata_error());
+        }
+        let next = AuthorityIssuerKey {
+            key_id: self.next_key_id.clone(),
+            public_key: self.next_public_key.clone(),
+            state: AuthorityIssuerState::Active,
+        };
+        next.verifying_key()?;
+        if next.key_id == previous.key_id {
+            return Err(metadata_error());
+        }
+        Ok(next)
+    }
 }

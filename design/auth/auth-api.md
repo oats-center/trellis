@@ -1,12 +1,14 @@
 # Design: Auth API
 
-Status: authoritative public Auth surface after WO-02.
+Status: retired WO-02 API reference during the unreleased Revision 7 cutover.
+Current native Auth contracts replace this inventory; see
+[trellis-auth.md](trellis-auth.md) for the authoritative core model.
 
 ## Source Of Truth
 
-`crates/runtime/contract.trellis` is the native IDL source. Generated Rust and
-TypeScript clients and schemas are the public API reference. HTTP-only
-browser/bootstrap DTOs remain Rust-owned at their transport boundary.
+`crates/runtime/trellis/src/apis/trellis_auth_v1/` is the native Auth source.
+Generated Rust and TypeScript clients and schemas are the public API reference.
+HTTP-only browser/bootstrap DTOs remain Rust-owned at their transport boundary.
 
 There are no handwritten desired/materialized-authority, proposal,
 reconciliation, identity-grant, trust-root, certificate, manifest, or legacy

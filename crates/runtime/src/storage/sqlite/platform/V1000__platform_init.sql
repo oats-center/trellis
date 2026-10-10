@@ -408,6 +408,15 @@ CREATE TABLE auth_accepted_apis (
     revision INTEGER NOT NULL CHECK (revision >= 1),
     UNIQUE (api_id, generation)
 );
+CREATE TABLE auth_api_reviews (
+    review_id TEXT PRIMARY KEY CHECK (length(review_id) = 26),
+    api_id TEXT NOT NULL,
+    review_json TEXT NOT NULL CHECK (json_valid(review_json)),
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    consumed_at INTEGER
+);
+CREATE INDEX auth_api_reviews_expiry ON auth_api_reviews(expires_at);
 CREATE TABLE auth_api_verification_snapshots (
     snapshot_digest TEXT PRIMARY KEY CHECK (length(snapshot_digest) = 43),
     api_id TEXT NOT NULL,
