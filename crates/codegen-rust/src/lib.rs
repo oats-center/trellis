@@ -8,9 +8,9 @@ use std::{
 
 use trellis_idl::{
     api_digest, canonical_package, participant_digest, ActionDefinition, ActionKind, ApiDefinition,
-    ApiId, CanonicalMode, InteractionDirection, ModelField, PackageGraph, PackageId,
-    ParticipantDefinition, ParticipantKind, Primitive, ResourceDefinition, TypeDefinition,
-    TypeExpression, TypeRef,
+    ApiId, AppKind, AppRequestDefinition, CanonicalMode, InteractionDirection,
+    InteractionSelection, ModelField, PackageGraph, PackageId, ParticipantDefinition,
+    ParticipantKind, Primitive, ResourceDefinition, TypeDefinition, TypeExpression, TypeRef,
 };
 
 /// A failure while generating a Rust package.
@@ -98,8 +98,13 @@ pub fn generate_rust_package(
             path: "src/participants/mod.rs".into(),
             contents: render_namespace(root.participants().keys().map(|id| id.as_str())),
         },
+        Source {
+            path: "src/apps/mod.rs".into(),
+            contents: render_namespace(root.app_requests().keys().map(|id| id.as_str())),
+        },
     ];
 
+    sources[0].contents.push_str("pub mod apps;\n");
     for package in graph.packages().values() {
         for api in package.apis().values() {
             sources.push(Source {
@@ -112,6 +117,14 @@ pub fn generate_rust_package(
     }
 
     let evidence = render_evidence(graph)?;
+    for (id, request) in root.app_requests() {
+        sources.push(Source {
+            path: PathBuf::from("src/apps")
+                .join(module_name(id.as_str()))
+                .join("mod.rs"),
+            contents: render_app_request(graph, request)?,
+        });
+    }
     for (id, participant) in root.participants() {
         sources.push(Source {
             path: PathBuf::from("src/participants")
@@ -169,6 +182,12 @@ fn validate_names(
     reject_collisions(
         "participants",
         root.participants()
+            .keys()
+            .map(|id| (id.as_str(), module_name(id.as_str()))),
+    )?;
+    reject_collisions(
+        "apps",
+        root.app_requests()
             .keys()
             .map(|id| (id.as_str(), module_name(id.as_str()))),
     )?;
@@ -566,10 +585,28 @@ fn render_api(graph: &PackageGraph, api: &ApiDefinition) -> Result<String, Codeg
 }
 
 fn render_api_facades(graph: &PackageGraph, api: &ApiDefinition) -> String {
+    let mut out = render_api_client(graph, api, None);
+    render_api_provider(api, &mut out);
+    out
+}
+
+fn render_api_client(
+    graph: &PackageGraph,
+    api: &ApiDefinition,
+    selection: Option<&InteractionSelection>,
+) -> String {
     let mut out = String::from(
         "#[derive(Clone)]\npub struct Client { inner: trellis_rs::generated::Client }\nimpl Client {\npub fn from_generated(inner: trellis_rs::generated::Client) -> Self { Self { inner } }\n",
     );
     for (id, action) in api.actions() {
+        if selection.is_some_and(|selection| {
+            !selection
+                .actions
+                .iter()
+                .any(|selected| &selected.action == id)
+        }) {
+            continue;
+        }
         let name = type_name(&id.name);
         let method = rust_ident(&key_to_snake(&id.name));
         match action {
@@ -596,9 +633,12 @@ fn render_api_facades(graph: &PackageGraph, api: &ApiDefinition) -> String {
                 }
             }
             ActionDefinition::Event { .. } => {
-                out.push_str(&format!(
-                    "pub async fn publish_{method}(&self, event: &events::{name}Event) -> Result<(), trellis_rs::client::TrellisClientError> {{ self.inner.publish::<events::{name}>(event).await }}\npub async fn subscribe_{method}(&self, options: trellis_rs::client::EventSubscribeOptions) -> Result<futures_util::stream::BoxStream<'static, Result<events::{name}Event, trellis_rs::client::TrellisClientError>>, trellis_rs::client::TrellisClientError> {{ self.inner.subscribe::<events::{name}>(options).await }}\n"
-                ));
+                if selection.is_none_or(|selection| selection.actions.iter().any(|selected| &selected.action == id && selected.direction == InteractionDirection::Publish)) {
+                    out.push_str(&format!("pub async fn publish_{method}(&self, event: &events::{name}Event) -> Result<(), trellis_rs::client::TrellisClientError> {{ self.inner.publish::<events::{name}>(event).await }}\n"));
+                }
+                if selection.is_none_or(|selection| selection.actions.iter().any(|selected| &selected.action == id && selected.direction == InteractionDirection::Subscribe)) {
+                    out.push_str(&format!("pub async fn subscribe_{method}(&self, options: trellis_rs::client::EventSubscribeOptions) -> Result<futures_util::stream::BoxStream<'static, Result<events::{name}Event, trellis_rs::client::TrellisClientError>>, trellis_rs::client::TrellisClientError> {{ self.inner.subscribe::<events::{name}>(options).await }}\n"));
+                }
             }
             ActionDefinition::Live { .. } => {
                 out.push_str(&format!(
@@ -611,6 +651,10 @@ fn render_api_facades(graph: &PackageGraph, api: &ApiDefinition) -> String {
         }
     }
     out.push_str("}\n");
+    out
+}
+
+fn render_api_provider(api: &ApiDefinition, out: &mut String) {
     if api.actions().values().any(|action| {
         matches!(
             action,
@@ -638,7 +682,6 @@ fn render_api_facades(graph: &PackageGraph, api: &ApiDefinition) -> String {
         }
         out.push_str("}\n");
     }
-    out
 }
 
 fn cursor_page_item(graph: &PackageGraph, output: &TypeRef) -> Option<String> {
@@ -860,23 +903,20 @@ fn render_participant(
     let kind = match participant.kind() {
         ParticipantKind::Service => "Service",
         ParticipantKind::Device => "Device",
-        ParticipantKind::App => "App",
-        ParticipantKind::Agent => "Agent",
     };
     let companion = participant.companion().map(|companion| {
         let child = graph
             .packages()
             .values()
-            .find_map(|package| package.participants().get(&companion.participant))
-            .expect("validated companion participant");
+            .find_map(|package| package.app_requests().get(&companion.request))
+            .expect("validated companion request");
         let child_kind = match child.kind() {
-            ParticipantKind::App => "App",
-            ParticipantKind::Agent => "Agent",
-            _ => unreachable!("validated companions are apps or agents"),
+            AppKind::Browser => "Browser",
+            AppKind::Native => "Native",
         };
         format!(
-            "Some(trellis_rs::generated::CompanionDescriptor {{ id: {:?}, kind: trellis_rs::generated::ParticipantKind::{child_kind}, required: {} }})",
-            companion.participant.as_str(),
+            "Some(trellis_rs::generated::CompanionDescriptor {{ request_id: {:?}, kind: trellis_rs::generated::AppKind::{child_kind}, required: {} }})",
+            companion.request.as_str(),
             !companion.optional
         )
     }).unwrap_or_else(|| "None".to_owned());
@@ -899,10 +939,118 @@ fn render_participant(
     out.push_str("pub mod types {\n");
     out.push_str(&render_type_exports(graph, private_types, true));
     out.push_str("}\n");
+    let required = participant
+        .uses()
+        .values()
+        .flat_map(|selection| &selection.required_capabilities)
+        .collect::<BTreeSet<_>>();
+    let optional = participant
+        .uses()
+        .values()
+        .flat_map(|selection| &selection.optional_capabilities)
+        .collect::<BTreeSet<_>>();
+    // These are authoring selections, not local catalog revisions or action grants.
+    out.push_str(&format!("pub const REQUIRED_CAPABILITIES: &[&str] = &{};\npub const OPTIONAL_CAPABILITIES: &[&str] = &{};\n", string_slice(required.iter().map(|id| id.as_str())), string_slice(optional.iter().map(|id| id.as_str()))));
     out.push_str(&render_resources(participant));
     out.push_str(&render_migrations(participant));
     out.push_str(&render_availability(graph, participant));
     out.push_str(&render_participant_facades(graph, participant));
+    Ok(out)
+}
+
+fn render_app_request(
+    graph: &PackageGraph,
+    request: &AppRequestDefinition,
+) -> Result<String, CodegenRustError> {
+    let kind = match request.kind() {
+        AppKind::Browser => "Browser",
+        AppKind::Native => "Native",
+    };
+    let required = request
+        .uses()
+        .values()
+        .flat_map(|selection| &selection.required_capabilities)
+        .collect::<BTreeSet<_>>();
+    let optional = request
+        .uses()
+        .values()
+        .flat_map(|selection| &selection.optional_capabilities)
+        .collect::<BTreeSet<_>>();
+    let mut optional_actions = Vec::new();
+    let mut has_download = false;
+    for (id, selection) in request.uses() {
+        let api = graph
+            .api(id)
+            .ok_or_else(|| CodegenRustError::Semantic(format!("missing API {id}")))?;
+        for selected in &selection.actions {
+            has_download |= matches!(
+                api.definition().actions().get(&selected.action),
+                Some(ActionDefinition::Rpc { download: true, .. })
+            );
+            if !selection.required_capabilities.iter().any(|capability| {
+                api.definition().capabilities()[capability]
+                    .allows
+                    .contains(selected)
+            }) {
+                optional_actions.push(optional_action(
+                    id.as_str(),
+                    selected.action.kind,
+                    &selected.action.name,
+                    selected.direction,
+                ));
+            }
+        }
+    }
+    let mut out = format!("//! Generated application request, not a deployed participant.\n\n/// Source-owned application request metadata.\npub struct Request;\nimpl trellis_rs::generated::AppRequestDescriptor for Request {{ const ID: &'static str = {:?}; const KIND: trellis_rs::generated::AppKind = trellis_rs::generated::AppKind::{kind}; const REQUIRED_CAPABILITIES: &'static [&'static str] = &{}; const OPTIONAL_CAPABILITIES: &'static [&'static str] = &{}; }}\nconst OPTIONAL_ACTIONS: &[trellis_rs::generated::OptionalAction] = &[{}];\n#[derive(Clone)]\npub struct Client {{ inner: trellis_rs::generated::Client }}\nimpl Client {{\npub fn from_generated(inner: trellis_rs::generated::Client) -> Self {{ Self {{ inner: inner.with_optional_actions(OPTIONAL_ACTIONS) }} }}\n", request.identity().as_str(), string_slice(required.iter().map(|id| id.as_str())), string_slice(optional.iter().map(|id| id.as_str())), optional_actions.join(","));
+    if has_download {
+        out.push_str("pub async fn download_transfer(&self, grant: &trellis_rs::client::DownloadTransferGrant) -> Result<Vec<u8>, trellis_rs::client::TrellisClientError> { self.inner.download_transfer(grant).await }\n");
+    }
+    for api in request.uses().keys() {
+        let module = module_name(api.as_str());
+        out.push_str(&format!("pub fn {module}(&self) -> {module}::Client {{ {module}::Client::from_generated(self.inner.clone()) }}\n"));
+    }
+    out.push_str("}\n");
+    for (id, selection) in request.uses() {
+        let api = graph
+            .api(id)
+            .ok_or_else(|| CodegenRustError::Semantic(format!("missing API {id}")))?;
+        let module = module_name(id.as_str());
+        out.push_str(&format!("pub mod {module} {{\n"));
+        for kind in selection
+            .actions
+            .iter()
+            .map(|selected| selected.action.kind)
+            .collect::<BTreeSet<_>>()
+        {
+            let namespace = action_module(kind);
+            out.push_str(&format!("use crate::apis::{module}::{namespace};\n"));
+        }
+        out.push_str(&render_api_client(graph, api.definition(), Some(selection)));
+        out.push_str("}\n");
+    }
+    let mut types = BTreeSet::new();
+    for state in request.states().values() {
+        if let ResourceDefinition::State {
+            schema, accepts, ..
+        } = state
+        {
+            collect_type(graph, schema, &mut types);
+            for historic in accepts {
+                collect_type(graph, &historic.ty, &mut types);
+            }
+        }
+    }
+    out.push_str("pub mod types {\n");
+    out.push_str(&render_type_exports(graph, &types, true));
+    out.push_str("}\n");
+    for (name, state) in request.states() {
+        if let ResourceDefinition::State {
+            schema, version, ..
+        } = state
+        {
+            out.push_str(&format!("/// Local State value encoding; does not allocate an owned resource.\npub type {}State = {};\npub const {}_VERSION: u32 = {version};\n", type_name(name.as_str()), type_path(schema), key_to_snake(name.as_str()).to_uppercase()));
+        }
+    }
     Ok(out)
 }
 
@@ -929,36 +1077,26 @@ fn render_participant_facades(graph: &PackageGraph, participant: &ParticipantDef
         out.push_str("pub async fn download_transfer(&self, grant: &trellis_rs::client::DownloadTransferGrant) -> Result<Vec<u8>, trellis_rs::client::TrellisClientError> { self.inner.download_transfer(grant).await }\n");
     }
     match participant.kind() {
-        ParticipantKind::App | ParticipantKind::Agent => out.push_str(
-            "pub async fn connect(options: trellis_rs::client::UserConnectOptions<'_>) -> Result<Self, trellis_rs::client::TrellisClientError> { trellis_rs::generated::Client::connect_user(options).await.map(Self::from_generated) }\n",
-        ),
         ParticipantKind::Device => out.push_str(
             "pub async fn connect(options: trellis_rs::client::DeviceConnectOptions<'_, Participant>) -> Result<Self, trellis_rs::client::TrellisClientError> { trellis_rs::generated::Client::connect_device(options).await.map(Self::from_generated) }\n",
         ),
         ParticipantKind::Service => {}
     }
     if let Some(companion) = participant.companion() {
-        let module = module_name(companion.participant.as_str());
+        let module = module_name(companion.request.as_str());
         if companion.optional {
             out.push_str(&format!(
-                "pub fn companion(&self) -> Option<crate::participants::{module}::Client> {{ self.inner.companion().map(crate::participants::{module}::Client::from_generated) }}\n"
+                "pub fn companion(&self) -> Option<crate::apps::{module}::Client> {{ self.inner.companion().map(crate::apps::{module}::Client::from_generated) }}\n"
             ));
         } else {
             out.push_str(&format!(
-                "pub fn companion(&self) -> crate::participants::{module}::Client {{ crate::participants::{module}::Client::from_generated(self.inner.companion().expect(\"required device companion is connected\")) }}\n"
+                "pub fn companion(&self) -> crate::apps::{module}::Client {{ crate::apps::{module}::Client::from_generated(self.inner.companion().expect(\"required device companion is connected\")) }}\n"
             ));
         }
     }
-    let client_apis = participant
-        .uses()
-        .keys()
-        .chain(participant.implements())
-        .collect::<BTreeSet<_>>();
-    for api in client_apis {
+    for api in participant.uses().keys() {
         let module = module_name(api.as_str());
-        out.push_str(&format!(
-            "pub fn {module}(&self) -> crate::apis::{module}::Client {{ crate::apis::{module}::Client::from_generated(self.inner.clone()) }}\n"
-        ));
+        out.push_str(&format!("pub fn {module}(&self) -> {module}::Client {{ {module}::Client::from_generated(self.inner.clone()) }}\n"));
     }
     for (name, resource) in participant.resources() {
         let method = rust_ident(&key_to_snake(name.as_str()));
@@ -1032,6 +1170,27 @@ fn render_participant_facades(graph: &PackageGraph, participant: &ParticipantDef
         }
     }
     out.push_str("}\n");
+    for (id, selection) in participant.uses() {
+        let module = module_name(id.as_str());
+        out.push_str(&format!("pub mod {module} {{\n"));
+        for kind in selection
+            .actions
+            .iter()
+            .map(|selected| selected.action.kind)
+            .collect::<BTreeSet<_>>()
+        {
+            out.push_str(&format!(
+                "use crate::apis::{module}::{};\n",
+                action_module(kind)
+            ));
+        }
+        out.push_str(&render_api_client(
+            graph,
+            graph.api(id).expect("validated API selection").definition(),
+            Some(selection),
+        ));
+        out.push_str("}\n");
+    }
     if participant.kind() == ParticipantKind::Service && !participant.implements().is_empty() {
         out.push_str("impl Participant { pub async fn connect(options: trellis_rs::service::ServiceConnectOptions<'_>) -> Result<trellis_rs::service::ConnectedServiceRuntime<Self>, trellis_rs::service::ServiceRuntimeError> { trellis_rs::service::ConnectedServiceRuntime::<Self>::connect(options).await } }\n");
         out.push_str("pub struct Provider<'a> { runtime: &'a mut trellis_rs::service::ConnectedServiceRuntime<Participant> }\nimpl<'a> Provider<'a> {\npub fn new(runtime: &'a mut trellis_rs::service::ConnectedServiceRuntime<Participant>) -> Self { Self { runtime } }\npub fn client(&self) -> Client { Client::from_generated(self.runtime.generated_client()) }\n");
@@ -1446,39 +1605,19 @@ fn optional_actions(
     graph: &PackageGraph,
     participant: &ParticipantDefinition,
 ) -> Vec<(String, ActionKind, String, InteractionDirection)> {
-    let mut actions = BTreeSet::new();
-    for (api, selection) in participant.uses() {
-        let Some(definition) = graph
-            .packages()
-            .values()
-            .find_map(|package| package.apis().get(api))
-        else {
-            continue;
-        };
-        for selected in &selection.actions {
-            if action_capabilities(
-                definition,
+    graph
+        .participant_needs(participant.identity())
+        .into_iter()
+        .flat_map(|needs| needs.optional_action_capabilities().keys())
+        .map(|(api, selected)| {
+            (
+                api.as_str().to_owned(),
                 selected.action.kind,
-                &selected.action.name,
+                selected.action.name.clone(),
                 selected.direction,
             )
-            .iter()
-            .any(|capability| {
-                selection
-                    .optional_capabilities
-                    .iter()
-                    .any(|optional| optional.as_str() == *capability)
-            }) {
-                actions.insert((
-                    api.as_str().to_owned(),
-                    selected.action.kind,
-                    selected.action.name.clone(),
-                    selected.direction,
-                ));
-            }
-        }
-    }
-    actions.into_iter().collect()
+        })
+        .collect()
 }
 
 fn optional_action(
@@ -1872,7 +2011,7 @@ mod tests {
 
     #[test]
     fn collisions_are_rejected_before_writes() {
-        let graph = graph("model FooBar {} model Foo_Bar {} api main@v1 { title \"Main\"; description \"Main API.\"; rpc Get { input FooBar; output Foo_Bar; } capabilities { public { allows { rpc Get; } } } }");
+        let graph = graph("model FooBar {} model Foo_Bar {} api main@v1 { title \"Main\"; description \"Main API.\"; rpc Get { input FooBar; output Foo_Bar; } capabilities { public { consent_revision 1; allows { rpc Get; } } } }");
         let output = tempfile::tempdir().unwrap().path().join("generated");
         assert!(matches!(
             generate_rust_package(&graph, &output, "fixture"),
@@ -1882,8 +2021,39 @@ mod tests {
     }
 
     #[test]
+    fn app_module_collisions_preserve_existing_output() {
+        for (source, module) in [
+            ("app FooBar {} app Foo_Bar {}", "fixture_foo_bar"),
+            ("app FooBar {} agent Foo_Bar {}", "fixture_foo_bar"),
+            (
+                "app Sensor_Operator {} device Sensor { app optional Operator {} }",
+                "fixture_sensor_operator",
+            ),
+        ] {
+            let graph = graph(source);
+            let directory = tempfile::tempdir().unwrap();
+            let output = directory.path().join("generated");
+            let existing = output.join("src/apps").join(module).join("mod.rs");
+            fs::create_dir_all(existing.parent().unwrap()).unwrap();
+            fs::write(&existing, "// Last-good generated output.\n").unwrap();
+            assert!(
+                matches!(
+                    generate_rust_package(&graph, &output, "fixture"),
+                    Err(CodegenRustError::IdentifierCollision { .. })
+                ),
+                "colliding requests must be rejected: {source}"
+            );
+            assert_eq!(
+                fs::read_to_string(existing).unwrap(),
+                "// Last-good generated output.\n",
+                "failed generation must preserve the previous app module"
+            );
+        }
+    }
+
+    #[test]
     fn generated_crate_compiles_against_current_abi() {
-        let graph = graph("type Name = string; enum Status { ready; } model OldValues {} model Values { name: Name; status: Status; signed: int64; unsigned: uint64; finite: number; bytes: bytes; } api main@v1 { title \"Main\"; description \"Main API.\"; error Bad(Values); rpc Get { input Values; output Values; errors [Bad]; download; } capabilities { public { allows { rpc Get; operation Work; } } } operation Work { input Values; output Values; progress Values; errors [Bad]; signals { resume Values; } upload; } } api other@v2 { title \"Other\"; description \"Other API.\"; capabilities { public { allows { publish event Changed; subscribe event Changed; live Watch; } } } event Changed { payload Values; } live Watch { input Values; event Values; } } service Backend { implements main; implements other; kv cache { title \"Cache\"; description \"Value cache.\"; schema Values; version 2; accepts { 1: OldValues; } } } app Caller { use main { rpc Get; operation Work; } use other { subscribe event Changed; live Watch; } }");
+        let graph = graph("type Name = string; enum Status { ready; } model OldValues {} model Values { name: Name; status: Status; signed: int64; unsigned: uint64; finite: number; bytes: bytes; } api main@v1 { title \"Main\"; description \"Main API.\"; error Bad(Values); rpc Get { input Values; output Values; errors [Bad]; download; } rpc Write { input Values; output Values; } capabilities { capability read { consent_revision 1; title \"Read\"; description \"Read values.\"; consequence \"Reveals values.\"; allows { rpc Get; } } capability work { consent_revision 1; title \"Work\"; description \"Run work.\"; consequence \"Changes values.\"; allows { operation Work; } } capability write { consent_revision 1; title \"Write\"; description \"Write values.\"; consequence \"Changes values.\"; allows { rpc Write; } } } operation Work { input Values; output Values; progress Values; errors [Bad]; signals { resume Values; } upload; } } api other@v2 { title \"Other\"; description \"Other API.\"; capabilities { capability observe { consent_revision 1; title \"Observe\"; description \"Observe values.\"; consequence \"Reveals value changes.\"; allows { subscribe event Changed; live Watch; } } } event Changed { payload Values; } live Watch { input Values; event Values; } } service Backend { implements main; implements other; kv cache { title \"Cache\"; description \"Value cache.\"; schema Values; version 2; accepts { 1: OldValues; } } } app Caller { use main { required capability read; required capability work; } use other { required capability observe; } }");
         let output = tempfile::tempdir().unwrap();
         generate_rust_package(&graph, output.path(), "fixture-sdk").unwrap();
         let runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1912,7 +2082,8 @@ mod tests {
         Client as MainClient,
     },
     apis::fixture_other_v2::{events::Changed, lives::Watch},
-    participants::{fixture_backend, fixture_caller},
+    participants::fixture_backend,
+    apps::fixture_caller,
     types::{Status, Values},
 };
 
@@ -2028,15 +2199,39 @@ fn download_output_round_trips_transfer_grant() {
         assert!(Command::new("cargo")
             .arg("test")
             .arg("--quiet")
+            .env(
+                "CARGO_TARGET_DIR",
+                runtime.join("../../target/codegen-consumers")
+            )
             .current_dir(output.path())
             .status()
             .unwrap()
             .success());
+        fs::create_dir(output.path().join("examples")).unwrap();
+        fs::write(output.path().join("examples/unselected_write.rs"), "use fixture_sdk::apps::fixture_caller::Client;\nasync fn write(client: &Client, input: &fixture_sdk::apis::fixture_main_v1::rpc::WriteInput) { let _ = client.fixture_main_v1().write(input).await; }\nfn main() {}\n").unwrap();
+        let failure = Command::new("cargo")
+            .args(["check", "--quiet", "--example", "unselected_write"])
+            .env(
+                "CARGO_TARGET_DIR",
+                runtime.join("../../target/codegen-consumers"),
+            )
+            .current_dir(output.path())
+            .output()
+            .unwrap();
+        assert!(
+            !failure.status.success(),
+            "An unselected write capability must not expose a caller method"
+        );
+        assert!(
+            String::from_utf8_lossy(&failure.stderr).contains("no method named `write`"),
+            "{}",
+            String::from_utf8_lossy(&failure.stderr)
+        );
     }
     #[test]
     fn generated_crate_keeps_distinct_progress_and_update_channels() {
         let graph = graph(
-            "type Name = string; model Status { stage: Name; } model Preview { text: Name; } model Values { name: Name; } api main@v1 { title \"Main\"; description \"Main API.\"; operation Work { input Values; output Values; progress Status; update Preview; } operation Step { input Values; output Values; progress Status; } capabilities { public { allows { operation Work; operation Step; } } } } service Backend { implements main; } app Caller { use main { operation Work; operation Step; } }",
+            "type Name = string; model Status { stage: Name; } model Preview { text: Name; } model Values { name: Name; } api main@v1 { title \"Main\"; description \"Main API.\"; operation Work { input Values; output Values; progress Status; update Preview; } operation Step { input Values; output Values; progress Status; } capabilities { public { consent_revision 1; allows { operation Work; operation Step; } } } } service Backend { implements main; } app Caller { use main { required capability public; } }",
         );
         let output = tempfile::tempdir().unwrap();
         generate_rust_package(&graph, output.path(), "fixture-sdk").unwrap();
@@ -2113,6 +2308,10 @@ fn generated_descriptors_validate_each_channel() {
         assert!(Command::new("cargo")
             .arg("test")
             .arg("--quiet")
+            .env(
+                "CARGO_TARGET_DIR",
+                runtime.join("../../target/codegen-consumers")
+            )
             .current_dir(output.path())
             .status()
             .unwrap()

@@ -42,6 +42,7 @@ pub fn api_digest(graph: &PackageGraph, api: &ApiId) -> miette::Result<String> {
     let mut projection = package.clone();
     projection.apis.retain(|id, _| id == api);
     projection.participants.clear();
+    projection.app_requests.clear();
     let mut local = BTreeSet::new();
     let mut external = BTreeSet::new();
     for reference in value.errors.values().flatten() {
@@ -165,8 +166,24 @@ pub(crate) fn selected_surface_digest_cached(
             }
         }
     }
-    for capability in &selection.optional_capabilities {
-        append_digest_field(&mut output, capability.as_str());
+    for (required, capabilities) in [
+        (true, &selection.required_capabilities),
+        (false, &selection.optional_capabilities),
+    ] {
+        for id in capabilities {
+            let capability = api.capabilities.get(id).ok_or_else(|| {
+                miette!(
+                    "selected capability '{id}' is absent from API '{}'",
+                    api.identity
+                )
+            })?;
+            append_digest_field(&mut output, if required { "required" } else { "optional" });
+            append_digest_field(&mut output, id.as_str());
+            append_digest_field(&mut output, &capability.consent_revision.to_string());
+            for action in &capability.allows {
+                append_digest_field(&mut output, &selection_key(action));
+            }
+        }
     }
     Ok(sha256_base64url(&output))
 }
@@ -209,31 +226,6 @@ fn append_schema(
 fn append_digest_field(output: &mut String, value: &str) {
     write!(output, "{}:", value.len()).unwrap();
     output.push_str(value);
-}
-
-/// Compute consent-text identity independently of authority identity.
-pub fn capability_consent_digest(
-    graph: &PackageGraph,
-    capability: &CapabilityId,
-) -> miette::Result<String> {
-    let value = graph
-        .packages()
-        .values()
-        .flat_map(|package| package.apis.values())
-        .find_map(|api| api.capabilities.get(capability))
-        .ok_or_else(|| miette!("capability '{capability}' is absent from graph"))?;
-    let mut digest = Sha256::new();
-    for value in [
-        capability.as_str(),
-        value.description.as_str(),
-        value.consequence.as_str(),
-    ] {
-        let length = u32::try_from(value.len())
-            .map_err(|_| miette!("capability consent field exceeds u32 length"))?;
-        digest.update(length.to_be_bytes());
-        digest.update(value.as_bytes());
-    }
-    Ok(URL_SAFE_NO_PAD.encode(digest.finalize()))
 }
 
 pub(crate) fn digest_package(
@@ -297,15 +289,19 @@ fn render(
             participant
                 .companion
                 .as_ref()
-                .map(|value| value.participant.clone())
+                .map(|value| value.request.clone())
         })
         .collect::<BTreeSet<_>>();
-    for participant in package
-        .participants
-        .values()
-        .filter(|participant| !companions.contains(&participant.identity))
-    {
+    for participant in package.participants.values() {
         render_participant(&mut output, participant, mode, &imports, package, false);
+        output.push('\n');
+    }
+    for request in package
+        .app_requests
+        .values()
+        .filter(|request| !companions.contains(&request.identity))
+    {
+        render_app_request(&mut output, request, mode, &imports, false);
         output.push('\n');
     }
     Ok(output)
@@ -342,6 +338,19 @@ impl Imports {
             }
             participant
                 .resources
+                .values()
+                .for_each(|value| collect_resource(value, &package.identity, &mut refs));
+        }
+        for request in package.app_requests.values() {
+            for api in request.uses.keys() {
+                if let Some((owner, name)) = split_api(api.as_str()) {
+                    if owner != package.identity.as_str() {
+                        refs.insert((PackageId::new(owner), name.to_owned()));
+                    }
+                }
+            }
+            request
+                .states
                 .values()
                 .for_each(|value| collect_resource(value, &package.identity, &mut refs));
         }
@@ -395,7 +404,7 @@ fn render_type_definition(
         TypeDefinition::Enum(symbols) => {
             writeln!(output, "enum {id} {{").unwrap();
             for symbol in symbols {
-                writeln!(output, "  {symbol};").unwrap();
+                writeln!(output, "  {};", quote(symbol)).unwrap();
             }
             output.push_str("}\n");
         }
@@ -532,6 +541,12 @@ fn render_api(api: &ApiDefinition, mode: CanonicalMode, imports: &Imports) -> St
             )
             .unwrap();
         }
+        writeln!(
+            output,
+            "      consent_revision {};",
+            capability.consent_revision
+        )
+        .unwrap();
         output.push_str("      allows {\n");
         let mut allows = capability.allows.iter().collect::<Vec<_>>();
         allows.sort_by_key(|selection| selection_key(selection));
@@ -662,17 +677,65 @@ fn render_participant(
     for api in &value.implements {
         writeln!(output, "  implements {};", imports.api(api)).unwrap();
     }
-    for (api, selections) in &value.uses {
+    render_uses(output, &value.uses, imports);
+    for (name, resource) in &value.resources {
+        render_resource(output, name, resource, imports, mode);
+    }
+    if let Some(companion) = &value.companion {
+        if let Some(child) = package.app_requests.get(&companion.request) {
+            render_app_request(output, child, mode, imports, companion.optional);
+        }
+    }
+    output.push_str("}\n");
+}
+
+fn render_app_request(
+    output: &mut String,
+    value: &AppRequestDefinition,
+    mode: CanonicalMode,
+    imports: &Imports,
+    optional: bool,
+) {
+    writeln!(
+        output,
+        "{}{} {} {{",
+        match value.kind {
+            AppKind::Browser => "app",
+            AppKind::Native => "agent",
+        },
+        if optional { " optional" } else { "" },
+        value.name
+    )
+    .unwrap();
+    render_uses(output, &value.uses, imports);
+    for (name, state) in &value.states {
+        render_resource(output, name, state, imports, mode);
+    }
+    output.push_str("}\n");
+}
+
+fn render_uses(
+    output: &mut String,
+    uses: &BTreeMap<ApiId, InteractionSelection>,
+    imports: &Imports,
+) {
+    for (api, selections) in uses {
         writeln!(output, "  use {} {{", imports.api(api)).unwrap();
-        let mut actions = selections.actions.iter().collect::<Vec<_>>();
-        actions.sort_by_key(|selection| selection_key(selection));
-        for selection in actions {
-            render_selection(output, selection, "    ");
+        for capability in &selections.required_capabilities {
+            writeln!(
+                output,
+                "    required capability {};",
+                capability
+                    .as_str()
+                    .rsplit_once("::")
+                    .map_or(capability.as_str(), |(_, name)| name)
+            )
+            .unwrap();
         }
         for capability in &selections.optional_capabilities {
             writeln!(
                 output,
-                "    optional capability {};",
+                "    capability {};",
                 capability
                     .as_str()
                     .rsplit_once("::")
@@ -682,15 +745,6 @@ fn render_participant(
         }
         output.push_str("  }\n");
     }
-    for (name, resource) in &value.resources {
-        render_resource(output, name, resource, imports, mode);
-    }
-    if let Some(companion) = &value.companion {
-        if let Some(child) = package.participants.get(&companion.participant) {
-            render_participant(output, child, mode, imports, package, companion.optional);
-        }
-    }
-    output.push_str("}\n");
 }
 
 fn render_resource(
@@ -1090,8 +1144,6 @@ fn participant_kind(value: ParticipantKind) -> &'static str {
     match value {
         ParticipantKind::Service => "service",
         ParticipantKind::Device => "device",
-        ParticipantKind::App => "app",
-        ParticipantKind::Agent => "agent",
     }
 }
 fn primitive_name(value: Primitive) -> &'static str {

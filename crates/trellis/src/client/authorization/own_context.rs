@@ -208,7 +208,7 @@ impl AuthorizationContextCache {
             AuthorizationCredential::User {
                 login_session_id, ..
             } => {
-                context.principal_kind == trellis_protocol::AuthorizationPrincipalKind::User
+                context.principal_kind == trellis_protocol::PrincipalKind::User
                     && context.login_session_id.as_deref() == Some(login_session_id.as_str())
                     && context.identity_key_id.is_none()
             }

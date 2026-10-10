@@ -1,6 +1,6 @@
 //! Generated API `trellis.health@v1`.
 pub const API_ID: &str = "trellis.health@v1";
-pub const API_DIGEST: &str = "6OM4Ykuq1pnElpYu8cbd4tHaom7W6U-PaZ29qX66L-w";
+pub const API_DIGEST: &str = "37s4Q1UVkqnYoqozMvVqBI8vSLaGuYo53ATVlKLO4eE";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;
@@ -90,7 +90,7 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.Inspect";
         pub const KEY: &'static str = "health.Inspect";
         pub const SUBJECT: &'static str = "rpc.v1.health.Inspect";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.health@v1::read"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.health@v1::inspect"];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.health@v1::NotFoundError",
             "trellis.health@v1::UnexpectedError",
@@ -153,7 +153,7 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.Metrics";
         pub const KEY: &'static str = "health.Metrics";
         pub const SUBJECT: &'static str = "rpc.v1.health.Metrics";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.health@v1::read"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.health@v1::metrics"];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.health@v1::UnexpectedError",
             "trellis.health@v1::ValidationError",
@@ -210,7 +210,7 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.Query";
         pub const KEY: &'static str = "health.Query";
         pub const SUBJECT: &'static str = "rpc.v1.health.Query";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.health@v1::read"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.health@v1::query"];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.health@v1::UnexpectedError",
             "trellis.health@v1::ValidationError",
@@ -267,7 +267,7 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.Summary";
         pub const KEY: &'static str = "health.Summary";
         pub const SUBJECT: &'static str = "rpc.v1.health.Summary";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.health@v1::read"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.health@v1::summary"];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.health@v1::UnexpectedError",
             "trellis.health@v1::ValidationError",
@@ -328,9 +328,10 @@ pub mod events {
         pub const SUBJECT: &'static str = "events.v1.dHJlbGxpcy5oZWFsdGhAdjE.StatusChanged";
         pub const SUBSCRIBE_SUBJECT: &'static str =
             "events.v1.dHJlbGxpcy5oZWFsdGhAdjE.StatusChanged";
-        pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &["trellis.health@v1::public"];
-        pub const DELEGATED_PUBLISH: bool = true;
-        pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &["trellis.health@v1::read"];
+        pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[];
+        pub const DELEGATED_PUBLISH: bool = false;
+        pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] =
+            &["trellis.health@v1::statusChanges"];
     }
     impl trellis_rs::generated::EventDescriptor for StatusChanged {
         type Event = StatusChangedEvent;
@@ -353,7 +354,7 @@ pub mod lives {
         pub const DESCRIPTOR_NAME: &'static str = "live.Watch";
         pub const KEY: &'static str = "health.Watch";
         pub const SUBJECT: &'static str = "live.v1.health.Watch";
-        pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &["trellis.health@v1::read"];
+        pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &["trellis.health@v1::observe"];
     }
     impl trellis_rs::generated::LiveDescriptor for Watch {
         type Input = WatchInput;

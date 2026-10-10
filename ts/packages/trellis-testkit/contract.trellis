@@ -1,55 +1,47 @@
 import { auth, events, health, jobs, state } from trellis;
 
-app cli {
+agent cli {
   use auth {
-    rpc Capabilities.List;
-    rpc CapabilityGroups.Get;
-    rpc CapabilityGroups.Put;
-    rpc Connections.List;
-    rpc Deployments.Apply;
-    rpc Deployments.Disable;
-    rpc Deployments.Enable;
-    rpc Deployments.Get;
-    rpc Deployments.Create;
-    rpc Devices.Provision;
-    rpc DeviceUserAuthorities.Reviews.List;
-    rpc DeviceUserAuthorities.Reviews.Decide;
-    rpc Grants.Get;
-    rpc Grants.List;
-    rpc Grants.Revoke;
-    rpc Grants.Set;
-    rpc Participants.Get;
-    rpc Participants.Install;
-    rpc Portals.Get;
-    rpc Portals.GrantOverrides.Put;
-    rpc Portals.GrantOverrides.Remove;
-    rpc Portals.List;
-    rpc Portals.LoginSettings.Get;
-    rpc Portals.LoginSettings.Update;
-    rpc Portals.Put;
-    rpc Portals.Routes.Put;
-    rpc ServiceInstances.Disable;
-    rpc ServiceInstances.Provision;
-    rpc Sessions.List;
-    rpc Sessions.Revoke;
-    rpc UserIdentities.List;
-    rpc Users.Create;
-    rpc Users.PasswordReset.Create;
+    capability capabilitiesRead;
+    capability rolesRead;
+    capability rolesPut;
+    capability roleAssignmentsRead;
+    capability roleAssignmentsAssign;
+    capability roleAssignmentsRevoke;
+    capability capabilityGrantsRead;
+    capability capabilityGrantsGrant;
+    capability capabilityGrantsRevoke;
+    capability connectionsRead;
+    capability deploymentsRead;
+    capability deploymentsCreate;
+    capability deploymentsApply;
+    capability deploymentsEnable;
+    capability deploymentsDisable;
+    capability devicesProvision;
+    capability apisRead;
+    capability apisReview;
+    capability apisAccept;
+    capability oauthClientsRead;
+    capability oauthClientsPut;
+    capability serviceInstancesDisable;
+    capability serviceInstancesProvision;
+    capability usersCreate;
+    capability usersPasswordReset;
+    required capability sessionsRead;
+    required capability sessionsRevoke;
+    required capability identitiesRead;
   }
   use events {
-    rpc Consumers.Inspect;
-    rpc Consumers.Query;
-    rpc DeadLetters.Dismiss;
-    rpc DeadLetters.Inspect;
-    rpc DeadLetters.Query;
-    rpc DeadLetters.Replay;
-    rpc Query;
+    required capability consumersInspect;
+    required capability deadLettersDismiss;
+    required capability deadLettersInspect;
+    required capability deadLettersReplay;
+    required capability query;
   }
-  use health { rpc Query; }
-  use jobs { rpc Query; }
+  use health { required capability query; }
+  use jobs { required capability query; }
   use state {
-    rpc Delete;
-    rpc Resources.Inspect;
-    rpc Resources.Query;
+    required capability delete;
+    required capability resourcesInspect;
   }
 }

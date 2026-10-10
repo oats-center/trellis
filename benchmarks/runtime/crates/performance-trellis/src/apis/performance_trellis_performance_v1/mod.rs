@@ -1,6 +1,6 @@
 //! Generated API `performance-trellis.performance@v1`.
 pub const API_ID: &str = "performance-trellis.performance@v1";
-pub const API_DIGEST: &str = "KyzZpUo9wQkRQDPkLf7zvjoiQV5QEBv0h83g1PYAj78";
+pub const API_DIGEST: &str = "rybfbxiawk21ZrWzh38IOO5J7lbpaJA9KYE2PiWq5fw";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;
@@ -22,7 +22,7 @@ pub mod rpc {
         pub const KEY: &'static str = "performance.Download";
         pub const SUBJECT: &'static str = "rpc.v1.performance.Download";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "performance-trellis.performance@v1::public",
+            "performance-trellis.performance@v1::workloads",
         ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const DOWNLOAD: bool = true;
@@ -54,7 +54,7 @@ pub mod rpc {
         pub const KEY: &'static str = "performance.Echo";
         pub const SUBJECT: &'static str = "rpc.v1.performance.Echo";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "performance-trellis.performance@v1::public",
+            "performance-trellis.performance@v1::workloads",
         ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const DOWNLOAD: bool = false;
@@ -86,7 +86,7 @@ pub mod rpc {
         pub const KEY: &'static str = "performance.PutRecord";
         pub const SUBJECT: &'static str = "rpc.v1.performance.PutRecord";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "performance-trellis.performance@v1::public",
+            "performance-trellis.performance@v1::workloads",
         ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const DOWNLOAD: bool = false;
@@ -118,7 +118,7 @@ pub mod rpc {
         pub const KEY: &'static str = "performance.ReadRecord";
         pub const SUBJECT: &'static str = "rpc.v1.performance.ReadRecord";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "performance-trellis.performance@v1::public",
+            "performance-trellis.performance@v1::workloads",
         ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const DOWNLOAD: bool = false;
@@ -153,7 +153,7 @@ pub mod operations {
         pub const KEY: &'static str = "performance.AwaitCancellation";
         pub const SUBJECT: &'static str = "operations.v1.performance.AwaitCancellation";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "performance-trellis.performance@v1::public",
+            "performance-trellis.performance@v1::workloads",
         ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const UPLOAD: bool = false;
@@ -194,7 +194,7 @@ pub mod operations {
         pub const KEY: &'static str = "performance.AwaitObject";
         pub const SUBJECT: &'static str = "operations.v1.performance.AwaitObject";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "performance-trellis.performance@v1::public",
+            "performance-trellis.performance@v1::workloads",
         ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const UPLOAD: bool = false;
@@ -233,7 +233,7 @@ pub mod operations {
         pub const KEY: &'static str = "performance.QueueKeyed";
         pub const SUBJECT: &'static str = "operations.v1.performance.QueueKeyed";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "performance-trellis.performance@v1::public",
+            "performance-trellis.performance@v1::workloads",
         ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const UPLOAD: bool = false;
@@ -272,7 +272,7 @@ pub mod operations {
         pub const KEY: &'static str = "performance.QueueWork";
         pub const SUBJECT: &'static str = "operations.v1.performance.QueueWork";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "performance-trellis.performance@v1::public",
+            "performance-trellis.performance@v1::workloads",
         ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const UPLOAD: bool = false;
@@ -311,7 +311,7 @@ pub mod operations {
         pub const KEY: &'static str = "performance.Upload";
         pub const SUBJECT: &'static str = "operations.v1.performance.Upload";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "performance-trellis.performance@v1::public",
+            "performance-trellis.performance@v1::workloads",
         ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const UPLOAD: bool = true;
@@ -351,7 +351,7 @@ pub mod operations {
         pub const KEY: &'static str = "performance.Work";
         pub const SUBJECT: &'static str = "operations.v1.performance.Work";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "performance-trellis.performance@v1::public",
+            "performance-trellis.performance@v1::workloads",
         ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const UPLOAD: bool = false;
@@ -394,11 +394,11 @@ pub mod events {
         pub const SUBJECT: &'static str = "events.v1.cGVyZm9ybWFuY2UtdHJlbGxpcy5wZXJmb3JtYW5jZUB2MQ.Changed";
         pub const SUBSCRIBE_SUBJECT: &'static str = "events.v1.cGVyZm9ybWFuY2UtdHJlbGxpcy5wZXJmb3JtYW5jZUB2MQ.Changed";
         pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[
-            "performance-trellis.performance@v1::public",
+            "performance-trellis.performance@v1::workloads",
         ];
         pub const DELEGATED_PUBLISH: bool = true;
         pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[
-            "performance-trellis.performance@v1::public",
+            "performance-trellis.performance@v1::workloads",
         ];
     }
     impl trellis_rs::generated::EventDescriptor for Changed {
@@ -421,11 +421,11 @@ pub mod events {
         pub const SUBJECT: &'static str = "events.v1.cGVyZm9ybWFuY2UtdHJlbGxpcy5wZXJmb3JtYW5jZUB2MQ.Delivered";
         pub const SUBSCRIBE_SUBJECT: &'static str = "events.v1.cGVyZm9ybWFuY2UtdHJlbGxpcy5wZXJmb3JtYW5jZUB2MQ.Delivered";
         pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[
-            "performance-trellis.performance@v1::public",
+            "performance-trellis.performance@v1::publishDelivered",
         ];
         pub const DELEGATED_PUBLISH: bool = true;
         pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[
-            "performance-trellis.performance@v1::public",
+            "performance-trellis.performance@v1::workloads",
         ];
     }
     impl trellis_rs::generated::EventDescriptor for Delivered {
@@ -450,7 +450,7 @@ pub mod lives {
         pub const KEY: &'static str = "performance.Watch";
         pub const SUBJECT: &'static str = "live.v1.performance.Watch";
         pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[
-            "performance-trellis.performance@v1::public",
+            "performance-trellis.performance@v1::workloads",
         ];
     }
     impl trellis_rs::generated::LiveDescriptor for Watch {

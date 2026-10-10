@@ -36,6 +36,7 @@ jsonschema.workspace = true
 nats-jwt-rs.workspace = true
 nkeys.workspace = true
 oauth2.workspace = true
+oauth-as.workspace = true
 openidconnect.workspace = true
 opentelemetry.workspace = true
 serde.workspace = true

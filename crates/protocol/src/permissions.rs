@@ -1,11 +1,6 @@
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 
-use crate::{
-    canonicalize_json, identifiers::compare_protocol_strings, sha256_base64url, ProtocolError,
-};
-
-/// The first canonical grant-set wire format.
-pub const GRANT_SET_FORMAT_V1: &str = "trellis.grant-set.v1";
+use crate::{canonicalize_json, ProtocolError};
 
 /// An externally visible API surface kind.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -346,30 +341,6 @@ impl PermissionTarget {
         }
     }
 
-    fn ordering_key(&self) -> (&'static str, &str, &'static str, &str, &str) {
-        match self {
-            Self::ApiSurface { api, surface, name } => {
-                ("apiSurface", api, surface.as_str(), name, "")
-            }
-            Self::ParticipantResource {
-                participant,
-                resource,
-                name,
-            } => (
-                "participantResource",
-                participant,
-                resource.as_str(),
-                name,
-                "",
-            ),
-            Self::OperationSignal {
-                api,
-                operation,
-                signal,
-            } => ("operationSignal", api, "operation", operation, signal),
-        }
-    }
-
     fn description(&self) -> &'static str {
         match self {
             Self::ApiSurface { surface, .. } => surface.as_str(),
@@ -469,11 +440,6 @@ impl PermissionAtom {
             })
         }
     }
-
-    fn ordering_key(&self) -> (&'static str, &str, &'static str, &str, &str, &'static str) {
-        let (kind, owner, target_kind, name, detail) = self.target.ordering_key();
-        (kind, owner, target_kind, name, detail, self.action.as_str())
-    }
 }
 
 impl<'de> Deserialize<'de> for PermissionAtom {
@@ -492,162 +458,29 @@ impl<'de> Deserialize<'de> for PermissionAtom {
     }
 }
 
-/// A named capability's normalized machine permissions.
-///
-/// A capability is an authoring and explanation grouping. It does not itself
-/// confer authority; enforcement uses exact atoms in a [`GrantSet`].
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct CapabilityDefinition {
-    allows: Vec<PermissionAtom>,
-}
-
-impl CapabilityDefinition {
-    /// Construct a capability and normalize duplicate permissions.
-    pub fn new(allows: Vec<PermissionAtom>) -> Self {
-        Self {
-            allows: normalize_permissions(allows),
-        }
-    }
-
-    /// Return normalized machine permissions in canonical order.
-    pub fn allows(&self) -> &[PermissionAtom] {
-        &self.allows
-    }
-}
-
-impl<'de> Deserialize<'de> for CapabilityDefinition {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct WireCapability {
-            allows: Vec<PermissionAtom>,
-        }
-
-        Ok(Self::new(WireCapability::deserialize(deserializer)?.allows))
-    }
-}
-
-/// Human-facing consent copy, separate from enforceable permissions.
-///
-/// These strings may be shown during owner review, but are non-authoritative.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ConsentMetadata {
-    /// Short consent heading.
-    pub title: String,
-    /// Plain-language capability description.
-    pub description: String,
-    /// Plain-language consequence of granting consent.
-    pub consequence: String,
-}
-
 /// Server-assigned meta-authority that cannot be expressed by an action permission.
 ///
 /// Participant capabilities and capability groups cannot define these privileges.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum PlatformPrivilege {
-    /// Global administration, including access across authorization owners.
-    #[serde(rename = "trellis.auth::admin")]
-    Admin,
-}
-
-/// Server-owned authorization owner shared by grant bindings and signed contexts.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum GrantOwnerKind {
-    /// One deployment and its provisioned service/device instances.
-    Deployment,
-    /// One user account.
-    User,
-}
-
-/// A normalized, content-addressed set of machine permissions.
-///
-/// Construction sorts by UTF-16 code units and removes duplicate atoms. The
-/// digest therefore identifies the enforceable set rather than authored order.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct GrantSet {
-    format: String,
-    permissions: Vec<PermissionAtom>,
-}
-
-impl GrantSet {
-    /// Construct a normalized grant set in the current format.
-    pub fn new(permissions: Vec<PermissionAtom>) -> Self {
-        Self {
-            format: GRANT_SET_FORMAT_V1.to_string(),
-            permissions: normalize_permissions(permissions),
-        }
-    }
-
-    /// Return the grant-set wire format.
-    pub fn format(&self) -> &str {
-        &self.format
-    }
-
-    /// Return permissions in canonical semantic order.
-    pub fn permissions(&self) -> &[PermissionAtom] {
-        &self.permissions
-    }
-
-    /// Render the normalized grant set as canonical Trellis JSON.
-    ///
-    /// # Errors
-    ///
-    /// Returns a serialization or canonicalization [`ProtocolError`] if the
-    /// normalized value cannot be encoded.
-    pub fn canonical_json(&self) -> Result<String, ProtocolError> {
-        canonicalize_json(&serde_json::to_value(self)?)
-    }
-
-    /// Return the grant set's SHA-256/base64url content digest.
-    ///
-    /// # Errors
-    ///
-    /// Returns a serialization or canonicalization [`ProtocolError`] if the
-    /// normalized value cannot be encoded before hashing.
-    pub fn digest(&self) -> Result<String, ProtocolError> {
-        Ok(sha256_base64url(&self.canonical_json()?))
-    }
-}
-
-impl<'de> Deserialize<'de> for GrantSet {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct WireGrantSet {
-            format: String,
-            permissions: Vec<PermissionAtom>,
-        }
-
-        let wire = WireGrantSet::deserialize(deserializer)?;
-        if wire.format != GRANT_SET_FORMAT_V1 {
-            return Err(D::Error::custom(ProtocolError::InvalidGrantSetFormat(
-                wire.format,
-            )));
-        }
-        Ok(Self::new(wire.permissions))
-    }
-}
-
-fn normalize_permissions(mut permissions: Vec<PermissionAtom>) -> Vec<PermissionAtom> {
-    permissions.sort_by(compare_permission_atoms);
-    permissions.dedup();
-    permissions
-}
-
-fn compare_permission_atoms(left: &PermissionAtom, right: &PermissionAtom) -> std::cmp::Ordering {
-    let left = left.ordering_key();
-    let right = right.ordering_key();
-    compare_protocol_strings(left.0, right.0)
-        .then_with(|| compare_protocol_strings(left.1, right.1))
-        .then_with(|| compare_protocol_strings(left.2, right.2))
-        .then_with(|| compare_protocol_strings(left.3, right.3))
-        .then_with(|| compare_protocol_strings(left.4, right.4))
-        .then_with(|| compare_protocol_strings(left.5, right.5))
+    /// Manage principals, deployments, devices, resources, and OIDC connections.
+    #[serde(rename = "principals.manage")]
+    PrincipalsManage,
+    /// Manage roles, assignments, and OIDC role mappings.
+    #[serde(rename = "roles.manage")]
+    RolesManage,
+    /// Accept normally compatible API definitions.
+    #[serde(rename = "apis.accept")]
+    ApisAccept,
+    /// Explicitly replace an incompatible API generation.
+    #[serde(rename = "apis.forceReplace")]
+    ApisForceReplace,
+    /// Manage registered public OAuth clients.
+    #[serde(rename = "clients.manage")]
+    ClientsManage,
+    /// Manage finite privileges, administrative delegations, and issuer keys.
+    #[serde(rename = "privileges.manage")]
+    PrivilegesManage,
 }
 
 fn validate_identifier(field: &'static str, value: &str) -> Result<(), ProtocolError> {
@@ -669,21 +502,6 @@ fn validate_identifier(field: &'static str, value: &str) -> Result<(), ProtocolE
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_admin_is_a_platform_privilege() {
-        assert_eq!(
-            serde_json::from_str::<PlatformPrivilege>(r#""trellis.auth::admin""#).unwrap(),
-            PlatformPrivilege::Admin
-        );
-        for value in [
-            "trellis.auth::capabilities.delegate",
-            "trellis.auth::users.manage",
-            "admin",
-        ] {
-            assert!(serde_json::from_value::<PlatformPrivilege>(serde_json::json!(value)).is_err());
-        }
-    }
 
     #[test]
     fn permission_atom_round_trips_and_accepts_current_names() {
@@ -789,99 +607,5 @@ mod tests {
                 "signal": "approve"
             })
         );
-    }
-
-    #[test]
-    fn consent_metadata_is_not_part_of_grant_identity() {
-        let grant_set = GrantSet::new(Vec::new());
-        let before = grant_set.digest().unwrap();
-        let _: ConsentMetadata = serde_json::from_value(serde_json::json!({
-            "title": "View documents",
-            "description": "Read documents available to your account.",
-            "consequence": "This application can view your documents."
-        }))
-        .unwrap();
-        assert_eq!(grant_set.digest().unwrap(), before);
-    }
-
-    #[test]
-    fn grant_identity_is_independent_of_input_order() {
-        let first = PermissionAtom::new(
-            PermissionTarget::api_surface("documents@v1", ApiSurfaceKind::Rpc, "Documents.Get")
-                .unwrap(),
-            PermissionAction::Call,
-        )
-        .unwrap();
-        let second = PermissionAtom::new(
-            PermissionTarget::participant_resource(
-                "documents-worker",
-                ParticipantResourceKind::JobQueue,
-                "reindex",
-            )
-            .unwrap(),
-            PermissionAction::Process,
-        )
-        .unwrap();
-
-        let forward = GrantSet::new(vec![first.clone(), second.clone()]);
-        let reverse = GrantSet::new(vec![second, first.clone()]);
-        assert_eq!(
-            forward.canonical_json().unwrap(),
-            reverse.canonical_json().unwrap()
-        );
-        assert_eq!(forward.digest().unwrap(), reverse.digest().unwrap());
-
-        let capability = CapabilityDefinition::new(vec![first.clone(), first]);
-        assert_eq!(capability.allows().len(), 1);
-    }
-
-    #[test]
-    fn capability_and_consent_objects_ignore_extensions() {
-        let capability: CapabilityDefinition = serde_json::from_value(serde_json::json!({
-            "allows": [],
-            "title": "not machine policy"
-        }))
-        .unwrap();
-        assert_eq!(
-            serde_json::to_value(capability).unwrap(),
-            serde_json::json!({ "allows": [] })
-        );
-        let consent: ConsentMetadata = serde_json::from_value(serde_json::json!({
-            "title": "View documents",
-            "description": "Read documents.",
-            "consequence": "Documents are visible.",
-            "allows": []
-        }))
-        .unwrap();
-        assert!(serde_json::to_value(consent)
-            .unwrap()
-            .get("allows")
-            .is_none());
-    }
-
-    #[test]
-    fn permission_and_grant_objects_ignore_extensions() {
-        for atom in [
-            serde_json::json!({
-                "target": { "kind": "apiSurface", "api": "documents@v1", "surface": "rpc", "name": "Documents.Get" },
-                "action": "call",
-                "extra": true
-            }),
-            serde_json::json!({
-                "target": { "kind": "apiSurface", "api": "documents@v1", "surface": "rpc", "name": "Documents.Get", "extra": true },
-                "action": "call"
-            }),
-        ] {
-            let atom: PermissionAtom = serde_json::from_value(atom).unwrap();
-            assert!(serde_json::to_value(atom).unwrap().get("extra").is_none());
-        }
-
-        let grant: GrantSet = serde_json::from_value(serde_json::json!({
-            "format": GRANT_SET_FORMAT_V1,
-            "permissions": [],
-            "extra": true
-        }))
-        .unwrap();
-        assert_eq!(grant, GrantSet::new(Vec::new()));
     }
 }

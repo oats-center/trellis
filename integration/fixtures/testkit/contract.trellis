@@ -19,20 +19,23 @@ api echo@v1 {
   operation Upload { input Value; output Value; upload; }
   event Observed { payload Value; }
   capabilities {
-    public { allows { rpc Echo; operation Work; operation UpdateOnly; operation Silent; operation Upload; publish event Observed; subscribe event Observed; } }
+    capability invoke { title "Invoke and observe"; description "Invoke fixture work and observe its events."; consequence "The caller may invoke Echo, work operations, and observe results."; consent_revision 1; allows { rpc Echo; operation Work; operation UpdateOnly; operation Silent; subscribe event Observed; } }
+    capability upload { title "Upload"; description "Upload fixture values."; consequence "The caller may execute uploads."; consent_revision 1; allows { operation Upload; } }
+    capability publishObserved { title "Publish observations"; description "Publish fixture observations."; consequence "The publisher may emit Observed events."; consent_revision 1; allows { publish event Observed; } }
     capability optionalSilent {
       title "Optional silent operation";
       description "Partial lifecycle authorization acceptance.";
-      consequence "The caller can invoke and manage Silent.";
+      consequence "The caller can invoke and manage the optional silent operation.";
+      consent_revision 1;
       allows { operation OptionalSilent; }
     }
   }
 }
 
 service Provider { implements echo; }
-app Caller { use echo { rpc Echo; operation Work; operation UpdateOnly; operation Silent; operation Upload; subscribe event Observed; } }
-agent AgentCaller { use echo { rpc Echo; operation Work; operation UpdateOnly; operation Silent; subscribe event Observed; } }
+app Caller { use echo { required capability invoke; required capability upload; } }
+agent AgentCaller { use echo { required capability invoke; } }
 app RestrictedCaller {}
-app OptionalOperationCaller { use echo { operation OptionalSilent; optional capability optionalSilent; } }
-app OperationAuthorizationCaller { use echo { operation OptionalSilent; } }
+app OptionalOperationCaller { use echo { capability optionalSilent; } }
+app OperationAuthorizationCaller { use echo { required capability optionalSilent; } }
 device UnsupportedDevice {}

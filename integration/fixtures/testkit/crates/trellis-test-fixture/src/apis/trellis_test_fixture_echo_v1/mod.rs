@@ -1,6 +1,6 @@
 //! Generated API `trellis-test-fixture.echo@v1`.
 pub const API_ID: &str = "trellis-test-fixture.echo@v1";
-pub const API_DIGEST: &str = "exX3WVHrrATKVGasxaU1ZMyd03qgQlznRpRBElObEp0";
+pub const API_DIGEST: &str = "QTMexIxu_T_DJkMCPHyqnEXh-iL6pozIWeLZim8b1wM";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;
@@ -16,7 +16,7 @@ pub mod rpc {
         pub const KEY: &'static str = "echo.Echo";
         pub const SUBJECT: &'static str = "rpc.v1.echo.Echo";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis-test-fixture.echo@v1::public",
+            "trellis-test-fixture.echo@v1::invoke",
         ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const DOWNLOAD: bool = false;
@@ -89,7 +89,7 @@ pub mod operations {
         pub const KEY: &'static str = "echo.Silent";
         pub const SUBJECT: &'static str = "operations.v1.echo.Silent";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis-test-fixture.echo@v1::public",
+            "trellis-test-fixture.echo@v1::invoke",
         ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const UPLOAD: bool = false;
@@ -130,7 +130,7 @@ pub mod operations {
         pub const KEY: &'static str = "echo.UpdateOnly";
         pub const SUBJECT: &'static str = "operations.v1.echo.UpdateOnly";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis-test-fixture.echo@v1::public",
+            "trellis-test-fixture.echo@v1::invoke",
         ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const UPLOAD: bool = false;
@@ -177,7 +177,7 @@ pub mod operations {
         pub const KEY: &'static str = "echo.Upload";
         pub const SUBJECT: &'static str = "operations.v1.echo.Upload";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis-test-fixture.echo@v1::public",
+            "trellis-test-fixture.echo@v1::upload",
         ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const UPLOAD: bool = true;
@@ -219,7 +219,7 @@ pub mod operations {
         pub const KEY: &'static str = "echo.Work";
         pub const SUBJECT: &'static str = "operations.v1.echo.Work";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis-test-fixture.echo@v1::public",
+            "trellis-test-fixture.echo@v1::invoke",
         ];
         pub const ERRORS: &'static [&'static str] = &[];
         pub const UPLOAD: bool = false;
@@ -268,11 +268,11 @@ pub mod events {
         pub const SUBJECT: &'static str = "events.v1.dHJlbGxpcy10ZXN0LWZpeHR1cmUuZWNob0B2MQ.Observed";
         pub const SUBSCRIBE_SUBJECT: &'static str = "events.v1.dHJlbGxpcy10ZXN0LWZpeHR1cmUuZWNob0B2MQ.Observed";
         pub const PUBLISH_CAPABILITIES: &'static [&'static str] = &[
-            "trellis-test-fixture.echo@v1::public",
+            "trellis-test-fixture.echo@v1::publishObserved",
         ];
         pub const DELEGATED_PUBLISH: bool = true;
         pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[
-            "trellis-test-fixture.echo@v1::public",
+            "trellis-test-fixture.echo@v1::invoke",
         ];
     }
     impl trellis_rs::generated::EventDescriptor for Observed {

@@ -8,19 +8,21 @@ use trellis_protocol::{
     decode_pagination_cursor as decode_pagination_cursor_protocol,
     derive_event_subject as derive_event_subject_protocol,
     encode_pagination_cursor as encode_pagination_cursor_protocol,
-    pagination_query_digest as pagination_query_digest_protocol, parse_authorization_context,
+    pagination_query_digest as pagination_query_digest_protocol, parse_session_authority,
     session_proof_request_digest as session_proof_request_digest_protocol,
     session_proof_signing_digest as session_proof_signing_digest_protocol,
-    verify_authorization_context as verify_authorization_context_protocol,
-    verify_authorization_event as verify_authorization_event_protocol,
-    verify_authorization_request as verify_authorization_request_protocol,
-    verify_session_proof as verify_session_proof_protocol, AuthorizationContextPurpose,
-    AuthorizationContextRefreshSessionProofInput, AuthorizationEventProof,
-    AuthorizationEventPublisher, AuthorizationEventVerificationInput, AuthorizationIssuerKey,
-    AuthorizationRequestProof, AuthorizationRequestVerificationInput,
-    AuthorizationVerificationPolicy, NativeBootstrapSessionProofInput, PermissionAtom,
-    ProtocolError, SessionProof, SessionProofInput, SessionProofPolicy, TransportAuthorizationV1,
-    UserAuthBindSessionProofInput, UserAuthRequestSessionProofInput, VerifiedAuthorizationContext,
+    verify_session_authority as verify_session_authority_protocol,
+    verify_session_proof as verify_session_proof_protocol,
+    verify_session_request as verify_session_request_protocol, AuthorityIssuerKey,
+    AuthorizationContextRefreshSessionProofInput, NativeBootstrapSessionProofInput, ProtocolError,
+    SessionAuthorityPurpose, SessionAuthorityVerificationInput, SessionAuthorityVerificationPolicy,
+    SessionProof, SessionProofInput, SessionProofPolicy, SessionRequest, SessionRequestProof,
+    SessionRequestVerificationInput, TransportAuthorizationV1, UserAuthBindSessionProofInput,
+    UserAuthRequestSessionProofInput, VerifiedSessionAuthority,
+};
+use trellis_protocol::{
+    verify_session_event as verify_session_event_protocol, OriginalEventPublication, SessionEvent,
+    SessionEventProof, SessionEventVerificationInput,
 };
 use wasm_bindgen::prelude::*;
 
@@ -225,10 +227,6 @@ pub fn event_subject(api_id: &str, action: &str) -> Result<String, JsError> {
 }
 
 #[derive(Deserialize)]
-#[serde(transparent)]
-struct RequiredNullable<T>(Option<T>);
-
-#[derive(Deserialize)]
 #[serde(
     deny_unknown_fields,
     tag = "purpose",
@@ -419,125 +417,91 @@ pub fn verify_session_proof(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct WireAuthorizationVerificationPolicy {
-    now_unix_seconds: f64,
-    allowed_clock_skew_seconds: u32,
-    maximum_context_lifetime_seconds: u32,
-    maximum_context_bytes: usize,
-    maximum_permissions: usize,
+struct WireSessionAuthorityVerification {
+    issuer: AuthorityIssuerKey,
+    trellis_instance_id: String,
+    audience_nats_account: String,
+    policy: SessionAuthorityVerificationPolicy,
+    purpose: SessionAuthorityPurpose,
+    revocation_cutoff: Option<i64>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct WireAuthorizationRequest {
-    subject: String,
-    reply: RequiredNullable<String>,
-    iat: i64,
-    request_id: String,
-    proof: String,
-    required_permissions: Vec<PermissionAtom>,
-    policy: WireAuthorizationVerificationPolicy,
+struct WireSessionRequest {
+    request: SessionRequest,
+    proof: SessionRequestProof,
+    policy: SessionAuthorityVerificationPolicy,
+    known_revoked: bool,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct WireAuthorizationEvent {
-    subject: String,
-    descriptor_identity: String,
-    event_id: String,
-    event_time: String,
-    proof: String,
-    #[serde(default)]
-    revoked_at: Option<i64>,
-    policy: WireAuthorizationVerificationPolicy,
+struct WireSessionEvent {
+    event: SessionEvent,
+    proof: SessionEventProof,
+    policy: SessionAuthorityVerificationPolicy,
+    original_publication: Option<OriginalEventPublication>,
+    known_revoked: bool,
 }
 
-fn authorization_verification_policy(
-    policy_json: &str,
-) -> Result<AuthorizationVerificationPolicy, JsError> {
-    let wire: WireAuthorizationVerificationPolicy =
-        serde_json::from_str(policy_json).map_err(|error| JsError::new(&error.to_string()))?;
-    let policy = authorization_verification_policy_from_wire(&wire)?;
-    Ok(policy)
-}
-
-fn authorization_verification_policy_from_wire(
-    wire: &WireAuthorizationVerificationPolicy,
-) -> Result<AuthorizationVerificationPolicy, JsError> {
-    let policy = AuthorizationVerificationPolicy::new(
-        safe_integer(wire.now_unix_seconds, "nowUnixSeconds")?,
-        wire.allowed_clock_skew_seconds,
-        wire.maximum_context_lifetime_seconds,
-        wire.maximum_context_bytes,
-        wire.maximum_permissions,
-    )
-    .map_err(|error| JsError::new(&error.to_string()))?;
-    Ok(policy)
-}
-
-/// Verify a live context with its authenticated online issuer entry.
+/// Opaque verified authority retained inside the shared Rust/WASM implementation.
 #[wasm_bindgen]
-pub fn verify_authorization_context(
-    issuer_json: &str,
-    context_json: &str,
-    policy_json: &str,
-) -> Result<String, JsError> {
-    create_authorization_context_handle(issuer_json, context_json, policy_json, false)?.projection()
-}
-
-/// Opaque Rust-owned authorization context retained for repeated proof verification.
-#[wasm_bindgen]
-pub struct VerifiedAuthorizationContextHandle {
-    context: VerifiedAuthorizationContext,
+pub struct VerifiedSessionAuthorityHandle {
+    authority: VerifiedSessionAuthority,
     projection: String,
 }
 
-/// Verify an online-issued context once and retain it inside WASM.
+/// Verify bounded target authority using explicit pinned trust and instance/account.
 #[wasm_bindgen]
-pub fn create_authorization_context_handle(
-    issuer_json: &str,
-    context_json: &str,
-    policy_json: &str,
-    historical: bool,
-) -> Result<VerifiedAuthorizationContextHandle, JsError> {
-    let policy = authorization_verification_policy(policy_json)?;
-    let issuer: AuthorizationIssuerKey =
-        serde_json::from_str(issuer_json).map_err(|error| JsError::new(&error.to_string()))?;
-    let context_value: Value =
-        serde_json::from_str(context_json).map_err(|error| JsError::new(&error.to_string()))?;
-    let signed_context = parse_authorization_context(&context_value)
+pub fn create_session_authority_handle(
+    verification_json: &str,
+    authority_bytes: &[u8],
+) -> Result<VerifiedSessionAuthorityHandle, JsError> {
+    if verification_json.len() > 16_384 {
+        return Err(JsError::new("verification input exceeds byte budget"));
+    }
+    let input: WireSessionAuthorityVerification = serde_json::from_str(verification_json)
         .map_err(|error| JsError::new(&error.to_string()))?;
-    let purpose = if historical {
-        AuthorizationContextPurpose::HistoricalEvent
-    } else {
-        AuthorizationContextPurpose::Live
-    };
-    let context = verify_authorization_context_protocol(&issuer, &signed_context, &policy, purpose)
+    let signed = parse_session_authority(authority_bytes, input.policy.maximum_authority_bytes)
         .map_err(|error| JsError::new(&error.to_string()))?;
+    let authority = verify_session_authority_protocol(SessionAuthorityVerificationInput {
+        issuer: &input.issuer,
+        trellis_instance_id: &input.trellis_instance_id,
+        audience_nats_account: &input.audience_nats_account,
+        authority: &signed,
+        policy: &input.policy,
+        purpose: input.purpose,
+        revocation_cutoff: input.revocation_cutoff,
+    })
+    .map_err(|error| JsError::new(&error.to_string()))?;
     let projection = serde_json::to_string(&json!({
-        "issuer": issuer,
-        "contextDigest": context.context_digest(),
-        "context": context.signed_context(),
+        "authorityDigest": authority.digest(),
+        "authority": authority.signed(),
     }))
     .map_err(|error| JsError::new(&error.to_string()))?;
-    Ok(VerifiedAuthorizationContextHandle {
-        context,
+    Ok(VerifiedSessionAuthorityHandle {
+        authority,
         projection,
     })
 }
 
 #[wasm_bindgen]
-impl VerifiedAuthorizationContextHandle {
-    /// Return the verified context projection used by the TypeScript cache.
+impl VerifiedSessionAuthorityHandle {
+    /// Return immutable authenticated material and its content address.
     pub fn projection(&self) -> Result<String, JsError> {
         Ok(self.projection.clone())
     }
 
-    /// Require the retained context to be eligible at the supplied current time.
-    pub fn assert_current(&self, policy_json: &str) -> Result<(), JsError> {
-        let policy = authorization_verification_policy(policy_json)?;
-        self.context
-            .assert_current(&policy)
+    /// Recheck current time and sticky logical-session revocation after waiting.
+    pub fn assert_current(&self, policy_json: &str, known_revoked: bool) -> Result<(), JsError> {
+        if policy_json.len() > 4096 {
+            return Err(JsError::new("policy exceeds byte budget"));
+        }
+        let policy: SessionAuthorityVerificationPolicy =
+            serde_json::from_str(policy_json).map_err(|error| JsError::new(&error.to_string()))?;
+        self.authority
+            .assert_current(&policy, known_revoked)
             .map_err(|error| JsError::new(&error.to_string()))
     }
 }
@@ -574,20 +538,6 @@ pub fn classify_transport_authorization(
         .classify(&allowed, now_unix_seconds as i64)
         .map_err(|error| JsError::new(&error.to_string()))?;
     serde_json::to_string(&class).map_err(|error| JsError::new(&error.to_string()))
-}
-
-/// Encode a protocol permission target as its canonical wire bytes.
-///
-/// Takes the target as JSON, validates it, and returns the canonical (RFC 8785)
-/// UTF-8 bytes that `AuthPermissionAtom.target` carries in grant authoring, so
-/// callers never reconstruct the encoding themselves.
-#[wasm_bindgen]
-pub fn encode_permission_target(target_json: &str) -> Result<Vec<u8>, JsError> {
-    let target: trellis_protocol::PermissionTarget =
-        serde_json::from_str(target_json).map_err(|error| JsError::new(&error.to_string()))?;
-    target
-        .encode()
-        .map_err(|error| JsError::new(&error.to_string()))
 }
 
 /// Generate one canonical live-session nonce from the operating system RNG.
@@ -889,149 +839,76 @@ fn json_result(value: Value) -> String {
     })
 }
 
-fn request_result(
-    context: &VerifiedAuthorizationContext,
-    input: WireAuthorizationRequest,
-    payload: &[u8],
-    transfer: Option<(&str, &str, &str)>,
-) -> String {
-    let policy = match authorization_verification_policy_from_wire(&input.policy) {
-        Ok(policy) => policy,
-        Err(_) => return input_error_result("/policy"),
-    };
-    let proof = match AuthorizationRequestProof::parse(input.proof) {
-        Ok(proof) => proof,
-        Err(error) => return protocol_error_result(&error),
-    };
-    let request = AuthorizationRequestVerificationInput {
-        context,
-        subject: &input.subject,
-        reply_subject: input.reply.0.as_deref(),
-        raw_payload: payload,
-        iat: input.iat,
-        request_id: &input.request_id,
-        proof: &proof,
-        policy: &policy,
-        required_permissions: &input.required_permissions,
-    };
-    let result = match transfer {
-        Some((provider, consumer, id)) => {
-            trellis_protocol::verify_transfer_authorization_request(request, provider, consumer, id)
-        }
-        None => verify_authorization_request_protocol(request),
-    };
-    let verified = match result {
-        Ok(verified) => verified,
-        Err(error) => return protocol_error_result(&error),
-    };
-    json_result(json!({
-        "ok": true,
-        "contextDigest": verified.context().context_digest(),
-    }))
-}
-
-fn event_publisher_projection(publisher: &AuthorizationEventPublisher) -> Value {
-    json!({
-        "kind": publisher.kind,
-        "deploymentId": publisher.deployment_id,
-        "instanceId": publisher.instance_id,
-        "participantId": publisher.participant_id,
-        "connectionId": publisher.connection_id,
-        "loginSessionId": publisher.login_session_id,
-    })
-}
-
-fn event_result(
-    context: &VerifiedAuthorizationContext,
-    input: WireAuthorizationEvent,
-    payload: &[u8],
-) -> String {
-    let policy = match authorization_verification_policy_from_wire(&input.policy) {
-        Ok(policy) => policy,
-        Err(_) => return input_error_result("/policy"),
-    };
-    let proof = match AuthorizationEventProof::parse(input.proof) {
-        Ok(proof) => proof,
-        Err(error) => return protocol_error_result(&error),
-    };
-    let verified = match verify_authorization_event_protocol(AuthorizationEventVerificationInput {
-        context,
-        subject: &input.subject,
-        descriptor_identity: &input.descriptor_identity,
-        raw_payload: payload,
-        event_id: &input.event_id,
-        event_time: &input.event_time,
-        proof: &proof,
-        policy: &policy,
-        revoked_at: input.revoked_at,
-    }) {
-        Ok(verified) => verified,
-        Err(error) => return protocol_error_result(&error),
-    };
-    json_result(json!({
-        "ok": true,
-        "contextDigest": verified.context().context_digest(),
-        "publisher": event_publisher_projection(verified.publisher()),
-    }))
-}
-
-/// Verify one context-bound authorization request proof from a JSON argument.
+/// Authenticate a target request with the same native transcript implementation.
 ///
-/// The result is always a JSON object. Successful results have `ok: true` and
-/// contain the verified context digest; rejected inputs have `ok: false`
-/// and a stable authorization error code and path.
+/// This authenticates bytes and API stamps; dispatch subsequently requires the
+/// verified catalog's whole-capability/action authorization.
 #[wasm_bindgen]
-pub fn verify_authorization_request(
-    context: &VerifiedAuthorizationContextHandle,
+pub fn verify_session_request(
+    authority: &VerifiedSessionAuthorityHandle,
     request_json: &str,
     payload: &[u8],
 ) -> String {
-    let input: WireAuthorizationRequest = match serde_json::from_str(request_json) {
+    if request_json.len() > 16_384 {
+        return input_error_result("");
+    }
+    let input: WireSessionRequest = match serde_json::from_str(request_json) {
         Ok(input) => input,
         Err(_) => return input_error_result(""),
     };
-    request_result(&context.context, input, payload, None)
+    let result = verify_session_request_protocol(SessionRequestVerificationInput {
+        authority: &authority.authority,
+        request: &input.request,
+        raw_payload: payload,
+        proof: &input.proof,
+        policy: &input.policy,
+        known_revoked: input.known_revoked,
+    });
+    match result {
+        Ok(verified) => json_result(json!({
+            "ok": true,
+            "authorityDigest": verified.authority().digest(),
+            "requestProofDigest": base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, verified.digest()),
+            "caller": verified.caller(),
+        })),
+        Err(error) => protocol_error_result(&error),
+    }
 }
 
-/// Verify a compact Transfer request proof with pinned P/C/T session coordinates.
-/// Returns the same structured authorization result as the ordinary verifier.
-#[wasm_bindgen]
-pub fn verify_transfer_authorization_request(
-    context: &VerifiedAuthorizationContextHandle,
-    request_json: &str,
-    compact_digest: &[u8],
-    provider_id: &str,
-    expected_consumer_connection: &str,
-    transfer_id: &str,
-) -> String {
-    let input: WireAuthorizationRequest = match serde_json::from_str(request_json) {
-        Ok(input) => input,
-        Err(_) => return input_error_result(""),
-    };
-    request_result(
-        &context.context,
-        input,
-        compact_digest,
-        Some((provider_id, expected_consumer_connection, transfer_id)),
-    )
-}
-
-/// Verify one context-bound authorization event proof from a JSON argument.
+/// Authenticate an event using the same native publication-time checks.
 ///
-/// The result is always a JSON object. Successful results have `ok: true` and
-/// contain verified publisher/context metadata; rejected inputs have `ok: false`
-/// and a stable authorization error code and path. Event context chains are
-/// checked at their signed historical boundary before the strict event-time
-/// window is evaluated.
+/// Historical verification requires original metadata from a trusted broker or
+/// preserved projector record, not fields supplied by the event publisher.
 #[wasm_bindgen]
-pub fn verify_authorization_event(
-    context: &VerifiedAuthorizationContextHandle,
+pub fn verify_session_event(
+    authority: &VerifiedSessionAuthorityHandle,
     event_json: &str,
     payload: &[u8],
 ) -> String {
-    let input: WireAuthorizationEvent = match serde_json::from_str(event_json) {
+    if event_json.len() > 16_384 {
+        return input_error_result("");
+    }
+    let input: WireSessionEvent = match serde_json::from_str(event_json) {
         Ok(input) => input,
         Err(_) => return input_error_result(""),
     };
-    event_result(&context.context, input, payload)
+    let result = verify_session_event_protocol(SessionEventVerificationInput {
+        authority: &authority.authority,
+        event: &input.event,
+        raw_payload: payload,
+        proof: &input.proof,
+        policy: &input.policy,
+        original_publication: input.original_publication.as_ref(),
+        known_revoked: input.known_revoked,
+    });
+    match result {
+        Ok(verified) => json_result(json!({
+            "ok": true,
+            "authorityDigest": verified.authority().digest(),
+            "eventProofDigest": base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, verified.digest()),
+            "publisherAuthority": verified.authority().authority(),
+            "originalPublication": verified.original_publication(),
+        })),
+        Err(error) => protocol_error_result(&error),
+    }
 }

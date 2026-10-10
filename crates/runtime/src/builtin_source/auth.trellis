@@ -1,1213 +1,731 @@
 import {
-  Approval,
-  AuthApiSurfaceTarget,
-  AuthApiSurfaceTargetKind,
-  AuthApiSurfaceTargetSurface,
-  AuthPackageEvidence,
-  AuthPackageSourceEvidence,
+  AuthEmpty,
+  AuthErrorDetails,
+  AuthPageRequest,
+  AuthMutationResult,
   AuthCapabilitiesListRequest,
   AuthCapabilitiesListResponse,
-  AuthCapabilitiesListResponseentriesItem,
-  AuthCapabilitiesListResponseentriesItemallowsItem,
-  AuthCapabilitiesListResponseentriesItemallowsItemAction,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget1,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget1Kind,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget1Surface,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget2,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget2Kind,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget3,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget3Kind,
-  AuthCapabilitiesListResponseentriesItemallowsItemtarget3Resource,
-  AuthCapabilityGroupsDeleteRequest,
-  AuthCapabilityGroupsDeleteResponse,
-  AuthCapabilityGroupsGetRequest,
-  AuthCapabilityGroupsGetResponse,
-  AuthCapabilityGroupsGetResponsegroup,
-  AuthCapabilityGroupsListRequest,
-  AuthCapabilityGroupsListResponse,
-  AuthCapabilityGroupsListResponseentriesItem,
-  AuthCapabilityGroupsPutRequest,
-  AuthCapabilityGroupsPutResponse,
-  AuthCapabilityGroupsPutResponsegroup,
-  AuthConnectionsClosedEvent,
-  AuthConnectionsKickRequest,
-  AuthConnectionsKickResponse,
-  AuthConnectionsKickedEvent,
+  AuthRoleGetRequest,
+  AuthRoleGetResponse,
+  AuthRolesListResponse,
+  AuthRolePutRequest,
+  AuthRolePutResponse,
+  AuthRoleDeleteRequest,
+  AuthRoleAssignmentsListRequest,
+  AuthRoleAssignmentsListResponse,
+  AuthRoleAssignRequest,
+  AuthRoleAssignResponse,
+  AuthRoleRevokeRequest,
+  AuthCapabilityGrantsListRequest,
+  AuthCapabilityGrantsListResponse,
+  AuthCapabilityGrantRequest,
+  AuthCapabilityGrantResponse,
+  AuthCapabilityRevokeRequest,
+  AuthPrincipalRequest,
+  AuthEffectiveAccessResponse,
+  AuthApiGetRequest,
+  AuthApiGetResponse,
+  AuthApisListResponse,
+  AuthApiReviewRequest,
+  AuthApiReviewResponse,
+  AuthApiAcceptRequest,
+  AuthApiForceReplaceRequest,
+  AuthApiAcceptResponse,
+  AuthOAuthClientGetRequest,
+  AuthOAuthClientGetResponse,
+  AuthOAuthClientsListResponse,
+  AuthOAuthClientPutRequest,
+  AuthOAuthClientMutationRequest,
+  AuthDelegationsListRequest,
+  AuthDelegationsListResponse,
+  AuthDelegationReviewRequest,
+  AuthDelegationReviewResponse,
+  AuthDelegationRevokeRequest,
+  AuthPlatformAssignmentsListResponse,
+  AuthPlatformAssignRequest,
+  AuthPlatformAssignResponse,
+  AuthPlatformRevokeRequest,
+  AuthPlatformDelegationsListResponse,
+  AuthPlatformDelegationPutRequest,
+  AuthPlatformDelegationPutResponse,
+  AuthPlatformDelegationRevokeRequest,
+  AuthAuthorizationSessionsListRequest,
+  AuthAuthorizationSessionsListResponse,
+  AuthAuthorizationSessionRevokeRequest,
+  AuthAuthorizationSessionRevokeResponse,
   AuthConnectionsListRequest,
   AuthConnectionsListResponse,
-  AuthConnectionsListResponseentriesItem,
-  AuthConnectionsOpenedEvent,
-  AuthDeploymentsApplyRequest,
-  AuthDeploymentsApplyResponse,
-  AuthDeploymentsCreateRequest,
-  AuthDeploymentsCreateRequestKind,
-  AuthDeploymentsCreateResponse,
-  AuthDeploymentsCreateResponsedeployment,
-  AuthDeploymentsCreateResponsedeploymentKind,
-  AuthDeploymentsCreateResponsedeploymentState,
-  AuthDeploymentsDisableRequest,
-  AuthDeploymentsDisableResponse,
-  AuthDeploymentsDisableResponsedeployment,
-  AuthDeploymentsDisableResponsedeploymentKind,
-  AuthDeploymentsDisableResponsedeploymentState,
-  AuthDeploymentsDisableResponsemutation,
-  AuthDeploymentsEnableRequest,
-  AuthDeploymentsEnableResponse,
-  AuthDeploymentsEnableResponsedeployment,
-  AuthDeploymentsEnableResponsedeploymentKind,
-  AuthDeploymentsEnableResponsedeploymentState,
-  AuthDeploymentsEnableResponsemutation,
-  AuthDeploymentsGetRequest,
-  AuthDeploymentsGetResponse,
-  AuthDeploymentsListRequest,
-  AuthDeploymentsListRequestKind,
-  AuthDeploymentsListRequestState,
-  AuthDeploymentsListResponse,
-  AuthDeploymentsListResponseentriesItem,
-  AuthDeploymentsListResponseentriesItemKind,
-  AuthDeploymentsListResponseentriesItemState,
-  AuthDeploymentsRemoveRequest,
-  AuthDeploymentsRemoveResponse,
-  AuthDeploymentsRemoveResponsedeployment,
-  AuthDeploymentsRemoveResponsedeploymentKind,
-  AuthDeploymentsRemoveResponsedeploymentState,
-  AuthDeploymentsRemoveResponsemutation,
-  AuthDeviceUserAuthoritiesApprovedEvent,
-  AuthDeviceUserAuthoritiesListRequest,
-  AuthDeviceUserAuthoritiesListResponse,
-  AuthDeviceUserAuthoritiesListResponseentriesItem,
-  AuthDeviceUserAuthoritiesListResponseentriesItemdevice,
-  AuthDeviceUserAuthoritiesListResponseentriesItemdeviceAdministrativeApproval,
-  AuthDeviceUserAuthoritiesListResponseentriesItemdeviceDelegationState,
-  AuthDeviceUserAuthoritiesListResponseentriesItemdeviceState,
-  AuthDeviceUserAuthoritiesRequestedEvent,
-  AuthDeviceUserAuthoritiesResolveProgress,
-  AuthDeviceUserAuthoritiesResolveProgressState,
-  AuthDeviceUserAuthoritiesResolveRequest,
-  AuthDeviceUserAuthoritiesResolveResponse,
-  AuthDeviceUserAuthoritiesResolveResponsedevice,
-  AuthDeviceUserAuthoritiesResolveResponsedeviceAdministrativeApproval,
-  AuthDeviceUserAuthoritiesResolveResponsedeviceDelegationState,
-  AuthDeviceUserAuthoritiesResolveResponsedeviceState,
-  AuthDeviceUserAuthoritiesResolveResponsereview,
-  AuthDeviceUserAuthoritiesResolveResponsereviewState,
-  ConsentRequest,
-  AuthDeviceUserAuthoritiesResolvedEvent,
-  AuthDeviceUserAuthoritiesReviewRequestedEvent,
-  AuthDeviceUserAuthoritiesReviewsDecideRequest,
-  AuthDeviceUserAuthoritiesReviewsDecideRequestDecision,
-  AuthDeviceUserAuthoritiesReviewsDecideResponse,
-  AuthDeviceUserAuthoritiesReviewsDecideResponsereview,
-  AuthDeviceUserAuthoritiesReviewsDecideResponsereviewState,
-  AuthDeviceUserAuthoritiesReviewsListRequest,
-  AuthDeviceUserAuthoritiesReviewsListRequestState,
-  AuthDeviceUserAuthoritiesReviewsListResponse,
-  AuthDeviceUserAuthoritiesReviewsListResponseentriesItem,
-  AuthDeviceUserAuthoritiesReviewsListResponseentriesItemState,
-  AuthDeviceUserAuthoritiesRevokeRequest,
-  AuthDeviceUserAuthoritiesRevokeResponse,
-  AuthDeviceUserAuthoritiesRevokeResponsedevice,
-  AuthDeviceUserAuthoritiesRevokeResponsedeviceAdministrativeApproval,
-  AuthDeviceUserAuthoritiesRevokeResponsedeviceDelegationState,
-  AuthDeviceUserAuthoritiesRevokeResponsedeviceState,
-  AuthDevicesDisableRequest,
-  AuthDevicesDisableResponse,
-  AuthDevicesDisableResponsedevice,
-  AuthDevicesDisableResponsedeviceAdministrativeApproval,
-  AuthDevicesDisableResponsedeviceDelegationState,
-  AuthDevicesDisableResponsedeviceState,
-  AuthDevicesDisableResponsemutation,
-  AuthDevicesEnableRequest,
-  AuthDevicesEnableResponse,
-  AuthDevicesEnableResponsedevice,
-  AuthDevicesEnableResponsedeviceAdministrativeApproval,
-  AuthDevicesEnableResponsedeviceDelegationState,
-  AuthDevicesEnableResponsedeviceState,
-  AuthDevicesEnableResponsemutation,
-  AuthDevicesListRequest,
-  AuthDevicesListRequestState,
-  AuthDevicesListResponse,
-  AuthDevicesListResponseentriesItem,
-  AuthDevicesListResponseentriesItemAdministrativeApproval,
-  AuthDevicesListResponseentriesItemDelegationState,
-  AuthDevicesListResponseentriesItemState,
-  AuthDevicesProvisionRequest,
-  AuthDevicesProvisionResponse,
-  AuthDevicesProvisionResponsedevice,
-  AuthDevicesProvisionResponsedeviceAdministrativeApproval,
-  AuthDevicesProvisionResponsedeviceDelegationState,
-  AuthDevicesProvisionResponsedeviceState,
-  AuthDevicesRemoveRequest,
-  AuthDevicesRemoveResponse,
-  AuthDevicesRemoveResponsedevice,
-  AuthDevicesRemoveResponsedeviceAdministrativeApproval,
-  AuthDevicesRemoveResponsedeviceDelegationState,
-  AuthDevicesRemoveResponsedeviceState,
-  AuthDevicesRemoveResponsemutation,
-  AuthErrorDetails,
-  AuthGrantBinding,
-  AuthGrantBindingOwnerKind,
-  AuthGrantBindingState,
-  AuthGrantSet,
-  AuthGrantsChangedEvent,
-  AuthGrantsGetRequest,
-  AuthGrantsGetRequestOwnerKind,
-  AuthGrantsGetResponse,
-  AuthGrantsListRequest,
-  AuthGrantsListRequestOwnerKind,
-  AuthGrantsListRequestState,
-  AuthGrantsListResponse,
-  AuthGrantsMutationResponse,
-  AuthGrantsRevokeRequest,
-  AuthGrantsRevokeRequestOwnerKind,
-  AuthGrantsSetRequest,
-  AuthGrantsSetRequestOwnerKind,
-  AuthIssuersRevokeRequest,
-  AuthIssuersRevokeResponse,
-  AuthIssuersRevokeResponseState,
-  AuthIssuersRevokedEvent,
-  AuthLoginSession,
-  AuthLoginSessionParticipantKind,
-  AuthLoginSessionState,
-  AuthOperationSignalTarget,
-  AuthOperationSignalTargetKind,
-  AuthOptionalBundle,
-  AuthParticipantResourceTarget,
-  AuthParticipantResourceTargetKind,
-  AuthParticipantResourceTargetResource,
-  AuthParticipantsGetRequest,
-  AuthParticipantsGetResponse,
-  AuthParticipantsListRequest,
-  AuthParticipantsListResponse,
-  AuthParticipantsInstallRequest,
-  AuthParticipantsInstallResponse,
-  AuthPermissionAtom,
-  AuthPermissionAtomAction,
-  AuthPortalsGetRequest,
-  AuthPortalsGetResponse,
-  AuthPortalsGetResponseportal,
-  AuthPortalsGetResponseportalloginSettings,
-  AuthPortalsGetResponseroutesItem,
-  AuthPortalsGrantOverridesListRequest,
-  AuthPortalsGrantOverridesListResponse,
-  AuthPortalsGrantOverridesListResponseentriesItem,
-  AuthPortalsGrantOverridesListResponseentriesItemroleMappingsItem,
-  AuthPortalsGrantOverridesPutRequest,
-  AuthPortalsGrantOverridesPutRequestroleMappingsItem,
-  AuthPortalsGrantOverridesPutResponse,
-  AuthPortalsGrantOverridesPutResponsepolicy,
-  AuthPortalsGrantOverridesPutResponsepolicyroleMappingsItem,
-  AuthPortalsGrantOverridesRemoveRequest,
-  AuthPortalsGrantOverridesRemoveResponse,
-  AuthPortalsGrantOverridesRemoveResponseremoved,
-  AuthPortalsGrantOverridesRemoveResponseremovedroleMappingsItem,
-  AuthPortalsListRequest,
-  AuthPortalsListResponse,
-  AuthPortalsListResponseentriesItem,
-  AuthPortalsListResponseentriesItemloginSettings,
-  AuthPortalsLoginSettingsGetRequest,
-  AuthPortalsLoginSettingsGetResponse,
-  AuthPortalsLoginSettingsGetResponsesettings,
-  AuthPortalsLoginSettingsUpdateRequest,
-  AuthPortalsLoginSettingsUpdateRequestsettings,
-  AuthPortalsLoginSettingsUpdateResponse,
-  AuthPortalsLoginSettingsUpdateResponsesettings,
-  AuthPortalsPutRequest,
-  AuthPortalsPutRequestloginSettings,
-  AuthPortalsPutResponse,
-  AuthPortalsPutResponseportal,
-  AuthPortalsPutResponseportalloginSettings,
-  AuthPortalsRemoveRequest,
-  AuthPortalsRemoveResponse,
-  AuthPortalsRoutesPutRequest,
-  AuthPortalsRoutesPutResponse,
-  AuthPortalsRoutesPutResponseroute,
-  AuthPortalsRoutesRemoveRequest,
-  AuthPortalsRoutesRemoveResponse,
-  AuthResourceBinding,
-  AuthResourceBindingState,
-  AuthResourceEventConsumerProvider,
-  AuthResourceEventConsumerProviderKind,
-  AuthResourceJobQueueProvider,
-  AuthResourceJobQueueProviderKind,
-  AuthResourceKvProvider,
-  AuthResourceKvProviderKind,
-  AuthResourceStateProvider,
-  AuthResourceStateProviderKind,
-  AuthResourceStoreProvider,
-  AuthResourceStoreProviderKind,
-  AuthRuntimeConnection,
-  AuthRuntimeConnectionParticipantKind,
-  AuthRuntimeConnectionPrincipalKind,
-  AuthServiceInstancesDisableRequest,
-  AuthServiceInstancesDisableResponse,
-  AuthServiceInstancesDisableResponseinstance,
-  AuthServiceInstancesDisableResponseinstanceState,
-  AuthServiceInstancesDisableResponsemutation,
-  AuthServiceInstancesEnableRequest,
-  AuthServiceInstancesEnableResponse,
-  AuthServiceInstancesEnableResponseinstance,
-  AuthServiceInstancesEnableResponseinstanceState,
-  AuthServiceInstancesEnableResponsemutation,
-  AuthServiceInstancesListRequest,
-  AuthServiceInstancesListRequestState,
-  AuthServiceInstancesListResponse,
-  AuthServiceInstancesListResponseentriesItem,
-  AuthServiceInstancesListResponseentriesItemState,
-  AuthServiceInstancesProvisionRequest,
-  AuthServiceInstancesProvisionResponse,
-  AuthServiceInstancesProvisionResponseinstance,
-  AuthServiceInstancesProvisionResponseinstanceState,
-  AuthServiceInstancesRemoveRequest,
-  AuthServiceInstancesRemoveResponse,
-  AuthServiceInstancesRemoveResponseinstance,
-  AuthServiceInstancesRemoveResponseinstanceState,
-  AuthServiceInstancesRemoveResponsemutation,
-  AuthSessionsListRequest,
-  AuthSessionsListRequestState,
+  AuthConnectionsKickRequest,
+  AuthConnectionsKickResponse,
+  AuthAuthorityRenewRequest,
+  AuthAuthorityRenewResponse,
+  AuthAdmissionRenewRequest,
+  AuthAdmissionRenewResponse,
+  AuthAuthorityResolveRequest,
+  AuthAuthorityResolveResponse,
+  AuthAuthorityStatusRequest,
+  AuthAuthorityStatusResponse,
+  AuthIssuerChainRequest,
+  AuthIssuerChainResponse,
+  AuthIssuerRotateRequest,
+  AuthIssuerRotateResponse,
+  AuthIssuerRevokeRequest,
+  AuthIssuerRevokeResponse,
   AuthSessionsListResponse,
-  AuthSessionsLogoutRequest,
-  AuthSessionsLogoutResponse,
-  AuthSessionsMeRequest,
   AuthSessionsMeResponse,
-  AuthSessionsRevokeRequest,
-  AuthSessionsRevokeResponse,
-  AuthSessionsRevokedEvent,
-  AuthUserIdentitiesListRequest,
-  AuthUserIdentitiesListResponse,
-  AuthUserIdentitiesListResponseentriesItem,
-  AuthUserIdentitiesUnlinkRequest,
-  AuthUserIdentitiesUnlinkResponse,
-  AuthUsersCreateRequest,
-  AuthUsersCreateResponse,
-  AuthUsersCreateResponseuser,
-  AuthUsersCreateResponseuserState,
-  AuthUsersGetRequest,
-  AuthUsersGetResponse,
-  AuthUsersGetResponseuser,
-  AuthUsersGetResponseuserState,
-  AuthUsersIdentityLinkCreateRequest,
-  AuthUsersIdentityLinkCreateResponse,
-  AuthUsersIdentityLinkCreateResponseflow,
-  AuthUsersIdentityLinkCreateResponseflowKind,
-  AuthUsersListRequest,
-  AuthUsersListRequestState,
+  AuthSessionsLogoutResponse,
+  AuthLoginRevokeRequest,
+  AuthUserGetRequest,
+  AuthUserGetResponse,
   AuthUsersListResponse,
-  AuthUsersListResponseentriesItem,
-  AuthUsersListResponseentriesItemState,
-  AuthUsersPasswordChangeRequest,
-  AuthUsersPasswordChangeResponse,
-  AuthUsersPasswordResetCreateRequest,
-  AuthUsersPasswordResetCreateResponse,
-  AuthUsersPasswordResetCreateResponseflow,
-  AuthUsersPasswordResetCreateResponseflowKind,
-  AuthUsersResolveRequest,
-  AuthUsersResolveRequestselector1,
-  AuthUsersResolveRequestselector1Kind,
-  AuthUsersResolveRequestselector2,
-  AuthUsersResolveRequestselector2Kind,
-  AuthUsersResolveResponse,
-  AuthUsersResolveResponseuser1,
-  AuthUsersResolveResponseuser1State,
-  AuthUsersUpdateRequest,
-  AuthUsersUpdateRequestState,
-  AuthUsersUpdateResponse,
-  AuthUsersUpdateResponseuser,
-  AuthUsersUpdateResponseuserState,
-  Empty,
-  EventConsumerStatusRow,
-  EventConsumerStatusRowManagedBy,
-  EventConsumerStatusRowStatus,
-  EventsConsumersInspectRequest,
-  EventsConsumersInspectResponse,
-  EventsConsumersQueryRequest,
-  EventsConsumersQueryRequestStatus,
-  EventsConsumersQueryResponse,
-  EventsInspectRequest,
-  EventsInspectResponse,
-  EventsMetricsRequest,
-  EventsMetricsResponse,
-  EventsMetricsResponsebucketsItem,
-  EventsMetricsResponsebucketsItembyResolution,
-  EventsMetricsResponsebucketsItembyVerificationStatus,
-  EventsMetricsResponsesummary,
-  EventsMetricsResponsesummarybyResolution,
-  EventsMetricsResponsesummarybyVerificationStatus,
-  EventsMetricsResponsesummaryeventTypesItem,
-  EventsQueryRequest,
-  EventsQueryRequestResolution,
-  EventsQueryRequestVerificationStatus,
-  EventsQueryRequestexcludeEventTypesItem,
-  EventsQueryRequestincludeEventTypesItem,
-  EventsQueryRequestsort,
-  EventsQueryResponse,
-  EventsRow,
-  EventsRowPublisherKind,
-  EventsRowResolution,
-  EventsRowVerificationStatus,
-  EventsWatchFrame,
-  EventsWatchRequest,
-  EventsNotFoundErrorData,
-  EventsNotFoundErrorDataType,
-  EventsNotFoundErrorDatacontext,
-  HealthHeartbeatSample,
-  HealthHeartbeatSampleReportedStatus,
-  HealthHeartbeatSamplechecksItem,
-  HealthHeartbeatSamplechecksItemStatus,
-  HealthHeartbeatSamplechecksIteminfo,
-  HealthHeartbeatSampleparticipant,
-  HealthHeartbeatSampleparticipantKind,
-  HealthHeartbeatSampleparticipantRuntime,
-  HealthHeartbeatSampleparticipantinfo,
-  HealthHeartbeatSamplesample,
-  HealthInspectRequest,
-  HealthInspectRequestParticipantKind,
-  HealthInspectResponse,
-  HealthInspectResponsehistoryItem,
-  HealthInspectResponsehistoryItemEffectiveStatus,
-  HealthInspectResponsehistoryItemReportedStatus,
-  HealthInspectResponsehistoryItemchecksItem,
-  HealthInspectResponsehistoryItemchecksItemStatus,
-  HealthInspectResponseinstancesItem,
-  HealthInspectResponseinstancesItemEffectiveStatus,
-  HealthInspectResponseinstancesItemReportedStatus,
-  HealthInspectResponseinstancesItemlatestSample,
-  HealthInspectResponseinstancesItemlatestSampleReportedStatus,
-  HealthInspectResponseinstancesItemlatestSamplechecksItem,
-  HealthInspectResponseinstancesItemlatestSamplechecksItemStatus,
-  HealthInspectResponseinstancesItemlatestSamplechecksIteminfo,
-  HealthInspectResponseinstancesItemlatestSampleparticipant,
-  HealthInspectResponseinstancesItemlatestSampleparticipantKind,
-  HealthInspectResponseinstancesItemlatestSampleparticipantRuntime,
-  HealthInspectResponseinstancesItemlatestSampleparticipantinfo,
-  HealthInspectResponseinstancesItemlatestSamplesample,
-  HealthInspectResponseparticipant,
-  HealthInspectResponseparticipantEffectiveStatus,
-  HealthInspectResponseparticipantParticipantKind,
-  HealthInspectResponseprojection,
-  HealthMetricsRequest,
-  HealthMetricsRequestParticipantKind,
-  HealthMetricsResponse,
-  HealthMetricsResponseprojection,
-  HealthMetricsResponseseriesItem,
-  HealthMetricsResponseseriesItemParticipantKind,
-  HealthMetricsResponseseriesItembucketsItem,
-  HealthMetricsResponseseriesItembucketsItemchecksItem,
-  HealthMetricsResponsesummary,
-  HealthNotFoundErrorData,
-  HealthNotFoundErrorDataType,
-  HealthNotFoundErrorDatacontext,
-  HealthProjectionDiagnostics,
-  HealthQueryRequest,
-  HealthQueryRequestParticipantKinds,
-  HealthQueryRequestStatuses,
-  HealthQueryResponse,
-  HealthQueryResponseentriesItem,
-  HealthQueryResponseentriesItemEffectiveStatus,
-  HealthQueryResponseentriesItemParticipantKind,
-  HealthQueryResponseprojection,
-  HealthStatusChangedEvent,
-  HealthStatusChangedEventPreviousStatus,
-  HealthStatusChangedEventReportedStatus,
-  HealthStatusChangedEventStatus,
-  HealthStatusChangedEventheader,
-  HealthStatusChangedEventparticipant,
-  HealthStatusChangedEventparticipantKind,
-  HealthWatchFrame,
-  HealthWatchFrameValue1,
-  HealthWatchFrameValue1Type,
-  HealthWatchFrameValue2,
-  HealthWatchFrameValue2Type,
-  HealthWatchFrameValue2changesItem,
-  HealthWatchFrameValue2changesItemParticipantKind,
-  HealthWatchRequest,
-  HealthWatchRequestParticipantKinds,
-  InstalledParticipantDetail,
-  InstalledParticipantDetailParticipantKind,
-  InstalledParticipantSummary,
-  InstalledParticipantSummaryParticipantKind,
-  Job,
-  JobConcurrencyMetadata,
-  JobContext,
-  JobErrorDetail,
-  JobErrorDetailcausesItem,
-  JobErrorDetailworker,
-  JobLineage,
-  JobLogEntry,
-  JobLogEntryLevel,
-  JobProgress,
-  JobQueuePolicyMetadata,
-  JobState,
-  JobTimelineEvent,
-  JobTimelineEventPreviousState,
-  JobTimelineEventState,
-  JobTimelineEventerrorDetail,
-  JobTimelineEventerrorDetailcausesItem,
-  JobTimelineEventerrorDetailworker,
-  JobTimelineEventlogsItem,
-  JobTimelineEventlogsItemLevel,
-  JobTimelineEventprogress,
-  JobTimelineEventwaitEdge,
-  JobTimelineEventwaitEdgetarget,
-  JobTimelineEventwaitEdgetargetKind,
-  JobTrigger,
-  JobTriggerKind,
-  JobWaitEdge,
-  JobWaitEdgetarget,
-  JobWaitEdgetargetKind,
-  JobWaitTarget,
-  JobWaitTargetKind,
-  Jobconcurrency,
-  Jobcontext,
-  JoberrorDetail,
-  JoberrorDetailcausesItem,
-  JoberrorDetailworker,
-  Joblineage,
-  JoblogsItem,
-  JoblogsItemLevel,
-  Jobprogress,
-  JobqueuePolicy,
-  JobsCancelRequest,
-  JobsCancelResponse,
-  JobsCancelResponsejob,
-  JobsCancelResponsejobState,
-  JobsCancelResponsejobconcurrency,
-  JobsCancelResponsejobcontext,
-  JobsCancelResponsejoberrorDetail,
-  JobsCancelResponsejoberrorDetailcausesItem,
-  JobsCancelResponsejoberrorDetailworker,
-  JobsCancelResponsejoblineage,
-  JobsCancelResponsejoblogsItem,
-  JobsCancelResponsejoblogsItemLevel,
-  JobsCancelResponsejobprogress,
-  JobsCancelResponsejobqueuePolicy,
-  JobsCancelResponsejobtrigger,
-  JobsCancelResponsejobtriggerKind,
-  JobsCancelResponsejobwaitingOnItem,
-  JobsCancelResponsejobwaitingOnItemtarget,
-  JobsCancelResponsejobwaitingOnItemtargetKind,
-  JobsDismissDLQRequest,
-  JobsDismissDLQResponse,
-  JobsDismissDLQResponsejob,
-  JobsDismissDLQResponsejobState,
-  JobsDismissDLQResponsejobconcurrency,
-  JobsDismissDLQResponsejobcontext,
-  JobsDismissDLQResponsejoberrorDetail,
-  JobsDismissDLQResponsejoberrorDetailcausesItem,
-  JobsDismissDLQResponsejoberrorDetailworker,
-  JobsDismissDLQResponsejoblineage,
-  JobsDismissDLQResponsejoblogsItem,
-  JobsDismissDLQResponsejoblogsItemLevel,
-  JobsDismissDLQResponsejobprogress,
-  JobsDismissDLQResponsejobqueuePolicy,
-  JobsDismissDLQResponsejobtrigger,
-  JobsDismissDLQResponsejobtriggerKind,
-  JobsDismissDLQResponsejobwaitingOnItem,
-  JobsDismissDLQResponsejobwaitingOnItemtarget,
-  JobsDismissDLQResponsejobwaitingOnItemtargetKind,
-  JobsGetKeyRequest,
-  JobsGetKeyResponse,
-  JobsGetKeyResponseactiveItem,
-  JobsGetKeyResponsequeuedItem,
-  JobsInspectRequest,
-  JobsInspectResponse,
-  JobsInspectResponseattemptsItem,
-  JobsInspectResponseattemptsItemState,
-  JobsInspectResponseattemptsItemerror,
-  JobsInspectResponseattemptsItemerrorcausesItem,
-  JobsInspectResponseattemptsItemerrorworker,
-  JobsInspectResponseerrorsItem,
-  JobsInspectResponseerrorsItemcausesItem,
-  JobsInspectResponseerrorsItemworker,
-  JobsInspectResponsejob,
-  JobsInspectResponsejobState,
-  JobsInspectResponsejobconcurrency,
-  JobsInspectResponsejobcontext,
-  JobsInspectResponsejoberrorDetail,
-  JobsInspectResponsejoberrorDetailcausesItem,
-  JobsInspectResponsejoberrorDetailworker,
-  JobsInspectResponsejoblineage,
-  JobsInspectResponsejoblogsItem,
-  JobsInspectResponsejoblogsItemLevel,
-  JobsInspectResponsejobprogress,
-  JobsInspectResponsejobqueuePolicy,
-  JobsInspectResponsejobtrigger,
-  JobsInspectResponsejobtriggerKind,
-  JobsInspectResponsejobwaitingOnItem,
-  JobsInspectResponsejobwaitingOnItemtarget,
-  JobsInspectResponsejobwaitingOnItemtargetKind,
-  JobsInspectResponselineage,
-  JobsInspectResponserelatedItem,
-  JobsInspectResponserelatedItemMatchedBy,
-  JobsInspectResponserelatedItemState,
-  JobsInspectResponserelatedItemcontext,
-  JobsInspectResponserelatedItemlineage,
-  JobsInspectResponserelatedItemprogress,
-  JobsInspectResponserelatedItemtrigger,
-  JobsInspectResponserelatedItemtriggerKind,
-  JobsInspectResponserelatedItemwaitingOnItem,
-  JobsInspectResponserelatedItemwaitingOnItemtarget,
-  JobsInspectResponserelatedItemwaitingOnItemtargetKind,
-  JobsInspectResponsetimelineItem,
-  JobsInspectResponsetimelineItemPreviousState,
-  JobsInspectResponsetimelineItemState,
-  JobsInspectResponsetimelineItemerrorDetail,
-  JobsInspectResponsetimelineItemerrorDetailcausesItem,
-  JobsInspectResponsetimelineItemerrorDetailworker,
-  JobsInspectResponsetimelineItemlogsItem,
-  JobsInspectResponsetimelineItemlogsItemLevel,
-  JobsInspectResponsetimelineItemprogress,
-  JobsInspectResponsetimelineItemwaitEdge,
-  JobsInspectResponsetimelineItemwaitEdgetarget,
-  JobsInspectResponsetimelineItemwaitEdgetargetKind,
-  JobsInspectResponsetrigger,
-  JobsInspectResponsetriggerKind,
-  JobsListDLQRequest,
-  JobsListDLQResponse,
-  JobsListDLQResponseentriesItem,
-  JobsListDLQResponseentriesItemState,
-  JobsListDLQResponseentriesItemconcurrency,
-  JobsListDLQResponseentriesItemcontext,
-  JobsListDLQResponseentriesItemerrorDetail,
-  JobsListDLQResponseentriesItemerrorDetailcausesItem,
-  JobsListDLQResponseentriesItemerrorDetailworker,
-  JobsListDLQResponseentriesItemlineage,
-  JobsListDLQResponseentriesItemlogsItem,
-  JobsListDLQResponseentriesItemlogsItemLevel,
-  JobsListDLQResponseentriesItemprogress,
-  JobsListDLQResponseentriesItemqueuePolicy,
-  JobsListDLQResponseentriesItemtrigger,
-  JobsListDLQResponseentriesItemtriggerKind,
-  JobsListDLQResponseentriesItemwaitingOnItem,
-  JobsListDLQResponseentriesItemwaitingOnItemtarget,
-  JobsListDLQResponseentriesItemwaitingOnItemtargetKind,
-  JobsListServicesRequest,
-  JobsListServicesResponse,
-  JobsListServicesResponseentriesItem,
-  JobsListServicesResponseentriesItemworkersItem,
-  JobsMetricsBucket,
-  JobsMetricsBucketGroup,
-  JobsMetricsBucketGroupqueueWait,
-  JobsMetricsBucketGroupruntime,
-  JobsMetricsBucketgroupsItem,
-  JobsMetricsBucketgroupsItemqueueWait,
-  JobsMetricsBucketgroupsItemruntime,
-  JobsMetricsLatency,
-  JobsMetricsRequest,
-  JobsMetricsRequestGroupBy,
-  JobsMetricsRequestState,
-  JobsMetricsResponse,
-  JobsMetricsResponsebucketsItem,
-  JobsMetricsResponsebucketsItemgroupsItem,
-  JobsMetricsResponsebucketsItemgroupsItemqueueWait,
-  JobsMetricsResponsebucketsItemgroupsItemruntime,
-  JobsMetricsResponsesummaryItem,
-  JobsMetricsResponsesummaryItemqueueWait,
-  JobsMetricsResponsesummaryItemruntime,
-  JobsMetricsSummaryGroup,
-  JobsMetricsSummaryGroupqueueWait,
-  JobsMetricsSummaryGroupruntime,
-  JobsNotFoundErrorData,
-  JobsNotFoundErrorDataType,
-  JobsNotFoundErrorDatacontext,
-  JobsQueryRequest,
-  JobsQueryRequestGroupBy,
-  JobsQueryRequestRuntimeBand,
-  JobsQueryRequestState,
-  JobsQueryRequestsort,
-  JobsQueryRequestsortDirection,
-  JobsQueryRequestsortField,
-  JobsQueryResponse,
-  JobsQueryResponseentriesItem,
-  JobsQueryResponseentriesItemState,
-  JobsQueryResponseentriesItemcontext,
-  JobsQueryResponseentriesItemlineage,
-  JobsQueryResponseentriesItemprogress,
-  JobsQueryResponseentriesItemtrigger,
-  JobsQueryResponseentriesItemtriggerKind,
-  JobsQueryResponseentriesItemwaitingOnItem,
-  JobsQueryResponseentriesItemwaitingOnItemtarget,
-  JobsQueryResponseentriesItemwaitingOnItemtargetKind,
-  JobsQueryResponsegroupsItem,
-  JobsQueryResponsegroupsItemState,
-  JobsQueryResponsestats,
-  JobsReplayDLQRequest,
-  JobsReplayDLQResponse,
-  JobsReplayDLQResponsejob,
-  JobsReplayDLQResponsejobState,
-  JobsReplayDLQResponsejobconcurrency,
-  JobsReplayDLQResponsejobcontext,
-  JobsReplayDLQResponsejoberrorDetail,
-  JobsReplayDLQResponsejoberrorDetailcausesItem,
-  JobsReplayDLQResponsejoberrorDetailworker,
-  JobsReplayDLQResponsejoblineage,
-  JobsReplayDLQResponsejoblogsItem,
-  JobsReplayDLQResponsejoblogsItemLevel,
-  JobsReplayDLQResponsejobprogress,
-  JobsReplayDLQResponsejobqueuePolicy,
-  JobsReplayDLQResponsejobtrigger,
-  JobsReplayDLQResponsejobtriggerKind,
-  JobsReplayDLQResponsejobwaitingOnItem,
-  JobsReplayDLQResponsejobwaitingOnItemtarget,
-  JobsReplayDLQResponsejobwaitingOnItemtargetKind,
-  JobsRetryRequest,
-  JobsRetryResponse,
-  JobsRetryResponsejob,
-  JobsRetryResponsejobState,
-  JobsRetryResponsejobconcurrency,
-  JobsRetryResponsejobcontext,
-  JobsRetryResponsejoberrorDetail,
-  JobsRetryResponsejoberrorDetailcausesItem,
-  JobsRetryResponsejoberrorDetailworker,
-  JobsRetryResponsejoblineage,
-  JobsRetryResponsejoblogsItem,
-  JobsRetryResponsejoblogsItemLevel,
-  JobsRetryResponsejobprogress,
-  JobsRetryResponsejobqueuePolicy,
-  JobsRetryResponsejobtrigger,
-  JobsRetryResponsejobtriggerKind,
-  JobsRetryResponsejobwaitingOnItem,
-  JobsRetryResponsejobwaitingOnItemtarget,
-  JobsRetryResponsejobwaitingOnItemtargetKind,
-  JobsWatchFrame,
-  JobsWatchFrameValue1,
-  JobsWatchFrameValue1Kind,
-  JobsWatchFrameValue2,
-  JobsWatchFrameValue2Kind,
-  JobsWatchFrameValue2State,
-  JobsWatchFrameValue3,
-  JobsWatchFrameValue3Kind,
-  JobsWatchFrameValue4,
-  JobsWatchFrameValue4Kind,
-  JobsWatchRequest,
-  JobsWatchRequestquery,
-  JobsWatchRequestqueryGroupBy,
-  JobsWatchRequestqueryRuntimeBand,
-  JobsWatchRequestqueryState,
-  JobsWatchRequestquerysort,
-  JobsWatchRequestquerysortDirection,
-  JobsWatchRequestquerysortField,
-  JobsWorkbenchGroup,
-  JobsWorkbenchGroupState,
-  JobsWorkbenchJobRow,
-  JobsWorkbenchJobRowState,
-  JobsWorkbenchJobRowcontext,
-  JobsWorkbenchJobRowlineage,
-  JobsWorkbenchJobRowprogress,
-  JobsWorkbenchJobRowtrigger,
-  JobsWorkbenchJobRowtriggerKind,
-  JobsWorkbenchJobRowwaitingOnItem,
-  JobsWorkbenchJobRowwaitingOnItemtarget,
-  JobsWorkbenchJobRowwaitingOnItemtargetKind,
-  JobsWorkbenchStats,
-  Jobtrigger,
-  JobtriggerKind,
-  JobwaitingOnItem,
-  JobwaitingOnItemtarget,
-  JobwaitingOnItemtargetKind,
-  PortalGrantProvenance,
-  TrellisSurfaceStatusRequest,
-  TrellisSurfaceStatusRequestAction,
-  TrellisSurfaceStatusRequestKind,
-  TrellisSurfaceStatusResponse,
-  TrellisSurfaceStatusResponsestatus1,
-  TrellisSurfaceStatusResponsestatus1Runtime,
-  TrellisSurfaceStatusResponsestatus1State,
-  TrellisSurfaceStatusResponsestatus2,
-  TrellisSurfaceStatusResponsestatus2Reason,
-  TrellisSurfaceStatusResponsestatus2State,
-  TrellisSurfaceStatusResponsestatus3,
-  TrellisSurfaceStatusResponsestatus3State,
-  TrellisSurfaceStatusResponsestatus4,
-  TrellisSurfaceStatusResponsestatus4State,
-  TrellisSurfaceStatusResponsestatus5,
-  TrellisSurfaceStatusResponsestatus5State,
-} from types;
+  AuthUserCreateRequest,
+  AuthUserUpdateRequest,
+  AuthPasswordChangeRequest,
+  AuthPasswordResetCreateRequest,
+  AuthPasswordResetCreateResponse,
+  AuthUserIdentitiesListResponse,
+  AuthUserIdentityUnlinkRequest,
+  AuthIdentityLinkCreateRequest,
+  AuthIdentityLinkCreateResponse,
+  AuthOIDCProviderGetRequest,
+  AuthOIDCProviderGetResponse,
+  AuthOIDCProvidersListResponse,
+  AuthOIDCProviderPutRequest,
+  AuthOIDCProviderMutationRequest,
+  AuthOIDCRoleMappingsListRequest,
+  AuthOIDCRoleMappingsListResponse,
+  AuthOIDCRoleMappingPutRequest,
+  AuthOIDCRoleMappingPutResponse,
+  AuthOIDCRoleMappingDeleteRequest,
+  AuthDeploymentCreateRequest,
+  AuthDeploymentGetRequest,
+  AuthDeploymentGetResponse,
+  AuthDeploymentsListResponse,
+  AuthDeploymentApplyRequest,
+  AuthDeploymentMutationRequest,
+  AuthDeploymentMutationResponse,
+  AuthInstancesListRequest,
+  AuthInstancesListResponse,
+  AuthInstanceProvisionRequest,
+  AuthInstanceProvisionResponse,
+  AuthInstanceMutationRequest,
+  AuthInstanceMutationResponse,
+  AuthResourcesListRequest,
+  AuthResourcesListResponse,
+  AuthResourceGetRequest,
+  AuthResourceGetResponse,
+  AuthResourceRemoveRequest,
+  AuthSecurityEvent,
+} from auth_types;
 
 api auth@v1 {
   title "Trellis Auth";
-  description "Authenticate Trellis principals and administer sessions, deployments, exact authority, devices, and login portals.";
+  description "Manage principals, whole-capability roles, public OAuth clients, consent, accepted APIs, and logical authorization sessions.";
   version "1.0.0";
   error AuthError(AuthErrorDetails);
   error UnexpectedError(AuthErrorDetails);
   error ValidationError(AuthErrorDetails);
-  rpc Issuers.Revoke {
-    input AuthIssuersRevokeRequest;
-    output AuthIssuersRevokeResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  event Issuers.Revoked {
-    payload AuthIssuersRevokedEvent;
-  }
-  rpc Participants.Install {
-    input AuthParticipantsInstallRequest;
-    output AuthParticipantsInstallResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Participants.Get {
-    input AuthParticipantsGetRequest;
-    output AuthParticipantsGetResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Participants.List {
-    input AuthParticipantsListRequest;
-    output AuthParticipantsListResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-    pagination cursor;
-  }
-  rpc Deployments.Apply {
-    input AuthDeploymentsApplyRequest;
-    output AuthDeploymentsApplyResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Deployments.Get {
-    input AuthDeploymentsGetRequest;
-    output AuthDeploymentsGetResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Grants.Get {
-    input AuthGrantsGetRequest;
-    output AuthGrantsGetResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Grants.List {
-    input AuthGrantsListRequest;
-    output AuthGrantsListResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-    pagination cursor;
-  }
-  rpc Grants.Set {
-    input AuthGrantsSetRequest;
-    output AuthGrantsMutationResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Grants.Revoke {
-    input AuthGrantsRevokeRequest;
-    output AuthGrantsMutationResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  event Grants.Changed {
-    payload AuthGrantsChangedEvent;
-  }
-  rpc Capabilities.List {
-    input AuthCapabilitiesListRequest;
-    output AuthCapabilitiesListResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-    pagination cursor;
-  }
-  rpc CapabilityGroups.Delete {
-    input AuthCapabilityGroupsDeleteRequest;
-    output AuthCapabilityGroupsDeleteResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc CapabilityGroups.Get {
-    input AuthCapabilityGroupsGetRequest;
-    output AuthCapabilityGroupsGetResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc CapabilityGroups.List {
-    input AuthCapabilityGroupsListRequest;
-    output AuthCapabilityGroupsListResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-    pagination cursor;
-  }
-  rpc CapabilityGroups.Put {
-    input AuthCapabilityGroupsPutRequest;
-    output AuthCapabilityGroupsPutResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Connections.Kick {
-    input AuthConnectionsKickRequest;
-    output AuthConnectionsKickResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Connections.List {
-    input AuthConnectionsListRequest;
-    output AuthConnectionsListResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-    pagination cursor;
-  }
-  rpc Deployments.Create {
-    input AuthDeploymentsCreateRequest;
-    output AuthDeploymentsCreateResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Deployments.Disable {
-    input AuthDeploymentsDisableRequest;
-    output AuthDeploymentsDisableResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Deployments.Enable {
-    input AuthDeploymentsEnableRequest;
-    output AuthDeploymentsEnableResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Deployments.List {
-    input AuthDeploymentsListRequest;
-    output AuthDeploymentsListResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-    pagination cursor;
-  }
-  rpc Deployments.Remove {
-    input AuthDeploymentsRemoveRequest;
-    output AuthDeploymentsRemoveResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc DeviceUserAuthorities.List {
-    input AuthDeviceUserAuthoritiesListRequest;
-    output AuthDeviceUserAuthoritiesListResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-    pagination cursor;
-  }
-  rpc DeviceUserAuthorities.Reviews.Decide {
-    input AuthDeviceUserAuthoritiesReviewsDecideRequest;
-    output AuthDeviceUserAuthoritiesReviewsDecideResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc DeviceUserAuthorities.Reviews.List {
-    input AuthDeviceUserAuthoritiesReviewsListRequest;
-    output AuthDeviceUserAuthoritiesReviewsListResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-    pagination cursor;
-  }
-  rpc DeviceUserAuthorities.Revoke {
-    input AuthDeviceUserAuthoritiesRevokeRequest;
-    output AuthDeviceUserAuthoritiesRevokeResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Devices.Disable {
-    input AuthDevicesDisableRequest;
-    output AuthDevicesDisableResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Devices.Enable {
-    input AuthDevicesEnableRequest;
-    output AuthDevicesEnableResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Devices.List {
-    input AuthDevicesListRequest;
-    output AuthDevicesListResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-    pagination cursor;
-  }
-  rpc Devices.Provision {
-    input AuthDevicesProvisionRequest;
-    output AuthDevicesProvisionResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Devices.Remove {
-    input AuthDevicesRemoveRequest;
-    output AuthDevicesRemoveResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Portals.Get {
-    input AuthPortalsGetRequest;
-    output AuthPortalsGetResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Portals.GrantOverrides.List {
-    input AuthPortalsGrantOverridesListRequest;
-    output AuthPortalsGrantOverridesListResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-    pagination cursor;
-  }
-  rpc Portals.GrantOverrides.Put {
-    input AuthPortalsGrantOverridesPutRequest;
-    output AuthPortalsGrantOverridesPutResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Portals.GrantOverrides.Remove {
-    input AuthPortalsGrantOverridesRemoveRequest;
-    output AuthPortalsGrantOverridesRemoveResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Portals.List {
-    input AuthPortalsListRequest;
-    output AuthPortalsListResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-    pagination cursor;
-  }
-  rpc Portals.LoginSettings.Get {
-    input AuthPortalsLoginSettingsGetRequest;
-    output AuthPortalsLoginSettingsGetResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Portals.LoginSettings.Update {
-    input AuthPortalsLoginSettingsUpdateRequest;
-    output AuthPortalsLoginSettingsUpdateResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Portals.Put {
-    input AuthPortalsPutRequest;
-    output AuthPortalsPutResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Portals.Remove {
-    input AuthPortalsRemoveRequest;
-    output AuthPortalsRemoveResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Portals.Routes.Put {
-    input AuthPortalsRoutesPutRequest;
-    output AuthPortalsRoutesPutResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Portals.Routes.Remove {
-    input AuthPortalsRoutesRemoveRequest;
-    output AuthPortalsRoutesRemoveResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc ServiceInstances.Disable {
-    input AuthServiceInstancesDisableRequest;
-    output AuthServiceInstancesDisableResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc ServiceInstances.Enable {
-    input AuthServiceInstancesEnableRequest;
-    output AuthServiceInstancesEnableResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc ServiceInstances.List {
-    input AuthServiceInstancesListRequest;
-    output AuthServiceInstancesListResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-    pagination cursor;
-  }
-  rpc ServiceInstances.Provision {
-    input AuthServiceInstancesProvisionRequest;
-    output AuthServiceInstancesProvisionResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc ServiceInstances.Remove {
-    input AuthServiceInstancesRemoveRequest;
-    output AuthServiceInstancesRemoveResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Sessions.List {
-    input AuthSessionsListRequest;
-    output AuthSessionsListResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-    pagination cursor;
-  }
-  rpc Sessions.Logout {
-    input AuthSessionsLogoutRequest;
-    output AuthSessionsLogoutResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Sessions.Me {
-    input AuthSessionsMeRequest;
-    output AuthSessionsMeResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Sessions.Revoke {
-    input AuthSessionsRevokeRequest;
-    output AuthSessionsRevokeResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc UserIdentities.List {
-    input AuthUserIdentitiesListRequest;
-    output AuthUserIdentitiesListResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-    pagination cursor;
-  }
-  rpc UserIdentities.Unlink {
-    input AuthUserIdentitiesUnlinkRequest;
-    output AuthUserIdentitiesUnlinkResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Users.Create {
-    input AuthUsersCreateRequest;
-    output AuthUsersCreateResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Users.Get {
-    input AuthUsersGetRequest;
-    output AuthUsersGetResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Users.IdentityLink.Create {
-    input AuthUsersIdentityLinkCreateRequest;
-    output AuthUsersIdentityLinkCreateResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Users.List {
-    input AuthUsersListRequest;
-    output AuthUsersListResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-    pagination cursor;
-  }
-  rpc Users.Password.Change {
-    input AuthUsersPasswordChangeRequest;
-    output AuthUsersPasswordChangeResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Users.PasswordReset.Create {
-    input AuthUsersPasswordResetCreateRequest;
-    output AuthUsersPasswordResetCreateResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Users.Resolve {
-    input AuthUsersResolveRequest;
-    output AuthUsersResolveResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  rpc Users.Update {
-    input AuthUsersUpdateRequest;
-    output AuthUsersUpdateResponse;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  operation DeviceUserAuthorities.Resolve {
-    input AuthDeviceUserAuthoritiesResolveRequest;
-    output AuthDeviceUserAuthoritiesResolveResponse;
-    progress AuthDeviceUserAuthoritiesResolveProgress;
-    errors [AuthError, UnexpectedError, ValidationError];
-  }
-  event Connections.Closed {
-    payload AuthConnectionsClosedEvent;
-  }
-  event Connections.Kicked {
-    payload AuthConnectionsKickedEvent;
-  }
-  event Connections.Opened {
-    payload AuthConnectionsOpenedEvent;
-  }
-  event DeviceUserAuthorities.Approved {
-    payload AuthDeviceUserAuthoritiesApprovedEvent;
-    params [deploymentId];
-  }
-  event DeviceUserAuthorities.Requested {
-    payload AuthDeviceUserAuthoritiesRequestedEvent;
-    params [deploymentId];
-  }
-  event DeviceUserAuthorities.Resolved {
-    payload AuthDeviceUserAuthoritiesResolvedEvent;
-    params [deploymentId];
-  }
-  event DeviceUserAuthorities.ReviewRequested {
-    payload AuthDeviceUserAuthoritiesReviewRequestedEvent;
-    params [deploymentId];
-  }
-  event Sessions.Revoked {
-    payload AuthSessionsRevokedEvent;
-  }
+
+  // roles.manage; role membership never contains action-level grants.
+  rpc Roles.List { input AuthPageRequest; output AuthRolesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Roles.Get { input AuthRoleGetRequest; output AuthRoleGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Roles.Put { input AuthRolePutRequest; output AuthRolePutResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Roles.Delete { input AuthRoleDeleteRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc RoleAssignments.List { input AuthRoleAssignmentsListRequest; output AuthRoleAssignmentsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc RoleAssignments.Assign { input AuthRoleAssignRequest; output AuthRoleAssignResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc RoleAssignments.Revoke { input AuthRoleRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc CapabilityGrants.List { input AuthCapabilityGrantsListRequest; output AuthCapabilityGrantsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc CapabilityGrants.Grant { input AuthCapabilityGrantRequest; output AuthCapabilityGrantResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc CapabilityGrants.Revoke { input AuthCapabilityRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Capabilities.List { input AuthCapabilitiesListRequest; output AuthCapabilitiesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Principals.EffectiveAccess { input AuthPrincipalRequest; output AuthEffectiveAccessResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // apis.accept; ForceReplace additionally requires apis.forceReplace.
+  rpc Apis.List { input AuthPageRequest; output AuthApisListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Apis.Get { input AuthApiGetRequest; output AuthApiGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Apis.Review { input AuthApiReviewRequest; output AuthApiReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Apis.Accept { input AuthApiAcceptRequest; output AuthApiAcceptResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Apis.ForceReplace { input AuthApiForceReplaceRequest; output AuthApiAcceptResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // clients.manage. Platform eligibility is edited separately below.
+  rpc OAuthClients.List { input AuthPageRequest; output AuthOAuthClientsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc OAuthClients.Get { input AuthOAuthClientGetRequest; output AuthOAuthClientGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc OAuthClients.Put { input AuthOAuthClientPutRequest; output AuthOAuthClientGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc OAuthClients.Disable { input AuthOAuthClientMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc OAuthClients.Delete { input AuthOAuthClientMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // These handlers scope ordinary delegated access to the verified user.
+  // Cross-user administration additionally requires principals.manage.
+  rpc Delegations.List { input AuthDelegationsListRequest; output AuthDelegationsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Delegations.Review { input AuthDelegationReviewRequest; output AuthDelegationReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Delegations.Revoke { input AuthDelegationRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // privileges.manage; eligibility is not a principal privilege assignment.
+  rpc PlatformPrivileges.List { input AuthPageRequest; output AuthPlatformAssignmentsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc PlatformPrivileges.Assign { input AuthPlatformAssignRequest; output AuthPlatformAssignResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc PlatformPrivileges.Revoke { input AuthPlatformRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc PlatformDelegations.List { input AuthPageRequest; output AuthPlatformDelegationsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc PlatformDelegations.Put { input AuthPlatformDelegationPutRequest; output AuthPlatformDelegationPutResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc PlatformDelegations.Revoke { input AuthPlatformDelegationRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // principals.manage; logical retirement and physical kicks are distinct.
+  rpc AuthorizationSessions.List { input AuthAuthorizationSessionsListRequest; output AuthAuthorizationSessionsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc AuthorizationSessions.Revoke { input AuthAuthorizationSessionRevokeRequest; output AuthAuthorizationSessionRevokeResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Connections.List { input AuthConnectionsListRequest; output AuthConnectionsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Connections.Kick { input AuthConnectionsKickRequest; output AuthConnectionsKickResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // Fixed authenticated-session rights. These cannot widen the original
+  // request, change the ephemeral key, or renew a retired session.
+  rpc Authority.Renew { input AuthAuthorityRenewRequest; output AuthAuthorityRenewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Admission.Renew { input AuthAdmissionRenewRequest; output AuthAdmissionRenewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Authority.Resolve { input AuthAuthorityResolveRequest; output AuthAuthorityResolveResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Authority.Status { input AuthAuthorityStatusRequest; output AuthAuthorityStatusResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Issuers.ResolveChain { input AuthIssuerChainRequest; output AuthIssuerChainResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Sessions.Me { input AuthEmpty; output AuthSessionsMeResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Sessions.Logout { input AuthEmpty; output AuthSessionsLogoutResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // privileges.manage.
+  rpc Issuers.Rotate { input AuthIssuerRotateRequest; output AuthIssuerRotateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Issuers.Revoke { input AuthIssuerRevokeRequest; output AuthIssuerRevokeResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // Own-account data, bounded by the named capabilities below.
+  rpc Users.Resolve { input AuthEmpty; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Users.Password.Change { input AuthPasswordChangeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Users.IdentityLink.Create { input AuthIdentityLinkCreateRequest; output AuthIdentityLinkCreateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc UserIdentities.List { input AuthPageRequest; output AuthUserIdentitiesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc UserIdentities.Unlink { input AuthUserIdentityUnlinkRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Sessions.List { input AuthPageRequest; output AuthSessionsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Sessions.Revoke { input AuthLoginRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // principals.manage. Administrative account access grants no domain data.
+  rpc Users.Get { input AuthUserGetRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Users.List { input AuthPageRequest; output AuthUsersListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Users.Create { input AuthUserCreateRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Users.Update { input AuthUserUpdateRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Users.PasswordReset.Create { input AuthPasswordResetCreateRequest; output AuthPasswordResetCreateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc OIDCProviders.List { input AuthPageRequest; output AuthOIDCProvidersListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc OIDCProviders.Get { input AuthOIDCProviderGetRequest; output AuthOIDCProviderGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc OIDCProviders.Put { input AuthOIDCProviderPutRequest; output AuthOIDCProviderGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc OIDCProviders.Disable { input AuthOIDCProviderMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc OIDCProviders.Delete { input AuthOIDCProviderMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // roles.manage; mappings apply only to verified claims from this provider.
+  rpc OIDCRoleMappings.List { input AuthOIDCRoleMappingsListRequest; output AuthOIDCRoleMappingsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc OIDCRoleMappings.Put { input AuthOIDCRoleMappingPutRequest; output AuthOIDCRoleMappingPutResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc OIDCRoleMappings.Delete { input AuthOIDCRoleMappingDeleteRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // principals.manage; only service/device implementations can be deployed.
+  rpc Deployments.Create { input AuthDeploymentCreateRequest; output AuthDeploymentMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Deployments.Get { input AuthDeploymentGetRequest; output AuthDeploymentGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Deployments.List { input AuthPageRequest; output AuthDeploymentsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Deployments.Apply { input AuthDeploymentApplyRequest; output AuthDeploymentMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Deployments.Enable { input AuthDeploymentMutationRequest; output AuthDeploymentMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Deployments.Disable { input AuthDeploymentMutationRequest; output AuthDeploymentMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Deployments.Remove { input AuthDeploymentMutationRequest; output AuthDeploymentMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc ServiceInstances.List { input AuthInstancesListRequest; output AuthInstancesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc ServiceInstances.Provision { input AuthInstanceProvisionRequest; output AuthInstanceProvisionResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc ServiceInstances.Enable { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc ServiceInstances.Disable { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc ServiceInstances.Remove { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Devices.List { input AuthInstancesListRequest; output AuthInstancesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Devices.Provision { input AuthInstanceProvisionRequest; output AuthInstanceProvisionResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Devices.Enable { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Devices.Disable { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Devices.Remove { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Resources.List { input AuthResourcesListRequest; output AuthResourcesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Resources.Get { input AuthResourceGetRequest; output AuthResourceGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Resources.Remove { input AuthResourceRemoveRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  event Connections.Opened { payload AuthSecurityEvent; }
+  event Connections.Closed { payload AuthSecurityEvent; }
+  event Connections.Kicked { payload AuthSecurityEvent; }
+  event AuthorizationSessions.Retired { payload AuthSecurityEvent; }
+  event Issuers.Rotated { payload AuthSecurityEvent; }
+  event Issuers.Revoked { payload AuthSecurityEvent; }
+
   capabilities {
-    public {
-      allows { publish event Issuers.Revoked; subscribe event Issuers.Revoked; publish event Grants.Changed; subscribe event Grants.Changed; rpc Sessions.Logout; rpc Sessions.Me; rpc UserIdentities.List; rpc UserIdentities.Unlink; rpc Users.IdentityLink.Create; rpc Users.Password.Change; operation DeviceUserAuthorities.Resolve; publish event Connections.Closed; publish event Connections.Kicked; publish event Connections.Opened; publish event DeviceUserAuthorities.Approved; publish event DeviceUserAuthorities.Requested; publish event DeviceUserAuthorities.Resolved; publish event DeviceUserAuthorities.ReviewRequested; publish event Sessions.Revoked; }
+    capability rolesRead {
+      consent_revision 1;
+      title "Read role definitions";
+      description "List roles and inspect their whole-capability membership; also requires roles.manage.";
+      consequence "Reveals configured roles and their capability membership.";
+      allows { rpc Roles.List; rpc Roles.Get; }
     }
-    capability authorities_mutate {
-      title "Authorities Mutate";
-      description "Allows authorities mutate.";
-      consequence "The caller can use authorities mutate.";
-      allows { rpc Issuers.Revoke; rpc Participants.Install; rpc Deployments.Apply; rpc Grants.Set; rpc Grants.Revoke; rpc CapabilityGroups.Delete; rpc CapabilityGroups.Put; }
+    capability rolesPut {
+      consent_revision 1;
+      title "Edit role definitions";
+      description "Create or replace a role definition; also requires roles.manage.";
+      consequence "Changes the capabilities granted by an assigned role.";
+      allows { rpc Roles.Put; }
     }
-    capability authorities_read {
-      title "Authorities Read";
-      description "Allows authorities read.";
-      consequence "The caller can use authorities read.";
-      allows { rpc Participants.Get; rpc Participants.List; rpc Grants.Get; rpc Grants.List; }
+    capability rolesDelete {
+      consent_revision 1;
+      title "Delete role definitions";
+      description "Delete a role definition; also requires roles.manage.";
+      consequence "Removes a role and its contribution to principal authority.";
+      allows { rpc Roles.Delete; }
     }
-    capability capabilities_read {
-      title "Capabilities Read";
-      description "Allows capabilities read.";
-      consequence "The caller can use capabilities read.";
-      allows { rpc Capabilities.List; rpc CapabilityGroups.Get; rpc CapabilityGroups.List; }
+    capability roleAssignmentsRead {
+      consent_revision 1;
+      title "Read role assignments";
+      description "List principal role assignments; also requires roles.manage.";
+      consequence "Reveals which roles are assigned to principals.";
+      allows { rpc RoleAssignments.List; }
     }
-    capability connections_kick {
-      title "Connections Kick";
-      description "Allows connections kick.";
-      consequence "The caller can use connections kick.";
-      allows { rpc Connections.Kick; }
+    capability roleAssignmentsAssign {
+      consent_revision 1;
+      title "Assign roles";
+      description "Assign a role to a principal; also requires roles.manage.";
+      consequence "Adds the role's capabilities to the principal's available authority.";
+      allows { rpc RoleAssignments.Assign; }
     }
-    capability connections_read {
-      title "Connections Read";
-      description "Allows connections read.";
-      consequence "The caller can use connections read.";
+    capability roleAssignmentsRevoke {
+      consent_revision 1;
+      title "Revoke role assignments";
+      description "Revoke a principal's role assignment; also requires roles.manage.";
+      consequence "Removes authority contributed by that assignment.";
+      allows { rpc RoleAssignments.Revoke; }
+    }
+    capability capabilityGrantsRead {
+      consent_revision 1;
+      title "Read direct capability grants";
+      description "List direct whole-capability grants; also requires roles.manage.";
+      consequence "Reveals capabilities granted directly to principals.";
+      allows { rpc CapabilityGrants.List; }
+    }
+    capability capabilityGrantsGrant {
+      consent_revision 1;
+      title "Grant capabilities";
+      description "Grant a whole capability to a principal; also requires roles.manage.";
+      consequence "Adds the capability to the principal's available authority.";
+      allows { rpc CapabilityGrants.Grant; }
+    }
+    capability capabilityGrantsRevoke {
+      consent_revision 1;
+      title "Revoke capability grants";
+      description "Revoke a direct whole-capability grant; also requires roles.manage.";
+      consequence "Removes authority contributed by the direct grant.";
+      allows { rpc CapabilityGrants.Revoke; }
+    }
+    capability capabilitiesRead {
+      consent_revision 1;
+      title "Read the capability catalog";
+      description "List accepted capability definitions; also requires roles.manage.";
+      consequence "Reveals capability meanings, actions, and consent revisions.";
+      allows { rpc Capabilities.List; }
+    }
+    capability principalsEffectiveAccess {
+      consent_revision 1;
+      title "Inspect effective principal access";
+      description "Inspect a principal's effective capabilities; also requires roles.manage.";
+      consequence "Reveals the principal's effective ordinary authority.";
+      allows { rpc Principals.EffectiveAccess; }
+    }
+    capability apisRead {
+      consent_revision 1;
+      title "Read accepted APIs";
+      description "List and inspect accepted APIs; also requires apis.accept.";
+      consequence "Reveals accepted API definitions and revisions.";
+      allows { rpc Apis.List; rpc Apis.Get; }
+    }
+    capability apisReview {
+      consent_revision 1;
+      title "Review API acceptance";
+      description "Review a proposed API definition; also requires apis.accept.";
+      consequence "Reveals compatibility and consent changes without accepting them.";
+      allows { rpc Apis.Review; }
+    }
+    capability apisAccept {
+      consent_revision 1;
+      title "Accept API definitions";
+      description "Accept a compatible API definition; also requires apis.accept.";
+      consequence "Advances the accepted catalog used for authorization.";
+      allows { rpc Apis.Accept; }
+    }
+    capability apisForceReplace {
+      consent_revision 1;
+      title "Force-replace API definitions";
+      description "Replace an incompatible API; also requires apis.accept and apis.forceReplace.";
+      consequence "Starts a new API generation and retires incompatible session authority.";
+      allows { rpc Apis.ForceReplace; }
+    }
+    capability oauthClientsRead {
+      consent_revision 1;
+      title "Read OAuth clients";
+      description "List and inspect public OAuth client registrations; also requires clients.manage.";
+      consequence "Reveals registered client metadata and redirect URIs.";
+      allows { rpc OAuthClients.List; rpc OAuthClients.Get; }
+    }
+    capability oauthClientsPut {
+      consent_revision 1;
+      title "Register OAuth clients";
+      description "Create or replace public OAuth client metadata; also requires clients.manage.";
+      consequence "Changes the client identities and redirect URIs accepted for OAuth login.";
+      allows { rpc OAuthClients.Put; }
+    }
+    capability oauthClientsDisable {
+      consent_revision 1;
+      title "Disable OAuth clients";
+      description "Disable a public OAuth client; also requires clients.manage.";
+      consequence "Prevents new authorization through the client.";
+      allows { rpc OAuthClients.Disable; }
+    }
+    capability oauthClientsDelete {
+      consent_revision 1;
+      title "Delete OAuth clients";
+      description "Delete a public OAuth client registration; also requires clients.manage.";
+      consequence "Removes the client registration.";
+      allows { rpc OAuthClients.Delete; }
+    }
+    capability platformPrivilegesRead {
+      consent_revision 1;
+      title "Read platform privilege assignments";
+      description "List direct privilege assignments; also requires privileges.manage.";
+      consequence "Reveals assigned platform administration privileges.";
+      allows { rpc PlatformPrivileges.List; }
+    }
+    capability platformPrivilegesAssign {
+      consent_revision 1;
+      title "Assign platform privileges";
+      description "Assign a finite platform privilege; also requires privileges.manage.";
+      consequence "Adds platform administration authority to a principal.";
+      allows { rpc PlatformPrivileges.Assign; }
+    }
+    capability platformPrivilegesRevoke {
+      consent_revision 1;
+      title "Revoke platform privileges";
+      description "Revoke a direct platform privilege assignment; also requires privileges.manage.";
+      consequence "Removes authority contributed by that privilege assignment.";
+      allows { rpc PlatformPrivileges.Revoke; }
+    }
+    capability platformDelegationsRead {
+      consent_revision 1;
+      title "Read platform delegation eligibility";
+      description "List public clients eligible for platform delegation; also requires privileges.manage.";
+      consequence "Reveals client administrative-delegation eligibility.";
+      allows { rpc PlatformDelegations.List; }
+    }
+    capability platformDelegationsPut {
+      consent_revision 1;
+      title "Set platform delegation eligibility";
+      description "Set a public client's eligible privilege subset; also requires privileges.manage.";
+      consequence "Changes which privileges a user may explicitly delegate to the client.";
+      allows { rpc PlatformDelegations.Put; }
+    }
+    capability platformDelegationsRevoke {
+      consent_revision 1;
+      title "Revoke platform delegation eligibility";
+      description "Revoke a public client's eligibility; also requires privileges.manage.";
+      consequence "Prevents further platform privilege delegation to the client.";
+      allows { rpc PlatformDelegations.Revoke; }
+    }
+    capability authorizationSessionsRead {
+      consent_revision 1;
+      title "Read logical authorization sessions";
+      description "List logical sessions and their delegation provenance; also requires principals.manage.";
+      consequence "Reveals session identity, key binding, and lifecycle state.";
+      allows { rpc AuthorizationSessions.List; }
+    }
+    capability authorizationSessionsRevoke {
+      consent_revision 1;
+      title "Revoke logical authorization sessions";
+      description "Retire a logical authorization session; also requires principals.manage.";
+      consequence "Invalidates authority and reconnect admission for the session.";
+      allows { rpc AuthorizationSessions.Revoke; }
+    }
+    capability connectionsRead {
+      consent_revision 1;
+      title "Read active connections";
+      description "List physical runtime attachments; also requires principals.manage.";
+      consequence "Reveals connection presence and logical session associations.";
       allows { rpc Connections.List; }
     }
-    capability deployments_mutate {
-      title "Deployments Mutate";
-      description "Allows deployments mutate.";
-      consequence "The caller can use deployments mutate.";
-      allows { rpc Deployments.Create; rpc Deployments.Disable; rpc Deployments.Enable; rpc Deployments.Remove; }
+    capability connectionsKick {
+      consent_revision 1;
+      title "Kick active connections";
+      description "Disconnect physical attachments; also requires principals.manage.";
+      consequence "Disconnects selected attachments without revoking their logical sessions.";
+      allows { rpc Connections.Kick; }
     }
-    capability deployments_read {
-      title "Deployments Read";
-      description "Allows deployments read.";
-      consequence "The caller can use deployments read.";
-      allows { rpc Deployments.Get; rpc Deployments.List; }
+    capability issuersRotate {
+      consent_revision 1;
+      title "Rotate issuer keys";
+      description "Rotate the active issuer signing key; also requires privileges.manage.";
+      consequence "Changes the key used for newly signed authority and catalog records.";
+      allows { rpc Issuers.Rotate; }
     }
-    capability devices_mutate {
-      title "Devices Mutate";
-      description "Allows devices mutate.";
-      consequence "The caller can use devices mutate.";
-      allows { rpc DeviceUserAuthorities.Revoke; rpc Devices.Disable; rpc Devices.Enable; rpc Devices.Provision; rpc Devices.Remove; }
+    capability issuersRevoke {
+      consent_revision 1;
+      title "Revoke issuer keys";
+      description "Irreversibly revoke an issuer key; also requires privileges.manage.";
+      consequence "Invalidates evidence whose verification depends on that key.";
+      allows { rpc Issuers.Revoke; }
     }
-    capability devices_read {
-      title "Devices Read";
-      description "Allows devices read.";
-      consequence "The caller can use devices read.";
-      allows { rpc DeviceUserAuthorities.List; rpc Devices.List; }
+    capability usersRead {
+      consent_revision 1;
+      title "Read user accounts";
+      description "List and inspect user accounts; also requires principals.manage.";
+      consequence "Reveals account profile and lifecycle information, not domain data.";
+      allows { rpc Users.List; rpc Users.Get; }
     }
-    capability devices_review {
-      title "Devices Review";
-      description "Allows devices review.";
-      consequence "The caller can use devices review.";
-      allows { rpc DeviceUserAuthorities.Reviews.Decide; rpc DeviceUserAuthorities.Reviews.List; }
+    capability usersCreate {
+      consent_revision 1;
+      title "Create user accounts";
+      description "Create a user account; also requires principals.manage.";
+      consequence "Creates a new user principal and login credential.";
+      allows { rpc Users.Create; }
     }
-    capability events_stream {
-      title "Events Stream";
-      description "Allows events stream.";
-      consequence "The caller can use events stream.";
-      allows { subscribe event Connections.Closed; subscribe event Connections.Kicked; subscribe event Connections.Opened; subscribe event DeviceUserAuthorities.Approved; subscribe event DeviceUserAuthorities.Requested; subscribe event DeviceUserAuthorities.Resolved; subscribe event DeviceUserAuthorities.ReviewRequested; subscribe event Sessions.Revoked; }
+    capability usersUpdate {
+      consent_revision 1;
+      title "Update user accounts";
+      description "Update account profile and lifecycle fields; also requires principals.manage.";
+      consequence "Changes another user's account configuration.";
+      allows { rpc Users.Update; }
     }
-    capability portals_mutate {
-      title "Portals Mutate";
-      description "Allows portals mutate.";
-      consequence "The caller can use portals mutate.";
-      allows { rpc Portals.GrantOverrides.Put; rpc Portals.GrantOverrides.Remove; rpc Portals.LoginSettings.Update; rpc Portals.Put; rpc Portals.Remove; rpc Portals.Routes.Put; rpc Portals.Routes.Remove; }
+    capability usersPasswordReset {
+      consent_revision 1;
+      title "Issue password resets";
+      description "Create a password-reset flow for a user; also requires principals.manage.";
+      consequence "Enables replacement of the user's local login credential.";
+      allows { rpc Users.PasswordReset.Create; }
     }
-    capability portals_read {
-      title "Portals Read";
-      description "Allows portals read.";
-      consequence "The caller can use portals read.";
-      allows { rpc Portals.Get; rpc Portals.GrantOverrides.List; rpc Portals.List; rpc Portals.LoginSettings.Get; }
+    capability oidcProvidersRead {
+      consent_revision 1;
+      title "Read identity providers";
+      description "List and inspect OIDC providers; also requires principals.manage.";
+      consequence "Reveals configured external login providers.";
+      allows { rpc OIDCProviders.List; rpc OIDCProviders.Get; }
     }
-    capability services_mutate {
-      title "Services Mutate";
-      description "Allows services mutate.";
-      consequence "The caller can use services mutate.";
-      allows { rpc ServiceInstances.Disable; rpc ServiceInstances.Enable; rpc ServiceInstances.Provision; rpc ServiceInstances.Remove; }
+    capability oidcProvidersPut {
+      consent_revision 1;
+      title "Configure identity providers";
+      description "Create or replace an OIDC provider; also requires principals.manage.";
+      consequence "Changes external identity-provider login configuration.";
+      allows { rpc OIDCProviders.Put; }
     }
-    capability services_read {
-      title "Services Read";
-      description "Allows services read.";
-      consequence "The caller can use services read.";
+    capability oidcProvidersDisable {
+      consent_revision 1;
+      title "Disable identity providers";
+      description "Disable an OIDC provider; also requires principals.manage.";
+      consequence "Prevents new logins through the provider.";
+      allows { rpc OIDCProviders.Disable; }
+    }
+    capability oidcProvidersDelete {
+      consent_revision 1;
+      title "Delete identity providers";
+      description "Delete an OIDC provider; also requires principals.manage.";
+      consequence "Removes an external login-provider configuration.";
+      allows { rpc OIDCProviders.Delete; }
+    }
+    capability oidcRoleMappingsRead {
+      consent_revision 1;
+      title "Read OIDC role mappings";
+      description "List provider-specific verified-claim mappings; also requires roles.manage.";
+      consequence "Reveals how verified external claims contribute role assignments.";
+      allows { rpc OIDCRoleMappings.List; }
+    }
+    capability oidcRoleMappingsPut {
+      consent_revision 1;
+      title "Configure OIDC role mappings";
+      description "Create or replace a verified-claim role mapping; also requires roles.manage.";
+      consequence "Changes roles assigned through verified provider claims.";
+      allows { rpc OIDCRoleMappings.Put; }
+    }
+    capability oidcRoleMappingsDelete {
+      consent_revision 1;
+      title "Delete OIDC role mappings";
+      description "Delete a provider-specific role mapping; also requires roles.manage.";
+      consequence "Removes a source of claim-derived role authority.";
+      allows { rpc OIDCRoleMappings.Delete; }
+    }
+    capability deploymentsRead {
+      consent_revision 1;
+      title "Read deployments";
+      description "List and inspect service/device deployments; also requires principals.manage.";
+      consequence "Reveals deployed implementations and their configuration.";
+      allows { rpc Deployments.List; rpc Deployments.Get; }
+    }
+    capability deploymentsCreate {
+      consent_revision 1;
+      title "Create deployments";
+      description "Create a service/device deployment; also requires principals.manage.";
+      consequence "Creates a deployable principal and its initial configuration.";
+      allows { rpc Deployments.Create; }
+    }
+    capability deploymentsApply {
+      consent_revision 1;
+      title "Apply deployment configuration";
+      description "Apply configuration to a deployment; also requires principals.manage.";
+      consequence "Changes deployed implementation and resource configuration.";
+      allows { rpc Deployments.Apply; }
+    }
+    capability deploymentsEnable {
+      consent_revision 1;
+      title "Enable deployments";
+      description "Enable a service/device deployment; also requires principals.manage.";
+      consequence "Allows the deployment to establish runtime sessions.";
+      allows { rpc Deployments.Enable; }
+    }
+    capability deploymentsDisable {
+      consent_revision 1;
+      title "Disable deployments";
+      description "Disable a service/device deployment; also requires principals.manage.";
+      consequence "Prevents deployment runtime admission and retires affected authority.";
+      allows { rpc Deployments.Disable; }
+    }
+    capability deploymentsRemove {
+      consent_revision 1;
+      title "Remove deployments";
+      description "Remove a service/device deployment; also requires principals.manage.";
+      consequence "Removes the deployed principal and its lifecycle configuration.";
+      allows { rpc Deployments.Remove; }
+    }
+    capability serviceInstancesRead {
+      consent_revision 1;
+      title "Read service instances";
+      description "List provisioned service instances; also requires principals.manage.";
+      consequence "Reveals service instance identity and lifecycle state.";
       allows { rpc ServiceInstances.List; }
     }
-    capability sessions_read {
-      title "Sessions Read";
-      description "Allows sessions read.";
-      consequence "The caller can use sessions read.";
+    capability serviceInstancesProvision {
+      consent_revision 1;
+      title "Provision service instances";
+      description "Provision a service instance identity; also requires principals.manage.";
+      consequence "Creates an instance and returns its one-time provisioning secret.";
+      allows { rpc ServiceInstances.Provision; }
+    }
+    capability serviceInstancesEnable {
+      consent_revision 1;
+      title "Enable service instances";
+      description "Enable a provisioned service instance; also requires principals.manage.";
+      consequence "Allows the instance to establish runtime sessions.";
+      allows { rpc ServiceInstances.Enable; }
+    }
+    capability serviceInstancesDisable {
+      consent_revision 1;
+      title "Disable service instances";
+      description "Disable a provisioned service instance; also requires principals.manage.";
+      consequence "Prevents instance admission and retires affected authority.";
+      allows { rpc ServiceInstances.Disable; }
+    }
+    capability serviceInstancesRemove {
+      consent_revision 1;
+      title "Remove service instances";
+      description "Remove a provisioned service instance; also requires principals.manage.";
+      consequence "Removes the instance identity and lifecycle configuration.";
+      allows { rpc ServiceInstances.Remove; }
+    }
+    capability devicesRead {
+      consent_revision 1;
+      title "Read devices";
+      description "List provisioned device instances; also requires principals.manage.";
+      consequence "Reveals device identity and lifecycle state.";
+      allows { rpc Devices.List; }
+    }
+    capability devicesProvision {
+      consent_revision 1;
+      title "Provision devices";
+      description "Provision a device identity; also requires principals.manage.";
+      consequence "Creates a device and returns its one-time provisioning secret.";
+      allows { rpc Devices.Provision; }
+    }
+    capability devicesEnable {
+      consent_revision 1;
+      title "Enable devices";
+      description "Enable a provisioned device; also requires principals.manage.";
+      consequence "Allows the device to establish runtime sessions.";
+      allows { rpc Devices.Enable; }
+    }
+    capability devicesDisable {
+      consent_revision 1;
+      title "Disable devices";
+      description "Disable a provisioned device; also requires principals.manage.";
+      consequence "Prevents device admission and retires affected authority.";
+      allows { rpc Devices.Disable; }
+    }
+    capability devicesRemove {
+      consent_revision 1;
+      title "Remove devices";
+      description "Remove a provisioned device; also requires principals.manage.";
+      consequence "Removes the device identity and lifecycle configuration.";
+      allows { rpc Devices.Remove; }
+    }
+    capability resourcesRead {
+      consent_revision 1;
+      title "Read principal resources";
+      description "List and inspect resolved principal resources; also requires principals.manage.";
+      consequence "Reveals the resources allocated to service/device principals.";
+      allows { rpc Resources.List; rpc Resources.Get; }
+    }
+    capability resourcesRemove {
+      consent_revision 1;
+      title "Remove principal resources";
+      description "Remove a principal resource; also requires principals.manage.";
+      consequence "Removes a runtime resource and its stored data.";
+      allows { rpc Resources.Remove; }
+    }
+    capability securityObserve {
+      consent_revision 1;
+      title "Observe runtime security changes";
+      description "Receive connection, logical-session retirement, and issuer lifecycle events.";
+      consequence "Continuously reveals runtime attachment and security lifecycle changes.";
+      allows { subscribe event Connections.Opened; subscribe event Connections.Closed; subscribe event Connections.Kicked; subscribe event AuthorizationSessions.Retired; subscribe event Issuers.Rotated; subscribe event Issuers.Revoked; }
+    }
+    capability accountRead {
+      consent_revision 1;
+      title "Read your account";
+      description "Read the current user's account profile.";
+      consequence "Reveals your username and display name to this app.";
+      allows { rpc Users.Resolve; }
+    }
+    capability passwordChange {
+      consent_revision 1;
+      title "Change your password";
+      description "Change the verified user's local password using the current password.";
+      consequence "Changes your login credential and retires sibling login sessions.";
+      allows { rpc Users.Password.Change; }
+    }
+    capability identitiesRead {
+      consent_revision 1;
+      title "Read your linked identities";
+      description "List identity-provider accounts linked to the verified user.";
+      consequence "Reveals your identity providers and their account identifiers.";
+      allows { rpc UserIdentities.List; }
+    }
+    capability identitiesManage {
+      consent_revision 1;
+      title "Manage your linked identities";
+      description "Start verified identity linking and unlink identities belonging to the current user.";
+      consequence "Changes which external accounts can log in to your Trellis account.";
+      allows { rpc Users.IdentityLink.Create; rpc UserIdentities.Unlink; }
+    }
+    capability sessionsRead {
+      consent_revision 1;
+      title "Read your login sessions";
+      description "List login sessions belonging to the verified user.";
+      consequence "Reveals when and how your account logged in.";
       allows { rpc Sessions.List; }
     }
-    capability sessions_revoke {
-      title "Sessions Revoke";
-      description "Allows sessions revoke.";
-      consequence "The caller can use sessions revoke.";
+    capability sessionsRevoke {
+      consent_revision 1;
+      title "Revoke your login sessions";
+      description "Revoke a login session belonging to the verified user.";
+      consequence "Ends apps and runtime attachments authorized through that login.";
       allows { rpc Sessions.Revoke; }
     }
-    capability users_mutate {
-      title "Users Mutate";
-      description "Allows users mutate.";
-      consequence "The caller can use users mutate.";
-      allows { rpc Users.Create; rpc Users.PasswordReset.Create; rpc Users.Update; }
+    capability delegationsRead {
+      consent_revision 1;
+      title "Read your app approvals";
+      description "List and review the verified user's remembered app choices.";
+      consequence "Reveals which apps you approved and which optional capabilities you declined.";
+      allows { rpc Delegations.List; rpc Delegations.Review; }
     }
-    capability users_read {
-      title "Users Read";
-      description "Allows users read.";
-      consequence "The caller can use users read.";
-      allows { rpc Users.Get; rpc Users.List; rpc Users.Resolve; }
+    capability delegationsRevoke {
+      consent_revision 1;
+      title "Revoke your app approvals";
+      description "Revoke remembered app consent belonging to the verified user.";
+      consequence "Removes the affected app's delegated authority and schedules session retirement.";
+      allows { rpc Delegations.Revoke; }
     }
   }
 }

@@ -1,6 +1,6 @@
 //! Generated API `trellis.jobs@v1`.
 pub const API_ID: &str = "trellis.jobs@v1";
-pub const API_DIGEST: &str = "dCRMNYjg9sZNN3dKFBoBlVJ3gMvPwPjZsPH6n16ECtc";
+pub const API_DIGEST: &str = "te7Bc9G_CD2uXOdqe01kQgY5vIjF4ZZS_u2i69q0kB4";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;
@@ -90,7 +90,7 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.Cancel";
         pub const KEY: &'static str = "jobs.Cancel";
         pub const SUBJECT: &'static str = "rpc.v1.jobs.Cancel";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::mutate"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::cancel"];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.jobs@v1::NotFoundError",
             "trellis.jobs@v1::UnexpectedError",
@@ -153,7 +153,7 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.DismissDLQ";
         pub const KEY: &'static str = "jobs.DismissDLQ";
         pub const SUBJECT: &'static str = "rpc.v1.jobs.DismissDLQ";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::mutate"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::dlqDismiss"];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.jobs@v1::NotFoundError",
             "trellis.jobs@v1::UnexpectedError",
@@ -216,7 +216,7 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.GetKey";
         pub const KEY: &'static str = "jobs.GetKey";
         pub const SUBJECT: &'static str = "rpc.v1.jobs.GetKey";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::read"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::keyLookup"];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.jobs@v1::NotFoundError",
             "trellis.jobs@v1::UnexpectedError",
@@ -279,7 +279,7 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.Inspect";
         pub const KEY: &'static str = "jobs.Inspect";
         pub const SUBJECT: &'static str = "rpc.v1.jobs.Inspect";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::read"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::inspect"];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.jobs@v1::NotFoundError",
             "trellis.jobs@v1::UnexpectedError",
@@ -342,7 +342,7 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.ListDLQ";
         pub const KEY: &'static str = "jobs.ListDLQ";
         pub const SUBJECT: &'static str = "rpc.v1.jobs.ListDLQ";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::read"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::dlqRead"];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.jobs@v1::UnexpectedError",
             "trellis.jobs@v1::ValidationError",
@@ -399,7 +399,7 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.ListServices";
         pub const KEY: &'static str = "jobs.ListServices";
         pub const SUBJECT: &'static str = "rpc.v1.jobs.ListServices";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::read"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::listServices"];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.jobs@v1::UnexpectedError",
             "trellis.jobs@v1::ValidationError",
@@ -456,7 +456,7 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.Metrics";
         pub const KEY: &'static str = "jobs.Metrics";
         pub const SUBJECT: &'static str = "rpc.v1.jobs.Metrics";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::read"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::metrics"];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.jobs@v1::UnexpectedError",
             "trellis.jobs@v1::ValidationError",
@@ -513,7 +513,7 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.Query";
         pub const KEY: &'static str = "jobs.Query";
         pub const SUBJECT: &'static str = "rpc.v1.jobs.Query";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::read"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::query"];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.jobs@v1::UnexpectedError",
             "trellis.jobs@v1::ValidationError",
@@ -570,7 +570,7 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.ReplayDLQ";
         pub const KEY: &'static str = "jobs.ReplayDLQ";
         pub const SUBJECT: &'static str = "rpc.v1.jobs.ReplayDLQ";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::mutate"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::dlqReplay"];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.jobs@v1::NotFoundError",
             "trellis.jobs@v1::UnexpectedError",
@@ -633,7 +633,7 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.Retry";
         pub const KEY: &'static str = "jobs.Retry";
         pub const SUBJECT: &'static str = "rpc.v1.jobs.Retry";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::mutate"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::retry"];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.jobs@v1::NotFoundError",
             "trellis.jobs@v1::UnexpectedError",
@@ -696,7 +696,7 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.Summary";
         pub const KEY: &'static str = "jobs.Summary";
         pub const SUBJECT: &'static str = "rpc.v1.jobs.Summary";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::read"];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::summary"];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.jobs@v1::UnexpectedError",
             "trellis.jobs@v1::ValidationError",
@@ -757,7 +757,7 @@ pub mod lives {
         pub const DESCRIPTOR_NAME: &'static str = "live.Watch";
         pub const KEY: &'static str = "jobs.Watch";
         pub const SUBJECT: &'static str = "live.v1.jobs.Watch";
-        pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::stream"];
+        pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &["trellis.jobs@v1::observe"];
     }
     impl trellis_rs::generated::LiveDescriptor for Watch {
         type Input = WatchInput;

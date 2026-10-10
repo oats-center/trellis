@@ -22,11 +22,11 @@ use crate::telemetry::lifecycle::Observation;
 use crate::telemetry::KeyValue;
 
 /// Catalog participant kind for one authorization principal kind.
-fn participant_kind_label(kind: &trellis_protocol::AuthorizationPrincipalKind) -> &'static str {
+fn participant_kind_label(kind: &trellis_protocol::PrincipalKind) -> &'static str {
     match kind {
-        trellis_protocol::AuthorizationPrincipalKind::User => "user",
-        trellis_protocol::AuthorizationPrincipalKind::Service => "service",
-        trellis_protocol::AuthorizationPrincipalKind::Device => "device",
+        trellis_protocol::PrincipalKind::User => "user",
+        trellis_protocol::PrincipalKind::Service => "service",
+        trellis_protocol::PrincipalKind::Device => "device",
     }
 }
 
@@ -449,7 +449,7 @@ struct NativeConnectOptions<'a> {
     companion_descriptor: Option<crate::generated::CompanionDescriptor>,
     name: Option<&'a str>,
     timeout_ms: u64,
-    kind: trellis_protocol::AuthorizationPrincipalKind,
+    kind: trellis_protocol::PrincipalKind,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -1060,7 +1060,7 @@ impl TrellisClient {
             companion_descriptor: None,
             name: opts.name,
             timeout_ms: opts.timeout_ms,
-            kind: trellis_protocol::AuthorizationPrincipalKind::Service,
+            kind: trellis_protocol::PrincipalKind::Service,
         })
         .await
     }
@@ -1148,13 +1148,9 @@ impl TrellisClient {
             session_key: auth.session_key.clone(),
             service_name: name.unwrap_or(participant_id).to_owned(),
             kind: match kind {
-                trellis_protocol::AuthorizationPrincipalKind::Service => {
-                    HealthHeartbeatServiceKind::Service
-                }
-                trellis_protocol::AuthorizationPrincipalKind::Device => {
-                    HealthHeartbeatServiceKind::Device
-                }
-                trellis_protocol::AuthorizationPrincipalKind::User => {
+                trellis_protocol::PrincipalKind::Service => HealthHeartbeatServiceKind::Service,
+                trellis_protocol::PrincipalKind::Device => HealthHeartbeatServiceKind::Device,
+                trellis_protocol::PrincipalKind::User => {
                     return Err(TrellisClientError::Bootstrap(
                         "native connection requires a service or device credential".into(),
                     ));
@@ -1263,7 +1259,7 @@ impl TrellisClient {
             companion_descriptor: C::COMPANION,
             name: opts.name,
             timeout_ms: opts.timeout_ms,
-            kind: trellis_protocol::AuthorizationPrincipalKind::Device,
+            kind: trellis_protocol::PrincipalKind::Device,
         })
         .await
     }

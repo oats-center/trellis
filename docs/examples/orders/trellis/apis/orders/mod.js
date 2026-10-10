@@ -15,14 +15,14 @@ const __api = apiDescriptor({
 	} },
 	packageEvidence: {
 		"packages": [{
-			"digest": "nLPCs5RNqC3-CfZtXptXFQ5tqIw5zcD_Vp-O6SvRNOY",
+			"digest": "cWiSxZBCYDlkzieAmB-za_9OAau2Me3TlZbY00w_kSk",
 			"name": "acme-orders",
-			"source": "package \"acme-orders\";\nmodel CreateOrderRequest {\n  customerId: string;\n}\n\nmodel CreateOrderResponse {\n  customerId: string;\n  orderId: string;\n}\n\napi orders@v1 {\n  title \"Orders\";\n  description \"Minimal service walkthrough.\";\n  rpc Create {\n    input CreateOrderRequest;\n    output CreateOrderResponse;\n  }\n  capabilities {\n    public {\n      allows {\n        rpc Create;\n      }\n    }\n  }\n}\n\napp OrdersCaller {\n  use orders {\n    rpc Create;\n  }\n}\n\nservice OrdersService {\n  implements orders;\n}\n\n",
+			"source": "package \"acme-orders\";\nmodel CreateOrderRequest {\n  customerId: string;\n}\n\nmodel CreateOrderResponse {\n  customerId: string;\n  orderId: string;\n}\n\napi orders@v1 {\n  title \"Orders\";\n  description \"Minimal service walkthrough.\";\n  rpc Create {\n    input CreateOrderRequest;\n    output CreateOrderResponse;\n  }\n  capabilities {\n    capability create {\n      title \"Create orders\";\n      description \"Create an order for a customer.\";\n      consequence \"The caller may create customer orders.\";\n      consent_revision 1;\n      allows {\n        rpc Create;\n      }\n    }\n  }\n}\n\nservice OrdersService {\n  implements orders;\n}\n\napp OrdersCaller {\n  use orders {\n    required capability create;\n  }\n}\n\n",
 			"version": "1.0.0"
 		}],
-		"rootDigest": "nLPCs5RNqC3-CfZtXptXFQ5tqIw5zcD_Vp-O6SvRNOY",
+		"rootDigest": "cWiSxZBCYDlkzieAmB-za_9OAau2Me3TlZbY00w_kSk",
 		"rootPackage": "acme-orders"
 	}
 });
 export const API = __api;
-export const API_DIGEST = "q3lUjFwlRq6kqh-O6tk3Y9IAt5_8Eza2oCVavB526G4";
+export const API_DIGEST = "1aeZNS8ytsZTBULzidswhI20WY1XS0EyKPuVKyb7Tyg";

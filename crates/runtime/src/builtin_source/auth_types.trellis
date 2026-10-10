@@ -1,0 +1,669 @@
+// Public Auth data. Signed authority, catalog, certificate, and issuer-chain
+// bytes are decoded by the shared protocol verifier, not by domain DTO codecs.
+type AuthApiId = string(min_length=1, max_length=256);
+type AuthCapabilityId = string(min_length=1, max_length=512);
+type AuthClientId = string(min_length=1, max_length=2048);
+type AuthDigest = string(min_length=1, max_length=128);
+type AuthKeyId = string(min_length=1, max_length=128);
+type AuthPublicKey = string(min_length=43, max_length=43);
+type AuthRevision = uint64(min=1);
+type AuthIdempotencyKey = string(min_length=1, max_length=256);
+type AuthSignedBlob = bytes;
+type AuthName = string(min_length=1, max_length=256);
+type AuthShortName = string(min_length=1, max_length=128);
+type AuthDescription = string(max_length=4096);
+type AuthSearch = string(max_length=256);
+type AuthCursor = string(min_length=1, max_length=4096);
+type AuthPath = string(min_length=1, max_length=4096);
+type AuthPassword = string(min_length=8, max_length=512);
+type AuthExistingPassword = string(max_length=512);
+type AuthPositiveSeconds = uint32(min=1);
+type AuthMachineCode = string(min_length=1, max_length=64);
+
+enum AuthPrincipalKind { user; service; device; }
+enum AuthPublicClientKind { browser; native; }
+enum AuthBindingKind { browser; native; service; device; }
+enum AuthCredentialKind { oauthGrant; provisionedIdentity; }
+enum AuthPlatformPrivilege {
+  "principals.manage";
+  "roles.manage";
+  "apis.accept";
+  "apis.forceReplace";
+  "clients.manage";
+  "privileges.manage";
+}
+enum AuthEnforcementState { queued; running; completed; failed; }
+enum AuthAuthorizationSessionState { active; superseded; revoked; }
+enum AuthAttachmentState { pending; admitted; closed; }
+enum AuthDecision { approved; declined; }
+enum AuthCapabilitySourceKind { role; direct; oidcRole; }
+enum AuthActionKind { rpc; operation; event; live; transfer; }
+enum AuthActionDirection { call; invoke; observe; cancel; control; publish; subscribe; read; write; delete; submit; process; consume; }
+enum AuthRevocationReason {
+  policyReduced;
+  logout;
+  credentialRevoked;
+  issuerCompromised;
+  explicitRevoke;
+  loginExpired;
+  oauthFamilyRevoked;
+  apiForceReplacement;
+  deploymentDisabled;
+}
+
+model AuthEmpty {}
+model AuthErrorDetails { code: AuthMachineCode; }
+model AuthPageRequest {
+  page?: CursorQuery;
+  search?: AuthSearch;
+}
+model AuthEnforcementProgress {
+  workId: ulid;
+  state: AuthEnforcementState;
+  scannedSessions: uint64;
+  retiredSessions: uint64;
+  pendingKicks: uint64;
+  failedKicks: uint64;
+}
+model AuthMutationResult {
+  revision: AuthRevision;
+  enforcement?: AuthEnforcementProgress;
+}
+model AuthCapabilityIdentity {
+  capabilityId: AuthCapabilityId;
+  identityGeneration: AuthRevision;
+}
+model AuthCapabilitySelection {
+  requiredCapabilities: list<AuthCapabilityId>;
+  optionalCapabilities: list<AuthCapabilityId>;
+}
+model AuthActionSummary {
+  name: AuthName;
+  kind: AuthActionKind;
+  direction: AuthActionDirection;
+}
+model AuthCapabilityDefinition {
+  identity: AuthCapabilityIdentity;
+  apiId: AuthApiId;
+  consentRevision: AuthRevision;
+  title: string;
+  description: string;
+  consequence: string;
+  allows: list<AuthActionSummary>;
+}
+model AuthCapabilitiesListRequest {
+  page?: CursorQuery;
+  apiId?: AuthApiId;
+  search?: AuthSearch;
+}
+type AuthCapabilitiesListResponse = CursorPage<AuthCapabilityDefinition>;
+
+model AuthRole {
+  roleId: ulid;
+  identityGeneration: AuthRevision;
+  revision: AuthRevision;
+  title: string;
+  description: string;
+  capabilities: list<AuthCapabilityIdentity>;
+}
+model AuthRoleGetRequest { roleId: ulid; }
+model AuthRoleGetResponse { role: AuthRole; }
+type AuthRolesListResponse = CursorPage<AuthRole>;
+model AuthRolePutRequest {
+  roleId?: ulid;
+  expectedRevision: uint64;
+  idempotencyKey: AuthIdempotencyKey;
+  title: AuthName;
+  description: AuthDescription;
+  capabilityIds: list<AuthCapabilityId>;
+}
+model AuthRolePutResponse { role: AuthRole; enforcement?: AuthEnforcementProgress; }
+model AuthRoleDeleteRequest {
+  roleId: ulid;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthRoleAssignment {
+  assignmentId: ulid;
+  principalId: ulid;
+  roleId: ulid;
+  roleIdentityGeneration: AuthRevision;
+  revision: AuthRevision;
+  expiresAt?: timestamp;
+}
+model AuthRoleAssignmentsListRequest {
+  principalId?: ulid;
+  roleId?: ulid;
+  page?: CursorQuery;
+}
+type AuthRoleAssignmentsListResponse = CursorPage<AuthRoleAssignment>;
+model AuthRoleAssignRequest {
+  principalId: ulid;
+  roleId: ulid;
+  expectedRevision: uint64;
+  idempotencyKey: AuthIdempotencyKey;
+  expiresAt?: timestamp;
+}
+model AuthRoleAssignResponse { assignment: AuthRoleAssignment; enforcement?: AuthEnforcementProgress; }
+model AuthRoleRevokeRequest {
+  assignmentId: ulid;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthCapabilityGrant {
+  grantId: ulid;
+  principalId: ulid;
+  capability: AuthCapabilityIdentity;
+  revision: AuthRevision;
+  expiresAt?: timestamp;
+}
+model AuthCapabilityGrantsListRequest {
+  principalId?: ulid;
+  capabilityId?: AuthCapabilityId;
+  page?: CursorQuery;
+}
+type AuthCapabilityGrantsListResponse = CursorPage<AuthCapabilityGrant>;
+model AuthCapabilityGrantRequest {
+  principalId: ulid;
+  capabilityId: AuthCapabilityId;
+  expectedRevision: uint64;
+  idempotencyKey: AuthIdempotencyKey;
+  expiresAt?: timestamp;
+}
+model AuthCapabilityGrantResponse { grant: AuthCapabilityGrant; enforcement?: AuthEnforcementProgress; }
+model AuthCapabilityRevokeRequest {
+  grantId: ulid;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthCapabilitySource {
+  kind: AuthCapabilitySourceKind;
+  roleId?: ulid;
+  grantId?: ulid;
+  providerId?: ulid;
+  mappingId?: ulid;
+}
+model AuthEffectiveCapability {
+  definition: AuthCapabilityDefinition;
+  sources: list<AuthCapabilitySource>;
+  expiresAt?: timestamp;
+}
+model AuthPrincipal {
+  principalId: ulid;
+  kind: AuthPrincipalKind;
+  title: string;
+  enabled: bool;
+  revision: AuthRevision;
+  createdAt: timestamp;
+}
+model AuthPrincipalRequest { principalId: ulid; }
+model AuthEffectiveAccessResponse {
+  principal: AuthPrincipal;
+  capabilities: list<AuthEffectiveCapability>;
+  platformPrivileges: list<AuthPlatformPrivilege>;
+}
+
+model AuthPackageSourceEvidence {
+  alias: AuthShortName;
+  path: AuthPath;
+  source: string;
+}
+model AuthPackageEvidence {
+  packageName: AuthName;
+  packageVersion: AuthShortName;
+  sources: list<AuthPackageSourceEvidence>;
+  dependencies: list<AuthPackageEvidence>;
+}
+model AuthAcceptedApi {
+  apiId: AuthApiId;
+  generation: AuthRevision;
+  acceptedRevision: AuthRevision;
+  canonicalDigest: AuthDigest;
+  acceptedAt: timestamp;
+  capabilities: list<AuthCapabilityDefinition>;
+}
+model AuthApiGetRequest { apiId: AuthApiId; }
+model AuthApiGetResponse { api: AuthAcceptedApi; canonicalIdl: string; }
+type AuthApisListResponse = CursorPage<AuthAcceptedApi>;
+model AuthApiReviewRequest { apiId: AuthApiId; packageEvidence: AuthPackageEvidence; }
+model AuthCapabilityChange {
+  capabilityId: AuthCapabilityId;
+  previousConsentRevision?: AuthRevision;
+  proposedConsentRevision?: AuthRevision;
+  previousIdentityGeneration?: AuthRevision;
+  description: string;
+}
+model AuthApiReview {
+  reviewId: ulid;
+  apiId: AuthApiId;
+  canonicalDigest: AuthDigest;
+  currentGeneration?: AuthRevision;
+  currentAcceptedRevision?: AuthRevision;
+  compatible: bool;
+  breakage: list<string>;
+  actionChanges: list<AuthActionSummary>;
+  capabilityChanges: list<AuthCapabilityChange>;
+  affectedRoleIds: list<ulid>;
+  affectedDeploymentIds: list<ulid>;
+  expiresAt: timestamp;
+}
+model AuthApiReviewResponse { review: AuthApiReview; }
+model AuthReviewedRoleEdit { roleId: ulid; expectedRevision: AuthRevision; capabilityIds: list<AuthCapabilityId>; }
+model AuthReviewedMappingEdit { mappingId: ulid; expectedRevision: AuthRevision; roleIds: list<ulid>; }
+model AuthApiAcceptRequest {
+  reviewId: ulid;
+  canonicalDigest: AuthDigest;
+  expectedGeneration: uint64;
+  expectedAcceptedRevision: uint64;
+  roleEdits: list<AuthReviewedRoleEdit>;
+  mappingEdits: list<AuthReviewedMappingEdit>;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthApiForceReplaceRequest {
+  reviewId: ulid;
+  canonicalDigest: AuthDigest;
+  expectedGeneration: AuthRevision;
+  expectedAcceptedRevision: AuthRevision;
+  acknowledgeBreakage: bool;
+  acknowledgeConsentImpact: bool;
+  roleEdits: list<AuthReviewedRoleEdit>;
+  mappingEdits: list<AuthReviewedMappingEdit>;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthApiAcceptResponse { api: AuthAcceptedApi; enforcement?: AuthEnforcementProgress; }
+
+model AuthOAuthClient {
+  clientId: AuthClientId;
+  kind: AuthPublicClientKind;
+  title: string;
+  description: string;
+  redirectUris: list<string>;
+  development: bool;
+  enabled: bool;
+  impliedConsent: list<AuthCapabilityId>;
+  revision: AuthRevision;
+}
+model AuthOAuthClientGetRequest { clientId: AuthClientId; }
+model AuthOAuthClientGetResponse { client: AuthOAuthClient; }
+type AuthOAuthClientsListResponse = CursorPage<AuthOAuthClient>;
+model AuthOAuthClientPutRequest {
+  clientId: AuthClientId;
+  kind: AuthPublicClientKind;
+  title: AuthName;
+  description: AuthDescription;
+  redirectUris: list<string>;
+  development: bool;
+  impliedConsent: list<AuthCapabilityId>;
+  expectedRevision: uint64;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthOAuthClientMutationRequest {
+  clientId: AuthClientId;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthDelegationBinding {
+  kind: AuthPublicClientKind;
+  clientId: AuthClientId;
+  origin?: string;
+  durableDpopJkt?: string;
+}
+model AuthConsentChoice {
+  capability: AuthCapabilityIdentity;
+  consentRevision: AuthRevision;
+  decision: AuthDecision;
+  expiresAt?: timestamp;
+}
+model AuthDelegation {
+  delegationId: ulid;
+  principalId: ulid;
+  binding: AuthDelegationBinding;
+  choices: list<AuthConsentChoice>;
+  revision: AuthRevision;
+}
+model AuthDelegationsListRequest {
+  principalId?: ulid;
+  clientId?: AuthClientId;
+  page?: CursorQuery;
+}
+type AuthDelegationsListResponse = CursorPage<AuthDelegation>;
+model AuthDelegationReviewRequest { delegationId: ulid; }
+model AuthDelegationReviewResponse { delegation: AuthDelegation; currentCapabilities: list<AuthCapabilityDefinition>; }
+model AuthDelegationRevokeRequest {
+  delegationId: ulid;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthPlatformAssignment {
+  assignmentId: ulid;
+  principalId: ulid;
+  privileges: list<AuthPlatformPrivilege>;
+  revision: AuthRevision;
+}
+type AuthPlatformAssignmentsListResponse = CursorPage<AuthPlatformAssignment>;
+model AuthPlatformAssignRequest {
+  principalId: ulid;
+  privileges: list<AuthPlatformPrivilege>;
+  expectedRevision: uint64;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthPlatformAssignResponse { assignment: AuthPlatformAssignment; enforcement?: AuthEnforcementProgress; }
+model AuthPlatformRevokeRequest {
+  assignmentId: ulid;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthAdministrativeBinding {
+  kind: AuthPublicClientKind;
+  clientId: AuthClientId;
+  origin?: string;
+}
+model AuthPlatformDelegation {
+  delegationId: ulid;
+  binding: AuthAdministrativeBinding;
+  eligiblePrivileges: list<AuthPlatformPrivilege>;
+  revision: AuthRevision;
+}
+type AuthPlatformDelegationsListResponse = CursorPage<AuthPlatformDelegation>;
+model AuthPlatformDelegationPutRequest {
+  binding: AuthAdministrativeBinding;
+  eligiblePrivileges: list<AuthPlatformPrivilege>;
+  expectedRevision: uint64;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthPlatformDelegationPutResponse { delegation: AuthPlatformDelegation; enforcement?: AuthEnforcementProgress; }
+model AuthPlatformDelegationRevokeRequest {
+  delegationId: ulid;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+
+model AuthRuntimeBinding {
+  kind: AuthBindingKind;
+  clientId?: AuthClientId;
+  origin?: string;
+  durableDpopJkt?: string;
+  deploymentId?: ulid;
+  instanceId?: ulid;
+  participantId?: string;
+}
+model AuthAuthorizationSession {
+  authorizationSessionId: ulid;
+  principalId: ulid;
+  principalKind: AuthPrincipalKind;
+  binding: AuthRuntimeBinding;
+  runtimeId: string;
+  sessionPublicKey: AuthPublicKey;
+  credentialKind: AuthCredentialKind;
+  loginSessionId?: ulid;
+  oauthGrantId?: ulid;
+  identityKeyId?: AuthKeyId;
+  state: AuthAuthorizationSessionState;
+  createdAt: timestamp;
+  notAfter: timestamp;
+  maximumContextExpiresAt?: timestamp;
+  retiredAt?: timestamp;
+  reason?: AuthRevocationReason;
+}
+model AuthAuthorizationSessionsListRequest {
+  principalId?: ulid;
+  clientId?: AuthClientId;
+  loginSessionId?: ulid;
+  oauthGrantId?: ulid;
+  deploymentId?: ulid;
+  state?: AuthAuthorizationSessionState;
+  page?: CursorQuery;
+}
+type AuthAuthorizationSessionsListResponse = CursorPage<AuthAuthorizationSession>;
+model AuthAuthorizationSessionRevokeRequest {
+  authorizationSessionId: ulid;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthAuthorizationSessionRevokeResponse {
+  authorizationSessionId: ulid;
+  retiredAt: timestamp;
+  enforcement: AuthEnforcementProgress;
+}
+model AuthAttachment {
+  attachmentId: ulid;
+  authorizationSessionId: ulid;
+  serverId: string;
+  brokerClientId: uint64;
+  sessionPublicKey: AuthPublicKey;
+  admittedTransportPolicyDigest: AuthDigest;
+  state: AuthAttachmentState;
+  admittedAt?: timestamp;
+  closedAt?: timestamp;
+}
+model AuthConnectionsListRequest {
+  authorizationSessionId?: ulid;
+  principalId?: ulid;
+  state?: AuthAttachmentState;
+  page?: CursorQuery;
+}
+type AuthConnectionsListResponse = CursorPage<AuthAttachment>;
+model AuthConnectionsKickRequest { attachmentId: ulid; idempotencyKey: AuthIdempotencyKey; }
+model AuthConnectionsKickResponse { attachmentId: ulid; enforcement: AuthEnforcementProgress; }
+model AuthAuthorityRenewRequest { contextDigest: AuthDigest; }
+model AuthAuthorityRenewResponse {
+  contextDigest: AuthDigest;
+  authority: AuthSignedBlob;
+  catalog: AuthSignedBlob;
+  providers: list<AuthSignedBlob>;
+}
+model AuthAdmissionRenewRequest { contextDigest: AuthDigest; }
+model AuthAdmissionRenewResponse { admissionCredential: string; expiresAt: timestamp; }
+model AuthAuthorityResolveRequest { contextDigest: AuthDigest; }
+model AuthAuthorityResolveResponse { authority: AuthSignedBlob; catalog: AuthSignedBlob; providers: list<AuthSignedBlob>; }
+model AuthAuthorityStatusRequest { authorizationSessionId: ulid; }
+model AuthAuthorityStatusResponse {
+  authorizationSessionId: ulid;
+  state: AuthAuthorizationSessionState;
+  cutoff?: timestamp;
+  reason?: AuthRevocationReason;
+  maximumContextExpiresAt?: timestamp;
+  revocation?: AuthSignedBlob;
+  enforcement?: AuthEnforcementProgress;
+}
+model AuthIssuerChainRequest { pinnedKeyId: AuthKeyId; targetKeyId: AuthKeyId; }
+model AuthIssuerChainResponse { rotations: list<AuthSignedBlob>; }
+model AuthIssuerRotateRequest { expectedCurrentKeyId: AuthKeyId; idempotencyKey: AuthIdempotencyKey; }
+model AuthIssuerRotateResponse { keyId: AuthKeyId; rotation: AuthSignedBlob; }
+model AuthIssuerRevokeRequest { keyId: AuthKeyId; idempotencyKey: AuthIdempotencyKey; }
+model AuthIssuerRevokeResponse { keyId: AuthKeyId; enforcement: AuthEnforcementProgress; }
+
+enum AuthLoginMethod { local; oidc; }
+enum AuthLoginState { active; revoked; }
+model AuthLoginSession {
+  loginSessionId: ulid;
+  principalId: ulid;
+  method: AuthLoginMethod;
+  providerId?: ulid;
+  createdAt: timestamp;
+  expiresAt: timestamp;
+  claimFreshUntil?: timestamp;
+  state: AuthLoginState;
+}
+type AuthSessionsListResponse = CursorPage<AuthLoginSession>;
+model AuthSessionsMeResponse { principal: AuthPrincipal; login?: AuthLoginSession; authorizationSessionId: ulid; }
+model AuthSessionsLogoutResponse { loginSessionId: ulid; enforcement: AuthEnforcementProgress; }
+model AuthLoginRevokeRequest { loginSessionId: ulid; idempotencyKey: AuthIdempotencyKey; }
+model AuthUser {
+  principal: AuthPrincipal;
+  username: string;
+  displayName: string;
+  hasLocalPassword: bool;
+}
+model AuthUserGetRequest { userId: ulid; }
+model AuthUserGetResponse { user: AuthUser; }
+type AuthUsersListResponse = CursorPage<AuthUser>;
+model AuthUserCreateRequest {
+  username: AuthName;
+  displayName: AuthName;
+  password?: AuthPassword;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthUserUpdateRequest {
+  userId: ulid;
+  displayName: AuthName;
+  enabled: bool;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthPasswordChangeRequest {
+  currentPassword: AuthExistingPassword;
+  newPassword: AuthPassword;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthPasswordResetCreateRequest { userId: ulid; idempotencyKey: AuthIdempotencyKey; }
+model AuthPasswordResetCreateResponse { token: string; expiresAt: timestamp; }
+model AuthUserIdentity {
+  identityId: ulid;
+  providerId: ulid;
+  issuer: string;
+  subject: string;
+  linkedAt: timestamp;
+}
+type AuthUserIdentitiesListResponse = CursorPage<AuthUserIdentity>;
+model AuthUserIdentityUnlinkRequest { identityId: ulid; idempotencyKey: AuthIdempotencyKey; }
+model AuthIdentityLinkCreateRequest { providerId: ulid; idempotencyKey: AuthIdempotencyKey; }
+model AuthIdentityLinkCreateResponse { authorizationUrl: string; expiresAt: timestamp; }
+
+model AuthOIDCProvider {
+  providerId: ulid;
+  issuer: string;
+  clientId: string;
+  title: string;
+  enabled: bool;
+  scopes: list<string>;
+  roleClaim: string;
+  claimFreshnessSeconds: AuthPositiveSeconds;
+  hasClientSecret: bool;
+  revision: AuthRevision;
+}
+model AuthOIDCProviderGetRequest { providerId: ulid; }
+model AuthOIDCProviderGetResponse { provider: AuthOIDCProvider; }
+type AuthOIDCProvidersListResponse = CursorPage<AuthOIDCProvider>;
+model AuthOIDCProviderPutRequest {
+  providerId?: ulid;
+  issuer: string;
+  clientId: string;
+  title: AuthName;
+  scopes: list<string>;
+  roleClaim: string;
+  claimFreshnessSeconds: AuthPositiveSeconds;
+  clientSecret?: string;
+  expectedRevision: uint64;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthOIDCProviderMutationRequest {
+  providerId: ulid;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthOIDCRoleMapping {
+  mappingId: ulid;
+  providerId: ulid;
+  externalRole: string;
+  roleIds: list<ulid>;
+  revision: AuthRevision;
+}
+model AuthOIDCRoleMappingsListRequest { providerId: ulid; page?: CursorQuery; }
+type AuthOIDCRoleMappingsListResponse = CursorPage<AuthOIDCRoleMapping>;
+model AuthOIDCRoleMappingPutRequest {
+  mappingId?: ulid;
+  providerId: ulid;
+  externalRole: AuthName;
+  roleIds: list<ulid>;
+  expectedRevision: uint64;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthOIDCRoleMappingPutResponse { mapping: AuthOIDCRoleMapping; enforcement?: AuthEnforcementProgress; }
+model AuthOIDCRoleMappingDeleteRequest {
+  mappingId: ulid;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+
+enum AuthDeploymentKind { service; device; }
+enum AuthDeploymentState { enabled; disabled; removed; }
+enum AuthResourceKind { kv; store; state; job; eventConsumer; }
+model AuthDeployment {
+  deploymentId: ulid;
+  title: string;
+  kind: AuthDeploymentKind;
+  participantId: string;
+  implementationDigest: AuthDigest;
+  selection: AuthCapabilitySelection;
+  state: AuthDeploymentState;
+  revision: AuthRevision;
+}
+model AuthDeploymentCreateRequest {
+  title: AuthName;
+  kind: AuthDeploymentKind;
+  participantId: string;
+  packageEvidence: AuthPackageEvidence;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthDeploymentGetRequest { deploymentId: ulid; }
+model AuthDeploymentGetResponse { deployment: AuthDeployment; }
+type AuthDeploymentsListResponse = CursorPage<AuthDeployment>;
+model AuthDeploymentApplyRequest {
+  deploymentId: ulid;
+  packageEvidence: AuthPackageEvidence;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthDeploymentMutationRequest {
+  deploymentId: ulid;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthDeploymentMutationResponse { deployment: AuthDeployment; enforcement?: AuthEnforcementProgress; }
+model AuthProvisionedInstance {
+  instanceId: ulid;
+  principal: AuthPrincipal;
+  deploymentId: ulid;
+  identityPublicKey?: AuthPublicKey;
+  revision: AuthRevision;
+}
+model AuthInstancesListRequest { deploymentId?: ulid; page?: CursorQuery; }
+type AuthInstancesListResponse = CursorPage<AuthProvisionedInstance>;
+model AuthInstanceProvisionRequest {
+  deploymentId: ulid;
+  title: AuthName;
+  identityPublicKey?: AuthPublicKey;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthInstanceProvisionResponse { instance: AuthProvisionedInstance; provisioningSecret?: string; }
+model AuthInstanceMutationRequest {
+  instanceId: ulid;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthInstanceMutationResponse { instance: AuthProvisionedInstance; enforcement?: AuthEnforcementProgress; }
+model AuthResourceBinding {
+  resourceId: ulid;
+  principalId: ulid;
+  deploymentId: ulid;
+  participantId: string;
+  localName: string;
+  kind: AuthResourceKind;
+  revision: AuthRevision;
+  ready: bool;
+}
+model AuthResourceGetRequest { resourceId: ulid; }
+model AuthResourceGetResponse { resource: AuthResourceBinding; }
+model AuthResourcesListRequest { principalId?: ulid; deploymentId?: ulid; page?: CursorQuery; }
+type AuthResourcesListResponse = CursorPage<AuthResourceBinding>;
+model AuthResourceRemoveRequest { resourceId: ulid; expectedRevision: AuthRevision; idempotencyKey: AuthIdempotencyKey; }
+
+model AuthSecurityEvent {
+  eventId: ulid;
+  occurredAt: timestamp;
+  principalId?: ulid;
+  authorizationSessionId?: ulid;
+  attachmentId?: ulid;
+  issuerKeyId?: AuthKeyId;
+  enforcement?: AuthEnforcementProgress;
+}

@@ -1,4 +1,3 @@
-import { auth } from trellis;
 model Value { value: string; }
 api upgrade@v1 {
   title "Client upgrade acceptance";
@@ -6,17 +5,17 @@ api upgrade@v1 {
   rpc Echo { input Value; output Value; }
   rpc Extra { input Value; output Value; }
   capabilities {
-    public { allows { rpc Echo; rpc Extra; } }
     capability read_documents {
       title "Read documents";
       description "Approve the revised usage terms for these document reads.";
       consequence "The caller can read documents under the revised usage terms.";
+      consent_revision 2;
       allows { rpc Echo; rpc Extra; }
     }
+    capability echo { title "Echo"; description "Read through Echo only."; consequence "The caller may invoke Echo."; consent_revision 1; allows { rpc Echo; } }
   }
 }
 service Provider { implements upgrade; }
 app Caller {
-  use auth { rpc Sessions.Me; }
-  use upgrade { rpc Echo; rpc Extra; }
+  use upgrade { required capability read_documents; }
 }

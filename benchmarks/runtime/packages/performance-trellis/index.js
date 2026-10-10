@@ -2,4 +2,5 @@
 // @ts-self-types="./index.d.ts"
 export * as apis from "./apis/index.js";
 export * as participants from "./participants/index.js";
+export * as apps from "./apps/index.js";
 export * as types from "./types/index.js";

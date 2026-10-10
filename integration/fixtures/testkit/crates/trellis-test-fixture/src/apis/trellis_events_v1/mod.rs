@@ -1,6 +1,6 @@
 //! Generated API `trellis.events@v1`.
 pub const API_ID: &str = "trellis.events@v1";
-pub const API_DIGEST: &str = "VnKi_htsISQvdvdTIQyNKNDwsWTeeXELZtL8AXUCrnQ";
+pub const API_DIGEST: &str = "j3FLZq6tWMnMfI7Odb95cLH7pYS7u2Q3l9dAVei4Vcw";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;
@@ -303,8 +303,7 @@ pub mod rpc {
         pub const KEY: &'static str = "events.Consumers.Inspect";
         pub const SUBJECT: &'static str = "rpc.v1.events.Consumers.Inspect";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.events@v1::manage_consumers",
-            "trellis.events@v1::public",
+            "trellis.events@v1::consumersInspect",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.events@v1::NotFoundError",
@@ -373,8 +372,7 @@ pub mod rpc {
         pub const KEY: &'static str = "events.Consumers.Query";
         pub const SUBJECT: &'static str = "rpc.v1.events.Consumers.Query";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.events@v1::manage_consumers",
-            "trellis.events@v1::public",
+            "trellis.events@v1::consumersInspect",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.events@v1::UnexpectedError",
@@ -434,9 +432,7 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.Consumers.ReportDelivery";
         pub const KEY: &'static str = "events.Consumers.ReportDelivery";
         pub const SUBJECT: &'static str = "rpc.v1.events.Consumers.ReportDelivery";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.events@v1::public",
-        ];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.events@v1::Conflict",
             "trellis.events@v1::Forbidden",
@@ -520,8 +516,7 @@ pub mod rpc {
         pub const KEY: &'static str = "events.DeadLetters.Dismiss";
         pub const SUBJECT: &'static str = "rpc.v1.events.DeadLetters.Dismiss";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.events@v1::manage_consumers",
-            "trellis.events@v1::public",
+            "trellis.events@v1::deadLettersDismiss",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.events@v1::Conflict",
@@ -606,8 +601,7 @@ pub mod rpc {
         pub const KEY: &'static str = "events.DeadLetters.Inspect";
         pub const SUBJECT: &'static str = "rpc.v1.events.DeadLetters.Inspect";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.events@v1::manage_consumers",
-            "trellis.events@v1::public",
+            "trellis.events@v1::deadLettersInspect",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.events@v1::Forbidden",
@@ -684,8 +678,7 @@ pub mod rpc {
         pub const KEY: &'static str = "events.DeadLetters.Query";
         pub const SUBJECT: &'static str = "rpc.v1.events.DeadLetters.Query";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.events@v1::manage_consumers",
-            "trellis.events@v1::public",
+            "trellis.events@v1::deadLettersInspect",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.events@v1::Forbidden",
@@ -754,8 +747,7 @@ pub mod rpc {
         pub const KEY: &'static str = "events.DeadLetters.Replay";
         pub const SUBJECT: &'static str = "rpc.v1.events.DeadLetters.Replay";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.events@v1::manage_consumers",
-            "trellis.events@v1::public",
+            "trellis.events@v1::deadLettersReplay",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.events@v1::Conflict",
@@ -848,7 +840,7 @@ pub mod rpc {
         pub const KEY: &'static str = "events.Diagnostics";
         pub const SUBJECT: &'static str = "rpc.v1.events.Diagnostics";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.events@v1::read",
+            "trellis.events@v1::diagnostics",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.events@v1::UnexpectedError",
@@ -909,7 +901,7 @@ pub mod rpc {
         pub const KEY: &'static str = "events.Inspect";
         pub const SUBJECT: &'static str = "rpc.v1.events.Inspect";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.events@v1::read",
+            "trellis.events@v1::inspect",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.events@v1::NotFoundError",
@@ -978,7 +970,7 @@ pub mod rpc {
         pub const KEY: &'static str = "events.Metrics";
         pub const SUBJECT: &'static str = "rpc.v1.events.Metrics";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.events@v1::read",
+            "trellis.events@v1::metrics",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.events@v1::UnexpectedError",
@@ -1039,7 +1031,7 @@ pub mod rpc {
         pub const KEY: &'static str = "events.Query";
         pub const SUBJECT: &'static str = "rpc.v1.events.Query";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.events@v1::read",
+            "trellis.events@v1::query",
         ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.events@v1::UnexpectedError",
@@ -1104,7 +1096,7 @@ pub mod lives {
         pub const KEY: &'static str = "events.Watch";
         pub const SUBJECT: &'static str = "live.v1.events.Watch";
         pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.events@v1::stream",
+            "trellis.events@v1::observe",
         ];
     }
     impl trellis_rs::generated::LiveDescriptor for Watch {

@@ -38,145 +38,282 @@ export declare class ValidationError extends TrellisError<ValidationErrorData> {
 	static fromSerializable(data: unknown): ValidationError;
 	override toSerializable(): ValidationErrorData;
 }
+export type AdmissionRenewInput = Types0.AuthAdmissionRenewRequest;
+export type AdmissionRenewOutput = Types0.AuthAdmissionRenewResponse;
+export type ApisAcceptInput = Types0.AuthApiAcceptRequest;
+export type ApisAcceptOutput = Types0.AuthApiAcceptResponse;
+export type ApisForceReplaceInput = Types0.AuthApiForceReplaceRequest;
+export type ApisForceReplaceOutput = Types0.AuthApiAcceptResponse;
+export type ApisGetInput = Types0.AuthApiGetRequest;
+export type ApisGetOutput = Types0.AuthApiGetResponse;
+export type ApisListInput = Types0.AuthPageRequest;
+export type ApisListOutput = Types0.AuthApisListResponse;
+export type ApisReviewInput = Types0.AuthApiReviewRequest;
+export type ApisReviewOutput = Types0.AuthApiReviewResponse;
+export type AuthorityRenewInput = Types0.AuthAuthorityRenewRequest;
+export type AuthorityRenewOutput = Types0.AuthAuthorityRenewResponse;
+export type AuthorityResolveInput = Types0.AuthAuthorityResolveRequest;
+export type AuthorityResolveOutput = Types0.AuthAuthorityResolveResponse;
+export type AuthorityStatusInput = Types0.AuthAuthorityStatusRequest;
+export type AuthorityStatusOutput = Types0.AuthAuthorityStatusResponse;
+export type AuthorizationSessionsListInput = Types0.AuthAuthorizationSessionsListRequest;
+export type AuthorizationSessionsListOutput = Types0.AuthAuthorizationSessionsListResponse;
+export type AuthorizationSessionsRevokeInput = Types0.AuthAuthorizationSessionRevokeRequest;
+export type AuthorizationSessionsRevokeOutput = Types0.AuthAuthorizationSessionRevokeResponse;
 export type CapabilitiesListInput = Types0.AuthCapabilitiesListRequest;
 export type CapabilitiesListOutput = Types0.AuthCapabilitiesListResponse;
-export type CapabilityGroupsDeleteInput = Types0.AuthCapabilityGroupsDeleteRequest;
-export type CapabilityGroupsDeleteOutput = Types0.AuthCapabilityGroupsDeleteResponse;
-export type CapabilityGroupsGetInput = Types0.AuthCapabilityGroupsGetRequest;
-export type CapabilityGroupsGetOutput = Types0.AuthCapabilityGroupsGetResponse;
-export type CapabilityGroupsListInput = Types0.AuthCapabilityGroupsListRequest;
-export type CapabilityGroupsListOutput = Types0.AuthCapabilityGroupsListResponse;
-export type CapabilityGroupsPutInput = Types0.AuthCapabilityGroupsPutRequest;
-export type CapabilityGroupsPutOutput = Types0.AuthCapabilityGroupsPutResponse;
+export type CapabilityGrantsGrantInput = Types0.AuthCapabilityGrantRequest;
+export type CapabilityGrantsGrantOutput = Types0.AuthCapabilityGrantResponse;
+export type CapabilityGrantsListInput = Types0.AuthCapabilityGrantsListRequest;
+export type CapabilityGrantsListOutput = Types0.AuthCapabilityGrantsListResponse;
+export type CapabilityGrantsRevokeInput = Types0.AuthCapabilityRevokeRequest;
+export type CapabilityGrantsRevokeOutput = Types0.AuthMutationResult;
 export type ConnectionsKickInput = Types0.AuthConnectionsKickRequest;
 export type ConnectionsKickOutput = Types0.AuthConnectionsKickResponse;
 export type ConnectionsListInput = Types0.AuthConnectionsListRequest;
 export type ConnectionsListOutput = Types0.AuthConnectionsListResponse;
-export type DeploymentsApplyInput = Types0.AuthDeploymentsApplyRequest;
-export type DeploymentsApplyOutput = Types0.AuthDeploymentsApplyResponse;
-export type DeploymentsCreateInput = Types0.AuthDeploymentsCreateRequest;
-export type DeploymentsCreateOutput = Types0.AuthDeploymentsCreateResponse;
-export type DeploymentsDisableInput = Types0.AuthDeploymentsDisableRequest;
-export type DeploymentsDisableOutput = Types0.AuthDeploymentsDisableResponse;
-export type DeploymentsEnableInput = Types0.AuthDeploymentsEnableRequest;
-export type DeploymentsEnableOutput = Types0.AuthDeploymentsEnableResponse;
-export type DeploymentsGetInput = Types0.AuthDeploymentsGetRequest;
-export type DeploymentsGetOutput = Types0.AuthDeploymentsGetResponse;
-export type DeploymentsListInput = Types0.AuthDeploymentsListRequest;
+export type DelegationsListInput = Types0.AuthDelegationsListRequest;
+export type DelegationsListOutput = Types0.AuthDelegationsListResponse;
+export type DelegationsReviewInput = Types0.AuthDelegationReviewRequest;
+export type DelegationsReviewOutput = Types0.AuthDelegationReviewResponse;
+export type DelegationsRevokeInput = Types0.AuthDelegationRevokeRequest;
+export type DelegationsRevokeOutput = Types0.AuthMutationResult;
+export type DeploymentsApplyInput = Types0.AuthDeploymentApplyRequest;
+export type DeploymentsApplyOutput = Types0.AuthDeploymentMutationResponse;
+export type DeploymentsCreateInput = Types0.AuthDeploymentCreateRequest;
+export type DeploymentsCreateOutput = Types0.AuthDeploymentMutationResponse;
+export type DeploymentsDisableInput = Types0.AuthDeploymentMutationRequest;
+export type DeploymentsDisableOutput = Types0.AuthDeploymentMutationResponse;
+export type DeploymentsEnableInput = Types0.AuthDeploymentMutationRequest;
+export type DeploymentsEnableOutput = Types0.AuthDeploymentMutationResponse;
+export type DeploymentsGetInput = Types0.AuthDeploymentGetRequest;
+export type DeploymentsGetOutput = Types0.AuthDeploymentGetResponse;
+export type DeploymentsListInput = Types0.AuthPageRequest;
 export type DeploymentsListOutput = Types0.AuthDeploymentsListResponse;
-export type DeploymentsRemoveInput = Types0.AuthDeploymentsRemoveRequest;
-export type DeploymentsRemoveOutput = Types0.AuthDeploymentsRemoveResponse;
-export type DeviceUserAuthoritiesListInput = Types0.AuthDeviceUserAuthoritiesListRequest;
-export type DeviceUserAuthoritiesListOutput = Types0.AuthDeviceUserAuthoritiesListResponse;
-export type DeviceUserAuthoritiesReviewsDecideInput = Types0.AuthDeviceUserAuthoritiesReviewsDecideRequest;
-export type DeviceUserAuthoritiesReviewsDecideOutput = Types0.AuthDeviceUserAuthoritiesReviewsDecideResponse;
-export type DeviceUserAuthoritiesReviewsListInput = Types0.AuthDeviceUserAuthoritiesReviewsListRequest;
-export type DeviceUserAuthoritiesReviewsListOutput = Types0.AuthDeviceUserAuthoritiesReviewsListResponse;
-export type DeviceUserAuthoritiesRevokeInput = Types0.AuthDeviceUserAuthoritiesRevokeRequest;
-export type DeviceUserAuthoritiesRevokeOutput = Types0.AuthDeviceUserAuthoritiesRevokeResponse;
-export type DevicesDisableInput = Types0.AuthDevicesDisableRequest;
-export type DevicesDisableOutput = Types0.AuthDevicesDisableResponse;
-export type DevicesEnableInput = Types0.AuthDevicesEnableRequest;
-export type DevicesEnableOutput = Types0.AuthDevicesEnableResponse;
-export type DevicesListInput = Types0.AuthDevicesListRequest;
-export type DevicesListOutput = Types0.AuthDevicesListResponse;
-export type DevicesProvisionInput = Types0.AuthDevicesProvisionRequest;
-export type DevicesProvisionOutput = Types0.AuthDevicesProvisionResponse;
-export type DevicesRemoveInput = Types0.AuthDevicesRemoveRequest;
-export type DevicesRemoveOutput = Types0.AuthDevicesRemoveResponse;
-export type GrantsGetInput = Types0.AuthGrantsGetRequest;
-export type GrantsGetOutput = Types0.AuthGrantsGetResponse;
-export type GrantsListInput = Types0.AuthGrantsListRequest;
-export type GrantsListOutput = Types0.AuthGrantsListResponse;
-export type GrantsRevokeInput = Types0.AuthGrantsRevokeRequest;
-export type GrantsRevokeOutput = Types0.AuthGrantsMutationResponse;
-export type GrantsSetInput = Types0.AuthGrantsSetRequest;
-export type GrantsSetOutput = Types0.AuthGrantsMutationResponse;
-export type IssuersRevokeInput = Types0.AuthIssuersRevokeRequest;
-export type IssuersRevokeOutput = Types0.AuthIssuersRevokeResponse;
-export type ParticipantsGetInput = Types0.AuthParticipantsGetRequest;
-export type ParticipantsGetOutput = Types0.AuthParticipantsGetResponse;
-export type ParticipantsInstallInput = Types0.AuthParticipantsInstallRequest;
-export type ParticipantsInstallOutput = Types0.AuthParticipantsInstallResponse;
-export type ParticipantsListInput = Types0.AuthParticipantsListRequest;
-export type ParticipantsListOutput = Types0.AuthParticipantsListResponse;
-export type PortalsGetInput = Types0.AuthPortalsGetRequest;
-export type PortalsGetOutput = Types0.AuthPortalsGetResponse;
-export type PortalsGrantOverridesListInput = Types0.AuthPortalsGrantOverridesListRequest;
-export type PortalsGrantOverridesListOutput = Types0.AuthPortalsGrantOverridesListResponse;
-export type PortalsGrantOverridesPutInput = Types0.AuthPortalsGrantOverridesPutRequest;
-export type PortalsGrantOverridesPutOutput = Types0.AuthPortalsGrantOverridesPutResponse;
-export type PortalsGrantOverridesRemoveInput = Types0.AuthPortalsGrantOverridesRemoveRequest;
-export type PortalsGrantOverridesRemoveOutput = Types0.AuthPortalsGrantOverridesRemoveResponse;
-export type PortalsListInput = Types0.AuthPortalsListRequest;
-export type PortalsListOutput = Types0.AuthPortalsListResponse;
-export type PortalsLoginSettingsGetInput = Types0.AuthPortalsLoginSettingsGetRequest;
-export type PortalsLoginSettingsGetOutput = Types0.AuthPortalsLoginSettingsGetResponse;
-export type PortalsLoginSettingsUpdateInput = Types0.AuthPortalsLoginSettingsUpdateRequest;
-export type PortalsLoginSettingsUpdateOutput = Types0.AuthPortalsLoginSettingsUpdateResponse;
-export type PortalsPutInput = Types0.AuthPortalsPutRequest;
-export type PortalsPutOutput = Types0.AuthPortalsPutResponse;
-export type PortalsRemoveInput = Types0.AuthPortalsRemoveRequest;
-export type PortalsRemoveOutput = Types0.AuthPortalsRemoveResponse;
-export type PortalsRoutesPutInput = Types0.AuthPortalsRoutesPutRequest;
-export type PortalsRoutesPutOutput = Types0.AuthPortalsRoutesPutResponse;
-export type PortalsRoutesRemoveInput = Types0.AuthPortalsRoutesRemoveRequest;
-export type PortalsRoutesRemoveOutput = Types0.AuthPortalsRoutesRemoveResponse;
-export type ServiceInstancesDisableInput = Types0.AuthServiceInstancesDisableRequest;
-export type ServiceInstancesDisableOutput = Types0.AuthServiceInstancesDisableResponse;
-export type ServiceInstancesEnableInput = Types0.AuthServiceInstancesEnableRequest;
-export type ServiceInstancesEnableOutput = Types0.AuthServiceInstancesEnableResponse;
-export type ServiceInstancesListInput = Types0.AuthServiceInstancesListRequest;
-export type ServiceInstancesListOutput = Types0.AuthServiceInstancesListResponse;
-export type ServiceInstancesProvisionInput = Types0.AuthServiceInstancesProvisionRequest;
-export type ServiceInstancesProvisionOutput = Types0.AuthServiceInstancesProvisionResponse;
-export type ServiceInstancesRemoveInput = Types0.AuthServiceInstancesRemoveRequest;
-export type ServiceInstancesRemoveOutput = Types0.AuthServiceInstancesRemoveResponse;
-export type SessionsListInput = Types0.AuthSessionsListRequest;
+export type DeploymentsRemoveInput = Types0.AuthDeploymentMutationRequest;
+export type DeploymentsRemoveOutput = Types0.AuthDeploymentMutationResponse;
+export type DevicesDisableInput = Types0.AuthInstanceMutationRequest;
+export type DevicesDisableOutput = Types0.AuthInstanceMutationResponse;
+export type DevicesEnableInput = Types0.AuthInstanceMutationRequest;
+export type DevicesEnableOutput = Types0.AuthInstanceMutationResponse;
+export type DevicesListInput = Types0.AuthInstancesListRequest;
+export type DevicesListOutput = Types0.AuthInstancesListResponse;
+export type DevicesProvisionInput = Types0.AuthInstanceProvisionRequest;
+export type DevicesProvisionOutput = Types0.AuthInstanceProvisionResponse;
+export type DevicesRemoveInput = Types0.AuthInstanceMutationRequest;
+export type DevicesRemoveOutput = Types0.AuthInstanceMutationResponse;
+export type IssuersResolveChainInput = Types0.AuthIssuerChainRequest;
+export type IssuersResolveChainOutput = Types0.AuthIssuerChainResponse;
+export type IssuersRevokeInput = Types0.AuthIssuerRevokeRequest;
+export type IssuersRevokeOutput = Types0.AuthIssuerRevokeResponse;
+export type IssuersRotateInput = Types0.AuthIssuerRotateRequest;
+export type IssuersRotateOutput = Types0.AuthIssuerRotateResponse;
+export type OAuthClientsDeleteInput = Types0.AuthOAuthClientMutationRequest;
+export type OAuthClientsDeleteOutput = Types0.AuthMutationResult;
+export type OAuthClientsDisableInput = Types0.AuthOAuthClientMutationRequest;
+export type OAuthClientsDisableOutput = Types0.AuthMutationResult;
+export type OAuthClientsGetInput = Types0.AuthOAuthClientGetRequest;
+export type OAuthClientsGetOutput = Types0.AuthOAuthClientGetResponse;
+export type OAuthClientsListInput = Types0.AuthPageRequest;
+export type OAuthClientsListOutput = Types0.AuthOAuthClientsListResponse;
+export type OAuthClientsPutInput = Types0.AuthOAuthClientPutRequest;
+export type OAuthClientsPutOutput = Types0.AuthOAuthClientGetResponse;
+export type OIDCProvidersDeleteInput = Types0.AuthOIDCProviderMutationRequest;
+export type OIDCProvidersDeleteOutput = Types0.AuthMutationResult;
+export type OIDCProvidersDisableInput = Types0.AuthOIDCProviderMutationRequest;
+export type OIDCProvidersDisableOutput = Types0.AuthMutationResult;
+export type OIDCProvidersGetInput = Types0.AuthOIDCProviderGetRequest;
+export type OIDCProvidersGetOutput = Types0.AuthOIDCProviderGetResponse;
+export type OIDCProvidersListInput = Types0.AuthPageRequest;
+export type OIDCProvidersListOutput = Types0.AuthOIDCProvidersListResponse;
+export type OIDCProvidersPutInput = Types0.AuthOIDCProviderPutRequest;
+export type OIDCProvidersPutOutput = Types0.AuthOIDCProviderGetResponse;
+export type OIDCRoleMappingsDeleteInput = Types0.AuthOIDCRoleMappingDeleteRequest;
+export type OIDCRoleMappingsDeleteOutput = Types0.AuthMutationResult;
+export type OIDCRoleMappingsListInput = Types0.AuthOIDCRoleMappingsListRequest;
+export type OIDCRoleMappingsListOutput = Types0.AuthOIDCRoleMappingsListResponse;
+export type OIDCRoleMappingsPutInput = Types0.AuthOIDCRoleMappingPutRequest;
+export type OIDCRoleMappingsPutOutput = Types0.AuthOIDCRoleMappingPutResponse;
+export type PlatformDelegationsListInput = Types0.AuthPageRequest;
+export type PlatformDelegationsListOutput = Types0.AuthPlatformDelegationsListResponse;
+export type PlatformDelegationsPutInput = Types0.AuthPlatformDelegationPutRequest;
+export type PlatformDelegationsPutOutput = Types0.AuthPlatformDelegationPutResponse;
+export type PlatformDelegationsRevokeInput = Types0.AuthPlatformDelegationRevokeRequest;
+export type PlatformDelegationsRevokeOutput = Types0.AuthMutationResult;
+export type PlatformPrivilegesAssignInput = Types0.AuthPlatformAssignRequest;
+export type PlatformPrivilegesAssignOutput = Types0.AuthPlatformAssignResponse;
+export type PlatformPrivilegesListInput = Types0.AuthPageRequest;
+export type PlatformPrivilegesListOutput = Types0.AuthPlatformAssignmentsListResponse;
+export type PlatformPrivilegesRevokeInput = Types0.AuthPlatformRevokeRequest;
+export type PlatformPrivilegesRevokeOutput = Types0.AuthMutationResult;
+export type PrincipalsEffectiveAccessInput = Types0.AuthPrincipalRequest;
+export type PrincipalsEffectiveAccessOutput = Types0.AuthEffectiveAccessResponse;
+export type ResourcesGetInput = Types0.AuthResourceGetRequest;
+export type ResourcesGetOutput = Types0.AuthResourceGetResponse;
+export type ResourcesListInput = Types0.AuthResourcesListRequest;
+export type ResourcesListOutput = Types0.AuthResourcesListResponse;
+export type ResourcesRemoveInput = Types0.AuthResourceRemoveRequest;
+export type ResourcesRemoveOutput = Types0.AuthMutationResult;
+export type RoleAssignmentsAssignInput = Types0.AuthRoleAssignRequest;
+export type RoleAssignmentsAssignOutput = Types0.AuthRoleAssignResponse;
+export type RoleAssignmentsListInput = Types0.AuthRoleAssignmentsListRequest;
+export type RoleAssignmentsListOutput = Types0.AuthRoleAssignmentsListResponse;
+export type RoleAssignmentsRevokeInput = Types0.AuthRoleRevokeRequest;
+export type RoleAssignmentsRevokeOutput = Types0.AuthMutationResult;
+export type RolesDeleteInput = Types0.AuthRoleDeleteRequest;
+export type RolesDeleteOutput = Types0.AuthMutationResult;
+export type RolesGetInput = Types0.AuthRoleGetRequest;
+export type RolesGetOutput = Types0.AuthRoleGetResponse;
+export type RolesListInput = Types0.AuthPageRequest;
+export type RolesListOutput = Types0.AuthRolesListResponse;
+export type RolesPutInput = Types0.AuthRolePutRequest;
+export type RolesPutOutput = Types0.AuthRolePutResponse;
+export type ServiceInstancesDisableInput = Types0.AuthInstanceMutationRequest;
+export type ServiceInstancesDisableOutput = Types0.AuthInstanceMutationResponse;
+export type ServiceInstancesEnableInput = Types0.AuthInstanceMutationRequest;
+export type ServiceInstancesEnableOutput = Types0.AuthInstanceMutationResponse;
+export type ServiceInstancesListInput = Types0.AuthInstancesListRequest;
+export type ServiceInstancesListOutput = Types0.AuthInstancesListResponse;
+export type ServiceInstancesProvisionInput = Types0.AuthInstanceProvisionRequest;
+export type ServiceInstancesProvisionOutput = Types0.AuthInstanceProvisionResponse;
+export type ServiceInstancesRemoveInput = Types0.AuthInstanceMutationRequest;
+export type ServiceInstancesRemoveOutput = Types0.AuthInstanceMutationResponse;
+export type SessionsListInput = Types0.AuthPageRequest;
 export type SessionsListOutput = Types0.AuthSessionsListResponse;
-export type SessionsLogoutInput = Types0.AuthSessionsLogoutRequest;
+export type SessionsLogoutInput = Types0.AuthEmpty;
 export type SessionsLogoutOutput = Types0.AuthSessionsLogoutResponse;
-export type SessionsMeInput = Types0.AuthSessionsMeRequest;
+export type SessionsMeInput = Types0.AuthEmpty;
 export type SessionsMeOutput = Types0.AuthSessionsMeResponse;
-export type SessionsRevokeInput = Types0.AuthSessionsRevokeRequest;
-export type SessionsRevokeOutput = Types0.AuthSessionsRevokeResponse;
-export type UserIdentitiesListInput = Types0.AuthUserIdentitiesListRequest;
+export type SessionsRevokeInput = Types0.AuthLoginRevokeRequest;
+export type SessionsRevokeOutput = Types0.AuthMutationResult;
+export type UserIdentitiesListInput = Types0.AuthPageRequest;
 export type UserIdentitiesListOutput = Types0.AuthUserIdentitiesListResponse;
-export type UserIdentitiesUnlinkInput = Types0.AuthUserIdentitiesUnlinkRequest;
-export type UserIdentitiesUnlinkOutput = Types0.AuthUserIdentitiesUnlinkResponse;
-export type UsersCreateInput = Types0.AuthUsersCreateRequest;
-export type UsersCreateOutput = Types0.AuthUsersCreateResponse;
-export type UsersGetInput = Types0.AuthUsersGetRequest;
-export type UsersGetOutput = Types0.AuthUsersGetResponse;
-export type UsersIdentityLinkCreateInput = Types0.AuthUsersIdentityLinkCreateRequest;
-export type UsersIdentityLinkCreateOutput = Types0.AuthUsersIdentityLinkCreateResponse;
-export type UsersListInput = Types0.AuthUsersListRequest;
+export type UserIdentitiesUnlinkInput = Types0.AuthUserIdentityUnlinkRequest;
+export type UserIdentitiesUnlinkOutput = Types0.AuthMutationResult;
+export type UsersCreateInput = Types0.AuthUserCreateRequest;
+export type UsersCreateOutput = Types0.AuthUserGetResponse;
+export type UsersGetInput = Types0.AuthUserGetRequest;
+export type UsersGetOutput = Types0.AuthUserGetResponse;
+export type UsersIdentityLinkCreateInput = Types0.AuthIdentityLinkCreateRequest;
+export type UsersIdentityLinkCreateOutput = Types0.AuthIdentityLinkCreateResponse;
+export type UsersListInput = Types0.AuthPageRequest;
 export type UsersListOutput = Types0.AuthUsersListResponse;
-export type UsersPasswordChangeInput = Types0.AuthUsersPasswordChangeRequest;
-export type UsersPasswordChangeOutput = Types0.AuthUsersPasswordChangeResponse;
-export type UsersPasswordResetCreateInput = Types0.AuthUsersPasswordResetCreateRequest;
-export type UsersPasswordResetCreateOutput = Types0.AuthUsersPasswordResetCreateResponse;
-export type UsersResolveInput = Types0.AuthUsersResolveRequest;
-export type UsersResolveOutput = Types0.AuthUsersResolveResponse;
-export type UsersUpdateInput = Types0.AuthUsersUpdateRequest;
-export type UsersUpdateOutput = Types0.AuthUsersUpdateResponse;
-export type DeviceUserAuthoritiesResolveInput = Types0.AuthDeviceUserAuthoritiesResolveRequest;
-export type DeviceUserAuthoritiesResolveOutput = Types0.AuthDeviceUserAuthoritiesResolveResponse;
-export type DeviceUserAuthoritiesResolveProgress = Types0.AuthDeviceUserAuthoritiesResolveProgress;
-export type DeviceUserAuthoritiesResolveUpdate = Types0.AuthDeviceUserAuthoritiesResolveProgress;
-export type ConnectionsClosedEvent = Types0.AuthConnectionsClosedEvent;
-export type ConnectionsKickedEvent = Types0.AuthConnectionsKickedEvent;
-export type ConnectionsOpenedEvent = Types0.AuthConnectionsOpenedEvent;
-export type DeviceUserAuthoritiesApprovedEvent = Types0.AuthDeviceUserAuthoritiesApprovedEvent;
-export type DeviceUserAuthoritiesRequestedEvent = Types0.AuthDeviceUserAuthoritiesRequestedEvent;
-export type DeviceUserAuthoritiesResolvedEvent = Types0.AuthDeviceUserAuthoritiesResolvedEvent;
-export type DeviceUserAuthoritiesReviewRequestedEvent = Types0.AuthDeviceUserAuthoritiesReviewRequestedEvent;
-export type GrantsChangedEvent = Types0.AuthGrantsChangedEvent;
-export type IssuersRevokedEvent = Types0.AuthIssuersRevokedEvent;
-export type SessionsRevokedEvent = Types0.AuthSessionsRevokedEvent;
+export type UsersPasswordChangeInput = Types0.AuthPasswordChangeRequest;
+export type UsersPasswordChangeOutput = Types0.AuthMutationResult;
+export type UsersPasswordResetCreateInput = Types0.AuthPasswordResetCreateRequest;
+export type UsersPasswordResetCreateOutput = Types0.AuthPasswordResetCreateResponse;
+export type UsersResolveInput = Types0.AuthEmpty;
+export type UsersResolveOutput = Types0.AuthUserGetResponse;
+export type UsersUpdateInput = Types0.AuthUserUpdateRequest;
+export type UsersUpdateOutput = Types0.AuthUserGetResponse;
+export type AuthorizationSessionsRetiredEvent = Types0.AuthSecurityEvent;
+export type ConnectionsClosedEvent = Types0.AuthSecurityEvent;
+export type ConnectionsKickedEvent = Types0.AuthSecurityEvent;
+export type ConnectionsOpenedEvent = Types0.AuthSecurityEvent;
+export type IssuersRevokedEvent = Types0.AuthSecurityEvent;
+export type IssuersRotatedEvent = Types0.AuthSecurityEvent;
 declare const __api: {
 	readonly identity: "trellis.auth@v1";
 	readonly actions: {
+		readonly "rpc:Admission.Renew": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Admission.Renew";
+			readonly input: typeof Types0.AuthAdmissionRenewRequestCodec;
+			readonly output: typeof Types0.AuthAdmissionRenewResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:Apis.Accept": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Apis.Accept";
+			readonly input: typeof Types0.AuthApiAcceptRequestCodec;
+			readonly output: typeof Types0.AuthApiAcceptResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:Apis.ForceReplace": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Apis.ForceReplace";
+			readonly input: typeof Types0.AuthApiForceReplaceRequestCodec;
+			readonly output: typeof Types0.AuthApiAcceptResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:Apis.Get": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Apis.Get";
+			readonly input: typeof Types0.AuthApiGetRequestCodec;
+			readonly output: typeof Types0.AuthApiGetResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:Apis.List": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Apis.List";
+			readonly input: typeof Types0.AuthPageRequestCodec;
+			readonly output: typeof Types0.AuthApisListResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: "cursor";
+		};
+		readonly "rpc:Apis.Review": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Apis.Review";
+			readonly input: typeof Types0.AuthApiReviewRequestCodec;
+			readonly output: typeof Types0.AuthApiReviewResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:Authority.Renew": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Authority.Renew";
+			readonly input: typeof Types0.AuthAuthorityRenewRequestCodec;
+			readonly output: typeof Types0.AuthAuthorityRenewResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:Authority.Resolve": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Authority.Resolve";
+			readonly input: typeof Types0.AuthAuthorityResolveRequestCodec;
+			readonly output: typeof Types0.AuthAuthorityResolveResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:Authority.Status": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Authority.Status";
+			readonly input: typeof Types0.AuthAuthorityStatusRequestCodec;
+			readonly output: typeof Types0.AuthAuthorityStatusResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:AuthorizationSessions.List": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:AuthorizationSessions.List";
+			readonly input: typeof Types0.AuthAuthorizationSessionsListRequestCodec;
+			readonly output: typeof Types0.AuthAuthorizationSessionsListResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: "cursor";
+		};
+		readonly "rpc:AuthorizationSessions.Revoke": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:AuthorizationSessions.Revoke";
+			readonly input: typeof Types0.AuthAuthorizationSessionRevokeRequestCodec;
+			readonly output: typeof Types0.AuthAuthorizationSessionRevokeResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
 		readonly "rpc:Capabilities.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Capabilities.List";
@@ -186,38 +323,29 @@ declare const __api: {
 			readonly download: false;
 			readonly pagination: "cursor";
 		};
-		readonly "rpc:CapabilityGroups.Delete": {
+		readonly "rpc:CapabilityGrants.Grant": {
 			readonly kind: "rpc";
-			readonly descriptorName: "rpc:CapabilityGroups.Delete";
-			readonly input: typeof Types0.AuthCapabilityGroupsDeleteRequestCodec;
-			readonly output: typeof Types0.AuthCapabilityGroupsDeleteResponseCodec;
+			readonly descriptorName: "rpc:CapabilityGrants.Grant";
+			readonly input: typeof Types0.AuthCapabilityGrantRequestCodec;
+			readonly output: typeof Types0.AuthCapabilityGrantResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
 		};
-		readonly "rpc:CapabilityGroups.Get": {
+		readonly "rpc:CapabilityGrants.List": {
 			readonly kind: "rpc";
-			readonly descriptorName: "rpc:CapabilityGroups.Get";
-			readonly input: typeof Types0.AuthCapabilityGroupsGetRequestCodec;
-			readonly output: typeof Types0.AuthCapabilityGroupsGetResponseCodec;
-			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
-			readonly download: false;
-			readonly pagination: undefined;
-		};
-		readonly "rpc:CapabilityGroups.List": {
-			readonly kind: "rpc";
-			readonly descriptorName: "rpc:CapabilityGroups.List";
-			readonly input: typeof Types0.AuthCapabilityGroupsListRequestCodec;
-			readonly output: typeof Types0.AuthCapabilityGroupsListResponseCodec;
+			readonly descriptorName: "rpc:CapabilityGrants.List";
+			readonly input: typeof Types0.AuthCapabilityGrantsListRequestCodec;
+			readonly output: typeof Types0.AuthCapabilityGrantsListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: "cursor";
 		};
-		readonly "rpc:CapabilityGroups.Put": {
+		readonly "rpc:CapabilityGrants.Revoke": {
 			readonly kind: "rpc";
-			readonly descriptorName: "rpc:CapabilityGroups.Put";
-			readonly input: typeof Types0.AuthCapabilityGroupsPutRequestCodec;
-			readonly output: typeof Types0.AuthCapabilityGroupsPutResponseCodec;
+			readonly descriptorName: "rpc:CapabilityGrants.Revoke";
+			readonly input: typeof Types0.AuthCapabilityRevokeRequestCodec;
+			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -240,11 +368,38 @@ declare const __api: {
 			readonly download: false;
 			readonly pagination: "cursor";
 		};
+		readonly "rpc:Delegations.List": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Delegations.List";
+			readonly input: typeof Types0.AuthDelegationsListRequestCodec;
+			readonly output: typeof Types0.AuthDelegationsListResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: "cursor";
+		};
+		readonly "rpc:Delegations.Review": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Delegations.Review";
+			readonly input: typeof Types0.AuthDelegationReviewRequestCodec;
+			readonly output: typeof Types0.AuthDelegationReviewResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:Delegations.Revoke": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Delegations.Revoke";
+			readonly input: typeof Types0.AuthDelegationRevokeRequestCodec;
+			readonly output: typeof Types0.AuthMutationResultCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
 		readonly "rpc:Deployments.Apply": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Deployments.Apply";
-			readonly input: typeof Types0.AuthDeploymentsApplyRequestCodec;
-			readonly output: typeof Types0.AuthDeploymentsApplyResponseCodec;
+			readonly input: typeof Types0.AuthDeploymentApplyRequestCodec;
+			readonly output: typeof Types0.AuthDeploymentMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -252,8 +407,8 @@ declare const __api: {
 		readonly "rpc:Deployments.Create": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Deployments.Create";
-			readonly input: typeof Types0.AuthDeploymentsCreateRequestCodec;
-			readonly output: typeof Types0.AuthDeploymentsCreateResponseCodec;
+			readonly input: typeof Types0.AuthDeploymentCreateRequestCodec;
+			readonly output: typeof Types0.AuthDeploymentMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -261,8 +416,8 @@ declare const __api: {
 		readonly "rpc:Deployments.Disable": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Deployments.Disable";
-			readonly input: typeof Types0.AuthDeploymentsDisableRequestCodec;
-			readonly output: typeof Types0.AuthDeploymentsDisableResponseCodec;
+			readonly input: typeof Types0.AuthDeploymentMutationRequestCodec;
+			readonly output: typeof Types0.AuthDeploymentMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -270,8 +425,8 @@ declare const __api: {
 		readonly "rpc:Deployments.Enable": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Deployments.Enable";
-			readonly input: typeof Types0.AuthDeploymentsEnableRequestCodec;
-			readonly output: typeof Types0.AuthDeploymentsEnableResponseCodec;
+			readonly input: typeof Types0.AuthDeploymentMutationRequestCodec;
+			readonly output: typeof Types0.AuthDeploymentMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -279,8 +434,8 @@ declare const __api: {
 		readonly "rpc:Deployments.Get": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Deployments.Get";
-			readonly input: typeof Types0.AuthDeploymentsGetRequestCodec;
-			readonly output: typeof Types0.AuthDeploymentsGetResponseCodec;
+			readonly input: typeof Types0.AuthDeploymentGetRequestCodec;
+			readonly output: typeof Types0.AuthDeploymentGetResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -288,7 +443,7 @@ declare const __api: {
 		readonly "rpc:Deployments.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Deployments.List";
-			readonly input: typeof Types0.AuthDeploymentsListRequestCodec;
+			readonly input: typeof Types0.AuthPageRequestCodec;
 			readonly output: typeof Types0.AuthDeploymentsListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
@@ -297,44 +452,8 @@ declare const __api: {
 		readonly "rpc:Deployments.Remove": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Deployments.Remove";
-			readonly input: typeof Types0.AuthDeploymentsRemoveRequestCodec;
-			readonly output: typeof Types0.AuthDeploymentsRemoveResponseCodec;
-			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
-			readonly download: false;
-			readonly pagination: undefined;
-		};
-		readonly "rpc:DeviceUserAuthorities.List": {
-			readonly kind: "rpc";
-			readonly descriptorName: "rpc:DeviceUserAuthorities.List";
-			readonly input: typeof Types0.AuthDeviceUserAuthoritiesListRequestCodec;
-			readonly output: typeof Types0.AuthDeviceUserAuthoritiesListResponseCodec;
-			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
-			readonly download: false;
-			readonly pagination: "cursor";
-		};
-		readonly "rpc:DeviceUserAuthorities.Reviews.Decide": {
-			readonly kind: "rpc";
-			readonly descriptorName: "rpc:DeviceUserAuthorities.Reviews.Decide";
-			readonly input: typeof Types0.AuthDeviceUserAuthoritiesReviewsDecideRequestCodec;
-			readonly output: typeof Types0.AuthDeviceUserAuthoritiesReviewsDecideResponseCodec;
-			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
-			readonly download: false;
-			readonly pagination: undefined;
-		};
-		readonly "rpc:DeviceUserAuthorities.Reviews.List": {
-			readonly kind: "rpc";
-			readonly descriptorName: "rpc:DeviceUserAuthorities.Reviews.List";
-			readonly input: typeof Types0.AuthDeviceUserAuthoritiesReviewsListRequestCodec;
-			readonly output: typeof Types0.AuthDeviceUserAuthoritiesReviewsListResponseCodec;
-			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
-			readonly download: false;
-			readonly pagination: "cursor";
-		};
-		readonly "rpc:DeviceUserAuthorities.Revoke": {
-			readonly kind: "rpc";
-			readonly descriptorName: "rpc:DeviceUserAuthorities.Revoke";
-			readonly input: typeof Types0.AuthDeviceUserAuthoritiesRevokeRequestCodec;
-			readonly output: typeof Types0.AuthDeviceUserAuthoritiesRevokeResponseCodec;
+			readonly input: typeof Types0.AuthDeploymentMutationRequestCodec;
+			readonly output: typeof Types0.AuthDeploymentMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -342,8 +461,8 @@ declare const __api: {
 		readonly "rpc:Devices.Disable": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Devices.Disable";
-			readonly input: typeof Types0.AuthDevicesDisableRequestCodec;
-			readonly output: typeof Types0.AuthDevicesDisableResponseCodec;
+			readonly input: typeof Types0.AuthInstanceMutationRequestCodec;
+			readonly output: typeof Types0.AuthInstanceMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -351,8 +470,8 @@ declare const __api: {
 		readonly "rpc:Devices.Enable": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Devices.Enable";
-			readonly input: typeof Types0.AuthDevicesEnableRequestCodec;
-			readonly output: typeof Types0.AuthDevicesEnableResponseCodec;
+			readonly input: typeof Types0.AuthInstanceMutationRequestCodec;
+			readonly output: typeof Types0.AuthInstanceMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -360,8 +479,8 @@ declare const __api: {
 		readonly "rpc:Devices.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Devices.List";
-			readonly input: typeof Types0.AuthDevicesListRequestCodec;
-			readonly output: typeof Types0.AuthDevicesListResponseCodec;
+			readonly input: typeof Types0.AuthInstancesListRequestCodec;
+			readonly output: typeof Types0.AuthInstancesListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: "cursor";
@@ -369,8 +488,8 @@ declare const __api: {
 		readonly "rpc:Devices.Provision": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Devices.Provision";
-			readonly input: typeof Types0.AuthDevicesProvisionRequestCodec;
-			readonly output: typeof Types0.AuthDevicesProvisionResponseCodec;
+			readonly input: typeof Types0.AuthInstanceProvisionRequestCodec;
+			readonly output: typeof Types0.AuthInstanceProvisionResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -378,44 +497,17 @@ declare const __api: {
 		readonly "rpc:Devices.Remove": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Devices.Remove";
-			readonly input: typeof Types0.AuthDevicesRemoveRequestCodec;
-			readonly output: typeof Types0.AuthDevicesRemoveResponseCodec;
+			readonly input: typeof Types0.AuthInstanceMutationRequestCodec;
+			readonly output: typeof Types0.AuthInstanceMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
 		};
-		readonly "rpc:Grants.Get": {
+		readonly "rpc:Issuers.ResolveChain": {
 			readonly kind: "rpc";
-			readonly descriptorName: "rpc:Grants.Get";
-			readonly input: typeof Types0.AuthGrantsGetRequestCodec;
-			readonly output: typeof Types0.AuthGrantsGetResponseCodec;
-			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
-			readonly download: false;
-			readonly pagination: undefined;
-		};
-		readonly "rpc:Grants.List": {
-			readonly kind: "rpc";
-			readonly descriptorName: "rpc:Grants.List";
-			readonly input: typeof Types0.AuthGrantsListRequestCodec;
-			readonly output: typeof Types0.AuthGrantsListResponseCodec;
-			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
-			readonly download: false;
-			readonly pagination: "cursor";
-		};
-		readonly "rpc:Grants.Revoke": {
-			readonly kind: "rpc";
-			readonly descriptorName: "rpc:Grants.Revoke";
-			readonly input: typeof Types0.AuthGrantsRevokeRequestCodec;
-			readonly output: typeof Types0.AuthGrantsMutationResponseCodec;
-			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
-			readonly download: false;
-			readonly pagination: undefined;
-		};
-		readonly "rpc:Grants.Set": {
-			readonly kind: "rpc";
-			readonly descriptorName: "rpc:Grants.Set";
-			readonly input: typeof Types0.AuthGrantsSetRequestCodec;
-			readonly output: typeof Types0.AuthGrantsMutationResponseCodec;
+			readonly descriptorName: "rpc:Issuers.ResolveChain";
+			readonly input: typeof Types0.AuthIssuerChainRequestCodec;
+			readonly output: typeof Types0.AuthIssuerChainResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -423,134 +515,287 @@ declare const __api: {
 		readonly "rpc:Issuers.Revoke": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Issuers.Revoke";
-			readonly input: typeof Types0.AuthIssuersRevokeRequestCodec;
-			readonly output: typeof Types0.AuthIssuersRevokeResponseCodec;
+			readonly input: typeof Types0.AuthIssuerRevokeRequestCodec;
+			readonly output: typeof Types0.AuthIssuerRevokeResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
 		};
-		readonly "rpc:Participants.Get": {
+		readonly "rpc:Issuers.Rotate": {
 			readonly kind: "rpc";
-			readonly descriptorName: "rpc:Participants.Get";
-			readonly input: typeof Types0.AuthParticipantsGetRequestCodec;
-			readonly output: typeof Types0.AuthParticipantsGetResponseCodec;
+			readonly descriptorName: "rpc:Issuers.Rotate";
+			readonly input: typeof Types0.AuthIssuerRotateRequestCodec;
+			readonly output: typeof Types0.AuthIssuerRotateResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
 		};
-		readonly "rpc:Participants.Install": {
+		readonly "rpc:OAuthClients.Delete": {
 			readonly kind: "rpc";
-			readonly descriptorName: "rpc:Participants.Install";
-			readonly input: typeof Types0.AuthParticipantsInstallRequestCodec;
-			readonly output: typeof Types0.AuthParticipantsInstallResponseCodec;
+			readonly descriptorName: "rpc:OAuthClients.Delete";
+			readonly input: typeof Types0.AuthOAuthClientMutationRequestCodec;
+			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
 		};
-		readonly "rpc:Participants.List": {
+		readonly "rpc:OAuthClients.Disable": {
 			readonly kind: "rpc";
-			readonly descriptorName: "rpc:Participants.List";
-			readonly input: typeof Types0.AuthParticipantsListRequestCodec;
-			readonly output: typeof Types0.AuthParticipantsListResponseCodec;
+			readonly descriptorName: "rpc:OAuthClients.Disable";
+			readonly input: typeof Types0.AuthOAuthClientMutationRequestCodec;
+			readonly output: typeof Types0.AuthMutationResultCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:OAuthClients.Get": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:OAuthClients.Get";
+			readonly input: typeof Types0.AuthOAuthClientGetRequestCodec;
+			readonly output: typeof Types0.AuthOAuthClientGetResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:OAuthClients.List": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:OAuthClients.List";
+			readonly input: typeof Types0.AuthPageRequestCodec;
+			readonly output: typeof Types0.AuthOAuthClientsListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: "cursor";
 		};
-		readonly "rpc:Portals.Get": {
+		readonly "rpc:OAuthClients.Put": {
 			readonly kind: "rpc";
-			readonly descriptorName: "rpc:Portals.Get";
-			readonly input: typeof Types0.AuthPortalsGetRequestCodec;
-			readonly output: typeof Types0.AuthPortalsGetResponseCodec;
+			readonly descriptorName: "rpc:OAuthClients.Put";
+			readonly input: typeof Types0.AuthOAuthClientPutRequestCodec;
+			readonly output: typeof Types0.AuthOAuthClientGetResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
 		};
-		readonly "rpc:Portals.GrantOverrides.List": {
+		readonly "rpc:OIDCProviders.Delete": {
 			readonly kind: "rpc";
-			readonly descriptorName: "rpc:Portals.GrantOverrides.List";
-			readonly input: typeof Types0.AuthPortalsGrantOverridesListRequestCodec;
-			readonly output: typeof Types0.AuthPortalsGrantOverridesListResponseCodec;
+			readonly descriptorName: "rpc:OIDCProviders.Delete";
+			readonly input: typeof Types0.AuthOIDCProviderMutationRequestCodec;
+			readonly output: typeof Types0.AuthMutationResultCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:OIDCProviders.Disable": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:OIDCProviders.Disable";
+			readonly input: typeof Types0.AuthOIDCProviderMutationRequestCodec;
+			readonly output: typeof Types0.AuthMutationResultCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:OIDCProviders.Get": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:OIDCProviders.Get";
+			readonly input: typeof Types0.AuthOIDCProviderGetRequestCodec;
+			readonly output: typeof Types0.AuthOIDCProviderGetResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:OIDCProviders.List": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:OIDCProviders.List";
+			readonly input: typeof Types0.AuthPageRequestCodec;
+			readonly output: typeof Types0.AuthOIDCProvidersListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: "cursor";
 		};
-		readonly "rpc:Portals.GrantOverrides.Put": {
+		readonly "rpc:OIDCProviders.Put": {
 			readonly kind: "rpc";
-			readonly descriptorName: "rpc:Portals.GrantOverrides.Put";
-			readonly input: typeof Types0.AuthPortalsGrantOverridesPutRequestCodec;
-			readonly output: typeof Types0.AuthPortalsGrantOverridesPutResponseCodec;
+			readonly descriptorName: "rpc:OIDCProviders.Put";
+			readonly input: typeof Types0.AuthOIDCProviderPutRequestCodec;
+			readonly output: typeof Types0.AuthOIDCProviderGetResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
 		};
-		readonly "rpc:Portals.GrantOverrides.Remove": {
+		readonly "rpc:OIDCRoleMappings.Delete": {
 			readonly kind: "rpc";
-			readonly descriptorName: "rpc:Portals.GrantOverrides.Remove";
-			readonly input: typeof Types0.AuthPortalsGrantOverridesRemoveRequestCodec;
-			readonly output: typeof Types0.AuthPortalsGrantOverridesRemoveResponseCodec;
+			readonly descriptorName: "rpc:OIDCRoleMappings.Delete";
+			readonly input: typeof Types0.AuthOIDCRoleMappingDeleteRequestCodec;
+			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
 		};
-		readonly "rpc:Portals.List": {
+		readonly "rpc:OIDCRoleMappings.List": {
 			readonly kind: "rpc";
-			readonly descriptorName: "rpc:Portals.List";
-			readonly input: typeof Types0.AuthPortalsListRequestCodec;
-			readonly output: typeof Types0.AuthPortalsListResponseCodec;
+			readonly descriptorName: "rpc:OIDCRoleMappings.List";
+			readonly input: typeof Types0.AuthOIDCRoleMappingsListRequestCodec;
+			readonly output: typeof Types0.AuthOIDCRoleMappingsListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: "cursor";
 		};
-		readonly "rpc:Portals.LoginSettings.Get": {
+		readonly "rpc:OIDCRoleMappings.Put": {
 			readonly kind: "rpc";
-			readonly descriptorName: "rpc:Portals.LoginSettings.Get";
-			readonly input: typeof Types0.AuthPortalsLoginSettingsGetRequestCodec;
-			readonly output: typeof Types0.AuthPortalsLoginSettingsGetResponseCodec;
+			readonly descriptorName: "rpc:OIDCRoleMappings.Put";
+			readonly input: typeof Types0.AuthOIDCRoleMappingPutRequestCodec;
+			readonly output: typeof Types0.AuthOIDCRoleMappingPutResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
 		};
-		readonly "rpc:Portals.LoginSettings.Update": {
+		readonly "rpc:PlatformDelegations.List": {
 			readonly kind: "rpc";
-			readonly descriptorName: "rpc:Portals.LoginSettings.Update";
-			readonly input: typeof Types0.AuthPortalsLoginSettingsUpdateRequestCodec;
-			readonly output: typeof Types0.AuthPortalsLoginSettingsUpdateResponseCodec;
+			readonly descriptorName: "rpc:PlatformDelegations.List";
+			readonly input: typeof Types0.AuthPageRequestCodec;
+			readonly output: typeof Types0.AuthPlatformDelegationsListResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: "cursor";
+		};
+		readonly "rpc:PlatformDelegations.Put": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:PlatformDelegations.Put";
+			readonly input: typeof Types0.AuthPlatformDelegationPutRequestCodec;
+			readonly output: typeof Types0.AuthPlatformDelegationPutResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
 		};
-		readonly "rpc:Portals.Put": {
+		readonly "rpc:PlatformDelegations.Revoke": {
 			readonly kind: "rpc";
-			readonly descriptorName: "rpc:Portals.Put";
-			readonly input: typeof Types0.AuthPortalsPutRequestCodec;
-			readonly output: typeof Types0.AuthPortalsPutResponseCodec;
+			readonly descriptorName: "rpc:PlatformDelegations.Revoke";
+			readonly input: typeof Types0.AuthPlatformDelegationRevokeRequestCodec;
+			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
 		};
-		readonly "rpc:Portals.Remove": {
+		readonly "rpc:PlatformPrivileges.Assign": {
 			readonly kind: "rpc";
-			readonly descriptorName: "rpc:Portals.Remove";
-			readonly input: typeof Types0.AuthPortalsRemoveRequestCodec;
-			readonly output: typeof Types0.AuthPortalsRemoveResponseCodec;
+			readonly descriptorName: "rpc:PlatformPrivileges.Assign";
+			readonly input: typeof Types0.AuthPlatformAssignRequestCodec;
+			readonly output: typeof Types0.AuthPlatformAssignResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
 		};
-		readonly "rpc:Portals.Routes.Put": {
+		readonly "rpc:PlatformPrivileges.List": {
 			readonly kind: "rpc";
-			readonly descriptorName: "rpc:Portals.Routes.Put";
-			readonly input: typeof Types0.AuthPortalsRoutesPutRequestCodec;
-			readonly output: typeof Types0.AuthPortalsRoutesPutResponseCodec;
+			readonly descriptorName: "rpc:PlatformPrivileges.List";
+			readonly input: typeof Types0.AuthPageRequestCodec;
+			readonly output: typeof Types0.AuthPlatformAssignmentsListResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: "cursor";
+		};
+		readonly "rpc:PlatformPrivileges.Revoke": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:PlatformPrivileges.Revoke";
+			readonly input: typeof Types0.AuthPlatformRevokeRequestCodec;
+			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
 		};
-		readonly "rpc:Portals.Routes.Remove": {
+		readonly "rpc:Principals.EffectiveAccess": {
 			readonly kind: "rpc";
-			readonly descriptorName: "rpc:Portals.Routes.Remove";
-			readonly input: typeof Types0.AuthPortalsRoutesRemoveRequestCodec;
-			readonly output: typeof Types0.AuthPortalsRoutesRemoveResponseCodec;
+			readonly descriptorName: "rpc:Principals.EffectiveAccess";
+			readonly input: typeof Types0.AuthPrincipalRequestCodec;
+			readonly output: typeof Types0.AuthEffectiveAccessResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:Resources.Get": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Resources.Get";
+			readonly input: typeof Types0.AuthResourceGetRequestCodec;
+			readonly output: typeof Types0.AuthResourceGetResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:Resources.List": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Resources.List";
+			readonly input: typeof Types0.AuthResourcesListRequestCodec;
+			readonly output: typeof Types0.AuthResourcesListResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: "cursor";
+		};
+		readonly "rpc:Resources.Remove": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Resources.Remove";
+			readonly input: typeof Types0.AuthResourceRemoveRequestCodec;
+			readonly output: typeof Types0.AuthMutationResultCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:RoleAssignments.Assign": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:RoleAssignments.Assign";
+			readonly input: typeof Types0.AuthRoleAssignRequestCodec;
+			readonly output: typeof Types0.AuthRoleAssignResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:RoleAssignments.List": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:RoleAssignments.List";
+			readonly input: typeof Types0.AuthRoleAssignmentsListRequestCodec;
+			readonly output: typeof Types0.AuthRoleAssignmentsListResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: "cursor";
+		};
+		readonly "rpc:RoleAssignments.Revoke": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:RoleAssignments.Revoke";
+			readonly input: typeof Types0.AuthRoleRevokeRequestCodec;
+			readonly output: typeof Types0.AuthMutationResultCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:Roles.Delete": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Roles.Delete";
+			readonly input: typeof Types0.AuthRoleDeleteRequestCodec;
+			readonly output: typeof Types0.AuthMutationResultCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:Roles.Get": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Roles.Get";
+			readonly input: typeof Types0.AuthRoleGetRequestCodec;
+			readonly output: typeof Types0.AuthRoleGetResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:Roles.List": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Roles.List";
+			readonly input: typeof Types0.AuthPageRequestCodec;
+			readonly output: typeof Types0.AuthRolesListResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: "cursor";
+		};
+		readonly "rpc:Roles.Put": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Roles.Put";
+			readonly input: typeof Types0.AuthRolePutRequestCodec;
+			readonly output: typeof Types0.AuthRolePutResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -558,8 +803,8 @@ declare const __api: {
 		readonly "rpc:ServiceInstances.Disable": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:ServiceInstances.Disable";
-			readonly input: typeof Types0.AuthServiceInstancesDisableRequestCodec;
-			readonly output: typeof Types0.AuthServiceInstancesDisableResponseCodec;
+			readonly input: typeof Types0.AuthInstanceMutationRequestCodec;
+			readonly output: typeof Types0.AuthInstanceMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -567,8 +812,8 @@ declare const __api: {
 		readonly "rpc:ServiceInstances.Enable": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:ServiceInstances.Enable";
-			readonly input: typeof Types0.AuthServiceInstancesEnableRequestCodec;
-			readonly output: typeof Types0.AuthServiceInstancesEnableResponseCodec;
+			readonly input: typeof Types0.AuthInstanceMutationRequestCodec;
+			readonly output: typeof Types0.AuthInstanceMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -576,8 +821,8 @@ declare const __api: {
 		readonly "rpc:ServiceInstances.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:ServiceInstances.List";
-			readonly input: typeof Types0.AuthServiceInstancesListRequestCodec;
-			readonly output: typeof Types0.AuthServiceInstancesListResponseCodec;
+			readonly input: typeof Types0.AuthInstancesListRequestCodec;
+			readonly output: typeof Types0.AuthInstancesListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: "cursor";
@@ -585,8 +830,8 @@ declare const __api: {
 		readonly "rpc:ServiceInstances.Provision": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:ServiceInstances.Provision";
-			readonly input: typeof Types0.AuthServiceInstancesProvisionRequestCodec;
-			readonly output: typeof Types0.AuthServiceInstancesProvisionResponseCodec;
+			readonly input: typeof Types0.AuthInstanceProvisionRequestCodec;
+			readonly output: typeof Types0.AuthInstanceProvisionResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -594,8 +839,8 @@ declare const __api: {
 		readonly "rpc:ServiceInstances.Remove": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:ServiceInstances.Remove";
-			readonly input: typeof Types0.AuthServiceInstancesRemoveRequestCodec;
-			readonly output: typeof Types0.AuthServiceInstancesRemoveResponseCodec;
+			readonly input: typeof Types0.AuthInstanceMutationRequestCodec;
+			readonly output: typeof Types0.AuthInstanceMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -603,7 +848,7 @@ declare const __api: {
 		readonly "rpc:Sessions.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Sessions.List";
-			readonly input: typeof Types0.AuthSessionsListRequestCodec;
+			readonly input: typeof Types0.AuthPageRequestCodec;
 			readonly output: typeof Types0.AuthSessionsListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
@@ -612,7 +857,7 @@ declare const __api: {
 		readonly "rpc:Sessions.Logout": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Sessions.Logout";
-			readonly input: typeof Types0.AuthSessionsLogoutRequestCodec;
+			readonly input: typeof Types0.AuthEmptyCodec;
 			readonly output: typeof Types0.AuthSessionsLogoutResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
@@ -621,7 +866,7 @@ declare const __api: {
 		readonly "rpc:Sessions.Me": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Sessions.Me";
-			readonly input: typeof Types0.AuthSessionsMeRequestCodec;
+			readonly input: typeof Types0.AuthEmptyCodec;
 			readonly output: typeof Types0.AuthSessionsMeResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
@@ -630,8 +875,8 @@ declare const __api: {
 		readonly "rpc:Sessions.Revoke": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Sessions.Revoke";
-			readonly input: typeof Types0.AuthSessionsRevokeRequestCodec;
-			readonly output: typeof Types0.AuthSessionsRevokeResponseCodec;
+			readonly input: typeof Types0.AuthLoginRevokeRequestCodec;
+			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -639,7 +884,7 @@ declare const __api: {
 		readonly "rpc:UserIdentities.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:UserIdentities.List";
-			readonly input: typeof Types0.AuthUserIdentitiesListRequestCodec;
+			readonly input: typeof Types0.AuthPageRequestCodec;
 			readonly output: typeof Types0.AuthUserIdentitiesListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
@@ -648,8 +893,8 @@ declare const __api: {
 		readonly "rpc:UserIdentities.Unlink": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:UserIdentities.Unlink";
-			readonly input: typeof Types0.AuthUserIdentitiesUnlinkRequestCodec;
-			readonly output: typeof Types0.AuthUserIdentitiesUnlinkResponseCodec;
+			readonly input: typeof Types0.AuthUserIdentityUnlinkRequestCodec;
+			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -657,8 +902,8 @@ declare const __api: {
 		readonly "rpc:Users.Create": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Users.Create";
-			readonly input: typeof Types0.AuthUsersCreateRequestCodec;
-			readonly output: typeof Types0.AuthUsersCreateResponseCodec;
+			readonly input: typeof Types0.AuthUserCreateRequestCodec;
+			readonly output: typeof Types0.AuthUserGetResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -666,8 +911,8 @@ declare const __api: {
 		readonly "rpc:Users.Get": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Users.Get";
-			readonly input: typeof Types0.AuthUsersGetRequestCodec;
-			readonly output: typeof Types0.AuthUsersGetResponseCodec;
+			readonly input: typeof Types0.AuthUserGetRequestCodec;
+			readonly output: typeof Types0.AuthUserGetResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -675,8 +920,8 @@ declare const __api: {
 		readonly "rpc:Users.IdentityLink.Create": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Users.IdentityLink.Create";
-			readonly input: typeof Types0.AuthUsersIdentityLinkCreateRequestCodec;
-			readonly output: typeof Types0.AuthUsersIdentityLinkCreateResponseCodec;
+			readonly input: typeof Types0.AuthIdentityLinkCreateRequestCodec;
+			readonly output: typeof Types0.AuthIdentityLinkCreateResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -684,7 +929,7 @@ declare const __api: {
 		readonly "rpc:Users.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Users.List";
-			readonly input: typeof Types0.AuthUsersListRequestCodec;
+			readonly input: typeof Types0.AuthPageRequestCodec;
 			readonly output: typeof Types0.AuthUsersListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
@@ -693,8 +938,8 @@ declare const __api: {
 		readonly "rpc:Users.Password.Change": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Users.Password.Change";
-			readonly input: typeof Types0.AuthUsersPasswordChangeRequestCodec;
-			readonly output: typeof Types0.AuthUsersPasswordChangeResponseCodec;
+			readonly input: typeof Types0.AuthPasswordChangeRequestCodec;
+			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -702,8 +947,8 @@ declare const __api: {
 		readonly "rpc:Users.PasswordReset.Create": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Users.PasswordReset.Create";
-			readonly input: typeof Types0.AuthUsersPasswordResetCreateRequestCodec;
-			readonly output: typeof Types0.AuthUsersPasswordResetCreateResponseCodec;
+			readonly input: typeof Types0.AuthPasswordResetCreateRequestCodec;
+			readonly output: typeof Types0.AuthPasswordResetCreateResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -711,8 +956,8 @@ declare const __api: {
 		readonly "rpc:Users.Resolve": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Users.Resolve";
-			readonly input: typeof Types0.AuthUsersResolveRequestCodec;
-			readonly output: typeof Types0.AuthUsersResolveResponseCodec;
+			readonly input: typeof Types0.AuthEmptyCodec;
+			readonly output: typeof Types0.AuthUserGetResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
@@ -720,86 +965,51 @@ declare const __api: {
 		readonly "rpc:Users.Update": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Users.Update";
-			readonly input: typeof Types0.AuthUsersUpdateRequestCodec;
-			readonly output: typeof Types0.AuthUsersUpdateResponseCodec;
+			readonly input: typeof Types0.AuthUserUpdateRequestCodec;
+			readonly output: typeof Types0.AuthUserGetResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
 		};
-		readonly "operation:DeviceUserAuthorities.Resolve": {
-			readonly kind: "operation";
-			readonly descriptorName: "operation:DeviceUserAuthorities.Resolve";
-			readonly input: typeof Types0.AuthDeviceUserAuthoritiesResolveRequestCodec;
-			readonly output: typeof Types0.AuthDeviceUserAuthoritiesResolveResponseCodec;
-			readonly progress: typeof Types0.AuthDeviceUserAuthoritiesResolveProgressCodec;
-			readonly update: typeof Types0.AuthDeviceUserAuthoritiesResolveProgressCodec;
-			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
-			readonly signals: {};
-			readonly upload: false;
+		readonly "event:AuthorizationSessions.Retired": {
+			readonly kind: "event";
+			readonly descriptorName: "event:AuthorizationSessions.Retired";
+			readonly payload: typeof Types0.AuthSecurityEventCodec;
+			readonly parameters: readonly [];
 		};
 		readonly "event:Connections.Closed": {
 			readonly kind: "event";
 			readonly descriptorName: "event:Connections.Closed";
-			readonly payload: typeof Types0.AuthConnectionsClosedEventCodec;
+			readonly payload: typeof Types0.AuthSecurityEventCodec;
 			readonly parameters: readonly [];
 		};
 		readonly "event:Connections.Kicked": {
 			readonly kind: "event";
 			readonly descriptorName: "event:Connections.Kicked";
-			readonly payload: typeof Types0.AuthConnectionsKickedEventCodec;
+			readonly payload: typeof Types0.AuthSecurityEventCodec;
 			readonly parameters: readonly [];
 		};
 		readonly "event:Connections.Opened": {
 			readonly kind: "event";
 			readonly descriptorName: "event:Connections.Opened";
-			readonly payload: typeof Types0.AuthConnectionsOpenedEventCodec;
-			readonly parameters: readonly [];
-		};
-		readonly "event:DeviceUserAuthorities.Approved": {
-			readonly kind: "event";
-			readonly descriptorName: "event:DeviceUserAuthorities.Approved";
-			readonly payload: typeof Types0.AuthDeviceUserAuthoritiesApprovedEventCodec;
-			readonly parameters: readonly [readonly ["deploymentId"]];
-		};
-		readonly "event:DeviceUserAuthorities.Requested": {
-			readonly kind: "event";
-			readonly descriptorName: "event:DeviceUserAuthorities.Requested";
-			readonly payload: typeof Types0.AuthDeviceUserAuthoritiesRequestedEventCodec;
-			readonly parameters: readonly [readonly ["deploymentId"]];
-		};
-		readonly "event:DeviceUserAuthorities.Resolved": {
-			readonly kind: "event";
-			readonly descriptorName: "event:DeviceUserAuthorities.Resolved";
-			readonly payload: typeof Types0.AuthDeviceUserAuthoritiesResolvedEventCodec;
-			readonly parameters: readonly [readonly ["deploymentId"]];
-		};
-		readonly "event:DeviceUserAuthorities.ReviewRequested": {
-			readonly kind: "event";
-			readonly descriptorName: "event:DeviceUserAuthorities.ReviewRequested";
-			readonly payload: typeof Types0.AuthDeviceUserAuthoritiesReviewRequestedEventCodec;
-			readonly parameters: readonly [readonly ["deploymentId"]];
-		};
-		readonly "event:Grants.Changed": {
-			readonly kind: "event";
-			readonly descriptorName: "event:Grants.Changed";
-			readonly payload: typeof Types0.AuthGrantsChangedEventCodec;
+			readonly payload: typeof Types0.AuthSecurityEventCodec;
 			readonly parameters: readonly [];
 		};
 		readonly "event:Issuers.Revoked": {
 			readonly kind: "event";
 			readonly descriptorName: "event:Issuers.Revoked";
-			readonly payload: typeof Types0.AuthIssuersRevokedEventCodec;
+			readonly payload: typeof Types0.AuthSecurityEventCodec;
 			readonly parameters: readonly [];
 		};
-		readonly "event:Sessions.Revoked": {
+		readonly "event:Issuers.Rotated": {
 			readonly kind: "event";
-			readonly descriptorName: "event:Sessions.Revoked";
-			readonly payload: typeof Types0.AuthSessionsRevokedEventCodec;
+			readonly descriptorName: "event:Issuers.Rotated";
+			readonly payload: typeof Types0.AuthSecurityEventCodec;
 			readonly parameters: readonly [];
 		};
 	};
 	readonly packageEvidence: unknown;
 };
 export declare const API: typeof __api;
-export declare const API_DIGEST: "I0YAEZwVPNZ3iF5qgO6sH3c2d-DpN_TihGTzSBX5npc";
+export declare const API_DIGEST: "CF6mJ1tZZXKP6VWFqfKo3ey8wHhhcyNPEFybZ53NFPk";
 export {};

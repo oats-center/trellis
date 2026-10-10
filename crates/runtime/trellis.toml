@@ -6,6 +6,7 @@ version = "0.100.0"
 
 [sources]
 types = "src/builtin_source/types.trellis"
+auth_types = "src/builtin_source/auth_types.trellis"
 auth = "src/builtin_source/auth.trellis"
 core = "src/builtin_source/core.trellis"
 state = "src/builtin_source/state.trellis"

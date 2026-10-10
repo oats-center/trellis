@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use serde_json::json;
 use trellis_protocol::{
-    AuthorizationContextRefreshSessionProofInput, AuthorizationPrincipalKind,
-    NativeBootstrapSessionProofInput, SessionProofInput,
+    AuthorizationContextRefreshSessionProofInput, NativeBootstrapSessionProofInput, PrincipalKind,
+    SessionProofInput,
 };
 
 use super::super::connection::{validate_native_runtime_refresh, AppliedNativeAuthorization};
@@ -123,17 +123,17 @@ pub(crate) async fn refresh(
                 unsigned_request: request.clone(),
             };
             match kind {
-                AuthorizationPrincipalKind::Service => (
+                PrincipalKind::Service => (
                     "/bootstrap/service",
                     SessionProofInput::service_bootstrap(input),
                     identity.as_ref(),
                 ),
-                AuthorizationPrincipalKind::Device => (
+                PrincipalKind::Device => (
                     "/bootstrap/device",
                     SessionProofInput::device_bootstrap(input),
                     identity.as_ref(),
                 ),
-                AuthorizationPrincipalKind::User => {
+                PrincipalKind::User => {
                     return Err(TrellisClientError::Bootstrap(
                         "user login cannot use a native credential".into(),
                     ));

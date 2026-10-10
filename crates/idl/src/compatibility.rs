@@ -134,6 +134,19 @@ pub fn compare_implementation(
         issue(&mut issues, "api", "API identity changed");
         return report(issues);
     }
+    for (id, capability) in &previous_api.capabilities {
+        if replacement_api
+            .capabilities
+            .get(id)
+            .is_some_and(|next| next.consent_revision < capability.consent_revision)
+        {
+            issue(
+                &mut issues,
+                format!("capabilities.{id}.consentRevision"),
+                "consent revision decreased for an existing capability identity",
+            );
+        }
+    }
     for (id, action) in &previous_api.actions {
         match replacement_api.actions.get(id) {
             None => issue(

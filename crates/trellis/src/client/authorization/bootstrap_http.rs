@@ -61,7 +61,7 @@ impl BootstrapHttp {
     pub(crate) async fn issuer_key(
         &self,
         key_id: &str,
-    ) -> Result<trellis_protocol::AuthorizationIssuerKey, TrellisClientError> {
+    ) -> Result<trellis_protocol::AuthorityIssuerKey, TrellisClientError> {
         if key_id.len() != 43
             || !key_id
                 .bytes()
@@ -91,7 +91,7 @@ impl BootstrapHttp {
         let body = read_bounded_http_body(response, 4096)
             .await
             .map_err(|error| TrellisClientError::AuthorizationUnavailable(error.to_string()))?;
-        let issuer: trellis_protocol::AuthorizationIssuerKey = serde_json::from_slice(&body)
+        let issuer: trellis_protocol::AuthorityIssuerKey = serde_json::from_slice(&body)
             .map_err(|error| TrellisClientError::AuthorizationUnavailable(error.to_string()))?;
         issuer
             .verifying_key()

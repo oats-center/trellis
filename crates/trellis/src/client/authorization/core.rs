@@ -24,7 +24,7 @@ pub struct VerifiedCaller {
     /// Signed principal identity.
     pub principal_id: String,
     /// Signed principal class.
-    pub principal_kind: trellis_protocol::AuthorizationPrincipalKind,
+    pub principal_kind: trellis_protocol::PrincipalKind,
     /// Installed participant assignment.
     pub participant_id: String,
     /// Server-assigned meta-authority, independent of ordinary permission atoms.

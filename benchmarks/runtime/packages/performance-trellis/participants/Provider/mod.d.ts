@@ -59,24 +59,14 @@ type __Resources = {
 };
 declare const __participant: {
 	readonly digest: string;
-	readonly requiredCapabilities: readonly Readonly<{
-		id: string;
-		consentDigest: string;
-	}>[];
-	readonly requiredGrants: readonly Readonly<{
-		action: string;
-		target: Readonly<Record<string, unknown>>;
-	}>[];
+	readonly requiredCapabilities: readonly string[];
+	readonly optionalCapabilities: readonly string[];
 	readonly kind: "service";
 	readonly id: "performance-trellis.Provider";
 	readonly identity: "performance-trellis.Provider";
 	readonly path: "Provider";
 	readonly implements: readonly [typeof Api0.API];
 	readonly uses: readonly [];
-	readonly optionalGrants: Readonly<Record<string, readonly Readonly<{
-		action: string;
-		target: Readonly<Record<string, unknown>>;
-	}>[]>>;
 	readonly actionNames: __ActionNames;
 	readonly resources: __Resources;
 	readonly __runtimeTypes?: {
@@ -93,17 +83,16 @@ export declare const participant: {
 	readonly identity: typeof __participant.identity;
 	readonly path: typeof __participant.path;
 	readonly digest: typeof __participant.digest;
-	readonly requiredGrants: typeof __participant.requiredGrants;
 	readonly requiredCapabilities: typeof __participant.requiredCapabilities;
 	readonly implements: typeof __participant.implements;
 	readonly uses: typeof __participant.uses;
-	readonly optionalGrants: typeof __participant.optionalGrants;
+	readonly optionalCapabilities: typeof __participant.optionalCapabilities;
 	readonly actionNames: typeof __participant.actionNames;
 	readonly resources: typeof __participant.resources;
 	readonly __runtimeTypes?: typeof __participant.__runtimeTypes;
 	readonly packageEvidence: unknown;
 };
-export declare const PARTICIPANT_DIGEST: "CR1dKraNurVUnws2_9uW0D9X5sGSS4GV_PQJLEw0Jeg";
+export declare const PARTICIPANT_DIGEST: "_DoMqeppa9rCjf6LQweh1hgpHOD9SMS5_5STUbvxkwE";
 export type Participant = typeof participant;
 export type ResourceDescriptors = typeof participant.resources;
 export type ChangesResource = ResourceDescriptors["changes"];

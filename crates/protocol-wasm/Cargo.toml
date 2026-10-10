@@ -10,6 +10,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+base64.workspace = true
 getrandom = { workspace = true, features = ["wasm_js"] }
 serde.workspace = true
 serde_json.workspace = true

@@ -1,5 +1,3 @@
-import { auth } from trellis;
-
 model Value { value: string; }
 model Empty {}
 model KeyedValue { key: string; value: string; }
@@ -21,7 +19,8 @@ api performance@v1 {
   event Changed { payload Value; }
   event Delivered { payload Value; }
   capabilities {
-    public { allows { rpc Echo; rpc PutRecord; rpc ReadRecord; rpc Download; operation Upload; operation Work; operation QueueWork; operation AwaitCancellation; operation AwaitObject; operation QueueKeyed; live Watch; publish event Changed; subscribe event Changed; publish event Delivered; subscribe event Delivered; } }
+    capability workloads { title "Run performance workloads"; description "Exercise measured RPC, operation, transfer, and event paths."; consequence "The caller may run the benchmark workloads and observe their results."; consent_revision 1; allows { rpc Echo; rpc PutRecord; rpc ReadRecord; rpc Download; operation Upload; operation Work; operation QueueWork; operation AwaitCancellation; operation AwaitObject; operation QueueKeyed; live Watch; publish event Changed; subscribe event Changed; subscribe event Delivered; } }
+    capability publishDelivered { title "Publish delivery results"; description "Report a completed durable delivery."; consequence "The provider may publish Delivered events."; consent_revision 1; allows { publish event Delivered; } }
   }
 }
 
@@ -36,7 +35,6 @@ service Provider {
 }
 
 app Caller {
-  use performance { rpc Echo; rpc PutRecord; rpc ReadRecord; rpc Download; operation Upload; operation Work; operation QueueWork; operation AwaitCancellation; operation AwaitObject; operation QueueKeyed; live Watch; publish event Changed; subscribe event Changed; subscribe event Delivered; }
-  use auth { rpc Sessions.Me; rpc Sessions.Logout; }
+  use performance { required capability workloads; }
   state saved { title "Saved"; description "Measured client state round trips."; schema Value; version 1; }
 }

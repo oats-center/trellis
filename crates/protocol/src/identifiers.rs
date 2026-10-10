@@ -1,10 +1,4 @@
-use std::cmp::Ordering;
-
 use crate::ProtocolError;
-
-pub(crate) fn compare_protocol_strings(left: &str, right: &str) -> Ordering {
-    left.encode_utf16().cmp(right.encode_utf16())
-}
 
 fn validate_protocol_identifier(field: &'static str, value: &str) -> Result<(), ProtocolError> {
     if value.is_empty() {

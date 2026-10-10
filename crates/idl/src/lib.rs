@@ -11,16 +11,14 @@ mod projection;
 mod semantic;
 
 pub use canonical::{
-    api_digest, canonical_package, capability_consent_digest, package_digest, participant_digest,
-    selected_surface_digest, CanonicalMode,
+    api_digest, canonical_package, package_digest, participant_digest, selected_surface_digest,
+    CanonicalMode,
 };
 pub use compatibility::{
     compare_implementation, compare_resource, compare_resource_evolution, compare_selected,
     CompatibilityIssue, CompatibilityReport, ResourceCompatibilityReport, RetainedResourceActual,
     SelectedCompatibilityCache,
 };
-#[doc(hidden)]
-pub use compile::selected_permission_atoms;
 pub use compile::SuppliedDependencies;
 pub use projection::json_schema;
 pub use semantic::*;
