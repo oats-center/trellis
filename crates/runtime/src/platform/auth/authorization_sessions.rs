@@ -60,6 +60,8 @@ pub(super) struct CredentialSnapshot {
     pub(super) providers: Vec<AuthorityProvider>,
     pub(super) resource_bindings_digest: Option<String>,
     pub(super) platform_privileges: Vec<PlatformPrivilege>,
+    pub(super) platform_privilege_deadline: Option<i64>,
+    /// Shared credential lifetime, independent of selected permission limits.
     pub(super) not_after: i64,
 }
 
@@ -144,7 +146,7 @@ pub(super) fn credential_snapshot(
             let mut privileges = Vec::new();
             let eligibility:Option<String>=connection.query_row("SELECT requested_privileges_json FROM auth_oauth_clients WHERE client_id=?1 AND state='active'",[&client],|row|row.get(0)).optional()?;
             let delegation:Option<(String,Option<i64>)>=connection.query_row("SELECT approved_privileges_json,expires_at FROM auth_platform_delegations WHERE principal_id=?1 AND client_id=?2 AND binding_kind=?3 AND binding_value=?4 AND (expires_at IS NULL OR expires_at>?5)",params![principal,client,kind,value,now],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
-            let mut not_after = deadline;
+            let mut platform_privilege_deadline = None;
             if let (Some(eligibility), Some((delegation, expires))) = (eligibility, delegation) {
                 let eligibility: Vec<PlatformPrivilege> = decode(&eligibility)?;
                 let delegation: Vec<PlatformPrivilege> = decode(&delegation)?;
@@ -158,9 +160,7 @@ pub(super) fn credential_snapshot(
                     }
                 }
                 if !privileges.is_empty() {
-                    if let Some(expires) = expires {
-                        not_after = not_after.min(expires);
-                    }
+                    platform_privilege_deadline = expires;
                 }
             }
             privileges
@@ -191,7 +191,8 @@ pub(super) fn credential_snapshot(
                 providers: vec![],
                 resource_bindings_digest: None,
                 platform_privileges: privileges,
-                not_after,
+                platform_privilege_deadline,
+                not_after: deadline,
             })
         }
         Credential::ProvisionedIdentity(identity) => {
@@ -260,6 +261,7 @@ pub(super) fn credential_snapshot(
                 providers,
                 resource_bindings_digest: Some(digest(&resources)?),
                 platform_privileges: vec![],
+                platform_privilege_deadline: None,
                 not_after: deadline.unwrap_or(i64::MAX),
             })
         }
@@ -292,11 +294,18 @@ pub(super) fn loses_authority(
     for row in statement.query_map(params![session, now], |row| row.get::<_, Vec<u8>>(0))? {
         let old = trellis_protocol::parse_session_authority(&row?, 1_048_576)?;
         let old = &old.unsigned;
-        if old.expires_at > current.not_after
-            || old
-                .capabilities
-                .iter()
-                .any(|capability| !current.capabilities.contains(capability))
+        if old.expires_at > current.root_not_after
+            || old.capabilities.iter().any(|capability| {
+                !current.capabilities.contains(capability)
+                    || current
+                        .capability_deadlines
+                        .get(&capability.capability_id)
+                        .is_some_and(|deadline| old.expires_at > *deadline)
+            })
+            || (!old.platform_privileges.is_empty()
+                && current
+                    .platform_privilege_deadline
+                    .is_some_and(|deadline| old.expires_at > deadline))
             || old
                 .platform_privileges
                 .iter()
@@ -357,8 +366,8 @@ impl SqliteAuthorizationStore {
             let session=session.unwrap_or_else(id);
             let (kind,grant,identity)=match &admission.credential {Credential::OAuthGrant(grant)=>("oauthGrant",Some(grant.as_str()),None),Credential::ProvisionedIdentity(identity)=>("provisionedIdentity",None,Some(identity.as_str()))};
             let existing:Option<i64>=connection.query_row("SELECT hard_deadline FROM auth_authorization_sessions WHERE authorization_session_id=?1",[&session],|row|row.get(0)).optional()?;
-            let hard_deadline=current.not_after.min(existing.unwrap_or(i64::MAX));
-            let expires_at=hard_deadline.min(now.saturating_add(i64::from(self.settings.authority_lifetime_seconds)));
+            let hard_deadline=current.root_not_after.min(existing.unwrap_or(i64::MAX));
+            let expires_at=current.not_after.min(hard_deadline).min(now.saturating_add(i64::from(self.settings.authority_lifetime_seconds)));
             if expires_at<=now {return Err(AuthError::Denied);}
             let maximum_acceptance=expires_at.saturating_add(i64::from(self.settings.clock_skew_seconds));
             let binding_kind=match &current.binding {SessionBinding::Browser{..}=>"browser",SessionBinding::Native{..}=>"native",SessionBinding::Service{..}=>"service",SessionBinding::Device{..}=>"device"};

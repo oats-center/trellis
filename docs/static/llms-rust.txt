@@ -19,6 +19,8 @@ Explicit one-off consent overrides older remembered choices without changing
 them. Reused choices retain their expiry; later shared withdrawals still retire
 affected sessions. A shortened effective authorization deadline is a reduction
 unless another entitlement path preserves the outstanding authority.
+Deadlines on newly gained rights bound new contexts, not older narrower contexts
+or the logical-session root.
 
 Declare whole capabilities in native IDL, not individual RPC/event grants:
 `required capability read;` is required and `capability export;` is optional.

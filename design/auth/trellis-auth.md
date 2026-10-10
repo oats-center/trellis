@@ -44,6 +44,12 @@ explicit withdrawals still constrain existing grants. Approval commits scoped
 enforcement work atomically when it changes remembered consent or platform
 delegation.
 
+Deadline reductions compare each outstanding context with its shared credential
+limit and the current limits of only the rights that context carries. Newly
+gained capabilities or privileges cannot shorten older, narrower authority.
+Their limits bound newly issued contexts, not the persistent logical-session
+root; spent contexts are excluded after their acceptance deadline.
+
 Trusted native device provisioning commits the device record with its principal,
 deployment, instance, identity key, and entitlements before authority issuance.
 

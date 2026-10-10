@@ -1589,7 +1589,187 @@ fn optional_reduction_requires_new_logical_id_and_old_admission_stays_closed() {
         *session
     );
     assert_eq!(replacement.authority.unsigned.capabilities.len(), 1);
-    assert_eq!(replacement.optional_unavailable, vec![f.write]);
+    assert_eq!(replacement.optional_unavailable, vec![f.write.clone()]);
+    let replacement_session = &replacement.authority.unsigned.authorization_session_id;
+    policy(
+        &f.store,
+        &f.admin,
+        PolicyMutation::CapabilityGrant {
+            principal_id: f.principal.clone(),
+            capability_id: f.write.clone(),
+            expected_revision: 0,
+            expires_at: Some(NOW + 10),
+        },
+        NOW + 2,
+    );
+    while f.store.enforce_next_page(NOW + 2).unwrap().is_some() {}
+    assert!(f
+        .store
+        .resolve_revocation(replacement_session)
+        .unwrap()
+        .is_none());
+    let expanded = f
+        .store
+        .issue_authority(&f.admission, Some(replacement_session), NOW + 3)
+        .unwrap();
+    assert_eq!(
+        expanded.authority.unsigned.authorization_session_id,
+        *replacement_session
+    );
+    assert!(expanded
+        .authority
+        .unsigned
+        .capabilities
+        .iter()
+        .any(|cap| cap.capability_id == f.write));
+    assert_eq!(expanded.authority.unsigned.expires_at, NOW + 10);
+    // The short-lived write context is no longer usable, but the earlier read
+    // context still is. A spent permission deadline cannot become a root limit.
+    let read_only = f
+        .store
+        .issue_authority(&f.admission, Some(replacement_session), NOW + 16)
+        .unwrap();
+    assert_eq!(
+        read_only.authority.unsigned.authorization_session_id,
+        *replacement_session
+    );
+    assert!(!read_only
+        .authority
+        .unsigned
+        .capabilities
+        .iter()
+        .any(|cap| cap.capability_id == f.write));
+    assert!(read_only.authority.unsigned.expires_at > replacement.authority.unsigned.expires_at);
+    assert!(matches!(
+        f.store
+            .issue_authority(&f.admission, Some(session), NOW + 16),
+        Err(AuthError::Retired)
+    ));
+}
+
+#[test]
+fn gained_platform_privilege_deadline_does_not_shorten_unprivileged_contexts() {
+    use trellis_protocol::PlatformPrivilege::ApisAccept;
+    let f = fixture();
+    let mut registration = ClientRegistration {
+        client_id: "native-client".into(),
+        kind: "native".into(),
+        display_name: "Native client".into(),
+        redirect_uris: vec!["http://127.0.0.1:9123/callback".into()],
+        development: false,
+        implied_capabilities: vec![],
+        eligible_privileges: vec![ApisAccept],
+        metadata: serde_json::json!({}),
+        expected_revision: 1,
+    };
+    f.store
+        .register_client(&mutation(&f.admin, &registration), &registration, NOW)
+        .unwrap();
+    policy(
+        &f.store,
+        &f.admin,
+        PolicyMutation::PrivilegeAssign {
+            principal_id: f.principal.clone(),
+            privilege: ApisAccept,
+            expected_revision: 0,
+        },
+        NOW,
+    );
+    let login = f
+        .store
+        .record_verified_login(
+            &VerifiedLogin {
+                principal_id: f.principal.clone(),
+                provider_id: None,
+                upstream_issuer: None,
+                upstream_subject: None,
+                verified_claims: None,
+                expires_at: NOW + 3600,
+            },
+            NOW,
+        )
+        .unwrap();
+    let mut approval = grant_request(&f.principal, &login, &f.read, &f.write, NOW);
+    approval.privileges = vec![ApisAccept];
+    approval.remember = false;
+    let grant = f
+        .store
+        .approve_grant(&mutation(&f.principal, &approval), &approval, NOW)
+        .unwrap();
+    let mut admission = f.admission.clone();
+    admission.credential = Credential::OAuthGrant(grant);
+    registration.expected_revision = 2;
+    registration.eligible_privileges.clear();
+    f.store
+        .register_client(&mutation(&f.admin, &registration), &registration, NOW)
+        .unwrap();
+    let unprivileged = f.store.issue_authority(&admission, None, NOW).unwrap();
+    let session = &unprivileged.authority.unsigned.authorization_session_id;
+    assert!(unprivileged
+        .authority
+        .unsigned
+        .platform_privileges
+        .is_empty());
+    while f.store.enforce_next_page(NOW).unwrap().is_some() {}
+    registration.expected_revision = 3;
+    registration.eligible_privileges = vec![ApisAccept];
+    f.store
+        .register_client(&mutation(&f.admin, &registration), &registration, NOW + 1)
+        .unwrap();
+    approval.remember_until = Some(NOW + 10);
+    f.store
+        .approve_grant(&mutation(&f.principal, &approval), &approval, NOW + 1)
+        .unwrap();
+    while f.store.enforce_next_page(NOW + 1).unwrap().is_some() {}
+    assert!(f.store.resolve_revocation(session).unwrap().is_none());
+    let privileged = f
+        .store
+        .issue_authority(&admission, Some(session), NOW + 2)
+        .unwrap();
+    assert_eq!(
+        privileged.authority.unsigned.authorization_session_id,
+        *session
+    );
+    assert!(privileged
+        .authority
+        .unsigned
+        .platform_privileges
+        .contains(&ApisAccept));
+    assert_eq!(privileged.authority.unsigned.expires_at, NOW + 10);
+    let renewed = f
+        .store
+        .issue_authority(&admission, Some(session), NOW + 16)
+        .unwrap();
+    assert_eq!(
+        renewed.authority.unsigned.authorization_session_id,
+        *session
+    );
+    assert!(renewed.authority.unsigned.platform_privileges.is_empty());
+    assert!(renewed.authority.unsigned.expires_at > unprivileged.authority.unsigned.expires_at);
+    approval.remember_until = Some(NOW + 100);
+    f.store
+        .approve_grant(&mutation(&f.principal, &approval), &approval, NOW + 16)
+        .unwrap();
+    let longer = f
+        .store
+        .issue_authority(&admission, Some(session), NOW + 17)
+        .unwrap();
+    assert!(longer
+        .authority
+        .unsigned
+        .platform_privileges
+        .contains(&ApisAccept));
+    assert!(longer.authority.unsigned.expires_at > NOW + 25);
+    approval.remember_until = Some(NOW + 25);
+    f.store
+        .approve_grant(&mutation(&f.principal, &approval), &approval, NOW + 18)
+        .unwrap();
+    while f.store.enforce_next_page(NOW + 18).unwrap().is_some() {}
+    assert!(f.store.resolve_revocation(session).unwrap().is_some());
+    assert!(matches!(
+        f.store.issue_authority(&admission, Some(session), NOW + 18),
+        Err(AuthError::Retired)
+    ));
 }
 
 #[test]

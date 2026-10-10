@@ -18,6 +18,8 @@ Explicit one-off consent overrides older remembered choices without changing
 them. Reused choices retain their expiry; later shared withdrawals still retire
 affected sessions. A shortened effective authorization deadline is a reduction
 unless another entitlement path preserves the outstanding authority.
+Deadlines on newly gained rights bound new contexts, not older narrower contexts
+or the logical-session root.
 
 This guidance covers Trellis interfaces, not application engineering policy.
 Services choose their configuration and validation libraries, databases, domain

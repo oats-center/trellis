@@ -30,6 +30,10 @@ pub(crate) struct Evaluation {
     pub(crate) providers: Vec<AuthorityProvider>,
     pub(crate) resource_bindings_digest: Option<String>,
     pub(crate) platform_privileges: Vec<PlatformPrivilege>,
+    pub(crate) platform_privilege_deadline: Option<i64>,
+    pub(crate) capability_deadlines: BTreeMap<String, i64>,
+    pub(crate) root_not_after: i64,
+    /// Issuance limit for the complete current set, not a shared root limit.
     pub(crate) not_after: i64,
     pub(crate) explanations: BTreeMap<String, Vec<String>>,
 }
@@ -216,7 +220,12 @@ pub(super) fn evaluate(
         providers: vec![],
         resource_bindings_digest: root.resource_bindings_digest,
         platform_privileges: root.platform_privileges,
-        not_after: root.not_after,
+        platform_privilege_deadline: root.platform_privilege_deadline,
+        capability_deadlines: BTreeMap::new(),
+        root_not_after: root.not_after,
+        not_after: root
+            .not_after
+            .min(root.platform_privilege_deadline.unwrap_or(i64::MAX)),
         explanations: BTreeMap::new(),
     };
     let required: BTreeSet<_> = result.selection.required.iter().cloned().collect();
@@ -240,11 +249,15 @@ pub(super) fn evaluate(
         if let (Some(current), Some((deadline, sources)), true) =
             (current, entitled.get(&selected), consent)
         {
-            if let Some(deadline) = deadline {
-                result.not_after = result.not_after.min(*deadline);
-            }
-            // Consent has a separate optional deadline, never a compulsory timer.
-            if let Some(deadline) = root.consent_deadlines.get(&selected) {
+            // Entitlement unions and consent bounds apply only to this right.
+            if let Some(deadline) = deadline
+                .iter()
+                .chain(root.consent_deadlines.get(&selected))
+                .min()
+            {
+                result
+                    .capability_deadlines
+                    .insert(selected.clone(), *deadline);
                 result.not_after = result.not_after.min(*deadline);
             }
             result
