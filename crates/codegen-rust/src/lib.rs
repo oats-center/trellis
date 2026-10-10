@@ -186,6 +186,12 @@ fn validate_names(
             .map(|id| (id.as_str(), module_name(id.as_str()))),
     )?;
     reject_collisions(
+        "apps",
+        root.app_requests()
+            .keys()
+            .map(|id| (id.as_str(), module_name(id.as_str()))),
+    )?;
+    reject_collisions(
         "types",
         public_types
             .iter()
@@ -2012,6 +2018,37 @@ mod tests {
             Err(CodegenRustError::IdentifierCollision { .. })
         ));
         assert!(!output.exists());
+    }
+
+    #[test]
+    fn app_module_collisions_preserve_existing_output() {
+        for (source, module) in [
+            ("app FooBar {} app Foo_Bar {}", "fixture_foo_bar"),
+            ("app FooBar {} agent Foo_Bar {}", "fixture_foo_bar"),
+            (
+                "app Sensor_Operator {} device Sensor { app optional Operator {} }",
+                "fixture_sensor_operator",
+            ),
+        ] {
+            let graph = graph(source);
+            let directory = tempfile::tempdir().unwrap();
+            let output = directory.path().join("generated");
+            let existing = output.join("src/apps").join(module).join("mod.rs");
+            fs::create_dir_all(existing.parent().unwrap()).unwrap();
+            fs::write(&existing, "// Last-good generated output.\n").unwrap();
+            assert!(
+                matches!(
+                    generate_rust_package(&graph, &output, "fixture"),
+                    Err(CodegenRustError::IdentifierCollision { .. })
+                ),
+                "colliding requests must be rejected: {source}"
+            );
+            assert_eq!(
+                fs::read_to_string(existing).unwrap(),
+                "// Last-good generated output.\n",
+                "failed generation must preserve the previous app module"
+            );
+        }
     }
 
     #[test]

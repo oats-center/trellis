@@ -1367,6 +1367,9 @@ pub fn verify_session_event(
     let expires_at = i128::from(body.expires_at) * 1_000_000_000;
     if event_time.unix_timestamp_nanos() < not_before
         || event_time.unix_timestamp_nanos() >= expires_at
+        || input.authority.revocation_cutoff.is_some_and(|cutoff| {
+            event_time.unix_timestamp_nanos() >= i128::from(cutoff) * 1_000_000_000
+        })
         || (input.authority.purpose == SessionAuthorityPurpose::Live
             && event_time
                 .unix_timestamp()

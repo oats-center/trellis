@@ -48,7 +48,7 @@ session rights rather than ordinary capability requests.
 
 Historical event verification uses the signed event time and trusted original
 JetStream publication time/stream sequence, never the consumer's read time.
-Original publication must precede ordinary session revocation and authority
+Both timestamps must precede ordinary session revocation and authority
 expiry; current permission to read is a separate authorization check.
 
 1. Author the `.trellis` files explicitly listed by `[sources]`.

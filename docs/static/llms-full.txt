@@ -275,7 +275,7 @@ headers do not establish another identity or carry permission lists.
 Historical event verification requires both the signed event timestamp and
 trusted original JetStream publication metadata (`published` and
 `stream_sequence`). Both timestamps must fall within the publisher authority's
-validity window, and original publication must precede any ordinary session
+validity window, and both must precede any ordinary session
 revocation cutoff. A consumer's read time is not publication evidence; a
 backdated signature cannot authenticate a new publication after expiry or
 revocation. Current permission to read remains separate from past publisher

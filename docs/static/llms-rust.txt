@@ -24,7 +24,7 @@ counters.
 
 Retained events require trusted original JetStream publication metadata as well
 as a signed publisher timestamp. Both times must lie within the authority lease,
-and original publication must precede an ordinary revocation cutoff. Read time
+and both must precede an ordinary revocation cutoff. Read time
 is not publication evidence. Current consumer read authority is separate from
 historical publisher authenticity; service code does not supply its own verifier.
 

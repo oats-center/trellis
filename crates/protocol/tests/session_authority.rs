@@ -123,6 +123,33 @@ fn historical_event_requires_original_publication_before_expiry_and_revocation()
             })
         };
         let retained = check(Some(&publication)).unwrap();
+        if cutoff.is_some() {
+            for (event_time, accepted) in [
+                ("1970-01-01T00:19:59.999999999Z", true),
+                ("1970-01-01T00:20:00Z", false),
+                ("1970-01-01T00:20:00.000000001Z", false),
+            ] {
+                let event = SessionEvent {
+                    event_time: event_time.into(),
+                    ..event.clone()
+                };
+                let proof = sign_session_event(&event, payload, &runtime).unwrap();
+                assert_eq!(
+                    verify_session_event(SessionEventVerificationInput {
+                        authority: &verified,
+                        event: &event,
+                        raw_payload: payload,
+                        proof: &proof,
+                        policy: &policy,
+                        original_publication: Some(&publication),
+                        known_revoked: true,
+                    })
+                    .is_ok(),
+                    accepted,
+                    "signed event time must precede the exclusive cutoff: {event_time}"
+                );
+            }
+        }
         assert_eq!(retained.raw_payload(), payload);
         assert_eq!(
             retained.original_publication().unwrap().stream_sequence,
@@ -400,6 +427,20 @@ fn native_signed_request_verifies_in_packaged_wasm() {
         known_revoked: true,
     })
     .unwrap();
+    let signed_time_cases = [
+        ("1970-01-01T00:19:59.999999999Z", true),
+        ("1970-01-01T00:20:00Z", false),
+        ("1970-01-01T00:20:00.000000001Z", false),
+        ("1970-01-01T00:21:00Z", false),
+    ]
+    .into_iter()
+    .map(|(event_time, accepted)| {
+        let mut candidate = event.clone();
+        candidate.event_time = event_time.into();
+        let proof = sign_session_event(&candidate, payload.as_bytes(), &runtime).unwrap();
+        json!({"event": candidate, "proof": proof, "accepted": accepted})
+    })
+    .collect::<Vec<_>>();
     let fixture = json!({
         "verification": {
             "issuer": issuer,
@@ -428,6 +469,7 @@ fn native_signed_request_verifies_in_packaged_wasm() {
         "eventProofDigest": URL_SAFE_NO_PAD.encode(verified_event.digest()),
         "publisherAuthority": historical_authority.authority(),
         "originalPublication": publication,
+        "signedTimeCases": signed_time_cases,
     });
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let directory = root

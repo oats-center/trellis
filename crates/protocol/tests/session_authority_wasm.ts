@@ -66,12 +66,13 @@ try {
     event: unknown,
     originalPublication: unknown,
     payload = fixture.payload,
+    proof = fixture.eventProof,
   ) =>
     JSON.parse(verify_session_event(
       historical,
       JSON.stringify({
         event,
-        proof: fixture.eventProof,
+        proof,
         policy: fixture.eventVerification.policy,
         originalPublication,
         knownRevoked: true,
@@ -83,6 +84,18 @@ try {
   assertEquals(retained.eventProofDigest, fixture.eventProofDigest);
   assertEquals(retained.publisherAuthority, fixture.publisherAuthority);
   assertEquals(retained.originalPublication, fixture.originalPublication);
+  for (const candidate of fixture.signedTimeCases) {
+    assertEquals(
+      verify(
+        candidate.event,
+        fixture.originalPublication,
+        fixture.payload,
+        candidate.proof,
+      ).ok,
+      candidate.accepted,
+      `signed event time cutoff: ${candidate.event.eventTime}`,
+    );
+  }
   assert(!verify(fixture.event, null).ok);
   assert(
     !verify(fixture.event, {
