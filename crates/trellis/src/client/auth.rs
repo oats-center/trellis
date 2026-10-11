@@ -1,8 +1,9 @@
 use ed25519_dalek::{Signature, Signer, SigningKey};
 use nkeys::{KeyPair, KeyPairType};
 use trellis_protocol::{
-    sign_authorization_event, sign_authorization_request, sign_session_proof,
-    AuthorizationEventProof, AuthorizationRequestProof, SessionProof, SessionProofInput,
+    session_request_signing_digest, sign_session_event, sign_session_proof, sign_session_response,
+    SessionEvent, SessionEventProof, SessionProof, SessionProofInput, SessionRequest,
+    SessionRequestProof, SessionResponse, SessionResponseProof,
 };
 
 use crate::client::proof::{base64url_decode, base64url_encode, sha256};
@@ -88,57 +89,48 @@ impl SessionAuth {
         &self.signing_key
     }
 
-    /// Create the context-bound v1 `proof` header for a signed RPC request.
+    /// Sign the exact publication bytes and catalog-stamped request transcript.
     ///
-    /// The exact NATS reply inbox must be created before signing and used for
-    /// both the proof input and the publish reply.
+    /// Returns the signature and retained request-transcript digest. The caller
+    /// retains that digest for response correlation without hashing the whole
+    /// publication buffer again.
+    /// When a request has a reply, its actual inbox must be created before
+    /// signing. One-way control traffic signs the absence of a reply instead.
     #[doc = concat!("Trellis API operation `", stringify!(create_request_proof), "`.")]
     pub fn create_request_proof(
         &self,
-        context_digest: &str,
-        subject: &str,
-        reply_subject: &str,
+        request: &SessionRequest,
         payload: &[u8],
-        iat: i64,
-        request_id: &str,
-    ) -> Result<AuthorizationRequestProof, TrellisClientError> {
-        if reply_subject.is_empty() {
-            return Err(TrellisClientError::Bootstrap(
-                "request reply subject must not be empty".into(),
-            ));
-        }
-        sign_authorization_request(
-            context_digest,
-            subject,
-            Some(reply_subject),
-            payload,
-            iat,
-            request_id,
-            &self.signing_key,
-        )
-        .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))
+    ) -> Result<(SessionRequestProof, [u8; 32]), TrellisClientError> {
+        let digest = session_request_signing_digest(request, payload)
+            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
+        let signature = self.signing_key.sign(&digest);
+        let proof = SessionRequestProof::parse(base64url_encode(&signature.to_bytes()))
+            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
+        Ok((proof, digest))
     }
 
-    /// Create the context-bound v1 `proof` header for a signed event.
+    /// Sign a catalog-stamped event without interpreting its subject as identity.
     #[doc = concat!("Trellis API operation `", stringify!(create_event_proof), "`.")]
     pub fn create_event_proof(
         &self,
-        context_digest: &str,
-        descriptor_identity: &str,
-        subject: &str,
+        event: &SessionEvent,
         payload: &[u8],
-        event_id: &str,
-        event_time: &str,
-    ) -> Result<AuthorizationEventProof, TrellisClientError> {
-        sign_authorization_event(
-            context_digest,
-            descriptor_identity,
-            subject,
-            payload,
-            event_id,
-            event_time,
-            &self.signing_key,
-        )
-        .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))
+    ) -> Result<SessionEventProof, TrellisClientError> {
+        sign_session_event(event, payload, &self.signing_key)
+            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))
+    }
+
+    /// Authenticate provider result bytes against the retained caller opening.
+    ///
+    /// Provider certification and current authority are checked by the receiver;
+    /// signing a result does not itself assert that this session is a provider.
+    pub fn create_response_proof(
+        &self,
+        response: &SessionResponse,
+        payload: &[u8],
+    ) -> Result<SessionResponseProof, TrellisClientError> {
+        sign_session_response(response, payload, &self.signing_key)
+            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))
     }
 }

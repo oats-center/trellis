@@ -58,6 +58,8 @@ pub fn generate_trellis_bootstrap(options: &TrellisBootstrapOptions) -> Result<(
     let authorization_directory = trellis_out.join("auth");
     trellis_local_bootstrap::generate_local_authorization_issuer(&authorization_directory)
         .map_err(|error| BootstrapError::AuthorizationTrust(error.to_string()))?;
+    trellis_local_bootstrap::generate_local_oauth_storage_key(&authorization_directory)
+        .map_err(|error| BootstrapError::AuthorizationTrust(error.to_string()))?;
     fs::write(
         trellis_out.join("config.toml"),
         render_trellis_config(options),

@@ -6,7 +6,7 @@
     "bench:runtime:browser:build": "cd .. && deno bundle -c ts/deno.json --platform=browser --output=benchmarks/runtime/browser.bundle.js benchmarks/runtime/browser.ts",
     "install": "cargo run --manifest-path ../xtask/Cargo.toml -- install",
     "protocol:wasm": "cargo run --manifest-path ../xtask/Cargo.toml -- protocol-wasm",
-    "browser:embedded": "deno task -c ../web/deno.json build:embedded",
+    "browser:embedded": "deno task -c ../portal/deno.json build:embedded && deno task -c ../web/deno.json build:embedded",
     "build:runtime": "deno task install && deno task protocol:wasm && deno task browser:embedded",
     "packages:build:npm": "deno task -c packages/result/deno.json build:npm && deno task -c packages/trellis/deno.json build:npm && deno task -c packages/trellis-svelte/deno.json build:npm",
     "packages:build:npm:installed": "deno task -c packages/result/deno.json build:npm && deno task -c packages/trellis/deno.json build:npm:installed && deno task -c packages/trellis-svelte/deno.json build:npm",
@@ -30,10 +30,7 @@
     },
     "test:ui-tools": "deno test -A ../web tools",
     "test": {
-      "dependencies": [
-        "test:packages",
-        "test:ui-tools"
-      ]
+      "dependencies": ["test:packages", "test:ui-tools"]
     },
     "test:browser": "deno task install && deno task protocol:wasm && deno task browser:embedded && deno test --parallel -A -c browser/deno.json browser/*.browser_test.ts",
     "test:browser:ui-hosting": "deno test -A -c browser/deno.json browser/ui_hosting.browser_test.ts",
@@ -153,13 +150,9 @@
     ]
   },
   "lint": {
-    "exclude": [
-      "packages/trellis/auth/protocol_wasm"
-    ],
+    "exclude": ["packages/trellis/auth/protocol_wasm"],
     "rules": {
-      "exclude": [
-        "import-map-remap"
-      ]
+      "exclude": ["import-map-remap"]
     }
   }
 }

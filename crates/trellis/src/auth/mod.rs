@@ -6,6 +6,7 @@ mod device_activation;
 mod device_identity;
 mod error;
 mod models;
+mod oauth_store;
 mod portal;
 mod protocol;
 mod session_store;
@@ -27,6 +28,7 @@ pub use models::{
     AdminLoginOutcome, AdminReauthOutcome, AdminSessionState, AgentLoginChallenge, BoundSession,
     DeviceCompanionIdentity, DeviceIdentity, StartAgentLoginOpts,
 };
+pub use oauth_store::{NativeCredentialLease, NativeCredentialScope, NativeOAuthGrant};
 pub use portal::{
     approve_local_login, begin_local_login, complete_local_login, create_portal_binding,
     intent_from_url, perform_local_login, start_portal_transaction, LocalLoginStep, PortalBinding,

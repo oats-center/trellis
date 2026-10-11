@@ -1,17 +1,21 @@
-import config from "../../deno.json" with { type: "json" };
+import config from "../../../package.json" with { type: "json" };
 
-/** Select npm runtime ranges from the import map without shipping build tooling. */
+/** Select runtime ranges from workspace dependencies without shipping build tooling. */
 export function runtimeDependencies(
-  imports: readonly (keyof typeof config.imports)[],
+  imports: readonly string[],
 ): Record<string, string> {
-  return Object.fromEntries(imports.map((name) => {
-    const specifier = config.imports[name];
-    const match = /^npm:((?:@[^/]+\/)?[^@/]+)@([^/]+)/.exec(specifier);
-    if (!match) {
-      throw new Error(
-        `Runtime dependency ${name} is not a versioned npm import`,
-      );
-    }
-    return [match[1], match[2]];
-  }));
+  const dependencies = new Map(Object.entries(config.devDependencies));
+  return Object.fromEntries(
+    imports.map((name) => {
+      const packageName = name
+        .split("/")
+        .slice(0, name.startsWith("@") ? 2 : 1)
+        .join("/");
+      const version = dependencies.get(packageName);
+      if (!version) {
+        throw new Error(`Runtime dependency ${name} has no workspace version`);
+      }
+      return [packageName, version];
+    }),
+  );
 }

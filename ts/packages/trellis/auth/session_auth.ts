@@ -1,24 +1,18 @@
 import { type Authenticator, nkeyAuthenticator } from "@nats-io/nats-core";
 import { fromSeed, Prefix } from "@nats-io/nkeys";
 import { Codec } from "@nats-io/nkeys/lib/codec.js";
-import { ulid } from "ulid";
 
 import type { AuthorizationProviderCache } from "./authorization_context.ts";
 import { trellisCrypto } from "./crypto.ts";
-import { createProof } from "./proof.ts";
+import { createProof, type RequestSignature } from "./proof.ts";
+import type { SessionRequest } from "./protocol_wasm.ts";
 import {
   type SessionProof,
   type SessionProofInput,
   signSessionProof,
 } from "./session_proof.ts";
 import { correctedIatSeconds } from "./time.ts";
-import {
-  base64urlDecode,
-  base64urlEncode,
-  canonicalizeJsonValue,
-  sha256,
-  utf8,
-} from "./utils.ts";
+import { base64urlDecode, base64urlEncode } from "./utils.ts";
 
 export type NatsConnectOptions = {
   authenticator: Authenticator | Authenticator[];
@@ -37,26 +31,22 @@ export type TrellisAuth = {
   authorizationProviderCache?: AuthorizationProviderCache;
 
   createProof: (
-    subject: string,
-    payloadHash: Uint8Array,
-    reply: string,
-    requestId?: string,
-    iat?: number,
-  ) => Promise<string>;
+    request: SessionRequest,
+    payload: Uint8Array,
+  ) => Promise<RequestSignature>;
   signSessionProof: (input: SessionProofInput) => Promise<SessionProof>;
-  natsConnectOptions: (
-    opts: {
-      inboxPrefix: string;
-      contextDigest: string | (() => string);
-      jwt: string | (() => string);
-      authorizationUsable?: () => boolean;
-    },
-  ) => Promise<NatsConnectOptions>;
+  natsConnectOptions: (opts: {
+    inboxPrefix: string;
+    /** Fresh signed admission for this exact ephemeral key, never a refresh token. */
+    admission: string | (() => string);
+    authorizationUsable?: () => boolean;
+  }) => Promise<NatsConnectOptions>;
 };
 
-export async function createAuth(
-  opts: { sessionKeySeed: string; contextDigest?: string | (() => string) },
-): Promise<TrellisAuth> {
+export async function createAuth(opts: {
+  sessionKeySeed: string;
+  contextDigest?: string | (() => string);
+}): Promise<TrellisAuth> {
   const seed = base64urlDecode(opts.sessionKeySeed);
   const signer = await (await trellisCrypto()).signerFromSeed(seed);
   const sessionKey = signer.publicKey;
@@ -64,9 +54,10 @@ export async function createAuth(
   const sessionNkey = fromSeed(encodedSeed).getPublicKey();
   let serverClockOffsetMs = 0;
   const resolveContextDigest = (): string => {
-    const digest = typeof opts.contextDigest === "function"
-      ? opts.contextDigest()
-      : opts.contextDigest;
+    const digest =
+      typeof opts.contextDigest === "function"
+        ? opts.contextDigest()
+        : opts.contextDigest;
     if (digest === undefined) {
       throw new Error("contextDigest is required to sign v1 request proofs");
     }
@@ -89,15 +80,7 @@ export async function createAuth(
       serverClockOffsetMs = clockOffsetMs;
     },
     contextDigest: resolveContextDigest,
-    createProof: (subject, payloadHash, reply, requestId, iat) =>
-      createProof(signer, {
-        contextDigest: resolveContextDigest(),
-        subject,
-        reply,
-        payloadHash,
-        iat: iat ?? currentIat(),
-        requestId: requestId ?? ulid(),
-      }),
+    createProof: (request, payload) => createProof(signer, request, payload),
     signSessionProof: (input) => signSessionProof(input, signer, sessionKey),
     natsConnectOptions: (options) => {
       return Promise.resolve({
@@ -108,20 +91,15 @@ export async function createAuth(
               throw new Error("authorization context is suspended");
             }
             if (!nonce) throw new Error("NATS server nonce is required");
-            const contextDigest = typeof options.contextDigest === "function"
-              ? options.contextDigest()
-              : options.contextDigest;
-            if (!contextDigest) {
-              throw new Error("contextDigest is required for NATS connect");
+            const admission =
+              typeof options.admission === "function"
+                ? options.admission()
+                : options.admission;
+            if (!admission) {
+              throw new Error("signed admission is required for NATS connect");
             }
             return {
-              auth_token: JSON.stringify({
-                format: "trellis.nats-connect-token.v2",
-                contextDigest,
-                routingJwt: typeof options.jwt === "function"
-                  ? options.jwt()
-                  : options.jwt,
-              }),
+              auth_token: admission,
             };
           },
         ],

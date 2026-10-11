@@ -87,6 +87,9 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             renew_ms: Some(5_000),
         }),
         auth: Some(AuthConfig {
+            instance_id: Some(options.runtime.instance_id.clone()),
+            oauth: Some(options.runtime.oauth.clone()),
+            oauth_storage_key_file: Some(PathBuf::from("./auth/oauth-storage.key")),
             local_identity: Some(LocalIdentityConfig {
                 enabled: Some(true),
                 password_min_length: Some(8),

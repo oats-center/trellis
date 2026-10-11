@@ -24,6 +24,11 @@ use trellis_protocol::{
     verify_session_event as verify_session_event_protocol, OriginalEventPublication, SessionEvent,
     SessionEventProof, SessionEventVerificationInput,
 };
+use trellis_protocol::{
+    verify_session_response as verify_session_response_protocol, CatalogActionIdentity,
+    SessionResponse, SessionResponseProof, SessionResponseVerificationInput,
+    SignedProviderCertificate,
+};
 use wasm_bindgen::prelude::*;
 
 /// Generate a high-entropy canonical Transfer v2 session ID.
@@ -432,6 +437,160 @@ struct WireSessionEvent {
     policy: SessionAuthorityVerificationPolicy,
     original_publication: Option<OriginalEventPublication>,
     known_revoked: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct WireSessionResponse {
+    response: SessionResponse,
+    proof: SessionResponseProof,
+    certificate: SignedProviderCertificate,
+    certificate_issuer: AuthorityIssuerKey,
+    pending_request: SessionRequest,
+    pending_request_digest: String,
+    action: CatalogActionIdentity,
+    expected_deployment_id: Option<String>,
+    received_subject: String,
+    policy: SessionAuthorityVerificationPolicy,
+    known_revoked: bool,
+}
+
+/// Shared request transcript digest over the exact publication buffer.
+#[wasm_bindgen]
+pub fn session_request_signing_digest(
+    request_json: &str,
+    raw_payload: &[u8],
+) -> Result<Vec<u8>, JsError> {
+    if request_json.len() > 16_384 {
+        return Err(JsError::new("request identity exceeds byte budget"));
+    }
+    let request: SessionRequest =
+        serde_json::from_str(request_json).map_err(|error| JsError::new(&error.to_string()))?;
+    trellis_protocol::session_request_signing_digest(&request, raw_payload)
+        .map(|digest| digest.to_vec())
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Shared event transcript digest over exact publication bytes.
+#[wasm_bindgen]
+pub fn session_event_signing_digest(
+    event_json: &str,
+    raw_payload: &[u8],
+) -> Result<Vec<u8>, JsError> {
+    if event_json.len() > 16_384 {
+        return Err(JsError::new("event identity exceeds byte budget"));
+    }
+    let event: SessionEvent =
+        serde_json::from_str(event_json).map_err(|error| JsError::new(&error.to_string()))?;
+    trellis_protocol::session_event_signing_digest(&event, raw_payload)
+        .map(|digest| digest.to_vec())
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Shared provider response transcript digest over exact result bytes.
+#[wasm_bindgen]
+pub fn session_response_signing_digest(
+    response_json: &str,
+    raw_payload: &[u8],
+) -> Result<Vec<u8>, JsError> {
+    if response_json.len() > 16_384 {
+        return Err(JsError::new("response identity exceeds byte budget"));
+    }
+    let response: SessionResponse =
+        serde_json::from_str(response_json).map_err(|error| JsError::new(&error.to_string()))?;
+    trellis_protocol::session_response_signing_digest(&response, raw_payload)
+        .map(|digest| digest.to_vec())
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Verify a provider response against a retained opening request and certified action.
+#[wasm_bindgen]
+pub fn verify_session_response(
+    provider: &VerifiedSessionAuthorityHandle,
+    response_json: &str,
+    raw_payload: &[u8],
+) -> String {
+    use base64::Engine as _;
+    if response_json.len() > 1_048_576 {
+        return input_error_result("response");
+    }
+    let input: WireSessionResponse = match serde_json::from_str(response_json) {
+        Ok(input) => input,
+        Err(_) => return input_error_result("response"),
+    };
+    let digest = match base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&input.pending_request_digest)
+    {
+        Ok(bytes)
+            if bytes.len() == 32
+                && base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&bytes)
+                    == input.pending_request_digest =>
+        {
+            bytes
+        }
+        _ => return input_error_result("pendingRequestDigest"),
+    };
+    let Ok(digest) = <[u8; 32]>::try_from(digest.as_slice()) else {
+        return input_error_result("pendingRequestDigest");
+    };
+    match verify_session_response_protocol(SessionResponseVerificationInput {
+        provider: &provider.authority,
+        certificate: &input.certificate,
+        certificate_issuer: &input.certificate_issuer,
+        pending_request: &input.pending_request,
+        pending_request_digest: &digest,
+        action: &input.action,
+        expected_deployment_id: input.expected_deployment_id.as_deref(),
+        received_subject: &input.received_subject,
+        response: &input.response,
+        raw_payload,
+        proof: &input.proof,
+        policy: &input.policy,
+        known_revoked: input.known_revoked,
+    }) {
+        Ok(verified) => json_result(json!({
+            "ok": true,
+            "providerAuthorityDigest": verified.provider().digest(),
+            "response": verified.response(),
+        })),
+        Err(error) => protocol_error_result(&error),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct WireIssuerMetadataVerification {
+    issuer: AuthorityIssuerKey,
+    request: trellis_protocol::IssuerMetadataRequest,
+    request_subject: String,
+    reply_subject: String,
+    now_unix_seconds: i64,
+}
+
+/// Authenticate public metadata against a retained nonce and configured issuer.
+///
+/// The responder's own context is deliberately unnecessary: the pinned Auth
+/// signature authenticates the objects required to resolve that context.
+#[wasm_bindgen]
+pub fn verify_issuer_metadata(verification_json: &str, raw_response: &[u8]) -> String {
+    if verification_json.len() > 16_384 {
+        return input_error_result("metadata");
+    }
+    let input: WireIssuerMetadataVerification = match serde_json::from_str(verification_json) {
+        Ok(input) => input,
+        Err(_) => return input_error_result("metadata"),
+    };
+    match trellis_protocol::verify_issuer_metadata(
+        raw_response,
+        &input.issuer,
+        &input.request,
+        &input.request_subject,
+        &input.reply_subject,
+        input.now_unix_seconds,
+    ) {
+        Ok(verified) => json_result(json!({"ok": true, "response": verified.response()})),
+        Err(error) => protocol_error_result(&error),
+    }
 }
 
 /// Opaque verified authority retained inside the shared Rust/WASM implementation.

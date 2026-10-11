@@ -1,0 +1,10 @@
+{
+  "name": "@oatscenter/trellis-testkit",
+  "version": "0.100.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": "./index.ts",
+  "dependencies": {
+    "@oatscenter/trellis": "0.100.0"
+  }
+}

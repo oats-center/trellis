@@ -1,287 +1,364 @@
-import { publicKeyBase64urlFromSeed } from "../keys.ts";
+import { err, isErr, ok, type Result } from "@oatscenter/result";
+import { AuthError } from "../../errors/AuthError.ts";
 
-const DB_NAME = "trellis-auth";
-const DB_VERSION = 3;
-const STORE_NAME = "installations";
+/** Exact ordinary-app and runtime identity owning one browser OAuth record. */
+export interface BrowserOAuthScope {
+  readonly issuer: string;
+  readonly instanceId: string;
+  readonly account: string;
+  readonly clientId: string;
+  readonly browserOrigin: string;
+  readonly credentialHandle: string;
+}
 
-type BrowserInstallationRecord = {
+/** Identity returned by the verified successful OAuth admission response. */
+export interface BrowserOAuthGrant {
+  readonly principalId: string;
+  readonly oauthGrantId: string;
+  readonly loginSessionId: string;
+  readonly refreshToken: string;
+}
+
+interface OAuthRecord {
   id: string;
-  generation: number;
-  seed?: Uint8Array;
-  sessionKey?: string;
-  loginSessionId?: string;
-  expiresAt?: number | null;
-  pendingIntentId?: string;
-};
+  revision: number;
+  dpop: CryptoKeyPair;
+  wrapping: CryptoKey;
+  iv?: Uint8Array<ArrayBuffer>;
+  ciphertext?: ArrayBuffer;
+  grant?: Omit<BrowserOAuthGrant, "refreshToken">;
+  recoveryRequired?: boolean;
+}
 
-/** Browser-owned installation credential and optional remembered login. */
-export type BrowserSessionCredential = Readonly<{
-  generation: number;
-  seed: Uint8Array;
-  sessionKey: string;
-  loginSessionId?: string;
-  expiresAt?: number | null;
-  pendingIntentId?: string;
-}>;
-
-const temporaryInstallations = new Map<string, BrowserInstallationRecord>();
-
-function openDB(): Promise<IDBDatabase> {
+function requestValue<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onerror = () => reject(request.error);
     request.onsuccess = () => resolve(request.result);
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME, { keyPath: "id" });
-      }
-    };
+    request.onerror = () => reject(request.error);
   });
 }
 
-function validGeneration(value: unknown): value is number {
-  return Number.isSafeInteger(value) && Number(value) >= 0;
+function committed(transaction: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onabort = () => reject(transaction.error);
+    transaction.onerror = () => reject(transaction.error);
+  });
 }
 
-function credential(
-  record: BrowserInstallationRecord | undefined,
-): BrowserSessionCredential | undefined {
-  if (
-    !record || !validGeneration(record.generation) ||
-    !(record.seed instanceof Uint8Array) || !record.sessionKey
-  ) return undefined;
-  return {
-    generation: record.generation,
-    seed: record.seed.slice(),
-    sessionKey: record.sessionKey,
-    ...(record.loginSessionId === undefined
-      ? {}
-      : { loginSessionId: record.loginSessionId }),
-    ...(record.expiresAt === undefined ? {} : { expiresAt: record.expiresAt }),
-    ...(record.pendingIntentId === undefined
-      ? {}
-      : { pendingIntentId: record.pendingIntentId }),
-  };
-}
-
-function expired(record: BrowserInstallationRecord, now: number): boolean {
-  return record.loginSessionId !== undefined && record.expiresAt !== null &&
-    record.expiresAt !== undefined && record.expiresAt <= now;
-}
-
-function tombstone(
-  record: BrowserInstallationRecord,
-): BrowserInstallationRecord {
-  return {
-    id: record.id,
-    generation: validGeneration(record.generation) ? record.generation + 1 : 0,
-  };
-}
-
-/** Canonical identity for one participant installation at one Trellis origin. */
-export function browserInstallationScope(
-  trellisUrl: string,
-  participantId: string,
-): string {
-  return JSON.stringify([
-    "trellis.browser-installation.v2",
-    new URL(trellisUrl).origin,
-    participantId,
+async function recordTransaction<T>(
+  database: IDBDatabase,
+  mode: IDBTransactionMode,
+  operation: (store: IDBObjectStore) => Promise<T>,
+): Promise<T> {
+  const transaction = database.transaction("credentials", mode);
+  const finished = committed(transaction);
+  const [result] = await Promise.all([
+    operation(transaction.objectStore("credentials")),
+    finished,
   ]);
+  return result;
 }
 
-/** Persists only a browser installation key and nullable login metadata. */
+/**
+ * Owns a non-extractable persistent DPoP key and an independently non-extractable
+ * AES-GCM wrapping key in the ordinary application's IndexedDB realm. Refresh
+ * credentials are encrypted and bound to the exact selected scope. Ephemeral
+ * NATS keys and SessionAuthorities are never persisted here. The retired login
+ * installation database is neither read nor migrated.
+ */
 export class BrowserSessionStore {
-  readonly #id: string;
-  readonly #temporary: boolean;
+  readonly #database: IDBDatabase;
+  readonly #scope: string;
+  #record: OAuthRecord;
 
-  constructor(
+  private constructor(
+    database: IDBDatabase,
     scope: string,
-    persistence: "remembered" | "temporary" = "remembered",
+    record: OAuthRecord,
   ) {
-    if (!scope.trim() || scope.length > 4_096) {
-      throw new Error("browser installation scope is invalid");
-    }
-    this.#id = scope;
-    this.#temporary = persistence === "temporary";
+    this.#database = database;
+    this.#scope = scope;
+    this.#record = record;
   }
 
-  async getOrCreateCredential(
-    now = Date.now(),
-  ): Promise<BrowserSessionCredential> {
-    const candidateSeed = crypto.getRandomValues(new Uint8Array(32));
-    const candidateSessionKey = publicKeyBase64urlFromSeed(candidateSeed);
-    if (this.#temporary) {
-      let current = temporaryInstallations.get(this.#id);
-      if (current && expired(current, now)) {
-        current = tombstone(current);
-        temporaryInstallations.set(this.#id, current);
+  /** Open or create custody for this ordinary app, without temporary fallback. */
+  static async open(
+    scope: BrowserOAuthScope,
+  ): Promise<Result<BrowserSessionStore, AuthError>> {
+    if (scope.browserOrigin !== globalThis.location.origin) {
+      return err(new AuthError({ reason: "InvalidCredential" }));
+    }
+    if (
+      !globalThis.navigator?.locks ||
+      !globalThis.indexedDB ||
+      !globalThis.crypto?.subtle
+    ) {
+      return err(new AuthError({ reason: "UnsupportedCredentialStorage" }));
+    }
+    if (
+      !/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(scope.credentialHandle) ||
+      [scope.issuer, scope.instanceId, scope.account, scope.clientId].some(
+        (value) => !value || value.length > 4096,
+      )
+    )
+      return err(new AuthError({ reason: "InvalidCredential" }));
+    const identity = JSON.stringify([
+      scope.issuer,
+      scope.instanceId,
+      scope.account,
+      scope.clientId,
+      scope.browserOrigin,
+      scope.credentialHandle,
+    ]);
+    let database: IDBDatabase | undefined;
+    try {
+      const opening = indexedDB.open("trellis-oauth", 1);
+      opening.onupgradeneeded = () => {
+        opening.result.createObjectStore("credentials", { keyPath: "id" });
+      };
+      database = await requestValue(opening);
+      database.onversionchange = () => database?.close();
+      let record: OAuthRecord | undefined = await recordTransaction(
+        database,
+        "readonly",
+        (store) => requestValue(store.get(identity)),
+      );
+      if (!record) {
+        const dpop = await crypto.subtle.generateKey(
+          { name: "ECDSA", namedCurve: "P-256" },
+          false,
+          ["sign", "verify"],
+        );
+        const wrapping = await crypto.subtle.generateKey(
+          { name: "AES-GCM", length: 256 },
+          false,
+          ["encrypt", "decrypt"],
+        );
+        record = await recordTransaction(
+          database,
+          "readwrite",
+          async (store) => {
+            // A competing tab's existing key and family must never be replaced.
+            let winner: OAuthRecord | undefined = await requestValue(
+              store.get(identity),
+            );
+            if (!winner) {
+              winner = { id: identity, revision: 0, dpop, wrapping };
+              await requestValue(store.add(winner));
+            }
+            return winner;
+          },
+        );
       }
-      const existing = credential(current);
-      if (existing) return existing;
-      const created = {
-        id: this.#id,
-        generation: validGeneration(current?.generation)
-          ? current.generation
-          : 0,
-        seed: candidateSeed,
-        sessionKey: candidateSessionKey,
-      };
-      temporaryInstallations.set(this.#id, created);
-      return credential(created)!;
-    }
-    const db = await openDB();
-    return await new Promise((resolve, reject) => {
-      let result: BrowserSessionCredential;
-      const tx = db.transaction(STORE_NAME, "readwrite");
-      const store = tx.objectStore(STORE_NAME);
-      const request = store.get(this.#id);
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => {
-        let current = request.result as BrowserInstallationRecord | undefined;
-        if (current && expired(current, now)) current = tombstone(current);
-        const existing = credential(current);
-        if (existing) {
-          result = existing;
-          if (current !== request.result) store.put(current);
-          return;
-        }
-        const created = {
-          id: this.#id,
-          generation: validGeneration(current?.generation)
-            ? current.generation
-            : 0,
-          seed: candidateSeed,
-          sessionKey: candidateSessionKey,
-        };
-        store.put(created);
-        result = credential(created)!;
-      };
-      tx.oncomplete = () => {
-        db.close();
-        resolve(result);
-      };
-      tx.onerror = () => reject(tx.error);
-    });
-  }
-
-  async readLogin(
-    now = Date.now(),
-  ): Promise<BrowserSessionCredential | undefined> {
-    if (this.#temporary) {
-      const current = temporaryInstallations.get(this.#id);
-      if (!current) return undefined;
-      if (expired(current, now)) {
-        temporaryInstallations.set(this.#id, tombstone(current));
-        return undefined;
+      if (
+        record.id !== identity ||
+        !Number.isSafeInteger(record.revision) ||
+        record.revision < 0 ||
+        !(record.dpop?.privateKey instanceof CryptoKey) ||
+        !(record.dpop.publicKey instanceof CryptoKey) ||
+        record.dpop.privateKey.extractable ||
+        !(record.wrapping instanceof CryptoKey) ||
+        record.wrapping.extractable
+      ) {
+        database.close();
+        return err(new AuthError({ reason: "InvalidCredential" }));
       }
-      return credential(current);
+      return ok(new BrowserSessionStore(database, identity, record));
+    } catch {
+      database?.close();
+      return err(new AuthError({ reason: "StorageUnavailable" }));
     }
-    const db = await openDB();
-    return await new Promise((resolve, reject) => {
-      let result: BrowserSessionCredential | undefined;
-      const tx = db.transaction(STORE_NAME, "readwrite");
-      const store = tx.objectStore(STORE_NAME);
-      const request = store.get(this.#id);
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => {
-        const current = request.result as BrowserInstallationRecord | undefined;
-        if (current && expired(current, now)) {
-          store.put(tombstone(current));
-          return;
+  }
+
+  /** Non-extractable signing handles for the standards client's DPoP adapter. */
+  get dpop(): Readonly<CryptoKeyPair> {
+    return { ...this.#record.dpop };
+  }
+
+  /** Decrypt this exact scope's refresh credential into transient SDK memory. */
+  async refreshToken(): Promise<Result<string | undefined, AuthError>> {
+    if (this.#record.recoveryRequired) {
+      return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
+    }
+    const { iv, ciphertext } = this.#record;
+    if (!iv && !ciphertext) return ok(undefined);
+    if (!iv || !ciphertext) {
+      return err(new AuthError({ reason: "InvalidCredential" }));
+    }
+    try {
+      const bytes = await crypto.subtle.decrypt(
+        {
+          name: "AES-GCM",
+          iv,
+          additionalData: new TextEncoder().encode(this.#scope),
+        },
+        this.#record.wrapping,
+        ciphertext,
+      );
+      const token = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      if (!token) return err(new AuthError({ reason: "InvalidCredential" }));
+      return ok(token);
+    } catch {
+      return err(new AuthError({ reason: "InvalidCredential" }));
+    }
+  }
+
+  /**
+   * Commit rotation only if this store still owns the read revision. A stale tab
+   * cannot overwrite another tab's newly rotated family or a cleared login.
+   */
+  async #saveRefreshToken(
+    token: string | undefined,
+    grant: OAuthRecord["grant"] = this.#record.grant,
+    recoveryRequired = false,
+  ): Promise<Result<void, AuthError>> {
+    try {
+      const iv =
+        token === undefined
+          ? undefined
+          : crypto.getRandomValues(new Uint8Array(12));
+      const ciphertext =
+        iv === undefined
+          ? undefined
+          : await crypto.subtle.encrypt(
+              {
+                name: "AES-GCM",
+                iv,
+                additionalData: new TextEncoder().encode(this.#scope),
+              },
+              this.#record.wrapping,
+              new TextEncoder().encode(token),
+            );
+      const replacement = await recordTransaction(
+        this.#database,
+        "readwrite",
+        async (store) => {
+          const current: OAuthRecord | undefined = await requestValue(
+            store.get(this.#scope),
+          );
+          if (!current || current.revision !== this.#record.revision)
+            return undefined;
+          const replacement: OAuthRecord = {
+            id: this.#scope,
+            revision: current.revision + 1,
+            dpop: current.dpop,
+            wrapping: current.wrapping,
+            iv,
+            ciphertext,
+            grant,
+            recoveryRequired,
+          };
+          await requestValue(store.put(replacement));
+          return replacement;
+        },
+      );
+      if (!replacement) return err(new AuthError({ reason: "Conflict" }));
+      this.#record = replacement;
+      return ok(undefined);
+    } catch {
+      return err(new AuthError({ reason: "StorageUnavailable" }));
+    }
+  }
+
+  /** Bind an unused credential handle to the verified user and initial family. */
+  async rememberGrant(
+    grant: BrowserOAuthGrant,
+  ): Promise<Result<void, AuthError>> {
+    if (
+      !grant.principalId ||
+      !grant.oauthGrantId ||
+      !grant.loginSessionId ||
+      !grant.refreshToken
+    ) {
+      return err(new AuthError({ reason: "InvalidCredential" }));
+    }
+    try {
+      return await navigator.locks.request(this.#scope, async () => {
+        const current: OAuthRecord | undefined = await recordTransaction(
+          this.#database,
+          "readonly",
+          (store) => requestValue(store.get(this.#scope)),
+        );
+        if (
+          !current ||
+          (current.grant && current.grant.principalId !== grant.principalId)
+        ) {
+          return err(new AuthError({ reason: "Conflict" }));
         }
-        result = credential(current);
-      };
-      tx.oncomplete = () => {
-        db.close();
-        resolve(result);
-      };
-      tx.onerror = () => reject(tx.error);
-    });
-  }
-
-  rememberIntent(
-    expected: Pick<BrowserSessionCredential, "generation" | "sessionKey">,
-    intentId: string,
-  ): Promise<boolean> {
-    return this.#update((current) => {
-      if (
-        current.generation !== expected.generation ||
-        current.sessionKey !== expected.sessionKey
-      ) return undefined;
-      return { ...current, pendingIntentId: intentId };
-    });
-  }
-
-  completeBind(
-    expected: Pick<
-      BrowserSessionCredential,
-      "generation" | "sessionKey" | "pendingIntentId"
-    >,
-    login: { loginSessionId: string; expiresAt: number | null },
-  ): Promise<boolean> {
-    return this.#update((current) => {
-      if (
-        current.generation !== expected.generation ||
-        current.sessionKey !== expected.sessionKey ||
-        !expected.pendingIntentId ||
-        current.pendingIntentId !== expected.pendingIntentId
-      ) return undefined;
-      const { pendingIntentId: _, ...retained } = current;
-      return { ...retained, ...login };
-    });
-  }
-
-  clearLogin(
-    expected: Pick<BrowserSessionCredential, "generation" | "sessionKey"> & {
-      loginSessionId?: string;
-    },
-  ): Promise<boolean> {
-    return this.#update((current) => {
-      if (
-        current.generation !== expected.generation ||
-        current.sessionKey !== expected.sessionKey ||
-        (expected.loginSessionId !== undefined &&
-          current.loginSessionId !== expected.loginSessionId)
-      ) return undefined;
-      return tombstone(current);
-    });
-  }
-
-  async #update(
-    update: (
-      current: BrowserInstallationRecord,
-    ) => BrowserInstallationRecord | undefined,
-  ): Promise<boolean> {
-    if (this.#temporary) {
-      const current = temporaryInstallations.get(this.#id);
-      if (!current) return false;
-      const next = update(current);
-      if (!next) return false;
-      temporaryInstallations.set(this.#id, next);
-      return true;
+        this.#record = current;
+        const { refreshToken, ...identity } = grant;
+        return await this.#saveRefreshToken(refreshToken, identity);
+      });
+    } catch {
+      return err(new AuthError({ reason: "StorageUnavailable" }));
     }
-    const db = await openDB();
-    return await new Promise((resolve, reject) => {
-      let changed = false;
-      const tx = db.transaction(STORE_NAME, "readwrite");
-      const store = tx.objectStore(STORE_NAME);
-      const request = store.get(this.#id);
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => {
-        const current = request.result as BrowserInstallationRecord | undefined;
-        if (!current) return;
-        const next = update(current);
-        if (!next) return;
-        store.put(next);
-        changed = true;
-      };
-      tx.oncomplete = () => {
-        db.close();
-        resolve(changed);
-      };
-      tx.onerror = () => reject(tx.error);
-    });
+  }
+
+  /**
+   * One cross-tab owner rereads, exchanges, and commits a refresh. Mark recovery
+   * before sending: a lost response must never cause replay of a spent token.
+   * Network work runs outside IndexedDB transactions but inside the Web Lock.
+   */
+  async rotate<T>(
+    exchange: (
+      token: string,
+      dpop: Readonly<CryptoKeyPair>,
+    ) => Promise<Result<{ value: T; refreshToken: string }, AuthError>>,
+  ): Promise<Result<T, AuthError>> {
+    try {
+      return await navigator.locks.request(this.#scope, async () => {
+        const current: OAuthRecord | undefined = await recordTransaction(
+          this.#database,
+          "readonly",
+          (store) => requestValue(store.get(this.#scope)),
+        );
+        if (!current || !current.grant) {
+          return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
+        }
+        this.#record = current;
+        const token = (await this.refreshToken()).take();
+        if (isErr(token)) return err(token.error);
+        if (!token) {
+          return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
+        }
+        const marked = await this.#saveRefreshToken(token, current.grant, true);
+        if (marked.isErr()) return err(marked.error);
+        const rotated = (await exchange(token, this.dpop)).take();
+        if (isErr(rotated)) return err(rotated.error);
+        if (!rotated.refreshToken) {
+          return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
+        }
+        const saved = await this.#saveRefreshToken(rotated.refreshToken);
+        if (saved.isErr()) return err(saved.error);
+        return ok(rotated.value);
+      });
+    } catch {
+      return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
+    }
+  }
+
+  /** Clear this family under the same lock used by competing refresh owners. */
+  async clear(): Promise<Result<void, AuthError>> {
+    try {
+      return await navigator.locks.request(this.#scope, async () => {
+        const current: OAuthRecord | undefined = await recordTransaction(
+          this.#database,
+          "readonly",
+          (store) => requestValue(store.get(this.#scope)),
+        );
+        if (!current) {
+          return err(new AuthError({ reason: "InvalidCredential" }));
+        }
+        this.#record = current;
+        return await this.#saveRefreshToken(undefined, undefined, true);
+      });
+    } catch {
+      return err(new AuthError({ reason: "StorageUnavailable" }));
+    }
+  }
+
+  /** Release this tab's database connection without deleting another tab's state. */
+  close(): void {
+    this.#database.close();
   }
 }

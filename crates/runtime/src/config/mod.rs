@@ -134,6 +134,9 @@ impl RuntimeConfig {
                 }
             }
         }
+        if matches!(mode, RuntimeMode::All | RuntimeMode::Platform) {
+            self.resolve_oauth_listener()?;
+        }
         if matches!(
             mode,
             RuntimeMode::All | RuntimeMode::Platform | RuntimeMode::Jobs | RuntimeMode::Events
@@ -142,6 +145,134 @@ impl RuntimeConfig {
         }
 
         Ok(())
+    }
+
+    /// Resolves the dedicated authorization listener and checks installation identity.
+    pub fn resolve_oauth_listener(&self) -> Result<&OAuthListenerConfig, ConfigError> {
+        let auth = self
+            .auth
+            .as_ref()
+            .ok_or(ConfigError::MissingSection { section: "auth" })?;
+        let instance = auth
+            .instance_id
+            .as_deref()
+            .ok_or(ConfigError::MissingSection {
+                section: "auth.instance_id",
+            })?;
+        if ulid::Ulid::from_string(instance).is_err()
+            || instance.len() != 26
+            || instance != instance.to_ascii_uppercase()
+        {
+            return Err(invalid_authorization(
+                "instance_id",
+                "must be a canonical installation ULID provisioned at initialization",
+            ));
+        }
+        if auth
+            .oauth_storage_key_file
+            .as_ref()
+            .is_none_or(|path| path.as_os_str().is_empty())
+        {
+            return Err(invalid_authorization(
+                "oauth_storage_key_file",
+                "must identify the existing installation-owned OAuth key file",
+            ));
+        }
+        let oauth = auth.oauth.as_ref().ok_or(ConfigError::MissingSection {
+            section: "auth.oauth",
+        })?;
+        let origin = Url::parse(&oauth.origin)
+            .map_err(|_| invalid_authorization("oauth.origin", "must be an absolute origin"))?;
+        if origin.host().is_none()
+            || !origin.username().is_empty()
+            || origin.password().is_some()
+            || origin.path() != "/"
+            || origin.query().is_some()
+            || origin.fragment().is_some()
+            || oauth.port == 0
+        {
+            return Err(invalid_authorization("oauth", "requires a nonzero listener port and an origin without credentials, path, query, or fragment"));
+        }
+        match &oauth.transport {
+            OAuthTransport::Tls {
+                certificate_chain,
+                private_key,
+            } => {
+                if origin.scheme() != "https"
+                    || certificate_chain.as_os_str().is_empty()
+                    || private_key.as_os_str().is_empty()
+                {
+                    return Err(invalid_authorization(
+                        "oauth.transport",
+                        "TLS requires an HTTPS origin and certificate/key paths",
+                    ));
+                }
+            }
+            OAuthTransport::LoopbackDevelopment => {
+                let local = match origin.host() {
+                    Some(Host::Ipv4(ip)) => ip.is_loopback(),
+                    Some(Host::Ipv6(ip)) => ip.is_loopback(),
+                    Some(Host::Domain(host)) => host == "localhost",
+                    None => false,
+                };
+                if origin.scheme() != "http" || !local || !oauth.bind_address.is_loopback() {
+                    return Err(invalid_authorization("oauth.transport", "plaintext OAuth requires explicit loopback development mode and a loopback origin/listener"));
+                }
+            }
+        }
+        let console_origin = self.public_origin();
+        for other in std::iter::once(&console_origin).chain(
+            self.http
+                .iter()
+                .flat_map(|http| http.origins.iter().flatten()),
+        ) {
+            let other = Url::parse(other).map_err(|_| {
+                invalid_authorization(
+                    "oauth.origin",
+                    "configured application origins must be valid URLs",
+                )
+            })?;
+            if other.origin() == origin.origin() {
+                return Err(invalid_authorization(
+                    "oauth.origin",
+                    "must differ from every configured application origin",
+                ));
+            }
+            warn_oauth_cookie_isolation(&origin, &other);
+        }
+        if let Some(servers) = self.nats.as_ref().and_then(|nats| nats.servers.as_deref()) {
+            for server in servers.split(',') {
+                let endpoint = Url::parse(server.trim()).map_err(|_| {
+                    invalid_authorization("nats.servers", "must contain absolute NATS endpoints")
+                })?;
+                let loopback = match endpoint.host() {
+                    Some(Host::Domain(host)) => {
+                        host == "localhost"
+                            || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+                    }
+                    Some(Host::Ipv4(ip)) => ip.is_loopback(),
+                    Some(Host::Ipv6(ip)) => ip.is_loopback(),
+                    _ => false,
+                };
+                if endpoint.host_str().is_none()
+                    || !endpoint.username().is_empty()
+                    || endpoint.password().is_some()
+                    || !matches!(endpoint.path(), "" | "/")
+                    || endpoint.query().is_some()
+                    || endpoint.fragment().is_some()
+                    || !(matches!(endpoint.scheme(), "tls" | "wss")
+                        || (matches!(oauth.transport, OAuthTransport::LoopbackDevelopment)
+                            && loopback
+                            && matches!(endpoint.scheme(), "nats" | "ws")))
+                {
+                    return Err(invalid_authorization(
+                        "nats.servers",
+                        "requires TLS; plaintext is restricted to explicit loopback development",
+                    ));
+                }
+            }
+        }
+        Ok(oauth)
     }
 
     fn validate_distinct_sqlite_paths(&self) -> Result<(), ConfigError> {
@@ -485,6 +616,21 @@ impl RuntimeConfig {
                 resolve_path(base_dir, &mut provider.client_secret_file);
             }
         }
+        if let Some(auth) = &mut self.auth {
+            resolve_path(base_dir, &mut auth.oauth_storage_key_file);
+            if let Some(OAuthListenerConfig {
+                transport:
+                    OAuthTransport::Tls {
+                        certificate_chain,
+                        private_key,
+                    },
+                ..
+            }) = &mut auth.oauth
+            {
+                resolve_required_path(base_dir, certificate_chain);
+                resolve_required_path(base_dir, private_key);
+            }
+        }
         if let Some(authorization) = self
             .auth
             .as_mut()
@@ -535,6 +681,18 @@ impl RuntimeConfig {
                 storage.path = Some(paths.data.join(format!("{name}.sqlite")));
             }
         }
+    }
+}
+
+/// Origins isolate JavaScript, but cookies are hostname-scoped, not port-scoped.
+pub(crate) fn warn_oauth_cookie_isolation(oauth: &Url, application: &Url) {
+    if oauth.host_str() == application.host_str() && oauth.origin() != application.origin() {
+        tracing::warn!(
+            security_event = "oauth_cookie_isolation_at_risk",
+            oauth_origin = %oauth.origin().ascii_serialization(),
+            application_origin = %application.origin().ascii_serialization(),
+            "SECURITY WARNING: OAuth login cookies can be sent to application servers on this shared hostname. Different ports and HttpOnly do NOT isolate these cookies. A compromised application server could steal a portal session. Use a dedicated OAuth hostname."
+        );
     }
 }
 
@@ -902,12 +1060,51 @@ pub struct ResolvedLeasesConfig {
 /// Runtime authentication configuration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AuthConfig {
+    /// Stable installation ULID, provisioned once and retained across key rotations.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
+    /// Dedicated OAuth listener, distinct from application origins.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<OAuthListenerConfig>,
+    /// Installation-owned base64url 32-byte key sealing durable OAuth credentials.
+    /// Provision once; retain across restarts and issuer rotations.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth_storage_key_file: Option<PathBuf>,
     /// Local username/password identity configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_identity: Option<LocalIdentityConfig>,
     /// Authorization trust and short-lived context runtime configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authorization: Option<AuthorizationConfig>,
+}
+
+/// Explicit dedicated OAuth listener configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OAuthListenerConfig {
+    /// Public authorization origin, distinct from every application origin.
+    pub origin: String,
+    /// Dedicated authorization listener address.
+    pub bind_address: IpAddr,
+    /// Dedicated listener port.
+    pub port: u16,
+    /// TLS or explicitly insecure loopback-only development transport.
+    pub transport: OAuthTransport,
+}
+
+/// Transport for the dedicated OAuth listener; failed TLS never becomes plaintext.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OAuthTransport {
+    /// HTTPS using operator-provided PEM certificate and key files.
+    Tls {
+        /// PEM leaf certificate followed by intermediates.
+        certificate_chain: PathBuf,
+        /// PEM private key matching the certificate.
+        private_key: PathBuf,
+    },
+    /// Explicitly insecure development mode restricted to loopback.
+    LoopbackDevelopment,
 }
 
 /// Native identity seed files for built-in live providers.

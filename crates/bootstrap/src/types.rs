@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use trellis_runtime::{OAuthProviderConfig, PlatformTtlConfig, WebSourceConfig};
+use trellis_runtime::{
+    OAuthListenerConfig, OAuthProviderConfig, OAuthTransport, PlatformTtlConfig, WebSourceConfig,
+};
 
 use crate::{
     DEFAULT_AUTH_ACCOUNT, DEFAULT_NATS_MONITOR_PORT, DEFAULT_NATS_PORT, DEFAULT_NATS_SERVER_URL,
@@ -98,6 +100,10 @@ impl NatsBootstrapOptions {
 /// Runtime-facing Trellis bootstrap configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrellisRuntimeBootstrapConfig {
+    /// Installation ULID generated once for this bootstrap bundle.
+    pub instance_id: String,
+    /// Dedicated authorization listener, distinct from the application origin.
+    pub oauth: OAuthListenerConfig,
     /// Human-readable Trellis name written to runtime config.
     pub name: String,
     /// Trellis HTTP port written to `config.toml`.
@@ -136,6 +142,13 @@ pub struct TrellisRuntimeBootstrapConfig {
 impl Default for TrellisRuntimeBootstrapConfig {
     fn default() -> Self {
         Self {
+            instance_id: ulid::Ulid::new().to_string(),
+            oauth: OAuthListenerConfig {
+                origin: "http://localhost:3001".into(),
+                bind_address: std::net::Ipv4Addr::LOCALHOST.into(),
+                port: 3001,
+                transport: OAuthTransport::LoopbackDevelopment,
+            },
             name: DEFAULT_TRELLIS_NAME.to_string(),
             trellis_port: DEFAULT_TRELLIS_PORT,
             nats_server_url: DEFAULT_NATS_SERVER_URL.to_string(),

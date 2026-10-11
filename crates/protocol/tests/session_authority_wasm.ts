@@ -1,4 +1,8 @@
-import { assert, assertEquals, assertThrows } from "@std/assert";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { createEventProof } from "../../../ts/packages/trellis/auth/proof.ts";
+import { trellisCrypto } from "../../../ts/packages/trellis/auth/crypto.ts";
+import { createAuth } from "../../../ts/packages/trellis/auth/session_auth.ts";
 import {
   create_session_authority_handle,
   initSync,
@@ -8,33 +12,58 @@ import {
 import { PROTOCOL_WASM_BASE64 } from "../../../ts/packages/trellis/auth/protocol_wasm/trellis_protocol_wasm_bytes.ts";
 
 initSync({
-  module: Uint8Array.from(
-    atob(PROTOCOL_WASM_BASE64),
-    (character) => character.charCodeAt(0),
+  module: Uint8Array.from(atob(PROTOCOL_WASM_BASE64), (character) =>
+    character.charCodeAt(0),
   ),
 });
 
-const fixture = JSON.parse(await Deno.readTextFile(Deno.args[0]));
+const fixture = JSON.parse(await readFile(process.argv[2], "utf8"));
+const signer = await (
+  await trellisCrypto()
+).signerFromSeed(new Uint8Array(Buffer.from(fixture.runtimeSeed, "base64url")));
+const auth = await createAuth({
+  sessionKeySeed: fixture.runtimeSeed,
+  contextDigest: fixture.request.authorityDigest,
+});
+const signed = await auth.createProof(
+  fixture.request,
+  new TextEncoder().encode(fixture.payload),
+);
+assert.equal(signed.proof, fixture.proof);
+assert.equal(
+  Buffer.from(signed.requestProofDigest).toString("base64url"),
+  fixture.requestProofDigest,
+);
+assert.equal(
+  await createEventProof(
+    signer,
+    fixture.event,
+    new TextEncoder().encode(fixture.payload),
+  ),
+  fixture.eventProof,
+);
 const handle = create_session_authority_handle(
   JSON.stringify(fixture.verification),
   new TextEncoder().encode(JSON.stringify(fixture.authority)),
 );
 try {
   const verify = (request: unknown, payload: string) =>
-    JSON.parse(verify_session_request(
-      handle,
-      JSON.stringify({
-        request,
-        proof: fixture.proof,
-        policy: fixture.verification.policy,
-        knownRevoked: false,
-      }),
-      new TextEncoder().encode(payload),
-    ));
+    JSON.parse(
+      verify_session_request(
+        handle,
+        JSON.stringify({
+          request,
+          proof: fixture.proof,
+          policy: fixture.verification.policy,
+          knownRevoked: false,
+        }),
+        new TextEncoder().encode(payload),
+      ),
+    );
   const result = verify(fixture.request, fixture.payload);
-  assertEquals(result.ok, true);
-  assertEquals(result.requestProofDigest, fixture.requestProofDigest);
-  assertEquals(result.caller, fixture.caller);
+  assert.deepEqual(result.ok, true);
+  assert.deepEqual(result.requestProofDigest, fixture.requestProofDigest);
+  assert.deepEqual(result.caller, fixture.caller);
   assert(
     !verify(
       { ...fixture.request, subject: `${fixture.request.subject}.other` },
@@ -47,11 +76,11 @@ try {
   assert(!verify(fixture.request, fixture.payload.replace("true", "false")).ok);
   const changed = structuredClone(fixture.authority);
   changed.binding.origin = "https://other.example";
-  assertThrows(() =>
+  assert.throws(() =>
     create_session_authority_handle(
       JSON.stringify(fixture.verification),
       new TextEncoder().encode(JSON.stringify(changed)),
-    )
+    ),
   );
 } finally {
   handle.free();
@@ -68,24 +97,26 @@ try {
     payload = fixture.payload,
     proof = fixture.eventProof,
   ) =>
-    JSON.parse(verify_session_event(
-      historical,
-      JSON.stringify({
-        event,
-        proof,
-        policy: fixture.eventVerification.policy,
-        originalPublication,
-        knownRevoked: true,
-      }),
-      new TextEncoder().encode(payload),
-    ));
+    JSON.parse(
+      verify_session_event(
+        historical,
+        JSON.stringify({
+          event,
+          proof,
+          policy: fixture.eventVerification.policy,
+          originalPublication,
+          knownRevoked: true,
+        }),
+        new TextEncoder().encode(payload),
+      ),
+    );
   const retained = verify(fixture.event, fixture.originalPublication);
-  assertEquals(retained.ok, true);
-  assertEquals(retained.eventProofDigest, fixture.eventProofDigest);
-  assertEquals(retained.publisherAuthority, fixture.publisherAuthority);
-  assertEquals(retained.originalPublication, fixture.originalPublication);
+  assert.deepEqual(retained.ok, true);
+  assert.deepEqual(retained.eventProofDigest, fixture.eventProofDigest);
+  assert.deepEqual(retained.publisherAuthority, fixture.publisherAuthority);
+  assert.deepEqual(retained.originalPublication, fixture.originalPublication);
   for (const candidate of fixture.signedTimeCases) {
-    assertEquals(
+    assert.deepEqual(
       verify(
         candidate.event,
         fixture.originalPublication,

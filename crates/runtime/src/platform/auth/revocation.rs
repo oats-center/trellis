@@ -30,6 +30,7 @@ pub(crate) struct Attachment {
     pub(crate) server_id: String,
     pub(crate) broker_client_id: u64,
     pub(crate) authorization_session_id: String,
+    pub(crate) context_digest: String,
     pub(crate) ephemeral_nkey: String,
     pub(crate) transport_policy_digest: String,
 }
@@ -273,7 +274,7 @@ impl SqliteAuthorizationStore {
             let reduced=match &current {Ok(current)=>!current.required_missing.is_empty() || loses_authority(connection,&attachment.authorization_session_id,current,now)?,Err(AuthError::Denied|AuthError::RequiredMissing|AuthError::NotFound)=>true,Err(_)=>false};
             if reduced {retire_session(self,connection,&attachment.authorization_session_id,"admission_reduction",false,None,now)?;return Ok(Err(AuthError::Retired));}
             current?;
-            connection.execute("INSERT INTO auth_attachments(attachment_id,server_id,broker_client_id,authorization_session_id,ephemeral_nkey,transport_policy_digest,state,created_at,admitted_at) VALUES(?1,?2,?3,?4,?5,?6,'admitted',?7,?7)",params![attachment.attachment_id,attachment.server_id,attachment.broker_client_id,attachment.authorization_session_id,attachment.ephemeral_nkey,attachment.transport_policy_digest,now])?;
+            connection.execute("INSERT INTO auth_attachments(attachment_id,server_id,broker_client_id,authorization_session_id,context_digest,ephemeral_nkey,transport_policy_digest,state,created_at,admitted_at) VALUES(?1,?2,?3,?4,?5,?6,?7,'admitted',?8,?8)",params![attachment.attachment_id,attachment.server_id,attachment.broker_client_id,attachment.authorization_session_id,attachment.context_digest,attachment.ephemeral_nkey,attachment.transport_policy_digest,now])?;
             Ok(Ok(()))
         })?;
         outcome

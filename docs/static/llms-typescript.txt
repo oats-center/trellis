@@ -8,8 +8,9 @@ tools are application choices. Neither Zod nor an ORM is required.
 The npm packages `@oatscenter/trellis` and `@oatscenter/result` contain ESM
 JavaScript and TypeScript declarations. Use `import`. CommonJS output and
 `require()` support have intentionally been removed, with no compatibility
-fallback. The shared ESM `/service` entrypoint supports Node-compatible native
-runtimes, including Deno; JSR publication remains supported.
+fallback. Revision 7 targets Node 24 LTS and npm ESM for native TypeScript
+tooling, and browser ESM for browser applications. The Node migration is still
+in progress; retained Deno tasks are not the intended service-author workflow.
 
 ## Generate And Connect
 
@@ -20,6 +21,15 @@ caches are migrated in later phases. Do not build per-context or per-role
 watchers, infer trust from missing mirror entries, or implement the retired
 GrantBinding/browser-bind protocol as a fallback. Released matching libraries
 remain the supported application integration until cutover completes.
+
+Browser OAuth custody keeps persistent DPoP and encryption keys nonextractable
+in IndexedDB. Refresh exchange and commit share a Web Lock across tabs. A lost
+refresh response marks recovery required instead of replaying a spent token;
+credential handles cannot silently switch to another principal. The isolated
+OAuth portal requires a distinct origin from Console and consuming apps.
+Shared hostnames are permitted with a cookie-scope security warning, not treated
+as cookie isolation. These custody components do not replace the unfinished
+connection-owned SDK integration.
 
 Explicit one-off consent overrides older remembered choices without changing
 them. Reused choices retain their expiry; later shared withdrawals still retire

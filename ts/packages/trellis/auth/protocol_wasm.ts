@@ -1,6 +1,5 @@
 import init, {
   initSync,
-  type SyncInitInput,
   type VerifiedSessionAuthorityHandle as WasmSessionAuthorityHandle,
 } from "./protocol_wasm/trellis_protocol_wasm.js";
 import * as protocolWasmModule from "./protocol_wasm/trellis_protocol_wasm.js";
@@ -59,6 +58,18 @@ export type SessionRequest = {
   issuedAt: number;
 };
 
+/** Rust-owned original event identity and accepted-catalog stamp. */
+export type SessionEvent = {
+  authorityDigest: string;
+  apiId: string;
+  apiGeneration: string;
+  acceptedRevision: string;
+  action: string;
+  subject: string;
+  eventId: string;
+  eventTime: string;
+};
+
 /** Stable error categories returned by local authorization verification. */
 export type AuthorizationVerificationErrorCode =
   | "InvalidInput"
@@ -85,6 +96,7 @@ export type AuthorizationVerificationErrorCode =
   | "ContextTooLarge"
   | "ProofIatOutOfRange"
   | "InvalidRequestProof"
+  | "InvalidResponseProof"
   | "ReplySubjectMismatch"
   | "InvalidEventTime"
   | "InvalidEventProof"
@@ -101,11 +113,11 @@ export type SessionBinding =
   | { kind: "browser"; clientId: string; origin: string }
   | { kind: "native"; clientId: string; durableDpopJkt: string }
   | {
-    kind: "service" | "device";
-    deploymentId: string;
-    instanceId: string;
-    participantId: string;
-  };
+      kind: "service" | "device";
+      deploymentId: string;
+      instanceId: string;
+      participantId: string;
+    };
 
 /** Approved whole-capability identity, with canonical decimal counters. */
 export type CapabilityAuthority = {
@@ -142,11 +154,11 @@ export type AuthenticatedCaller = {
 /** Cryptographically authenticated request binding, before dispatch authorization. */
 export type VerifySessionRequestResult =
   | {
-    ok: true;
-    authorityDigest: string;
-    requestProofDigest: string;
-    caller: AuthenticatedCaller;
-  }
+      ok: true;
+      authorityDigest: string;
+      requestProofDigest: string;
+      caller: AuthenticatedCaller;
+    }
   | { ok: false; error: AuthorizationVerificationError };
 
 /** Received bytes and actual route metadata, not a payload-supplied hash. */
@@ -158,6 +170,47 @@ export type VerifySessionRequestArgs = {
   policy: SessionAuthorityVerificationPolicy;
   knownRevoked: boolean;
 };
+
+/** Rust-owned provider response transcript fields, before verification. */
+export type SessionResponse = {
+  trellisInstanceId: string;
+  audienceNatsAccount: string;
+  providerAuthorityDigest: string;
+  providerCertificateDigest: string;
+  apiId: string;
+  apiGeneration: string;
+  action: string;
+  requestAuthorityDigest: string;
+  requestId: string;
+  requestProofDigest: string;
+  subject: string;
+  kind: "success" | "error";
+  issuedAt: number;
+};
+
+/** Exact retained opening and actual transport metadata for provider verification. */
+export type VerifySessionResponseArgs = {
+  providerHandle: SessionAuthorityHandle;
+  response: SessionResponse;
+  payload: Uint8Array;
+  proof: string;
+  /** Untrusted certificate bytes are authenticated by Rust, not merely decoded. */
+  certificate: JsonObject;
+  certificateIssuer: AuthorityIssuerKey;
+  pendingRequest: SessionRequest;
+  pendingRequestDigest: string;
+  /** Route-owned surface/name/direction, never inferred from a response. */
+  action: JsonObject;
+  expectedDeploymentId: string | null;
+  receivedSubject: string;
+  policy: SessionAuthorityVerificationPolicy;
+  knownRevoked: boolean;
+};
+
+/** Only a successful shared verification authenticates application result bytes. */
+export type VerifySessionResponseResult =
+  | { ok: true; providerAuthorityDigest: string; response: SessionResponse }
+  | { ok: false; error: AuthorizationVerificationError };
 
 /**
  * Exact signed NATS transport authorization bound into a context.
@@ -186,9 +239,7 @@ export const TRANSPORT_AUTHORIZATION_FORMAT_V1 =
 
 /** Result of classifying admitted transport policy against currently allowed. */
 export type TransportPolicyClass =
-  | "current"
-  | "upgrade_available"
-  | "reduction_required";
+  "current" | "upgrade_available" | "reduction_required";
 
 /** Immutable signed material authenticated by the Rust-owned parser/verifier. */
 export type VerifiedSessionAuthorityProjection = {
@@ -222,44 +273,75 @@ async function wasmBytes(): Promise<Uint8Array> {
 
 /** Initialize the shared Rust protocol implementation before asynchronous use. */
 export async function initializeProtocolWasm(): Promise<void> {
+  if (initializedSync) return;
   initialized ??= (async () => {
     await init({ module_or_path: await wasmBytes() });
   })();
   await initialized;
+  initializedSync = true;
 }
 
 /** Initialize the shared Rust protocol implementation before synchronous use. */
 export function initializeProtocolWasmSync(): void {
   if (initializedSync) return;
-  const url = new URL(
-    "./protocol_wasm/trellis_protocol_wasm_bg.wasm",
-    import.meta.url,
-  );
-  const runtime = globalThis as Record<string, unknown>;
-  const process = runtime["pro" + "cess"] as
-    | {
-      versions?: { node?: string };
-      getBuiltinModule?: (name: string) => {
-        readFileSync(path: URL): Uint8Array;
-      };
-    }
-    | undefined;
-  if (process?.versions?.node && process.getBuiltinModule) {
-    initSync({
-      module: process.getBuiltinModule("node:fs").readFileSync(
-        url,
-      ) as SyncInitInput,
-    });
-    initializedSync = true;
-    return;
-  }
   const binary = atob(PROTOCOL_WASM_BASE64);
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) {
     bytes[index] = binary.charCodeAt(index);
   }
-  initSync({ module: bytes as SyncInitInput });
+  initSync({ module: bytes });
   initializedSync = true;
+}
+
+/** Hash the exact request publication buffer through the native shared transcript. */
+export async function sessionRequestSigningDigestWasm(
+  request: SessionRequest,
+  payload: Uint8Array,
+): Promise<Uint8Array> {
+  await initializeProtocolWasm();
+  return protocolWasm.session_request_signing_digest(
+    JSON.stringify(request),
+    payload,
+  );
+}
+
+/** Hash the original publication bytes and event identity in the shared protocol. */
+export async function sessionEventSigningDigestWasm(
+  event: SessionEvent,
+  payload: Uint8Array,
+): Promise<Uint8Array> {
+  await initializeProtocolWasm();
+  return protocolWasm.session_event_signing_digest(
+    JSON.stringify(event),
+    payload,
+  );
+}
+
+/** Hash exact provider result bytes through the shared response transcript. */
+export async function sessionResponseSigningDigestWasm(
+  response: SessionResponse,
+  payload: Uint8Array,
+): Promise<Uint8Array> {
+  await initializeProtocolWasm();
+  return protocolWasm.session_response_signing_digest(
+    JSON.stringify(response),
+    payload,
+  );
+}
+
+/** Verify before decoding a provider result or completing its pending request. */
+export async function verifySessionResponseWasm(
+  args: VerifySessionResponseArgs,
+): Promise<VerifySessionResponseResult> {
+  await initializeProtocolWasm();
+  const { providerHandle, payload, ...verification } = args;
+  return JSON.parse(
+    protocolWasm.verify_session_response(
+      providerHandle,
+      JSON.stringify(verification),
+      payload,
+    ),
+  ) as VerifySessionResponseResult;
 }
 
 /** Derive an API-qualified event subject through the shared Rust protocol. */
@@ -407,29 +489,29 @@ export type LiveErrorCodeWire = string;
 /** One parsed provider data-channel frame projection. */
 export type LiveFrameWire =
   | {
-    format: string;
-    type: "data";
-    sessionId: string;
-    seq: string;
-    value: unknown;
-  }
+      format: string;
+      type: "data";
+      sessionId: string;
+      seq: string;
+      value: unknown;
+    }
   | {
-    format: string;
-    type: "challenge";
-    sessionId: string;
-    challengeId: string;
-    lastSentSeq: string;
-  }
+      format: string;
+      type: "challenge";
+      sessionId: string;
+      challengeId: string;
+      lastSentSeq: string;
+    }
   | {
-    format: string;
-    type: "end";
-    sessionId: string;
-    finalSeq: string;
-    terminal: {
-      reason: LiveEndReasonWire;
-      error: { code: string; message: string; traceId?: string } | null;
+      format: string;
+      type: "end";
+      sessionId: string;
+      finalSeq: string;
+      terminal: {
+        reason: LiveEndReasonWire;
+        error: { code: string; message: string; traceId?: string } | null;
+      };
     };
-  };
 
 /** One parsed consumer control projection. */
 export type LiveControlWire = {
@@ -490,38 +572,40 @@ export type LiveWireTerminal = {
 /** One strict signed control response projection. */
 export type LiveControlResponse =
   | {
-    kind: "ack";
-    body: {
-      format: string;
-      type: "control-ack";
-      sessionId: string;
-      controlSeq: string;
-      requestId: string;
-      action: "activate" | "pulse" | "ack" | "close" | "end-ack";
-      state: "activating" | "active" | "closed";
-      acceptedReceivedSeq: string;
-      acceptedConsumedSeq: string;
-      terminal: LiveWireTerminal | null;
-      cleanup: "complete" | "incomplete" | null;
-    };
-  }
+      kind: "ack";
+      body: {
+        format: string;
+        type: "control-ack";
+        sessionId: string;
+        controlSeq: string;
+        requestId: string;
+        action: "activate" | "pulse" | "ack" | "close" | "end-ack";
+        state: "activating" | "active" | "closed";
+        acceptedReceivedSeq: string;
+        acceptedConsumedSeq: string;
+        terminal: LiveWireTerminal | null;
+        cleanup: "complete" | "incomplete" | null;
+      };
+    }
   | {
-    kind: "error";
-    body: {
-      format: string;
-      type: "control-error";
-      sessionId: string;
-      controlSeq: string;
-      requestId: string;
-      code: string;
+      kind: "error";
+      body: {
+        format: string;
+        type: "control-error";
+        sessionId: string;
+        controlSeq: string;
+        requestId: string;
+        code: string;
+      };
     };
-  };
 
 function parseWasmResult<T>(encoded: string): T {
-  const result = JSON.parse(encoded) as { ok: true } & T | {
-    ok: false;
-    error: { code: string; path: string };
-  };
+  const result = JSON.parse(encoded) as
+    | ({ ok: true } & T)
+    | {
+        ok: false;
+        error: { code: string; path: string };
+      };
   if (!result.ok) {
     throw new Error(
       `live protocol error ${result.error.code} at ${result.error.path}`,
@@ -674,9 +758,7 @@ export function liveParseOffer(raw: Uint8Array): LiveOfferWire {
 }
 
 /** Parse one strict signed control response through the shared protocol. */
-export function liveParseControlResponse(
-  raw: Uint8Array,
-): LiveControlResponse {
+export function liveParseControlResponse(raw: Uint8Array): LiveControlResponse {
   initializeProtocolWasmSync();
   return JSON.parse(
     protocolWasm.live_parse_control_response(raw),
@@ -727,10 +809,7 @@ export function liveVerifyServerProof(
 
 /** Canonical Transfer session subject family. */
 export type TransferSubjectKind =
-  | "upload-data"
-  | "download-data"
-  | "control"
-  | "signal";
+  "upload-data" | "download-data" | "control" | "signal";
 
 /** Logical final object declaration authenticated by completion or EOF. */
 export type TransferTerminalWire = {
@@ -759,9 +838,8 @@ type TransferControlBase = {
 };
 
 /** Strict v2 caller controls, parsed and validated by canonical Rust/WASM. */
-export type TransferControlWire =
-  & TransferControlBase
-  & (
+export type TransferControlWire = TransferControlBase &
+  (
     | { action: "activate"; receiveMaxFrameBytes: number }
     | { action: "credit" | "cancel"; consumedBytes: string }
     | { action: "end-ack"; consumedBytes: string; finalSeq: string }
@@ -816,8 +894,7 @@ export type TransferReceiveGrantWire = TransferGrantBaseWire & {
 
 /** Canonically validated direction-specific public grant. */
 export type TransferGrantWire =
-  | TransferSendGrantWire
-  | TransferReceiveGrantWire;
+  TransferSendGrantWire | TransferReceiveGrantWire;
 
 /** Canonical terminal error categories, not physical backend diagnostics. */
 export type TransferErrorCode =
@@ -840,13 +917,11 @@ export type TransferErrorCode =
   | "cancelled";
 
 /** Strict provider signals; consumed credit is distinct from durable commit. */
-export type TransferSignalWire =
-  & {
-    format: "trellis.transfer.v2";
-    transferId: string;
-  }
-  & (
-    | {
+export type TransferSignalWire = {
+  format: "trellis.transfer.v2";
+  transferId: string;
+} & (
+  | {
       type: "activated";
       controlSeq: string;
       requestId: string;
@@ -854,16 +929,16 @@ export type TransferSignalWire =
       windowFrames: number;
       windowBytes: number;
     }
-    | {
+  | {
       type: "credit";
       receivedSeq: string;
       consumedSeq: string;
       consumedBytes: string;
     }
-    | { type: "committed"; finalSeq: string; info: TransferFileInfoWire }
-    | { type: "cancelled" }
-    | { type: "error"; code: TransferErrorCode }
-  );
+  | { type: "committed"; finalSeq: string; info: TransferFileInfoWire }
+  | { type: "cancelled" }
+  | { type: "error"; code: TransferErrorCode }
+);
 
 /** Ordered upload completion on the same subject as upload DATA. */
 export type TransferCompleteWire = TransferTerminalWire & {

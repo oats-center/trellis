@@ -9,7 +9,8 @@
     "./ts/packages/trellis-svelte",
     "./ts/packages/trellis-testkit",
     "./ts/packages/trellis",
-    "./web"
+    "./web",
+    "./portal"
   ],
   "nodeModulesDir": "auto",
   "compilerOptions": {

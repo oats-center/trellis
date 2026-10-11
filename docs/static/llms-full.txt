@@ -16,6 +16,16 @@ reconnect or missing entries until context acceptance deadlines expire. The
 OAuth/Callout and client/provider cutover is unfinished on this unreleased branch;
 the old GrantBinding/browser-bind model is not a compatibility option.
 
+OAuth login and consent belong to a separate required portal app and origin
+from Console, not a Console route. A different hostname is recommended, not
+mandatory: same-hostname origins produce a prominent cookie-scope warning.
+Outside explicit loopback development, OAuth and broker transports require
+TLS. Keep the provisioned installation identity and independent OAuth storage
+key across restarts and issuer rotation. Browser custody uses nonextractable
+keys and cross-tab refresh ownership; native custody uses owner-only files and
+a cross-process family lock. Dex is an upstream OIDC integration-test
+dependency only, never a required Trellis deployment component.
+
 Explicit one-off consent overrides older remembered choices without changing
 them. Reused choices retain their expiry; later shared withdrawals still retire
 affected sessions. A shortened effective authorization deadline is a reduction

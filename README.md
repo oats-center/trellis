@@ -74,7 +74,8 @@ Current TypeScript runtime entrypoints:
 Install locked API dependencies and regenerate project-local artifacts with:
 
 - `cargo xtask install`
-- `cd ts && deno task install`
+- `npm ci` (Node 24 LTS and npm 11)
+- `npm run install:contracts`
 - `cargo xtask build`
 - `cargo xtask release check-versions`
 - `cargo xtask release prepare --tag v0.100.0-rc.1`

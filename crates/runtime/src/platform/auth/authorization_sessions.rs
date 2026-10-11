@@ -103,7 +103,16 @@ pub(super) fn credential_snapshot(
                     |row| row.get(0),
                 )
                 .optional()?;
-            if client_state.as_deref() != Some("active") {
+            let validated_cimd: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM auth_cimd_clients WHERE client_id=?1)",
+                [&client],
+                |row| row.get(0),
+            )?;
+            if client_state
+                .as_deref()
+                .is_some_and(|state| state != "active")
+                || (client_state.is_none() && !validated_cimd)
+            {
                 return Err(AuthError::Denied);
             }
             let provider_active:bool=connection.query_row("SELECT NOT EXISTS(SELECT 1 FROM auth_login_sessions l JOIN auth_oidc_providers p USING(provider_id) WHERE l.login_session_id=?1 AND p.state!='active')",[&login],|row|row.get(0))?;
@@ -166,6 +175,18 @@ pub(super) fn credential_snapshot(
             privileges
                 .sort_by_key(|privilege| serde_json::to_string(privilege).unwrap_or_default());
             privileges.dedup();
+            let required_privileges: String = connection.query_row(
+                "SELECT required_privileges_json FROM auth_oauth_grants WHERE oauth_grant_id=?1",
+                [grant],
+                |row| row.get(0),
+            )?;
+            let required_privileges: Vec<PlatformPrivilege> = decode(&required_privileges)?;
+            if !required_privileges
+                .iter()
+                .all(|privilege| privileges.contains(privilege))
+            {
+                return Err(AuthError::RequiredMissing);
+            }
             let binding = match kind.as_str() {
                 "browser" => SessionBinding::Browser {
                     client_id: client,
@@ -341,60 +362,214 @@ impl SqliteAuthorizationStore {
         now: i64,
     ) -> Result<IssuedAuthority, AuthError> {
         // Retirement must commit even when renewal returns a typed denial.
-        let outcome=self.transaction(|connection| {
-            self.current_signer(connection)?;
-            let current=evaluate(connection,&admission.credential,now)?;
-            let binding_key=digest(&(&current.principal_id,&current.binding))?;
-            let session=if let Some(session)=renew_session {
-                let exact:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_authorization_sessions WHERE authorization_session_id=?1 AND state='active' AND binding_key=?2 AND runtime_id=?3 AND session_public_key=?4)",params![session,binding_key,admission.runtime_id,admission.session_public_key],|row|row.get(0))?;
-                if !exact {return Err(AuthError::Retired);}
-                Some(session.to_owned())
-            } else {
-                connection.query_row("SELECT authorization_session_id FROM auth_authorization_sessions WHERE binding_key=?1 AND runtime_id=?2 AND session_public_key=?3 AND state='active'",params![binding_key,admission.runtime_id,admission.session_public_key],|row|row.get(0)).optional()?
-            };
-            let mut session=session;
-            if let Some(existing)=&session {
-                if session_credential(connection,existing)?!=admission.credential {return Err(AuthError::Denied);}
-                let expired:bool=connection.query_row("SELECT hard_deadline<=?2 FROM auth_authorization_sessions WHERE authorization_session_id=?1",params![existing,now],|row|row.get(0))?;
-                if expired || !current.required_missing.is_empty() || loses_authority(connection,existing,&current,now)? {
-                    retire_session(self,connection,existing,if expired {"authorization_expired"} else {"policy_reduction"},false,None,now)?;
-                    if renew_session.is_some() {return Ok(Err(AuthError::Retired));}
-                    session=None;
-                }
+        self.transaction(|connection| {
+            self.issue_authority_in_transaction(connection, admission, renew_session, now)
+        })?
+    }
+
+    pub(super) fn issue_authority_in_transaction(
+        &self,
+        connection: &Connection,
+        admission: &AdmissionIdentity,
+        renew_session: Option<&str>,
+        now: i64,
+    ) -> Result<Result<IssuedAuthority, AuthError>, AuthError> {
+        self.current_signer(connection)?;
+        let current = evaluate(connection, &admission.credential, now)?;
+        let binding_key = digest(&(&current.principal_id, &current.binding))?;
+        let session = if let Some(session) = renew_session {
+            let exact:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_authorization_sessions WHERE authorization_session_id=?1 AND state='active' AND binding_key=?2 AND runtime_id=?3 AND session_public_key=?4)",params![session,binding_key,admission.runtime_id,admission.session_public_key],|row|row.get(0))?;
+            if !exact {
+                return Err(AuthError::Retired);
             }
-            if !current.required_missing.is_empty() {return Ok(Err(AuthError::RequiredMissing));}
-            let session=session.unwrap_or_else(id);
-            let (kind,grant,identity)=match &admission.credential {Credential::OAuthGrant(grant)=>("oauthGrant",Some(grant.as_str()),None),Credential::ProvisionedIdentity(identity)=>("provisionedIdentity",None,Some(identity.as_str()))};
-            let existing:Option<i64>=connection.query_row("SELECT hard_deadline FROM auth_authorization_sessions WHERE authorization_session_id=?1",[&session],|row|row.get(0)).optional()?;
-            let hard_deadline=current.root_not_after.min(existing.unwrap_or(i64::MAX));
-            let expires_at=current.not_after.min(hard_deadline).min(now.saturating_add(i64::from(self.settings.authority_lifetime_seconds)));
-            if expires_at<=now {return Err(AuthError::Denied);}
-            let maximum_acceptance=expires_at.saturating_add(i64::from(self.settings.clock_skew_seconds));
-            let binding_kind=match &current.binding {SessionBinding::Browser{..}=>"browser",SessionBinding::Native{..}=>"native",SessionBinding::Service{..}=>"service",SessionBinding::Device{..}=>"device"};
-            let session_hard_deadline=if hard_deadline==i64::MAX {9_007_199_254_740_991_i64} else {hard_deadline};
-            connection.execute("INSERT INTO auth_authorization_sessions(authorization_session_id,principal_id,binding_kind,binding_key,binding_json,runtime_id,session_public_key,credential_kind,oauth_grant_id,identity_key_id,selected_capabilities_json,approved_capabilities_json,approved_privileges_json,issued_at,hard_deadline,latest_context_expiry,state,revision) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,'active',1) ON CONFLICT(authorization_session_id) DO UPDATE SET hard_deadline=min(hard_deadline,excluded.hard_deadline),latest_context_expiry=max(latest_context_expiry,excluded.latest_context_expiry),approved_capabilities_json=excluded.approved_capabilities_json,approved_privileges_json=excluded.approved_privileges_json,revision=revision+1",params![session,current.principal_id,binding_kind,binding_key,json(&current.binding)?,admission.runtime_id,admission.session_public_key,kind,grant,identity,json(&current.selection)?,json(&current.capabilities)?,json(&current.platform_privileges)?,now,session_hard_deadline,expires_at])?;
-            let mut providers=current.providers.clone();
-            if let SessionBinding::Service{deployment_id,instance_id,..}|SessionBinding::Device{deployment_id,instance_id,..}=&current.binding {
-                let provided:String=connection.query_row("SELECT provided_apis_json FROM auth_deployment_bindings WHERE deployment_id=?1",[deployment_id],|row|row.get(0))?;
-                let provided:Vec<ProviderImplementation>=decode(&provided)?;
-                for provider in &mut providers {
-                    let implementation=provided.iter().find(|implementation|implementation.api_id==provider.api_id && implementation.generation==provider.generation.get()).ok_or(AuthError::Denied)?;
-                    let catalog=self.catalog_in_transaction(connection,&provider.api_id)?;
-                    if implementation.implemented_actions.iter().any(|action|!catalog.actions.iter().any(|entry|&entry.identity==action)) {return Err(AuthError::Denied);}
-                    let certificate=SignedProviderCertificate {format:PROVIDER_CERTIFICATE_FORMAT_V1.into(),issuer_key_id:self.issuer().key_id,trellis_instance_id:self.settings.instance_id.clone(),audience_nats_account:self.settings.account.clone(),principal_id:current.principal_id.clone(),deployment_id:deployment_id.clone(),instance_id:instance_id.clone(),session_public_key:admission.session_public_key.clone(),api_id:provider.api_id.clone(),generation:provider.generation,implementation_digest:provider.implementation_digest.clone(),implemented_actions:implementation.implemented_actions.clone(),issued_at:now,not_before:now,expires_at,extensions:Default::default(),critical:vec![],signature:String::new()}.sign(&self.signer)?;
-                    provider.provider_certificate_digest=certificate.digest()?;
-                    connection.execute("INSERT OR IGNORE INTO auth_provider_certificates VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",params![certificate.digest()?,deployment_id,instance_id,current.principal_id,provider.api_id,provider.generation.get(),provider.implementation_digest,self.issuer().key_id,json(&certificate.implemented_actions)?,json(&certificate)?.as_bytes(),now,expires_at])?;
-                    enqueue_effect(connection,"authority_publish",&serde_json::json!({"kind":"provider","digest":certificate.digest()?}),None,now)?;
-                }
+            Some(session.to_owned())
+        } else {
+            connection.query_row("SELECT authorization_session_id FROM auth_authorization_sessions WHERE binding_key=?1 AND runtime_id=?2 AND session_public_key=?3 AND state='active'",params![binding_key,admission.runtime_id,admission.session_public_key],|row|row.get(0)).optional()?
+        };
+        let mut session = session;
+        if let Some(existing) = &session {
+            if session_credential(connection, existing)? != admission.credential {
+                return Err(AuthError::Denied);
             }
-            let authority=sign_session_authority(UnsignedSessionAuthority {format:SESSION_AUTHORITY_FORMAT_V1.into(),issuer_key_id:self.issuer().key_id,trellis_instance_id:self.settings.instance_id.clone(),audience_nats_account:self.settings.account.clone(),principal_id:current.principal_id.clone(),principal_kind:current.principal_kind,binding:current.binding,authorization_session_id:session.clone(),runtime_id:admission.runtime_id.clone(),session_public_key:admission.session_public_key.clone(),inbox_prefix:admission.inbox_prefix.clone(),login_session_id:current.login_session_id,oauth_grant_id:grant.map(str::to_owned),capabilities:current.capabilities,apis:current.apis,provider_bindings:providers,resource_bindings_digest:current.resource_bindings_digest,platform_privileges:current.platform_privileges,issued_at:now,not_before:now,expires_at,extensions:Default::default(),critical:vec![]},&self.signer)?;
-            let digest=authority.digest()?;
-            connection.execute("INSERT OR IGNORE INTO auth_session_authorities VALUES(?1,?2,?3,?4,?5,?6,?6,?7,?8)",params![digest,session,self.issuer().key_id,json(&authority)?.as_bytes(),json(&authority.unsigned.apis)?,now,expires_at,maximum_acceptance])?;
-            connection.execute("UPDATE auth_authorization_issuers SET maximum_acceptance_deadline=max(maximum_acceptance_deadline,?1) WHERE key_id=?2",params![maximum_acceptance,self.issuer().key_id])?;
-            enqueue_effect(connection,"authority_publish",&serde_json::json!({"kind":"authority","digest":digest}),None,now)?;
-            Ok(Ok(IssuedAuthority{authority,digest,optional_unavailable:current.optional_unavailable}))
-        })?;
-        outcome
+            let expired:bool=connection.query_row("SELECT hard_deadline<=?2 FROM auth_authorization_sessions WHERE authorization_session_id=?1",params![existing,now],|row|row.get(0))?;
+            if expired
+                || !current.required_missing.is_empty()
+                || loses_authority(connection, existing, &current, now)?
+            {
+                retire_session(
+                    self,
+                    connection,
+                    existing,
+                    if expired {
+                        "authorization_expired"
+                    } else {
+                        "policy_reduction"
+                    },
+                    false,
+                    None,
+                    now,
+                )?;
+                if renew_session.is_some() {
+                    return Ok(Err(AuthError::Retired));
+                }
+                session = None;
+            }
+        }
+        if !current.required_missing.is_empty() {
+            return Ok(Err(AuthError::RequiredMissing));
+        }
+        let session = session.unwrap_or_else(id);
+        let (kind, grant, identity) = match &admission.credential {
+            Credential::OAuthGrant(grant) => ("oauthGrant", Some(grant.as_str()), None),
+            Credential::ProvisionedIdentity(identity) => {
+                ("provisionedIdentity", None, Some(identity.as_str()))
+            }
+        };
+        let existing:Option<i64>=connection.query_row("SELECT hard_deadline FROM auth_authorization_sessions WHERE authorization_session_id=?1",[&session],|row|row.get(0)).optional()?;
+        let hard_deadline = current.root_not_after.min(existing.unwrap_or(i64::MAX));
+        let expires_at = current
+            .not_after
+            .min(hard_deadline)
+            .min(now.saturating_add(i64::from(self.settings.authority_lifetime_seconds)));
+        if expires_at <= now {
+            return Err(AuthError::Denied);
+        }
+        let maximum_acceptance =
+            expires_at.saturating_add(i64::from(self.settings.clock_skew_seconds));
+        let binding_kind = match &current.binding {
+            SessionBinding::Browser { .. } => "browser",
+            SessionBinding::Native { .. } => "native",
+            SessionBinding::Service { .. } => "service",
+            SessionBinding::Device { .. } => "device",
+        };
+        let session_hard_deadline = if hard_deadline == i64::MAX {
+            9_007_199_254_740_991_i64
+        } else {
+            hard_deadline
+        };
+        connection.execute("INSERT INTO auth_authorization_sessions(authorization_session_id,principal_id,binding_kind,binding_key,binding_json,runtime_id,session_public_key,credential_kind,oauth_grant_id,identity_key_id,selected_capabilities_json,approved_capabilities_json,approved_privileges_json,issued_at,hard_deadline,latest_context_expiry,state,revision) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,'active',1) ON CONFLICT(authorization_session_id) DO UPDATE SET hard_deadline=min(hard_deadline,excluded.hard_deadline),latest_context_expiry=max(latest_context_expiry,excluded.latest_context_expiry),approved_capabilities_json=excluded.approved_capabilities_json,approved_privileges_json=excluded.approved_privileges_json,revision=revision+1",params![session,current.principal_id,binding_kind,binding_key,json(&current.binding)?,admission.runtime_id,admission.session_public_key,kind,grant,identity,json(&current.selection)?,json(&current.capabilities)?,json(&current.platform_privileges)?,now,session_hard_deadline,expires_at])?;
+        let mut providers = current.providers.clone();
+        if let SessionBinding::Service {
+            deployment_id,
+            instance_id,
+            ..
+        }
+        | SessionBinding::Device {
+            deployment_id,
+            instance_id,
+            ..
+        } = &current.binding
+        {
+            let provided: String = connection.query_row(
+                "SELECT provided_apis_json FROM auth_deployment_bindings WHERE deployment_id=?1",
+                [deployment_id],
+                |row| row.get(0),
+            )?;
+            let provided: Vec<ProviderImplementation> = decode(&provided)?;
+            for provider in &mut providers {
+                let implementation = provided
+                    .iter()
+                    .find(|implementation| {
+                        implementation.api_id == provider.api_id
+                            && implementation.generation == provider.generation.get()
+                    })
+                    .ok_or(AuthError::Denied)?;
+                let catalog = self.catalog_in_transaction(connection, &provider.api_id)?;
+                if implementation.implemented_actions.iter().any(|action| {
+                    !catalog
+                        .actions
+                        .iter()
+                        .any(|entry| &entry.identity == action)
+                }) {
+                    return Err(AuthError::Denied);
+                }
+                let certificate = SignedProviderCertificate {
+                    format: PROVIDER_CERTIFICATE_FORMAT_V1.into(),
+                    issuer_key_id: self.issuer().key_id,
+                    trellis_instance_id: self.settings.instance_id.clone(),
+                    audience_nats_account: self.settings.account.clone(),
+                    principal_id: current.principal_id.clone(),
+                    deployment_id: deployment_id.clone(),
+                    instance_id: instance_id.clone(),
+                    session_public_key: admission.session_public_key.clone(),
+                    api_id: provider.api_id.clone(),
+                    generation: provider.generation,
+                    implementation_digest: provider.implementation_digest.clone(),
+                    implemented_actions: implementation.implemented_actions.clone(),
+                    issued_at: now,
+                    not_before: now,
+                    expires_at,
+                    extensions: Default::default(),
+                    critical: vec![],
+                    signature: String::new(),
+                }
+                .sign(&self.signer)?;
+                provider.provider_certificate_digest = certificate.digest()?;
+                connection.execute("INSERT OR IGNORE INTO auth_provider_certificates VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",params![certificate.digest()?,deployment_id,instance_id,current.principal_id,provider.api_id,provider.generation.get(),provider.implementation_digest,self.issuer().key_id,json(&certificate.implemented_actions)?,json(&certificate)?.as_bytes(),now,expires_at])?;
+                enqueue_effect(
+                    connection,
+                    "authority_publish",
+                    &serde_json::json!({"kind":"provider","digest":certificate.digest()?}),
+                    None,
+                    now,
+                )?;
+            }
+        }
+        let authority = sign_session_authority(
+            UnsignedSessionAuthority {
+                format: SESSION_AUTHORITY_FORMAT_V1.into(),
+                issuer_key_id: self.issuer().key_id,
+                trellis_instance_id: self.settings.instance_id.clone(),
+                audience_nats_account: self.settings.account.clone(),
+                principal_id: current.principal_id.clone(),
+                principal_kind: current.principal_kind,
+                binding: current.binding,
+                authorization_session_id: session.clone(),
+                runtime_id: admission.runtime_id.clone(),
+                session_public_key: admission.session_public_key.clone(),
+                inbox_prefix: admission.inbox_prefix.clone(),
+                login_session_id: current.login_session_id,
+                oauth_grant_id: grant.map(str::to_owned),
+                capabilities: current.capabilities,
+                apis: current.apis,
+                provider_bindings: providers,
+                resource_bindings_digest: current.resource_bindings_digest,
+                platform_privileges: current.platform_privileges,
+                issued_at: now,
+                not_before: now,
+                expires_at,
+                extensions: Default::default(),
+                critical: vec![],
+            },
+            &self.signer,
+        )?;
+        let digest = authority.digest()?;
+        connection.execute(
+            "INSERT OR IGNORE INTO auth_session_authorities VALUES(?1,?2,?3,?4,?5,?6,?6,?7,?8)",
+            params![
+                digest,
+                session,
+                self.issuer().key_id,
+                json(&authority)?.as_bytes(),
+                json(&authority.unsigned.apis)?,
+                now,
+                expires_at,
+                maximum_acceptance
+            ],
+        )?;
+        connection.execute("UPDATE auth_authorization_issuers SET maximum_acceptance_deadline=max(maximum_acceptance_deadline,?1) WHERE key_id=?2",params![maximum_acceptance,self.issuer().key_id])?;
+        enqueue_effect(
+            connection,
+            "authority_publish",
+            &serde_json::json!({"kind":"authority","digest":digest}),
+            None,
+            now,
+        )?;
+        Ok(Ok(IssuedAuthority {
+            authority,
+            digest,
+            optional_unavailable: current.optional_unavailable,
+        }))
     }
 
     pub(super) fn catalog_in_transaction(
@@ -481,24 +656,29 @@ impl SqliteAuthorizationStore {
     }
 
     pub(crate) fn resolve_issuer(&self, key_id: &str) -> Result<AuthorityIssuerKey, AuthError> {
-        self.transaction(|connection| {
-            let (public, state): (String, String) = connection
-                .query_row(
-                    "SELECT public_key,state FROM auth_authorization_issuers WHERE key_id=?1",
-                    [key_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?
-                .ok_or(AuthError::NotFound)?;
-            Ok(AuthorityIssuerKey {
-                key_id: key_id.into(),
-                public_key: public,
-                state: match state.as_str() {
-                    "active" => AuthorityIssuerState::Active,
-                    "retired" => AuthorityIssuerState::Retired,
-                    _ => AuthorityIssuerState::Revoked,
-                },
-            })
+        self.transaction(|connection| Self::resolve_issuer_in(connection, key_id))
+    }
+
+    pub(super) fn resolve_issuer_in(
+        connection: &rusqlite::Connection,
+        key_id: &str,
+    ) -> Result<AuthorityIssuerKey, AuthError> {
+        let (public, state): (String, String) = connection
+            .query_row(
+                "SELECT public_key,state FROM auth_authorization_issuers WHERE key_id=?1",
+                [key_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .ok_or(AuthError::NotFound)?;
+        Ok(AuthorityIssuerKey {
+            key_id: key_id.into(),
+            public_key: public,
+            state: match state.as_str() {
+                "active" => AuthorityIssuerState::Active,
+                "retired" => AuthorityIssuerState::Retired,
+                _ => AuthorityIssuerState::Revoked,
+            },
         })
     }
 }

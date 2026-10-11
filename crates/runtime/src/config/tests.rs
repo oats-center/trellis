@@ -30,6 +30,18 @@ target_signing_seed_file = "./nats/trellis-target-signing.seed"
 xkey_seed_file = "./nats/auth-callout-xkey.seed"
 sentinel_public_key_file = "./nats/auth-sentinel.pub"
 
+[auth]
+instance_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+oauth_storage_key_file = "./auth/oauth-storage.key"
+
+[auth.oauth]
+origin = "http://localhost:3001"
+bind_address = "127.0.0.1"
+port = 3001
+
+[auth.oauth.transport]
+mode = "loopback_development"
+
 [auth.authorization]
 issuer_signing_seed_file = "./auth/authorization-issuer.seed"
 context_lifetime_seconds = 300
@@ -355,140 +367,32 @@ future_lease_option = { enabled = true }
 }
 
 #[test]
-fn parses_plan_shaped_toml_config() {
-    let config = RuntimeConfig::from_toml_str(
-        r#"
-instance_name = "Trellis"
-event_session_seed_file = "./session.seed"
-
-[http]
-port = 3000
-public_origin = "http://localhost:3000"
-origins = ["http://localhost:3000"]
-allow_insecure_origins = ["http://localhost:3000"]
-rate_limit_max = 60
-rate_limit_window_ms = 60000
-
-[nats]
-servers = "nats://127.0.0.1:4222"
-
-[nats.runtime]
-auth_creds_path = "./nats/auth-runtime.creds"
-trellis_creds_path = "./nats/trellis-runtime.creds"
-system_creds_path = "./nats/system-runtime.creds"
-
-[nats.auth_callout]
-issuer_signing_seed_file = "./nats/auth-issuer-signing.seed"
-target_signing_seed_file = "./nats/trellis-target-signing.seed"
-xkey_seed_file = "./nats/auth-callout-xkey.seed"
-sentinel_public_key_file = "./nats/auth-sentinel.pub"
-
-[client]
-ws_nats_servers = ["ws://localhost:8080"]
-nats_servers = ["nats://127.0.0.1:4222"]
-
-[platform.storage]
-kind = "sqlite"
-path = "./data/platform.sqlite"
-journal_mode = "wal"
-busy_timeout_ms = 5000
-single_writer = true
-
-[jobs.storage]
-kind = "sqlite"
-path = "./data/jobs.sqlite"
-
-[health]
-history_retention_days = 30
-
-[health.storage]
-kind = "sqlite"
-path = "./data/health.sqlite"
-
-[events]
-retention_days = 7
-
-[events.storage]
-kind = "sqlite"
-path = "./data/events.sqlite"
-
-[leases]
-bucket = "trellis_runtime_leases"
-replicas = 1
-ttl_ms = 15000
-renew_ms = 5000
-
-[auth.local_identity]
-enabled = true
-password_min_length = 8
-
-[auth.authorization]
-issuer_signing_seed_file = "./auth/authorization-issuer.seed"
-context_lifetime_seconds = 300
-refresh_lead_seconds = 60
-refresh_jitter_seconds = 15
-minimum_context_lifetime_seconds = 76
-maximum_bootstrap_jwt_lifetime_seconds = 3600
-allowed_clock_skew_seconds = 30
-maximum_context_bytes = 16384
-maximum_permissions = 4096
-context_bucket = "trellis_authorization_contexts"
-registry_replicas = 1
-
-[oauth]
-redirect_base = "http://localhost:3000/auth/callback"
-always_show_provider_chooser = false
-
-[oauth.providers.google]
-type = "oidc"
-issuer = "https://accounts.google.com"
-client_id = "client-id"
-client_secret_file = "./secrets/google-client-secret"
-display_name = "Google"
-scopes = ["openid", "profile", "email"]
-
-[platform.ttl_ms]
-sessions = 86400000
-oauth = 300000
-device_flow = 1800000
-pending_auth = 300000
-"#,
-    )
-    .expect("parse config");
-
-    config
-        .validate_for_mode(RuntimeMode::All)
-        .expect("valid config");
-    assert_eq!(
-        config
-            .health
-            .as_ref()
-            .and_then(|health| health.history_retention_days),
-        Some(30)
-    );
-    assert_eq!(
-        config
-            .events
-            .as_ref()
-            .and_then(|events| events.retention_days),
-        Some(7)
-    );
-    assert_eq!(
-        config.leases.as_ref().and_then(|leases| leases.ttl_ms),
-        Some(15000)
-    );
-    assert_eq!(
-        config.leases.as_ref().and_then(|leases| leases.replicas),
-        Some(1)
-    );
-    assert_eq!(
-        config
-            .oauth
-            .as_ref()
-            .and_then(|oauth| oauth.providers.get("google"))
-            .and_then(|google| google.client_secret_file.as_ref()),
-        Some(&PathBuf::from("./secrets/google-client-secret"))
-    );
+fn oauth_listener_requires_stable_identity_distinct_origins_and_explicit_loopback_transport() {
+    RuntimeConfig::from_toml_str(COMPLETE_CONFIG)
+        .unwrap()
+        .resolve_oauth_listener()
+        .unwrap();
+    for (before, after) in [
+        ("instance_id = \"01ARZ3NDEKTSV4RRFFQ69G5FAV\"", ""),
+        ("01ARZ3NDEKTSV4RRFFQ69G5FAV", "01arz3ndektsv4rrffq69g5fav"),
+        ("bind_address = \"127.0.0.1\"", "bind_address = \"0.0.0.0\""),
+        ("http://localhost:3001", "http://auth.example.org:3001"),
+        ("nats://127.0.0.1:4222", "nats://broker.example:4222"),
+        ("nats://127.0.0.1:4222", "ws://broker.example:4222"),
+        ("nats://127.0.0.1:4222", "nats://192.168.1.1:4222"),
+        ("nats://127.0.0.1:4222", "https://broker.example:4222"),
+        (
+            "[http]",
+            "[http]\npublic_origin = \"http://localhost:3001\"",
+        ),
+    ] {
+        let input = COMPLETE_CONFIG.replace(before, after);
+        let config = RuntimeConfig::from_toml_str(&input).unwrap();
+        assert!(
+            config.resolve_oauth_listener().is_err(),
+            "accepted unsafe configuration: {before} -> {after}"
+        );
+    }
 }
 
 #[test]
@@ -651,23 +555,6 @@ registry_replicas = 1
             ..
         })
     ));
-}
-
-#[test]
-fn uses_default_http_port_when_missing() {
-    let config = RuntimeConfig::from_toml_str(
-        r#"
-[jobs.storage]
-kind = "sqlite"
-path = "./data/jobs.sqlite"
-
-[leases]
-replicas = 1
-"#,
-    )
-    .expect("parse config");
-
-    assert_eq!(config.http_port(), 3000);
 }
 
 #[test]

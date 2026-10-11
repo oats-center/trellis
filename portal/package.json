@@ -1,0 +1,12 @@
+{
+  "name": "@trellis/oauth-portal",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:build": "node --test scripts/build_embedded.test.ts",
+    "build": "vite build",
+    "build:embedded": "node scripts/build_embedded.ts",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "dev": "vite dev"
+  }
+}

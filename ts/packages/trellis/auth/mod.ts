@@ -31,31 +31,26 @@ export {
   deriveDeviceIdentity,
   waitForDeviceActivation,
 } from "./device_activation.ts";
-export {
-  fetchPortalFlowState,
-  fetchPortalIntentState,
-  portalIntentFromUrl,
-  portalProviderLoginUrl,
-  portalRedirectLocation,
-  portalTransactionIdFromUrl,
-  startPortalTransaction,
-  submitPortalApproval,
-} from "./browser/portal.ts";
 export type {
   DeviceUserAuthoritiesResolveOutput,
   DeviceUserAuthoritiesResolveProgress,
 } from "../internal_sdk/generated/apis/auth/mod.js";
-// Context-bound proof helpers for local signing and signature verification.
+// All transcript framing and authenticated verification is owned by Rust/WASM.
 export {
-  buildEventProofInput,
-  buildProofInput,
   createEventProof,
   createProof,
-  type EventProofParams,
-  type ProofParams,
-  verifyEventProof,
-  verifyProof,
+  createResponseProof,
+  type RequestSignature,
 } from "./proof.ts";
+export {
+  type SessionRequest,
+  type SessionEvent,
+  type SessionResponse,
+  type VerifySessionResponseArgs,
+  type VerifySessionResponseResult,
+  verifySessionRequestWasm,
+  verifySessionResponseWasm,
+} from "./protocol_wasm.ts";
 export {
   parseSessionProof,
   SESSION_PROOF_FORMAT_V1,

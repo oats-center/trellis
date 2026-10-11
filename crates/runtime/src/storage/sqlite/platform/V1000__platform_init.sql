@@ -564,6 +564,16 @@ CREATE TABLE auth_login_sessions (
 CREATE INDEX auth_login_sessions_principal ON auth_login_sessions(principal_id, revoked_at, expires_at);
 CREATE INDEX auth_login_sessions_provider ON auth_login_sessions(provider_id, principal_id, observation_order);
 
+CREATE TABLE auth_portal_sessions (
+    portal_session_id TEXT PRIMARY KEY CHECK (length(portal_session_id)=26),
+    cookie_hash TEXT NOT NULL UNIQUE,
+    csrf_hash TEXT NOT NULL,
+    login_session_id TEXT REFERENCES auth_login_sessions(login_session_id),
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL CHECK (expires_at>created_at)
+);
+CREATE INDEX auth_portal_sessions_expiry ON auth_portal_sessions(expires_at);
+
 CREATE TABLE auth_oauth_clients (
     client_id TEXT PRIMARY KEY,
     kind TEXT NOT NULL CHECK (kind IN ('browser', 'native')),
@@ -577,6 +587,14 @@ CREATE TABLE auth_oauth_clients (
     revision INTEGER NOT NULL CHECK (revision >= 1),
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
+);
+-- Retrieved public metadata is not client registration or privilege eligibility.
+CREATE TABLE auth_cimd_clients (
+    client_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('browser','native')),
+    metadata_digest TEXT NOT NULL,
+    metadata_json TEXT NOT NULL CHECK (json_valid(metadata_json)),
+    observed_at INTEGER NOT NULL
 );
 CREATE TABLE auth_platform_privileges (
     principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id),
@@ -631,6 +649,7 @@ CREATE TABLE auth_oauth_grants (
     approved_capabilities_json TEXT NOT NULL CHECK (json_valid(approved_capabilities_json)),
     approved_privileges_json TEXT NOT NULL CHECK (json_valid(approved_privileges_json)),
     consent_basis_json TEXT NOT NULL CHECK (json_valid(consent_basis_json)),
+    required_privileges_json TEXT NOT NULL CHECK (json_valid(required_privileges_json)),
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
     revoked_at INTEGER,
@@ -655,8 +674,11 @@ CREATE TRIGGER auth_oauth_family_revocation_final BEFORE UPDATE ON auth_oauth_fa
 WHEN OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NOT OLD.revoked_at
 BEGIN SELECT RAISE(ABORT, 'refresh family revocation is irreversible'); END;
 CREATE TABLE auth_oauth_artifacts (
-    kind TEXT NOT NULL CHECK (kind IN ('authorization', 'code', 'device', 'token', 'refresh', 'dpopReplay')),
+    kind TEXT NOT NULL CHECK (kind IN ('authorization', 'upstream', 'code', 'device', 'deviceSelection', 'token', 'refresh', 'dpopReplay', 'client')),
     lookup_hash TEXT NOT NULL CHECK (length(lookup_hash) = 43),
+    client_id TEXT,
+    user_code_hash TEXT,
+    grant_established_at_ns INTEGER NOT NULL DEFAULT 0,
     family_lookup_hash TEXT REFERENCES auth_oauth_families(family_lookup_hash),
     oauth_grant_id TEXT REFERENCES auth_oauth_grants(oauth_grant_id),
     sealed_record BLOB NOT NULL,
@@ -667,6 +689,15 @@ CREATE TABLE auth_oauth_artifacts (
 );
 CREATE INDEX auth_oauth_artifacts_expiry ON auth_oauth_artifacts(expires_at);
 CREATE INDEX auth_oauth_artifacts_family ON auth_oauth_artifacts(family_lookup_hash, kind);
+CREATE UNIQUE INDEX auth_oauth_artifacts_user_code ON auth_oauth_artifacts(user_code_hash) WHERE user_code_hash IS NOT NULL;
+CREATE INDEX auth_oauth_artifacts_client ON auth_oauth_artifacts(client_id, kind);
+CREATE TABLE auth_oauth_barriers (
+    kind TEXT NOT NULL CHECK (kind IN ('client', 'family')),
+    scope TEXT NOT NULL,
+    recorded_at_ns INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY (kind, scope)
+);
 
 CREATE TABLE auth_authorization_sessions (
     authorization_session_id TEXT PRIMARY KEY CHECK (length(authorization_session_id) = 26),
@@ -739,6 +770,8 @@ CREATE TABLE auth_session_authorities (
 CREATE INDEX auth_session_authorities_session_expiry
 ON auth_session_authorities(authorization_session_id, expires_at);
 CREATE INDEX auth_session_authorities_issuer ON auth_session_authorities(issuer_key_id);
+CREATE UNIQUE INDEX auth_session_authorities_context_session
+ON auth_session_authorities(context_digest, authorization_session_id);
 CREATE TRIGGER auth_session_authority_immutable BEFORE UPDATE ON auth_session_authorities
 BEGIN SELECT RAISE(ABORT, 'signed session authority is immutable'); END;
 CREATE TRIGGER auth_session_authority_retained BEFORE DELETE ON auth_session_authorities
@@ -764,13 +797,16 @@ CREATE TABLE auth_attachments (
     server_id TEXT NOT NULL,
     broker_client_id INTEGER NOT NULL CHECK (broker_client_id >= 1),
     authorization_session_id TEXT NOT NULL REFERENCES auth_authorization_sessions(authorization_session_id),
+    context_digest TEXT NOT NULL,
     ephemeral_nkey TEXT NOT NULL CHECK (length(ephemeral_nkey) = 56),
     transport_policy_digest TEXT NOT NULL CHECK (length(transport_policy_digest) = 43),
     state TEXT NOT NULL CHECK (state IN ('pending', 'admitted', 'closed')),
     created_at INTEGER NOT NULL,
     admitted_at INTEGER,
     closed_at INTEGER,
-    UNIQUE (server_id, broker_client_id, attachment_id)
+    UNIQUE (server_id, broker_client_id, attachment_id),
+    FOREIGN KEY (context_digest, authorization_session_id)
+        REFERENCES auth_session_authorities(context_digest, authorization_session_id)
 );
 CREATE INDEX auth_attachments_session ON auth_attachments(authorization_session_id, state, attachment_id);
 CREATE INDEX auth_attachments_broker ON auth_attachments(server_id, broker_client_id, state);

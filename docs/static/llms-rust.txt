@@ -15,6 +15,15 @@ connection-owned cache integration are unfinished on this unreleased branch.
 Do not revive the retired GrantBinding/browser-bind protocol or install a watcher
 per context as a compatibility path.
 
+Native OAuth custody binds each credential handle to the selected issuer,
+installation, NATS account, and client identity. Owner-only files retain the
+persistent DPoP key and rotating refresh family; an operating-system lock spans
+read, exchange, and commit across processes. Mark recovery before exchange so
+a lost response cannot trigger replay of a spent refresh token. Platforms
+without this owner-only adapter must supply an explicit secure-store adapter.
+Native CLI workflows and production Callout/startup integration are unfinished;
+the custody component alone is not a working Revision 7 native login command.
+
 Explicit one-off consent overrides older remembered choices without changing
 them. Reused choices retain their expiry; later shared withdrawals still retire
 affected sessions. A shortened effective authorization deadline is a reduction

@@ -1,198 +1,56 @@
-import { AsyncResult } from "@oatscenter/result";
+import type { Ed25519Signer } from "./crypto.ts";
+import {
+  sessionRequestSigningDigestWasm,
+  sessionResponseSigningDigestWasm,
+  sessionEventSigningDigestWasm,
+  type SessionEvent,
+  type SessionRequest,
+  type SessionResponse,
+} from "./protocol_wasm.ts";
+import { base64urlEncode } from "./utils.ts";
 
-import { type Ed25519Signer, trellisCrypto } from "./crypto.ts";
-import { base64urlDecode, base64urlEncode, sha256, utf8 } from "./utils.ts";
-
-export type ProofParams = {
-  contextDigest: string;
-  subject: string;
-  reply: string;
-  payloadHash: Uint8Array;
-  iat: number;
-  requestId: string;
+/** Request proof and shared transcript digest retained until authenticated completion. */
+export type RequestSignature = {
+  readonly proof: string;
+  readonly requestProofDigest: Uint8Array;
 };
 
-export type EventProofParams = {
-  contextDigest: string;
-  descriptorIdentity: string;
-  subject: string;
-  payloadHash: Uint8Array;
-  eventId: string;
-  eventTime: string;
-};
-
-const REQUEST_PROOF_DOMAIN = utf8("trellis.authorization-request-proof.v1");
-const EVENT_PROOF_DOMAIN = utf8("trellis.authorization-event-proof.v1");
-
-function appendLengthPrefixed(
-  buf: Uint8Array,
-  view: DataView,
-  offset: number,
-  value: Uint8Array,
-): number {
-  view.setUint32(offset, value.length);
-  const valueOffset = offset + 4;
-  buf.set(value, valueOffset);
-  return valueOffset + value.length;
-}
-
-function buildLengthPrefixed(
-  components: Uint8Array[],
-): Uint8Array {
-  const total = components.reduce(
-    (sum, value) => sum + 4 + value.length,
-    0,
-  );
-  const buf = new Uint8Array(total);
-  const view = new DataView(buf.buffer);
-
-  let offset = 0;
-  for (const component of components) {
-    offset = appendLengthPrefixed(buf, view, offset, component);
-  }
-  return buf;
-}
-
-/**
- * Builds the canonical v1 context-bound request proof input bytes.
- *
- * The exact NATS reply inbox must be created before signing and is bound into
- * the proof input, matching the runtime request verifier.
- */
-export function buildProofInput(
-  contextDigest: string,
-  subject: string,
-  reply: string,
-  payloadHash: Uint8Array,
-  iat: number,
-  requestId: string,
-): Uint8Array {
-  const contextDigestBytes = base64urlDecode(contextDigest);
-  if (contextDigestBytes.length !== 32) {
-    throw new Error("authorization context digest must encode 32 bytes");
-  }
-  if (reply.length === 0) {
-    throw new Error("request reply subject must not be empty");
-  }
-  return buildLengthPrefixed([
-    REQUEST_PROOF_DOMAIN,
-    contextDigestBytes,
-    utf8(subject),
-    utf8(reply),
-    payloadHash,
-    utf8(String(iat)),
-    utf8(requestId),
-  ]);
-}
-
-/**
- * Builds the canonical v1 context-bound event proof input bytes.
- */
-export function buildEventProofInput(
-  contextDigest: string,
-  descriptorIdentity: string,
-  subject: string,
-  payloadHash: Uint8Array,
-  eventId: string,
-  eventTime: string,
-): Uint8Array {
-  const contextDigestBytes = base64urlDecode(contextDigest);
-  if (contextDigestBytes.length !== 32) {
-    throw new Error("authorization context digest must encode 32 bytes");
-  }
-  return buildLengthPrefixed([
-    EVENT_PROOF_DOMAIN,
-    contextDigestBytes,
-    utf8(descriptorIdentity),
-    utf8(subject),
-    payloadHash,
-    utf8(eventId),
-    utf8(eventTime),
-  ]);
-}
-
+/** Sign the shared Rust transcript over the exact request publication buffer. */
 export async function createProof(
   signer: Ed25519Signer,
-  params: ProofParams,
-): Promise<string> {
-  const input = buildProofInput(
-    params.contextDigest,
-    params.subject,
-    params.reply,
-    params.payloadHash,
-    params.iat,
-    params.requestId,
+  request: SessionRequest,
+  payload: Uint8Array,
+): Promise<RequestSignature> {
+  const requestProofDigest = await sessionRequestSigningDigestWasm(
+    request,
+    payload,
   );
-  const digest = await sha256(input);
-  return base64urlEncode(await signer.sign(digest));
+  return {
+    proof: base64urlEncode(await signer.sign(requestProofDigest)),
+    requestProofDigest,
+  };
 }
 
+/** Sign catalog-stamped event identity; no subject parsing or independent framing. */
 export async function createEventProof(
   signer: Ed25519Signer,
-  params: EventProofParams,
+  event: SessionEvent,
+  payload: Uint8Array,
 ): Promise<string> {
-  const input = buildEventProofInput(
-    params.contextDigest,
-    params.descriptorIdentity,
-    params.subject,
-    params.payloadHash,
-    params.eventId,
-    params.eventTime,
+  return base64urlEncode(
+    await signer.sign(await sessionEventSigningDigestWasm(event, payload)),
   );
-  const digest = await sha256(input);
-  return base64urlEncode(await signer.sign(digest));
 }
 
-export async function verifyProof(
-  publicSessionKey: string,
-  params: ProofParams,
-  proofBase64url: string,
-): Promise<boolean> {
-  const result = await AsyncResult.try(async () => {
-    const input = buildProofInput(
-      params.contextDigest,
-      params.subject,
-      params.reply,
-      params.payloadHash,
-      params.iat,
-      params.requestId,
-    );
-    const digest = await sha256(input);
-    const signature = base64urlDecode(proofBase64url);
-    const publicKey = base64urlDecode(publicSessionKey);
-    if (publicKey.length !== 32) return false;
-    return await (await trellisCrypto()).verifyEd25519(
-      publicKey,
-      digest,
-      signature,
-    );
-  });
-  return result.unwrapOr(false);
-}
-
-export async function verifyEventProof(
-  publicSessionKey: string,
-  params: EventProofParams,
-  proofBase64url: string,
-): Promise<boolean> {
-  const result = await AsyncResult.try(async () => {
-    const input = buildEventProofInput(
-      params.contextDigest,
-      params.descriptorIdentity,
-      params.subject,
-      params.payloadHash,
-      params.eventId,
-      params.eventTime,
-    );
-    const digest = await sha256(input);
-    const signature = base64urlDecode(proofBase64url);
-    const publicKey = base64urlDecode(publicSessionKey);
-    if (publicKey.length !== 32) return false;
-    return await (await trellisCrypto()).verifyEd25519(
-      publicKey,
-      digest,
-      signature,
-    );
-  });
-  return result.unwrapOr(false);
+/** Sign actual result bytes and the retained opening request as a provider. */
+export async function createResponseProof(
+  signer: Ed25519Signer,
+  response: SessionResponse,
+  payload: Uint8Array,
+): Promise<string> {
+  return base64urlEncode(
+    await signer.sign(
+      await sessionResponseSigningDigestWasm(response, payload),
+    ),
+  );
 }

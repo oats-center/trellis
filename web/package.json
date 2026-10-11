@@ -1,0 +1,18 @@
+{
+  "name": "@trellis/console",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npm run install:contracts --prefix .. && npm run protocol:wasm --prefix .. && vite dev",
+    "build": "npm run install:contracts --prefix .. && npm run protocol:wasm --prefix .. && npm run build:prepared",
+    "build:prepared": "svelte-kit sync && vite build",
+    "build:embedded": "node scripts/build_embedded.ts",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.check.json",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@oatscenter/result": "0.100.0",
+    "@oatscenter/trellis": "0.100.0",
+    "@oatscenter/trellis-svelte": "0.100.0"
+  }
+}

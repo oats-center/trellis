@@ -41,8 +41,11 @@ pub(crate) enum AuthError {
 pub(crate) struct AuthSettings {
     pub(crate) instance_id: String,
     pub(crate) account: String,
+    pub(crate) oauth_origin: String,
+    pub(crate) upstream_tls_roots_pem: Vec<String>,
     pub(crate) authority_lifetime_seconds: u32,
     pub(crate) clock_skew_seconds: u32,
+    pub(crate) login_lifetime_seconds: u32,
     pub(crate) enforcement_page_size: usize,
 }
 
@@ -93,7 +96,21 @@ impl SqliteAuthorizationStore {
         signer: SigningKey,
         settings: AuthSettings,
     ) -> Result<Self, AuthError> {
+        let origin = url::Url::parse(&settings.oauth_origin)
+            .map_err(|_| AuthError::Invalid("invalid OAuth origin".into()))?;
+        let loopback = matches!(origin.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+        if origin.origin().ascii_serialization() != settings.oauth_origin
+            || !origin.username().is_empty()
+            || origin.password().is_some()
+            || origin.query().is_some()
+            || origin.fragment().is_some()
+            || origin.path() != "/"
+            || (origin.scheme() != "https" && !(origin.scheme() == "http" && loopback))
+        {
+            return Err(AuthError::Invalid("unsafe OAuth origin".into()));
+        }
         if settings.authority_lifetime_seconds == 0
+            || settings.login_lifetime_seconds == 0
             || !(1..=256).contains(&settings.enforcement_page_size)
             || settings.instance_id.is_empty()
             || settings.account.is_empty()

@@ -1,8 +1,17 @@
 # Design: Trellis Authentication And Authorization
 
-Status: Revision 7. The authoritative Auth core is implemented through Phase 2;
-OAuth/Callout adapters, SDK ownership, provider integration, and runtime startup
-wiring are completed in the remaining phases. This is an unreleased clean break,
+Status: Revision 7. The authoritative Auth core is implemented through Phase 2.
+Phase 3 includes OAuth storage, local/OIDC login, consent, device authorization,
+signed admission, isolated portal hosting, TLS, and browser/native custody
+components. Production startup, Callout/ACL lifecycle wiring, native CLI flows,
+and complete legacy-path removal remain unfinished; component verification does
+not establish production deployment readiness. Phase 4 has started with shared
+Rust/WASM provider-response and issuer-metadata verification, and SDK signing
+of catalog-stamped request/event transcripts with retained request digests.
+These primitives are not yet wired through all application transports. Shared
+SDK authority ownership, provider/resource integration, and the Console cutover
+remain unfinished. This is a review checkpoint, not phase acceptance or a
+release. This is an unreleased clean break,
 not a compatibility path for GrantBinding or the former browser bind protocol.
 
 ## Authority Ownership
@@ -15,6 +24,61 @@ authorization sessions, immutable signed material, and durable effects.
 Providers verify compact signed results. They do not resolve roles, reproduce
 OAuth consent, track source floors, or subscribe separately for every context.
 NATS KV is a rebuildable distribution mirror, never authoritative policy.
+
+### Installation Identity And Authorization Listener
+
+Fresh initialization generates `auth.instance_id` as a canonical ULID. Retain it
+with the installation configuration and database across restarts and all key
+rotations; startup requires it rather than inventing a new identity.
+
+`auth.oauth` explicitly configures the dedicated listener's `origin`,
+`bind_address`, `port`, and `transport`. TLS mode requires `certificate_chain`
+and `private_key` PEM paths resolved relative to the runtime configuration.
+`loopback_development` is an explicit plaintext mode restricted to loopback
+origins and addresses, never a TLS fallback. The OAuth origin must differ from
+all configured application origins. A shared hostname is allowed but requires a
+prominent cookie-scope warning, because cookies are not port-scoped. Console
+assets and application routers are never mounted on the OAuth listener.
+
+### OAuth Storage Key Custody
+
+Fresh initialization provisions `auth/oauth-storage.key`, independently of the
+online issuer, as an owner-only `0600` file containing a base64url 32-byte key.
+`auth.oauth_storage_key_file` selects it; relative paths resolve against the
+runtime configuration file. Retain and back up this key together with Auth's
+database. Issuer rotation does not replace it. Bootstrap refuses to overwrite
+existing material. The OAuth adapter refuses missing, malformed, symlinked, or
+non-private key files and authenticates existing encrypted OAuth material before
+accepting new writes. Key files must be owned by the process user, have no other
+hard links, and fit the bounded encoded-key format. Opening refuses symlinks
+without following them. Startup never generates a replacement key. Production
+startup wiring remains part of the Phase 3 cutover.
+
+### Authorization HTTP Boundary
+
+The OAuth adapter bounds form bodies and per-peer/origin request admission,
+rejects untrusted Host/HTTP2 authority and cross-origin portal mutations, and
+limits CORS to origins from validated client callbacks. Forwarding headers do
+not select the peer identity. Expiry cleanup removes transient portal, proof,
+device, and token state without deleting immutable authority or audit evidence.
+
+Portal documents use `Referrer-Policy: same-origin`: cross-origin destinations
+receive no referrer, while same-origin forms retain the Origin required by the
+strict CSRF check. Accepting `Origin: null` is not a fallback. Own-context
+introspection binds its reply to the ephemeral key's derived inbox namespace;
+the responder checks that routing before publishing either success or errors.
+
+Console and OAuth portal are separate required frontend apps. Their build tools
+now use Node 24 LTS, npm workspaces, and Vite; embedded builds compile into
+staging before replacing only owner-marked output. This tooling change does not
+migrate the Console's older SDK authentication to Revision 7. The required
+Console build currently fails on retired participant imports, and SDK builds
+fail on retired protocol APIs; no placeholder assets or optional Console build
+are substituted to conceal that later-phase dependency.
+
+Dex is exclusively a real upstream OIDC test dependency, not a deployment
+component. Trellis validates upstream nonce, signature, issuer, and audience
+before translating verified claims through its own role mapping and consent.
 
 ## One Capability Compiler
 

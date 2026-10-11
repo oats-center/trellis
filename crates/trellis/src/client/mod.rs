@@ -92,5 +92,3 @@ pub(crate) use transport_generations::{
     GenerationIntake, GenerationIntakeHandle, GenerationIntakeRetireReason, LogicalTerminalCause,
     TransportGeneration, TransportGenerationManager, TransportLease,
 };
-#[cfg(test)]
-mod tests;

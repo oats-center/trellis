@@ -5,20 +5,32 @@
 //! to `trellis-idl`. This crate owns only runtime protocol values whose identity and
 //! verification must agree across implementations.
 
+mod admission;
 pub mod authorization;
 mod canonical;
 mod catalog;
 mod error;
 mod identifiers;
+mod issuer_metadata;
 pub mod live;
 mod pagination;
 mod participant;
 mod permissions;
+mod response;
 mod session_proof;
 mod subjects;
 pub mod transfer;
 pub mod transport_authorization;
 
+pub use admission::{
+    admission_get_subject, admission_inbox_prefix, sign_admission_context, sign_admission_get,
+    sign_oauth_admission, sign_provisioned_admission, verify_admission_context,
+    verify_admission_get, verify_oauth_admission, verify_provisioned_admission, AdmissionContext,
+    AdmissionGet, OAuthAdmission, OAuthAdmissionBinding, ProvisionedAdmission,
+    ProvisionedImplementation, SignedAdmissionContext, SignedAdmissionGet, SignedOAuthAdmission,
+    SignedProvisionedAdmission, MAX_ADMISSION_RESPONSE_BYTES, OAUTH_ADMISSION_FORMAT_V1,
+    PROVISIONED_ADMISSION_FORMAT_V1,
+};
 pub use authorization::{
     parse_session_authority, session_event_signing_digest, session_request_signing_digest,
     sign_session_authority, sign_session_event, sign_session_request, verify_session_authority,
@@ -42,6 +54,10 @@ pub use catalog::{
 };
 pub use error::{AuthorizationErrorCode, ProtocolError, SessionProofErrorCode};
 pub use identifiers::validate_api_id;
+pub use issuer_metadata::{
+    sign_issuer_metadata, verify_issuer_metadata, IssuerMetadata, IssuerMetadataQuery,
+    IssuerMetadataRequest, IssuerMetadataResult, SignedIssuerMetadata, VerifiedIssuerMetadata,
+};
 pub use live::{
     build_live_server_proof_input, derive_live_data_subject, derive_live_observe_subject,
     derive_live_observe_wildcard_subject, generate_nonce, live_server_proof_digest,
@@ -71,6 +87,11 @@ pub use participant::ParticipantKind;
 pub use permissions::{
     ApiSurfaceKind, ParticipantResourceKind, PermissionAction, PermissionAtom, PermissionTarget,
     PlatformPrivilege,
+};
+pub use response::{
+    session_response_signing_digest, sign_session_response, verify_session_response,
+    SessionResponse, SessionResponseKind, SessionResponseProof, SessionResponseVerificationInput,
+    VerifiedSessionResponse,
 };
 pub use session_proof::{
     parse_session_proof, session_proof_request_digest, session_proof_signing_digest,

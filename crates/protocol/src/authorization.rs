@@ -64,7 +64,7 @@ pub(crate) fn is_utf16_strictly_sorted(values: &[String]) -> bool {
         .all(|pair| pair[0].encode_utf16().cmp(pair[1].encode_utf16()).is_lt())
 }
 
-fn decode_base64url<const N: usize>(value: &str) -> Result<[u8; N], ProtocolError> {
+pub(crate) fn decode_base64url<const N: usize>(value: &str) -> Result<[u8; N], ProtocolError> {
     if value.len() != (N * 8).div_ceil(6) {
         return Err(authorization_error(
             AuthorizationErrorCode::InvalidEncoding,
@@ -113,7 +113,7 @@ fn verifying_key(value: &str) -> Result<VerifyingKey, ProtocolError> {
     Ok(key)
 }
 
-fn validate_id(value: &str, field: &str) -> Result<(), ProtocolError> {
+pub(crate) fn validate_id(value: &str, field: &str) -> Result<(), ProtocolError> {
     if value.len() != 26
         || ulid::Ulid::from_string(value).is_err()
         || value != value.to_ascii_uppercase()
@@ -127,7 +127,7 @@ fn validate_id(value: &str, field: &str) -> Result<(), ProtocolError> {
     Ok(())
 }
 
-fn validate_subject(value: &str) -> Result<(), ProtocolError> {
+pub(crate) fn validate_subject(value: &str) -> Result<(), ProtocolError> {
     validate_text(value, &["subject"])?;
     if value.split('.').any(str::is_empty)
         || value.contains(['*', '>'])
@@ -142,7 +142,7 @@ fn validate_subject(value: &str) -> Result<(), ProtocolError> {
     Ok(())
 }
 
-fn push_component(bytes: &mut Vec<u8>, value: &[u8]) -> Result<(), ProtocolError> {
+pub(crate) fn push_component(bytes: &mut Vec<u8>, value: &[u8]) -> Result<(), ProtocolError> {
     let length = u32::try_from(value.len()).map_err(|_| {
         authorization_error(
             AuthorizationErrorCode::InvalidFormat,

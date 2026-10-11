@@ -86,28 +86,28 @@ agent cli {
     capability devicesRemove;
     capability resourcesRead;
     capability resourcesRemove;
-    required capability accountRead;
-    required capability passwordChange;
-    required capability identitiesRead;
-    required capability identitiesManage;
-    required capability sessionsRead;
-    required capability sessionsRevoke;
+    capability accountRead;
+    capability passwordChange;
+    capability identitiesRead;
+    capability identitiesManage;
+    capability sessionsRead;
+    capability sessionsRevoke;
     capability delegationsRead;
     capability delegationsRevoke;
   }
-  use state { required capability delete; }
+  use state { capability delete; }
   use core {
-    required capability resources_destroy;
-    required capability resources_read;
+    capability resources_destroy;
+    capability resources_read;
   }
-  use health { required capability query; }
-  use jobs { required capability query; }
+  use health { capability query; }
+  use jobs { capability query; }
   use events {
-    required capability consumersInspect;
-    required capability deadLettersDismiss;
-    required capability deadLettersInspect;
-    required capability deadLettersReplay;
-    required capability query;
+    capability consumersInspect;
+    capability deadLettersDismiss;
+    capability deadLettersInspect;
+    capability deadLettersReplay;
+    capability query;
   }
 }
 
@@ -174,55 +174,55 @@ app console {
     capability resourcesRead;
     capability resourcesRemove;
     capability securityObserve;
-    required capability accountRead;
-    required capability passwordChange;
-    required capability identitiesRead;
-    required capability identitiesManage;
-    required capability sessionsRead;
-    required capability sessionsRevoke;
+    capability accountRead;
+    capability passwordChange;
+    capability identitiesRead;
+    capability identitiesManage;
+    capability sessionsRead;
+    capability sessionsRevoke;
     capability delegationsRead;
     capability delegationsRevoke;
   }
   use state {
-    required capability delete;
-    required capability read;
-    required capability write;
-    required capability resourcesInspect;
+    capability delete;
+    capability read;
+    capability write;
+    capability resourcesInspect;
   }
   use core {
-    required capability resources_destroy;
-    required capability resources_read;
+    capability resources_destroy;
+    capability resources_read;
   }
   use health {
-    required capability inspect;
-    required capability metrics;
-    required capability query;
-    required capability summary;
-    required capability observe;
+    capability inspect;
+    capability metrics;
+    capability query;
+    capability summary;
+    capability observe;
   }
   use jobs {
-    required capability cancel;
-    required capability dlqDismiss;
-    required capability keyLookup;
-    required capability inspect;
-    required capability dlqRead;
-    required capability listServices;
-    required capability metrics;
-    required capability query;
-    required capability summary;
-    required capability dlqReplay;
-    required capability retry;
-    required capability observe;
+    capability cancel;
+    capability dlqDismiss;
+    capability keyLookup;
+    capability inspect;
+    capability dlqRead;
+    capability listServices;
+    capability metrics;
+    capability query;
+    capability summary;
+    capability dlqReplay;
+    capability retry;
+    capability observe;
   }
   use events {
-    required capability consumersInspect;
-    required capability deadLettersDismiss;
-    required capability deadLettersInspect;
-    required capability deadLettersReplay;
-    required capability diagnostics;
-    required capability inspect;
-    required capability metrics;
-    required capability query;
-    required capability observe;
+    capability consumersInspect;
+    capability deadLettersDismiss;
+    capability deadLettersInspect;
+    capability deadLettersReplay;
+    capability diagnostics;
+    capability inspect;
+    capability metrics;
+    capability query;
+    capability observe;
   }
 }

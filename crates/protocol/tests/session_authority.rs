@@ -81,6 +81,267 @@ fn issued() -> (
 }
 
 #[test]
+fn certified_responses_bind_opening_bytes_action_destination_and_result_kind() {
+    use trellis_protocol::{
+        session_request_signing_digest, sign_session_response, verify_session_response,
+        ApiSurfaceKind, AuthorityProvider, CatalogActionIdentity, PermissionAction,
+        SessionResponse, SessionResponseKind, SessionResponseVerificationInput,
+        SignedProviderCertificate, PROVIDER_CERTIFICATE_FORMAT_V1,
+    };
+    let (_, pinned, caller, policy) = issued();
+    let issuer = SigningKey::from_bytes(&[2; 32]);
+    let provider_key = SigningKey::from_bytes(&[8; 32]);
+    let action = CatalogActionIdentity {
+        kind: ApiSurfaceKind::Rpc,
+        name: "Documents.Get".into(),
+        direction: PermissionAction::Call,
+    };
+    let certificate = SignedProviderCertificate {
+        format: PROVIDER_CERTIFICATE_FORMAT_V1.into(),
+        issuer_key_id: pinned.key_id.clone(),
+        trellis_instance_id: caller.unsigned.trellis_instance_id.clone(),
+        audience_nats_account: caller.unsigned.audience_nats_account.clone(),
+        principal_id: "01JY0000000000000000000006".into(),
+        deployment_id: "01JY0000000000000000000007".into(),
+        instance_id: "01JY0000000000000000000008".into(),
+        session_public_key: URL_SAFE_NO_PAD.encode(provider_key.verifying_key().as_bytes()),
+        api_id: "documents@v1".into(),
+        generation: U64s::new(1),
+        implementation_digest: URL_SAFE_NO_PAD.encode([9; 32]),
+        implemented_actions: vec![action.clone()],
+        issued_at: 1_100,
+        not_before: 1_100,
+        expires_at: 1_300,
+        extensions: Map::new(),
+        critical: vec![],
+        signature: String::new(),
+    }
+    .sign(&issuer)
+    .unwrap();
+    let mut provider_body = caller.unsigned.clone();
+    provider_body.principal_id = certificate.principal_id.clone();
+    provider_body.principal_kind = PrincipalKind::Service;
+    provider_body.binding = SessionBinding::Service {
+        deployment_id: certificate.deployment_id.clone(),
+        instance_id: certificate.instance_id.clone(),
+        participant_id: "documents.service".into(),
+    };
+    provider_body.authorization_session_id = "01JY0000000000000000000009".into();
+    provider_body.session_public_key = certificate.session_public_key.clone();
+    provider_body.login_session_id = None;
+    provider_body.oauth_grant_id = None;
+    provider_body.capabilities.clear();
+    provider_body.platform_privileges.clear();
+    provider_body.provider_bindings = vec![AuthorityProvider {
+        api_id: certificate.api_id.clone(),
+        generation: certificate.generation,
+        deployment_id: certificate.deployment_id.clone(),
+        implementation_digest: certificate.implementation_digest.clone(),
+        provider_certificate_digest: certificate.digest().unwrap(),
+    }];
+    let signed_provider = sign_session_authority(provider_body, &issuer).unwrap();
+    let provider = verify_session_authority(SessionAuthorityVerificationInput {
+        authority: &signed_provider,
+        issuer: &pinned,
+        trellis_instance_id: &caller.unsigned.trellis_instance_id,
+        audience_nats_account: &caller.unsigned.audience_nats_account,
+        policy: &policy,
+        purpose: SessionAuthorityPurpose::Live,
+        revocation_cutoff: None,
+    })
+    .unwrap();
+    let request = SessionRequest {
+        authority_digest: caller.digest().unwrap(),
+        api_id: "documents@v1".into(),
+        api_generation: U64s::new(1),
+        accepted_revision: U64s::new(3),
+        action: action.name.clone(),
+        subject: "documents.get".into(),
+        reply_subject: Some("_INBOX.runtime.reply".into()),
+        request_id: "01JY0000000000000000000010".into(),
+        issued_at: policy.now_unix_seconds,
+    };
+    let pending_digest = session_request_signing_digest(&request, b"original opening").unwrap();
+    let response = SessionResponse {
+        trellis_instance_id: caller.unsigned.trellis_instance_id.clone(),
+        audience_nats_account: caller.unsigned.audience_nats_account.clone(),
+        provider_authority_digest: provider.digest().into(),
+        provider_certificate_digest: certificate.digest().unwrap(),
+        api_id: request.api_id.clone(),
+        api_generation: request.api_generation,
+        action: request.action.clone(),
+        request_authority_digest: request.authority_digest.clone(),
+        request_id: request.request_id.clone(),
+        request_proof_digest: URL_SAFE_NO_PAD.encode(pending_digest),
+        subject: request.reply_subject.clone().unwrap(),
+        kind: SessionResponseKind::Success,
+        issued_at: policy.now_unix_seconds,
+    };
+    let payload = b"actual provider result";
+    let proof = sign_session_response(&response, payload, &provider_key).unwrap();
+    let verify = |response, bytes, opening_digest, subject, expected_action, revoked| {
+        verify_session_response(SessionResponseVerificationInput {
+            provider: &provider,
+            certificate: &certificate,
+            certificate_issuer: &pinned,
+            pending_request: &request,
+            pending_request_digest: opening_digest,
+            action: expected_action,
+            expected_deployment_id: Some(&certificate.deployment_id),
+            received_subject: subject,
+            response,
+            raw_payload: bytes,
+            proof: &proof,
+            policy: &policy,
+            known_revoked: revoked,
+        })
+        .map(|verified| verified.raw_payload().to_vec())
+    };
+    assert_eq!(
+        verify(
+            &response,
+            payload,
+            &pending_digest,
+            &response.subject,
+            &action,
+            false
+        )
+        .unwrap(),
+        payload
+    );
+    assert!(verify(
+        &response,
+        b"forged result",
+        &pending_digest,
+        &response.subject,
+        &action,
+        false
+    )
+    .is_err());
+    let other_opening = session_request_signing_digest(&request, b"substituted opening").unwrap();
+    assert!(verify(
+        &response,
+        payload,
+        &other_opening,
+        &response.subject,
+        &action,
+        false
+    )
+    .is_err());
+    assert!(verify(
+        &response,
+        payload,
+        &pending_digest,
+        "_INBOX.runtime.other",
+        &action,
+        false
+    )
+    .is_err());
+    let mut substituted_kind = response.clone();
+    substituted_kind.kind = SessionResponseKind::Error;
+    assert!(verify(
+        &substituted_kind,
+        payload,
+        &pending_digest,
+        &response.subject,
+        &action,
+        false
+    )
+    .is_err());
+    let mut other_action = action.clone();
+    other_action.name = "Documents.Delete".into();
+    assert!(verify(
+        &response,
+        payload,
+        &pending_digest,
+        &response.subject,
+        &other_action,
+        false
+    )
+    .is_err());
+    assert!(verify(
+        &response,
+        payload,
+        &pending_digest,
+        &response.subject,
+        &action,
+        true
+    )
+    .is_err());
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let directory = root
+        .join(".local/protocol-interop")
+        .join(ulid::Ulid::new().to_string());
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("response.json");
+    fs::write(&path, serde_json::to_vec(&json!({
+                "authority": signed_provider,
+                "providerSeed": URL_SAFE_NO_PAD.encode(provider_key.to_bytes()),
+        "authorityVerification": {
+            "issuer": pinned,
+            "trellisInstanceId": caller.unsigned.trellis_instance_id,
+            "audienceNatsAccount": caller.unsigned.audience_nats_account,
+            "policy": policy,
+            "purpose": "live",
+            "revocationCutoff": null
+        },
+        "verification": {
+            "response": response,
+            "proof": proof,
+            "certificate": certificate,
+            "certificateIssuer": pinned,
+            "pendingRequest": request,
+            "pendingRequestDigest": URL_SAFE_NO_PAD.encode(pending_digest),
+            "action": action,
+            "expectedDeploymentId": certificate.deployment_id,
+            "receivedSubject": response.subject,
+            "policy": policy,
+            "knownRevoked": false
+        },
+        "payload": String::from_utf8(payload.to_vec()).unwrap(),
+        "digest": URL_SAFE_NO_PAD.encode(trellis_protocol::session_response_signing_digest(&response, payload).unwrap())
+    })).unwrap()).unwrap();
+    let output = Command::new("node")
+        .current_dir(&root)
+        .arg("crates/protocol/tests/session_response_wasm.ts")
+        .arg(&path)
+        .output()
+        .unwrap();
+    fs::remove_dir_all(&directory).unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut signed_error = response;
+    signed_error.kind = SessionResponseKind::Error;
+    let error_bytes = b"declared application error";
+    let error_proof = sign_session_response(&signed_error, error_bytes, &provider_key).unwrap();
+    assert_eq!(
+        verify_session_response(SessionResponseVerificationInput {
+            provider: &provider,
+            certificate: &certificate,
+            certificate_issuer: &pinned,
+            pending_request: &request,
+            pending_request_digest: &pending_digest,
+            action: &action,
+            expected_deployment_id: None,
+            received_subject: &signed_error.subject,
+            response: &signed_error,
+            raw_payload: error_bytes,
+            proof: &error_proof,
+            policy: &policy,
+            known_revoked: false,
+        })
+        .unwrap()
+        .response()
+        .kind,
+        SessionResponseKind::Error
+    );
+}
+
+#[test]
 fn historical_event_requires_original_publication_before_expiry_and_revocation() {
     let (runtime, issuer, authority, mut policy) = issued();
     let event = SessionEvent {
@@ -353,6 +614,138 @@ fn authority_scope_expiry_and_logical_revocation_fail_closed() {
 }
 
 #[test]
+fn issuer_metadata_authenticates_public_material_and_absence_for_one_exchange() {
+    use trellis_protocol::{
+        sign_issuer_metadata, verify_issuer_metadata, IssuerMetadata, IssuerMetadataQuery,
+        IssuerMetadataRequest, IssuerMetadataResult, ISSUER_METADATA_DOMAIN_V1,
+    };
+    let (_, issuer, authority, policy) = issued();
+    let signer = SigningKey::from_bytes(&[2; 32]);
+    let request = IssuerMetadataRequest {
+        trellis_instance_id: authority.unsigned.trellis_instance_id.clone(),
+        audience_nats_account: authority.unsigned.audience_nats_account.clone(),
+        request_nonce: URL_SAFE_NO_PAD.encode([8; 16]),
+        query: IssuerMetadataQuery::AuthorityResolve {
+            context_digest: authority.digest().unwrap(),
+        },
+    };
+    let subject = "rpc.trellis.auth.Authority.Resolve";
+    let reply = "_INBOX.runtime.metadata";
+    let payload = serde_json::to_string(&authority).unwrap();
+    let signed = sign_issuer_metadata(
+        IssuerMetadata {
+            format: ISSUER_METADATA_DOMAIN_V1.into(),
+            issuer_key_id: issuer.key_id.clone(),
+            request: request.clone(),
+            request_subject: subject.into(),
+            reply_subject: reply.into(),
+            result: IssuerMetadataResult::Value {
+                payload: payload.clone(),
+            },
+            issued_at: policy.now_unix_seconds,
+            expires_at: policy.now_unix_seconds + 30,
+        },
+        &signer,
+    )
+    .unwrap();
+    let bytes = serde_json::to_vec(&signed).unwrap();
+    let verify = |bytes: &[u8], retained: &IssuerMetadataRequest, destination: &str| {
+        verify_issuer_metadata(
+            bytes,
+            &issuer,
+            retained,
+            subject,
+            destination,
+            policy.now_unix_seconds,
+        )
+    };
+    let verified = verify(&bytes, &request, reply).unwrap();
+    assert!(
+        matches!(verified.result(), IssuerMetadataResult::Value { payload: got } if got == &payload)
+    );
+    let mut changed = signed.clone();
+    changed.response.result = IssuerMetadataResult::Missing;
+    assert!(verify(&serde_json::to_vec(&changed).unwrap(), &request, reply).is_err());
+    let mut other = request.clone();
+    other.request_nonce = URL_SAFE_NO_PAD.encode([9; 16]);
+    assert!(verify(&bytes, &other, reply).is_err());
+    other = request.clone();
+    other.query = IssuerMetadataQuery::AuthorityStatus {
+        authorization_session_id: authority.unsigned.authorization_session_id.clone(),
+    };
+    assert!(verify(&bytes, &other, reply).is_err());
+    other = request.clone();
+    other.audience_nats_account = "another-account".into();
+    assert!(verify(&bytes, &other, reply).is_err());
+    assert!(verify(&bytes, &request, "_INBOX.another.exchange").is_err());
+    assert!(verify_issuer_metadata(
+        &bytes,
+        &issuer,
+        &request,
+        subject,
+        reply,
+        signed.response.expires_at
+    )
+    .is_err());
+    let revoked = AuthorityIssuerKey {
+        state: AuthorityIssuerState::Revoked,
+        ..issuer.clone()
+    };
+    assert!(verify_issuer_metadata(
+        &bytes,
+        &revoked,
+        &request,
+        subject,
+        reply,
+        policy.now_unix_seconds
+    )
+    .is_err());
+    for result in [
+        IssuerMetadataResult::Missing,
+        IssuerMetadataResult::Unavailable,
+    ] {
+        let mut response = signed.response.clone();
+        response.result = result.clone();
+        let absence = sign_issuer_metadata(response, &signer).unwrap();
+        assert_eq!(
+            verify(&serde_json::to_vec(&absence).unwrap(), &request, reply)
+                .unwrap()
+                .result(),
+            &result
+        );
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let directory = root
+        .join(".local/protocol-interop")
+        .join(ulid::Ulid::new().to_string());
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("metadata.json");
+    fs::write(
+        &path,
+        serde_json::to_vec(&json!({
+            "signed": signed,
+            "verification": { "issuer": issuer, "request": request, "requestSubject": subject,
+                "replySubject": reply, "nowUnixSeconds": policy.now_unix_seconds }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let output = Command::new("node")
+        .current_dir(&root)
+        .arg("crates/protocol/tests/issuer_metadata_wasm.ts")
+        .arg(&path)
+        .output()
+        .unwrap();
+    fs::remove_dir_all(&directory).unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn native_signed_request_verifies_in_packaged_wasm() {
     let (runtime, issuer, authority, policy) = issued();
     let request = SessionRequest {
@@ -442,6 +835,7 @@ fn native_signed_request_verifies_in_packaged_wasm() {
     })
     .collect::<Vec<_>>();
     let fixture = json!({
+        "runtimeSeed": URL_SAFE_NO_PAD.encode(runtime.to_bytes()),
         "verification": {
             "issuer": issuer,
             "trellisInstanceId": authority.unsigned.trellis_instance_id,
@@ -478,15 +872,9 @@ fn native_signed_request_verifies_in_packaged_wasm() {
     fs::create_dir_all(&directory).unwrap();
     let path = directory.join("request.json");
     fs::write(&path, serde_json::to_vec(&fixture).unwrap()).unwrap();
-    let output = Command::new("deno")
+    let output = Command::new("node")
         .current_dir(&root)
-        .args([
-            "run",
-            "--allow-read",
-            "--config",
-            "ts/deno.json",
-            "crates/protocol/tests/session_authority_wasm.ts",
-        ])
+        .arg("crates/protocol/tests/session_authority_wasm.ts")
         .arg(&path)
         .output()
         .unwrap();

@@ -67,6 +67,7 @@ pub(crate) struct GrantApproval {
     pub(crate) reused_remembered: Vec<String>,
     pub(crate) declined: Vec<String>,
     pub(crate) privileges: Vec<PlatformPrivilege>,
+    pub(crate) required_privileges: Vec<PlatformPrivilege>,
     pub(crate) remember: bool,
     pub(crate) remember_until: Option<i64>,
     pub(crate) expires_at: i64,
@@ -131,19 +132,26 @@ impl SqliteAuthorizationStore {
     ) -> Result<u64, AuthError> {
         self.mutate(identity,"client.register",registration,now,|connection| {
             Self::require_privilege(connection,&identity.actor,"clients.manage")?;
-            if !["browser","native"].contains(&registration.kind.as_str()) || registration.client_id.is_empty() || registration.display_name.is_empty() {return Err(AuthError::Invalid("invalid public client".into()));}
+            if !["browser","native"].contains(&registration.kind.as_str()) || registration.client_id.is_empty() || registration.display_name.is_empty() || registration.redirect_uris.is_empty() {return Err(AuthError::Invalid("invalid public client".into()));}
             for redirect in &registration.redirect_uris {
                 let uri=url::Url::parse(redirect).map_err(|_|AuthError::Invalid("invalid redirect".into()))?;
-                let loopback=matches!(uri.host_str(),Some("127.0.0.1"|"[::1]"|"::1"));
-                if uri.fragment().is_some() || !uri.username().is_empty() || uri.password().is_some()
-                    || (uri.scheme()!="https" && !(uri.scheme()=="http" && (registration.development || (registration.kind=="native" && loopback)))) {return Err(AuthError::Invalid("unsafe redirect".into()));}
+                let loopback=match uri.host() {Some(url::Host::Domain("localhost"))=>true,Some(url::Host::Ipv4(ip))=>ip.is_loopback(),Some(url::Host::Ipv6(ip))=>ip.is_loopback(),_=>false};
+                if uri.origin().ascii_serialization()==self.settings.oauth_origin {return Err(AuthError::Invalid("reserved_oauth_origin".into()));}
+                if uri.host_str().is_none() || uri.fragment().is_some() || !uri.username().is_empty() || uri.password().is_some()
+                    || (uri.scheme()!="https" && !(uri.scheme()=="http" && loopback && (registration.development || registration.kind=="native")))
+                    || (registration.kind=="browser" && loopback && !registration.development) {return Err(AuthError::Invalid("unsafe redirect".into()));}
+                super::warn_oauth_cookie_isolation(&url::Url::parse(&self.settings.oauth_origin).map_err(|_|AuthError::Denied)?, &uri);
             }
             // Administrative eligibility is never available to CIMD or a
             // development registration, even with administrator registration.
-            if !registration.eligible_privileges.is_empty() && (registration.development || registration.client_id.starts_with("https://")) {return Err(AuthError::Denied);}
+            if !registration.eligible_privileges.is_empty() {
+                if registration.development {return Err(AuthError::Denied);}
+                Self::require_privilege(connection,&identity.actor,"privileges.manage")?;
+            }
             for name in &registration.implied_capabilities {capability(connection,name)?;}
-            let current:Option<u64>=connection.query_row("SELECT revision FROM auth_oauth_clients WHERE client_id=?1 AND state!='deleted'",[&registration.client_id],|row|row.get(0)).optional()?;
-            if current.unwrap_or(0)!=registration.expected_revision {return Err(AuthError::Conflict);}
+            let current:Option<(u64,String)>=connection.query_row("SELECT revision,kind FROM auth_oauth_clients WHERE client_id=?1",[&registration.client_id],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+            if current.as_ref().map_or(0,|(revision,_)|*revision)!=registration.expected_revision {return Err(AuthError::Conflict);}
+            if current.as_ref().is_some_and(|(_,kind)|kind!=&registration.kind) {return Err(AuthError::Invalid("client binding kind cannot change".into()));}
             connection.execute("INSERT INTO auth_oauth_clients VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'active',?9,?10,?10) ON CONFLICT(client_id) DO UPDATE SET kind=excluded.kind,display_name=excluded.display_name,redirect_uris_json=excluded.redirect_uris_json,development=excluded.development,implied_capabilities_json=excluded.implied_capabilities_json,requested_privileges_json=excluded.requested_privileges_json,metadata_json=excluded.metadata_json,revision=excluded.revision,updated_at=excluded.updated_at",params![registration.client_id,registration.kind,registration.display_name,json(&registration.redirect_uris)?,registration.development,json(&registration.implied_capabilities)?,json(&registration.eligible_privileges)?,json(&registration.metadata)?,registration.expected_revision+1,now])?;
             enqueue_scope(connection,&EnforcementScope::Client(registration.client_id.clone()),now)?;
             Ok(registration.expected_revision+1)
@@ -155,23 +163,52 @@ impl SqliteAuthorizationStore {
         login: &VerifiedLogin,
         now: i64,
     ) -> Result<String, AuthError> {
-        self.transaction(|connection| {
-            let active:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_principals WHERE principal_id=?1 AND kind='user' AND state='active')",[&login.principal_id],|row|row.get(0))?;
-            if !active || login.expires_at<=now {return Err(AuthError::Denied);}
-            let mut fresh_until=None;
-            if let Some(provider)=&login.provider_id {
-                let (issuer,freshness):(String,i64)=connection.query_row("SELECT issuer,claim_freshness_seconds FROM auth_oidc_providers WHERE provider_id=?1 AND state='active'",[provider],|row|Ok((row.get(0)?,row.get(1)?))).optional()?.ok_or(AuthError::Denied)?;
-                if login.upstream_issuer.as_deref()!=Some(&issuer) || login.upstream_subject.as_ref().is_none_or(String::is_empty) || login.verified_claims.as_ref().is_none_or(|claims|!claims.is_object()) {return Err(AuthError::Denied);}
-                fresh_until=Some(now.saturating_add(freshness).min(login.expires_at));
-                let mapped:Option<String>=connection.query_row("SELECT principal_id FROM auth_provider_identities WHERE provider=?1 AND provider_subject=?2",params![provider,login.upstream_subject],|row|row.get(0)).optional()?;
-                if mapped.as_deref()!=Some(&login.principal_id) {return Err(AuthError::Denied);}
-            } else if login.upstream_issuer.is_some() || login.upstream_subject.is_some() || login.verified_claims.is_some() {return Err(AuthError::Denied);}
-            let order:u64=connection.query_row("SELECT coalesce(max(observation_order),0)+1 FROM auth_login_sessions WHERE principal_id=?1",[&login.principal_id],|row|row.get(0))?;
-            let session=id();
-            connection.execute("INSERT INTO auth_login_sessions(login_session_id,principal_id,method,provider_id,upstream_issuer,upstream_subject,verified_claims_json,verified_roles_json,observed_at,observation_order,fresh_until,expires_at,created_at,revision) VALUES(?1,?2,?3,?4,?5,?6,?7,'[]',?8,?9,?10,?11,?8,1)",params![session,login.principal_id,if login.provider_id.is_some(){"oidc"}else{"local"},login.provider_id,login.upstream_issuer,login.upstream_subject,login.verified_claims.as_ref().map(json).transpose()?,now,order,fresh_until,login.expires_at])?;
-            if login.provider_id.is_some() {enqueue_scope(connection,&EnforcementScope::Principal(login.principal_id.clone()),now)?;}
-            Ok(session)
-        })
+        self.transaction(|connection| Self::record_verified_login_in(connection, login, now))
+    }
+
+    pub(super) fn record_verified_login_in(
+        connection: &rusqlite::Connection,
+        login: &VerifiedLogin,
+        now: i64,
+    ) -> Result<String, AuthError> {
+        let active:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_principals WHERE principal_id=?1 AND kind='user' AND state='active')",[&login.principal_id],|row|row.get(0))?;
+        if !active || login.expires_at <= now {
+            return Err(AuthError::Denied);
+        }
+        let mut fresh_until = None;
+        if let Some(provider) = &login.provider_id {
+            let (issuer,freshness):(String,i64)=connection.query_row("SELECT issuer,claim_freshness_seconds FROM auth_oidc_providers WHERE provider_id=?1 AND state='active'",[provider],|row|Ok((row.get(0)?,row.get(1)?))).optional()?.ok_or(AuthError::Denied)?;
+            if login.upstream_issuer.as_deref() != Some(&issuer)
+                || login.upstream_subject.as_ref().is_none_or(String::is_empty)
+                || login
+                    .verified_claims
+                    .as_ref()
+                    .is_none_or(|claims| !claims.is_object())
+            {
+                return Err(AuthError::Denied);
+            }
+            fresh_until = Some(now.saturating_add(freshness).min(login.expires_at));
+            let mapped:Option<String>=connection.query_row("SELECT principal_id FROM auth_provider_identities WHERE provider=?1 AND provider_subject=?2",params![provider,login.upstream_subject],|row|row.get(0)).optional()?;
+            if mapped.as_deref() != Some(&login.principal_id) {
+                return Err(AuthError::Denied);
+            }
+        } else if login.upstream_issuer.is_some()
+            || login.upstream_subject.is_some()
+            || login.verified_claims.is_some()
+        {
+            return Err(AuthError::Denied);
+        }
+        let order:u64=connection.query_row("SELECT coalesce(max(observation_order),0)+1 FROM auth_login_sessions WHERE principal_id=?1",[&login.principal_id],|row|row.get(0))?;
+        let session = id();
+        connection.execute("INSERT INTO auth_login_sessions(login_session_id,principal_id,method,provider_id,upstream_issuer,upstream_subject,verified_claims_json,verified_roles_json,observed_at,observation_order,fresh_until,expires_at,created_at,revision) VALUES(?1,?2,?3,?4,?5,?6,?7,'[]',?8,?9,?10,?11,?8,1)",params![session,login.principal_id,if login.provider_id.is_some(){"oidc"}else{"local"},login.provider_id,login.upstream_issuer,login.upstream_subject,login.verified_claims.as_ref().map(json).transpose()?,now,order,fresh_until,login.expires_at])?;
+        if login.provider_id.is_some() {
+            enqueue_scope(
+                connection,
+                &EnforcementScope::Principal(login.principal_id.clone()),
+                now,
+            )?;
+        }
+        Ok(session)
     }
 
     pub(crate) fn register_oidc_provider(
@@ -255,10 +292,18 @@ impl SqliteAuthorizationStore {
             if !["native","browser"].contains(&approval.binding_kind.as_str()) {return Err(AuthError::Denied);}
             if approval.binding_kind=="browser" {
                 let origin=url::Url::parse(&approval.binding_value).map_err(|_|AuthError::Denied)?;
-                if origin.origin().ascii_serialization()!=approval.binding_value || origin.scheme()!="https" {return Err(AuthError::Denied);}
+                let loopback=matches!(origin.host_str(),Some("localhost"|"127.0.0.1"|"[::1]"));
+                if origin.origin().ascii_serialization()!=approval.binding_value || (origin.scheme()!="https" && !(origin.scheme()=="http" && loopback)) {return Err(AuthError::Denied);}
             }
-            let client:Option<(String,String,String)>=connection.query_row("SELECT kind,implied_capabilities_json,requested_privileges_json FROM auth_oauth_clients WHERE client_id=?1 AND state='active'",[&approval.client_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
-            let (kind,implied,eligible)=client.ok_or(AuthError::Denied)?;
+            let client:Option<(String,String,String,String)>=connection.query_row("SELECT state,kind,implied_capabilities_json,requested_privileges_json FROM auth_oauth_clients WHERE client_id=?1",[&approval.client_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?;
+            let (kind,implied,eligible)=match client {
+                Some((state,kind,implied,eligible)) if state=="active"=>(kind,implied,eligible),
+                Some(_)=>return Err(AuthError::Denied),
+                None=>{
+                    let kind:Option<String>=connection.query_row("SELECT kind FROM auth_cimd_clients WHERE client_id=?1",[&approval.client_id],|row|row.get(0)).optional()?;
+                    (kind.ok_or(AuthError::Denied)?,"[]".into(),"[]".into())
+                },
+            };
             if kind!=approval.binding_kind {return Err(AuthError::Denied);}
             let implied:Vec<String>=decode(&implied)?;
             let eligible:Vec<PlatformPrivilege>=decode(&eligible)?;
@@ -296,6 +341,7 @@ impl SqliteAuthorizationStore {
                     approved.push(cap);
                 }
             }
+            if !approval.required_privileges.iter().all(|privilege| approval.privileges.contains(privilege)) {return Err(AuthError::RequiredMissing);}
             for privilege in &approval.privileges {
                 let assigned:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_platform_privileges WHERE principal_id=?1 AND privilege=?2)",params![approval.principal_id,serde_json::to_value(privilege)?.as_str()],|row|row.get(0))?;
                 if !assigned || !eligible.contains(privilege) {return Err(AuthError::Denied);}
@@ -304,7 +350,7 @@ impl SqliteAuthorizationStore {
                 connection.execute("INSERT INTO auth_platform_delegations VALUES(?1,?2,?3,?4,?5,?6,1) ON CONFLICT(principal_id,client_id,binding_kind,binding_value) DO UPDATE SET approved_privileges_json=excluded.approved_privileges_json,expires_at=excluded.expires_at,revision=revision+1",params![approval.principal_id,approval.client_id,approval.binding_kind,approval.binding_value,json(&approval.privileges)?,approval.remember_until])?;
             }
             let grant=id();
-            connection.execute("INSERT INTO auth_oauth_grants(oauth_grant_id,principal_id,login_session_id,client_id,binding_kind,binding_value,durable_dpop_jkt,public_jwk_json,required_capabilities_json,optional_capabilities_json,approved_capabilities_json,approved_privileges_json,consent_basis_json,created_at,expires_at,revoked_at,revision) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,NULL,1)",params![grant,approval.principal_id,approval.login_session_id,approval.client_id,approval.binding_kind,approval.binding_value,approval.durable_dpop_jkt,json(&approval.public_jwk)?,json(&approval.selection.required)?,json(&approval.selection.optional)?,json(&approved)?,json(&approval.privileges)?,json(&consent_basis)?,now,approval.expires_at.min(login_expiry)])?;
+            connection.execute("INSERT INTO auth_oauth_grants(oauth_grant_id,principal_id,login_session_id,client_id,binding_kind,binding_value,durable_dpop_jkt,public_jwk_json,required_capabilities_json,optional_capabilities_json,approved_capabilities_json,approved_privileges_json,required_privileges_json,consent_basis_json,created_at,expires_at,revoked_at,revision) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,NULL,1)",params![grant,approval.principal_id,approval.login_session_id,approval.client_id,approval.binding_kind,approval.binding_value,approval.durable_dpop_jkt,json(&approval.public_jwk)?,json(&approval.selection.required)?,json(&approval.selection.optional)?,json(&approved)?,json(&approval.privileges)?,json(&approval.required_privileges)?,json(&consent_basis)?,now,approval.expires_at.min(login_expiry)])?;
             if approval.remember || !approval.privileges.is_empty() {
                 enqueue_scope(connection, &EnforcementScope::Principal(approval.principal_id.clone()), now)?;
             }

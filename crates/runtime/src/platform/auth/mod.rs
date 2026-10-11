@@ -9,6 +9,9 @@ mod broker;
 mod catalog;
 mod deployments;
 mod lifecycle;
+mod oauth;
+mod own_context;
+pub(crate) use own_context::OwnContextService;
 mod policy;
 mod revocation;
 mod sqlite;
@@ -20,6 +23,8 @@ pub(crate) use lifecycle::{ClientRegistration, GrantApproval, VerifiedLogin};
 pub(crate) use policy::{CapabilitySelection, Evaluation, PolicyMutation};
 pub(crate) use revocation::{Attachment, EnforcementScope, PendingEffect};
 pub(crate) use sqlite::{AuthError, AuthSettings, Mutation, SqliteAuthorizationStore};
+
+use crate::config::warn_oauth_cookie_isolation;
 
 #[cfg(test)]
 mod phase_two_tests;

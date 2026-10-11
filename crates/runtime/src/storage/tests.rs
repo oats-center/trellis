@@ -78,6 +78,9 @@ fn runtime_config() -> RuntimeConfig {
             renew_ms: None,
         }),
         auth: Some(crate::AuthConfig {
+            instance_id: None,
+            oauth: None,
+            oauth_storage_key_file: None,
             local_identity: None,
             authorization: Some(crate::AuthorizationConfig {
                 issuer_signing_seed_file: PathBuf::from("authorization-issuer.seed"),

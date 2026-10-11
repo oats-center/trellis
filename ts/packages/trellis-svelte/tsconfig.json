@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ESNext", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
+    "types": ["node", "svelte"],
+    "strict": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.svelte"],
+  "exclude": ["src/**/*_test.ts", "src/**/*.test.ts", "src/**/*.spec.ts"]
+}

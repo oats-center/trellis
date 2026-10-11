@@ -18,6 +18,13 @@ use trellis_protocol::{
 use super::sqlite::{digest, id};
 use super::*;
 
+#[path = "oauth_engine_tests.rs"]
+mod oauth_engine_tests;
+#[path = "oauth_transport_tests.rs"]
+mod oauth_transport_tests;
+#[path = "oauth_upstream_tests.rs"]
+mod oauth_upstream_tests;
+
 const NOW: i64 = 1_800_000_000;
 const SOURCE: &str = r#"
 model Document { id: string; }
@@ -102,10 +109,13 @@ fn open(directory: &tempfile::TempDir, key: SigningKey) -> SqliteAuthorizationSt
         connection,
         key,
         AuthSettings {
+            upstream_tls_roots_pem: Vec::new(),
             instance_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
             account: "account-phase-two".into(),
+            oauth_origin: "https://auth.example".into(),
             authority_lifetime_seconds: 60,
             clock_skew_seconds: 5,
+            login_lifetime_seconds: 86400,
             enforcement_page_size: 2,
         },
     )
@@ -197,6 +207,7 @@ fn grant_request(principal: &str, login: &str, read: &str, write: &str, now: i64
         reused_remembered: vec![],
         declined: vec![],
         privileges: vec![],
+        required_privileges: vec![],
         remember: true,
         remember_until: None,
         expires_at: now + 3600,
@@ -275,6 +286,224 @@ fn fixture() -> Fixture {
         grant,
         admission,
     }
+}
+
+#[test]
+fn oauth_registration_rejects_portal_and_remote_plaintext_callbacks_without_rebinding_clients() {
+    let f = fixture();
+    let before = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+    let mut client = ClientRegistration {
+        client_id: "native-client".into(),
+        kind: "native".into(),
+        display_name: "Renamed application".into(),
+        redirect_uris: vec!["http://127.0.0.1:9123/callback".into()],
+        development: false,
+        implied_capabilities: vec![],
+        eligible_privileges: vec![],
+        metadata: serde_json::json!({}),
+        expected_revision: 1,
+    };
+    for redirect in [
+        "https://auth.example/callback",
+        "http://public.example/callback",
+        "https://user:password@public.example/callback",
+        "https://public.example/callback#fragment",
+    ] {
+        client.redirect_uris = vec![redirect.into()];
+        client.development = true;
+        assert!(f
+            .store
+            .register_client(&mutation(&f.admin, &client), &client, NOW + 1)
+            .is_err());
+    }
+    client.development = false;
+    client.redirect_uris = vec!["http://127.0.0.1:9123/callback".into()];
+    client.kind = "browser".into();
+    assert!(f
+        .store
+        .register_client(&mutation(&f.admin, &client), &client, NOW + 1)
+        .is_err());
+    client.kind = "native".into();
+    f.store
+        .register_client(&mutation(&f.admin, &client), &client, NOW + 1)
+        .unwrap();
+    while f.store.enforce_next_page(NOW + 1).unwrap().is_some() {}
+    let after = f
+        .store
+        .issue_authority(&f.admission, None, NOW + 1)
+        .unwrap();
+    assert_eq!(
+        before.authority.unsigned.binding,
+        after.authority.unsigned.binding
+    );
+    assert_eq!(
+        before.authority.unsigned.authorization_session_id,
+        after.authority.unsigned.authorization_session_id
+    );
+    let mut browser = client;
+    browser.client_id = "development-spa".into();
+    browser.kind = "browser".into();
+    browser.expected_revision = 0;
+    assert!(f
+        .store
+        .register_client(&mutation(&f.admin, &browser), &browser, NOW + 1)
+        .is_err());
+    browser.development = true;
+    f.store
+        .register_client(&mutation(&f.admin, &browser), &browser, NOW + 1)
+        .unwrap();
+}
+
+#[tokio::test]
+async fn oauth_sqlite_restart_retains_refresh_rotation_and_reuse_revokes_authority() {
+    use oauth_as::authorization::AuthorizationRequest;
+    use oauth_as::server::{AuthorizationServer, ServerConfig, TokenRequest, UserApproval};
+    use oauth_as::store::Storage;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let f = fixture();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let grant = approve(&f.store, &f.principal, &f.read, &f.write, now);
+    let key_directory = tempfile::tempdir().unwrap();
+    trellis_local_bootstrap::generate_local_oauth_storage_key(key_directory.path()).unwrap();
+    let sealing_key_file = key_directory.path().join("oauth-storage.key");
+    let engine = AuthorizationServer::new(
+        ServerConfig::new("https://auth.example", "https://auth.example/oauth/device"),
+        super::oauth::OAuthStorage::open(Arc::new(f.store), &sealing_key_file).unwrap(),
+    );
+    let verifier = URL_SAFE_NO_PAD.encode([31; 32]);
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let request = AuthorizationRequest::from_pairs([
+        ("client_id", "native-client"),
+        ("response_type", "code"),
+        ("redirect_uri", "http://127.0.0.1:9123/callback"),
+        ("code_challenge_method", "S256"),
+        ("code_challenge", challenge.as_str()),
+    ]);
+    let request = engine
+        .validate_authorization_request(&request)
+        .await
+        .unwrap();
+    let authorization = engine
+        .issue_authorization_code(UserApproval::granted(&request, &grant))
+        .await
+        .unwrap();
+    let issued = engine
+        .token(TokenRequest::AuthorizationCode {
+            client_id: oauth_as::ClientId::new("native-client"),
+            client_secret: None,
+            code: authorization.code,
+            redirect_uri: Some("http://127.0.0.1:9123/callback".into()),
+            code_verifier: Some(verifier),
+        })
+        .await
+        .unwrap();
+    let refresh = issued.refresh_token.unwrap();
+    drop(engine);
+
+    // Startup must not begin writing a second set of ciphertext after key loss
+    // or replacement. Check against the OAuth records created by redemption.
+    let authority = Arc::new(open(&f.directory, SigningKey::from_bytes(&[42; 32])));
+    let key_bytes = std::fs::read(&sealing_key_file).unwrap();
+    assert!(
+        trellis_local_bootstrap::generate_local_oauth_storage_key(key_directory.path()).is_err()
+    );
+    std::fs::write(&sealing_key_file, URL_SAFE_NO_PAD.encode([84; 32])).unwrap();
+    assert!(super::oauth::OAuthStorage::open(authority.clone(), &sealing_key_file).is_err());
+    std::fs::write(&sealing_key_file, "invalid key").unwrap();
+    assert!(super::oauth::OAuthStorage::open(authority.clone(), &sealing_key_file).is_err());
+    std::fs::remove_file(&sealing_key_file).unwrap();
+    assert!(super::oauth::OAuthStorage::open(authority.clone(), &sealing_key_file).is_err());
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&sealing_key_file)
+            .unwrap();
+        file.write_all(&key_bytes).unwrap();
+        drop(file);
+        std::fs::set_permissions(&sealing_key_file, std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        assert!(super::oauth::OAuthStorage::open(authority.clone(), &sealing_key_file).is_err());
+        std::fs::set_permissions(&sealing_key_file, std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+        let link = key_directory.path().join("linked.key");
+        std::os::unix::fs::symlink(&sealing_key_file, &link).unwrap();
+        assert!(super::oauth::OAuthStorage::open(authority.clone(), &link).is_err());
+        let alias = key_directory.path().join("hardlinked.key");
+        std::fs::hard_link(&sealing_key_file, &alias).unwrap();
+        assert!(super::oauth::OAuthStorage::open(authority.clone(), &sealing_key_file).is_err());
+        std::fs::remove_file(alias).unwrap();
+        let mut oversized = key_bytes.clone();
+        oversized.extend(vec![b' '; 256]);
+        std::fs::write(&sealing_key_file, oversized).unwrap();
+        assert!(super::oauth::OAuthStorage::open(authority.clone(), &sealing_key_file).is_err());
+        std::fs::write(&sealing_key_file, &key_bytes).unwrap();
+    }
+    #[cfg(not(unix))]
+    std::fs::write(&sealing_key_file, &key_bytes).unwrap();
+    drop(authority);
+
+    // Reopen the real, migrated database through the production constructor.
+    // There is no memory mirror or restored test-only OAuth state.
+    let engine = AuthorizationServer::new(
+        ServerConfig::new("https://auth.example", "https://auth.example/oauth/device"),
+        super::oauth::OAuthStorage::open(
+            Arc::new(open(&f.directory, SigningKey::from_bytes(&[42; 32]))),
+            &sealing_key_file,
+        )
+        .unwrap(),
+    );
+    let rotated = engine
+        .token(TokenRequest::RefreshToken {
+            client_id: oauth_as::ClientId::new("native-client"),
+            client_secret: None,
+            refresh_token: refresh.clone(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+    let mut admission = f.admission;
+    admission.credential = Credential::OAuthGrant(grant);
+    engine
+        .store()
+        .authority
+        .issue_authority(&admission, None, now)
+        .unwrap();
+    assert!(engine
+        .token(TokenRequest::RefreshToken {
+            client_id: oauth_as::ClientId::new("native-client"),
+            client_secret: None,
+            refresh_token: refresh,
+            scope: None,
+        })
+        .await
+        .is_err());
+    assert!(engine
+        .store()
+        .get_token(&rotated.access_token)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(engine
+        .store()
+        .get_refresh_token(&rotated.refresh_token.unwrap())
+        .await
+        .unwrap()
+        .is_none());
+    assert!(engine
+        .store()
+        .authority
+        .issue_authority(&admission, None, now)
+        .is_err());
 }
 
 #[test]
@@ -693,6 +922,62 @@ fn trusted_native_device_provisioning_issues_authority_and_replays_its_identity(
             participant_id: participant,
         }
     );
+    let ephemeral = nkeys::KeyPair::new_user();
+    let signed = trellis_protocol::sign_provisioned_admission(
+        trellis_protocol::ProvisionedAdmission {
+            format: trellis_protocol::PROVISIONED_ADMISSION_FORMAT_V1.into(),
+            trellis_instance_id: f.store.settings.instance_id.clone(),
+            audience_nats_account: f.store.settings.account.clone(),
+            credential_id: provisioned.identity_key_id.clone(),
+            binding: issued.authority.unsigned.binding.clone(),
+            implementations: vec![],
+            runtime_id: URL_SAFE_NO_PAD.encode([17; 16]),
+            ephemeral_nkey: ephemeral.public_key(),
+            issued_at: NOW,
+            expires_at: NOW + 60,
+        },
+        &SigningKey::from_bytes(&[11; 32]),
+    )
+    .unwrap();
+    let bytes = serde_json::to_vec(&signed).unwrap();
+    let (_, public) = nkeys::from_public_key(&ephemeral.public_key()).unwrap();
+    let inbox = trellis_protocol::admission_inbox_prefix(&URL_SAFE_NO_PAD.encode(public)).unwrap();
+    let admitted = f
+        .store
+        .admit_provisioned(&bytes, &ephemeral.public_key(), &inbox, NOW)
+        .unwrap();
+    assert_eq!(
+        admitted.authority.unsigned.principal_id,
+        provisioned.principal_id
+    );
+    assert_eq!(
+        admitted.authority.unsigned.session_public_key,
+        URL_SAFE_NO_PAD.encode(public)
+    );
+    assert!(f
+        .store
+        .admit_provisioned(
+            &bytes,
+            &nkeys::KeyPair::new_user().public_key(),
+            &inbox,
+            NOW
+        )
+        .is_err());
+    let mut forged = signed.clone();
+    forged.credential.runtime_id = URL_SAFE_NO_PAD.encode([18; 16]);
+    assert!(f
+        .store
+        .admit_provisioned(
+            &serde_json::to_vec(&forged).unwrap(),
+            &ephemeral.public_key(),
+            &inbox,
+            NOW
+        )
+        .is_err());
+    assert!(f
+        .store
+        .admit_provisioned(&bytes, &ephemeral.public_key(), &inbox, NOW + 60)
+        .is_err());
     let scope = EnforcementScope::Identity(provisioned.identity_key_id);
     f.store
         .revoke_root(&mutation(&f.admin, &scope), &scope, NOW + 1)
@@ -701,6 +986,10 @@ fn trusted_native_device_provisioning_issues_authority_and_replays_its_identity(
         f.store.issue_authority(&admission, None, NOW + 1),
         Err(AuthError::Denied)
     ));
+    assert!(f
+        .store
+        .admit_provisioned(&bytes, &ephemeral.public_key(), &inbox, NOW + 1)
+        .is_err());
 }
 
 #[test]
@@ -1256,6 +1545,7 @@ async fn real_broker_publishes_signed_cutoff_before_closing_only_the_matching_at
         server_id: server_id.clone(),
         broker_client_id: cid,
         authorization_session_id: issued.authority.unsigned.authorization_session_id.clone(),
+        context_digest: issued.digest.clone(),
         ephemeral_nkey: nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
             .unwrap()
             .public_key(),
@@ -1566,6 +1856,7 @@ fn optional_reduction_requires_new_logical_id_and_old_admission_stays_closed() {
         server_id: "server".into(),
         broker_client_id: 1,
         authorization_session_id: session.clone(),
+        context_digest: issued.digest.clone(),
         ephemeral_nkey: nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
             .unwrap()
             .public_key(),
@@ -1971,6 +2262,7 @@ fn outbox_orders_revocation_before_kicks_and_fences_expired_claims() {
                     .unwrap()
                     .public_key(),
                 transport_policy_digest: issued.digest.clone(),
+                context_digest: issued.digest.clone(),
             },
             NOW,
         )
@@ -2018,4 +2310,246 @@ fn outbox_orders_revocation_before_kicks_and_fences_expired_claims() {
             NOW + 4,
         )
         .unwrap();
+}
+
+#[test]
+fn own_context_requires_an_admitted_runtime_and_binds_the_exact_reply_before_policy_recheck() {
+    use trellis_protocol::{
+        admission_get_subject, sign_admission_get, verify_admission_context, AdmissionGet,
+    };
+    let mut f = fixture();
+    f.admission.inbox_prefix =
+        trellis_protocol::admission_inbox_prefix(&f.admission.session_public_key).unwrap();
+    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+    let subject = admission_get_subject(&f.admission.session_public_key).unwrap();
+    let reply = format!("{}.initial", f.admission.inbox_prefix);
+    let request = AdmissionGet {
+        trellis_instance_id: f.store.settings.instance_id.clone(),
+        runtime_id: f.admission.runtime_id.clone(),
+        session_public_key: f.admission.session_public_key.clone(),
+        request_nonce: URL_SAFE_NO_PAD.encode([23; 16]),
+        issued_at: NOW,
+    };
+    let signed = sign_admission_get(
+        request.clone(),
+        &subject,
+        &reply,
+        &ed25519_dalek::SigningKey::from_bytes(&[9; 32]),
+    )
+    .unwrap();
+    let bytes = serde_json::to_vec(&signed).unwrap();
+    assert!(f.store.own_context(&bytes, &subject, &reply, NOW).is_err());
+    f.store
+        .admit_attachment(
+            &Attachment {
+                attachment_id: id(),
+                server_id: "broker".into(),
+                broker_client_id: 1,
+                authorization_session_id: issued
+                    .authority
+                    .unsigned
+                    .authorization_session_id
+                    .clone(),
+                context_digest: issued.digest.clone(),
+                ephemeral_nkey: nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
+                    .unwrap()
+                    .public_key(),
+                transport_policy_digest: digest(&issued.authority).unwrap(),
+            },
+            NOW,
+        )
+        .unwrap();
+    assert!(f
+        .store
+        .own_context(&bytes, &subject, "_INBOX.attacker.reply", NOW)
+        .is_err());
+    let response = f.store.own_context(&bytes, &subject, &reply, NOW).unwrap();
+    let encoded = serde_json::to_vec(&response).unwrap();
+    let verified = verify_admission_context(
+        &encoded,
+        &f.store.issuer(),
+        &request,
+        &subject,
+        &reply,
+        &f.store.settings.account,
+        NOW,
+    )
+    .unwrap();
+    let context = trellis_protocol::parse_session_authority(
+        verified.response.session_authority.as_bytes(),
+        64 * 1024,
+    )
+    .unwrap();
+    assert_eq!(context.digest().unwrap(), issued.digest);
+    assert!(verify_admission_context(
+        &encoded,
+        &f.store.issuer(),
+        &request,
+        &subject,
+        "_INBOX.attacker.reply",
+        &f.store.settings.account,
+        NOW
+    )
+    .is_err());
+    let mut other_nonce = request.clone();
+    other_nonce.request_nonce = URL_SAFE_NO_PAD.encode([24; 16]);
+    assert!(verify_admission_context(
+        &encoded,
+        &f.store.issuer(),
+        &other_nonce,
+        &subject,
+        &reply,
+        &f.store.settings.account,
+        NOW
+    )
+    .is_err());
+    assert!(verify_admission_context(
+        &encoded,
+        &f.store.issuer(),
+        &request,
+        &subject,
+        &reply,
+        "another-account",
+        NOW
+    )
+    .is_err());
+    let mut forged = response;
+    forged.response.session_authority.push(' ');
+    assert!(verify_admission_context(
+        &serde_json::to_vec(&forged).unwrap(),
+        &f.store.issuer(),
+        &request,
+        &subject,
+        &reply,
+        &f.store.settings.account,
+        NOW
+    )
+    .is_err());
+    policy(
+        &f.store,
+        &f.admin,
+        PolicyMutation::CapabilityRevoke {
+            principal_id: f.principal.clone(),
+            capability_id: f.write.clone(),
+            expected_revision: 1,
+        },
+        NOW + 1,
+    );
+    assert!(matches!(
+        f.store.own_context(&bytes, &subject, &reply, NOW + 1),
+        Err(AuthError::Retired)
+    ));
+    assert!(f
+        .store
+        .resolve_revocation(&issued.authority.unsigned.authorization_session_id)
+        .unwrap()
+        .is_some());
+}
+
+#[tokio::test]
+async fn own_context_errors_never_publish_to_another_keys_reply_namespace() {
+    use futures_util::StreamExt as _;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use tokio::io::AsyncBufReadExt as _;
+    use trellis_protocol::{
+        admission_get_subject, admission_inbox_prefix, sign_admission_get, AdmissionGet,
+    };
+
+    let f = fixture();
+    let instance_id = f.store.settings.instance_id.clone();
+    let binary =
+        std::env::var_os("TRELLIS_NATS_SERVER_BIN").unwrap_or_else(|| "nats-server".into());
+    let mut server = tokio::process::Command::new(binary)
+        .args(["-a", "127.0.0.1", "-p", "-1"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("set TRELLIS_NATS_SERVER_BIN to the producer-built NATS executable");
+    let mut lines = tokio::io::BufReader::new(server.stderr.take().unwrap()).lines();
+    let address = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut address = None;
+        while let Some(line) = lines.next_line().await.unwrap() {
+            if let Some((_, value)) = line.split_once("Listening for client connections on ") {
+                address = Some(value.to_owned());
+            }
+            if line.contains("Server is ready") {
+                return address.expect("NATS listen diagnostic");
+            }
+        }
+        panic!("NATS exited before readiness");
+    })
+    .await
+    .expect("NATS readiness deadline");
+    let client = async_nats::connect(format!("nats://{address}"))
+        .await
+        .unwrap();
+    let service =
+        super::own_context::OwnContextService::start(client.clone(), std::sync::Arc::new(f.store))
+            .await
+            .unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let running = tokio::spawn(service.run(async move {
+        let _ = stopped.await;
+    }));
+    let signer = SigningKey::from_bytes(&[88; 32]);
+    let public = URL_SAFE_NO_PAD.encode(signer.verifying_key().as_bytes());
+    let subject = admission_get_subject(&public).unwrap();
+    let reply = format!("{}.reply", admission_inbox_prefix(&public).unwrap());
+    let foreign = format!(
+        "{}.reply",
+        admission_inbox_prefix(
+            &URL_SAFE_NO_PAD.encode(SigningKey::from_bytes(&[89; 32]).verifying_key().as_bytes())
+        )
+        .unwrap()
+    );
+    let mut foreign_messages = client.subscribe(foreign.clone()).await.unwrap();
+    let mut own_messages = client.subscribe(reply.clone()).await.unwrap();
+    client.flush().await.unwrap();
+    let request = sign_admission_get(
+        AdmissionGet {
+            trellis_instance_id: instance_id,
+            runtime_id: URL_SAFE_NO_PAD.encode([88; 16]),
+            session_public_key: public,
+            request_nonce: URL_SAFE_NO_PAD.encode([89; 16]),
+            issued_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+        },
+        &subject,
+        &reply,
+        &signer,
+    )
+    .unwrap();
+    let bytes = serde_json::to_vec(&request).unwrap();
+    client
+        .publish_with_reply(subject.clone(), foreign.clone(), bytes.clone().into())
+        .await
+        .unwrap();
+    client
+        .publish_with_reply(subject, reply, bytes.into())
+        .await
+        .unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(5), own_messages.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&response.payload).unwrap(),
+        serde_json::json!({"error":"authentication_required"})
+    );
+    stop.send(()).unwrap();
+    running.await.unwrap().unwrap();
+    // Drain is a real responder completion barrier. The marker uses the exact
+    // foreign subject and same publisher, never cross-subscription ordering or sleep.
+    client.publish(foreign, "completed".into()).await.unwrap();
+    client.flush().await.unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(5), foreign_messages.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.payload.as_ref(), b"completed");
+    server.kill().await.unwrap();
+    server.wait().await.unwrap();
 }

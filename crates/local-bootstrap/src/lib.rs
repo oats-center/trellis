@@ -145,6 +145,8 @@ impl LocalNatsBootstrapOptions {
 /// Options for generating a complete local Trellis bootstrap bundle.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalTrellisBootstrapOptions {
+    /// Installation ULID generated once for this local bootstrap bundle.
+    pub instance_id: String,
     /// Output directory for generated NATS and Trellis bootstrap files.
     pub out: PathBuf,
     /// Replace an existing non-empty output directory.
@@ -178,6 +180,7 @@ impl LocalTrellisBootstrapOptions {
     #[must_use]
     pub fn new(out: impl Into<PathBuf>) -> Self {
         Self {
+            instance_id: ulid::Ulid::new().to_string(),
             out: out.into(),
             force: false,
             container_runtime: ContainerRuntime::Auto,
@@ -424,6 +427,7 @@ pub fn generate_local_trellis_bootstrap(
     let nats_manifest = generate_local_nats_bootstrap_with_runtime(&nats_options, runtime)?;
     let authorization_directory = trellis_out.join("auth");
     generate_local_authorization_issuer(&authorization_directory)?;
+    generate_local_oauth_storage_key(&authorization_directory)?;
     fs::write(
         trellis_out.join("config.toml"),
         render_trellis_config(options, &nats_manifest),
@@ -534,6 +538,18 @@ replicas = 1
 ttl_ms = 30000
 renew_ms = 5000
 
+[auth]
+instance_id = {instance_id}
+oauth_storage_key_file = "./auth/oauth-storage.key"
+
+[auth.oauth]
+origin = "http://localhost:3001"
+bind_address = "127.0.0.1"
+port = 3001
+
+[auth.oauth.transport]
+mode = "loopback_development"
+
 [auth.local_identity]
 enabled = true
 password_min_length = 12
@@ -581,6 +597,7 @@ busy_timeout_ms = 5000
 single_writer = true
 "#,
         trellis_port = options.trellis_port,
+        instance_id = json_string(&options.instance_id),
         public_origin = json_string(&options.public_origin),
         nats_server_url = json_string(&options.nats_server_url),
         nats_websocket_url = json_string(&options.nats_websocket_url),
@@ -1120,6 +1137,15 @@ fn write_secret(path: &Path, value: &str) -> Result<(), LocalBootstrapError> {
     }
     writeln!(options.open(path)?, "{value}")?;
     Ok(())
+}
+
+/// Provision an installation-owned OAuth storage key without replacing existing material.
+/// This key is independent of online signing keys and must survive issuer rotation.
+pub fn generate_local_oauth_storage_key(directory: &Path) -> Result<(), LocalBootstrapError> {
+    write_secret(
+        &directory.join("oauth-storage.key"),
+        &generate_session_seed(),
+    )
 }
 
 fn trim_trailing_slashes(value: &str) -> &str {

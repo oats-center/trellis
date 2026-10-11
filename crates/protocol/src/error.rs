@@ -47,6 +47,8 @@ pub enum AuthorizationErrorCode {
     ProofIatOutOfRange,
     /// The context-bound request signature is invalid.
     InvalidRequestProof,
+    /// The provider response proof or its opening request binding is invalid.
+    InvalidResponseProof,
     /// The request reply subject is outside the caller inbox prefix.
     ReplySubjectMismatch,
     /// The event time is not canonical RFC 3339 UTC.

@@ -14,6 +14,16 @@ and SDK/provider migration are still in progress; do not adapt applications to
 the former browser-bind or GrantBinding protocols. Use a released matching
 version until the complete cutover is available.
 
+Revision 7's OAuth components use a separate, required login/consent portal
+from Console. Their origins must differ; hostnames need not differ, but sharing
+a hostname emits a security warning because cookies are not port-scoped. TLS
+is required outside explicitly configured loopback development. Installation
+identity and the independently provisioned OAuth storage key survive restarts
+and issuer rotation. Browser credential custody uses nonextractable keys and
+cross-tab refresh ownership; native custody uses owner-only files and a
+cross-process family lock. These components do not mean the unfinished
+production Callout/startup or client SDK cutover is deployable.
+
 Explicit one-off consent overrides older remembered choices without changing
 them. Reused choices retain their expiry; later shared withdrawals still retire
 affected sessions. A shortened effective authorization deadline is a reduction

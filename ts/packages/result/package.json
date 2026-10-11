@@ -1,0 +1,14 @@
+{
+  "name": "@oatscenter/result",
+  "version": "0.100.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": "./mod.ts",
+  "scripts": {
+    "build": "node scripts/build_npm.ts"
+  },
+  "dependencies": {
+    "typebox": "^1.1.33",
+    "ulid": "^3.0.2"
+  }
+}
