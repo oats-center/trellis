@@ -21,6 +21,7 @@ import {
 } from "../auth/utils.ts";
 import { codecs, type AppRequestDescriptor } from "../generated_support.ts";
 import { AuthError } from "../errors/AuthError.ts";
+import { authenticateIssuerChain } from "../auth/issuer_trust.ts";
 import {
   NativeCredentialLease,
   type NativeCredentialScope,
@@ -207,7 +208,7 @@ export class NativeOAuthClient {
   #closing = false;
   #connected = false;
   #owner?: SessionAuthorityOwner;
-  readonly #anchor: RuntimeAuthorizationTrust;
+  #anchor: RuntimeAuthorizationTrust;
 
   private constructor(lease: NativeCredentialLease, auth: TrellisAuth) {
     this.#lease = lease;
@@ -322,6 +323,9 @@ export class NativeOAuthClient {
   ): Promise<Result<NativeOAuthSession, AuthError>> {
     return this.#serial(async () => {
       options.signal?.throwIfAborted();
+      if (!this.#lease.refreshAvailable)
+        throw new AuthError({ reason: "OAuthRecoveryRequired" });
+      await this.#prepareTrust(options.signal);
       const token = this.#lease.beginRotation();
       try {
         return await this.#install(
@@ -332,7 +336,12 @@ export class NativeOAuthClient {
           ),
           options.signal,
         );
-      } catch {
+      } catch (cause) {
+        if (
+          cause instanceof AuthError &&
+          cause.reason === "OAuthTrustUnavailable"
+        )
+          throw cause;
         throw new AuthError({ reason: "OAuthRecoveryRequired" });
       }
     });
@@ -344,7 +353,10 @@ export class NativeOAuthClient {
   ): Promise<Result<NativeOAuthSession, AuthError>> {
     return this.#serial(async () => {
       options.signal?.throwIfAborted();
+      if (!this.#lease.refreshAvailable)
+        throw new AuthError({ reason: "OAuthRecoveryRequired" });
       if (this.#owner) this.#lease.retainTrust(this.#owner);
+      else await this.#prepareTrust(options.signal);
       const token = this.#lease.beginRotation();
       try {
         return await this.#install(
@@ -355,7 +367,12 @@ export class NativeOAuthClient {
           ),
           options.signal,
         );
-      } catch {
+      } catch (cause) {
+        if (
+          cause instanceof AuthError &&
+          cause.reason === "OAuthTrustUnavailable"
+        )
+          throw cause;
         throw new AuthError({ reason: "OAuthRecoveryRequired" });
       }
     });
@@ -527,13 +544,34 @@ export class NativeOAuthClient {
     throw new AuthError({ reason: "OAuthRecoveryRequired" });
   }
 
+  async #prepareTrust(signal?: AbortSignal): Promise<void> {
+    const discovered = await discoverNativeOAuth(this.scope.issuer, { signal });
+    if (discovered.isErr())
+      throw new AuthError({ reason: "OAuthTrustUnavailable" });
+    const owner = await authenticateIssuerChain(
+      this.scope.issuer,
+      this.trust,
+      discovered.orThrow().trust,
+      signal,
+      this.#owner,
+    );
+    try {
+      this.#lease.retainTrust(owner);
+      if (!this.#connected) this.#anchor = this.trust;
+    } finally {
+      if (owner !== this.#owner) owner.stop();
+    }
+  }
+
   async #install(
     data: unknown,
     signal?: AbortSignal,
   ): Promise<NativeOAuthSession> {
     const response = tokenSchema.parse(data);
-    const trust = this.trust;
-    const verified = await verifyOAuthAdmissionWasm(
+    if (response.token_type.toLowerCase() === "dpop")
+      this.#lease.retainRotatedToken(response.refresh_token);
+    let trust = this.trust;
+    let verified = await verifyOAuthAdmissionWasm(
       utf8(response.trellis_admission),
       {
         issuer: trust.issuer,
@@ -544,7 +582,24 @@ export class NativeOAuthClient {
         maximumLifetimeSeconds: 300,
       },
     );
-    if (!verified.ok) throw new AuthError({ reason: "InvalidOAuthResponse" });
+    if (!verified.ok) {
+      // The old token was spent, but this freshly returned successor has never
+      // been sent. Retain it without promoting unverified admission authority.
+      await this.#prepareTrust(signal);
+      trust = this.trust;
+      verified = await verifyOAuthAdmissionWasm(
+        utf8(response.trellis_admission),
+        {
+          issuer: trust.issuer,
+          trellisInstanceId: trust.instanceId,
+          audienceNatsAccount: trust.account,
+          ephemeralNkey: this.auth.sessionNkey,
+          nowUnixSeconds: Math.floor(Date.now() / 1000),
+          maximumLifetimeSeconds: 300,
+        },
+      );
+      if (!verified.ok) throw new AuthError({ reason: "InvalidOAuthResponse" });
+    }
     const body = verified.admission.credential;
     const jwk = this.#lease.publicJwk;
     const jkt = base64urlEncode(

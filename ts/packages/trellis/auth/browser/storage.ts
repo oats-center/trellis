@@ -396,6 +396,7 @@ export class BrowserSessionStore {
       dpop: Readonly<CryptoKeyPair>,
     ) => Promise<Result<{ value: T; refreshToken: string }, AuthError>>,
     install: (value: T) => Promise<void>,
+    prepare?: () => Promise<void>,
   ): Promise<Result<T, AuthError>> {
     try {
       return await navigator.locks.request(this.#scope, async () => {
@@ -408,6 +409,15 @@ export class BrowserSessionStore {
           return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
         }
         this.#record = current;
+        try {
+          await prepare?.();
+        } catch (cause) {
+          return err(
+            cause instanceof AuthError
+              ? cause
+              : new AuthError({ reason: "OAuthTrustUnavailable" }),
+          );
+        }
         const token = (await this.refreshToken()).take();
         if (isErr(token)) return err(token.error);
         if (!token) {
@@ -429,6 +439,16 @@ export class BrowserSessionStore {
     } catch {
       return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
     }
+  }
+
+  /** Retain a returned unspent successor inside the rotation lock, without installing admission authority. */
+  async retainRotatedToken(
+    token: string,
+    spentToken: string,
+  ): Promise<Result<void, AuthError>> {
+    if (!token || token === spentToken || !this.#record.grant)
+      return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
+    return await this.#saveRefreshToken(token, this.#record.grant);
   }
 
   /** Clear this family under the refresh lock, optionally revoking its latest token first. */

@@ -1,5 +1,12 @@
 # Trellis
 
+Cold OAuth resume verifies signed issuer successors from the retained pin using
+GET /.well-known/trellis/issuer-chain at the selected OAuth origin and persists
+successor trust before spending a refresh token. Unavailable or invalid chains
+leave it unspent. A successfully returned new token survives later issuer
+verification failure, but its admission remains unusable until authenticated.
+Never retry an ambiguously spent predecessor.
+
 Account actions use generated Auth RPCs and the isolated OAuth portal.
 PasswordReset.Create returns a five-minute, one-use token for `/account/reset`;
 completion checks Origin/CSRF, credential CAS, and the requester's original active
@@ -8,6 +15,12 @@ Bootstrap administrators use local recovery. IdentityLink.Create returns a
 five-minute portal URL requiring the exact initiating user and fresh verified
 OIDC with nonce/PKCE. Provider changes and cross-user identity collisions fail;
 creation replay never renews or revives an action.
+
+Identity-link approval remains a protected same-origin POST. Its no-store
+continuation page shows a navigation link to a 60-second, one-use GET handoff
+bound to the exact portal session, provider and account. Top-level navigation
+reaches the verified IdP without relaxing form-action 'self' or leaking the
+handoff in referrers. Direct, expired and replayed handoffs fail.
 
 Provisioned services/devices publish native Health.Heartbeat events automatically
 with ordinary SessionEvent signatures and the runtime-only selfReport capability.
@@ -331,3 +344,8 @@ commands generate configuration and own managed NATS. Graceful TypeScript host
 shutdown has a bounded fallback that reclaims the isolated host/broker process
 group. Registry-distributed Rust implementation crates are not supported
 service-author APIs.
+Historical issuer keys are resolved through the existing issuer-signed metadata
+exchange, authenticated by the active pinned issuer or its forward-verified
+successor. Historical keys never advance live trust; compromised keys remain
+unusable. A retired catalog signer does not invalidate an immutable catalog
+referenced by current signed authority.

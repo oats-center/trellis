@@ -2,6 +2,7 @@ import { err, isErr, ok, type Result } from "@oatscenter/result";
 import { ulid } from "ulid";
 import { z } from "zod";
 import { AuthError } from "../../errors/AuthError.ts";
+import { authenticateIssuerChain } from "../issuer_trust.ts";
 import { createAuth, type TrellisAuth } from "../session_auth.ts";
 import { base64urlEncode, sha256, utf8, toArrayBuffer } from "../utils.ts";
 import { BrowserSessionStore, type BrowserOAuthScope } from "./storage.ts";
@@ -369,6 +370,10 @@ export class BrowserOAuthClient {
         else if (!this.#owner)
           throw new AuthError({ reason: "OAuthRecoveryRequired" });
       },
+      async () => {
+        if (this.#owner) await this.store.retainTrust(this.#owner);
+        else await this.#prepareTrust(this.metadata);
+      },
     );
   }
 
@@ -380,6 +385,47 @@ export class BrowserOAuthClient {
 
   #pendingKey(): string {
     return `trellis.oauth.pending:${JSON.stringify([this.scope.issuer, this.scope.clientId, this.scope.credentialHandle])}`;
+  }
+
+  async #prepareTrust(metadata?: BrowserOAuthMetadata): Promise<void> {
+    if (!metadata) {
+      const response = await fetch(
+        new URL("/.well-known/oauth-authorization-server", this.scope.issuer),
+        {
+          redirect: "error",
+          credentials: "omit",
+          signal: AbortSignal.timeout(30000),
+        },
+      );
+      if (!response.ok)
+        throw new AuthError({ reason: "OAuthTrustUnavailable" });
+      metadata = metadataSchema.parse(await boundedJson(response));
+    }
+    const active = metadata.trellis.issuers.filter(
+      (key) => key.state === "active",
+    );
+    if (
+      new URL(metadata.issuer).origin !== this.scope.issuer ||
+      active.length !== 1
+    )
+      throw new AuthError({ reason: "OAuthTrustUnavailable" });
+    const owner = await authenticateIssuerChain(
+      this.scope.issuer,
+      this.store.trust,
+      {
+        instanceId: metadata.trellis.trellisInstanceId,
+        account: metadata.trellis.audienceNatsAccount,
+        issuer: active[0],
+        rotationSequence: metadata.trellis.rotationSequence,
+      },
+      undefined,
+      this.#owner,
+    );
+    try {
+      await this.store.retainTrust(owner);
+    } finally {
+      if (owner !== this.#owner) owner.stop();
+    }
   }
 
   async #exchange(
@@ -444,11 +490,18 @@ export class BrowserOAuthClient {
             }),
           );
         const token = tokenSchema.parse(data);
+        if (form.get("grant_type") === "refresh_token") {
+          const saved = await this.store.retainRotatedToken(
+            token.refresh_token,
+            form.get("refresh_token") ?? "",
+          );
+          if (saved.isErr()) return err(saved.error);
+        }
         // Recheck the authenticated chain after network I/O; an issuer retired
         // while the request was in flight must not mint a newly installed grant.
         if (this.#owner) await this.store.retainTrust(this.#owner);
-        const trust = this.store.trust;
-        const verified = await verifyOAuthAdmissionWasm(
+        let trust = this.store.trust;
+        let verified = await verifyOAuthAdmissionWasm(
           utf8(token.trellis_admission),
           {
             issuer: trust.issuer,
@@ -459,8 +512,23 @@ export class BrowserOAuthClient {
             maximumLifetimeSeconds: 300,
           },
         );
-        if (!verified.ok)
-          return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
+        if (!verified.ok) {
+          await this.#prepareTrust();
+          trust = this.store.trust;
+          verified = await verifyOAuthAdmissionWasm(
+            utf8(token.trellis_admission),
+            {
+              issuer: trust.issuer,
+              trellisInstanceId: trust.instanceId,
+              audienceNatsAccount: trust.account,
+              ephemeralNkey: auth.sessionNkey,
+              nowUnixSeconds: auth.currentIat(),
+              maximumLifetimeSeconds: 300,
+            },
+          );
+          if (!verified.ok)
+            return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
+        }
         const body = verified.admission.credential;
         const { crv, kty, x, y } = await crypto.subtle.exportKey(
           "jwk",
@@ -503,8 +571,12 @@ export class BrowserOAuthClient {
         });
       }
       return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
-    } catch {
-      return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
+    } catch (cause) {
+      return err(
+        cause instanceof AuthError
+          ? cause
+          : new AuthError({ reason: "OAuthRecoveryRequired" }),
+      );
     }
   }
 }

@@ -73,6 +73,7 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
                 }
             }),
         )
+        .route("/.well-known/trellis/issuer-chain", get(issuer_chain))
         .route("/token", post(token))
         .route("/device_authorization", post(super::device::start))
         .route("/revoke", post(revoke))
@@ -235,6 +236,61 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
             }
         }))
         .with_state(engine)
+}
+
+async fn issuer_chain(
+    State(engine): State<Arc<OAuthEngine>>,
+    query: Result<
+        Query<trellis_runtime_apis::types::AuthIssuerChainRequest>,
+        axum::extract::rejection::QueryRejection,
+    >,
+) -> Response {
+    let Ok(Query(input)) = query else {
+        return error(ErrorCode::InvalidRequest);
+    };
+    if input.pinned_key_id.len() > 128 || input.target_key_id.len() > 128 {
+        return error(ErrorCode::InvalidRequest);
+    }
+    let result = tokio::task::spawn_blocking(move || {
+        let store = &engine.server.store().authority;
+        store.transaction(|connection| {
+            // A compromised pin cannot authenticate a new trust root. Recovery
+            // requires an explicitly selected new anchor, not an unsigned key.
+            for key in [&input.pinned_key_id, &input.target_key_id] {
+                if super::super::SqliteAuthorizationStore::resolve_issuer_in(connection, key)?.state
+                    == trellis_protocol::AuthorityIssuerState::Revoked
+                {
+                    return Err(super::super::AuthError::Denied);
+                }
+            }
+            let chain = super::super::rpc_credentials::read_chain(connection, &input)?;
+            for bytes in &chain.rotations {
+                let rotation: trellis_protocol::SignedIssuerRotation =
+                    serde_json::from_slice(bytes.as_ref())?;
+                if super::super::SqliteAuthorizationStore::resolve_issuer_in(
+                    connection,
+                    &rotation.next_key_id,
+                )?
+                .state
+                    == trellis_protocol::AuthorityIssuerState::Revoked
+                {
+                    return Err(super::super::AuthError::Denied);
+                }
+            }
+            Ok(chain)
+        })
+    })
+    .await;
+    match result {
+        Ok(Ok(chain)) => {
+            let mut response = Json(chain).into_response();
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            response
+        }
+        _ => error(ErrorCode::InvalidRequest),
+    }
 }
 
 pub(super) fn portal_origin(engine: &OAuthEngine, headers: &HeaderMap) -> bool {

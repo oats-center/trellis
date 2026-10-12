@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createAccount } from "@nats-io/nkeys";
 import { createHash } from "node:crypto";
+import { ulid } from "ulid";
 import { NativeCredentialLease } from "./storage.ts";
 import type { NativeCredentialScope } from "./storage.ts";
 import {
@@ -46,6 +47,34 @@ const trust: RuntimeAuthorizationTrust = {
   },
   rotationSequence: "0",
 };
+
+test("a received refresh successor survives restart without replaying its spent predecessor", async () => {
+  const directory = await mkdtemp("/tmp/opencode/native-oauth-successor-");
+  let lease: NativeCredentialLease | undefined;
+  try {
+    lease = await NativeCredentialLease.open(directory, scope, trust);
+    lease.install({
+      principalId: ulid(),
+      oauthGrantId: ulid(),
+      loginSessionId: ulid(),
+      refreshToken: "predecessor",
+    });
+    assert.equal(lease.beginRotation(), "predecessor");
+    assert.throws(
+      () => lease?.retainRotatedToken("predecessor"),
+      /OAuthRecoveryRequired/,
+    );
+    assert.throws(() => lease?.beginRotation(), /OAuthRecoveryRequired/);
+    lease.retainRotatedToken("received-successor");
+    await lease.close();
+    lease = await NativeCredentialLease.open(directory, scope, trust);
+    assert.equal(lease.beginRotation(), "received-successor");
+    assert.throws(() => lease?.beginRotation(), /OAuthRecoveryRequired/);
+  } finally {
+    await lease?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test(
   "exclusive native custody survives cross-process contention and crashes without replaying a spent refresh",

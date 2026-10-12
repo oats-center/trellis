@@ -1205,11 +1205,6 @@ impl AuthorizationOwner {
                     "revocation capacity reached".into(),
                 ));
             }
-            if issuer.state != AuthorityIssuerState::Active {
-                return Err(TrellisClientError::AuthorizationUnavailable(
-                    "catalog issuer retired".into(),
-                ));
-            }
             catalog.verify(&issuer, &self.trust.instance_id, &self.trust.account)?;
             if catalog.api_id != api_id {
                 return Err(super::core::AuthorizationVerificationError::PermissionDenied.into());
@@ -1563,9 +1558,7 @@ impl AuthorizationOwner {
                     "certificate issuer unavailable".into(),
                 )
             })?;
-        if issuer.state != AuthorityIssuerState::Active
-            || certificate_issuer.state != AuthorityIssuerState::Active
-        {
+        if certificate_issuer.state != AuthorityIssuerState::Active {
             return Err(TrellisClientError::AuthorizationUnavailable(
                 "provider material issuer retired".into(),
             ));
@@ -1676,7 +1669,7 @@ impl AuthorizationOwner {
             ));
         }
         let issuer = self
-            .issuer(transport, &signed.response.issuer_key_id)
+            .forward_issuer(transport, &signed.response.issuer_key_id)
             .await?;
         let state = self.state.read().map_err(|_| {
             TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
@@ -1686,14 +1679,44 @@ impl AuthorizationOwner {
             .ok_or_else(|| {
                 TrellisClientError::AuthorizationUnavailable("metadata issuer unavailable".into())
             })?;
-        Ok(verify_issuer_metadata(
+        let verified = verify_issuer_metadata(
             bytes,
             &issuer,
             request,
             actual_subject,
             actual_reply,
             self.policy().now_unix_seconds,
-        )?)
+        )?;
+        drop(state);
+        if let (IssuerMetadataQuery::IssuerKey { .. }, IssuerMetadataResult::Value { payload }) =
+            (&request.query, verified.result())
+        {
+            let historical: AuthorityIssuerKey = serde_json::from_str(payload)?;
+            let mut state = self.state.write().map_err(|_| {
+                TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
+            })?;
+            if let Some(previous) = state.issuers.get(&historical.key_id) {
+                if previous.public_key != historical.public_key {
+                    return Err(TrellisClientError::AuthorizationUnavailable(
+                        "historical issuer conflict".into(),
+                    ));
+                }
+                if previous.state == AuthorityIssuerState::Revoked {
+                    return Ok(verified);
+                }
+                if previous.state == AuthorityIssuerState::Active {
+                    return Err(TrellisClientError::AuthorizationUnavailable(
+                        "historical issuer is a live pin".into(),
+                    ));
+                }
+            } else if state.issuers.len() >= MAX_ISSUERS {
+                return Err(TrellisClientError::AuthorizationUnavailable(
+                    "issuer chain capacity reached".into(),
+                ));
+            }
+            state.issuers.insert(historical.key_id.clone(), historical);
+        }
+        Ok(verified)
     }
 
     /// Resolve fresh issuer-signed logical-session status for a retained publisher.
@@ -2237,6 +2260,104 @@ impl AuthorizationOwner {
                 "invalid issuer digest".into(),
             ));
         }
+        match self.forward_issuer(transport, key_id).await {
+            Ok(issuer) => return Ok(issuer),
+            Err(error) => {
+                let state = self.state.read().map_err(|_| {
+                    TrellisClientError::AuthorizationUnavailable(
+                        "authority owner unavailable".into(),
+                    )
+                })?;
+                if state.issuers.contains_key(key_id) {
+                    return Err(error);
+                }
+            }
+        }
+        // Only the active forward-authenticated pin may attest a historical key.
+        // This read can bootstrap mirror verification, but grants no application use.
+        let _permit = self.metadata_reads.try_acquire().map_err(|_| {
+            TrellisClientError::AuthorizationUnavailable("metadata read capacity reached".into())
+        })?;
+        tokio::time::timeout(RESOLUTION_TIMEOUT, async {
+            let request = IssuerMetadataRequest {
+                trellis_instance_id: self.trust.instance_id.clone(),
+                audience_nats_account: self.trust.account.clone(),
+                request_nonce: URL_SAFE_NO_PAD.encode(rand::random::<[u8; 16]>()),
+                query: IssuerMetadataQuery::IssuerKey {
+                    key_id: key_id.into(),
+                },
+            };
+            let subject = trellis_protocol::ISSUER_METADATA_SUBJECT;
+            let reply = format!("{}.metadata", transport.new_inbox());
+            let mut replies = transport.subscribe(reply.clone()).await.map_err(|_| {
+                TrellisClientError::AuthorizationUnavailable("metadata reply unavailable".into())
+            })?;
+            transport.flush().await.map_err(|_| {
+                TrellisClientError::AuthorizationUnavailable(
+                    "metadata transport unavailable".into(),
+                )
+            })?;
+            transport
+                .publish_with_reply(subject, reply.clone(), serde_json::to_vec(&request)?.into())
+                .await
+                .map_err(|_| {
+                    TrellisClientError::AuthorizationUnavailable(
+                        "metadata request unavailable".into(),
+                    )
+                })?;
+            let mut candidates = 0usize;
+            let mut bytes = 0usize;
+            while let Some(message) = replies.next().await {
+                candidates += 1;
+                bytes = bytes.saturating_add(message.payload.len());
+                if candidates > 16 || bytes > trellis_protocol::MAX_ADMISSION_RESPONSE_BYTES {
+                    break;
+                }
+                if let Ok(verified) = self
+                    .verify_metadata_inner(transport, &message.payload, &request, subject, &reply)
+                    .await
+                {
+                    if !matches!(verified.result(), IssuerMetadataResult::Value { .. }) {
+                        break;
+                    }
+                    let state = self.state.read().map_err(|_| {
+                        TrellisClientError::AuthorizationUnavailable(
+                            "authority owner unavailable".into(),
+                        )
+                    })?;
+                    return state
+                        .issuer(key_id, self.policy().now_unix_seconds)
+                        .ok_or_else(|| {
+                            TrellisClientError::AuthorizationUnavailable(
+                                "historical issuer unavailable".into(),
+                            )
+                        });
+                }
+            }
+            Err(TrellisClientError::AuthorizationUnavailable(
+                "historical issuer unavailable".into(),
+            ))
+        })
+        .await
+        .map_err(|_| {
+            TrellisClientError::AuthorizationUnavailable("historical issuer read timed out".into())
+        })?
+    }
+
+    async fn forward_issuer(
+        &self,
+        transport: &async_nats::Client,
+        key_id: &str,
+    ) -> Result<AuthorityIssuerKey, TrellisClientError> {
+        if key_id.len() != 43
+            || !URL_SAFE_NO_PAD
+                .decode(key_id)
+                .is_ok_and(|bytes| bytes.len() == 32 && URL_SAFE_NO_PAD.encode(bytes) == key_id)
+        {
+            return Err(TrellisClientError::AuthorizationUnavailable(
+                "invalid issuer digest".into(),
+            ));
+        }
         tokio::time::timeout(RESOLUTION_TIMEOUT, async {
             {
                 let state = self.state.read().map_err(|_| {
@@ -2342,6 +2463,20 @@ impl AuthorizationOwner {
         drop(state);
         let _ = self.changes.send(());
         Ok(())
+    }
+
+    /// Fence attachment-bound coverage immediately without erasing signed retirements.
+    /// A displaced mirror's epoch cannot restore usability after a transport change.
+    pub(crate) fn fence_revocation_coverage(&self) {
+        if let Ok(mut state) = self.state.write() {
+            let changed = state.revocation_covered || state.revocation_epoch.is_some();
+            state.revocation_covered = false;
+            state.revocation_epoch = None;
+            drop(state);
+            if changed {
+                let _ = self.changes.send(());
+            }
+        }
     }
 
     /// Run one logical-session mirror for this attachment, not one watch per peer.

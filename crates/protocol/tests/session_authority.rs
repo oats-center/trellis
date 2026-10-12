@@ -935,6 +935,208 @@ fn authority_scope_expiry_and_logical_revocation_fail_closed() {
 }
 
 #[test]
+fn current_issuer_metadata_authenticates_only_the_requested_historical_key() {
+    use trellis_protocol::{
+        sign_issuer_metadata, verify_issuer_metadata, IssuerMetadata, IssuerMetadataQuery,
+        IssuerMetadataRequest, IssuerMetadataResult, ISSUER_METADATA_DOMAIN_V1,
+        ISSUER_METADATA_SUBJECT,
+    };
+    let (_, old, authority, policy) = issued();
+    let signer = SigningKey::from_bytes(&[12; 32]);
+    let current = AuthorityIssuerKey {
+        key_id: URL_SAFE_NO_PAD.encode(Sha256::digest(signer.verifying_key().as_bytes())),
+        public_key: URL_SAFE_NO_PAD.encode(signer.verifying_key().as_bytes()),
+        state: AuthorityIssuerState::Active,
+    };
+    let historical = AuthorityIssuerKey {
+        state: AuthorityIssuerState::Retired,
+        ..old.clone()
+    };
+    let request = IssuerMetadataRequest {
+        trellis_instance_id: authority.unsigned.trellis_instance_id.clone(),
+        audience_nats_account: authority.unsigned.audience_nats_account.clone(),
+        request_nonce: URL_SAFE_NO_PAD.encode([8; 16]),
+        query: IssuerMetadataQuery::IssuerKey {
+            key_id: historical.key_id.clone(),
+        },
+    };
+    let reply = "_INBOX.runtime.historicalIssuer";
+    let response = IssuerMetadata {
+        format: ISSUER_METADATA_DOMAIN_V1.into(),
+        issuer_key_id: current.key_id.clone(),
+        request: request.clone(),
+        request_subject: ISSUER_METADATA_SUBJECT.into(),
+        reply_subject: reply.into(),
+        result: IssuerMetadataResult::Value {
+            payload: serde_json::to_string(&historical).unwrap(),
+        },
+        issued_at: policy.now_unix_seconds,
+        expires_at: policy.now_unix_seconds + 30,
+    };
+    let signed = sign_issuer_metadata(response, &signer).unwrap();
+    let bytes = serde_json::to_vec(&signed).unwrap();
+    let verify = |bytes: &[u8], trusted: &AuthorityIssuerKey, retained: &IssuerMetadataRequest| {
+        verify_issuer_metadata(
+            bytes,
+            trusted,
+            retained,
+            ISSUER_METADATA_SUBJECT,
+            reply,
+            policy.now_unix_seconds,
+        )
+    };
+    let verified = verify(&bytes, &current, &request).unwrap();
+    let IssuerMetadataResult::Value { payload } = verified.result() else {
+        panic!("current issuer authenticates the requested historical key")
+    };
+    let resolved: AuthorityIssuerKey = serde_json::from_str(payload).unwrap();
+    // Apply the attested public key at a real cryptographic boundary: an old
+    // authority's historical signature remains valid, but not a live admission.
+    let input = SessionAuthorityVerificationInput {
+        issuer: &resolved,
+        trellis_instance_id: &request.trellis_instance_id,
+        audience_nats_account: &request.audience_nats_account,
+        authority: &authority,
+        policy: &policy,
+        purpose: SessionAuthorityPurpose::HistoricalEvent,
+        revocation_cutoff: None,
+    };
+    verify_session_authority(SessionAuthorityVerificationInput { ..input }).unwrap();
+    assert!(verify_session_authority(SessionAuthorityVerificationInput {
+        purpose: SessionAuthorityPurpose::Live,
+        ..input
+    })
+    .is_err());
+
+    let mut forged = signed.clone();
+    let replacement = if forged.signature.starts_with('A') {
+        "B"
+    } else {
+        "A"
+    };
+    forged.signature.replace_range(..1, replacement);
+    assert!(verify(&serde_json::to_vec(&forged).unwrap(), &current, &request).is_err());
+    let mut tampered = signed.clone();
+    tampered.response.result = IssuerMetadataResult::Missing;
+    assert!(verify(&serde_json::to_vec(&tampered).unwrap(), &current, &request).is_err());
+
+    // Even a correctly signed envelope cannot substitute another key, attach
+    // unrelated public bytes to the requested digest, or introduce an active pin.
+    for candidate in [
+        AuthorityIssuerKey {
+            state: AuthorityIssuerState::Retired,
+            ..current.clone()
+        },
+        AuthorityIssuerKey {
+            public_key: current.public_key.clone(),
+            ..historical.clone()
+        },
+        AuthorityIssuerKey {
+            public_key: format!("{}=", historical.public_key),
+            ..historical.clone()
+        },
+        AuthorityIssuerKey {
+            state: AuthorityIssuerState::Active,
+            ..historical.clone()
+        },
+    ] {
+        let mut response = signed.response.clone();
+        response.result = IssuerMetadataResult::Value {
+            payload: serde_json::to_string(&candidate).unwrap(),
+        };
+        let invalid = sign_issuer_metadata(response, &signer).unwrap();
+        assert!(verify(&serde_json::to_vec(&invalid).unwrap(), &current, &request).is_err());
+    }
+    for retained in [
+        IssuerMetadataRequest {
+            request_nonce: URL_SAFE_NO_PAD.encode([9; 16]),
+            ..request.clone()
+        },
+        IssuerMetadataRequest {
+            audience_nats_account: "another-account".into(),
+            ..request.clone()
+        },
+        IssuerMetadataRequest {
+            trellis_instance_id: "01JY0000000000000000000009".into(),
+            ..request.clone()
+        },
+        IssuerMetadataRequest {
+            query: IssuerMetadataQuery::IssuerKey {
+                key_id: current.key_id.clone(),
+            },
+            ..request.clone()
+        },
+    ] {
+        assert!(verify(&bytes, &current, &retained).is_err());
+    }
+    assert!(verify_issuer_metadata(
+        &bytes,
+        &current,
+        &request,
+        ISSUER_METADATA_SUBJECT,
+        "_INBOX.another.exchange",
+        policy.now_unix_seconds
+    )
+    .is_err());
+    assert!(verify_issuer_metadata(
+        &bytes,
+        &current,
+        &request,
+        "rpc.other.Metadata",
+        reply,
+        policy.now_unix_seconds
+    )
+    .is_err());
+    for inactive in [AuthorityIssuerState::Retired, AuthorityIssuerState::Revoked] {
+        assert!(verify(
+            &bytes,
+            &AuthorityIssuerKey {
+                state: inactive,
+                ..current.clone()
+            },
+            &request
+        )
+        .is_err());
+    }
+    assert!(verify(&bytes, &old, &request).is_err());
+    // A valid signature from a different, unpinned active issuer does not make
+    // its historical payload acceptable under the retained current pin.
+    let foreign_signer = SigningKey::from_bytes(&[13; 32]);
+    let mut response = signed.response.clone();
+    response.issuer_key_id =
+        URL_SAFE_NO_PAD.encode(Sha256::digest(foreign_signer.verifying_key().as_bytes()));
+    let foreign = sign_issuer_metadata(response, &foreign_signer).unwrap();
+    assert!(verify(&serde_json::to_vec(&foreign).unwrap(), &current, &request).is_err());
+
+    let mut response = signed.response.clone();
+    response.result = IssuerMetadataResult::Value {
+        payload: serde_json::to_string(&AuthorityIssuerKey {
+            state: AuthorityIssuerState::Revoked,
+            ..historical
+        })
+        .unwrap(),
+    };
+    let revoked = sign_issuer_metadata(response, &signer).unwrap();
+    let revoked_bytes = serde_json::to_vec(&revoked).unwrap();
+    let verified = verify(&revoked_bytes, &current, &request).unwrap();
+    let IssuerMetadataResult::Value { payload } = verified.result() else {
+        panic!("compromise state is authenticated, not treated as unavailable")
+    };
+    let compromised: AuthorityIssuerKey = serde_json::from_str(payload).unwrap();
+    assert!(verify_session_authority(SessionAuthorityVerificationInput {
+        issuer: &compromised,
+        ..input
+    })
+    .is_err());
+    assert!(verify_session_authority(SessionAuthorityVerificationInput {
+        issuer: &compromised,
+        purpose: SessionAuthorityPurpose::Live,
+        ..input
+    })
+    .is_err());
+}
+
+#[test]
 fn issuer_metadata_authenticates_public_material_and_absence_for_one_exchange() {
     use trellis_protocol::{
         sign_issuer_metadata, verify_issuer_metadata, IssuerMetadata, IssuerMetadataQuery,

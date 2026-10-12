@@ -217,6 +217,14 @@ impl SqliteAuthorizationStore {
             // Validate canonical nonce, selectors, scope and routing before SQL.
             response.digest()?;
             let result = match &response.request.query {
+                IssuerMetadataQuery::IssuerKey { key_id } => {
+                    Self::resolve_issuer_in(connection, key_id).and_then(|issuer| {
+                        if issuer.state == trellis_protocol::AuthorityIssuerState::Active {
+                            return Err(AuthError::Denied);
+                        }
+                        Ok(serde_json::to_string(&issuer)?)
+                    })
+                }
                 IssuerMetadataQuery::AuthorityResolve { context_digest } => {
                     super::rpc_credentials::read_authority(connection, context_digest)
                         .and_then(|value| Ok(serde_json::to_string(&value)?))

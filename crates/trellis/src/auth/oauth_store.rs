@@ -146,7 +146,7 @@ impl NativeCredentialLease {
         })
     }
 
-    /// Persist only the exact trust supplied by the authenticated connection owner.
+    /// Persist only trust authenticated by the connection owner or pinned issuer chain.
     /// The same record holds both the rotation floor and token-spent marker.
     pub(crate) fn retain_trust(&mut self, trust: &RuntimeAuthorizationTrust) -> io::Result<()> {
         if trust.instance_id != self.record.scope.instance_id
@@ -366,6 +366,35 @@ impl NativeCredentialLease {
         self.record.recovery_required = true;
         self.commit()?;
         Ok(token)
+    }
+
+    /// Retain a known, unsubmitted successor secret without trusting response identity.
+    /// The exclusive lease and existing grant identity remain unchanged while an
+    /// admission awaits issuer-chain verification. An ambiguous exchange cannot
+    /// call this method or make its possibly consumed token reusable.
+    pub(crate) fn retain_rotated_token(&mut self, token: String) -> io::Result<()> {
+        let grant = self
+            .record
+            .grant
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "OAuth login required"))?;
+        if !self.record.recovery_required
+            || token.is_empty()
+            || token.len() > 16 * 1024
+            || token == grant.refresh_token
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid OAuth refresh successor",
+            ));
+        }
+        grant.refresh_token = token;
+        self.record.recovery_required = false;
+        if let Err(error) = self.commit() {
+            self.record.recovery_required = true;
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn commit(&self) -> io::Result<()> {

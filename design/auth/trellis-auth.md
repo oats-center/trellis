@@ -298,6 +298,15 @@ Replacement streams use an epoch fence: completion of a retired watcher cannot
 restore or clear its successor's coverage. Observed revocations remain sticky;
 recovery never extends the signed authority's expiry.
 
+One cancellable supervisor retries unexpected stream loss or a temporarily
+missing published carrier with bounded backoff and jitter. Private maintenance
+can acquire an admitted carrier while application use remains fenced; only a
+complete authenticated snapshot on the current generation restores usability.
+A retired session remains denied, but fresh ordinary admission may replace it
+under a still-valid credential. Explicit close or terminal credential failure
+stops recovery. Explicit native authority refresh and scheduled renewal share
+one custody worker and await authenticated publication and mirror coverage.
+
 Kicks use the operational system-account client and exact broker inventory. A
 reused CID with another attachment marker is never kicked. Unavailable or
 malformed inventory is retryable, not proof of absence. `CONNZ`'s filtered
@@ -305,6 +314,28 @@ malformed inventory is retryable, not proof of absence. `CONNZ`'s filtered
 bounded claims, retry backoff, stale-claim recovery, and predecessor ordering.
 
 ## Issuers And Bootstrap
+
+Cold OAuth resume reads the bounded public issuer chain from
+`GET /.well-known/trellis/issuer-chain?pinnedKeyId=...&targetKeyId=...` on the
+selected OAuth origin. Discovery identifies a target but never replaces a
+persisted pin: SDKs authenticate each signed successor's sequence, scope and
+key continuity using the existing rotation verifier, then persist successor
+trust before consuming a refresh token. Missing, compromised or invalid chains
+leave the existing credential unspent. If an issuer changes during refresh,
+custody retains the known newly returned, unsubmitted token without promoting
+unverified admission authority; later recovery spends that successor, not the
+already spent predecessor. Ambiguous responses retain the spent marker.
+
+Cold successor pins resolve older immutable verification material through the
+existing issuer-signed metadata exchange's `issuerKey` selector. Only an active
+issuer authenticated from the pin and forward rotations may sign this reply;
+its requested key, canonical bytes, installation/account, nonce, destinations,
+and freshness are verified before caching. Returned keys are historical-only:
+retired keys can authenticate unchanged catalogs and historical publications,
+while compromised keys remain unusable. The read cannot install an active key,
+advance the rotation sequence, or replace credential trust. Learned compromise
+is sticky. Current session and provider-certificate checks remain independent
+of immutable catalog-signature authenticity.
 
 The initial administrator is created through the local production bootstrap
 boundary and remains protected against disablement or administrative demotion.
@@ -333,6 +364,14 @@ user and a fresh nonce/PKCE-verified upstream exchange; provider disablement or 
 revision change invalidates the action, and another user's identity cannot be
 reassigned. Native forms enforce Origin and CSRF without accepting actor IDs from
 the browser.
+
+Identity-link approval never redirects its form POST to an external provider.
+It rotates the existing action token into a 60-second, one-use, exact-session
+handoff and returns a no-store continuation page with an ordinary navigation
+link. The same-origin GET authenticates the reviewed handoff before redirecting
+to the verified provider. The continuation and redirect suppress referrers;
+`form-action 'self'` remains enforced. Wrong-session, cross-user, expired,
+replayed or unreviewed handoffs cannot begin upstream linking.
 
 Issuer rotation installs a signed, preceding-key-bound, monotonic chain record
 and retains retired public keys and immutable signed contexts. Rotation commits

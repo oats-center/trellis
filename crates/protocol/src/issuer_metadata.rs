@@ -21,6 +21,12 @@ pub const ISSUER_METADATA_SUBJECT: &str = "trellis.auth.metadata.get";
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum IssuerMetadataQuery {
+    /// Obtain historical verification material authenticated by the current pin.
+    IssuerKey {
+        /// Requested historical key digest, never a new live trust anchor.
+        #[serde(rename = "keyId")]
+        key_id: String,
+    },
     /// Resolve immutable context bytes and their public verification material.
     AuthorityResolve {
         /// Content digest of the requested immutable context.
@@ -130,6 +136,9 @@ impl IssuerMetadata {
         validate_subject(&self.request_subject)?;
         validate_subject(&self.reply_subject)?;
         match &self.request.query {
+            IssuerMetadataQuery::IssuerKey { key_id } => {
+                decode_base64url::<32>(key_id)?;
+            }
             IssuerMetadataQuery::AuthorityResolve { context_digest } => {
                 decode_base64url::<32>(context_digest)?;
             }
@@ -269,5 +278,18 @@ pub fn verify_issuer_metadata(
                 "invalid issuer metadata signature",
             )
         })?;
+    if let (IssuerMetadataQuery::IssuerKey { key_id }, IssuerMetadataResult::Value { payload }) =
+        (&request.query, &response.result)
+    {
+        let historical: AuthorityIssuerKey = serde_json::from_str(payload)?;
+        historical.verifying_key()?;
+        if historical.key_id != *key_id || historical.state == AuthorityIssuerState::Active {
+            return Err(authorization_error(
+                AuthorizationErrorCode::ScopeMismatch,
+                [],
+                "invalid historical issuer statement",
+            ));
+        }
+    }
     Ok(VerifiedIssuerMetadata(signed))
 }

@@ -11,7 +11,9 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use tokio::time::Instant;
-use trellis_protocol::{verify_oauth_admission, OAuthAdmissionBinding, SignedOAuthAdmission};
+use trellis_protocol::{
+    verify_oauth_admission, OAuthAdmissionBinding, SignedIssuerRotation, SignedOAuthAdmission,
+};
 
 use super::oauth_store::{NativeCredentialLease, NativeCredentialScope, NativeOAuthGrant};
 use crate::client::{RuntimeAuthorizationTrust, SessionAuth};
@@ -24,7 +26,8 @@ pub struct NativeOAuthServer {
     pub issuer: String,
     /// Native NATS/TLS transport endpoints advertised by that origin.
     pub nats_servers: Vec<String>,
-    /// Current installation trust for first authorization only.
+    /// Initial installation trust; for existing credentials this is only a
+    /// successor hint that must be authenticated from their retained issuer pin.
     pub trust: RuntimeAuthorizationTrust,
 }
 
@@ -119,19 +122,28 @@ pub async fn discover_native_oauth(
     {
         return Err(NativeOAuthError::InvalidResponse);
     }
+    let mut nats_servers = Vec::new();
     for endpoint in &metadata.nats_endpoints {
         let parsed = url::Url::parse(endpoint).map_err(|_| NativeOAuthError::InvalidResponse)?;
-        if !matches!(parsed.scheme(), "nats" | "tls")
+        if !matches!(parsed.scheme(), "nats" | "tls" | "ws" | "wss")
             || parsed.host().is_none()
             || !parsed.username().is_empty()
             || parsed.password().is_some()
             || !matches!(parsed.path(), "" | "/")
             || parsed.query().is_some()
             || parsed.fragment().is_some()
-            || endpoint.parse::<async_nats::ServerAddr>().is_err()
         {
             return Err(NativeOAuthError::InvalidResponse);
         }
+        if matches!(parsed.scheme(), "nats" | "tls") {
+            endpoint
+                .parse::<async_nats::ServerAddr>()
+                .map_err(|_| NativeOAuthError::InvalidResponse)?;
+            nats_servers.push(endpoint.clone());
+        }
+    }
+    if nats_servers.is_empty() {
+        return Err(NativeOAuthError::InvalidResponse);
     }
     let mut current = None;
     let mut ids = std::collections::BTreeSet::new();
@@ -147,7 +159,7 @@ pub async fn discover_native_oauth(
     }
     Ok(NativeOAuthServer {
         issuer,
-        nats_servers: metadata.nats_endpoints,
+        nats_servers,
         trust: RuntimeAuthorizationTrust {
             instance_id: metadata.trellis_instance_id,
             account: metadata.audience_nats_account,
@@ -158,8 +170,8 @@ pub async fn discover_native_oauth(
 }
 
 /// Expected native OAuth failures. HTTP response bodies and credentials are never
-/// included in errors. Recovery means starting a new standard authorization flow,
-/// not retrying a possibly consumed refresh token or erasing a durable grant.
+/// included in errors. A possibly consumed refresh token requires a new standard
+/// authorization flow; unavailable issuer trust can recover without erasing the grant.
 #[derive(Debug, thiserror::Error)]
 pub enum NativeOAuthError {
     /// Protected storage could not be opened or committed.
@@ -180,6 +192,10 @@ pub enum NativeOAuthError {
     /// A bounded HTTP exchange failed; durable credentials remain stored.
     #[error("OAuth endpoint unavailable")]
     Unavailable,
+    /// A discovery hint could not be authenticated from the retained issuer pin.
+    /// Retry after trust recovery; no unsubmitted refresh credential is consumed.
+    #[error("OAuth issuer trust unavailable")]
+    TrustUnavailable,
 }
 
 /// Verified in-memory inputs for the ordinary one-step native NATS connection.
@@ -191,7 +207,7 @@ pub struct NativeOAuthSession {
     pub runtime_id: String,
     /// Issuer-verified short-lived admission for exactly this runtime and key.
     pub admission: SignedOAuthAdmission,
-    /// Explicit selected trust; later rotations belong to AuthorizationOwner.
+    /// Installation trust authenticated from the selected pin and signed rotations.
     pub trust: RuntimeAuthorizationTrust,
     /// Actual granted RFC 9396 details, including optional deselections.
     pub authorization_details: serde_json::Value,
@@ -295,8 +311,8 @@ struct OAuthError {
 
 impl NativeOAuthClient {
     /// Open owner-only custody off the async executor. The caller must explicitly
-    /// approve the first issuer pin; a retained successor must have been validated
-    /// through the common authority owner's authenticated rotation chain.
+    /// approve the first issuer pin; retained pins are restored rather than replaced
+    /// by discovery. Cold resume authenticates any successor before token rotation.
     pub async fn open(
         directory: PathBuf,
         scope: NativeCredentialScope,
@@ -385,10 +401,111 @@ impl NativeOAuthClient {
     }
 
     /// Resume after process restart with a fresh ephemeral runtime key. The spent
-    /// marker is durable before network I/O; only a verified success clears it.
+    /// issuer chain is authenticated before spending the token. Its spent marker
+    /// remains durable unless the endpoint returns a known, unsubmitted successor.
     pub async fn resume(mut self) -> Result<NativeOAuthSession, NativeOAuthError> {
+        self.refresh_trust().await?;
         let bytes = self.rotate().await?;
         self.install(&bytes).await
+    }
+
+    async fn refresh_trust(&mut self) -> Result<(), NativeOAuthError> {
+        use crate::__types::trellis::{AuthIssuerChainRequest, AuthIssuerChainResponse};
+
+        let scope = self
+            .lease
+            .lock()
+            .map_err(|_| NativeOAuthError::RecoveryRequired)?
+            .scope()
+            .clone();
+        let target = discover_native_oauth(&scope.issuer)
+            .await
+            .map_err(|_| NativeOAuthError::TrustUnavailable)?
+            .trust;
+        if target.instance_id != scope.instance_id
+            || target.account != scope.account
+            || target.rotation_sequence < self.trust.rotation_sequence
+        {
+            return Err(NativeOAuthError::TrustUnavailable);
+        }
+        let mut authenticated = self.trust.clone();
+        if target.issuer.key_id != authenticated.issuer.key_id {
+            let request = AuthIssuerChainRequest {
+                pinned_key_id: authenticated.issuer.key_id.clone().into(),
+                target_key_id: target.issuer.key_id.clone().into(),
+                extra: Default::default(),
+            };
+            let mut uri = url::Url::parse(&format!(
+                "{}/.well-known/trellis/issuer-chain",
+                scope.issuer
+            ))
+            .map_err(|_| NativeOAuthError::TrustUnavailable)?;
+            uri.query_pairs_mut()
+                .append_pair("pinnedKeyId", &request.pinned_key_id)
+                .append_pair("targetKeyId", &request.target_key_id);
+            let mut response = self
+                .http
+                .get(uri)
+                .send()
+                .await
+                .map_err(|_| NativeOAuthError::TrustUnavailable)?;
+            if !response.status().is_success() {
+                return Err(NativeOAuthError::TrustUnavailable);
+            }
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|_| NativeOAuthError::TrustUnavailable)?
+            {
+                if bytes.len() + chunk.len() > 1024 * 1024 {
+                    return Err(NativeOAuthError::TrustUnavailable);
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            let chain: AuthIssuerChainResponse =
+                serde_json::from_slice(&bytes).map_err(|_| NativeOAuthError::TrustUnavailable)?;
+            if chain.rotations.len() > 128 {
+                return Err(NativeOAuthError::TrustUnavailable);
+            }
+            let now = time::OffsetDateTime::now_utc().unix_timestamp();
+            let mut seen = std::collections::BTreeSet::from([authenticated.issuer.key_id.clone()]);
+            for blob in chain.rotations {
+                let rotation: SignedIssuerRotation = serde_json::from_slice(&blob.0 .0)
+                    .map_err(|_| NativeOAuthError::TrustUnavailable)?;
+                authenticated.issuer = rotation
+                    .verify_successor(
+                        &authenticated.issuer,
+                        &scope.instance_id,
+                        &scope.account,
+                        authenticated.rotation_sequence,
+                        now,
+                    )
+                    .map_err(|_| NativeOAuthError::TrustUnavailable)?;
+                authenticated.rotation_sequence = rotation.sequence.get();
+                if !seen.insert(authenticated.issuer.key_id.clone()) {
+                    return Err(NativeOAuthError::TrustUnavailable);
+                }
+            }
+        }
+        if authenticated.issuer != target.issuer
+            || authenticated.rotation_sequence != target.rotation_sequence
+        {
+            return Err(NativeOAuthError::TrustUnavailable);
+        }
+        let lease = Arc::clone(&self.lease);
+        let retained = authenticated.clone();
+        tokio::task::spawn_blocking(move || {
+            lease
+                .lock()
+                .map_err(|_| std::io::Error::other("OAuth custody poisoned"))?
+                .retain_trust(&retained)
+        })
+        .await
+        .map_err(|_| NativeOAuthError::RecoveryRequired)?
+        .map_err(NativeOAuthError::Custody)?;
+        self.trust = authenticated;
+        Ok(())
     }
 
     async fn rotate(&mut self) -> Result<Vec<u8>, NativeOAuthError> {
@@ -407,16 +524,36 @@ impl NativeOAuthClient {
             }
             _ => NativeOAuthError::Custody(error),
         })?;
-        self.exchange(
-            "/token",
-            &[
-                ("grant_type", "refresh_token".into()),
-                ("refresh_token", token),
-            ],
-        )
+        let bytes = self
+            .exchange(
+                "/token",
+                &[
+                    ("grant_type", "refresh_token".into()),
+                    ("refresh_token", token),
+                ],
+            )
+            .await
+            // Ambiguous/lost responses leave the original spent marker in place.
+            .map_err(|_| NativeOAuthError::RecoveryRequired)?;
+        let response: TokenResponse =
+            serde_json::from_slice(&bytes).map_err(|_| NativeOAuthError::InvalidResponse)?;
+        if !response.token_type.eq_ignore_ascii_case("DPoP") {
+            return Err(NativeOAuthError::InvalidResponse);
+        }
+        let lease = Arc::clone(&self.lease);
+        // Once a success identifies an unsubmitted replacement secret, schedule
+        // its durable checkpoint before awaiting admission/issuer verification.
+        // The blocking task retains custody even if this future is cancelled.
+        tokio::task::spawn_blocking(move || {
+            lease
+                .lock()
+                .map_err(|_| std::io::Error::other("OAuth custody poisoned"))?
+                .retain_rotated_token(response.refresh_token)
+        })
         .await
-        // Any unverified/ambiguous response leaves the spent marker in place.
-        .map_err(|_| NativeOAuthError::RecoveryRequired)
+        .map_err(|_| NativeOAuthError::RecoveryRequired)?
+        .map_err(NativeOAuthError::Custody)?;
+        Ok(bytes)
     }
 
     fn proof(&self, uri: &str, nonce: Option<&str>) -> Result<String, NativeOAuthError> {
@@ -553,23 +690,28 @@ impl NativeOAuthClient {
             .map_err(|_| NativeOAuthError::RecoveryRequired)?
             .scope()
             .clone();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| NativeOAuthError::Unavailable)?
-            .as_secs();
-        let admission = verify_oauth_admission(
-            response.trellis_admission.as_bytes(),
-            &self.trust.issuer,
-            &scope.instance_id,
-            &scope.account,
-            &self
-                .auth
-                .session_nkey()
-                .map_err(|_| NativeOAuthError::InvalidResponse)?,
-            i64::try_from(now).map_err(|_| NativeOAuthError::InvalidResponse)?,
-            300,
-        )
-        .map_err(|_| NativeOAuthError::InvalidResponse)?;
+        let session_nkey = self
+            .auth
+            .session_nkey()
+            .map_err(|_| NativeOAuthError::InvalidResponse)?;
+        let verify = |trust: &RuntimeAuthorizationTrust| {
+            verify_oauth_admission(
+                response.trellis_admission.as_bytes(),
+                &trust.issuer,
+                &scope.instance_id,
+                &scope.account,
+                &session_nkey,
+                time::OffsetDateTime::now_utc().unix_timestamp(),
+                300,
+            )
+        };
+        let admission = match verify(&self.trust) {
+            Ok(admission) => admission,
+            Err(_) => {
+                self.refresh_trust().await?;
+                verify(&self.trust).map_err(|_| NativeOAuthError::InvalidResponse)?
+            }
+        };
         let jwk = self
             .lease
             .lock()

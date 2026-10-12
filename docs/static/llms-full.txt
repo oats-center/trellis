@@ -1,5 +1,22 @@
 # Trellis Consumer Guide
 
+The `accountRead` capability covers account resolution, reading your current
+session and signing out of the current login and its application sessions.
+`Sessions.Me` and `Sessions.Logout` require normal selection and consent.
+
+Identity-link approval remains a protected same-origin POST. Its no-store
+continuation page shows a navigation link to a 60-second, one-use GET handoff
+bound to the exact portal session, provider and account. Top-level navigation
+reaches the verified IdP without relaxing form-action 'self' or leaking the
+handoff in referrers. Direct, expired and replayed handoffs fail.
+
+Cold OAuth resume verifies signed issuer successors from the retained pin using
+GET /.well-known/trellis/issuer-chain at the selected OAuth origin and persists
+successor trust before spending a refresh token. Unavailable or invalid chains
+leave it unspent. A successfully returned new token survives later issuer
+verification failure, but its admission remains unusable until authenticated.
+Never retry an ambiguously spent predecessor.
+
 Provisioned services/devices automatically publish the native Health.Heartbeat
 event using ordinary SessionEvent signatures. Auth assigns only the runtime-owned
 trellis.health@v1::selfReport capability through native provisioning; users/apps
@@ -665,3 +682,8 @@ For runtime operation, see `/guides/starting-trellis`. For a complete service,
 see `/guides/write-a-service`. Use `/api` for public language APIs and generated
 source for project-specific names. Run the consumer repository's own checks
 after generation; Trellis-repository xtask commands are not consumer commands.
+Historical issuer keys are resolved through the existing issuer-signed metadata
+exchange, authenticated by the active pinned issuer or its forward-verified
+successor. Historical keys never advance live trust; compromised keys remain
+unusable. A retired catalog signer does not invalidate an immutable catalog
+referenced by current signed authority.

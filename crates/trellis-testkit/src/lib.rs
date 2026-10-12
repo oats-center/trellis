@@ -113,6 +113,9 @@ mod tests {
                 panic!("real admitted caller must resolve public verification material")
             };
             match &request.query {
+                IssuerMetadataQuery::IssuerKey { .. } => {
+                    unreachable!("this caller exercises context, session and rotation reads")
+                }
                 IssuerMetadataQuery::AuthorityResolve { .. } => {
                     let resolved: trellis_runtime_apis::types::AuthAuthorityResolveResponse =
                         serde_json::from_str(payload).unwrap();

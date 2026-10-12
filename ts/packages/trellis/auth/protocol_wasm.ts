@@ -472,6 +472,7 @@ export type SessionRevocation = {
 export type IssuerMetadataQuery =
   | { kind: "authorityResolve"; contextDigest: string }
   | { kind: "authorityStatus"; authorizationSessionId: string }
+  | { kind: "issuerKey"; keyId: string }
   | { kind: "issuerChain"; pinnedKeyId: string; targetKeyId: string };
 
 /** Retained scope and nonce for a signed issuer metadata exchange. */

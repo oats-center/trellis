@@ -28,14 +28,32 @@ fn native_custody_preserves_key_possession_and_recovers_instead_of_replaying_aft
         .unwrap();
     let competing = fs::File::open(first.path.with_extension("lock")).unwrap();
     assert!(competing.try_lock().is_err());
+    assert!(first
+        .retain_rotated_token("unsolicited-successor".into())
+        .is_err());
     assert_eq!(first.begin_rotation().unwrap(), "rotating-one");
     drop(first);
     competing.try_lock().unwrap();
     competing.unlock().unwrap();
-    let mut reopened = NativeCredentialLease::lock(&root, scope).unwrap();
+    let mut reopened = NativeCredentialLease::lock(&root, scope.clone()).unwrap();
     let payload = b"new runtime proof signed by the persisted native DPoP identity";
     let signature = Signature::from_slice(&reopened.sign_dpop(payload)).unwrap();
     verifier.verify(payload, &signature).unwrap();
+    assert!(reopened.begin_rotation().is_err());
+    assert!(reopened
+        .retain_rotated_token("rotating-one".into())
+        .is_err());
+    reopened
+        .retain_rotated_token("known-unsubmitted-successor".into())
+        .unwrap();
+    drop(reopened);
+    let mut reopened = NativeCredentialLease::lock(&root, scope).unwrap();
+    let signature = Signature::from_slice(&reopened.sign_dpop(payload)).unwrap();
+    verifier.verify(payload, &signature).unwrap();
+    assert_eq!(
+        reopened.begin_rotation().unwrap(),
+        "known-unsubmitted-successor"
+    );
     assert!(reopened.begin_rotation().is_err());
     assert!(reopened
         .install(NativeOAuthGrant {

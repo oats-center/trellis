@@ -144,6 +144,16 @@ export class VerifiedAuthority {
     return allowed;
   }
 
+  /** Return authenticated catalog evidence bound to this exact live authority. @internal */
+  async authenticatedCatalog(
+    apiId: string,
+  ): Promise<Readonly<RecordObject> | undefined> {
+    return await this.#owner.authenticatedCatalog(
+      this.entry(authorityLeaseToken),
+      apiId,
+    );
+  }
+
   /** Check the Auth-certified implementation, not consumer capability authority. */
   async authorizeProvider(
     apiId: string,
@@ -1087,6 +1097,28 @@ export class SessionAuthorityOwner {
     return allowed;
   }
 
+  /** Resolve immutable catalog evidence for one API bound to a live verified authority. @internal */
+  async authenticatedCatalog(
+    entry: CachedAuthority,
+    apiId: string,
+  ): Promise<Readonly<RecordObject> | undefined> {
+    this.assertCurrent(entry);
+    const api = entry.authority.apis.find((api) => api.apiId === apiId);
+    if (!api) return undefined;
+    const catalog = await this.#metadata("catalog", api.catalogSnapshotDigest);
+    const record = catalog.record;
+    await this.#issuer(String(record.issuerKeyId));
+    if (
+      record.apiId !== apiId ||
+      record.generation !== api.generation ||
+      typeof record.acceptedRevision !== "string" ||
+      BigInt(record.acceptedRevision) < BigInt(api.acceptedRevision)
+    )
+      throw new Error("catalog does not match authority binding");
+    this.assertCurrent(entry);
+    return structuredClone(record);
+  }
+
   /** Authenticate the provider certificate and exact advertised action for a retained endpoint. */
   async authorizeProvider(
     entry: CachedAuthority,
@@ -1170,13 +1202,20 @@ export class SessionAuthorityOwner {
   async readIssuerMetadata(
     query: IssuerMetadataQuery,
   ): Promise<IssuerMetadataResponse> {
+    return this.#readIssuerMetadata(query, true);
+  }
+
+  async #readIssuerMetadata(
+    query: IssuerMetadataQuery,
+    requireCoverage: boolean,
+  ): Promise<IssuerMetadataResponse> {
     const transport = this.#metadataTransport;
     const epoch = this.#mirrorEpoch;
     const assertCurrent = () => {
       if (
         !transport ||
         this.#stopped ||
-        !this.#mirrorCovered ||
+        (requireCoverage && !this.#mirrorCovered) ||
         this.#mirrorEpoch !== epoch ||
         transport.nats.isClosed() ||
         transport.nats.isDraining()
@@ -1193,9 +1232,30 @@ export class SessionAuthorityOwner {
         instanceId: this.instanceId,
         account: this.account,
         query,
-        issuer: (keyId) => this.#issuer(keyId),
+        issuer: async (keyId) => {
+          // Never resolve a metadata envelope through another metadata lookup.
+          const issuer = await this.#forwardIssuer(keyId);
+          if (issuer?.state !== "active")
+            throw new Error("untrusted issuer metadata signer");
+          return issuer;
+        },
         assertCurrent,
       });
+      if (query.kind === "issuerKey" && response.result.kind === "value") {
+        // The shared verifier checked the exact requested key and non-live state.
+        const historical: AuthorityIssuerKey = JSON.parse(
+          response.result.payload,
+        );
+        const previous = this.#keys.get(historical.keyId);
+        if (previous && previous.publicKey !== historical.publicKey)
+          throw new Error("historical issuer conflict");
+        if (previous?.state === "active")
+          throw new Error("historical issuer is a live pin");
+        if (!previous && this.#keys.size >= 128)
+          throw new Error("issuer history budget exceeded");
+        if (previous?.state !== "revoked")
+          this.#keys.set(historical.keyId, historical);
+      }
       if (
         query.kind === "authorityStatus" &&
         response.result.kind === "value"
@@ -1251,8 +1311,15 @@ export class SessionAuthorityOwner {
   async #issuer(keyId: string): Promise<AuthorityIssuerKey> {
     let issuer = this.#keys.get(keyId);
     if (!issuer) {
-      // Bounded sequential discovery authenticates every successor from the pinned predecessor.
-      await this.#advanceTrust(this.#rotationSequence + 32n);
+      issuer = await this.#forwardIssuer(keyId);
+    }
+    if (!issuer) {
+      const response = await this.#readIssuerMetadata(
+        { kind: "issuerKey", keyId },
+        false,
+      );
+      if (response.result.kind !== "value")
+        throw new Error("historical authority issuer unavailable");
       issuer = this.#keys.get(keyId);
     }
     if (!issuer || issuer.state === "revoked")
@@ -1260,8 +1327,65 @@ export class SessionAuthorityOwner {
     return issuer;
   }
 
+  async #forwardIssuer(keyId: string): Promise<AuthorityIssuerKey | undefined> {
+    if (!this.#keys.has(keyId)) {
+      // Only consecutive predecessor signatures can extend live issuer trust.
+      await this.#advanceTrust(this.#rotationSequence + 32n);
+    }
+    return this.#keys.get(keyId);
+  }
+
+  /** Authenticate one signed successor from this owner's existing durable pin. */
+  async acceptIssuerRotation(bytes: Uint8Array): Promise<void> {
+    while (this.#rotation) await this.#rotation;
+    const rotation = this.#applyIssuerRotation(bytes);
+    this.#rotation = rotation;
+    try {
+      await rotation;
+    } finally {
+      if (this.#rotation === rotation) this.#rotation = undefined;
+    }
+  }
+
+  async #applyIssuerRotation(bytes: Uint8Array): Promise<void> {
+    if (this.#stopped) throw new Error("authority owner stopped");
+    const hints = this.#hints(bytes);
+    const previous =
+      typeof hints.previousKeyId === "string"
+        ? this.#keys.get(hints.previousKeyId)
+        : undefined;
+    if (
+      !previous ||
+      previous.state !== "active" ||
+      previous.keyId !== this.#currentTrust().issuer.keyId
+    )
+      throw new Error("untrusted rotation predecessor");
+    const verified = await verifyAuthorityMetadataWasm(
+      "rotation",
+      bytes,
+      this.#metadataPolicy(previous),
+    );
+    if (this.#stopped) throw new Error("authority owner stopped");
+    if (
+      this.#keys.get(previous.keyId)?.state !== "active" ||
+      previous.keyId !== this.#currentTrust().issuer.keyId
+    )
+      throw new Error("rotation predecessor changed during verification");
+    if (!verified.successor || this.#keys.size >= 128)
+      throw new Error("issuer rotation budget exceeded");
+    const existing = this.#keys.get(verified.successor.keyId);
+    if (existing) throw new Error("issuer rotation conflict");
+    this.#keys.set(previous.keyId, { ...previous, state: "retired" });
+    this.#keys.set(verified.successor.keyId, verified.successor);
+    this.#rotationSequence++;
+    this.#authenticatedIssuerSequences.set(
+      verified.successor.keyId,
+      this.#rotationSequence.toString(),
+    );
+  }
+
   async #advanceTrust(target: bigint): Promise<void> {
-    if (this.#rotation) {
+    while (this.#rotation) {
       await this.#rotation;
       if (this.#rotationSequence >= target) return;
     }
@@ -1280,29 +1404,7 @@ export class SessionAuthorityOwner {
         } catch {
           break;
         }
-        const hints = this.#hints(bytes);
-        const previous =
-          typeof hints.previousKeyId === "string"
-            ? this.#keys.get(hints.previousKeyId)
-            : undefined;
-        if (!previous) throw new Error("untrusted rotation predecessor");
-        const verified = await verifyAuthorityMetadataWasm(
-          "rotation",
-          bytes,
-          this.#metadataPolicy(previous),
-        );
-        if (!verified.successor || this.#keys.size >= 128)
-          throw new Error("issuer rotation budget exceeded");
-        const existing = this.#keys.get(verified.successor.keyId);
-        if (existing && existing.publicKey !== verified.successor.publicKey)
-          throw new Error("issuer rotation conflict");
-        this.#keys.set(previous.keyId, { ...previous, state: "retired" });
-        this.#keys.set(verified.successor.keyId, verified.successor);
-        this.#rotationSequence++;
-        this.#authenticatedIssuerSequences.set(
-          verified.successor.keyId,
-          this.#rotationSequence.toString(),
-        );
+        await this.#applyIssuerRotation(bytes);
       }
     })();
     this.#rotation = rotation;

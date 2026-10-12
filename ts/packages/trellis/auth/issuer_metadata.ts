@@ -23,7 +23,7 @@ export async function requestIssuerMetadata(options: {
 }): Promise<IssuerMetadataResponse> {
   options.assertCurrent();
   const subject = await issuerMetadataSubjectWasm();
-  const reply = createInbox(options.inboxPrefix);
+  const reply = `${createInbox(options.inboxPrefix)}.metadata`;
   const nonce = crypto.getRandomValues(new Uint8Array(16));
   const request: IssuerMetadataRequest = {
     trellisInstanceId: options.instanceId,

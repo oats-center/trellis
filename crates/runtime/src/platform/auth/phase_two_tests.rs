@@ -27,6 +27,10 @@ mod initialization_capability_tests;
 mod issuer_metadata_tests;
 #[path = "oauth_renewal_tests.rs"]
 mod oauth_renewal_tests;
+#[path = "oauth_runtime_rotation_tests.rs"]
+mod oauth_runtime_rotation_tests;
+#[path = "oauth_sdk_rotation_tests.rs"]
+mod oauth_sdk_rotation_tests;
 #[path = "oauth_transport_tests.rs"]
 mod oauth_transport_tests;
 #[path = "oauth_upstream_tests.rs"]

@@ -443,6 +443,18 @@ export class NativeCredentialLease {
     );
   }
 
+  /** Whether custody holds a known unspent refresh credential, without reading its secret. */
+  get refreshAvailable(): boolean {
+    this.#assertOpen();
+    return (
+      this.#records
+        .prepare(
+          "SELECT id FROM credential WHERE id=1 AND spent=0 AND grant_json IS NOT NULL",
+        )
+        .get() !== undefined
+    );
+  }
+
   /** Commit the spent marker before returning a token to the internal HTTP exchange. */
   beginRotation(): string {
     this.#assertOpen();
@@ -454,6 +466,23 @@ export class NativeCredentialLease {
     const grant = grantSchema.parse(JSON.parse(row.grant_json));
     this.#records.prepare("UPDATE credential SET spent=1 WHERE id=1").run();
     return grant.refreshToken;
+  }
+
+  /** Preserve a newly returned, unspent refresh secret without installing admission authority. */
+  retainRotatedToken(refreshToken: string): void {
+    this.#assertOpen();
+    const row = this.#records
+      .prepare("SELECT grant_json FROM credential WHERE id=1")
+      .get();
+    if (typeof row?.grant_json !== "string") return;
+    const grant = grantSchema.parse(JSON.parse(row.grant_json));
+    if (grant.refreshToken === refreshToken)
+      throw new AuthError({ reason: "OAuthRecoveryRequired" });
+    grant.refreshToken = refreshToken;
+    grantSchema.parse(grant);
+    this.#records
+      .prepare("UPDATE credential SET grant_json=?, spent=0 WHERE id=1")
+      .run(JSON.stringify(grant));
   }
 
   /** Install a fully verified response atomically, preserving the principal on reauthorization. */
