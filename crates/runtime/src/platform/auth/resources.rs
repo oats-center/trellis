@@ -106,6 +106,7 @@ pub(crate) async fn materialize_native_kv(
     // Empty projections are valid only after inspecting the installed declaration set.
     let mut bindings = ServiceResourceBindings::default();
     let allocation_result: Result<(),AuthError> = async {
+    super::framework_storage::materialize_operations(store, operational, deployment, now).await?;
     for (name, allocation) in &plan.kv {
         let bucket = format!("TRELLIS_RESOURCE_{}_{}", allocation.resource_id, allocation.allocation_id);
         let marker = format!("trellis.resource.v1:{}:{}", allocation.resource_id, allocation.allocation_id);

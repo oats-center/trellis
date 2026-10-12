@@ -150,6 +150,7 @@ export class TrellisConnection {
   #listeners = new Set<TrellisConnectionStatusListener>();
   #availability: TrellisAvailability;
   #authorityAvailability?: () => TrellisAvailability;
+  #ownAuthority?: OwnAuthorityView;
   #unsubscribeAuthority?: () => void;
   #availabilityListeners = new Set<
     (availability: TrellisAvailability) => void
@@ -188,6 +189,24 @@ export class TrellisConnection {
     return this.#authorityAvailability?.() ?? this.#availability;
   }
 
+  /** Check advisory action membership projected by the live signed-authority owner. @internal */
+  allowsAction(
+    apiId: string,
+    kind: string,
+    name: string,
+    direction: string,
+  ): boolean {
+    return (
+      this.#ownAuthority?.current?.actions.some(
+        (allowed) =>
+          allowed.apiId === apiId &&
+          allowed.action.kind === kind &&
+          allowed.action.name === name &&
+          allowed.action.direction === direction,
+      ) ?? false
+    );
+  }
+
   /** Bind advisory optional availability to the same live verified owner used for signing. @internal */
   bindAuthorityAvailability(
     view: OwnAuthorityView,
@@ -197,6 +216,7 @@ export class TrellisConnection {
     ) => TrellisAvailability,
   ): void {
     this.#unsubscribeAuthority?.();
+    this.#ownAuthority = view;
     this.#authorityAvailability = () =>
       immutableAvailability(project(view.current, this.#availability));
     this.#unsubscribeAuthority = view.subscribe(() => {

@@ -122,6 +122,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "arc-swap"
+version = "1.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "argon2"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -293,6 +302,28 @@ dependencies = [
  "tower",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "axum-server"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1df331683d982a0b9492b38127151e6453639cd34926eb9c07d4cd8c6d22bfc"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "either",
+ "fs-err",
+ "http",
+ "http-body",
+ "hyper",
+ "hyper-util",
+ "pin-project-lite",
+ "rustls",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+ "tower-service",
 ]
 
 [[package]]
@@ -1165,6 +1196,16 @@ checksum = "e076045bb43dac435333ed5f04caf35c7463631d0dae2deb2638d94dd0a5b872"
 dependencies = [
  "lazy_static",
  "num",
+]
+
+[[package]]
+name = "fs-err"
+version = "3.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5c95b673b8f6f7235229ae11c5642d81b04c2e64c1e2fb417bc0cf73ca45f29"
+dependencies = [
+ "autocfg",
+ "tokio",
 ]
 
 [[package]]
@@ -2155,6 +2196,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
+name = "mime_guess"
+version = "2.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e"
+dependencies = [
+ "mime",
+ "unicase",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2350,6 +2401,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "oauth-as"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e3bf4c869f5d66f1a4254dd1bd2ddad2de1746bd0649186945fd17b391ee95e"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "bytes",
+ "getrandom 0.3.4",
+ "http",
+ "http-body",
+ "p256",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+]
+
+[[package]]
 name = "oauth2"
 version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2360,6 +2430,7 @@ dependencies = [
  "getrandom 0.2.17",
  "http",
  "rand 0.8.8",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "serde_path_to_error",
@@ -2982,6 +3053,44 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "reqwest"
+version = "0.12.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "futures-core",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "js-sys",
+ "log",
+ "percent-encoding",
+ "pin-project-lite",
+ "quinn",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sync_wrapper",
+ "tokio",
+ "tokio-rustls",
+ "tower",
+ "tower-http",
+ "tower-service",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "webpki-roots 1.0.9",
+]
+
+[[package]]
+name = "reqwest"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
@@ -3005,6 +3114,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
@@ -3072,6 +3182,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-trellis"
+version = "0.100.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "trellis-rs",
+]
+
+[[package]]
 name = "rusqlite"
 version = "0.40.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3084,6 +3204,41 @@ dependencies = [
  "libsqlite3-sys",
  "smallvec",
  "sqlite-wasm-rs",
+]
+
+[[package]]
+name = "rust-embed"
+version = "8.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19afa5b4b6a611de00bd1bdae6ae6f39084c9399f0679c3f52d8469cf335cc23"
+dependencies = [
+ "rust-embed-impl",
+ "rust-embed-utils",
+ "walkdir",
+]
+
+[[package]]
+name = "rust-embed-impl"
+version = "8.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0d8afda6374eac59e066abee06d265247ebbaf3006cf878e2879e8356e34053"
+dependencies = [
+ "mime_guess",
+ "proc-macro2",
+ "quote",
+ "rust-embed-utils",
+ "syn 2.0.119",
+ "walkdir",
+]
+
+[[package]]
+name = "rust-embed-utils"
+version = "8.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d84e8ba78bd384263e5922f084cbe1b081c3b7e69add59c8fb097b879ba968a"
+dependencies = [
+ "sha2 0.11.0",
+ "walkdir",
 ]
 
 [[package]]
@@ -4216,6 +4371,7 @@ dependencies = [
  "toml",
  "trellis-local-bootstrap",
  "trellis-runtime",
+ "ulid",
  "url",
 ]
 
@@ -4284,6 +4440,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "ulid",
 ]
 
 [[package]]
@@ -4318,6 +4475,7 @@ dependencies = [
  "thiserror 2.0.21",
  "time",
  "ulid",
+ "url",
 ]
 
 [[package]]
@@ -4332,11 +4490,13 @@ dependencies = [
  "hkdf 0.13.0",
  "hmac 0.13.0",
  "jsonschema",
+ "libc",
  "nkeys",
  "opentelemetry",
  "opentelemetry_sdk",
+ "p256",
  "rand 0.10.3",
- "reqwest",
+ "reqwest 0.13.5",
  "rustls",
  "rustls-platform-verifier",
  "ryu-js",
@@ -4363,6 +4523,7 @@ dependencies = [
  "async-trait",
  "axum",
  "axum-reverse-proxy",
+ "axum-server",
  "base64 0.22.1",
  "bytes",
  "clap",
@@ -4371,14 +4532,18 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "jsonschema",
+ "libc",
  "nats-jwt-rs",
  "nkeys",
+ "oauth-as",
  "oauth2",
  "openidconnect",
  "opentelemetry",
  "refinery",
- "reqwest",
+ "reqwest 0.13.5",
+ "ring",
  "rusqlite",
+ "rust-embed",
  "rustls",
  "serde",
  "serde_json",
@@ -4430,14 +4595,20 @@ dependencies = [
 name = "trellis-test-fixture-live"
 version = "0.100.0"
 dependencies = [
+ "async-nats",
  "futures-util",
- "reqwest",
+ "reqwest 0.13.5",
+ "runtime-trellis",
+ "serde",
  "serde_json",
  "tokio",
  "toml",
+ "trellis-idl",
  "trellis-rs",
+ "trellis-runtime-apis",
  "trellis-test-fixture",
  "trellis-testkit",
+ "ulid",
 ]
 
 [[package]]
@@ -4447,7 +4618,7 @@ dependencies = [
  "base64 0.22.1",
  "futures-util",
  "getrandom 0.3.4",
- "reqwest",
+ "reqwest 0.13.5",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -4457,6 +4628,7 @@ dependencies = [
  "tokio-util",
  "toml",
  "trellis-bootstrap",
+ "trellis-idl",
  "trellis-local-nats",
  "trellis-rs",
  "trellis-runtime",
@@ -4527,8 +4699,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "470dbf6591da1b39d43c14523b2b469c86879a53e8b758c8e090a470fe7b1fbe"
 dependencies = [
  "rand 0.9.5",
+ "serde",
  "web-time",
 ]
+
+[[package]]
+name = "unicase"
+version = "2.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "357cc3acc6a036009fd6c973ed009037c732d60d0b4f6c673e9041497482a28f"
 
 [[package]]
 name = "unicode-general-category"

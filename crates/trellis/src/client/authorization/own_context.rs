@@ -26,6 +26,8 @@ struct Candidate {
     instance: Arc<()>,
     authorization: Option<serde_json::Value>,
     resources: crate::service::ServiceResourceBindings,
+    actions: Vec<crate::generated::CatalogActionProjection>,
+    capabilities: Vec<trellis_protocol::CapabilityAuthority>,
 }
 
 /// Own-authority installation controller shared by all retained connection handles.
@@ -222,6 +224,56 @@ impl AuthorizationContextCache {
         } else {
             crate::service::ServiceResourceBindings::default()
         };
+        let mut actions = Vec::new();
+        let mut capabilities = Vec::new();
+        for reference in &authority.authority().apis {
+            let material = self
+                .owner
+                .material(
+                    transport,
+                    super::registry::MaterialKind::Catalog,
+                    &reference.catalog_snapshot_digest,
+                )
+                .await?;
+            let super::registry::RegistryMaterial::Catalog(catalog) = material.as_ref() else {
+                return Err(unavailable());
+            };
+            let issuer = self.owner.issuer(transport, &catalog.issuer_key_id).await?;
+            catalog.verify(
+                &issuer,
+                &authority.authority().trellis_instance_id,
+                &authority.authority().audience_nats_account,
+            )?;
+            if catalog.api_id != reference.api_id
+                || catalog.generation != reference.generation
+                || catalog.accepted_revision != reference.accepted_revision
+            {
+                return Err(unavailable());
+            }
+            for action in &catalog.actions {
+                if catalog.authorizes(authority.signed(), &action.identity) {
+                    actions.push(crate::generated::CatalogActionProjection {
+                        api_id: reference.api_id.clone(),
+                        action: action.identity.clone(),
+                    });
+                }
+            }
+            capabilities.extend(
+                authority
+                    .authority()
+                    .capabilities
+                    .iter()
+                    .filter(|selected| {
+                        catalog.capabilities.iter().any(|accepted| {
+                            accepted.capability_id == selected.capability_id
+                                && accepted.identity_generation == selected.identity_generation
+                                && accepted.consent_revision == selected.consent_revision
+                        })
+                    })
+                    .cloned(),
+            );
+        }
+        self.owner.assert_prepared_current(&authority)?;
         let _transition = self.lock_own_transition()?;
         let candidate = Candidate {
             transport: transport_policy,
@@ -230,6 +282,8 @@ impl AuthorizationContextCache {
             authority,
             authorization,
             resources,
+            actions,
+            capabilities,
         };
         let prepared = PreparedOwnCandidate {
             context_digest: candidate.authority.digest().to_owned(),
@@ -264,15 +318,37 @@ impl AuthorizationContextCache {
             authorization: candidate.authorization.clone(),
         });
         let resources = candidate.resources.clone();
+        let actions = candidate.actions.clone();
+        let capabilities = candidate.capabilities.clone();
+        let body = candidate.authority.authority();
+        let state_owner = matches!(
+            (body.principal_kind, &body.binding),
+            (
+                trellis_protocol::PrincipalKind::User,
+                trellis_protocol::SessionBinding::Browser { .. }
+                    | trellis_protocol::SessionBinding::Native { .. }
+            ) | (
+                trellis_protocol::PrincipalKind::Device,
+                trellis_protocol::SessionBinding::Device { .. }
+            )
+        )
+        .then(|| body.principal_id.clone());
         *slot = None;
         // Surface availability is projected separately from catalog authorization.
         // Every action still resolves against the owner's signed catalogs.
         let previous = self.availability.borrow().clone();
+        let next = crate::generated::AvailabilitySnapshot::replacing(
+            actions,
+            capabilities,
+            state_owner,
+            resources,
+            &previous,
+        );
         self.availability
-            .send_replace(crate::generated::AvailabilitySnapshot::replacing(
-                Vec::new(),
-                resources,
-                &previous,
+            .send_replace(crate::generated::AvailabilitySnapshot::with_usability(
+                &next,
+                self.transport_ready
+                    .load(std::sync::atomic::Ordering::Acquire),
             ));
         Ok(())
     }
@@ -480,17 +556,10 @@ impl AuthorizationContextCache {
     pub(crate) fn set_transport_ready(&self, ready: bool) {
         self.transport_ready
             .store(ready, std::sync::atomic::Ordering::Release);
-        let previous = self.availability.borrow().clone();
-        let next = if ready && self.retained_context_digest().is_ok() {
-            crate::generated::AvailabilitySnapshot::replacing(
-                Vec::new(),
-                Default::default(),
-                &previous,
-            )
-        } else {
-            crate::generated::AvailabilitySnapshot::suspended(&previous)
-        };
-        self.availability.send_replace(next);
+        let usable = ready && self.retained_context_digest().is_ok();
+        self.availability.send_modify(|installed| {
+            *installed = crate::generated::AvailabilitySnapshot::with_usability(installed, usable);
+        });
     }
     pub(crate) fn request_coverage_reconciliation(&self) {
         self.request_refresh();

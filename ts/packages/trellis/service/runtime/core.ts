@@ -912,9 +912,8 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             logicalStore.name,
             logicalStore.representation,
             {
+              // Bind the producer-owned store without SDK creation defaults.
               bindOnly: true,
-              ttl: 30 * 24 * 60 * 60 * 1_000,
-              maxValueBytes: 1024 * 1024,
             },
           ).orThrow();
           controller.signal.throwIfAborted();
@@ -1703,7 +1702,11 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       this.#operationUpdateSequences.set(key, sequence);
       const metadata = headers();
       const occurredAt = new Date().toISOString();
-      const subject = `${ctx.subject}.updates.${runtime.id}`;
+      const boundSubject = operationControlSubject(
+        ctx,
+        this.#operationDeploymentId ?? "",
+      ).slice(0, -".control".length);
+      const subject = `${boundSubject}.updates.${runtime.id}`;
       const payload = JSON.stringify({
         operationId: runtime.id,
         apiId: runtime.apiId,
@@ -2364,7 +2367,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         "operation controls require their authenticated deployment",
       );
     const controlSubject = operationControlSubject(
-      ctx.subject,
+      ctx,
       this.#operationDeploymentId,
     );
     if (this.#mountedOperationControls.has(controlSubject)) {
@@ -2604,7 +2607,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             try {
               await liveProvider.offer(
                 msg,
-                ctx.subject,
+                controlSubject.slice(0, -".control".length),
                 opening.observation,
                 {
                   connectionId: value.caller.runtimeId,
@@ -2851,11 +2854,15 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           }),
         manager: this.connection.live,
       });
-      observeSub = target.nc.subscribe(provider.wildcardSubject(ctx.subject));
+      const boundSubject = operationControlSubject(
+        ctx,
+        own.binding.deploymentId,
+      ).slice(0, -".control".length);
+      observeSub = target.nc.subscribe(provider.wildcardSubject(boundSubject));
       // Register at readiness so this generation owns the route's retained
       // receipts even before it has served a session; dispose() unregisters
       // transactionally on a failed install.
-      provider.registerRoute(ctx.subject);
+      provider.registerRoute(boundSubject);
     } catch (cause) {
       // Roll back a partial provider so a failed candidate leaves no retained
       // authority, wildcard control subscription, or manager registration
@@ -2954,7 +2961,9 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       // published there after a newer generation takes over are still observed.
       const watchNats = this.#operationNats(operationId);
       updateSub = includeUpdates
-        ? watchNats.subscribe(`${ctx.subject}.updates.${operationId}`)
+        ? watchNats.subscribe(
+            `${operationControlSubject(ctx, this.#operationDeploymentId ?? "").slice(0, -".control".length)}.updates.${operationId}`,
+          )
         : undefined;
       const watchIterator = (
         await (await this.operationStoreHandle()).watch(operationId).orThrow()
@@ -3957,7 +3966,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               if (expectedEpoch !== undefined) {
                 throw new Error("reconciliation reached a non-owner executor");
               }
-              const subject = `${ctx.subject}.reconcile.${base64urlEncode(
+              const subject = `${operationControlSubject(ctx, this.#operationDeploymentId ?? "").slice(0, -".control".length)}.reconcile.${base64urlEncode(
                 utf8(runtime.ownerConnectionId),
               )}`;
               // Hold one generation lease through the whole reconcile exchange:
@@ -4047,7 +4056,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           done: Promise<void>;
           dispose: () => Promise<void>;
         }> => {
-          const reconcileSubject = `${ctx.subject}.reconcile.${base64urlEncode(
+          const reconcileSubject = `${operationControlSubject(ctx, this.#operationDeploymentId ?? "").slice(0, -".control".length)}.reconcile.${base64urlEncode(
             utf8(this.#operationConnectionId),
           )}`;
           const startSub = target.nc.subscribe(startSubject, {

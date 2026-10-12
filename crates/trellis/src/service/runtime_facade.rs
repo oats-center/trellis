@@ -1440,12 +1440,9 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
             })
             .await?;
         let binding = parse_bootstrap_binding(&client)?;
-        let api_id = C::IMPLEMENTED_API_IDS.first().copied().ok_or_else(|| {
-            TrellisClientError::Bootstrap(format!(
-                "generated service participant `{}` implements no API",
-                C::ID
-            ))
-        })?;
+        // Resource-only services have no default inbound API. Explicit generated
+        // routes still supply their real API identity to the shared verifier.
+        let api_id = C::IMPLEMENTED_API_IDS.first().copied().unwrap_or_default();
         let mut runtime = Self::from_parts(
             options.name.unwrap_or(C::ID),
             Arc::new(client),

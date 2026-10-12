@@ -51,6 +51,9 @@ type DescriptorName<T> = T extends `${string}:${infer TName}` ? TName : never;
 
 type OperationDescriptorFor<TAction> = {
   subject: string;
+  permissions: {
+    invoke: { apiId: string; apiVersion: `v${number}` };
+  };
   input: TAction extends { input: infer TInput } ? TInput : undefined;
   output: TAction extends { output: infer TOutput } ? TOutput : undefined;
   progress: TAction extends { progress: infer TProgress }
@@ -251,9 +254,13 @@ export function selectedActionAvailabilityError(
   connection: TrellisConnection,
   action: RuntimeSelectedAction,
 ): TransportError | undefined {
-  const current = connection.availability().capabilities;
   return action.optionalCapabilities.length > 0 &&
-    !action.optionalCapabilities.some((capability) => current[capability])
+    !connection.allowsAction(
+      action.api.identity,
+      action.descriptor.kind,
+      action.descriptor.descriptorName.slice(action.descriptor.kind.length + 1),
+      action.direction,
+    )
     ? createActionUnavailableError(action.name, action.optionalCapabilities)
     : undefined;
 }

@@ -3173,9 +3173,7 @@ export function connectTrellisServiceWithRuntimeDeps<
           },
           availability: participantAvailability(
             args.participant,
-            {},
             authorization.resourceRuntime,
-            [],
           ),
           healthIdentity: {
             instanceId: binding.instanceId,

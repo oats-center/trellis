@@ -11,6 +11,15 @@ lifecycle—including get/watch/wait, cancel, and declared signals—subject to
 capability approval and exact derived authority. There is no action
 sub-selection.
 
+Native provider provisioning creates the durable deployment-scoped framework KV
+repository and staging object store through the platform's operational owner.
+Startup verifies their physical ownership before committing framework binding
+evidence. These stores are not participant-declared KV allocations or generated
+resource handles. Ordinary provider connection opens them only when the installed
+participant implements Operations. Broker storage rights are limited to the exact
+committed stores of a current, accepted provider binding; caller capabilities do
+not grant raw access to the workflow repository or staging store.
+
 Acceptance persists one deployment-scoped record before reply. The caller
 creates a stable invocation ULID. A digest binds Operation identity, canonical
 typed input, and initiating principal/participant. Repeating the same ID/digest

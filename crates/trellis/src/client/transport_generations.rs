@@ -1020,9 +1020,14 @@ impl ManagerInner {
         }
         let next_id = next.map(|generation| generation.id);
         state.current = next.cloned();
-        self.contexts.set_transport_ready(next.is_some());
         let previous = *self.published.borrow();
         if previous != next_id {
+            // Publication makes this admitted carrier available to private
+            // maintenance, not to application work. The single owner mirror
+            // restores usability only after its authenticated snapshot on this
+            // exact generation; an old epoch cannot authorize the replacement.
+            self.contexts.owner.fence_revocation_coverage();
+            self.contexts.set_transport_ready(false);
             self.published.send_replace(next_id);
         }
     }
@@ -1230,6 +1235,7 @@ impl ManagerInner {
             {
                 built = state.current.clone();
                 lost_current = true;
+                self.contexts.owner.fence_revocation_coverage();
                 self.contexts.set_transport_ready(false);
             } else if let Some(generation) =
                 state.draining.iter().find(|generation| generation.id == id)
@@ -2123,6 +2129,43 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
         }
         let desired = match inner.contexts.own_transport_snapshot() {
             Ok(snapshot) => snapshot,
+            Err(TrellisClientError::Protocol(trellis_protocol::ProtocolError::Authorization {
+                code: trellis_protocol::AuthorizationErrorCode::SessionRevoked,
+                ..
+            })) => {
+                // A session cutoff forbids renewing that opening, but it does
+                // not revoke the native credential. Fence the old attachments
+                // and use ordinary fresh admission to learn the current root.
+                // Never pass the retired context as an expected attachment.
+                let retired = {
+                    let _transition = inner.contexts.lock_own_transition()?;
+                    let mut state = inner.lock_state()?;
+                    let mut retired = std::mem::take(&mut state.draining);
+                    if let Some(current) = state.current.clone() {
+                        retired.push(current);
+                    }
+                    inner.set_current(&mut state, None);
+                    retired
+                };
+                for generation in retired {
+                    close_generation(&generation, GenerationIntakeRetireReason::AuthorityReduced);
+                }
+                let id = inner.alloc_id();
+                let recovered =
+                    match open_generation(inner, id, None, "own_session_replacement").await {
+                        Ok(generation) => generation,
+                        Err(error) => {
+                            inner.clear_opening(id);
+                            return Err(error);
+                        }
+                    };
+                // This private carrier only prepares verified own authority.
+                // The normal path below owns intake readiness, generation
+                // publication, and the new mirror's application-usability gate.
+                inner.clear_opening(id);
+                close_generation(&recovered, GenerationIntakeRetireReason::Superseded);
+                continue;
+            }
             Err(_) => return Ok(()),
         };
         let desired_policy_digest = desired.policy.digest()?;
@@ -2187,16 +2230,16 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
             .is_some_and(|candidate| !candidate.intake_active())
         {
             let candidate = chosen.clone().expect("restore candidate is chosen");
-            // Coverage restoration wakes this worker independently of a context
-            // promotion. Do not repeatedly prepare and retire intake while that
-            // restoration is still pending; the guarded publication check below
-            // remains the final authority fence after preparation.
+            // Maintenance uses the current signed installation and all known
+            // cutoffs, without requiring the mirror this carrier will restore.
+            // Application acquisition remains fenced until that snapshot is ready.
             {
                 let transition = inner.contexts.lock_own_transition()?;
-                if !matches!(
-                    inner.contexts.application_transport_locked(&transition),
-                    Ok(Some(_))
-                ) {
+                if inner
+                    .contexts
+                    .maintenance_transport_locked(&transition)
+                    .is_err()
+                {
                     return Ok(());
                 }
             }
@@ -2244,8 +2287,7 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
         {
             let transition = inner.contexts.lock_own_transition()?;
             let mut state = inner.lock_state()?;
-            let Ok(Some((policy, now))) = inner.contexts.application_transport_locked(&transition)
-            else {
+            let Ok((policy, now)) = inner.contexts.maintenance_transport_locked(&transition) else {
                 drop(state);
                 if let Some(candidate) = &chosen {
                     for handle in promoted_intake.drain(..) {
@@ -2431,8 +2473,7 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
             // step. Do not validate a CONNECT credential for an admitted socket.
             let transition = inner.contexts.lock_own_transition()?;
             let mut state = inner.lock_state()?;
-            let Ok(Some((policy, now))) = inner.contexts.application_transport_locked(&transition)
-            else {
+            let Ok((policy, now)) = inner.contexts.maintenance_transport_locked(&transition) else {
                 drop(state);
                 inner.clear_opening(id);
                 inner.track_draining(&candidate, GenerationIntakeRetireReason::Superseded);

@@ -99,8 +99,7 @@ export type GeneratedParticipant = Readonly<{
   requiredGrants?: readonly GeneratedPermissionAtom[];
   /** Native capability IDs or OAuth consent-bearing capability selections. */
   requiredCapabilities: readonly (
-    | string
-    | Readonly<{ id: string; consentDigest: string }>
+    string | Readonly<{ id: string; consentDigest: string }>
   )[];
   actionNames: Readonly<Record<string, string>>;
   resources: Readonly<Record<string, GeneratedResourceDescriptor>>;
@@ -560,87 +559,35 @@ export function getCallerRuntime(
   };
 }
 
-/** Compares one signed grant permission with one authored grant atom. */
-export function sameGrantAtom(
-  permission: Readonly<{
-    action?: string;
-    target: Readonly<Record<string, unknown>>;
-  }>,
-  atom: Readonly<{
-    action?: string;
-    target: Readonly<Record<string, unknown>>;
-  }>,
-): boolean {
-  if (permission.action !== atom.action) return false;
-  const permissionTarget = permission.target as Record<string, unknown>;
-  const atomTarget = atom.target as Record<string, unknown>;
-  const fields = new Set([
-    ...Object.keys(permissionTarget),
-    ...Object.keys(atomTarget),
-  ]);
-  for (const field of fields) {
-    if (permissionTarget[field] !== atomTarget[field]) return false;
-  }
-  return true;
-}
-
-/** Projects installed API and resource bindings into one immutable participant snapshot. */
+/** Projects authenticated native resource bindings; caller action availability is supplied by the live authority view. */
 export function participantAvailability(
   participant: GeneratedParticipant,
-  apiBindings: Readonly<Record<string, unknown>>,
   resourceBindings: Readonly<{
     kv?: Readonly<Record<string, unknown>>;
     store?: Readonly<Record<string, unknown>>;
     jobs?: Readonly<{ queues: Readonly<Record<string, unknown>> }>;
     eventConsumers?: Readonly<Record<string, unknown>>;
   }>,
-  permissions: readonly Readonly<{
-    action?: string;
-    target: Readonly<Record<string, unknown>>;
-  }>[],
 ): TrellisAvailability {
   const capabilities: Record<string, boolean> = {};
   for (const selection of participant.uses) {
-    // A capability is available when its route is bound and the current signed
-    // application grant actually contains its exact bundle. Provider-binding
-    // presence alone answers a different question, and admitted transport
-    // authority is deliberately not consulted here: a granted capability that
-    // the current attachment has not adopted is still available at the
-    // application level; using it waits for automatic transport adoption.
-    const routeBound = selection.api.identity in apiBindings;
     for (const capability of selection.optionalCapabilities) {
-      const bundle = participant.optionalGrants?.[capability];
-      capabilities[capability] =
-        routeBound &&
-        (bundle?.every((atom) =>
-          permissions.some((permission) => sameGrantAtom(permission, atom)),
-        ) ?? false);
+      capabilities[capability] = false;
     }
   }
 
   const resources: Record<string, boolean> = {};
-  const granted = (name: string, kind: string) =>
-    permissions.some(
-      (permission) =>
-        permission.target.kind === "participantResource" &&
-        permission.target.participant === participant.identity &&
-        permission.target.resource === kind &&
-        permission.target.name === name,
-    );
   for (const [name, descriptor] of Object.entries(participant.resources)) {
     if (descriptor.availability !== "optional") continue;
     switch (descriptor.kind) {
       case "state":
-        resources[name] = granted(name, "state");
+        resources[name] = participant.kind === "device";
         break;
       case "kv":
-        resources[name] =
-          resourceBindings.kv?.[name] !== undefined && granted(name, "kv");
+        resources[name] = resourceBindings.kv?.[name] !== undefined;
         break;
       case "store":
-        resources[name] =
-          resourceBindings.store?.[name] !== undefined &&
-          granted(name, "store");
+        resources[name] = resourceBindings.store?.[name] !== undefined;
         break;
       case "job":
         resources[name] = resourceBindings.jobs?.queues[name] !== undefined;

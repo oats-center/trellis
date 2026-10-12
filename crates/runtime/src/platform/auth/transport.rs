@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use trellis_idl::{compile_evidence, ActionDefinition, PackageEvidence};
 use trellis_protocol::{
     ApiSurfaceKind, PermissionAction, SessionBinding, TransportAuthorizationV1,
@@ -36,8 +36,11 @@ impl SqliteAuthorizationStore {
             subscribe.insert(format!("$KV.{bucket}.>"));
         }
         let own = &authority.authorization_session_id;
-        let own_token = trellis_protocol::encode_subject_token(own);
+        // Live data routes carry the authenticated logical runtime ID. The
+        // authorization-session ID is for cutoffs, not a transport subject.
+        let own_token = trellis_protocol::encode_subject_token(&authority.runtime_id);
         let mut responds = false;
+        let mut operation_providers = BTreeSet::new();
         for reference in &authority.apis {
             let (generation,revision,evidence):(u64,u64,String)=connection.query_row(
                 "SELECT generation,accepted_revision,definition_json FROM auth_accepted_apis WHERE api_id=?1",
@@ -113,6 +116,15 @@ impl SqliteAuthorizationStore {
                         );
                     }
                     (ApiSurfaceKind::Operation, direction) => {
+                        if can_provide {
+                            operation_providers.extend(
+                                authority
+                                    .provider_bindings
+                                    .iter()
+                                    .filter(|binding| binding.api_id == reference.api_id)
+                                    .map(|binding| binding.deployment_id.clone()),
+                            );
+                        }
                         let subject = subjects
                             .operations
                             .get(&identity.name)
@@ -163,12 +175,16 @@ impl SqliteAuthorizationStore {
                                 })
                             {
                                 subscribe.insert(format!("{base}.control"));
-                                subscribe.insert(
-                                    trellis_protocol::derive_live_observe_wildcard_subject(
-                                        &base, own,
-                                    )?,
-                                );
+                                // The implementation owns this deployment's
+                                // route; observers carry their own session ID,
+                                // not the provider's. Each request still passes
+                                // native caller authorization at dispatch.
+                                subscribe.insert(format!("{base}.observe.*.*"));
                                 publish.insert(format!("{base}.updates.*"));
+                                // Private owner reconciliation is restricted to
+                                // this accepted deployment implementation.
+                                publish.insert(format!("{base}.reconcile.*"));
+                                subscribe.insert(format!("{base}.reconcile.{own_token}"));
                                 responds = true;
                             }
                         }
@@ -275,6 +291,35 @@ impl SqliteAuthorizationStore {
                 .ok_or(AuthError::Denied)?;
             let resources: trellis_rs::service::ServiceResourceBindings =
                 serde_json::from_value(bootstrap["resourceRuntime"].clone())?;
+            for deployment in &operation_providers {
+                let (owner, instance, participant) = match &authority.binding {
+                    SessionBinding::Service {
+                        deployment_id,
+                        instance_id,
+                        participant_id,
+                    }
+                    | SessionBinding::Device {
+                        deployment_id,
+                        instance_id,
+                        participant_id,
+                    } => (deployment_id, instance_id, participant_id),
+                    _ => return Err(AuthError::Denied),
+                };
+                if owner != deployment {
+                    return Err(AuthError::Denied);
+                }
+                let evidence: Option<String> = connection.query_row("SELECT e.actual_json FROM auth_resource_binding_evidence e JOIN auth_instances i ON i.deployment_id=e.owner_id AND i.installed_revision=e.installed_revision WHERE e.owner_kind='deployment' AND e.owner_id=?1 AND e.participant_id=?2 AND e.resource_kind='framework_operation' AND e.local_name='operations' AND e.state='available' AND i.instance_id=?3 AND i.state='active'",params![deployment,participant,instance], |row|row.get(0)).optional()?;
+                let storage: super::framework_storage::OperationStorage =
+                    decode(&evidence.ok_or(AuthError::Unavailable)?)?;
+                for (bucket, stream_prefix, subject_prefix) in [
+                    (&storage.repository, "KV", "$KV"),
+                    (&storage.staging, "OBJ", "$O"),
+                ] {
+                    stream_access(&mut publish, &format!("{stream_prefix}_{bucket}"), true)?;
+                    publish.insert(format!("{subject_prefix}.{bucket}.>"));
+                    subscribe.insert(format!("{subject_prefix}.{bucket}.>"));
+                }
+            }
             for resource in resources.kv.values() {
                 stream_access(&mut publish, &format!("KV_{}", resource.bucket), true)?;
                 publish.insert(format!("$KV.{}.>", resource.bucket));

@@ -452,6 +452,9 @@ type OperationControlErrorFrame = {
 
 type OperationShape = {
   subject: string;
+  permissions: {
+    invoke: { apiId: string; apiVersion: `v${number}` };
+  };
   input: unknown;
   progress?: unknown;
   update?: unknown;
@@ -550,23 +553,29 @@ function encodeOperationInput(schema: unknown, value: unknown): JsonValue {
 }
 
 /** Route established controls to their durable deployment using the existing owner subject family. */
-export function controlSubject(subject: string, deploymentId: string): string {
-  const parts = subject.split(".");
+export function controlSubject(
+  descriptor: Pick<OperationShape, "subject" | "permissions">,
+  deploymentId: string,
+): string {
+  const parts = descriptor.subject.split(".");
+  const { apiId, apiVersion } = descriptor.permissions.invoke;
   if (
-    parts[0] !== "operation" ||
+    parts[0] !== "operations" ||
     parts[1] !== "v1" ||
     parts.length < 4 ||
+    !apiId ||
+    !apiVersion ||
     !deploymentId
   ) {
     throw new Error("invalid operation owner route");
   }
-  const token = btoa(
-    String.fromCharCode(...new TextEncoder().encode(deploymentId)),
-  )
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replace(/=+$/u, "");
-  return [...parts.slice(0, 3), token, ...parts.slice(3), "control"].join(".");
+  const tokens = [`${apiId}@${apiVersion}`, deploymentId].map((value) =>
+    btoa(String.fromCharCode(...new TextEncoder().encode(value)))
+      .replaceAll("+", "-")
+      .replaceAll("/", "_")
+      .replace(/=+$/u, ""),
+  );
+  return ["operation", "v1", ...tokens, ...parts.slice(3), "control"].join(".");
 }
 
 function isTerminalState(state: OperationState): boolean {
@@ -1087,7 +1096,7 @@ class RuntimeOperationRef<
 
         const responseValue = await settleRequest(() =>
           this.#transport.requestJson(
-            controlSubject(this.#descriptor.subject, this.deploymentId),
+            controlSubject(this.#descriptor, this.deploymentId),
             body,
             this.deploymentId,
           ),
@@ -1143,7 +1152,7 @@ class RuntimeOperationRef<
         const decodeEvent = this.#decodeEvent.bind(this);
         const subscription = await this.#transport
           .watchJson(
-            controlSubject(this.#descriptor.subject, this.deploymentId),
+            controlSubject(this.#descriptor, this.deploymentId),
             {
               action: "watch",
               operationId: this.id,
@@ -1201,7 +1210,7 @@ class RuntimeOperationRef<
       (async () => {
         const responseValue = await settleRequest(() =>
           this.#transport.requestJson(
-            controlSubject(this.#descriptor.subject, this.deploymentId),
+            controlSubject(this.#descriptor, this.deploymentId),
             {
               action,
               operationId: this.id,

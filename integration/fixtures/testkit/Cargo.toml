@@ -12,8 +12,14 @@ trellis-rs = "0.100.0"
 trellis-test-fixture = { path = "crates/trellis-test-fixture" }
 
 [dev-dependencies]
+async-nats = "0.50"
+runtime-trellis = { path = "../runtime/crates/runtime-trellis" }
+trellis-runtime-apis = "0.100.0"
+trellis-idl = "0.100.0"
+serde = "1"
+ulid = "1"
 serde_json = "1"
 toml = "1.1.2"
 trellis-testkit = "0.100.0"
-reqwest = { version = "0.13.2", default-features = false, features = ["rustls"] }
+reqwest = { version = "0.13.2", default-features = false, features = ["rustls", "json", "form"] }
 tokio = { version = "1", features = ["macros", "net", "process", "rt-multi-thread", "sync", "time"] }

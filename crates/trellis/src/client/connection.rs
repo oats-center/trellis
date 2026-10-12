@@ -792,70 +792,143 @@ struct AuthorizationProviderHandle {
 /// Attach the connected NATS authorization registry to this client's provider
 /// cache and wait for its complete snapshot before returning.
 async fn attach_authorization_provider(
-    nats: async_nats::Client,
     authorization_contexts: Arc<AuthorizationContextCache>,
-    generations: Option<crate::client::TransportGenerationManager>,
+    generations: crate::client::TransportGenerationManager,
 ) -> Result<AuthorizationProviderHandle, TrellisClientError> {
     let provider = authorization_contexts.owner.clone();
     let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(());
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let watcher = provider.clone();
     let task = tokio::spawn(async move {
-        let mut publications = generations
-            .as_ref()
-            .map(|manager| manager.subscribe_publication());
+        let mut publications = generations.subscribe_publication();
+        let mut own_changes = watcher.subscribe_changes();
         let mut initial_ready = Some(ready_tx);
+        let mut retry_ms = 100u64;
         loop {
-            let lease = match generations
-                .as_ref()
-                .map(|manager| manager.acquire_published())
-                .transpose()
-            {
-                Ok(lease) => lease,
-                Err(error) => {
-                    tracing::warn!(%error, "authorization retirement attachment unavailable");
-                    authorization_contexts.suspend();
-                    return;
-                }
-            };
-            let transport = lease.as_ref().map_or(&nats, |lease| lease.nats());
-            if let Some(publications) = &mut publications {
-                publications.borrow_and_update();
+            if generations.terminal().is_some() {
+                return;
             }
-            let (_shutdown, shutdown) = tokio::sync::watch::channel(false);
-            let (snapshot_ready, snapshot) = tokio::sync::oneshot::channel();
-            let mirror = watcher.run_revocations(transport, shutdown, snapshot_ready);
-            tokio::pin!(mirror);
-            let changed = async {
-                match &mut publications {
-                    Some(publications) => {
-                        let _ = publications.changed().await;
+            // A known cutoff retires a session, not the logical client. Keep
+            // denial sticky, but wait for an independently verified replacement
+            // instead of reopening consumers for the same retired context.
+            while matches!(
+                watcher.staged_own_authority(),
+                Err(TrellisClientError::Protocol(
+                    trellis_protocol::ProtocolError::Authorization {
+                        code: trellis_protocol::AuthorizationErrorCode::SessionRevoked,
+                        ..
                     }
-                    None => std::future::pending::<()>().await,
-                }
-            };
-            tokio::pin!(changed);
-            tokio::select! {
-                _ = stop_rx.changed() => return,
-                _ = &mut changed => continue,
-                ready = snapshot => {
-                    if ready.is_err() { authorization_contexts.suspend(); return; }
-                    if let Some(ready) = initial_ready.take() { let _ = ready.send(()); }
-                }
-                result = &mut mirror => {
-                    if let Err(error) = result { tracing::warn!(%error, "authorization retirement mirror stopped"); }
-                    authorization_contexts.suspend();
-                    return;
+                ))
+            ) {
+                authorization_contexts.set_transport_ready(false);
+                tokio::select! {
+                    biased;
+                    _ = stop_rx.changed() => return,
+                    _ = generations.wait_terminal() => return,
+                    changed = own_changes.recv() => {
+                        if matches!(changed, Err(tokio::sync::broadcast::error::RecvError::Closed)) {
+                            return;
+                        }
+                    }
+                    _ = publications.changed() => {},
                 }
             }
-            tokio::select! {
-                _ = stop_rx.changed() => return,
-                _ = &mut changed => {},
-                result = &mut mirror => {
-                    if let Err(error) = result { tracing::warn!(%error, "authorization retirement mirror stopped"); }
-                    authorization_contexts.suspend();
-                    return;
+            // Consume publication changes before acquiring, never after it: a
+            // change during acquisition must still cancel the old mirror.
+            publications.borrow_and_update();
+            let result = async {
+                let lease = match generations.acquire_published() {
+                    Ok(lease) => lease,
+                    Err(error) => {
+                        // The manager alone opens physical replacements. Pace
+                        // its demand-driven recovery with this supervisor's retry
+                        // rather than abandoning a temporarily absent carrier.
+                        generations.authorization_promoted();
+                        return Err(error);
+                    }
+                };
+                let (_shutdown, shutdown) = tokio::sync::watch::channel(false);
+                let (snapshot_ready, snapshot) = tokio::sync::oneshot::channel();
+                let mirror = watcher.run_revocations(lease.nats(), shutdown, snapshot_ready);
+                tokio::pin!(mirror);
+                tokio::select! {
+                    biased;
+                    _ = stop_rx.changed() => return Ok(false),
+                    _ = generations.wait_terminal() => return Ok(false),
+                    _ = publications.changed() => return Ok(true),
+                    result = &mut mirror => {
+                        result?;
+                        return Err(TrellisClientError::AuthorizationUnavailable("authorization retirement mirror ended".into()));
+                    }
+                    ready = snapshot => {
+                        ready.map_err(|error| TrellisClientError::AuthorizationUnavailable(error.to_string()))?;
+                    }
                 }
+                // A complete snapshot does not authorize a retired own session.
+                // Pin the exact carrier and installation through the final swap.
+                let resumed = {
+                    let transition = authorization_contexts.lock_own_transition()?;
+                    generations.commit_published_if_current(
+                        &transition,
+                        lease.generation_id(),
+                        || {
+                            if watcher.own_authority().is_err() {
+                                return false;
+                            }
+                            authorization_contexts.set_transport_ready(true);
+                            true
+                        },
+                    )?
+                };
+                if !resumed {
+                    watcher.own_authority()?;
+                    return Err(TrellisClientError::AuthorizationUnavailable("own authority is unavailable after retirement snapshot".into()));
+                }
+                retry_ms = 100;
+                if let Some(ready) = initial_ready.take() {
+                    let _ = ready.send(());
+                }
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = stop_rx.changed() => return Ok(false),
+                        _ = generations.wait_terminal() => return Ok(false),
+                        _ = publications.changed() => return Ok(true),
+                        result = &mut mirror => {
+                            result?;
+                            return Err(TrellisClientError::AuthorizationUnavailable("authorization retirement mirror ended".into()));
+                        }
+                        changed = own_changes.recv() => {
+                            if matches!(changed, Err(tokio::sync::broadcast::error::RecvError::Closed)) {
+                                return Ok(false);
+                            }
+                            if watcher.own_authority().is_err() {
+                                authorization_contexts.suspend();
+                                authorization_contexts.request_coverage_reconciliation();
+                            }
+                        }
+                    }
+                }
+            }.await;
+            // Dropping the epoch above fences verification before retrying. The
+            // owner keeps every authenticated cutoff across these replacements.
+            authorization_contexts.set_transport_ready(false);
+            match result {
+                Ok(false) => return,
+                Ok(true) => continue,
+                Err(error) => {
+                    tracing::warn!(%error, "authorization retirement mirror unavailable; retrying");
+                }
+            }
+            let delay =
+                Duration::from_millis(retry_ms + rand::random::<u64>() % (retry_ms / 2 + 1));
+            retry_ms = (retry_ms * 2).min(5_000);
+            tokio::select! {
+                biased;
+                _ = stop_rx.changed() => return,
+                _ = generations.wait_terminal() => return,
+                _ = publications.changed() => {},
+                _ = tokio::time::sleep(delay) => {},
             }
         }
     });
@@ -951,6 +1024,9 @@ pub struct TrellisClient {
     generations: crate::client::TransportGenerationManager,
     authorization_context_refresh_task: Option<JoinHandle<()>>,
     oauth_admission_refresh_task: Option<JoinHandle<()>>,
+    oauth_admission_refresh_requests: Option<
+        tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<Result<(), TrellisClientError>>>,
+    >,
     companion: Option<Arc<TrellisClient>>,
     /// Process-local connection state registration for telemetry gauges.
     connection: std::sync::Arc<crate::telemetry::lifecycle::ConnectionRegistration>,
@@ -1368,15 +1444,29 @@ impl TrellisClient {
         .await?;
         let generations = connected.generations.clone();
         let nats = connected.nats.clone();
+        let (renew_tx, mut renew_rx) = tokio::sync::mpsc::channel::<
+            tokio::sync::oneshot::Sender<Result<(), TrellisClientError>>,
+        >(1);
+        connected.oauth_admission_refresh_requests = Some(renew_tx);
         connected.oauth_admission_refresh_task = Some(tokio::spawn(async move {
-            let result: Result<(), TrellisClientError> = async {
-                loop {
-                    let remaining = session
-                        .admission
-                        .credential
-                        .expires_at
-                        .saturating_sub(now_iat_seconds() as i64);
-                    tokio::time::sleep(Duration::from_secs((remaining / 2).max(1) as u64)).await;
+            loop {
+                let remaining = session
+                    .admission
+                    .credential
+                    .expires_at
+                    .saturating_sub(now_iat_seconds() as i64);
+                let request = tokio::select! {
+                    biased;
+                    _ = generations.wait_terminal() => return,
+                    request = renew_rx.recv() => match request {
+                        Some(request) => Some(request),
+                        None => return,
+                    },
+                    _ = tokio::time::sleep(Duration::from_secs((remaining / 2).max(1) as u64)) => None,
+                };
+                // Manual and timed renewals share this one custody owner;
+                // never retry a potentially spent refresh token elsewhere.
+                let result: Result<(), TrellisClientError> = async {
                     let trust = authorization_contexts.owner.current_trust()?;
                     session.refresh(trust).await.map_err(|_| {
                         TrellisClientError::AuthorizationUnavailable(
@@ -1387,12 +1477,19 @@ impl TrellisClient {
                         .replace_oauth_admission(&nats, &session.auth, session.admission.clone())
                         .await?;
                     authorization_contexts.request_refresh();
+                    generations.authorization_promoted();
+                    Ok(())
                 }
-            }
-            .await;
-            if result.is_err() {
-                generations.close();
-                tracing::warn!("native OAuth credential renewal requires recovery");
+                .await;
+                let failed = result.is_err();
+                if let Some(request) = request {
+                    let _ = request.send(result);
+                }
+                if failed {
+                    generations.close();
+                    tracing::warn!("native OAuth credential renewal requires recovery");
+                    return;
+                }
             }
         }));
         Ok(connected)
@@ -1444,12 +1541,9 @@ impl TrellisClient {
         if let Ok(mut slot) = live_slot.lock() {
             *slot = Some(std::sync::Arc::downgrade(&live));
         }
-        let provider = attach_authorization_provider(
-            nats.clone(),
-            authorization_contexts.clone(),
-            Some(generations.clone()),
-        )
-        .await?;
+        let provider =
+            attach_authorization_provider(authorization_contexts.clone(), generations.clone())
+                .await?;
         let applied_native_authorization =
             Arc::new(tokio::sync::Mutex::new(applied_native_authorization));
         let authorization_context_refresh_task = Some(
@@ -1479,6 +1573,7 @@ impl TrellisClient {
             generations,
             authorization_context_refresh_task,
             oauth_admission_refresh_task: None,
+            oauth_admission_refresh_requests: None,
             companion: None,
             live: Some(live),
         })
@@ -1514,6 +1609,8 @@ impl TrellisClient {
     }
 
     /// Refresh and verify the current authorization context immediately.
+    /// Native OAuth connections first renew admission through their single
+    /// credential-custody worker and wait for authenticated transport coverage.
     pub async fn refresh_authorization_context(
         &self,
     ) -> Result<AuthorizationContextBundle, TrellisClientError> {
@@ -1539,6 +1636,38 @@ impl TrellisClient {
         let contexts = self.authorization_contexts.as_ref().ok_or_else(|| {
             TrellisClientError::Bootstrap("authorization context unavailable".into())
         })?;
+        if let Some(renew) = &self.oauth_admission_refresh_requests {
+            let mut publication = self.generations.subscribe_publication();
+            let mut changes = contexts.owner.subscribe_changes();
+            let (complete, completed) = tokio::sync::oneshot::channel();
+            renew.send(complete).await.map_err(|_| {
+                TrellisClientError::AuthorizationUnavailable("native renewal stopped".into())
+            })?;
+            tokio::select! {
+                biased;
+                cause = self.generations.wait_terminal() => return Err(cause.client_error()),
+                completed = completed => completed.map_err(|_| {
+                    TrellisClientError::AuthorizationUnavailable("native renewal stopped".into())
+                })??,
+            }
+            // A retired session needs a privately admitted replacement before
+            // own-context renewal can use a published physical attachment.
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while contexts.owner.staged_own_authority().is_err()
+                    || self.generations.acquire_published().is_err()
+                {
+                    tokio::select! {
+                        biased;
+                        cause = self.generations.wait_terminal() => return Err(cause.client_error()),
+                        _ = publication.changed() => {},
+                        _ = changes.recv() => {},
+                    }
+                }
+                Ok(())
+            }).await.map_err(|_| TrellisClientError::AuthorizationUnavailable(
+                "native authority replacement unavailable".into(),
+            ))??;
+        }
         crate::client::authorization::install_prepared_authorization(
             &crate::client::authorization::AuthorizationRefreshRuntime {
                 contexts: contexts.clone(),
@@ -1547,6 +1676,17 @@ impl TrellisClient {
             },
         )
         .await?;
+        let mut availability = contexts.watch_availability();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::select! {
+                biased;
+                cause = self.generations.wait_terminal() => Err(cause.client_error()),
+                ready = availability.wait_for(|state| state.is_usable()) => ready.map(|_| ())
+                    .map_err(|_| TrellisClientError::AuthorizationUnavailable("authorization stopped".into())),
+            }
+        }).await.map_err(|_| TrellisClientError::AuthorizationUnavailable(
+            "authorization coverage unavailable".into(),
+        ))??;
         contexts.bundle()
     }
 
@@ -2336,6 +2476,10 @@ fn event_consumer_config(
 fn descriptor_action(action: &str) -> &str {
     action.split_once('.').map_or(action, |(_, action)| action)
 }
+
+#[cfg(test)]
+#[path = "connection_mirror_tests.rs"]
+mod mirror_tests;
 
 #[cfg(test)]
 mod tests {

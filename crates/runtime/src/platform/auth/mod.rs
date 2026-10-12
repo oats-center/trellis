@@ -8,6 +8,7 @@ mod authorization_sessions;
 mod broker;
 mod catalog;
 mod deployments;
+mod framework_storage;
 mod initialization;
 pub(crate) use initialization::{console_registration, CONSOLE_CLIENT_ID};
 mod lifecycle;

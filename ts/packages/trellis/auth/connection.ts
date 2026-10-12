@@ -477,6 +477,14 @@ export async function connectAdmitted(options: {
       ? AbortSignal.any([options.signal, renewalAbort.signal])
       : renewalAbort.signal;
     const task = (async () => {
+      // A reduction can withdraw the attachment while the existing admission
+      // pipeline is preparing its replacement. Explicit renewal must join that
+      // bounded recovery rather than treating an unpublished interval as final.
+      const available = await manager.acquireCurrent({
+        deadlineMs: Date.now() + (options.timeout ?? 30_000),
+        signal,
+      });
+      available.release();
       const lease = await manager.acquirePublishedAttachment();
       if (!lease)
         throw new TransportError({
@@ -625,7 +633,9 @@ export async function connectAdmitted(options: {
       } else if (owner.ownRevoked) {
         if (renewalTimer !== undefined) clearTimeout(renewalTimer);
         renewalTimer = undefined;
-        renewalAbort?.abort();
+        // The old own remains revoked while preactivation attaches coverage
+        // for its replacement. A requested renewal may be awaiting that very
+        // replacement. Do not cancel it for this predecessor notification.
         try {
           void manager.currentNats().close();
         } catch {

@@ -1355,6 +1355,7 @@ function recordRuntimeError(
 
 export type RuntimeOperationDesc = {
   subject: string;
+  permissions: RuntimeApi["operations"][string]["permissions"];
   input: unknown;
   revision: number;
   progress?: unknown;
@@ -3015,9 +3016,8 @@ export class Trellis<
             },
           },
           {
+            // The platform producer owns framework retention and size limits.
             bindOnly: true,
-            ttl: 30 * 24 * 60 * 60 * 1_000,
-            maxValueBytes: 1024 * 1024,
             acquireTimeoutMs: this.timeout,
           },
         );
@@ -4090,7 +4090,7 @@ export class Trellis<
           decodeEvent,
           observe,
           expectedDeploymentId,
-          descriptor.subject,
+          subject.slice(0, -".control".length),
         );
       },
       putTransfer: (

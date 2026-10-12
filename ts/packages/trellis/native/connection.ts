@@ -127,7 +127,11 @@ export type NativeClientConnectOptions<T extends AppRequestDescriptor> =
 
 /** Ordinary generated caller with the shared promoted own-authority view. */
 export type ConnectedNativeClient<T extends AppRequestDescriptor> =
-  CallerRuntime<T> & { readonly ownAuthority: OwnAuthorityView };
+  CallerRuntime<T> & {
+    readonly ownAuthority: OwnAuthorityView;
+    /** Refresh authenticated authority through the shared connection owner. */
+    refreshAuthority(): Promise<void>;
+  };
 
 /** Open a generated native application using exclusively owned, issuer-verified OAuth custody. */
 export function connectNativeClient<const T extends AppRequestDescriptor>(
@@ -145,10 +149,44 @@ export function connectNativeClient<const T extends AppRequestDescriptor>(
       const connected = result;
       try {
         const runtime = getCallerRuntime(options.request);
+        let readyView: OwnAuthorityView | undefined;
         const connection = observeTrellisConnection({
           kind: "client",
           transport: {
-            status: () => connected.manager.status(),
+            status: async function* () {
+              for await (const status of connected.manager.status()) {
+                const view = readyView;
+                if (
+                  status &&
+                  typeof status === "object" &&
+                  Reflect.get(status, "type") === "reconnect" &&
+                  view &&
+                  !view.current
+                ) {
+                  // The logical attachment is covered before reconnect, but
+                  // its verified advisory projection completes asynchronously.
+                  // Publish client readiness only after both are installed.
+                  let unsubscribe = () => {};
+                  try {
+                    const projected = new Promise<boolean>((resolve) => {
+                      unsubscribe = view.subscribe((snapshot) => {
+                        if (snapshot) resolve(true);
+                      });
+                    });
+                    if (
+                      !(await Promise.race([
+                        projected,
+                        connected.manager.closed().then(() => false),
+                      ]))
+                    )
+                      return;
+                  } finally {
+                    unsubscribe();
+                  }
+                }
+                yield status;
+              }
+            },
             closed: () => connected.manager.closed(),
             close: () => connected.manager.close(),
             isClosed: () => connected.manager.isClosed(),
@@ -180,12 +218,17 @@ export function connectNativeClient<const T extends AppRequestDescriptor>(
         );
         const ownAuthority = trellis.ownAuthority;
         if (!ownAuthority) throw new AuthError({ reason: "Unavailable" });
+        readyView = ownAuthority;
         await ownAuthority.refresh();
         if (!ownAuthority.current)
           throw new AuthError({ reason: "Unavailable" });
         return Result.ok(
           Object.assign(createCallerRuntime(trellis, options.request), {
             ownAuthority,
+            refreshAuthority: async () => {
+              await connected.refreshAuthority();
+              await ownAuthority.refresh();
+            },
           }),
         );
       } catch (cause) {

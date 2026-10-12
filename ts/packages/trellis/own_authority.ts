@@ -83,8 +83,10 @@ export class PromotedOwnAuthorityView implements OwnAuthorityView {
   /** Recompute from one retained verified installation, rejecting stale completions. */
   async refresh(): Promise<void> {
     const generation = ++this.#generation;
-    this.#snapshot = undefined;
-    for (const listener of this.#listeners) listener(undefined);
+    // Keep the immutable projection across transport suspension. `current`
+    // hides it unless the owner is usable and still holds this exact digest;
+    // refreshing unchanged authority must not temporarily withdraw actions.
+    for (const listener of this.#listeners) listener(this.current);
     if (this.#closed) return;
     try {
       const lease = this.owner.own();
@@ -116,6 +118,29 @@ export class PromotedOwnAuthorityView implements OwnAuthorityView {
               Object.freeze({ apiId, action: Object.freeze(action) }),
             );
         }
+        const acceptedCapabilities = new Map<
+          string,
+          { identityGeneration: string; consentRevision: string }
+        >();
+        for (const api of lease.authority.apis) {
+          const catalog = await lease.authenticatedCatalog(api.apiId);
+          if (!catalog || !Array.isArray(catalog.capabilities)) continue;
+          for (const capability of catalog.capabilities) {
+            if (
+              capability &&
+              typeof capability === "object" &&
+              !Array.isArray(capability) &&
+              typeof capability.capabilityId === "string" &&
+              typeof capability.identityGeneration === "string" &&
+              typeof capability.consentRevision === "string"
+            ) {
+              acceptedCapabilities.set(capability.capabilityId, {
+                identityGeneration: capability.identityGeneration,
+                consentRevision: capability.consentRevision,
+              });
+            }
+          }
+        }
         lease.assertCurrent();
         if (
           this.#closed ||
@@ -136,9 +161,18 @@ export class PromotedOwnAuthorityView implements OwnAuthorityView {
           expiresAt: authority.expiresAt,
           platformPrivileges: Object.freeze([...authority.platformPrivileges]),
           capabilities: Object.freeze(
-            authority.capabilities.map((capability) =>
-              Object.freeze({ ...capability }),
-            ),
+            authority.capabilities
+              .filter((capability) => {
+                const accepted = acceptedCapabilities.get(
+                  capability.capabilityId,
+                );
+                return (
+                  accepted?.identityGeneration ===
+                    capability.identityGeneration &&
+                  accepted.consentRevision === capability.consentRevision
+                );
+              })
+              .map((capability) => Object.freeze({ ...capability })),
           ),
           actions: Object.freeze(allowed),
         });
