@@ -750,13 +750,14 @@ mod tests {
             )
             .is_err());
             if expires {
+                let after_handoff_deadline = super::now().saturating_add(61);
                 assert!(link_session(
                     engine.server.store(),
                     &handoff,
                     &cookie,
                     &guest.csrf,
                     &provider,
-                    now + 61
+                    after_handoff_deadline
                 )
                 .is_err());
             } else {
